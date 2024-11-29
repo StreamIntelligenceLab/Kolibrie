@@ -1,0 +1,27 @@
+0.1.0
+1. Parsing RDF/XML
+2. Parsing Turtle
+3. Parsing N3
+4. Desing SQL syntax
+5. Desing JOINing
+5. Add aggregation functions (MIN, MAX, AVG, SUM)
+6. Add 'FILTER' keyword
+7. Add 'INSERT' keyword
+8. Ability to make 'SELECT *' or select all
+9. Add 'VALUES' keyword
+10. Ability to read files (dataset files)
+12. Add benchmark
+13. Add unit tests
+14. Add examples
+15. Modify join by using rayon
+16. Modify parse_rdf by using rayon and crossbeam
+17. Modify join by uisng hash join and use rayon for parallel computation
+18. Add volcano optimizer and cardinality estimator
+19. Add knowledge graph
+20. Add forward and backward chaining
+21. Ability to process N3 logic 
+22. Add IStream, RStream, DStream
+23. Add sliding window
+24. Add policies (window close policy, content change policy, non-empty content policy, periodic policy)
+25. Add REST API for database engine
+26. Ability to generate synthetic dataset
