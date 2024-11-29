@@ -4,7 +4,7 @@
     <img src="logo/kolibrie.jfif" width="400" height="400" />
 </p>
 
-![État du Flux de Travail GitHub](https://img.shields.io/github/commit-activity/t/ladroid/goku)
+<!-- ![État du Flux de Travail GitHub](https://img.shields.io/github/commit-activity/t/ladroid/goku) -->
 ![Licence : MIT](https://img.shields.io/badge/License-MIT-yellow.svg)
 ![Version de Rust](https://img.shields.io/badge/Rust-1.60+-blue.svg)
 ![Statut de Compilation](https://img.shields.io/badge/build-passing-brightgreen.svg)
