@@ -34,7 +34,7 @@ Pour plus d'informations sur notre recherche et nos projets en cours, veuillez v
 - **Codage de Dictionnaire Extensible** : Encode et décode efficacement les termes RDF à l'aide d'un dictionnaire personnalisable.
 - **API Complète** : Offre un ensemble riche de méthodes pour la manipulation des données, les requêtes et le traitement des résultats.
 
-> **Avertissement**
+> [!WARNING]
 > L'utilisation de CUDA est expérimentale et en développement.
 
 ## Installation

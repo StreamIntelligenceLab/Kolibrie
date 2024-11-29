@@ -34,7 +34,7 @@ Voor meer informatie over ons onderzoek en lopende projecten, bezoek de [Stream 
 - **Uitbreidbare Dictionary Encoding**: Codeert en decodeert RDF-termen efficiënt met behulp van een aanpasbare dictionary.
 - **Uitgebreide API**: Biedt een rijke set methoden voor gegevensmanipulatie, querying en resultaatsverwerking.
 
-> **Waarschuwing**
+> [!WARNING]
 > Het gebruik van CUDA is experimenteel en in ontwikkeling.
 
 ## Installatie

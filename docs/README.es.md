@@ -34,7 +34,7 @@ Para más información sobre nuestra investigación y proyectos en curso, visita
 - **Codificación de Diccionario Extensible**: Codifica y decodifica términos RDF de manera eficiente usando un diccionario personalizable.
 - **API Completa**: Ofrece un conjunto rico de métodos para la manipulación de datos, consultas y procesamiento de resultados.
 
-> **Advertencia**
+> [!WARNING]
 > El uso de CUDA es experimental y está en desarrollo.
 
 ## Instalación
