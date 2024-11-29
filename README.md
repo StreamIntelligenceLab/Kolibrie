@@ -34,7 +34,7 @@ For more information about our research and ongoing projects, please visit the [
 - **Extensible Dictionary Encoding**: Efficiently encodes and decodes RDF terms using a customizable dictionary.
 - **Comprehensive API**: Offers a rich set of methods for data manipulation, querying, and result processing.
 
-> **Warning**
+> [!WARNING]
 > utilizing CUDA is experimental and under the development
 
 ## Installation
