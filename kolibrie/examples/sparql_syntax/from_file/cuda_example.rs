@@ -4,7 +4,7 @@ use shared::GPU_MODE_ENABLED;
 
 /*
 For unix:
-export LD_LIBRARY_PATH=/mnt/d/Projects/RustProj/Stream_Reasoning/kolibrie/src/cuda/:$LD_LIBRARY_PATH
+export LD_LIBRARY_PATH=<path>:$LD_LIBRARY_PATH
 cmake .
 cmake --build .
 
