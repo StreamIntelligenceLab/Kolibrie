@@ -10,9 +10,12 @@ target/
 # MSVC Windows builds of rustc generate these, which store debugging information
 *.pdb
 
+*.lib
+*.dll
+
 # Old files
-src/old_new.rs
-src/old.rs
+kolibrie/src/old_new.rs
+kolibrie/src/old.rs
 
 # Some unnecessary python directories
 py_tests/
@@ -40,9 +43,25 @@ graphics.png
 flamegraph.svg
 
 # Unused
-examples/sql_query/
+kolibrie/examples/sql_query/
 
 # Logos
 /docs/logo/image1.webp
 /docs/logo/kolibri.png
 /docs/logo/kolibri.webp
+
+# .dll and .so files
+kolibrie/src/cuda/*.so
+kolibrie/src/cuda/*.dll
+
+# .vscode
+.vscode
+
+#CMake 
+kolibrie/src/cuda/cmake_install.cmake
+kolibrie/src/cuda/CMakeCache.txt
+kolibrie/src/cuda/output
+kolibrie/src/cuda/CMakeFiles
+kolibrie/src/cuda/Makefile
+kolibrie/src/cuda/cudajoin.exp
+kolibrie/src/cuda/cudajoin.lib

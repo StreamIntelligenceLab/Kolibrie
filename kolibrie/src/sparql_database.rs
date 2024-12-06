@@ -4,6 +4,7 @@ use crate::triple::TimestampedTriple;
 use crate::triple::Triple;
 use crate::utils;
 use crate::utils::current_timestamp;
+use crate::cuda::cuda_join::*;
 use crossbeam::channel::unbounded;
 use crossbeam::scope;
 use crossbeam::thread;
@@ -2071,5 +2072,166 @@ impl SparqlDatabase {
                 self.dictionary.decode(triple.object).unwrap()
             );
         }
+    }
+
+    pub fn perform_hash_join_cuda_wrapper<'a>(
+        &self,
+        subject_var: &'a str,
+        predicate: String,
+        object_var: &'a str,
+        triples: Vec<Triple>,
+        dictionary: &'a Dictionary,
+        final_results: Vec<BTreeMap<&'a str, String>>,
+        literal_filter: Option<String>,
+    ) -> Vec<BTreeMap<&'a str, String>> {
+        if final_results.is_empty() {
+            return Vec::new();
+        }
+
+        // Prepare data for CUDA
+        let subjects: Vec<u32> = triples.iter().map(|t| t.subject).collect();
+        let predicates: Vec<u32> = triples.iter().map(|t| t.predicate).collect();
+        let objects: Vec<u32> = triples.iter().map(|t| t.object).collect();
+
+        let predicate_filter = dictionary.clone().encode(&predicate);
+
+        let literal_filter_value = literal_filter
+            .as_ref()
+            .map(|lit| dictionary.clone().encode(lit))
+            .unwrap_or(0);
+
+        let literal_filter_option = if literal_filter.is_some() {
+            Some(literal_filter_value)
+        } else {
+            None
+        };
+
+        // Call CUDA function
+        let matching_indices = hash_join_cuda(
+            &subjects,
+            &predicates,
+            &objects,
+            predicate_filter,
+            literal_filter_option,
+        );
+
+        // Prepare variable bindings
+        let mut both_vars_bound: HashMap<(String, String), Vec<BTreeMap<&'a str, String>>> =
+            HashMap::new();
+        let mut subject_var_bound: HashMap<String, Vec<BTreeMap<&'a str, String>>> = HashMap::new();
+        let mut object_var_bound: HashMap<String, Vec<BTreeMap<&'a str, String>>> = HashMap::new();
+        let mut neither_var_bound: Vec<BTreeMap<&'a str, String>> = Vec::new();
+
+        for result in final_results {
+            let subject_binding = result.get(subject_var).cloned();
+            let object_binding = result.get(object_var).cloned();
+
+            match (subject_binding, object_binding) {
+                (Some(subj_val), Some(obj_val)) => {
+                    both_vars_bound
+                        .entry((subj_val.clone(), obj_val.clone()))
+                        .or_default()
+                        .push(result);
+                }
+                (Some(subj_val), None) => {
+                    subject_var_bound
+                        .entry(subj_val.clone())
+                        .or_default()
+                        .push(result);
+                }
+                (None, Some(obj_val)) => {
+                    object_var_bound
+                        .entry(obj_val.clone())
+                        .or_default()
+                        .push(result);
+                }
+                (None, None) => {
+                    neither_var_bound.push(result);
+                }
+            }
+        }
+
+        // Reconstruct results
+        let mut results = Vec::new();
+
+        for idx in matching_indices {
+            let triple = &triples[idx as usize];
+
+            if let (Some(subject), Some(object)) = (
+                dictionary.decode(triple.subject),
+                dictionary.decode(triple.object),
+            ) {
+                // Process group both_vars_bound
+                {
+                    let key = (subject.to_string(), object.to_string());
+                    if let Some(results_vec) = both_vars_bound.get(&key) {
+                        for result in results_vec {
+                            let extended_result = result.clone();
+                            results.push(extended_result);
+                        }
+                    }
+                }
+
+                // Process group subject_var_bound
+                {
+                    if let Some(results_vec) = subject_var_bound.get(subject) {
+                        for result in results_vec {
+                            let mut extended_result = result.clone();
+                            // Extend object_var
+                            if let Some(existing_object) = extended_result.get(object_var) {
+                                if existing_object != &object {
+                                    continue; // Inconsistent variable binding
+                                }
+                            } else {
+                                extended_result.insert(object_var, object.to_string());
+                            }
+                            results.push(extended_result);
+                        }
+                    }
+                }
+
+                // Process group object_var_bound
+                {
+                    if let Some(results_vec) = object_var_bound.get(object) {
+                        for result in results_vec {
+                            let mut extended_result = result.clone();
+                            // Extend subject_var
+                            if let Some(existing_subject) = extended_result.get(subject_var) {
+                                if existing_subject != &subject {
+                                    continue; // Inconsistent variable binding
+                                }
+                            } else {
+                                extended_result.insert(subject_var, subject.to_string());
+                            }
+                            results.push(extended_result);
+                        }
+                    }
+                }
+
+                // Process group neither_var_bound
+                for result in &neither_var_bound {
+                    let mut extended_result = result.clone();
+                    // Extend subject_var
+                    if let Some(existing_subject) = extended_result.get(subject_var) {
+                        if existing_subject != &subject {
+                            continue; // Inconsistent variable binding
+                        }
+                    } else {
+                        extended_result.insert(subject_var, subject.to_string());
+                    }
+                    // Extend object_var
+                    if let Some(existing_object) = extended_result.get(object_var) {
+                        if existing_object != &object {
+                            continue; // Inconsistent variable binding
+                        }
+                    } else {
+                        extended_result.insert(object_var, object.to_string());
+                    }
+                    results.push(extended_result);
+                }
+            }
+        }
+
+        results
     }
 }

@@ -8,3 +8,4 @@ pub mod utils;
 pub mod volcano_optimizer;
 pub mod parser_n3_logic;
 pub mod lsm_tree;
+pub mod cuda;

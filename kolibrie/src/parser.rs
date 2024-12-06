@@ -11,6 +11,8 @@ use nom::{
 };
 use rayon::str;
 use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::sync::atomic::Ordering;
+use shared::GPU_MODE_ENABLED;
 
 // Define the Value enum to represent terms or UNDEF in VALUES clause
 #[derive(Debug, Clone)]
@@ -458,15 +460,29 @@ pub fn execute_query(sparql: &str, database: &mut SparqlDatabase) -> Vec<Vec<Str
                 None
             };
 
-            final_results = database.perform_join_par_simd_with_strict_filter_1(
-                subject_var,
-                resolved_predicate,
-                object_var,
-                triples_vec.clone(),
-                &database.dictionary,
-                final_results,
-                literal_filter,
-            );
+            if GPU_MODE_ENABLED.load(Ordering::SeqCst) {
+                println!("CUDA");
+                final_results = database.perform_hash_join_cuda_wrapper(
+                    subject_var,
+                    resolved_predicate,
+                    object_var,
+                    triples_vec.clone(),
+                    &database.dictionary,
+                    final_results,
+                    literal_filter,
+                );
+            } else {
+                println!("NORM");
+                final_results = database.perform_join_par_simd_with_strict_filter_1(
+                    subject_var,
+                    resolved_predicate,
+                    object_var,
+                    triples_vec.clone(),
+                    &database.dictionary,
+                    final_results,
+                    literal_filter,
+                );
+            }
         }
 
         // Apply filters
