@@ -4,6 +4,7 @@ use crate::triple::TimestampedTriple;
 use crate::triple::Triple;
 use crate::utils;
 use crate::utils::current_timestamp;
+use crate::utils::ClonableFn;
 use crate::cuda::cuda_join::*;
 use crossbeam::channel::unbounded;
 use crossbeam::scope;
@@ -26,6 +27,7 @@ pub struct SparqlDatabase {
     pub sliding_window: Option<SlidingWindow>,
     pub dictionary: Dictionary,
     pub prefixes: HashMap<String, String>,
+    pub udfs: HashMap<String, ClonableFn>,
 }
 
 #[allow(dead_code)]
@@ -37,6 +39,7 @@ impl SparqlDatabase {
             sliding_window: None,
             dictionary: Dictionary::new(),
             prefixes: HashMap::new(),
+            udfs: HashMap::new(),
         }
     }
 
@@ -594,6 +597,7 @@ impl SparqlDatabase {
             sliding_window: self.sliding_window.clone(),
             dictionary: self.dictionary.clone(),
             prefixes: self.prefixes.clone(),
+            udfs: HashMap::new(),
         }
     }
 
@@ -611,6 +615,7 @@ impl SparqlDatabase {
             sliding_window: self.sliding_window.clone(),
             dictionary: self.dictionary.clone(),
             prefixes: self.prefixes.clone(),
+            udfs: HashMap::new(),
         }
     }
 
@@ -841,6 +846,7 @@ impl SparqlDatabase {
             sliding_window: self.sliding_window.clone(),
             dictionary: self.dictionary.clone(),
             prefixes: self.prefixes.clone(),
+            udfs: HashMap::new(),
         }
     }
 
@@ -917,6 +923,7 @@ impl SparqlDatabase {
             sliding_window: self.sliding_window.clone(),
             dictionary: merged_dictionary,
             prefixes: self.prefixes.clone(),
+            udfs: HashMap::new(),
         }
     }
 
@@ -982,6 +989,7 @@ impl SparqlDatabase {
             sliding_window: self.sliding_window.clone(),
             dictionary: self.dictionary.clone(),
             prefixes: self.prefixes.clone(),
+            udfs: HashMap::new(),
         }
     }
 
@@ -1023,6 +1031,7 @@ impl SparqlDatabase {
             sliding_window: self.sliding_window.clone(),
             dictionary: self.dictionary.clone(),
             prefixes: self.prefixes.clone(),
+            udfs: HashMap::new(),
         }
     }
 
@@ -1077,6 +1086,7 @@ impl SparqlDatabase {
             sliding_window: self.sliding_window.clone(),
             dictionary: self.dictionary.clone(),
             prefixes: self.prefixes.clone(),
+            udfs: HashMap::new(),
         }
     }
 
@@ -1736,6 +1746,7 @@ impl SparqlDatabase {
             sliding_window: self.sliding_window.clone(),
             dictionary: self.dictionary.clone(),
             prefixes: self.prefixes.clone(),
+            udfs: HashMap::new(),
         }
     }
 
@@ -2233,5 +2244,13 @@ impl SparqlDatabase {
         }
 
         results
+    }
+
+    // Create user defined function
+    pub fn register_udf<F>(&mut self, name: &str, f: F)
+    where
+        F: Fn(Vec<&str>) -> String + Send + Sync + 'static,
+    {
+        self.udfs.insert(name.to_string(), ClonableFn::new(f));
     }
 }

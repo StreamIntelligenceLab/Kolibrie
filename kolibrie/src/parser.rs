@@ -186,6 +186,29 @@ pub fn parse_filter(input: &str) -> IResult<&str, (&str, &str, &str)> {
     Ok((input, (var, operator, value)))
 }
 
+// Parser for BIND clauses: BIND(funcName(?var, "literal") AS ?newVar)
+pub fn parse_bind(input: &str) -> IResult<&str, (&str, Vec<&str>, &str)> {
+    let (input, _) = tag("BIND")(input)?;
+    let (input, _) = multispace0(input)?;
+    let (input, _) = char('(')(input)?;
+    let (input, func_name) = identifier(input)?;
+    let (input, _) = char('(')(input)?;
+
+    let (input, args) = separated_list1(
+        tuple((multispace0, char(','), multispace0)),
+        alt((variable, parse_literal))
+    )(input)?;
+
+    let (input, _) = char(')')(input)?;
+    let (input, _) = multispace1(input)?;
+    let (input, _) = tag("AS")(input)?;
+    let (input, _) = multispace1(input)?;
+    let (input, new_var) = variable(input)?;
+    let (input, _) = char(')')(input)?;
+
+    Ok((input, (func_name, args, new_var)))
+}
+
 pub fn parse_where(
     input: &str,
 ) -> IResult<
@@ -194,6 +217,7 @@ pub fn parse_where(
         Vec<(&str, &str, &str)>,
         Vec<(&str, &str, &str)>,
         Option<ValuesClause>,
+        Vec<(&str, Vec<&str>, &str)>,
     ),
 > {
     let (input, _) = multispace0(input)?;
@@ -216,6 +240,8 @@ pub fn parse_where(
 
     let (input, filters) = many0(preceded(multispace0, parse_filter))(input)?;
 
+    let (input, binds) = many0(preceded(multispace0, parse_bind))(input)?;
+
     // Try to parse a VALUES clause
     let (input, values_clause) = opt(preceded(multispace0, parse_values))(input)?;
 
@@ -228,7 +254,7 @@ pub fn parse_where(
         .map(|(s, _, p, _, o)| (s, p, o))
         .collect();
 
-    Ok((input, (patterns, filters, values_clause)))
+    Ok((input, (patterns, filters, values_clause, binds)))
 }
 
 pub fn parse_group_by(input: &str) -> IResult<&str, Vec<&str>> {
@@ -295,6 +321,7 @@ pub fn parse_sparql_query(
         Vec<&str>,                       // group_vars
         HashMap<String, String>,         // prefixes
         Option<ValuesClause>,
+        Vec<(&str, Vec<&str>, &str)>,    // BIND clauses
     ),
 > {
     let mut input = input;
@@ -329,7 +356,7 @@ pub fn parse_sparql_query(
     let (input, _) = multispace0(input)?;
 
     // Parse WHERE clause
-    let (input, (patterns, filters, values_clause)) = parse_where(input)?;
+    let (input, (patterns, filters, values_clause, binds)) = parse_where(input)?;
 
     // Optionally parse the GROUP BY clause
     let (input, group_vars) =
@@ -349,6 +376,7 @@ pub fn parse_sparql_query(
             group_vars,
             prefixes,
             values_clause,
+            binds,
         ),
     ))
 }
@@ -370,6 +398,7 @@ pub fn execute_query(sparql: &str, database: &mut SparqlDatabase) -> Vec<Vec<Str
             group_vars,
             parsed_prefixes,
             values_clause,
+            binds,
         ),
     )) = parse_sparql_query(sparql)
     {
@@ -487,6 +516,29 @@ pub fn execute_query(sparql: &str, database: &mut SparqlDatabase) -> Vec<Vec<Str
 
         // Apply filters
         final_results = database.apply_filters_simd(final_results, filters);
+
+        // Apply BIND (UDF) clauses
+        // Each BIND is (func_name, args, new_var)
+        for (func_name, args, new_var) in binds {
+            if let Some(func) = database.udfs.get(func_name) {
+                // Apply this function to each row
+                for row in &mut final_results {
+                    let resolved_args: Vec<&str> = args.iter().map(|arg| {
+                        if arg.starts_with('?') {
+                            row.get(arg).map(|s| s.as_str()).unwrap_or("")
+                        } else {
+                            // literal
+                            arg
+                        }
+                    }).collect();
+
+                    let result = func.call(resolved_args);
+                    row.insert(new_var, result);
+                }
+            } else {
+                eprintln!("UDF {} not found", func_name);
+            }
+        }
 
         // Apply GROUP BY and aggregations
         if !group_by_variables.is_empty() {

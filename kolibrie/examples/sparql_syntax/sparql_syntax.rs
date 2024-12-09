@@ -166,7 +166,7 @@ fn volcano_optmizer_rdf() {
     let sparql = r#"PREFIX ex: <http://example.org/> SELECT ?person ?location WHERE {?person ex:worksAt ?org . ?org ex:located ?location}"#;
 
     // Parse the SPARQL query
-    if let Ok((_, (_, variables, patterns, filters, _, prefixes, _))) = parse_sparql_query(sparql) {
+    if let Ok((_, (_, variables, patterns, filters, _, prefixes, _, _))) = parse_sparql_query(sparql) {
         // Merge prefixes into the database
         database.prefixes.extend(prefixes.clone());
 

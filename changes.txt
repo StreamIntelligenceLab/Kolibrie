@@ -3,8 +3,12 @@
 2. Modify GPU CUDA
 3. Add proc_macro for GPU ```[gpu::main]```
 4. Add cuda example
-5.
-6.
+5. Add possibility to make a user defined function
+6. Add user defined function example
+7. 
+8. 
+9. 
+10. 
 
 0.1.0
 1. Parsing RDF/XML

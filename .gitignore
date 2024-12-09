@@ -57,6 +57,9 @@ kolibrie/src/cuda/*.dll
 # .vscode
 .vscode
 
+# build
+build/
+
 #CMake 
 kolibrie/src/cuda/cmake_install.cmake
 kolibrie/src/cuda/CMakeCache.txt

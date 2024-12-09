@@ -154,3 +154,7 @@ path = "examples/sparql_syntax/from_file/one_thread.rs"
 [[example]]
 name = "cuda_example"
 path = "examples/sparql_syntax/from_file/cuda_example.rs"
+
+[[example]]
+name = "udf"
+path = "examples/sparql_syntax/user_defined_function/udf.rs"

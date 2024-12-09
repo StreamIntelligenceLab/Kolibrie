@@ -1,8 +1,32 @@
 use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream};
 use std::time::{SystemTime, UNIX_EPOCH};
-
+use std::sync::Arc;
+use std::fmt::{self, Debug};
 use crate::sparql_database::SparqlDatabase;
+
+#[derive(Clone)]
+pub struct ClonableFn(Arc<dyn Fn(Vec<&str>) -> String + Send + Sync>);
+
+impl ClonableFn {
+    pub fn new<F>(f: F) -> Self
+    where
+        F: Fn(Vec<&str>) -> String + Send + Sync + 'static,
+    {
+        ClonableFn(Arc::new(f))
+    }
+
+    pub fn call(&self, args: Vec<&str>) -> String {
+        (self.0)(args)
+    }
+}
+
+// Implement Debug for ClonableFn
+impl Debug for ClonableFn {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "ClonableFn(<function>)")
+    }
+}
 
 // Basic HTTP server function
 pub fn run_server() {
