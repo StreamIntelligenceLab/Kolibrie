@@ -194,9 +194,10 @@ pub fn parse_bind(input: &str) -> IResult<&str, (&str, Vec<&str>, &str)> {
     let (input, func_name) = identifier(input)?;
     let (input, _) = char('(')(input)?;
 
+    // Allow multiple arguments for CONCAT
     let (input, args) = separated_list1(
         tuple((multispace0, char(','), multispace0)),
-        alt((variable, parse_literal))
+        alt((variable, parse_literal)),
     )(input)?;
 
     let (input, _) = char(')')(input)?;
@@ -520,18 +521,35 @@ pub fn execute_query(sparql: &str, database: &mut SparqlDatabase) -> Vec<Vec<Str
         // Apply BIND (UDF) clauses
         // Each BIND is (func_name, args, new_var)
         for (func_name, args, new_var) in binds {
-            if let Some(func) = database.udfs.get(func_name) {
-                // Apply this function to each row
+            if func_name == "CONCAT" {
+                // Process CONCAT function
                 for row in &mut final_results {
-                    let resolved_args: Vec<&str> = args.iter().map(|arg| {
-                        if arg.starts_with('?') {
-                            row.get(arg).map(|s| s.as_str()).unwrap_or("")
-                        } else {
-                            // literal
-                            arg
-                        }
-                    }).collect();
-
+                    let concatenated = args
+                        .iter()
+                        .map(|arg| {
+                            if arg.starts_with('?') {
+                                row.get(arg).map(|s| s.as_str()).unwrap_or("")
+                            } else {
+                                arg // literal
+                            }
+                        })
+                        .collect::<Vec<&str>>()
+                        .join("");
+                    row.insert(new_var, concatenated);
+                }
+            } else if let Some(func) = database.udfs.get(func_name) {
+                // Process other UDFs
+                for row in &mut final_results {
+                    let resolved_args: Vec<&str> = args
+                        .iter()
+                        .map(|arg| {
+                            if arg.starts_with('?') {
+                                row.get(arg).map(|s| s.as_str()).unwrap_or("")
+                            } else {
+                                arg
+                            }
+                        })
+                        .collect();
                     let result = func.call(resolved_args);
                     row.insert(new_var, result);
                 }

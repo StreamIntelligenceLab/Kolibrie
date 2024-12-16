@@ -14,20 +14,33 @@ if(WIN32)
     set_target_properties(cudajoin PROPERTIES
         OUTPUT_NAME cudajoin
     )
-    target_compile_options(cudajoin PRIVATE $<$<COMPILE_LANGUAGE:CUDA>:-Xcompiler=/MD>)
+    target_compile_options(cudajoin PRIVATE 
+        $<$<COMPILE_LANGUAGE:CUDA>:-Xcompiler=/MD>
+    )
+    set_target_properties(cudajoin PROPERTIES
+        CUDA_ARCHITECTURES "${CUDA_ARCHITECTURES}"
+        CUDA_GENERATE_CODE "arch=compute_75,code=[compute_75,sm_75,lto_75];arch=compute_80,code=[compute_80,sm_80,lto_80];arch=compute_86,code=[compute_86,sm_86,lto_86]"
+    )
 elseif(UNIX)
     message(STATUS "Configured build for Linux")
     set(CUDA_ARCHITECTURES "52;60;61") # Compatible with CUDA 11.5
     set_target_properties(cudajoin PROPERTIES
         OUTPUT_NAME cudajoin
+        CUDA_GENERATE_CODE "arch=compute_52,code=[compute_52,sm_52,lto_52];arch=compute_60,code=[compute_60,sm_60,lto_60];arch=compute_61,code=[compute_61,sm_61,lto_61]"
     )
 else()
     message(FATAL_ERROR "Unsupported platform")
 endif()
 
+# Add nvcc-specific flags
+target_compile_options(cudajoin PRIVATE 
+    $<$<COMPILE_LANGUAGE:CUDA>:-lineinfo>
+    $<$<COMPILE_LANGUAGE:CUDA>:-Xptxas=-O3>
+    $<$<COMPILE_LANGUAGE:CUDA>:-use_fast_math>
+)
+
 # Apply architecture configuration
 set_target_properties(cudajoin PROPERTIES
-    CUDA_ARCHITECTURES "${CUDA_ARCHITECTURES}"
     POSITION_INDEPENDENT_CODE ON
 )
 

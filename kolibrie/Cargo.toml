@@ -158,3 +158,7 @@ path = "examples/sparql_syntax/from_file/cuda_example.rs"
 [[example]]
 name = "udf"
 path = "examples/sparql_syntax/user_defined_function/udf.rs"
+
+[[example]]
+name = "concat"
+path = "examples/sparql_syntax/concat/concat.rs"

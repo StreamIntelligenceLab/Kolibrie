@@ -5,7 +5,7 @@
 4. Add cuda example
 5. Add possibility to make a user defined function
 6. Add user defined function example
-7. 
+7. Add 'CONCAT' keyword
 8. 
 9. 
 10. 
