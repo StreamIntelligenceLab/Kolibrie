@@ -6,9 +6,13 @@
 5. Add possibility to make a user defined function
 6. Add user defined function example
 7. Add 'CONCAT' keyword
-8. 
-9. 
-10. 
+8. Add indexing optimization
+9. Modify WHERE clause by accept a uri in addition to variable or literal
+10. Modify query by adding semicolon
+11. Modify query, ability to write nested query
+12. Add Datalog engine
+13. 
+14. 
 
 0.1.0
 1. Parsing RDF/XML

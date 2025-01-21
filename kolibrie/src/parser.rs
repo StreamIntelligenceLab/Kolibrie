@@ -34,6 +34,15 @@ pub struct InsertClause<'a> {
     pub triples: Vec<(&'a str, &'a str, &'a str)>,
 }
 
+#[derive(Debug, Clone)]
+pub struct SubQuery<'a> {
+    variables: Vec<(&'a str, &'a str, Option<&'a str>)>, // SELECT variables
+    patterns: Vec<(&'a str, &'a str, &'a str)>,          // WHERE patterns
+    filters: Vec<(&'a str, &'a str, &'a str)>,           // FILTER conditions
+    binds: Vec<(&'a str, Vec<&'a str>, &'a str)>,        // BIND clauses
+    _values_clause: Option<ValuesClause<'a>>,                  // VALUES clause
+}
+
 // Helper function to recognize identifiers
 pub fn identifier(input: &str) -> IResult<&str, &str> {
     take_while1(|c: char| c.is_alphanumeric() || c == '_')(input)
@@ -62,6 +71,40 @@ pub fn parse_literal(input: &str) -> IResult<&str, &str> {
 // Parser for a URI within angle brackets
 pub fn parse_uri(input: &str) -> IResult<&str, &str> {
     delimited(char('<'), take_while1(|c| c != '>'), char('>'))(input)
+}
+
+// Helper parser to parse a single predicate-object pair.
+pub fn parse_predicate_object(input: &str) -> IResult<&str, (&str, &str)> {
+    let (input, p) = predicate(input)?;
+    let (input, _) = multispace1(input)?;
+    let (input, o) = alt((parse_uri, variable, parse_literal))(input)?;
+    Ok((input, (p, o)))
+}
+
+pub fn parse_triple_block(input: &str) -> IResult<&str, Vec<(&str, &str, &str)>> {
+    let (input, subject) = alt((parse_uri, variable))(input)?;
+    let (input, _) = multispace1(input)?;
+    
+    // First predicate-object pair
+    let (input, first_po) = parse_predicate_object(input)?;
+    
+    // Zero or more additional predicate-object pairs separated by semicolon
+    let (input, rest_po) = many0(preceded(
+        tuple((multispace0, char(';'), multispace0)),
+        parse_predicate_object,
+    ))(input)?;
+    
+    // Gather all (predicate, object) pairs
+    let mut pairs = vec![first_po];
+    pairs.extend(rest_po);
+    
+    // Convert each pair into a triple by reusing the same subject
+    let mut triples = Vec::new();
+    for (p, o) in pairs {
+        triples.push((subject, p, o));
+    }
+    
+    Ok((input, triples))
 }
 
 // Parser for values in the VALUES clause
@@ -210,6 +253,29 @@ pub fn parse_bind(input: &str) -> IResult<&str, (&str, Vec<&str>, &str)> {
     Ok((input, (func_name, args, new_var)))
 }
 
+pub fn parse_subquery<'a>(input: &'a str) -> IResult<&'a str, SubQuery<'a>> {
+    let (input, _) = multispace0::<&str, nom::error::Error<&str>>(input)?;
+    let (input, _) = char('{')(input)?;
+    let (input, _) = multispace0::<&str, nom::error::Error<&str>>(input)?;
+    
+    // Parse SELECT clause
+    let (input, variables) = parse_select(input)?;
+    
+    // Parse WHERE clause (recursive)
+    let (input, (patterns, filters, values_clause, binds, _)) = parse_where(input)?;
+    
+    let (input, _) = multispace0::<&str, nom::error::Error<&str>>(input)?;
+    let (input, _) = char('}')(input)?;
+    
+    Ok((input, SubQuery {
+        variables,
+        patterns,
+        filters,
+        binds,
+        _values_clause: values_clause,
+    }))
+}
+
 pub fn parse_where(
     input: &str,
 ) -> IResult<
@@ -219,6 +285,7 @@ pub fn parse_where(
         Vec<(&str, &str, &str)>,
         Option<ValuesClause>,
         Vec<(&str, Vec<&str>, &str)>,
+        Vec<SubQuery>,  // Add subqueries to the return type
     ),
 > {
     let (input, _) = multispace0(input)?;
@@ -227,35 +294,61 @@ pub fn parse_where(
     let (input, _) = char('{')(input)?;
     let (input, _) = multispace0(input)?;
 
-    // Modify this line to accept literals in the object position
-    let (input, patterns) = separated_list1(
-        tuple((space0, char('.'), multispace1)),
-        tuple((
-            alt((parse_uri, variable)), // Subject
-            multispace1,
-            predicate, // Predicate
-            multispace1,
-            alt((variable, parse_literal)), // Accept variable or literal in object position
-        )),
-    )(input)?;
+    let mut patterns = Vec::new();
+    let mut filters = Vec::new();
+    let mut binds = Vec::new();
+    let mut subqueries = Vec::new();
+    let mut values_clause = None;
+    let mut current_input = input;
 
-    let (input, filters) = many0(preceded(multispace0, parse_filter))(input)?;
+    // Parse components until we reach the closing brace
+    loop {
+        let (new_input, _) = multispace0(current_input)?;
+        current_input = new_input;
 
-    let (input, binds) = many0(preceded(multispace0, parse_bind))(input)?;
+        // Try to match a closing brace
+        if let Ok((new_input, _)) = char::<_, nom::error::Error<_>>('}')(current_input) {
+            current_input = new_input;
+            break;
+        }
 
-    // Try to parse a VALUES clause
-    let (input, values_clause) = opt(preceded(multispace0, parse_values))(input)?;
+        // Try to parse each possible component
+        current_input = if let Ok((new_input, triple_block)) = parse_triple_block(current_input) {
+            patterns.extend(triple_block);
+            new_input
+        } else if let Ok((new_input, filter)) = parse_filter(current_input) {
+            filters.push(filter);
+            new_input
+        } else if let Ok((new_input, bind)) = parse_bind(current_input) {
+            binds.push(bind);
+            new_input
+        } else if let Ok((new_input, subquery)) = parse_subquery(current_input) {
+            subqueries.push(subquery);
+            new_input
+        } else if let Ok((new_input, vals)) = parse_values(current_input) {
+            values_clause = Some(vals);
+            new_input
+        } else {
+            return Err(nom::Err::Error(nom::error::Error::new(
+                current_input,
+                nom::error::ErrorKind::Alt,
+            )));
+        };
 
-    let (input, _) = multispace0(input)?;
-    let (input, _) = char('}')(input)?;
+        // Consume any trailing dot
+        if let Ok((new_input, _)) = tuple((
+            space0::<&str, nom::error::Error<&str>>,
+            char::<&str, nom::error::Error<&str>>('.'),
+            space0::<&str, nom::error::Error<&str>>,
+        ))(current_input) {
+            current_input = new_input;
+        }
+    }
 
-    // Convert patterns from a 5-tuple to a 3-tuple by extracting relevant parts
-    let patterns = patterns
-        .into_iter()
-        .map(|(s, _, p, _, o)| (s, p, o))
-        .collect();
-
-    Ok((input, (patterns, filters, values_clause, binds)))
+    Ok((
+        current_input,
+        (patterns, filters, values_clause, binds, subqueries),
+    ))
 }
 
 pub fn parse_group_by(input: &str) -> IResult<&str, Vec<&str>> {
@@ -287,25 +380,18 @@ pub fn parse_insert(input: &str) -> IResult<&str, InsertClause> {
     let (input, _) = char('{')(input)?;
     let (input, _) = multispace0(input)?;
 
-    let (input, triples) = separated_list1(
+    // Parse one or more triple blocks separated by dots.
+    // Each triple block can contain multiple predicate-object pairs separated by semicolons.
+    let (input, triple_blocks) = separated_list1(
         tuple((space0, char('.'), space0)),
-        tuple((
-            alt((parse_uri, variable)),
-            multispace1,
-            predicate,
-            multispace1,
-            alt((parse_uri, variable, parse_literal)), // Accept either variable or literal
-        )),
+        parse_triple_block,
     )(input)?;
 
     let (input, _) = multispace0(input)?;
     let (input, _) = char('}')(input)?;
 
-    // Convert triples from a 5-tuple to a 3-tuple by extracting relevant parts
-    let triples = triples
-        .into_iter()
-        .map(|(s, _, p, _, o)| (s, p, o))
-        .collect();
+    // Flatten all the triple blocks into a single Vec
+    let triples = triple_blocks.into_iter().flatten().collect();
 
     Ok((input, InsertClause { triples }))
 }
@@ -323,6 +409,7 @@ pub fn parse_sparql_query(
         HashMap<String, String>,         // prefixes
         Option<ValuesClause>,
         Vec<(&str, Vec<&str>, &str)>,    // BIND clauses
+        Vec<SubQuery>,
     ),
 > {
     let mut input = input;
@@ -357,7 +444,7 @@ pub fn parse_sparql_query(
     let (input, _) = multispace0(input)?;
 
     // Parse WHERE clause
-    let (input, (patterns, filters, values_clause, binds)) = parse_where(input)?;
+    let (input, (patterns, filters, values_clause, binds, subqueries)) = parse_where(input)?;
 
     // Optionally parse the GROUP BY clause
     let (input, group_vars) =
@@ -378,8 +465,101 @@ pub fn parse_sparql_query(
             prefixes,
             values_clause,
             binds,
+            subqueries
         ),
     ))
+}
+
+pub fn execute_subquery<'a>(
+    subquery: &SubQuery<'a>,
+    database: &SparqlDatabase,
+    prefixes: &HashMap<String, String>,
+    current_results: Vec<BTreeMap<&'a str, String>>,
+) -> Vec<BTreeMap<&'a str, String>> {
+    // Execute subquery patterns
+    let mut results = current_results;
+    
+    for (subject_var, predicate, object_var) in &subquery.patterns {
+        let triples_vec: Vec<Triple> = database.triples.iter().cloned().collect();
+
+        // IMPORTANT: resolve the prefixed name to its full IRI
+        let resolved_predicate = database.resolve_query_term(predicate, prefixes);
+        
+        // If object_var is not a variable, also resolve that if needed:
+        let literal_filter = if !object_var.starts_with('?') {
+            Some(database.resolve_query_term(object_var, prefixes))
+        } else {
+            None
+        };
+
+        results = database.perform_join_par_simd_with_strict_filter_1(
+            subject_var,
+            resolved_predicate,
+            object_var,
+            triples_vec,
+            &database.dictionary,
+            results,
+            literal_filter,
+        );
+    }
+    
+    // Apply filters
+    results = database.apply_filters_simd(results, subquery.filters.clone());
+    
+    // Process BIND clauses
+    for (func_name, args, new_var) in subquery.binds.clone() {
+        if func_name == "CONCAT" {
+            // Process CONCAT function
+            for row in &mut results {
+                let concatenated = args
+                    .iter()
+                    .map(|arg| {
+                        if arg.starts_with('?') {
+                            row.get(arg).map(|s| s.as_str()).unwrap_or("")
+                        } else {
+                            arg // literal
+                        }
+                    })
+                    .collect::<Vec<&str>>()
+                    .join("");
+                row.insert(new_var, concatenated);
+            }
+        } else if let Some(func) = database.udfs.get(func_name) {
+            // Process other UDFs
+            for row in &mut results {
+                let resolved_args: Vec<&str> = args
+                    .iter()
+                    .map(|arg| {
+                        if arg.starts_with('?') {
+                            row.get(arg).map(|s| s.as_str()).unwrap_or("")
+                        } else {
+                            arg
+                        }
+                    })
+                    .collect();
+                let result = func.call(resolved_args);
+                row.insert(new_var, result);
+            }
+        } else {
+            eprintln!("UDF {} not found", func_name);
+        }
+    }
+    
+    // Return only the variables specified in the SELECT clause
+    results
+        .into_iter()
+        .map(|mut row| {
+            let mut new_row = BTreeMap::new();
+            for (var_type, var_name, _) in &subquery.variables {
+                if *var_type == "VAR" {
+                    if let Some(value) = row.remove(var_name) {
+                        new_row.insert(*var_name, value);
+                    }
+                }
+            }
+            new_row
+        })
+        .collect()
 }
 
 pub fn execute_query(sparql: &str, database: &mut SparqlDatabase) -> Vec<Vec<String>> {
@@ -400,6 +580,7 @@ pub fn execute_query(sparql: &str, database: &mut SparqlDatabase) -> Vec<Vec<Str
             parsed_prefixes,
             values_clause,
             binds,
+            subqueries,
         ),
     )) = parse_sparql_query(sparql)
     {
@@ -517,6 +698,13 @@ pub fn execute_query(sparql: &str, database: &mut SparqlDatabase) -> Vec<Vec<Str
 
         // Apply filters
         final_results = database.apply_filters_simd(final_results, filters);
+
+        // Process subqueries first
+        for subquery in subqueries {
+            let subquery_results = execute_subquery(&subquery, database, &prefixes, final_results.clone());
+            // Merge subquery results with main query results
+            final_results = merge_results(final_results, subquery_results);
+        }
 
         // Apply BIND (UDF) clauses
         // Each BIND is (func_name, args, new_var)
@@ -657,4 +845,26 @@ pub fn group_and_aggregate_results<'a>(
             value
         })
         .collect()
+}
+
+fn merge_results<'a>(
+    main_results: Vec<BTreeMap<&'a str, String>>,
+    subquery_results: Vec<BTreeMap<&'a str, String>>,
+) -> Vec<BTreeMap<&'a str, String>> {
+    if main_results.is_empty() {
+        return subquery_results;
+    }
+    if subquery_results.is_empty() {
+        return main_results;
+    }
+
+    let mut merged = Vec::new();
+    for main_row in main_results {
+        for sub_row in &subquery_results {
+            let mut new_row = main_row.clone();
+            new_row.extend(sub_row.iter().map(|(k, v)| (*k, v.clone())));
+            merged.push(new_row);
+        }
+    }
+    merged
 }
