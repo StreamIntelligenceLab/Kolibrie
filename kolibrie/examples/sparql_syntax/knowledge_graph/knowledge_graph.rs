@@ -162,11 +162,51 @@ fn test() {
     }
 }
 
+fn test2() {
+    let mut kg = KnowledgeGraph::new();
+
+    let n3_rule = r#"@prefix ex: <http://example.org/family#>.
+{ ?x ex:hasParent ?y. ?y ex:hasSibling ?z. } => { ?x ex:hasUncleOrAunt ?z. }."#;
+
+    kg.add_abox_triple("John", "ex:hasParent", "Mary");
+    kg.add_abox_triple("Mary", "ex:hasSibling", "Robert");
+
+    match parse_n3_rule(&n3_rule, &mut kg) {
+        Ok((_, (prefixes, rule))) => {
+            println!("Parsed Prefixes:");
+            for (prefix, uri) in prefixes {
+                println!("{}: <{}>", prefix, uri);
+            }
+
+            println!("\nParsed Rule:");
+            println!("{:?}", rule);
+
+            // Add parsed rule to KnowledgeGraph
+            kg.add_rule(rule);
+
+            let old_facts = kg.abox_index.dump_triples();
+
+            let inferred_facts = kg.infer_new_facts();
+
+            println!("\nOriginal and Inferred Facts:");
+            for triple in old_facts.iter().chain(inferred_facts.iter()) {
+                let s = kg.dictionary.decode(triple.subject).unwrap();
+                let p = kg.dictionary.decode(triple.predicate).unwrap();
+                let o = kg.dictionary.decode(triple.object).unwrap();
+                println!("<{}> <{}> <{}>.", s, p, o);
+            }
+        }
+        Err(error) => eprintln!("Failed to parse rule: {:?}", error),
+    }
+}
+
 fn main() {
     knowledge_graph();
     println!("=======================================");
     backward_chaining();
     println!("=======================================");
     test();
+    println!("=======================================");
+    test2();
 }
 

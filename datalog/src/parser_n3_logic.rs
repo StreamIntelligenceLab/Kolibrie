@@ -20,72 +20,124 @@ fn parse_prefix(input: &str) -> IResult<&str, (&str, &str)> {
     Ok((input, (prefix, uri)))
 }
 
-// Parsing prefixed names, like rdf:type or test:SubClass
-fn parse_prefixed_name(input: &str) -> IResult<&str, String> {
-    let res = map(
-        separated_pair(alphanumeric1, tag(":"), alphanumeric1),
-        |(prefix, term)| format!("{}:{}", prefix, term),
-    )(input);
-    res
+/// Parse something like "test:SubClass" or "?variable"
+fn parse_unresolved_term(input: &str) -> IResult<&str, UnresolvedTerm> {
+    alt((
+        map(preceded(tag("?"), alphanumeric1), |var: &str| {
+            UnresolvedTerm::Var(var.to_string())
+        }),
+        map(
+            separated_pair(alphanumeric1, tag(":"), alphanumeric1),
+            |(prefix, term)| UnresolvedTerm::Prefixed(format!("{}:{}", prefix, term)),
+        ),
+    ))(input)
 }
 
-// Parsing triples within the rule premises and conclusions
-fn parse_triple(input: &str) -> IResult<&str, (String, String, String)> {
-    let (input, _) = multispace0(input)?; // Allow optional whitespace at the start of a triple
-    let (input, subject) = map(preceded(tag("?"), alphanumeric1), |s: &str| s.to_string())(input)?;
+fn parse_unresolved_triple(input: &str) -> IResult<&str, UnresolvedTriple> {
+    let (input, _) = multispace0(input)?;
+    let (input, subject) = parse_unresolved_term(input)?;
     let (input, _) = multispace1(input)?;
-    let (input, predicate) = parse_prefixed_name(input)?;
+    let (input, predicate) = parse_unresolved_term(input)?;
     let (input, _) = multispace1(input)?;
-    let (input, object) = alt((
-        map(preceded(tag("?"), alphanumeric1), |o: &str| o.to_string()),
-        parse_prefixed_name,
-    ))(input)?;
-    let (input, _) = multispace0(input)?; // Allow optional whitespace before the period
+    let (input, object) = parse_unresolved_term(input)?;
+    let (input, _) = multispace0(input)?;
     let (input, _) = tag(".")(input)?;
     Ok((input, (subject, predicate, object)))
 }
 
-// Parsing the rule structure
-fn parse_rule(input: &str) -> IResult<&str, (Vec<(String, String, String)>, (String, String, String))> {
-    let (input, _) = multispace0(input)?; // Allow optional whitespace
-    let (input, premise) = delimited(
-        tag("{"),
-        separated_list1(multispace0, parse_triple), // Allow flexible spacing between triples
-        preceded(multispace0, tag("}"))
-    )(input)?;
-    let (input, _) = multispace0(input)?; // Allow optional whitespace around =>
+/// Parsing a single triple block
+fn parse_nested_unresolved_rule(input: &str) -> IResult<&str, UnresolvedTriple> {
+    let (input, _) = multispace0(input)?;
+    let (input, _) = tag("{")(input)?;
+
+    let (input, _) = take_until("}")(input)?; 
+    let (input, _) = tag("}")(input)?;
+    
+    let (input, _) = multispace0(input)?;
     let (input, _) = tag("=>")(input)?;
-    let (input, _) = multispace0(input)?; // Allow optional whitespace before the conclusion
-    let (input, conclusion) = delimited(tag("{"), parse_triple, preceded(multispace0, tag("}")))(input)?; // Allow whitespace after { in conclusion
-    Ok((input, (premise, conclusion)))
+    let (input, _) = multispace0(input)?;
+    
+    let (input, _) = tag("{")(input)?;
+    let (input, triple) = parse_unresolved_triple(input)?;
+    let (input, _) = multispace0(input)?;
+    let (input, _) = tag("}")(input)?;
+    
+    Ok((input, triple))
 }
 
-// Main parsing function that uses the above helpers
-pub fn parse_n3_rule<'a>(input: &'a str, graph: &'a mut KnowledgeGraph) -> IResult<&'a str, (Vec<(&'a str, &'a str)>, Rule)> {
+/// Parse a block that can contain either triple(s) or a nested rule
+fn parse_unresolved_clause_block(input: &str) -> IResult<&str, Vec<UnresolvedTriple>> {
+    separated_list1(multispace0, |i| {
+        alt((
+            parse_nested_unresolved_rule, // if it's a nested rule
+            parse_unresolved_triple,      // if it's just a triple
+        ))(i)
+    })(input)
+}
+
+fn parse_unresolved_rule(input: &str) -> IResult<&str, (Vec<UnresolvedTriple>, UnresolvedTriple)> {
+    let (input, _) = multispace0(input)?;
+    
+    // Parse premise
+    let (input, premise_triples) = delimited(
+        tag("{"),
+        parse_unresolved_clause_block,
+        preceded(multispace0, tag("}")),
+    )(input)?;
+    
+    let (input, _) = multispace0(input)?;
+    let (input, _) = tag("=>")(input)?;
+    let (input, _) = multispace0(input)?;
+    
+    let (input, conclusion) = delimited(
+        tag("{"),
+        parse_unresolved_triple,
+        preceded(multispace0, tag("}")),
+    )(input)?;
+    
+    Ok((input, (premise_triples, conclusion)))
+}
+
+/// Parsing into unresolved terms
+pub fn parse_n3_rule<'a>(
+    input: &'a str,
+    graph: &mut KnowledgeGraph,
+) -> IResult<&'a str, (Vec<(&'a str, &'a str)>, Rule)> {
     let (input, prefixes) = separated_list1(multispace1, parse_prefix)(input)?;
-    let (input, (premises, conclusion)) = parse_rule(input)?;
-    // Transform parsed triples into Term and TriplePattern structures
-    let premise_patterns: Vec<TriplePattern> = premises
-        .iter()
+
+    // Parse to an intermediate unresolved form
+    let (input, (premise_triples, conclusion_triple)) = parse_unresolved_rule(input)?;
+    
+    // Convert from unresolved string-based data to final `Term` with dictionary encoding
+    let premise_parsed: Vec<TriplePattern> = premise_triples
+        .into_iter()
         .map(|(s, p, o)| {
             (
-                Term::Variable(s.to_string()),
-                Term::Constant(graph.dictionary.encode(p)),
-                Term::Constant(graph.dictionary.encode(o)),
+                to_term(s, graph),
+                to_term(p, graph),
+                to_term(o, graph),
             )
         })
         .collect();
 
-    let conclusion_pattern = (
-        Term::Variable(conclusion.0.to_string()),
-        Term::Constant(graph.dictionary.encode(&conclusion.1)),
-        Term::Constant(graph.dictionary.encode(&conclusion.2)),
+    let conclusion_parsed = (
+        to_term(conclusion_triple.0, graph),
+        to_term(conclusion_triple.1, graph),
+        to_term(conclusion_triple.2, graph),
     );
 
     let rule = Rule {
-        premise: premise_patterns,
-        conclusion: conclusion_pattern,
+        premise: premise_parsed,
+        conclusion: conclusion_parsed,
     };
 
     Ok((input, (prefixes, rule)))
+}
+
+/// Helper to convert UnresolvedTerm to Term
+fn to_term(ut: UnresolvedTerm, graph: &mut KnowledgeGraph) -> Term {
+    match ut {
+        UnresolvedTerm::Var(v) => Term::Variable(v),
+        UnresolvedTerm::Prefixed(s) => Term::Constant(graph.dictionary.encode(&s)),
+    }
 }

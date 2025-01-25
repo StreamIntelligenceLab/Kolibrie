@@ -140,6 +140,14 @@ pub enum Term {
 
 pub type TriplePattern = (Term, Term, Term);
 
+#[derive(Debug)]
+pub enum UnresolvedTerm {
+    Var(String),
+    Prefixed(String),
+}
+
+pub type UnresolvedTriple = (UnresolvedTerm, UnresolvedTerm, UnresolvedTerm);
+
 #[derive(Debug, Clone)]
 pub struct Rule {
     pub premise: Vec<TriplePattern>,
