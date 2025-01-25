@@ -1,6 +1,6 @@
 use kolibrie::parser::*;
 use kolibrie::sparql_database::*;
-use kolibrie::triple::*;
+use shared::triple::*;
 use kolibrie::volcano_optimizer::*;
 use std::time::Instant;
 

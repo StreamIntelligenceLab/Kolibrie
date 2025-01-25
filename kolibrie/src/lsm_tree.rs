@@ -1,4 +1,4 @@
-use crate::triple::Triple;
+use shared::triple::Triple;
 use std::collections::{BTreeMap, BTreeSet};
 
 #[derive(Debug, Clone)]

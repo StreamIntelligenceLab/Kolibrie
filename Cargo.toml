@@ -4,6 +4,7 @@ members = [
   "kolibrie",
   "gpu",
   "shared",
+  "datalog",
 ]
 
 exclude = [

@@ -1,6 +1,6 @@
 extern crate kolibrie;
 use kolibrie::sparql_database::*;
-use kolibrie::triple::*;
+use shared::triple::*;
 use kolibrie::utils::current_timestamp;
 
 fn main() {

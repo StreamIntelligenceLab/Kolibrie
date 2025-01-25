@@ -1,7 +1,7 @@
-use crate::dictionary::Dictionary;
+use shared::dictionary::Dictionary;
 use crate::sliding_window::SlidingWindow;
-use crate::triple::TimestampedTriple;
-use crate::triple::Triple;
+use shared::triple::TimestampedTriple;
+use shared::triple::Triple;
 use crate::utils;
 use crate::utils::current_timestamp;
 use crate::utils::ClonableFn;

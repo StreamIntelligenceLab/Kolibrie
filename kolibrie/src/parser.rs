@@ -1,5 +1,5 @@
 use crate::sparql_database::SparqlDatabase;
-use crate::triple::Triple;
+use shared::triple::Triple;
 use nom::{
     branch::alt,
     bytes::complete::{tag, take_while1},

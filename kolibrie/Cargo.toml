@@ -30,6 +30,7 @@ httparse = { workspace = true }
 crossbeam = { workspace = true }
 gpu = { path = "../gpu" }
 shared = { path = "../shared" }
+datalog =  { path = "../datalog" }
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2.161"

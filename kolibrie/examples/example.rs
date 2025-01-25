@@ -7,7 +7,7 @@ use quick_xml::events::Event;
 use quick_xml::Reader;
 use std::collections::HashMap;
 use kolibrie::sparql_database::*;
-use kolibrie::triple::Triple;
+use shared::triple::Triple;
 use kolibrie::utils::current_timestamp;
 
 #[derive(Debug)]

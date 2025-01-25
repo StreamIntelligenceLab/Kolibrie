@@ -1,7 +1,7 @@
-use crate::dictionary::Dictionary;
+use shared::dictionary::Dictionary;
 use crate::sparql_database::SparqlDatabase;
 use crate::index_manager::IndexType;
-use crate::triple::Triple;
+use shared::triple::Triple;
 use std::collections::{BTreeMap, HashMap, HashSet};
 
 // Define logical operators

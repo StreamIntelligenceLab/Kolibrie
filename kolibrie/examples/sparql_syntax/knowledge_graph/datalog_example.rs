@@ -1,6 +1,6 @@
-use kolibrie::knowledge_graph::KnowledgeGraph;
-use kolibrie::knowledge_graph::Term;
-use kolibrie::knowledge_graph::Rule;
+use datalog::knowledge_graph::KnowledgeGraph;
+use datalog::knowledge_graph::Term;
+use datalog::knowledge_graph::Rule;
 use std::time::Instant;
 
 fn main() {
@@ -53,6 +53,20 @@ fn main() {
     let _inferred_facts = kg.infer_new_facts_optimized();
     let duration = start.elapsed();
     println!("Inference took: {:?}", duration);
+
+    let results = kg.query_abox(
+        Some("person0"),                // subject
+        Some("likes"),                  // predicate
+        None,                           // object -> wildcard
+    );
+
+    println!("person0 likes these people:");
+    for triple in results {
+        let s_str = kg.dictionary.decode(triple.subject).unwrap();
+        let p_str = kg.dictionary.decode(triple.predicate).unwrap();
+        let o_str = kg.dictionary.decode(triple.object).unwrap();
+        println!("  {} {} {}", s_str, p_str, o_str);
+    }
 
     // Display the newly inferred facts
     // println!("Inferred facts:");

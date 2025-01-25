@@ -1,0 +1,9 @@
+[package]
+name = "datalog"
+version = "0.1.0"
+edition = "2021"
+description = "Datalog Engine"
+
+[dependencies]
+nom = { workspace = true }
+shared = { path = "../shared" }

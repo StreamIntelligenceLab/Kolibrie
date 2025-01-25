@@ -1,8 +1,6 @@
-use std::collections::BTreeSet;
-use kolibrie::dictionary::Dictionary;
-use kolibrie::knowledge_graph::*;
-use kolibrie::triple::Triple;
-use kolibrie::parser_n3_logic::parse_n3_rule;
+use shared::dictionary::Dictionary;
+use datalog::knowledge_graph::*;
+use datalog::parser_n3_logic::parse_n3_rule;
 
 fn knowledge_graph() {
     let mut graph = KnowledgeGraph::new();
@@ -54,69 +52,52 @@ fn backward_chaining() {
 
     let parent = dict.encode("parent");
     let ancestor = dict.encode("ancestor");
-    let alice = dict.encode("Alice");
-    let bob = dict.encode("Bob");
     let charlie = dict.encode("Charlie");
 
-    // ABox (facts)
-    let mut abox = BTreeSet::new();
-    abox.insert(Triple {
-        subject: alice,
-        predicate: parent,
-        object: bob,
-    });
-    abox.insert(Triple {
-        subject: bob,
-        predicate: parent,
-        object: charlie,
-    });
+    let mut kg = KnowledgeGraph::new();
 
-    // TBox (schema) - can be empty if not used
-    let tbox = BTreeSet::new();
+    // ABox (facts)
+    kg.add_abox_triple("Alice", "parent", "Bob");
+    kg.add_abox_triple("Bob", "parent", "Charlie");
 
     // Rules
-    let rules = vec![
-        // Rule 1: ancestor(X, Y) :- parent(X, Y)
-        Rule {
-            premise: vec![(
+    let rule1 = Rule {
+        // ancestor(X, Y) :- parent(X, Y)
+        premise: vec![(
+            Term::Variable("X".to_string()),
+            Term::Constant(parent),
+            Term::Variable("Y".to_string()),
+        )],
+        conclusion: (
+            Term::Variable("X".to_string()),
+            Term::Constant(ancestor),
+            Term::Variable("Y".to_string()),
+        ),
+    };
+
+    let rule2 = Rule {
+        // ancestor(X, Z) :- parent(X, Y), ancestor(Y, Z)
+        premise: vec![
+            (
                 Term::Variable("X".to_string()),
                 Term::Constant(parent),
                 Term::Variable("Y".to_string()),
-            )],
-            conclusion: (
-                Term::Variable("X".to_string()),
-                Term::Constant(ancestor),
-                Term::Variable("Y".to_string()),
             ),
-        },
-        // Rule 2: ancestor(X, Z) :- parent(X, Y), ancestor(Y, Z)
-        Rule {
-            premise: vec![
-                (
-                    Term::Variable("X".to_string()),
-                    Term::Constant(parent),
-                    Term::Variable("Y".to_string()),
-                ),
-                (
-                    Term::Variable("Y".to_string()),
-                    Term::Constant(ancestor),
-                    Term::Variable("Z".to_string()),
-                ),
-            ],
-            conclusion: (
-                Term::Variable("X".to_string()),
+            (
+                Term::Variable("Y".to_string()),
                 Term::Constant(ancestor),
                 Term::Variable("Z".to_string()),
             ),
-        },
-    ];
-
-    let kg = KnowledgeGraph {
-        abox,
-        tbox,
-        dictionary: dict.clone(),
-        rules,
+        ],
+        conclusion: (
+            Term::Variable("X".to_string()),
+            Term::Constant(ancestor),
+            Term::Variable("Z".to_string()),
+        ),
     };
+
+    kg.add_rule(rule1);
+    kg.add_rule(rule2);
 
     // Query: Who are the ancestors of Charlie?
     let query = (
@@ -146,14 +127,13 @@ fn test() {
 
     let mut graph = KnowledgeGraph::new();
 
-    // Add ABox triple for the instance-level information
     graph.add_abox_triple(
         "http://example2.com/a",
         "http://www.w3.org/1999/02/22-rdf-syntax-ns#type",
         "http://www.test.be/test#SubClass",
     );
 
-    match parse_n3_rule(input,&mut graph) {
+    match parse_n3_rule(input, &mut graph) {
         Ok((_, (prefixes, rule))) => {
             println!("Parsed Prefixes:");
             for (prefix, uri) in prefixes {
@@ -166,16 +146,16 @@ fn test() {
             // Add parsed rule to KnowledgeGraph
             graph.add_rule(rule);
 
+            let old_facts = graph.abox_index.dump_triples();
+
             let inferred_facts = graph.infer_new_facts();
 
-            println!("Original and Inferred Facts:");
-            for triple in graph.abox.iter().chain(inferred_facts.iter()) {
-                println!(
-                    "<{}> -- <{}> -- <{}> .",
-                    graph.dictionary.decode(triple.subject).unwrap(),
-                    graph.dictionary.decode(triple.predicate).unwrap(),
-                    graph.dictionary.decode(triple.object).unwrap()
-                );
+            println!("\nOriginal and Inferred Facts:");
+            for triple in old_facts.iter().chain(inferred_facts.iter()) {
+                let s = graph.dictionary.decode(triple.subject).unwrap();
+                let p = graph.dictionary.decode(triple.predicate).unwrap();
+                let o = graph.dictionary.decode(triple.object).unwrap();
+                println!("<{}> -- <{}> -- <{}> .", s, p, o);
             }
         }
         Err(error) => eprintln!("Failed to parse rule: {:?}", error),

@@ -11,8 +11,9 @@
 10. Modify query by adding semicolon
 11. Modify query, ability to write nested query
 12. Add Datalog engine
-13. 
-14. 
+13. Add Trie indexing for Datalog engine
+14. Modify workspace split everything into parts (triple&dict -> shared, kg -> datalog)
+15. 
 
 0.1.0
 1. Parsing RDF/XML
