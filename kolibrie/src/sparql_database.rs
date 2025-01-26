@@ -404,47 +404,57 @@ impl SparqlDatabase {
 
     // New parse_n3 function
     pub fn parse_n3(&mut self, n3_data: &str) {
-        let mut statement = String::new();
-        let lines = n3_data.lines();
-
-        for line in lines {
-            let mut line = line.trim();
-
-            // Remove comments starting with '#'
-            if let Some(comment_start) = line.find('#') {
-                line = &line[..comment_start];
-                line = line.trim();
-            }
-
-            // Skip empty lines
-            if line.is_empty() {
-                continue;
-            }
-
-            if line.starts_with("@prefix") {
-                // Parse prefix declaration
-                let line = line.trim_start_matches("@prefix").trim_end_matches('.');
-                let parts: Vec<&str> = line.split_whitespace().collect();
-                if parts.len() >= 2 {
-                    let prefix = parts[0].trim_end_matches(':').to_string();
-                    let uri = parts[1]
-                        .trim_start_matches('<')
-                        .trim_end_matches('>')
-                        .to_string();
-                    self.prefixes.insert(prefix, uri);
-                } else {
-                    eprintln!("Invalid prefix declaration: {}", line);
+        let lines: Vec<String> = n3_data.lines().map(|l| l.trim().to_string()).collect();
+        let chunk_size = 1000;
+        let chunks: Vec<Vec<String>> = lines
+            .chunks(chunk_size)
+            .map(|c| c.to_vec())
+            .collect();
+    
+        let partial_results: Vec<(BTreeSet<Triple>, Dictionary, HashMap<String, String>)> =
+            chunks.par_iter().map(|chunk| {
+                let mut local_db = SparqlDatabase::new();
+                let mut statement = String::new();
+    
+                for raw_line in chunk {
+                    let mut line = raw_line.as_str();
+                    if let Some(comment_start) = line.find('#') {
+                        line = &line[..comment_start];
+                        line = line.trim();
+                    }
+                    if line.is_empty() {
+                        continue;
+                    }
+                    if line.starts_with("@prefix") {
+                        let line = line.trim_start_matches("@prefix").trim_end_matches('.');
+                        let parts: Vec<&str> = line.split_whitespace().collect();
+                        if parts.len() >= 2 {
+                            let prefix = parts[0].trim_end_matches(':').to_string();
+                            let uri = parts[1].trim_start_matches('<').trim_end_matches('>').to_string();
+                            local_db.prefixes.insert(prefix, uri);
+                        } else {
+                            eprintln!("Invalid prefix declaration: {}", line);
+                        }
+                    } else {
+                        statement.push_str(line);
+                        statement.push(' ');
+                        if line.ends_with('.') {
+                            local_db.parse_statement(statement.trim());
+                            statement.clear();
+                        }
+                    }
                 }
-            } else {
-                // Accumulate the statement until we reach a period
-                statement.push_str(line);
-                statement.push(' '); // Add space to separate lines
-
-                if line.ends_with('.') {
-                    // Process the complete statement
-                    self.parse_statement(&statement.trim());
-                    statement.clear();
-                }
+    
+                (local_db.triples, local_db.dictionary, local_db.prefixes)
+            }).collect();
+    
+        for (triples, dict, pref) in partial_results {
+            for t in triples {
+                self.triples.insert(t);
+            }
+            self.dictionary.merge(&dict);
+            for (k, v) in pref {
+                self.prefixes.insert(k, v);
             }
         }
     }

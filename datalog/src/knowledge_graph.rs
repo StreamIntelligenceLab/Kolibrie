@@ -11,7 +11,6 @@ pub struct TrieIndex {
 }
 
 impl TrieIndex {
-    /// Create a new, empty TrieIndex.
     pub fn new() -> Self {
         TrieIndex {
             data: HashMap::new(),
@@ -27,9 +26,7 @@ impl TrieIndex {
         false
     }
 
-    /// Insert a triple into the trie.
-    /// This does *not* prevent duplicates; typically you'd keep an external set
-    /// or something that ensures you only insert “new” facts once.
+    /// Insert a triple into the trie
     pub fn insert_raw(&mut self, triple: &Triple) {
         let subject_map = self.data
             .entry(triple.subject)
@@ -50,29 +47,24 @@ impl TrieIndex {
         true
     }
 
-    /// Remove a triple from the trie, if present.
+    /// Remove a triple from the trie, if present
     pub fn remove(&mut self, triple: &Triple) {
         if let Some(subject_map) = self.data.get_mut(&triple.subject) {
             if let Some(object_set) = subject_map.get_mut(&triple.predicate) {
                 object_set.remove(&triple.object);
-                // If the object set is now empty, remove the predicate entry.
+                // If the object set is now empty, remove the predicate entry
                 if object_set.is_empty() {
                     subject_map.remove(&triple.predicate);
                 }
             }
-            // If the subject map is now empty, remove the subject entry.
+            // If the subject map is now empty, remove the subject entry
             if subject_map.is_empty() {
                 self.data.remove(&triple.subject);
             }
         }
     }
 
-    /// Query the index with optional subject/predicate/object.
-    ///
-    /// If any field is `None`, it acts like a wildcard:
-    /// it matches all possible values in that position.
-    ///
-    /// Returns a `Vec<Triple>` matching the pattern.
+    /// Query the index with optional subject/predicate/object
     pub fn query(
         &self,
         subject_id: Option<u32>,
@@ -193,7 +185,7 @@ impl KnowledgeGraph {
         self.abox_index.insert(&triple);
     }
 
-    /// Query the ABox for instance-level assertions (using TrieIndex now).
+    /// Query the ABox for instance-level assertions (using TrieIndex now)
     pub fn query_abox(
         &mut self,
         subject: Option<&str>,
@@ -204,11 +196,11 @@ impl KnowledgeGraph {
         let predicate_id = predicate.map(|p| self.dictionary.encode(p));
         let object_id = object.map(|o| self.dictionary.encode(o));
 
-        // Use the trie index instead of scanning the entire BTreeSet.
+        // Use the trie index instead of scanning the entire BTreeSet
         self.abox_index.query(subject_id, predicate_id, object_id)
     }
 
-    /// Query the TBox for schema-level assertions (using TrieIndex now).
+    /// Query the TBox for schema-level assertions (using TrieIndex now)
     pub fn query_tbox(
         &mut self,
         subject: Option<&str>,
@@ -271,7 +263,6 @@ impl KnowledgeGraph {
                     }
                 }
                 _ => {
-                    // Extend to more premises if needed
                 }
             }
         }
@@ -300,7 +291,7 @@ impl KnowledgeGraph {
         let substituted = substitute(query, bindings);
 
         let mut results = Vec::new();
-        // 1. Try to match with ABox + TBox facts
+        // match with ABox + TBox facts
         let all_facts: Vec<Triple> = self.abox_index.dump_triples()
             .into_iter()
             .chain(self.tbox_index.dump_triples().into_iter())
@@ -313,7 +304,7 @@ impl KnowledgeGraph {
             }
         }
 
-        // 2. Try to match with rules
+        // match with rules
         for rule in &self.rules {
             let renamed_rule = rename_rule_variables(rule, variable_counter);
 
@@ -336,15 +327,9 @@ impl KnowledgeGraph {
     }
 
     /// A convenience method to run the Datalog engine on the current KG
-    /// and then query it.
     pub fn datalog_query_kg(&self, query: &TriplePattern) -> Vec<HashMap<String, u32>> {
-        // Construct a new Datalog engine from this KG.
         let mut engine = DatalogEngine::new_from_kg(self);
-
-        // Run bottom-up inference until fixpoint.
         engine.run_datalog();
-
-        // Query the saturated facts.
         engine.datalog_query(query)
     }
 
@@ -369,7 +354,7 @@ impl KnowledgeGraph {
     }
     
     pub fn infer_new_facts_optimized(&mut self) -> Vec<Triple> {
-        // We'll store all "old" facts in old_facts. Initially, this is just our current ABox.
+        // Store all "old" facts in old_facts
         let mut old_triples: BTreeSet<Triple> =
             self.abox_index.dump_triples().into_iter().collect();
 
@@ -399,7 +384,7 @@ impl KnowledgeGraph {
                         let p1 = &rule.premise[0];
                         let p2 = &rule.premise[1];
 
-                        // (A) fact1 from delta, fact2 from old
+                        // fact1 from delta, fact2 from old
                         for fact1 in &delta {
                             for fact2 in &old_triples {
                                 if fact1.object != fact2.subject {
@@ -416,7 +401,7 @@ impl KnowledgeGraph {
                                 }
                             }
                         }
-                        // (B) fact1 from old, fact2 from delta
+                        // fact1 from old, fact2 from delta
                         for fact1 in &old_triples {
                             for fact2 in &delta {
                                 if fact1.object != fact2.subject {
@@ -581,34 +566,20 @@ fn rename_rule_variables(rule: &Rule, counter: &mut usize) -> Rule {
 
 #[derive(Debug)]
 pub struct DatalogEngine {
-    /// Facts: each fact is a ground triple (i.e., no variables).
-    /// We’ll store them in a set to avoid duplicates.
     pub facts: TrieIndex,
-
-    /// Datalog rules are the same as your dynamic rules: 
-    /// premises are patterns (variables allowed), 
-    /// conclusion is a single pattern (variables allowed).
     pub rules: Vec<Rule>,
 }
 
 impl DatalogEngine {
     /// Construct a new DatalogEngine from an existing KnowledgeGraph
     pub fn new_from_kg(kg: &KnowledgeGraph) -> Self {
-        // We treat ABox as facts. TBox can also be added as "facts" if it is relevant
-        // to your logic, or left out if it is purely schema information.
-        // Here we just copy the ABox facts as our initial Datalog facts.
         Self {
             facts: kg.abox_index.clone(),
             rules: kg.rules.clone(),
         }
     }
 
-    /// Perform naive bottom-up evaluation until no new facts are derived.
-    ///
-    /// For each rule in `self.rules`, try to match it against known `self.facts`.
-    /// Derive new facts.
-    /// Insert new facts into `self.facts`.
-    /// Repeat until a fixpoint is reached (no new facts).
+    /// Perform naive bottom-up evaluation until no new facts are derived
     pub fn run_datalog(&mut self) {
         let mut changed = true;
         while changed {
@@ -660,8 +631,7 @@ impl DatalogEngine {
         }
     }
 
-    /// Query the derived facts in a Datalog style (i.e., after `run_datalog`).
-    /// Returns variable bindings for matches.
+    /// Returns variable bindings for matches
     pub fn datalog_query(&self, pattern: &TriplePattern) -> Vec<HashMap<String, u32>> {
         let mut results = Vec::new();
         let all_facts = self.facts.dump_triples();
@@ -675,9 +645,7 @@ impl DatalogEngine {
     }
 }
 
-/// Construct a new Triple from a conclusion pattern and bound variables.
-/// If the conclusion pattern has a variable, substitute its bound value;
-/// if it's a constant, just use the constant.
+/// Construct a new Triple from a conclusion pattern and bound variables
 fn construct_triple(conclusion: &TriplePattern, vars: &HashMap<String, u32>) -> Triple {
     let subject = match &conclusion.0 {
         Term::Variable(v) => *vars.get(v).unwrap(),
