@@ -15,7 +15,7 @@
 14. Modify workspace split everything into parts (triple&dict -> shared, kg -> datalog)
 15. Modify N3 logic by including nested rules
 16. Modify N3 parser by utilize rayon
-17. 
+17. Modify Indexing by removing Trie algorithm and using my own from triple
 18. 
 19. 
 20. 

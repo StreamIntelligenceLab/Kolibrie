@@ -1,144 +1,10 @@
 use shared::dictionary::Dictionary;
 use shared::triple::Triple;
 use std::collections::{BTreeSet, HashMap};
-
-/// A trie-like index that maps:
-///   subject -> predicate -> set of objects
-#[derive(Debug, Default, Clone)]
-pub struct TrieIndex {
-    // subject -> (predicate -> set of objects)
-    data: HashMap<u32, HashMap<u32, BTreeSet<u32>>>,
-}
-
-impl TrieIndex {
-    pub fn new() -> Self {
-        TrieIndex {
-            data: HashMap::new(),
-        }
-    }
-
-    pub fn contains(&self, triple: &Triple) -> bool {
-        if let Some(subj_map) = self.data.get(&triple.subject) {
-            if let Some(obj_set) = subj_map.get(&triple.predicate) {
-                return obj_set.contains(&triple.object);
-            }
-        }
-        false
-    }
-
-    /// Insert a triple into the trie
-    pub fn insert_raw(&mut self, triple: &Triple) {
-        let subject_map = self.data
-            .entry(triple.subject)
-            .or_insert_with(HashMap::new);
-
-        let object_set = subject_map
-            .entry(triple.predicate)
-            .or_insert_with(BTreeSet::new);
-
-        object_set.insert(triple.object);
-    }
-
-    pub fn insert(&mut self, triple: &Triple) -> bool {
-        if self.contains(triple) {
-            return false; // no-op, already in the index
-        }
-        self.insert_raw(triple);
-        true
-    }
-
-    /// Remove a triple from the trie, if present
-    pub fn remove(&mut self, triple: &Triple) {
-        if let Some(subject_map) = self.data.get_mut(&triple.subject) {
-            if let Some(object_set) = subject_map.get_mut(&triple.predicate) {
-                object_set.remove(&triple.object);
-                // If the object set is now empty, remove the predicate entry
-                if object_set.is_empty() {
-                    subject_map.remove(&triple.predicate);
-                }
-            }
-            // If the subject map is now empty, remove the subject entry
-            if subject_map.is_empty() {
-                self.data.remove(&triple.subject);
-            }
-        }
-    }
-
-    /// Query the index with optional subject/predicate/object
-    pub fn query(
-        &self,
-        subject_id: Option<u32>,
-        predicate_id: Option<u32>,
-        object_id: Option<u32>,
-    ) -> Vec<Triple> {
-        let mut results = Vec::new();
-
-        let subjects = match subject_id {
-            Some(sid) => vec![sid],
-            None => self.data.keys().cloned().collect(),
-        };
-
-        for s in subjects {
-            if let Some(subj_map) = self.data.get(&s) {
-                let predicates = match predicate_id {
-                    Some(pid) => vec![pid],
-                    None => subj_map.keys().cloned().collect(),
-                };
-
-                for p in predicates {
-                    if let Some(objects) = subj_map.get(&p) {
-                        match object_id {
-                            Some(oid) => {
-                                if objects.contains(&oid) {
-                                    results.push(Triple { subject: s, predicate: p, object: oid });
-                                }
-                            }
-                            None => {
-                                for &o in objects {
-                                    results.push(Triple { subject: s, predicate: p, object: o });
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-        }
-        results
-    }
-
-    pub fn dump_triples(&self) -> Vec<Triple> {
-        let mut all = Vec::new();
-        for (&subj, pred_map) in &self.data {
-            for (&pred, obj_set) in pred_map {
-                for &obj in obj_set {
-                    all.push(Triple {
-                        subject: subj,
-                        predicate: pred,
-                        object: obj,
-                    });
-                }
-            }
-        }
-        all
-    }
-}
+use shared::index_manager::*;
+use shared::terms::{Term, TriplePattern};
 
 // Logic part: Knowledge Graph
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
-pub enum Term {
-    Variable(String),
-    Constant(u32),
-}
-
-pub type TriplePattern = (Term, Term, Term);
-
-#[derive(Debug)]
-pub enum UnresolvedTerm {
-    Var(String),
-    Prefixed(String),
-}
-
-pub type UnresolvedTriple = (UnresolvedTerm, UnresolvedTerm, UnresolvedTerm);
 
 #[derive(Debug, Clone)]
 pub struct Rule {
@@ -151,8 +17,7 @@ pub struct KnowledgeGraph {
     pub dictionary: Dictionary,
     pub rules: Vec<Rule>, // List of dynamic rules
 
-    pub abox_index: TrieIndex,
-    pub tbox_index: TrieIndex,
+    pub index_manager: UnifiedIndex,
 }
 
 impl KnowledgeGraph {
@@ -160,29 +25,17 @@ impl KnowledgeGraph {
         Self {
             dictionary: Dictionary::new(),
             rules: Vec::new(),
-            abox_index: TrieIndex::new(),
-            tbox_index: TrieIndex::new(),
+            index_manager: UnifiedIndex::new(),
         }
-    }
-
-    /// Add a TBox triple (schema-level information)
-    pub fn add_tbox_triple(&mut self, subject: &str, predicate: &str, object: &str) {
-        let triple = Triple {
-            subject: self.dictionary.encode(subject),
-            predicate: self.dictionary.encode(predicate),
-            object: self.dictionary.encode(object),
-        };
-        self.tbox_index.insert(&triple);
     }
 
     /// Add an ABox triple (instance-level information)
     pub fn add_abox_triple(&mut self, subject: &str, predicate: &str, object: &str) {
-        let triple = Triple {
-            subject: self.dictionary.encode(subject),
-            predicate: self.dictionary.encode(predicate),
-            object: self.dictionary.encode(object),
-        };
-        self.abox_index.insert(&triple);
+        let s = self.dictionary.encode(subject);
+        let p = self.dictionary.encode(predicate);
+        let o = self.dictionary.encode(object);
+
+        self.index_manager.insert(&Triple { subject: s, predicate: p, object: o });
     }
 
     /// Query the ABox for instance-level assertions (using TrieIndex now)
@@ -192,26 +45,11 @@ impl KnowledgeGraph {
         predicate: Option<&str>,
         object: Option<&str>,
     ) -> Vec<Triple> {
-        let subject_id = subject.map(|s| self.dictionary.encode(s));
-        let predicate_id = predicate.map(|p| self.dictionary.encode(p));
-        let object_id = object.map(|o| self.dictionary.encode(o));
+        let s = subject.map(|s| self.dictionary.encode(s));
+        let p = predicate.map(|p| self.dictionary.encode(p));
+        let o = object.map(|o| self.dictionary.encode(o));
 
-        // Use the trie index instead of scanning the entire BTreeSet
-        self.abox_index.query(subject_id, predicate_id, object_id)
-    }
-
-    /// Query the TBox for schema-level assertions (using TrieIndex now)
-    pub fn query_tbox(
-        &mut self,
-        subject: Option<&str>,
-        predicate: Option<&str>,
-        object: Option<&str>,
-    ) -> Vec<Triple> {
-        let subject_id = subject.map(|s| self.dictionary.encode(s));
-        let predicate_id = predicate.map(|p| self.dictionary.encode(p));
-        let object_id = object.map(|o| self.dictionary.encode(o));
-
-        self.tbox_index.query(subject_id, predicate_id, object_id)
+        self.index_manager.query(s, p, o)
     }
 
     /// Add a dynamic rule to the graph
@@ -221,31 +59,27 @@ impl KnowledgeGraph {
 
     pub fn infer_new_facts(&mut self) -> Vec<Triple> {
         let mut inferred_facts = Vec::new();
-        // Dump all current ABox facts
-        let abox_facts = self.abox_index.dump_triples();
-        let rules = self.rules.clone();
+        
+        // Get all current facts first
+        let all_facts = self.index_manager.query(None, None, None);
 
+        let rules = self.rules.clone(); // Clone rules to avoid borrowing conflict
+        
+        // Process rules using the retrieved facts
         for rule in &rules {
             match rule.premise.len() {
                 1 => {
-                    // Single-premise rule
-                    for triple in &abox_facts {
+                    for triple in &all_facts {
                         let mut variable_bindings = HashMap::new();
                         if matches_rule_pattern(&rule.premise[0], triple, &mut variable_bindings) {
                             let inferred = construct_triple(&rule.conclusion, &variable_bindings);
-                            // Insert only if new
-                            if self.abox_index.insert(&inferred) {
-                                inferred_facts.push(inferred.clone());
-                                println!("Inferred new fact: {:?}", inferred);
-                            }
+                            inferred_facts.push(inferred);
                         }
                     }
                 }
                 2 => {
-                    // Two-premise rule
-                    for triple1 in &abox_facts {
-                        for triple2 in &abox_facts {
-                            // For chaining rules that require triple1.object == triple2.subject
+                    for triple1 in &all_facts {
+                        for triple2 in &all_facts {
                             if triple1.object != triple2.subject {
                                 continue;
                             }
@@ -254,16 +88,12 @@ impl KnowledgeGraph {
                                 && matches_rule_pattern(&rule.premise[1], triple2, &mut variable_bindings)
                             {
                                 let inferred = construct_triple(&rule.conclusion, &variable_bindings);
-                                if self.abox_index.insert(&inferred) {
-                                    inferred_facts.push(inferred.clone());
-                                    println!("Inferred new fact: {:?}", inferred);
-                                }
+                                inferred_facts.push(inferred);
                             }
                         }
                     }
                 }
-                _ => {
-                }
+                _ => {}
             }
         }
 
@@ -291,11 +121,8 @@ impl KnowledgeGraph {
         let substituted = substitute(query, bindings);
 
         let mut results = Vec::new();
-        // match with ABox + TBox facts
-        let all_facts: Vec<Triple> = self.abox_index.dump_triples()
-            .into_iter()
-            .chain(self.tbox_index.dump_triples().into_iter())
-            .collect();
+        // Get facts from the index manager
+        let all_facts: Vec<Triple> = self.index_manager.query(None, None, None);
 
         for fact in &all_facts {
             let fact_pattern = triple_to_pattern(fact);
@@ -335,9 +162,17 @@ impl KnowledgeGraph {
 
     pub fn datalog_inferred_query(&self, query: &TriplePattern) -> Vec<HashMap<String, u32>> {
         let mut engine = DatalogEngine::new_from_kg(self);
-        let original = engine.facts.dump_triples().into_iter().collect::<BTreeSet<_>>();
+        let original = engine
+                                            .facts
+                                            .query(None, None, None)
+                                            .into_iter()
+                                            .collect::<BTreeSet<_>>();
         engine.run_datalog();
-        let all_after = engine.facts.dump_triples().into_iter().collect::<BTreeSet<_>>();
+        let all_after = engine
+                                            .facts
+                                            .query(None, None, None)
+                                            .into_iter()
+                                            .collect::<BTreeSet<_>>();
 
         // newly inferred = all_after - original
         let inferred = all_after.difference(&original).cloned().collect::<Vec<_>>();
@@ -351,95 +186,6 @@ impl KnowledgeGraph {
             }
         }
         results
-    }
-    
-    pub fn infer_new_facts_optimized(&mut self) -> Vec<Triple> {
-        // Store all "old" facts in old_facts
-        let mut old_triples: BTreeSet<Triple> =
-            self.abox_index.dump_triples().into_iter().collect();
-
-        let mut delta: BTreeSet<Triple> = old_triples.clone();
-        let mut new_inferred = Vec::new();
-
-        loop {
-            let mut next_delta = BTreeSet::new();
-
-            for rule in &self.rules {
-                match rule.premise.len() {
-                    1 => {
-                        // Single-premise rule: only match the premise with the "delta" facts
-                        let pattern = &rule.premise[0];
-                        for fact in &delta {
-                            let mut var_bindings = HashMap::new();
-                            if matches_rule_pattern(pattern, fact, &mut var_bindings) {
-                                let inferred = construct_triple(&rule.conclusion, &var_bindings);
-                                if !old_triples.contains(&inferred) {
-                                    next_delta.insert(inferred);
-                                }
-                            }
-                        }
-                    }
-                    2 => {
-                        // Two-premise rule: match premise1 with delta, premise2 with old
-                        let p1 = &rule.premise[0];
-                        let p2 = &rule.premise[1];
-
-                        // fact1 from delta, fact2 from old
-                        for fact1 in &delta {
-                            for fact2 in &old_triples {
-                                if fact1.object != fact2.subject {
-                                    continue;
-                                }
-                                let mut var_bindings = HashMap::new();
-                                if matches_rule_pattern(p1, fact1, &mut var_bindings)
-                                    && matches_rule_pattern(p2, fact2, &mut var_bindings)
-                                {
-                                    let inferred = construct_triple(&rule.conclusion, &var_bindings);
-                                    if !old_triples.contains(&inferred) {
-                                        next_delta.insert(inferred);
-                                    }
-                                }
-                            }
-                        }
-                        // fact1 from old, fact2 from delta
-                        for fact1 in &old_triples {
-                            for fact2 in &delta {
-                                if fact1.object != fact2.subject {
-                                    continue;
-                                }
-                                let mut var_bindings = HashMap::new();
-                                if matches_rule_pattern(p1, fact1, &mut var_bindings)
-                                    && matches_rule_pattern(p2, fact2, &mut var_bindings)
-                                {
-                                    let inferred = construct_triple(&rule.conclusion, &var_bindings);
-                                    if !old_triples.contains(&inferred) {
-                                        next_delta.insert(inferred);
-                                    }
-                                }
-                            }
-                        }
-                    }
-                    _ => {}
-                }
-            }
-
-            if next_delta.is_empty() {
-                // fixpoint
-                break;
-            }
-
-            // Insert new facts into the trie, update old_triples
-            for t in &next_delta {
-                if self.abox_index.insert(t) {
-                    // Inserted successfully
-                    new_inferred.push(t.clone());
-                }
-            }
-            old_triples.extend(next_delta);
-            delta = old_triples.clone(); // or just next_delta if you prefer a standard semi-naive approach
-        }
-
-        new_inferred
     }            
 }
 
@@ -566,7 +312,7 @@ fn rename_rule_variables(rule: &Rule, counter: &mut usize) -> Rule {
 
 #[derive(Debug)]
 pub struct DatalogEngine {
-    pub facts: TrieIndex,
+    pub facts: UnifiedIndex,
     pub rules: Vec<Rule>,
 }
 
@@ -574,7 +320,7 @@ impl DatalogEngine {
     /// Construct a new DatalogEngine from an existing KnowledgeGraph
     pub fn new_from_kg(kg: &KnowledgeGraph) -> Self {
         Self {
-            facts: kg.abox_index.clone(),
+            facts: kg.index_manager.clone(),
             rules: kg.rules.clone(),
         }
     }
@@ -585,7 +331,7 @@ impl DatalogEngine {
         while changed {
             changed = false;
             // Snapshot current facts
-            let current_facts = self.facts.dump_triples();
+            let current_facts = self.facts.query(None, None, None);
 
             // For each rule, see if we can derive new facts
             for rule in &self.rules {
@@ -634,7 +380,7 @@ impl DatalogEngine {
     /// Returns variable bindings for matches
     pub fn datalog_query(&self, pattern: &TriplePattern) -> Vec<HashMap<String, u32>> {
         let mut results = Vec::new();
-        let all_facts = self.facts.dump_triples();
+        let all_facts = self.facts.query(None, None, None);
         for fact in &all_facts {
             let mut vmap = HashMap::new();
             if matches_rule_pattern(pattern, fact, &mut vmap) {

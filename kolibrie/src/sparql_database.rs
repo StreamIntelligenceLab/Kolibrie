@@ -6,7 +6,7 @@ use crate::utils;
 use crate::utils::current_timestamp;
 use crate::utils::ClonableFn;
 use crate::cuda::cuda_join::*;
-use crate::index_manager::{IndexManager, IndexType};
+use shared::index_manager::UnifiedIndex;
 use crossbeam::channel::unbounded;
 use crossbeam::scope;
 use crossbeam::thread;
@@ -29,7 +29,7 @@ pub struct SparqlDatabase {
     pub dictionary: Dictionary,
     pub prefixes: HashMap<String, String>,
     pub udfs: HashMap<String, ClonableFn>,
-    pub index_manager: IndexManager,
+    pub index_manager: UnifiedIndex,
 }
 
 #[allow(dead_code)]
@@ -42,7 +42,7 @@ impl SparqlDatabase {
             dictionary: Dictionary::new(),
             prefixes: HashMap::new(),
             udfs: HashMap::new(),
-            index_manager: IndexManager::new(),
+            index_manager: UnifiedIndex::new(),
         }
     }
 
@@ -611,7 +611,7 @@ impl SparqlDatabase {
             dictionary: self.dictionary.clone(),
             prefixes: self.prefixes.clone(),
             udfs: HashMap::new(),
-            index_manager: IndexManager::new(),
+            index_manager: UnifiedIndex::new(),
         }
     }
 
@@ -630,7 +630,7 @@ impl SparqlDatabase {
             dictionary: self.dictionary.clone(),
             prefixes: self.prefixes.clone(),
             udfs: HashMap::new(),
-            index_manager: IndexManager::new(),
+            index_manager: UnifiedIndex::new(),
         }
     }
 
@@ -862,7 +862,7 @@ impl SparqlDatabase {
             dictionary: self.dictionary.clone(),
             prefixes: self.prefixes.clone(),
             udfs: HashMap::new(),
-            index_manager: IndexManager::new(),
+            index_manager: UnifiedIndex::new(),
         }
     }
 
@@ -940,7 +940,7 @@ impl SparqlDatabase {
             dictionary: merged_dictionary,
             prefixes: self.prefixes.clone(),
             udfs: HashMap::new(),
-            index_manager: IndexManager::new(),
+            index_manager: UnifiedIndex::new(),
         }
     }
 
@@ -1007,7 +1007,7 @@ impl SparqlDatabase {
             dictionary: self.dictionary.clone(),
             prefixes: self.prefixes.clone(),
             udfs: HashMap::new(),
-            index_manager: IndexManager::new(),
+            index_manager: UnifiedIndex::new(),
         }
     }
 
@@ -1050,7 +1050,7 @@ impl SparqlDatabase {
             dictionary: self.dictionary.clone(),
             prefixes: self.prefixes.clone(),
             udfs: HashMap::new(),
-            index_manager: IndexManager::new(),
+            index_manager: UnifiedIndex::new(),
         }
     }
 
@@ -1106,7 +1106,7 @@ impl SparqlDatabase {
             dictionary: self.dictionary.clone(),
             prefixes: self.prefixes.clone(),
             udfs: HashMap::new(),
-            index_manager: IndexManager::new(),
+            index_manager: UnifiedIndex::new(),
         }
     }
 
@@ -1767,7 +1767,7 @@ impl SparqlDatabase {
             dictionary: self.dictionary.clone(),
             prefixes: self.prefixes.clone(),
             udfs: HashMap::new(),
-            index_manager: IndexManager::new(),
+            index_manager: UnifiedIndex::new(),
         }
     }
 
@@ -2278,49 +2278,17 @@ impl SparqlDatabase {
     /// Rebuild all indexes from the current state of `self.triples`.
     pub fn build_all_indexes(&mut self) {
         // Clear existing indexes
-        self.index_manager.clear_all();
+        self.index_manager.clear();
 
         // Create a snapshot of all the triples so that we're not borrowing `self` in the loop
         let triple_list: Vec<Triple> = self.triples.iter().cloned().collect();
 
         // Populate indexes for each triple
         for triple in &triple_list {
-            self.index_triple(triple);
+            self.index_manager.insert(triple);
         }
 
         // Sort + deduplicate all index values
-        self.index_manager.optimize_all();
-    }
-
-    /// A helper to insert one triple into all relevant indexes.
-    fn index_triple(&mut self, triple: &Triple) {
-        let s = triple.subject;
-        let p = triple.predicate;
-        let o = triple.object;
-
-        // SubjectPredicate: (s,p) => [o]
-        if let Some(index) = self.index_manager.get_index_mut(IndexType::SubjectPredicate) {
-            index.insert((s, p), o);
-        }
-        // PredicateSubject: (p,s) => [o]
-        if let Some(index) = self.index_manager.get_index_mut(IndexType::PredicateSubject) {
-            index.insert((p, s), o);
-        }
-        // SubjectObject: (s,o) => [p]
-        if let Some(index) = self.index_manager.get_index_mut(IndexType::SubjectObject) {
-            index.insert((s, o), p);
-        }
-        // ObjectSubject: (o,s) => [p]
-        if let Some(index) = self.index_manager.get_index_mut(IndexType::ObjectSubject) {
-            index.insert((o, s), p);
-        }
-        // PredicateObject: (p,o) => [s]
-        if let Some(index) = self.index_manager.get_index_mut(IndexType::PredicateObject) {
-            index.insert((p, o), s);
-        }
-        // ObjectPredicate: (o,p) => [s]
-        if let Some(index) = self.index_manager.get_index_mut(IndexType::ObjectPredicate) {
-            index.insert((o, p), s);
-        }
+        self.index_manager.optimize();
     }
 }

@@ -1,4 +1,5 @@
 use shared::dictionary::Dictionary;
+use shared::terms::Term;
 use datalog::knowledge_graph::*;
 use datalog::parser_n3_logic::parse_n3_rule;
 
@@ -146,7 +147,7 @@ fn test() {
             // Add parsed rule to KnowledgeGraph
             graph.add_rule(rule);
 
-            let old_facts = graph.abox_index.dump_triples();
+            let old_facts = graph.index_manager.query(None, None, None);
 
             let inferred_facts = graph.infer_new_facts();
 
@@ -184,7 +185,7 @@ fn test2() {
             // Add parsed rule to KnowledgeGraph
             kg.add_rule(rule);
 
-            let old_facts = kg.abox_index.dump_triples();
+            let old_facts = kg.index_manager.query(None, None, None);
 
             let inferred_facts = kg.infer_new_facts();
 

@@ -1,5 +1,5 @@
 use datalog::knowledge_graph::KnowledgeGraph;
-use datalog::knowledge_graph::Term;
+use shared::terms::Term;
 use datalog::knowledge_graph::Rule;
 use std::time::Instant;
 
@@ -7,9 +7,9 @@ fn main() {
     let mut kg = KnowledgeGraph::new();
 
     // Generate 100 facts programmatically (ABox)
-    for i in 0..5 {
+    for i in 0..100 {
         let subject = format!("person{}", i);
-        let object = format!("person{}", (i + 1) % 5); // Wraps around to connect the last person with the first
+        let object = format!("person{}", (i + 1) % 100); // Wraps around to connect the last person with the first
         kg.add_abox_triple(&subject, "likes", &object);
     }
 
@@ -50,7 +50,7 @@ fn main() {
 
     // Run the optimized inference
     let start = Instant::now();
-    let _inferred_facts = kg.infer_new_facts_optimized();
+    let inferred_facts = kg.infer_new_facts();
     let duration = start.elapsed();
     println!("Inference took: {:?}", duration);
 
@@ -69,13 +69,13 @@ fn main() {
     }
 
     // Display the newly inferred facts
-    // println!("Inferred facts:");
-    // for fact in inferred_facts {
-    //     println!(
-    //         "({:?}, {:?}, {:?})",
-    //         kg.dictionary.decode(fact.subject),
-    //         kg.dictionary.decode(fact.predicate),
-    //         kg.dictionary.decode(fact.object),
-    //     );
-    // }
+    println!("Inferred facts:");
+    for fact in inferred_facts {
+        println!(
+            "({:?}, {:?}, {:?})",
+            kg.dictionary.decode(fact.subject),
+            kg.dictionary.decode(fact.predicate),
+            kg.dictionary.decode(fact.object),
+        );
+    }
 }

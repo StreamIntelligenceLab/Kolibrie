@@ -1,6 +1,5 @@
 use shared::dictionary::Dictionary;
 use crate::sparql_database::SparqlDatabase;
-use crate::index_manager::IndexType;
 use shared::triple::Triple;
 use std::collections::{BTreeMap, HashMap, HashSet};
 
@@ -684,36 +683,34 @@ impl PhysicalOperator {
         pattern: &TriplePattern,
     ) -> Vec<BTreeMap<String, String>> {
         let mut results = Vec::new();
-        if let Some(index) = database.index_manager.get_index(IndexType::SubjectPredicate) {
-            if let Some(objects) = index.get(&(s, p)) {
-                for &obj in objects {
-                    let mut row = BTreeMap::new();
-                    if let Some(subj_str) = &pattern.subject {
-                        if subj_str.starts_with('?') {
-                            row.insert(
-                                subj_str.clone(),
-                                database.dictionary.decode(s as u32).unwrap().to_string(),
-                            );
-                        }
+        if let Some(objects) = database.index_manager.scan_sp(s, p) {
+            for &obj in objects {
+                let mut row = BTreeMap::new();
+                if let Some(subj_str) = &pattern.subject {
+                    if subj_str.starts_with('?') {
+                        row.insert(
+                            subj_str.clone(),
+                            database.dictionary.decode(s).unwrap().to_string(),
+                        );
                     }
-                    if let Some(pred_str) = &pattern.predicate {
-                        if pred_str.starts_with('?') {
-                            row.insert(
-                                pred_str.clone(),
-                                database.dictionary.decode(p as u32).unwrap().to_string(),
-                            );
-                        }
-                    }
-                    if let Some(obj_str) = &pattern.object {
-                        if obj_str.starts_with('?') {
-                            row.insert(
-                                obj_str.clone(),
-                                database.dictionary.decode(obj as u32).unwrap().to_string(),
-                            );
-                        }
-                    }
-                    results.push(row);
                 }
+                if let Some(pred_str) = &pattern.predicate {
+                    if pred_str.starts_with('?') {
+                        row.insert(
+                            pred_str.clone(),
+                            database.dictionary.decode(p).unwrap().to_string(),
+                        );
+                    }
+                }
+                if let Some(obj_str) = &pattern.object {
+                    if obj_str.starts_with('?') {
+                        row.insert(
+                            obj_str.clone(),
+                            database.dictionary.decode(obj).unwrap().to_string(),
+                        );
+                    }
+                }
+                results.push(row);
             }
         }
         results
@@ -727,36 +724,35 @@ impl PhysicalOperator {
         pattern: &TriplePattern,
     ) -> Vec<BTreeMap<String, String>> {
         let mut results = Vec::new();
-        if let Some(index) = database.index_manager.get_index(IndexType::SubjectObject) {
-            if let Some(preds) = index.get(&(s, o)) {
-                for &p in preds {
-                    let mut row = BTreeMap::new();
-                    if let Some(subj_str) = &pattern.subject {
-                        if subj_str.starts_with('?') {
-                            row.insert(
-                                subj_str.clone(),
-                                database.dictionary.decode(s as u32).unwrap().to_string(),
-                            );
-                        }
+        // Use the unified index's scan_so method
+        if let Some(predicates) = database.index_manager.scan_so(s, o) {
+            for &p in predicates {
+                let mut row = BTreeMap::new();
+                if let Some(subj_str) = &pattern.subject {
+                    if subj_str.starts_with('?') {
+                        row.insert(
+                            subj_str.clone(),
+                            database.dictionary.decode(s).unwrap().to_string(),
+                        );
                     }
-                    if let Some(pred_str) = &pattern.predicate {
-                        if pred_str.starts_with('?') {
-                            row.insert(
-                                pred_str.clone(),
-                                database.dictionary.decode(p as u32).unwrap().to_string(),
-                            );
-                        }
-                    }
-                    if let Some(obj_str) = &pattern.object {
-                        if obj_str.starts_with('?') {
-                            row.insert(
-                                obj_str.clone(),
-                                database.dictionary.decode(o as u32).unwrap().to_string(),
-                            );
-                        }
-                    }
-                    results.push(row);
                 }
+                if let Some(pred_str) = &pattern.predicate {
+                    if pred_str.starts_with('?') {
+                        row.insert(
+                            pred_str.clone(),
+                            database.dictionary.decode(p).unwrap().to_string(),
+                        );
+                    }
+                }
+                if let Some(obj_str) = &pattern.object {
+                    if obj_str.starts_with('?') {
+                        row.insert(
+                            obj_str.clone(),
+                            database.dictionary.decode(o).unwrap().to_string(),
+                        );
+                    }
+                }
+                results.push(row);
             }
         }
         results
@@ -770,36 +766,35 @@ impl PhysicalOperator {
         pattern: &TriplePattern,
     ) -> Vec<BTreeMap<String, String>> {
         let mut results = Vec::new();
-        if let Some(index) = database.index_manager.get_index(IndexType::PredicateObject) {
-            if let Some(subjects) = index.get(&(p, o)) {
-                for &s in subjects {
-                    let mut row = BTreeMap::new();
-                    if let Some(subj_str) = &pattern.subject {
-                        if subj_str.starts_with('?') {
-                            row.insert(
-                                subj_str.clone(),
-                                database.dictionary.decode(s as u32).unwrap().to_string(),
-                            );
-                        }
+        // Use the unified index's scan_po method
+        if let Some(subjects) = database.index_manager.scan_po(p, o) {
+            for &s in subjects {
+                let mut row = BTreeMap::new();
+                if let Some(subj_str) = &pattern.subject {
+                    if subj_str.starts_with('?') {
+                        row.insert(
+                            subj_str.clone(),
+                            database.dictionary.decode(s).unwrap().to_string(),
+                        );
                     }
-                    if let Some(pred_str) = &pattern.predicate {
-                        if pred_str.starts_with('?') {
-                            row.insert(
-                                pred_str.clone(),
-                                database.dictionary.decode(p as u32).unwrap().to_string(),
-                            );
-                        }
-                    }
-                    if let Some(obj_str) = &pattern.object {
-                        if obj_str.starts_with('?') {
-                            row.insert(
-                                obj_str.clone(),
-                                database.dictionary.decode(o as u32).unwrap().to_string(),
-                            );
-                        }
-                    }
-                    results.push(row);
                 }
+                if let Some(pred_str) = &pattern.predicate {
+                    if pred_str.starts_with('?') {
+                        row.insert(
+                            pred_str.clone(),
+                            database.dictionary.decode(p).unwrap().to_string(),
+                        );
+                    }
+                }
+                if let Some(obj_str) = &pattern.object {
+                    if obj_str.starts_with('?') {
+                        row.insert(
+                            obj_str.clone(),
+                            database.dictionary.decode(o).unwrap().to_string(),
+                        );
+                    }
+                }
+                results.push(row);
             }
         }
         results
@@ -816,26 +811,21 @@ impl PhysicalOperator {
     ) -> Vec<BTreeMap<String, String>> {
         let mut results = Vec::new();
 
-        if let Some(sp_index) = database.index_manager.get_index(IndexType::SubjectPredicate) {
-            // Range from (s,0) up to (s,u32::MAX)
-            for ((subj, pred), objects) in sp_index.index.range((s, 0)..=(s, u32::MAX)) {
-                if *subj != s {
-                    break;
-                }
-
-                // Inline filter if `pattern.predicate` is a constant (not a variable).
+        // Use the spo index directly since we're only bound on subject
+        if let Some(pred_map) = database.index_manager.spo.get(&s) {
+            for (&pred, objects) in pred_map {
+                // Check predicate pattern if specified
                 if let Some(ref p_str) = pattern.predicate {
                     if !p_str.starts_with('?') {
                         let bound_p = database.dictionary.encode(p_str);
-                        if *pred != bound_p {
+                        if pred != bound_p {
                             continue;
                         }
                     }
                 }
 
-                // Now check objects
                 for &obj in objects {
-                    // Inline filter if `pattern.object` is a constant.
+                    // Check object pattern if specified
                     if let Some(ref o_str) = pattern.object {
                         if !o_str.starts_with('?') {
                             let bound_o = database.dictionary.encode(o_str);
@@ -845,30 +835,33 @@ impl PhysicalOperator {
                         }
                     }
 
-                    // Build result row
                     let mut row = BTreeMap::new();
-
-                    // subject variable?
-                    if let Some(subj_var) = &pattern.subject {
-                        if subj_var.starts_with('?') {
-                            let decoded_subj = database.dictionary.decode(s).unwrap();
-                            row.insert(subj_var.clone(), decoded_subj.to_string());
+                    
+                    // Add variables to result row
+                    if let Some(s_var) = &pattern.subject {
+                        if s_var.starts_with('?') {
+                            row.insert(
+                                s_var.clone(),
+                                database.dictionary.decode(s).unwrap().to_string(),
+                            );
                         }
                     }
-
-                    // predicate variable?
-                    if let Some(pred_var) = &pattern.predicate {
-                        if pred_var.starts_with('?') {
-                            let decoded_pred = database.dictionary.decode(*pred).unwrap();
-                            row.insert(pred_var.clone(), decoded_pred.to_string());
+                    
+                    if let Some(p_var) = &pattern.predicate {
+                        if p_var.starts_with('?') {
+                            row.insert(
+                                p_var.clone(),
+                                database.dictionary.decode(pred).unwrap().to_string(),
+                            );
                         }
                     }
-
-                    // object variable?
-                    if let Some(obj_var) = &pattern.object {
-                        if obj_var.starts_with('?') {
-                            let decoded_obj = database.dictionary.decode(obj).unwrap();
-                            row.insert(obj_var.clone(), decoded_obj.to_string());
+                    
+                    if let Some(o_var) = &pattern.object {
+                        if o_var.starts_with('?') {
+                            row.insert(
+                                o_var.clone(),
+                                database.dictionary.decode(obj).unwrap().to_string(),
+                            );
                         }
                     }
 
@@ -876,10 +869,9 @@ impl PhysicalOperator {
                 }
             }
         }
-
+        
         results
     }
-
 
     /// Only `predicate` is bound: use the PredicateSubject index (PS), and inline-filter the subject/object.
     fn scan_p_index(
@@ -890,26 +882,21 @@ impl PhysicalOperator {
     ) -> Vec<BTreeMap<String, String>> {
         let mut results = Vec::new();
 
-        if let Some(ps_index) = database.index_manager.get_index(IndexType::PredicateSubject) {
-            // Range from (p,0) up to (p,u32::MAX)
-            for ((pred, subj), objects) in ps_index.index.range((p, 0)..=(p, u32::MAX)) {
-                if *pred != p {
-                    break;
-                }
-
-                // Inline filter if `pattern.subject` is a constant (not a variable).
+        // Use the pso index directly since we're only bound on predicate
+        if let Some(subj_map) = database.index_manager.pso.get(&p) {
+            for (&subj, objects) in subj_map {
+                // Check subject pattern if specified
                 if let Some(ref s_str) = pattern.subject {
                     if !s_str.starts_with('?') {
                         let bound_s = database.dictionary.encode(s_str);
-                        if *subj != bound_s {
+                        if subj != bound_s {
                             continue;
                         }
                     }
                 }
 
-                // Now check objects
                 for &obj in objects {
-                    // Inline filter if `pattern.object` is a constant.
+                    // Check object pattern if specified
                     if let Some(ref o_str) = pattern.object {
                         if !o_str.starts_with('?') {
                             let bound_o = database.dictionary.encode(o_str);
@@ -919,30 +906,33 @@ impl PhysicalOperator {
                         }
                     }
 
-                    // Build result row
                     let mut row = BTreeMap::new();
-
-                    // subject variable?
+                    
+                    // Add variables to result row
                     if let Some(s_var) = &pattern.subject {
                         if s_var.starts_with('?') {
-                            let decoded_subj = database.dictionary.decode(*subj).unwrap();
-                            row.insert(s_var.clone(), decoded_subj.to_string());
+                            row.insert(
+                                s_var.clone(),
+                                database.dictionary.decode(subj).unwrap().to_string(),
+                            );
                         }
                     }
-
-                    // predicate variable?
+                    
                     if let Some(p_var) = &pattern.predicate {
                         if p_var.starts_with('?') {
-                            let decoded_pred = database.dictionary.decode(*pred).unwrap();
-                            row.insert(p_var.clone(), decoded_pred.to_string());
+                            row.insert(
+                                p_var.clone(),
+                                database.dictionary.decode(p).unwrap().to_string(),
+                            );
                         }
                     }
-
-                    // object variable?
+                    
                     if let Some(o_var) = &pattern.object {
                         if o_var.starts_with('?') {
-                            let decoded_obj = database.dictionary.decode(obj).unwrap();
-                            row.insert(o_var.clone(), decoded_obj.to_string());
+                            row.insert(
+                                o_var.clone(),
+                                database.dictionary.decode(obj).unwrap().to_string(),
+                            );
                         }
                     }
 
@@ -950,7 +940,7 @@ impl PhysicalOperator {
                 }
             }
         }
-
+        
         results
     }
 
@@ -964,59 +954,57 @@ impl PhysicalOperator {
     ) -> Vec<BTreeMap<String, String>> {
         let mut results = Vec::new();
 
-        if let Some(os_index) = database.index_manager.get_index(IndexType::ObjectSubject) {
-            // Range from (o,0) up to (o,u32::MAX)
-            for ((obj, subj), preds) in os_index.index.range((o, 0)..=(o, u32::MAX)) {
-                if *obj != o {
-                    break;
-                }
-
-                // Inline filter if `pattern.subject` is a constant.
-                if let Some(ref s_str) = pattern.subject {
-                    if !s_str.starts_with('?') {
-                        let bound_s = database.dictionary.encode(s_str);
-                        if *subj != bound_s {
+        // Use the ops index directly since we're only bound on object
+        if let Some(pred_map) = database.index_manager.ops.get(&o) {
+            for (&pred, subjects) in pred_map {
+                // Check predicate pattern if specified
+                if let Some(ref p_str) = pattern.predicate {
+                    if !p_str.starts_with('?') {
+                        let bound_p = database.dictionary.encode(p_str);
+                        if pred != bound_p {
                             continue;
                         }
                     }
                 }
 
-                // Now check predicates
-                for &p in preds {
-                    // Inline filter if `pattern.predicate` is a constant.
-                    if let Some(ref p_str) = pattern.predicate {
-                        if !p_str.starts_with('?') {
-                            let bound_p = database.dictionary.encode(p_str);
-                            if p != bound_p {
+                for &subj in subjects {
+                    // Check subject pattern if specified
+                    if let Some(ref s_str) = pattern.subject {
+                        if !s_str.starts_with('?') {
+                            let bound_s = database.dictionary.encode(s_str);
+                            if subj != bound_s {
                                 continue;
                             }
                         }
                     }
 
-                    // Build result row
                     let mut row = BTreeMap::new();
-
-                    // subject variable?
+                    
+                    // Add variables to result row
                     if let Some(s_var) = &pattern.subject {
                         if s_var.starts_with('?') {
-                            let decoded_subj = database.dictionary.decode(*subj).unwrap();
-                            row.insert(s_var.clone(), decoded_subj.to_string());
+                            row.insert(
+                                s_var.clone(),
+                                database.dictionary.decode(subj).unwrap().to_string(),
+                            );
                         }
                     }
-
-                    // predicate variable?
+                    
                     if let Some(p_var) = &pattern.predicate {
                         if p_var.starts_with('?') {
-                            let decoded_pred = database.dictionary.decode(p).unwrap();
-                            row.insert(p_var.clone(), decoded_pred.to_string());
+                            row.insert(
+                                p_var.clone(),
+                                database.dictionary.decode(pred).unwrap().to_string(),
+                            );
                         }
                     }
-
-                    // object variable?
+                    
                     if let Some(o_var) = &pattern.object {
                         if o_var.starts_with('?') {
-                            let decoded_obj = database.dictionary.decode(*obj).unwrap();
-                            row.insert(o_var.clone(), decoded_obj.to_string());
+                            row.insert(
+                                o_var.clone(),
+                                database.dictionary.decode(o).unwrap().to_string(),
+                            );
                         }
                     }
 
@@ -1024,7 +1012,7 @@ impl PhysicalOperator {
                 }
             }
         }
-
+        
         results
     }
 }
