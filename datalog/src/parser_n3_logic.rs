@@ -1,5 +1,6 @@
 use crate::knowledge_graph::*;
 use shared::terms::{Term, TriplePattern, UnresolvedTerm, UnresolvedTriple};
+use shared::rule::Rule;
 use nom::{
     branch::alt,
     bytes::complete::{tag, take_until},

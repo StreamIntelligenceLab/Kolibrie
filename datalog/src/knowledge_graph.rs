@@ -1,16 +1,11 @@
 use shared::dictionary::Dictionary;
 use shared::triple::Triple;
-use std::collections::{BTreeSet, HashMap};
+use std::collections::{BTreeSet, HashMap, HashSet};
 use shared::index_manager::*;
+use shared::rule_index::RuleIndex;
 use shared::terms::{Term, TriplePattern};
-
+use shared::rule::Rule;
 // Logic part: Knowledge Graph
-
-#[derive(Debug, Clone)]
-pub struct Rule {
-    pub premise: Vec<TriplePattern>,
-    pub conclusion: TriplePattern,
-}
 
 #[derive(Debug, Clone)]
 pub struct KnowledgeGraph {
@@ -18,6 +13,7 @@ pub struct KnowledgeGraph {
     pub rules: Vec<Rule>, // List of dynamic rules
 
     pub index_manager: UnifiedIndex,
+    pub rule_index: RuleIndex,
 }
 
 impl KnowledgeGraph {
@@ -26,6 +22,7 @@ impl KnowledgeGraph {
             dictionary: Dictionary::new(),
             rules: Vec::new(),
             index_manager: UnifiedIndex::new(),
+            rule_index: RuleIndex::new(),
         }
     }
 
@@ -54,7 +51,11 @@ impl KnowledgeGraph {
 
     /// Add a dynamic rule to the graph
     pub fn add_rule(&mut self, rule: Rule) {
-        self.rules.push(rule);
+        let rule_id = self.rules.len();
+        self.rules.push(rule.clone());
+        for prem in &rule.premise {
+            self.rule_index.insert_premise_pattern(prem, rule_id);
+        }
     }
 
     pub fn infer_new_facts(&mut self) -> Vec<Triple> {
@@ -99,6 +100,146 @@ impl KnowledgeGraph {
 
         inferred_facts
     }
+
+    pub fn infer_new_facts_semi_naive(&mut self) -> Vec<Triple> {
+        // 1) Collect all known facts
+        let all_initial = self.index_manager.query(None, None, None);
+        let mut all_facts: HashSet<Triple> = all_initial.into_iter().collect();
+
+        // 2) Delta = all the initial facts
+        let mut delta = all_facts.clone();
+
+        // 3) Keep track of newly inferred so we can return them
+        let mut inferred_so_far = Vec::new();
+
+        // 4) Repeat until no new facts
+        loop {
+            let mut this_round_new = HashSet::new();
+
+            // For each triple in delta
+            for triple1 in &delta {
+                // (A) Look up candidate rules in the rule_index
+                let candidate_rule_ids = self.rule_index.query_candidate_rules(
+                    Some(triple1.subject),
+                    Some(triple1.predicate),
+                    Some(triple1.object),
+                );
+
+                // (B) For each candidate rule, check how many premises
+                for &rule_id in &candidate_rule_ids {
+                    let rule = &self.rules[rule_id];
+
+                    match rule.premise.len() {
+                        1 => {
+                            // Single-premise rule: unify triple1 with premise[0]
+                            let mut variable_bindings = HashMap::new();
+                            if matches_rule_pattern(
+                                &rule.premise[0],
+                                triple1,
+                                &mut variable_bindings,
+                            ) {
+                                let inferred = construct_triple(
+                                    &rule.conclusion,
+                                    &variable_bindings,
+                                );
+
+                                // Insert into ABox index
+                                if self.index_manager.insert(&inferred) {
+                                    // If brand new, add to `this_round_new`
+                                    if !all_facts.contains(&inferred) {
+                                        this_round_new.insert(inferred.clone());
+                                    }
+                                }
+                            }
+                        }
+
+                        2 => {
+                            // Two-premise rule, e.g. premise[0], premise[1].
+                            // We know triple1 might match premise[0] or premise[1].
+                            // We'll check both possibilities:
+
+                            // (1) Attempt triple1 => premise[0].
+                            let mut variable_bindings_1 = HashMap::new();
+                            let matched_1 = matches_rule_pattern(
+                                &rule.premise[0],
+                                triple1,
+                                &mut variable_bindings_1,
+                            );
+                            if matched_1 {
+                                // Then find triple2 that matches premise[1]
+                                for triple2 in &all_facts {
+                                    let mut variable_bindings_2 = variable_bindings_1.clone();
+                                    if matches_rule_pattern(
+                                        &rule.premise[1],
+                                        triple2,
+                                        &mut variable_bindings_2,
+                                    ) {
+                                        let inferred = construct_triple(
+                                            &rule.conclusion,
+                                            &variable_bindings_2,
+                                        );
+                                        if self.index_manager.insert(&inferred) {
+                                            if !all_facts.contains(&inferred) {
+                                                this_round_new.insert(inferred.clone());
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+
+                            // (2) Attempt triple1 => premise[1].
+                            let mut variable_bindings_1b = HashMap::new();
+                            let matched_1b = matches_rule_pattern(
+                                &rule.premise[1],
+                                triple1,
+                                &mut variable_bindings_1b,
+                            );
+                            if matched_1b {
+                                // Then find triple2 that matches premise[0].
+                                for triple2 in &all_facts {
+                                    let mut variable_bindings_2b = variable_bindings_1b.clone();
+                                    if matches_rule_pattern(
+                                        &rule.premise[0],
+                                        triple2,
+                                        &mut variable_bindings_2b,
+                                    ) {
+                                        let inferred = construct_triple(
+                                            &rule.conclusion,
+                                            &variable_bindings_2b,
+                                        );
+                                        if self.index_manager.insert(&inferred) {
+                                            if !all_facts.contains(&inferred) {
+                                                this_round_new.insert(inferred.clone());
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+
+                        _ => {
+                            // For more premises, do a generalized approach 
+                            // or scan as you did originally.
+                        }
+                    }
+                }
+            }
+
+            // If nothing new, fixpoint
+            if this_round_new.is_empty() {
+                break;
+            } else {
+                // Merge newly inferred into global sets
+                for fact in &this_round_new {
+                    all_facts.insert(fact.clone());
+                    inferred_so_far.push(fact.clone());
+                }
+                delta = this_round_new;
+            }
+        }
+
+        inferred_so_far
+    }    
 
     pub fn backward_chaining(&self, query: &TriplePattern) -> Vec<HashMap<String, Term>> {
         let bindings = HashMap::new();

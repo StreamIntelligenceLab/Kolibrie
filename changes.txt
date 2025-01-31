@@ -16,7 +16,7 @@
 15. Modify N3 logic by including nested rules
 16. Modify N3 parser by utilize rayon
 17. Modify Indexing by removing Trie algorithm and using my own from triple
-18. 
+18. Modify Indexing by adding Rule Index, add some examples
 19. 
 20. 
 

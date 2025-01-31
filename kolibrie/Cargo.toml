@@ -113,6 +113,10 @@ name = "knowledge_graph"
 path = "examples/sparql_syntax/knowledge_graph/knowledge_graph.rs"
 
 [[example]]
+name = "kg_test_scenarios"
+path = "examples/sparql_syntax/knowledge_graph/knowledge_graph_test_scenarios.rs"
+
+[[example]]
 name = "datalog_example"
 path = "examples/sparql_syntax/knowledge_graph/datalog_example.rs"
 

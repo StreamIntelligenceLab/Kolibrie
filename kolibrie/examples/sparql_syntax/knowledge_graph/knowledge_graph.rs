@@ -1,5 +1,6 @@
 use shared::dictionary::Dictionary;
 use shared::terms::Term;
+use shared::rule::Rule;
 use datalog::knowledge_graph::*;
 use datalog::parser_n3_logic::parse_n3_rule;
 

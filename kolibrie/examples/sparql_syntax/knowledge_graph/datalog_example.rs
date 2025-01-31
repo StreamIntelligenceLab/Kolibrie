@@ -1,81 +1,56 @@
 use datalog::knowledge_graph::KnowledgeGraph;
 use shared::terms::Term;
-use datalog::knowledge_graph::Rule;
-use std::time::Instant;
+use shared::rule::Rule;
 
 fn main() {
     let mut kg = KnowledgeGraph::new();
 
-    // Generate 100 facts programmatically (ABox)
-    for i in 0..100 {
-        let subject = format!("person{}", i);
-        let object = format!("person{}", (i + 1) % 100); // Wraps around to connect the last person with the first
-        kg.add_abox_triple(&subject, "likes", &object);
-    }
+    kg.add_abox_triple("Alice", "parent", "Bob");
+    kg.add_abox_triple("Bob", "parent", "Charlie");
+    kg.add_abox_triple("Charlie", "parent", "David");
 
-    // Add transitivity rule: likes(X, Y) & likes(Y, Z) => likes(X, Z)
-    kg.add_rule(Rule {
+    let rule1 = Rule {
         premise: vec![
-            (
-                Term::Variable("x".to_string()),
-                Term::Constant(kg.dictionary.clone().encode("likes")),
-                Term::Variable("y".to_string()),
-            ),
-            (
-                Term::Variable("y".to_string()),
-                Term::Constant(kg.dictionary.clone().encode("likes")),
-                Term::Variable("z".to_string()),
-            ),
+            (Term::Variable("X".to_string()), 
+                          Term::Constant(kg.dictionary.encode("parent")), 
+                          Term::Variable("Y".to_string())),
         ],
-        conclusion: (
-            Term::Variable("x".to_string()),
-            Term::Constant(kg.dictionary.clone().encode("likes")),
-            Term::Variable("z".to_string()),
-        ),
-    });
+        conclusion: (Term::Variable("X".to_string()), 
+                                  Term::Constant(kg.dictionary.encode("ancestor")), 
+                                  Term::Variable("Y".to_string())),
+    };
+    
+    let rule2 = Rule {
+        premise: vec![
+            (Term::Variable("X".to_string()), 
+                          Term::Constant(kg.dictionary.encode("parent")), 
+                          Term::Variable("Y".to_string())),
+            (Term::Variable("Y".to_string()), 
+                          Term::Constant(kg.dictionary.encode("ancestor")), 
+                          Term::Variable("Z".to_string())),
+        ],
+        conclusion: (Term::Variable("X".to_string()), 
+                                  Term::Constant(kg.dictionary.encode("ancestor")), 
+                                  Term::Variable("Z".to_string())),
+    };
+    
+    kg.add_rule(rule1);
+    kg.add_rule(rule2);
 
-    // Add symmetry rule: likes(X, Y) => likes(Y, X)
-    kg.add_rule(Rule {
-        premise: vec![(
-            Term::Variable("x".to_string()),
-            Term::Constant(kg.dictionary.clone().encode("likes")),
-            Term::Variable("y".to_string()),
-        )],
-        conclusion: (
-            Term::Variable("y".to_string()),
-            Term::Constant(kg.dictionary.clone().encode("likes")),
-            Term::Variable("x".to_string()),
-        ),
-    });
-
-    // Run the optimized inference
-    let start = Instant::now();
-    let inferred_facts = kg.infer_new_facts();
-    let duration = start.elapsed();
-    println!("Inference took: {:?}", duration);
-
-    let results = kg.query_abox(
-        Some("person0"),                // subject
-        Some("likes"),                  // predicate
-        None,                           // object -> wildcard
-    );
-
-    println!("person0 likes these people:");
-    for triple in results {
-        let s_str = kg.dictionary.decode(triple.subject).unwrap();
-        let p_str = kg.dictionary.decode(triple.predicate).unwrap();
-        let o_str = kg.dictionary.decode(triple.object).unwrap();
-        println!("  {} {} {}", s_str, p_str, o_str);
-    }
-
-    // Display the newly inferred facts
-    println!("Inferred facts:");
+    let inferred_facts = kg.infer_new_facts_semi_naive();
     for fact in inferred_facts {
-        println!(
-            "({:?}, {:?}, {:?})",
-            kg.dictionary.decode(fact.subject),
-            kg.dictionary.decode(fact.predicate),
-            kg.dictionary.decode(fact.object),
-        );
+        println!("{:?}", kg.dictionary.decode_triple(&fact));
     }
+    let query = (
+        Term::Variable("X".to_string()), 
+        Term::Constant(kg.dictionary.encode("ancestor")), 
+        Term::Constant(kg.dictionary.encode("David")),
+    );
+    
+    let results = kg.datalog_query_kg(&query);
+    
+    for result in results {
+        println!("Ancestor: {:?}", kg.dictionary.decode(*result.get("X").unwrap()));
+    }
+    
 }
