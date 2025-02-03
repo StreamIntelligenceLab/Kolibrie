@@ -7,3 +7,4 @@ description = "Datalog Engine"
 [dependencies]
 nom = { workspace = true }
 shared = { path = "../shared" }
+rayon = { workspace = true }

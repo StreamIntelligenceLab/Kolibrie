@@ -9,6 +9,7 @@ use nom::{
     sequence::{delimited, preceded, tuple},
     IResult, Parser,
 };
+use nom::sequence::terminated;
 use rayon::str;
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::sync::atomic::Ordering;
@@ -43,6 +44,42 @@ pub struct SubQuery<'a> {
     _values_clause: Option<ValuesClause<'a>>,                  // VALUES clause
 }
 
+#[derive(Debug, Clone)]
+pub struct RuleHead<'a> {
+    pub predicate: &'a str,
+    pub arguments: Vec<&'a str>,
+}
+
+#[derive(Debug, Clone)]
+pub struct CombinedRule<'a> {
+    pub head: RuleHead<'a>,
+    pub body: (
+        Vec<(&'a str, &'a str, &'a str)>,
+        Vec<(&'a str, &'a str, &'a str)>,
+        Option<ValuesClause<'a>>,
+        Vec<(&'a str, Vec<&'a str>, &'a str)>,
+        Vec<SubQuery<'a>>,
+    ),
+    pub conclusion: Vec<(&'a str, &'a str, &'a str)>,
+}
+
+#[derive(Debug, Clone)]
+pub struct CombinedQuery<'a> {
+    pub prefixes: HashMap<String, String>,
+    pub rule: Option<CombinedRule<'a>>,
+    pub sparql: (
+        Option<InsertClause<'a>>,
+        Vec<(&'a str, &'a str, Option<&'a str>)>,
+        Vec<(&'a str, &'a str, &'a str)>,
+        Vec<(&'a str, &'a str, &'a str)>,
+        Vec<&'a str>,
+        HashMap<String, String>,
+        Option<ValuesClause<'a>>,
+        Vec<(&'a str, Vec<&'a str>, &'a str)>,
+        Vec<SubQuery<'a>>,
+    ),
+}
+
 // Helper function to recognize identifiers
 pub fn identifier(input: &str) -> IResult<&str, &str> {
     take_while1(|c: char| c.is_alphanumeric() || c == '_')(input)
@@ -55,7 +92,11 @@ pub fn prefixed_identifier(input: &str) -> IResult<&str, &str> {
 
 // Parser for a predicate (either prefixed or unprefixed)
 pub fn predicate(input: &str) -> IResult<&str, &str> {
-    alt((prefixed_identifier, identifier))(input)
+    alt((
+        recognize(tuple((char(':'), identifier))), 
+        prefixed_identifier, 
+        identifier
+    ))(input)
 }
 
 // Parser for variables (e.g., ?person)
@@ -77,7 +118,7 @@ pub fn parse_uri(input: &str) -> IResult<&str, &str> {
 pub fn parse_predicate_object(input: &str) -> IResult<&str, (&str, &str)> {
     let (input, p) = predicate(input)?;
     let (input, _) = multispace1(input)?;
-    let (input, o) = alt((parse_uri, variable, parse_literal))(input)?;
+    let (input, o) = alt((parse_uri, variable, parse_literal, identifier))(input)?;
     Ok((input, (p, o)))
 }
 
@@ -99,10 +140,7 @@ pub fn parse_triple_block(input: &str) -> IResult<&str, Vec<(&str, &str, &str)>>
     pairs.extend(rest_po);
     
     // Convert each pair into a triple by reusing the same subject
-    let mut triples = Vec::new();
-    for (p, o) in pairs {
-        triples.push((subject, p, o));
-    }
+    let triples = pairs.into_iter().map(|(p, o)| (subject, p, o)).collect();
     
     Ok((input, triples))
 }
@@ -327,6 +365,10 @@ pub fn parse_where(
             new_input
         } else if let Ok((new_input, vals)) = parse_values(current_input) {
             values_clause = Some(vals);
+            new_input
+        } else if let Ok((new_input, rule_call)) = parse_rule_call(current_input) {
+            let arg_str = rule_call.arguments.join(",");
+            patterns.push((rule_call.predicate, "RULECALL", Box::leak(arg_str.into_boxed_str())));
             new_input
         } else {
             return Err(nom::Err::Error(nom::error::Error::new(
@@ -867,4 +909,75 @@ fn merge_results<'a>(
         }
     }
     merged
+}
+
+pub fn parse_rule_call(input: &str) -> IResult<&str, RuleHead> {
+    let (input, pred) = predicate(input)?;
+    let (input, args) = delimited(
+        char('('),
+        separated_list1(alt((tag(","), space1)), variable),
+        char(')')
+    )(input)?;
+    Ok((input, RuleHead { predicate: pred, arguments: args }))
+}
+
+pub fn parse_rule_head(input: &str) -> IResult<&str, RuleHead> {
+    let (input, pred) = predicate(input)?;
+    let (input, args) = opt(delimited(
+        char('('),
+        separated_list1(alt((tag(","), space1)), variable),
+        char(')')
+    ))(input)?;
+    let arguments = args.unwrap_or_else(|| vec![]);
+    Ok((input, RuleHead { predicate: pred, arguments }))
+}
+
+/// Parse a complete rule:
+///   RULE :OverheatingAlert(?room) :- WHERE { ... } => { ... } .
+pub fn parse_rule(input: &str) -> IResult<&str, CombinedRule> {
+    let (input, _) = tag("RULE")(input)?;
+    let (input, _) = space1(input)?;
+    let (input, head) = parse_rule_head(input)?;
+    let (input, _) = space0(input)?;
+    let (input, _) = tag(":-")(input)?;
+    let (input, _) = multispace0(input)?;
+    // Let parse_where consume the "WHERE" token.
+    let (input, body) = parse_where(input)?;
+    let (input, _) = multispace0(input)?;
+    let (input, _) = tag("=>")(input)?;
+    let (input, _) = multispace0(input)?;
+    let (input, conclusion) = delimited(
+        char('{'),
+        preceded(
+            multispace0,
+            terminated(parse_triple_block, opt(tuple((multispace0, char('.')))))
+        ),
+        preceded(multispace0, char('}'))
+    )(input)?;
+    let (input, _) = multispace0(input)?;
+    let (input, _) = char('.')(input)?;
+    Ok((input, CombinedRule { head, body, conclusion }))
+}
+
+/// The combined query parser parses SPARQL + LP
+pub fn parse_combined_query(input: &str) -> IResult<&str, CombinedQuery> {
+    let (input, prefix_list) = many0(|i| {
+        let (i, _) = multispace0(i)?;
+        let (i, _) = tag("PREFIX")(i)?;
+        let (i, _) = space1(i)?;
+        let (i, p) = identifier(i)?;
+        let (i, _) = char(':')(i)?;
+        let (i, _) = space0(i)?;
+        let (i, uri) = delimited(char('<'), take_while1(|c| c != '>'), char('>'))(i)?;
+        Ok((i, (p, uri)))
+    })(input)?;
+    let mut prefixes = HashMap::new();
+    for (p, uri) in prefix_list {
+        prefixes.insert(p.to_string(), uri.to_string());
+    }
+    let (input, _) = multispace0(input)?;
+    let (input, rule_opt) = opt(parse_rule)(input)?;
+    let (input, _) = multispace0(input)?;
+    let (input, sparql_parse) = parse_sparql_query(input)?;
+    Ok((input, CombinedQuery { prefixes, rule: rule_opt, sparql: sparql_parse }))
 }

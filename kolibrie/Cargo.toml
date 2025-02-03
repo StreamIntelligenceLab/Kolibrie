@@ -183,3 +183,7 @@ path = "examples/sparql_syntax/select_semicolon/select_semicolon.rs"
 [[example]]
 name = "nested_query"
 path = "examples/sparql_syntax/nested_query/nested_query.rs"
+
+[[example]]
+name = "combination"
+path = "examples/sparql_syntax/combination/combination.rs"
