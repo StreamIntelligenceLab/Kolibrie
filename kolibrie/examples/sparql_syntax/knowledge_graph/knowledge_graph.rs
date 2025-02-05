@@ -30,6 +30,7 @@ fn knowledge_graph() {
             Term::Constant(graph.dictionary.encode("hasGrandparent")),
             Term::Variable("Z".to_string()),
         ),
+        filters: vec![],
     };
 
     // Add the rule to the knowledge graph
@@ -75,6 +76,7 @@ fn backward_chaining() {
             Term::Constant(ancestor),
             Term::Variable("Y".to_string()),
         ),
+        filters: vec![],
     };
 
     let rule2 = Rule {
@@ -96,6 +98,7 @@ fn backward_chaining() {
             Term::Constant(ancestor),
             Term::Variable("Z".to_string()),
         ),
+        filters: vec![],
     };
 
     kg.add_rule(rule1);

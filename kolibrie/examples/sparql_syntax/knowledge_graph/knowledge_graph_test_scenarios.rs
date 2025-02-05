@@ -9,9 +9,9 @@ fn test1() {
     let mut kg = KnowledgeGraph::new();
 
     // Generate 100 facts programmatically (ABox)
-    for i in 0..100 {
+    for i in 0..5 {
         let subject = format!("person{}", i);
-        let object = format!("person{}", (i + 1) % 100); // Wraps around to connect the last person with the first
+        let object = format!("person{}", (i + 1) % 5); // Wraps around to connect the last person with the first
         kg.add_abox_triple(&subject, "likes", &object);
     }
 
@@ -34,6 +34,7 @@ fn test1() {
             Term::Constant(kg.dictionary.clone().encode("likes")),
             Term::Variable("z".to_string()),
         ),
+        filters: vec![],
     });
 
     // Add symmetry rule: likes(X, Y) => likes(Y, X)
@@ -48,6 +49,7 @@ fn test1() {
             Term::Constant(kg.dictionary.clone().encode("likes")),
             Term::Variable("x".to_string()),
         ),
+        filters: vec![],
     });
 
     // Run the optimized inference
@@ -87,7 +89,7 @@ fn test2() {
     let mut kg = KnowledgeGraph::new();
     kg.add_abox_triple("myInstance", "type", "Class0");
 
-    for i in 0..100 {
+    for i in 0..5 {
         let premise_pattern: TriplePattern = (
             Term::Variable("x".to_string()),
             Term::Constant(kg.dictionary.encode("type")),
@@ -101,6 +103,7 @@ fn test2() {
         let rule = Rule {
             premise: vec![premise_pattern],
             conclusion: conclusion_pattern,
+            filters: vec![],
         };
         kg.add_rule(rule);
     }

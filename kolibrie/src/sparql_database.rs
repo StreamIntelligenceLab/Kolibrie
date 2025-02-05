@@ -30,6 +30,7 @@ pub struct SparqlDatabase {
     pub prefixes: HashMap<String, String>,
     pub udfs: HashMap<String, ClonableFn>,
     pub index_manager: UnifiedIndex,
+    pub rule_map: HashMap<String, String>,
 }
 
 #[allow(dead_code)]
@@ -43,7 +44,47 @@ impl SparqlDatabase {
             prefixes: HashMap::new(),
             udfs: HashMap::new(),
             index_manager: UnifiedIndex::new(),
+            rule_map: HashMap::new(),
         }
+    }
+
+    pub fn generate_rdf_xml(&mut self) -> String {
+        let mut xml = String::new();
+        xml.push_str("<?xml version=\"1.0\"?>\n");
+        xml.push_str("<rdf:RDF");
+    
+        // Write namespace declarations (from the stored prefixes)
+        for (prefix, uri) in &self.prefixes {
+            if prefix.is_empty() {
+                xml.push_str(&format!(" xmlns=\"{}\"", uri));
+            } else {
+                xml.push_str(&format!(" xmlns:{}=\"{}\"", prefix, uri));
+            }
+        }
+        // Always include the standard RDF namespace
+        xml.push_str(" xmlns:rdf=\"http://www.w3.org/1999/02/22-rdf-syntax-ns#\"");
+        xml.push_str(">\n");
+    
+        // Group triples by subject
+        let mut subjects: BTreeMap<String, Vec<(String, String)>> = BTreeMap::new();
+        for triple in &self.triples {
+            let subject = self.dictionary.decode(triple.subject);
+            let predicate = self.dictionary.decode(triple.predicate);
+            let object = self.dictionary.decode(triple.object);
+            subjects.entry(subject.unwrap().to_string()).or_default().push((predicate.unwrap().to_string(), object.unwrap().to_string()));
+        }
+    
+        // For each subject, create an <rdf:Description> element.
+        for (subject, po_pairs) in subjects {
+            xml.push_str(&format!("  <rdf:Description rdf:about=\"{}\">\n", subject));
+            for (predicate, object) in po_pairs {
+                xml.push_str(&format!("    <{}>{}</{}>\n", predicate, object, predicate));
+            }
+            xml.push_str("  </rdf:Description>\n");
+        }
+    
+        xml.push_str("</rdf:RDF>\n");
+        xml
     }
 
     pub fn parse_rdf_from_file(&mut self, filename: &str) {
@@ -612,6 +653,7 @@ impl SparqlDatabase {
             prefixes: self.prefixes.clone(),
             udfs: HashMap::new(),
             index_manager: UnifiedIndex::new(),
+            rule_map: HashMap::new(),
         }
     }
 
@@ -631,6 +673,7 @@ impl SparqlDatabase {
             prefixes: self.prefixes.clone(),
             udfs: HashMap::new(),
             index_manager: UnifiedIndex::new(),
+            rule_map: HashMap::new(),
         }
     }
 
@@ -863,6 +906,7 @@ impl SparqlDatabase {
             prefixes: self.prefixes.clone(),
             udfs: HashMap::new(),
             index_manager: UnifiedIndex::new(),
+            rule_map: HashMap::new(),
         }
     }
 
@@ -941,6 +985,7 @@ impl SparqlDatabase {
             prefixes: self.prefixes.clone(),
             udfs: HashMap::new(),
             index_manager: UnifiedIndex::new(),
+            rule_map: HashMap::new(),
         }
     }
 
@@ -1008,6 +1053,7 @@ impl SparqlDatabase {
             prefixes: self.prefixes.clone(),
             udfs: HashMap::new(),
             index_manager: UnifiedIndex::new(),
+            rule_map: HashMap::new(),
         }
     }
 
@@ -1051,6 +1097,7 @@ impl SparqlDatabase {
             prefixes: self.prefixes.clone(),
             udfs: HashMap::new(),
             index_manager: UnifiedIndex::new(),
+            rule_map: HashMap::new(),
         }
     }
 
@@ -1107,6 +1154,7 @@ impl SparqlDatabase {
             prefixes: self.prefixes.clone(),
             udfs: HashMap::new(),
             index_manager: UnifiedIndex::new(),
+            rule_map: HashMap::new(),
         }
     }
 
@@ -1768,6 +1816,7 @@ impl SparqlDatabase {
             prefixes: self.prefixes.clone(),
             udfs: HashMap::new(),
             index_manager: UnifiedIndex::new(),
+            rule_map: HashMap::new(),
         }
     }
 
@@ -2290,5 +2339,13 @@ impl SparqlDatabase {
 
         // Sort + deduplicate all index values
         self.index_manager.optimize();
+    }
+
+    /// Triple to string
+    pub fn triple_to_string(&self, triple: &Triple, dict: &Dictionary) -> String {
+        let subject = dict.decode(triple.subject);
+        let predicate = dict.decode(triple.predicate);
+        let object = dict.decode(triple.object);
+        format!("{} {} {}", subject.unwrap(), predicate.unwrap(), object.unwrap())
     }
 }

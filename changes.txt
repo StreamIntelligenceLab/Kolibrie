@@ -19,9 +19,10 @@
 18. Modify Indexing by adding Rule Index, add some examples
 19. Modify knowledge Graph adding parallel processing for semi-naive
 20. Modify SPARQL syntax by combining SPARQL + LP 
-21. 
+21. Modify SPARQL syntax make execution of SPARQL + LP (N3 logic)
 22. 
 23. 
+24. 
 
 0.1.0
 1. Parsing RDF/XML

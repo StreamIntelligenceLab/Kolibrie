@@ -131,6 +131,7 @@ pub fn parse_n3_rule<'a>(
     let rule = Rule {
         premise: premise_parsed,
         conclusion: conclusion_parsed,
+        filters: vec![],
     };
 
     Ok((input, (prefixes, rule)))

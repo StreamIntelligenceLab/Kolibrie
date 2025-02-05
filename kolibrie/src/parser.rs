@@ -12,8 +12,11 @@ use nom::{
 use nom::sequence::terminated;
 use rayon::str;
 use std::collections::{BTreeMap, BTreeSet, HashMap};
-use std::sync::atomic::Ordering;
 use shared::GPU_MODE_ENABLED;
+use shared::dictionary::Dictionary;
+use shared::terms::*;
+use shared::rule::Rule;
+use shared::rule::FilterCondition;
 
 // Define the Value enum to represent terms or UNDEF in VALUES clause
 #[derive(Debug, Clone)]
@@ -605,6 +608,17 @@ pub fn execute_subquery<'a>(
 }
 
 pub fn execute_query(sparql: &str, database: &mut SparqlDatabase) -> Vec<Vec<String>> {
+    let sparql = if sparql.contains("RULE") {
+        if let Some(pos) = sparql.find("SELECT") {
+            &sparql[pos..]
+        } else {
+            sparql
+        }
+    } else {
+        sparql
+    };
+
+    // Prepare variables to hold the query processing state.
     let mut final_results: Vec<BTreeMap<&str, String>>;
     let mut selected_variables: Vec<(String, String)> = Vec::new();
     let mut aggregation_vars: Vec<(&str, &str, &str)> = Vec::new();
@@ -642,7 +656,7 @@ pub fn execute_query(sparql: &str, database: &mut SparqlDatabase) -> Vec<Vec<Str
                     predicate: predicate_id,
                     object: object_id,
                 };
-                database.triples.insert(triple.clone());
+                database.triples.insert(triple);
             }
         }
 
@@ -700,40 +714,57 @@ pub fn execute_query(sparql: &str, database: &mut SparqlDatabase) -> Vec<Vec<Str
 
         // Process each pattern in the WHERE clause
         for (subject_var, predicate, object_var) in patterns {
-            // Resolve the predicate using prefixes
-            let resolved_predicate = database.resolve_query_term(predicate, &prefixes);
-
-            // Resolve the object variable using prefixes
-            let resolved_object_var = database.resolve_query_term(object_var, &prefixes);
-
-            // Instead of checking double quotes, just use the object_var directly as the filter value
-            let literal_filter = if !object_var.starts_with('?') {
-                Some(resolved_object_var)
+            let (join_subject, join_predicate, join_object) = if predicate == "RULECALL" {
+                let rule_name = if subject_var.starts_with(':') {
+                    &subject_var[1..]
+                } else {
+                    subject_var
+                };
+                let rule_key = rule_name.to_lowercase();
+                // Look up the expanded predicate in the rule_map
+                let expanded_rule_predicate = if let Some(expanded) = database.rule_map.get(&rule_key) {
+                    expanded.clone()
+                } else {
+                    // Fallback: if the rule name is not already prefixed, prepend default prefix "ex"
+                    if let Some(default_uri) = prefixes.get("ex") {
+                        format!("{}{}", default_uri, rule_name)
+                    } else {
+                        rule_name.to_string()
+                    }
+                };
+                (object_var.to_string(), expanded_rule_predicate, "true".to_string())
             } else {
-                None
+                // For a normal triple pattern, resolve predicate and object using the prefixes.
+                let resolved_predicate = database.resolve_query_term(predicate, &prefixes);
+                let resolved_object = database.resolve_query_term(object_var, &prefixes);
+                (subject_var.to_string(), resolved_predicate, resolved_object)
             };
 
-            if GPU_MODE_ENABLED.load(Ordering::SeqCst) {
+            // To satisfy lifetime requirements, leak the computed join_subject and join_object into 'static str.
+            let join_subject_static: &'static str = Box::leak(join_subject.into_boxed_str());
+            let join_object_static: &'static str = Box::leak(join_object.into_boxed_str());
+
+            if GPU_MODE_ENABLED.load(std::sync::atomic::Ordering::SeqCst) {
                 println!("CUDA");
                 final_results = database.perform_hash_join_cuda_wrapper(
-                    subject_var,
-                    resolved_predicate,
-                    object_var,
+                    join_subject_static,
+                    join_predicate,
+                    join_object_static,
                     triples_vec.clone(),
                     &database.dictionary,
                     final_results,
-                    literal_filter,
+                    if !join_object_static.starts_with('?') { Some(join_object_static.to_string()) } else { None },
                 );
             } else {
                 println!("NORM");
                 final_results = database.perform_join_par_simd_with_strict_filter_1(
-                    subject_var,
-                    resolved_predicate,
-                    object_var,
+                    join_subject_static,
+                    join_predicate,
+                    join_object_static,
                     triples_vec.clone(),
                     &database.dictionary,
                     final_results,
-                    literal_filter,
+                    if !join_object_static.starts_with('?') { Some(join_object_static.to_string()) } else { None },
                 );
             }
         }
@@ -744,7 +775,6 @@ pub fn execute_query(sparql: &str, database: &mut SparqlDatabase) -> Vec<Vec<Str
         // Process subqueries first
         for subquery in subqueries {
             let subquery_results = execute_subquery(&subquery, database, &prefixes, final_results.clone());
-            // Merge subquery results with main query results
             final_results = merge_results(final_results, subquery_results);
         }
 
@@ -768,7 +798,6 @@ pub fn execute_query(sparql: &str, database: &mut SparqlDatabase) -> Vec<Vec<Str
                     row.insert(new_var, concatenated);
                 }
             } else if let Some(func) = database.udfs.get(func_name) {
-                // Process other UDFs
                 for row in &mut final_results {
                     let resolved_args: Vec<&str> = args
                         .iter()
@@ -790,15 +819,14 @@ pub fn execute_query(sparql: &str, database: &mut SparqlDatabase) -> Vec<Vec<Str
 
         // Apply GROUP BY and aggregations
         if !group_by_variables.is_empty() {
-            final_results =
-                group_and_aggregate_results(final_results, &group_by_variables, &aggregation_vars);
+            final_results = group_and_aggregate_results(final_results, &group_by_variables, &aggregation_vars);
         }
     } else {
         eprintln!("Failed to parse the query.");
         return Vec::new();
     }
 
-    // Convert the BTreeMap results into Vec<Vec<String>> format
+    // Finally, convert the final BTreeMap results into Vec<Vec<String>>.
     final_results
         .into_iter()
         .map(|result| {
@@ -941,7 +969,6 @@ pub fn parse_rule(input: &str) -> IResult<&str, CombinedRule> {
     let (input, _) = space0(input)?;
     let (input, _) = tag(":-")(input)?;
     let (input, _) = multispace0(input)?;
-    // Let parse_where consume the "WHERE" token.
     let (input, body) = parse_where(input)?;
     let (input, _) = multispace0(input)?;
     let (input, _) = tag("=>")(input)?;
@@ -980,4 +1007,71 @@ pub fn parse_combined_query(input: &str) -> IResult<&str, CombinedQuery> {
     let (input, _) = multispace0(input)?;
     let (input, sparql_parse) = parse_sparql_query(input)?;
     Ok((input, CombinedQuery { prefixes, rule: rule_opt, sparql: sparql_parse }))
+}
+
+fn resolve_term_with_prefix(term: &str, prefixes: &HashMap<String, String>) -> String {
+    if let Some(idx) = term.find(':') {
+        let prefix = &term[..idx];
+        let local = &term[idx + 1..];
+        if let Some(expanded) = prefixes.get(prefix) {
+            return format!("{}{}", expanded, local);
+        }
+    }
+    term.to_string()
+}
+
+fn convert_term(term: &str, dict: &mut Dictionary, prefixes: &HashMap<String, String>) -> Term {
+    if term.starts_with('?') {
+        Term::Variable(term.trim_start_matches('?').to_string())
+    } else {
+        let expanded = resolve_term_with_prefix(term, prefixes);
+        Term::Constant(dict.encode(&expanded))
+    }
+}
+
+/// Convert a triple (subject, predicate, object) from &str into a TriplePattern
+fn convert_triple_pattern(
+    triple: (&str, &str, &str),
+    dict: &mut Dictionary,
+    prefixes: &HashMap<String, String>,
+) -> TriplePattern {
+    (
+        convert_term(triple.0, dict, prefixes),
+        convert_term(triple.1, dict, prefixes),
+        convert_term(triple.2, dict, prefixes),
+    )
+}
+
+pub fn convert_combined_rule<'a>(
+    cr: CombinedRule<'a>,
+    dict: &mut Dictionary,
+    prefixes: &HashMap<String, String>,
+) -> Rule {
+    let premise_patterns = cr
+        .body
+        .0
+        .into_iter()
+        .map(|triple| convert_triple_pattern(triple, dict, prefixes))
+        .collect::<Vec<TriplePattern>>();
+
+    // Convert filter conditions
+    let filter_conditions = cr.body.1.into_iter().map(|(var, op, value)| {
+        FilterCondition {
+            variable: var.trim_start_matches('?').to_string(), // Remove the leading '?'
+            operator: op.to_string(),
+            value: value.to_string(),
+        }
+    }).collect();
+
+    let conclusion_triple = if let Some(first) = cr.conclusion.first() {
+        convert_triple_pattern(*first, dict, prefixes)
+    } else {
+        panic!("No conclusion triple found in the combined rule")
+    };
+
+    Rule {
+        premise: premise_patterns,
+        filters: filter_conditions,
+        conclusion: conclusion_triple,
+    }
 }

@@ -7,6 +7,7 @@ use shared::terms::{Term, TriplePattern};
 use shared::rule::Rule;
 use rayon::prelude::*;
 use std::sync::Arc;
+use shared::rule::FilterCondition;
 
 // Logic part: Knowledge Graph
 
@@ -105,95 +106,42 @@ impl KnowledgeGraph {
     }
 
     pub fn infer_new_facts_semi_naive(&mut self) -> Vec<Triple> {
-        // Collect all known facts
+        // Start with all known facts
         let all_initial = self.index_manager.query(None, None, None);
         let mut all_facts: HashSet<Triple> = all_initial.into_iter().collect();
-    
-        // Delta = all the initial facts
+        // Delta holds the "new" facts in the last round
         let mut delta = all_facts.clone();
-    
-        // Keep track of newly inferred so we can return them
         let mut inferred_so_far = Vec::new();
     
-        // Repeat until no new facts are inferred
         loop {
-            let mut this_round_new = HashSet::new();
+            let mut new_delta = HashSet::new();
     
-            // For each fact in delta
-            for triple1 in &delta {
-                let candidate_rule_ids = self.rule_index.query_candidate_rules(
-                    None,
-                    Some(triple1.predicate),
-                    None,
-                );
-    
-                for &rule_id in &candidate_rule_ids {
-                    let rule = &self.rules[rule_id];
-    
-                    match rule.premise.len() {
-                        1 => {
-                            // Single-premise rule: unify triple1 with premise[0]
-                            let mut variable_bindings = HashMap::new();
-                            if matches_rule_pattern(&rule.premise[0], triple1, &mut variable_bindings) {
-                                let inferred = construct_triple(&rule.conclusion, &variable_bindings);
-    
-                                if self.index_manager.insert(&inferred) {
-                                    if !all_facts.contains(&inferred) {
-                                        this_round_new.insert(inferred.clone());
-                                    }
-                                }
-                            }
-                        }
-    
-                        2 => {
-                            let mut variable_bindings_1 = HashMap::new();
-                            if matches_rule_pattern(&rule.premise[0], triple1, &mut variable_bindings_1) {
-                                for triple2 in &all_facts {
-                                    let mut variable_bindings_2 = variable_bindings_1.clone();
-                                    if matches_rule_pattern(&rule.premise[1], triple2, &mut variable_bindings_2) {
-                                        let inferred = construct_triple(&rule.conclusion, &variable_bindings_2);
-                                        if self.index_manager.insert(&inferred) {
-                                            if !all_facts.contains(&inferred) {
-                                                this_round_new.insert(inferred.clone());
-                                            }
-                                        }
-                                    }
-                                }
-                            }
-    
-                            // Option 2: Assume triple1 matches the second premise
-                            let mut variable_bindings_1b = HashMap::new();
-                            if matches_rule_pattern(&rule.premise[1], triple1, &mut variable_bindings_1b) {
-                                for triple2 in &all_facts {
-                                    let mut variable_bindings_2b = variable_bindings_1b.clone();
-                                    if matches_rule_pattern(&rule.premise[0], triple2, &mut variable_bindings_2b) {
-                                        let inferred = construct_triple(&rule.conclusion, &variable_bindings_2b);
-                                        if self.index_manager.insert(&inferred) {
-                                            if !all_facts.contains(&inferred) {
-                                                this_round_new.insert(inferred.clone());
-                                            }
-                                        }
-                                    }
-                                }
-                            }
-                        }
-    
-                        _ => {
+            // For each rule in the knowledge graph
+            for rule in &self.rules {
+                let bindings = join_rule(rule, &all_facts, &delta);
+                for binding in bindings {
+                    // Check that filters pass
+                    if evaluate_filters(&binding, &rule.filters, &self.dictionary) {
+                        let inferred = construct_triple(&rule.conclusion, &binding);
+                        // Insert into the index; if the fact is new, add it to new_delta
+                        if self.index_manager.insert(&inferred) && !all_facts.contains(&inferred) {
+                            new_delta.insert(inferred.clone());
                         }
                     }
                 }
             }
     
-            // If nothing new was inferred in this round, we’ve reached a fixpoint
-            if this_round_new.is_empty() {
+            // Terminate when no new facts were inferred
+            if new_delta.is_empty() {
                 break;
-            } else {
-                for fact in &this_round_new {
-                    all_facts.insert(fact.clone());
-                    inferred_so_far.push(fact.clone());
-                }
-                delta = this_round_new;
             }
+    
+            // Update all_facts and delta
+            for fact in &new_delta {
+                all_facts.insert(fact.clone());
+                inferred_so_far.push(fact.clone());
+            }
+            delta = new_delta;
         }
     
         inferred_so_far
@@ -518,6 +466,7 @@ fn rename_rule_variables(rule: &Rule, counter: &mut usize) -> Rule {
     Rule {
         premise: new_premise,
         conclusion: (conclusion_s, conclusion_p, conclusion_o),
+        filters: rule.filters.clone(),
     }
 }
 
@@ -675,4 +624,88 @@ fn matches_rule_pattern(
     };
 
     s_ok && p_ok && o_ok
+}
+
+fn evaluate_filters(
+    bindings: &HashMap<String, u32>, 
+    filters: &Vec<FilterCondition>, 
+    dict: &Dictionary
+) -> bool {
+    for filter in filters {
+        if let Some(&value_code) = bindings.get(&filter.variable) {
+            let value_str = dict.decode(value_code).unwrap_or("");
+            // Try to parse both the bound value and the filter's value as numbers.
+            let bound_num: f64 = value_str.parse().unwrap_or(0.0);
+            let filter_num: f64 = filter.value.parse().unwrap_or(0.0);
+            match filter.operator.as_str() {
+                ">" if bound_num <= filter_num => return false,
+                "<" if bound_num >= filter_num => return false,
+                ">=" if bound_num < filter_num => return false,
+                "<=" if bound_num > filter_num => return false,
+                "=" if (bound_num - filter_num).abs() > std::f64::EPSILON => return false,
+                "!=" if (bound_num - filter_num).abs() <= std::f64::EPSILON => return false,
+                _ => {}
+            }
+        }
+    }
+    true
+}
+
+/// Given a rule, a set of all facts, and a set of "changed" facts (delta)
+fn join_rule(
+    rule: &Rule,
+    all_facts: &HashSet<Triple>,
+    delta: &HashSet<Triple>,
+) -> Vec<HashMap<String, u32>> {
+    let n = rule.premise.len();
+    let mut results = Vec::new();
+
+    // For each premise position i
+    for i in 0..n {
+        // For each fact in the delta that might "fire" the rule on this premise
+        for fact in delta.iter() {
+            let mut binding = HashMap::new();
+            // NOTE: For a rule with one premise, use index 0 (not 1)
+            if matches_rule_pattern(&rule.premise[i], fact, &mut binding) {
+                // Now join with the remaining premises (all j ≠ i)
+                let joined = join_remaining(rule, i, all_facts, binding);
+                results.extend(joined);
+            }
+        }
+    }
+    results
+}
+
+/// Given a rule, a set of all facts, and a binding that matches some premise
+fn join_remaining(
+    rule: &Rule,
+    changed_idx: usize,
+    all_facts: &HashSet<Triple>,
+    binding: HashMap<String, u32>,
+) -> Vec<HashMap<String, u32>> {
+    let mut results = vec![binding];
+    let n = rule.premise.len();
+
+    // For each other premise j (order can be arbitrary)
+    for j in 0..n {
+        if j == changed_idx {
+            continue;
+        }
+        let mut new_results = Vec::new();
+        // For every binding so far
+        for partial_binding in results.into_iter() {
+            // And for every fact in all_facts
+            for fact in all_facts.iter() {
+                let mut b = partial_binding.clone();
+                if matches_rule_pattern(&rule.premise[j], fact, &mut b) {
+                    new_results.push(b);
+                }
+            }
+        }
+        results = new_results;
+        if results.is_empty() {
+            break;
+        }
+    }
+    results
 }
