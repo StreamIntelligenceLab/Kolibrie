@@ -20,7 +20,7 @@
 19. Modify knowledge Graph adding parallel processing for semi-naive
 20. Modify SPARQL syntax by combining SPARQL + LP 
 21. Modify SPARQL syntax make execution of SPARQL + LP (N3 logic)
-22. 
+22. Integrate project with Python (currently only Datalog)
 23. 
 24. 
 

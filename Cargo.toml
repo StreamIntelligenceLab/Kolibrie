@@ -5,6 +5,7 @@ members = [
   "gpu",
   "shared",
   "datalog",
+  "python",
 ]
 
 exclude = [
@@ -23,6 +24,7 @@ url = "2.5.2"
 percent-encoding = "2.3.1"
 httparse = "1.9.4"
 crossbeam = "0.8.4"
+pyo3 = { version = "0.23.3", features = ["extension-module"] }
 
 [profile.bench]
 debug = true

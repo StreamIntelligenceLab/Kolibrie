@@ -70,3 +70,6 @@ kolibrie/src/cuda/CMakeFiles
 kolibrie/src/cuda/Makefile
 kolibrie/src/cuda/cudajoin.exp
 kolibrie/src/cuda/cudajoin.lib
+
+# venv
+python/.venv/
