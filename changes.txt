@@ -21,8 +21,10 @@
 20. Modify SPARQL syntax by combining SPARQL + LP 
 21. Modify SPARQL syntax make execution of SPARQL + LP (N3 logic)
 22. Integrate project with Python (currently only Datalog)
-23. 
-24. 
+23. Modify SPARQL by making CUDA as a feature (by default disabled)
+24. Add ARM instructions to 'FILTER'
+25. Small cleaning
+26. 
 
 0.1.0
 1. Parsing RDF/XML

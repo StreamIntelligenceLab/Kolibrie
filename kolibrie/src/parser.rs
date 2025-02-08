@@ -746,15 +746,18 @@ pub fn execute_query(sparql: &str, database: &mut SparqlDatabase) -> Vec<Vec<Str
 
             if GPU_MODE_ENABLED.load(std::sync::atomic::Ordering::SeqCst) {
                 println!("CUDA");
-                final_results = database.perform_hash_join_cuda_wrapper(
-                    join_subject_static,
-                    join_predicate,
-                    join_object_static,
-                    triples_vec.clone(),
-                    &database.dictionary,
-                    final_results,
-                    if !join_object_static.starts_with('?') { Some(join_object_static.to_string()) } else { None },
-                );
+                #[cfg(feature = "cuda")]
+                {
+                    final_results = database.perform_hash_join_cuda_wrapper(
+                        join_subject_static,
+                        join_predicate,
+                        join_object_static,
+                        triples_vec.clone(),
+                        &database.dictionary,
+                        final_results,
+                        if !join_object_static.starts_with('?') { Some(join_object_static.to_string()) } else { None },
+                    );
+                }
             } else {
                 println!("NORM");
                 final_results = database.perform_join_par_simd_with_strict_filter_1(

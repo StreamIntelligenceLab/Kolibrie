@@ -542,14 +542,15 @@ impl PhysicalOperator {
                 })
                 .collect();
 
-            // Call perform_join_par_simd
-            let results = database.perform_join_par_simd(
+            // Call perform_join_par_simd_with_strict_filter_1
+            let results = database.perform_join_par_simd_with_strict_filter_1(
                 subject_var,
                 predicate.to_string(),
                 object_var,
                 triples_vec,
                 &database.dictionary,
                 final_results_ref,
+                None,
             );
 
             // Convert results back to Vec<BTreeMap<String, String>>

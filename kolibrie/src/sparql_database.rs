@@ -5,17 +5,20 @@ use shared::triple::Triple;
 use crate::utils;
 use crate::utils::current_timestamp;
 use crate::utils::ClonableFn;
+#[cfg(feature = "cuda")]
 use crate::cuda::cuda_join::*;
 use shared::index_manager::UnifiedIndex;
 use crossbeam::channel::unbounded;
 use crossbeam::scope;
-use crossbeam::thread;
 use percent_encoding::percent_decode;
 use quick_xml::events::Event;
 use quick_xml::name::QName;
 use quick_xml::Reader;
 use rayon::prelude::*;
+#[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
 use std::arch::x86_64::*;
+#[cfg(target_arch = "aarch64")]
+use std::arch::aarch64::*;
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::sync::Arc;
 use std::sync::{Mutex, RwLock};
@@ -716,7 +719,7 @@ impl SparqlDatabase {
             .filter(|result| {
                 filters.iter().all(|(var, operator, value)| {
                     if let Some(var_value_str) = result.get(var) {
-                        // Try parsing both values as numbers
+                        // First, try parsing both values as numbers.
                         let var_value_num = var_value_str.parse::<i32>();
                         let filter_value_num = value.parse::<i32>();
 
@@ -725,46 +728,119 @@ impl SparqlDatabase {
                             let var_value = var_value_num.unwrap();
                             let filter_value = filter_value_num.unwrap();
 
-                            // Load values into SIMD registers
-                            let var_value_simd = unsafe { _mm_set1_epi32(var_value) };
-                            let filter_value_simd = unsafe { _mm_set1_epi32(filter_value) };
+                            // On x86 (SSE2) or x86_64 (SSE2) use SIMD intrinsics
+                            #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+                            {
+                                unsafe {
+                                    // Load values into SIMD registers
+                                    let var_value_simd = _mm_set1_epi32(var_value);
+                                    let filter_value_simd = _mm_set1_epi32(filter_value);
+                                    return match *operator {
+                                        "=" => _mm_movemask_epi8(_mm_cmpeq_epi32(
+                                            var_value_simd,
+                                            filter_value_simd,
+                                        )) == 0xFFFF,
+                                        "!=" => _mm_movemask_epi8(_mm_cmpeq_epi32(
+                                            var_value_simd,
+                                            filter_value_simd,
+                                        )) != 0xFFFF,
+                                        ">" => _mm_movemask_epi8(_mm_cmpgt_epi32(
+                                            var_value_simd,
+                                            filter_value_simd,
+                                        )) == 0xFFFF,
+                                        ">=" => {
+                                            let eq = _mm_cmpeq_epi32(var_value_simd, filter_value_simd);
+                                            let gt = _mm_cmpgt_epi32(var_value_simd, filter_value_simd);
+                                            _mm_movemask_epi8(_mm_or_si128(eq, gt)) == 0xFFFF
+                                        }
+                                        "<" => _mm_movemask_epi8(_mm_cmpgt_epi32(
+                                            filter_value_simd,
+                                            var_value_simd,
+                                        )) == 0xFFFF,
+                                        "<=" => {
+                                            let eq = _mm_cmpeq_epi32(var_value_simd, filter_value_simd);
+                                            let lt = _mm_cmpgt_epi32(filter_value_simd, var_value_simd);
+                                            _mm_movemask_epi8(_mm_or_si128(eq, lt)) == 0xFFFF
+                                        }
+                                        _ => false,
+                                    };
+                                }
+                            }
 
-                            match *operator {
-                                "=" => unsafe {
-                                    _mm_movemask_epi8(_mm_cmpeq_epi32(
-                                        var_value_simd,
-                                        filter_value_simd,
-                                    )) == 0xFFFF
-                                },
-                                "!=" => unsafe {
-                                    _mm_movemask_epi8(_mm_cmpeq_epi32(
-                                        var_value_simd,
-                                        filter_value_simd,
-                                    )) != 0xFFFF
-                                },
-                                ">" => unsafe {
-                                    _mm_movemask_epi8(_mm_cmpgt_epi32(
-                                        var_value_simd,
-                                        filter_value_simd,
-                                    )) == 0xFFFF
-                                },
-                                ">=" => unsafe {
-                                    let eq = _mm_cmpeq_epi32(var_value_simd, filter_value_simd);
-                                    let gt = _mm_cmpgt_epi32(var_value_simd, filter_value_simd);
-                                    _mm_movemask_epi8(_mm_or_si128(eq, gt)) == 0xFFFF
-                                },
-                                "<" => unsafe {
-                                    _mm_movemask_epi8(_mm_cmpgt_epi32(
-                                        filter_value_simd,
-                                        var_value_simd,
-                                    )) == 0xFFFF
-                                },
-                                "<=" => unsafe {
-                                    let eq = _mm_cmpeq_epi32(var_value_simd, filter_value_simd);
-                                    let lt = _mm_cmpgt_epi32(filter_value_simd, var_value_simd);
-                                    _mm_movemask_epi8(_mm_or_si128(eq, lt)) == 0xFFFF
-                                },
-                                _ => false,
+                            // On ARM (aarch64) use NEON intrinsics
+                            #[cfg(target_arch = "aarch64")]
+                            {
+                                unsafe {
+                                    let var_value_neon = vdupq_n_s32(var_value);
+                                    let filter_value_neon = vdupq_n_s32(filter_value);
+                                    return match *operator {
+                                        "=" => {
+                                            let cmp = vceqq_s32(var_value_neon, filter_value_neon);
+                                            (vgetq_lane_s32(cmp, 0) == -1)
+                                                && (vgetq_lane_s32(cmp, 1) == -1)
+                                                && (vgetq_lane_s32(cmp, 2) == -1)
+                                                && (vgetq_lane_s32(cmp, 3) == -1)
+                                        }
+                                        "!=" => {
+                                            let cmp = vceqq_s32(var_value_neon, filter_value_neon);
+                                            !((vgetq_lane_s32(cmp, 0) == -1)
+                                                && (vgetq_lane_s32(cmp, 1) == -1)
+                                                && (vgetq_lane_s32(cmp, 2) == -1)
+                                                && (vgetq_lane_s32(cmp, 3) == -1))
+                                        }
+                                        ">" => {
+                                            let cmp = vcgtq_s32(var_value_neon, filter_value_neon);
+                                            (vgetq_lane_s32(cmp, 0) == -1)
+                                                && (vgetq_lane_s32(cmp, 1) == -1)
+                                                && (vgetq_lane_s32(cmp, 2) == -1)
+                                                && (vgetq_lane_s32(cmp, 3) == -1)
+                                        }
+                                        ">=" => {
+                                            let eq = vceqq_s32(var_value_neon, filter_value_neon);
+                                            let gt = vcgtq_s32(var_value_neon, filter_value_neon);
+                                            let cmp = vorrq_s32(eq, gt);
+                                            (vgetq_lane_s32(cmp, 0) == -1)
+                                                && (vgetq_lane_s32(cmp, 1) == -1)
+                                                && (vgetq_lane_s32(cmp, 2) == -1)
+                                                && (vgetq_lane_s32(cmp, 3) == -1)
+                                        }
+                                        "<" => {
+                                            let cmp = vcgtq_s32(filter_value_neon, var_value_neon);
+                                            (vgetq_lane_s32(cmp, 0) == -1)
+                                                && (vgetq_lane_s32(cmp, 1) == -1)
+                                                && (vgetq_lane_s32(cmp, 2) == -1)
+                                                && (vgetq_lane_s32(cmp, 3) == -1)
+                                        }
+                                        "<=" => {
+                                            let eq = vceqq_s32(var_value_neon, filter_value_neon);
+                                            let lt = vcgtq_s32(filter_value_neon, var_value_neon);
+                                            let cmp = vorrq_s32(eq, lt);
+                                            (vgetq_lane_s32(cmp, 0) == -1)
+                                                && (vgetq_lane_s32(cmp, 1) == -1)
+                                                && (vgetq_lane_s32(cmp, 2) == -1)
+                                                && (vgetq_lane_s32(cmp, 3) == -1)
+                                        }
+                                        _ => false,
+                                    }
+                                }
+                            }
+
+                            // Fallback (or if compiled for a non‐SIMD platform)
+                            #[cfg(not(any(
+                                target_arch = "x86",
+                                target_arch = "x86_64",
+                                target_arch = "aarch64"
+                            )))]
+                            {
+                                return match *operator {
+                                    "=" => var_value == filter_value,
+                                    "!=" => var_value != filter_value,
+                                    ">" => var_value > filter_value,
+                                    ">=" => var_value >= filter_value,
+                                    "<" => var_value < filter_value,
+                                    "<=" => var_value <= filter_value,
+                                    _ => false,
+                                };
                             }
                         } else {
                             // At least one value is a string, perform SIMD string comparison
@@ -784,24 +860,54 @@ impl SparqlDatabase {
                             }
 
                             let mut i = 0;
-                            while i + 16 <= var_len {
-                                unsafe {
-                                    let var_chunk =
-                                        _mm_loadu_si128(var_bytes[i..].as_ptr() as *const __m128i);
-                                    let filter_chunk = _mm_loadu_si128(
-                                        filter_bytes[i..].as_ptr() as *const __m128i
-                                    );
-                                    let cmp = _mm_cmpeq_epi8(var_chunk, filter_chunk);
-                                    let mask = _mm_movemask_epi8(cmp);
-                                    if mask != 0xFFFF {
-                                        return match *operator {
-                                            "=" => false,
-                                            "!=" => true,
-                                            _ => false,
-                                        };
+                            #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+                            {
+                                while i + 16 <= var_len {
+                                    unsafe {
+                                        let var_chunk = _mm_loadu_si128(
+                                            var_bytes[i..].as_ptr() as *const __m128i,
+                                        );
+                                        let filter_chunk = _mm_loadu_si128(
+                                            filter_bytes[i..].as_ptr() as *const __m128i,
+                                        );
+                                        let cmp = _mm_cmpeq_epi8(var_chunk, filter_chunk);
+                                        let mask = _mm_movemask_epi8(cmp);
+                                        if mask != 0xFFFF {
+                                            return match *operator {
+                                                "=" => false,
+                                                "!=" => true,
+                                                _ => false,
+                                            };
+                                        }
                                     }
+                                    i += 16;
                                 }
-                                i += 16;
+                            }
+
+                            #[cfg(target_arch = "aarch64")]
+                            {
+                                while i + 16 <= var_len {
+                                    unsafe {
+                                        let var_chunk = vld1q_u8(var_bytes[i..].as_ptr());
+                                        let filter_chunk = vld1q_u8(filter_bytes[i..].as_ptr());
+                                        let cmp = vceqq_u8(var_chunk, filter_chunk);
+                                        let mut all_equal = true;
+                                        for j in 0..16 {
+                                            if vgetq_lane_u8(cmp, j) != 0xFF {
+                                                all_equal = false;
+                                                break;
+                                            }
+                                        }
+                                        if !all_equal {
+                                            return match *operator {
+                                                "=" => false,
+                                                "!=" => true,
+                                                _ => false,
+                                            };
+                                        }
+                                    }
+                                    i += 16;
+                                }
                             }
 
                             // Handle remaining bytes
@@ -1207,273 +1313,6 @@ impl SparqlDatabase {
         new_results
     }
 
-    pub fn perform_join_par_simd<'a>(
-        &self,
-        subject_var: &'a str,
-        predicate: String,
-        object_var: &'a str,
-        triples: Vec<Triple>,
-        dictionary: &'a Dictionary,
-        final_results: Vec<BTreeMap<&'a str, String>>,
-    ) -> Vec<BTreeMap<&'a str, String>> {
-        if final_results.is_empty() {
-            return Vec::new();
-        }
-
-        let predicate_bytes = predicate.as_bytes();
-        let predicate_len = predicate_bytes.len();
-
-        // Use chunk size based on hardware cache lines
-        let new_results: Vec<BTreeMap<&'a str, String>> = triples
-            .par_chunks(256) // Experiment with chunk size
-            .flat_map_iter(|chunk| {
-                chunk.iter().filter_map(|triple| {
-                    let subject = dictionary.decode(triple.subject)?;
-                    let pred = dictionary.decode(triple.predicate)?;
-                    let object = dictionary.decode(triple.object)?;
-
-                    // SIMD comparison for predicates
-                    if pred.len() == predicate_len {
-                        let is_match = if predicate_len >= 16 {
-                            unsafe {
-                                let mut is_equal = true;
-                                let mut i = 0;
-                                while i + 16 <= predicate_len && is_equal {
-                                    let predicate_simd = _mm_loadu_si128(
-                                        predicate_bytes[i..].as_ptr() as *const __m128i,
-                                    );
-                                    let pred_simd = _mm_loadu_si128(
-                                        pred.as_bytes()[i..].as_ptr() as *const __m128i
-                                    );
-                                    let cmp = _mm_cmpeq_epi8(predicate_simd, pred_simd);
-                                    let mask = _mm_movemask_epi8(cmp);
-                                    if mask != 0xFFFF {
-                                        is_equal = false;
-                                    }
-                                    i += 16;
-                                }
-                                is_equal && (&pred[i..] == &predicate[i..])
-                            }
-                        } else {
-                            pred == predicate
-                        };
-
-                        if is_match {
-                            Some((subject, object))
-                        } else {
-                            None
-                        }
-                    } else {
-                        None
-                    }
-                })
-            })
-            .fold(
-                || Vec::with_capacity(final_results.len()), // Pre-allocate for efficiency
-                |mut results, (subject, object)| {
-                    let mut local_results = Vec::with_capacity(final_results.len());
-
-                    for result in &final_results {
-                        let mut extended_result = result.clone();
-                        let mut valid_extension = true;
-
-                        // Extend subject
-                        if let Some(existing_subject) = extended_result.get(subject_var) {
-                            if existing_subject != &subject {
-                                valid_extension = false;
-                            }
-                        } else {
-                            extended_result.insert(subject_var, subject.to_string());
-                        }
-
-                        // Extend object
-                        if let Some(existing_object) = extended_result.get(object_var) {
-                            if existing_object != &object {
-                                valid_extension = false;
-                            }
-                        } else {
-                            extended_result.insert(object_var, object.to_string());
-                        }
-
-                        if valid_extension {
-                            local_results.push(extended_result);
-                        }
-                    }
-
-                    results.extend(local_results);
-                    results
-                },
-            )
-            .reduce(
-                || Vec::new(), // Initial value for reduce
-                |mut results1, mut results2| {
-                    results1.append(&mut results2);
-                    results1
-                },
-            );
-
-        new_results
-    }
-
-    pub fn perform_join_par_simd_with_strict_filter<'a>(
-        &self,
-        subject_var: &'a str,
-        predicate: String,
-        object_var: &'a str,
-        triples: Vec<Triple>,
-        dictionary: &'a Dictionary,
-        final_results: Vec<BTreeMap<&'a str, String>>,
-        literal_filter: Option<String>,
-    ) -> Vec<BTreeMap<&'a str, String>> {
-        if final_results.is_empty() {
-            return Vec::new();
-        }
-
-        // Convert predicate and literal_filter to bytes for SIMD
-        let predicate_bytes = predicate.clone().into_bytes();
-        let predicate_len = predicate_bytes.len();
-        let literal_filter_bytes = literal_filter.as_ref().map(|s| s.as_bytes().to_vec());
-
-        // Using crossbeam for scoped threads
-        let new_results = thread::scope(|s| {
-            let handles: Vec<_> = triples
-                .par_chunks(256)
-                .map(|chunk| {
-                    let predicate_bytes = predicate_bytes.clone();
-                    let literal_filter_bytes = literal_filter_bytes.clone();
-                    let predicate = predicate.clone(); // Clone predicate for this closure
-
-                    s.spawn(move |_| {
-                        chunk
-                            .iter()
-                            .filter_map(|triple| {
-                                let subject = dictionary.decode(triple.subject)?;
-                                let pred = dictionary.decode(triple.predicate)?;
-                                let object = dictionary.decode(triple.object)?;
-
-                                // SIMD comparison for predicate
-                                let pred_bytes = pred.as_bytes();
-                                if pred_bytes.len() == predicate_len {
-                                    let is_match = if predicate_len >= 16 {
-                                        unsafe {
-                                            let mut is_equal = true;
-                                            let mut i = 0;
-                                            while i + 16 <= predicate_len && is_equal {
-                                                let predicate_simd =
-                                                    _mm_loadu_si128(predicate_bytes[i..].as_ptr()
-                                                        as *const __m128i);
-                                                let pred_simd = _mm_loadu_si128(
-                                                    pred_bytes[i..].as_ptr() as *const __m128i,
-                                                );
-                                                let cmp = _mm_cmpeq_epi8(predicate_simd, pred_simd);
-                                                let mask = _mm_movemask_epi8(cmp);
-                                                if mask != 0xFFFF {
-                                                    is_equal = false;
-                                                }
-                                                i += 16;
-                                            }
-                                            is_equal && (&pred_bytes[i..] == &predicate_bytes[i..])
-                                        }
-                                    } else {
-                                        pred == predicate
-                                    };
-
-                                    if !is_match {
-                                        return None;
-                                    }
-                                } else {
-                                    return None;
-                                }
-
-                                // Apply SIMD comparison for literal filter if provided
-                                if let Some(ref filter_bytes) = literal_filter_bytes {
-                                    let object_bytes = object.as_bytes();
-                                    let filter_len = filter_bytes.len();
-
-                                    if object_bytes.len() == filter_len {
-                                        let is_match = if filter_len >= 16 {
-                                            unsafe {
-                                                let mut is_equal = true;
-                                                let mut i = 0;
-                                                while i + 16 <= filter_len && is_equal {
-                                                    let filter_simd =
-                                                        _mm_loadu_si128(filter_bytes[i..].as_ptr()
-                                                            as *const __m128i);
-                                                    let object_simd =
-                                                        _mm_loadu_si128(object_bytes[i..].as_ptr()
-                                                            as *const __m128i);
-                                                    let cmp =
-                                                        _mm_cmpeq_epi8(filter_simd, object_simd);
-                                                    let mask = _mm_movemask_epi8(cmp);
-                                                    if mask != 0xFFFF {
-                                                        is_equal = false;
-                                                    }
-                                                    i += 16;
-                                                }
-                                                is_equal
-                                                    && (&object_bytes[i..] == &filter_bytes[i..])
-                                            }
-                                        } else {
-                                            object_bytes == filter_bytes.as_slice()
-                                        };
-
-                                        if !is_match {
-                                            return None;
-                                        }
-                                    } else {
-                                        return None;
-                                    }
-                                }
-
-                                Some((subject, object))
-                            })
-                            .collect::<Vec<_>>() // Collecting results of this chunk
-                    })
-                })
-                .collect();
-
-            let mut collected_results = Vec::new();
-
-            for handle in handles {
-                if let Ok(chunk_results) = handle.join() {
-                    for (subject, object) in chunk_results {
-                        for result in &final_results {
-                            let mut extended_result = result.clone();
-                            let mut valid_extension = true;
-
-                            // Extend subject
-                            if let Some(existing_subject) = extended_result.get(subject_var) {
-                                if existing_subject != &subject {
-                                    valid_extension = false;
-                                }
-                            } else {
-                                extended_result.insert(subject_var, subject.to_string());
-                            }
-
-                            // Extend object
-                            if let Some(existing_object) = extended_result.get(object_var) {
-                                if existing_object != &object {
-                                    valid_extension = false;
-                                }
-                            } else {
-                                extended_result.insert(object_var, object.to_string());
-                            }
-
-                            if valid_extension {
-                                collected_results.push(extended_result);
-                            }
-                        }
-                    }
-                }
-            }
-
-            collected_results
-        })
-        .unwrap();
-
-        new_results
-    }
-
     pub fn perform_join_par_simd_with_strict_filter_1<'a>(
         &self,
         subject_var: &'a str,
@@ -1629,126 +1468,6 @@ impl SparqlDatabase {
         });
 
         results.into_inner().unwrap()
-    }
-
-    pub fn perform_join_par_simd_new<'a>(
-        &self,
-        subject_var: &'a str,
-        predicate: String,
-        object_var: &'a str,
-        triples: Vec<Triple>,
-        dictionary: &'a Dictionary,
-        final_results: Vec<BTreeMap<&'a str, String>>,
-    ) -> Vec<BTreeMap<&'a str, String>> {
-        if final_results.is_empty() {
-            return Vec::new();
-        }
-
-        let predicate_bytes = predicate.as_bytes();
-        let predicate_len = predicate_bytes.len();
-
-        let new_results = triples
-            .par_iter()
-            .filter_map(|triple| {
-                // Decode the predicate of the triple
-                let pred = dictionary.decode(triple.predicate)?;
-
-                // Early exit if lengths differ
-                if pred.len() != predicate_len {
-                    return None;
-                }
-
-                let pred_bytes = pred.as_bytes();
-
-                // SIMD comparison
-                let is_match = unsafe {
-                    let mut i = 0;
-                    while i + 16 <= predicate_len {
-                        let pred_chunk =
-                            _mm_loadu_si128(pred_bytes[i..].as_ptr() as *const __m128i);
-                        let predicate_chunk =
-                            _mm_loadu_si128(predicate_bytes[i..].as_ptr() as *const __m128i);
-                        let cmp = _mm_cmpeq_epi8(pred_chunk, predicate_chunk);
-                        let mask = _mm_movemask_epi8(cmp);
-                        if mask != 0xFFFF {
-                            return None;
-                        }
-                        i += 16;
-                    }
-
-                    // Compare remaining bytes
-                    if i < predicate_len {
-                        let remaining = predicate_len - i;
-                        let mut pred_tail = [0u8; 16];
-                        let mut predicate_tail = [0u8; 16];
-                        pred_tail[..remaining].copy_from_slice(&pred_bytes[i..]);
-                        predicate_tail[..remaining].copy_from_slice(&predicate_bytes[i..]);
-                        let pred_chunk = _mm_loadu_si128(pred_tail.as_ptr() as *const __m128i);
-                        let predicate_chunk =
-                            _mm_loadu_si128(predicate_tail.as_ptr() as *const __m128i);
-                        let cmp = _mm_cmpeq_epi8(pred_chunk, predicate_chunk);
-                        let mask = _mm_movemask_epi8(cmp);
-                        if mask != (1 << remaining) - 1 {
-                            return None;
-                        }
-                    }
-
-                    true
-                };
-
-                if is_match {
-                    Some((triple.subject, triple.object))
-                } else {
-                    None
-                }
-            })
-            .fold(Vec::new, |mut acc, (subject_id, object_id)| {
-                // Decode subject and object
-                let subject = match dictionary.decode(subject_id) {
-                    Some(s) => s,
-                    None => return acc,
-                };
-                let object = match dictionary.decode(object_id) {
-                    Some(o) => o,
-                    None => return acc,
-                };
-
-                // Build extended results without cloning final_results
-                for result in final_results.iter() {
-                    let mut extended_result = result.clone();
-                    let mut valid_extension = true;
-
-                    // Extend subject
-                    if let Some(existing_subject) = extended_result.get(subject_var) {
-                        if existing_subject != subject {
-                            valid_extension = false;
-                        }
-                    } else {
-                        extended_result.insert(subject_var, subject.to_string());
-                    }
-
-                    // Extend object
-                    if let Some(existing_object) = extended_result.get(object_var) {
-                        if existing_object != object {
-                            valid_extension = false;
-                        }
-                    } else {
-                        extended_result.insert(object_var, object.to_string());
-                    }
-
-                    if valid_extension {
-                        acc.push(extended_result);
-                    }
-                }
-
-                acc
-            })
-            .reduce(Vec::new, |mut acc, mut results| {
-                acc.append(&mut results);
-                acc
-            });
-
-        new_results
     }
 
     pub fn join_by_conditions_with_filters<F>(
@@ -2155,6 +1874,7 @@ impl SparqlDatabase {
         }
     }
 
+    #[cfg(feature = "cuda")]
     pub fn perform_hash_join_cuda_wrapper<'a>(
         &self,
         subject_var: &'a str,

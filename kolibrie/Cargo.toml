@@ -44,6 +44,10 @@ criterion = "0.5.1"
 [lib]
 path = "src/lib.rs"
 
+[features]
+# When the "cuda" feature is enabled, all CUDA code is compiled in
+cuda = []
+
 [[example]]
 name = "test"
 path = "examples/example.rs"

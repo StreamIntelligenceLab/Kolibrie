@@ -4,8 +4,9 @@ use std::io::Read;
 use kolibrie::sparql_database::*;
 
 fn filter_example() {
-    let mut file = File::open("/mnt/e/Projects/RustProj/kolibrie/datasets/xzkq-xp2w.rdf")
-        .expect("Unable to open file");
+    let project_root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+    let rdf_file_path = project_root.join("datasets/xzkq-xp2w.rdf");
+    let mut file = File::open(rdf_file_path).expect("Unable to open file");
     let mut rdf_data = String::new();
     file.read_to_string(&mut rdf_data)
         .expect("Unable to read file");
@@ -43,9 +44,9 @@ fn filter_example() {
 }
 
 fn join_example() {
-    let mut file =
-        File::open("E:\\Projects\\RustProj\\kolibrie\\synthetic_employee_data11.rdf")
-            .expect("Unable to open file");
+    let project_root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+    let rdf_file_path = project_root.join("datasets/xzkq-xp2w.rdf");
+    let mut file = File::open(rdf_file_path).expect("Unable to open file");
     let mut rdf_data = String::new();
     file.read_to_string(&mut rdf_data)
         .expect("Unable to read file");
@@ -53,9 +54,8 @@ fn join_example() {
     let mut db = SparqlDatabase::new();
     db.parse_rdf(&rdf_data);
 
-    let mut file2 =
-        File::open("E:\\Projects\\RustProj\\kolibrie\\synthetic_employee_data12.rdf")
-            .expect("Unable to open file");
+    let file2_path = project_root.join("datasets/synthetic_employee_data12.rdf");
+    let mut file2 = File::open(file2_path).expect("Unable to open file");
     let mut rdf_data2 = String::new();
     file2
         .read_to_string(&mut rdf_data2)

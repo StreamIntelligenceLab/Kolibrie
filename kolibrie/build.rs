@@ -3,25 +3,27 @@ use std::path::Path;
 use std::process::Command;
 
 fn main() {
-    // Determine the root of the crate
-    let project_root = Path::new(env!("CARGO_MANIFEST_DIR"));
-    
-    // Dynamically set the path to the CUDA source directory
-    let cuda_dir = project_root.join("src").join("cuda");
+     if env::var("CARGO_FEATURE_CUDA").is_ok() {
+        // Determine the root of the crate
+        let project_root = Path::new(env!("CARGO_MANIFEST_DIR"));
+        
+        // Dynamically set the path to the CUDA source directory
+        let cuda_dir = project_root.join("src").join("cuda");
 
-    if !cuda_dir.exists() {
-        panic!(
-            "Expected CUDA directory at {:?}, but it does not exist.",
-            cuda_dir
-        );
-    }
+        if !cuda_dir.exists() {
+            panic!(
+                "Expected CUDA directory at {:?}, but it does not exist.",
+                cuda_dir
+            );
+        }
 
-    // Determine the target platform
-    let target_os = env::var("CARGO_CFG_TARGET_OS").expect("Failed to get target OS");
+        // Determine the target platform
+        let target_os = env::var("CARGO_CFG_TARGET_OS").expect("Failed to get target OS");
 
-    match target_os.as_str() {
-        "windows" | "linux" => build_with_cmake(&cuda_dir, target_os),
-        _ => panic!("Unsupported target OS: {}", target_os),
+        match target_os.as_str() {
+            "windows" | "linux" => build_with_cmake(&cuda_dir, target_os),
+            _ => panic!("Unsupported target OS: {}", target_os),
+        }
     }
 }
 

@@ -1,5 +1,7 @@
+#[cfg(feature = "cuda")]
 use std::os::raw::c_uint;
 
+#[cfg(feature = "cuda")]
 extern "C" {
     pub fn perform_hash_join_cuda(
         h_subjects: *const c_uint,
@@ -13,6 +15,7 @@ extern "C" {
     );
 }
 
+#[cfg(feature = "cuda")]
 pub fn hash_join_cuda(
     subjects: &[u32],
     predicates: &[u32],
