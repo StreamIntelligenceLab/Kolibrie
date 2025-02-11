@@ -410,6 +410,20 @@ impl KnowledgeGraph {
     pub fn infer_new_facts_semi_naive_with_repairs(&mut self) -> Vec<Triple> {
         let all_initial = self.index_manager.query(None, None, None);
         let mut all_facts: HashSet<Triple> = all_initial.into_iter().collect();
+        
+        // First, check if initial facts are consistent
+        if self.violates_constraints(&all_facts) {
+            let repairs = self.compute_repairs(&all_facts);
+            if let Some(best_repair) = repairs.into_iter().max_by_key(|r| r.len()) {
+                // Clear index manager and reinsert repaired facts
+                self.index_manager = UnifiedIndex::new();
+                for fact in &best_repair {
+                    self.index_manager.insert(fact);
+                }
+                all_facts = best_repair;
+            }
+        }
+
         let mut delta = all_facts.clone();
         let mut inferred_so_far = Vec::new();
     
@@ -428,28 +442,10 @@ impl KnowledgeGraph {
                         temp_facts.insert(inferred.clone());
                         
                         if !self.violates_constraints(&temp_facts) {
-                            // Only add if it doesn't cause inconsistency
                             if self.index_manager.insert(&inferred) && !all_facts.contains(&inferred) {
                                 new_delta.insert(inferred.clone());
-                            }
-                        } else {
-                            // Compute repairs for the inconsistent state
-                            let repairs = self.compute_repairs(&temp_facts);
-                            
-                            // Choose the repair with maximum size
-                            if let Some(best_repair) = repairs.into_iter().max_by_key(|r| r.len()) {
-                                // Update facts to the repaired version
-                                let new_facts: HashSet<_> = best_repair.difference(&all_facts).collect();
-                                
-                                // Add new facts from repair to delta
-                                for fact in new_facts {
-                                    if !all_facts.contains(fact) {
-                                        new_delta.insert(fact.clone());
-                                        self.index_manager.insert(fact);
-                                    }
-                                }
-                                
-                                all_facts = best_repair;
+                                all_facts.insert(inferred.clone());
+                                inferred_so_far.push(inferred);
                             }
                         }
                     }
@@ -460,12 +456,7 @@ impl KnowledgeGraph {
             if new_delta.is_empty() {
                 break;
             }
-    
-            // Update facts and record inferred facts
-            for fact in &new_delta {
-                all_facts.insert(fact.clone());
-                inferred_so_far.push(fact.clone());
-            }
+            
             delta = new_delta;
         }
     

@@ -26,7 +26,7 @@
 25. Small cleaning
 26. Modify Datalog by adding inconsistency
 27. Add example in Rust and Python with inconsistency
-28. 
+28. Fix problem with inconsistency
 29. 
 30. 
 
