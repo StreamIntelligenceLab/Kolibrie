@@ -205,6 +205,48 @@ fn test2() {
     }
 }
 
+fn inconsistency() {
+    let mut kg = KnowledgeGraph::new();
+
+    // Add some facts
+    kg.add_abox_triple("john", "isA", "professor");
+    kg.add_abox_triple("john", "isA", "student"); // This could be inconsistent
+
+    // Add a constraint: someone cannot be both a professor and a student
+    let constraint = Rule {
+        premise: vec![
+            (
+                Term::Variable("X".to_string()),
+                Term::Constant(kg.dictionary.encode("isA")),
+                Term::Constant(kg.dictionary.encode("professor"))
+            ),
+            (
+                Term::Variable("X".to_string()),
+                Term::Constant(kg.dictionary.encode("isA")),
+                Term::Constant(kg.dictionary.encode("student"))
+            )
+        ],
+        conclusion: (
+            Term::Constant(0), // Dummy values for constraint
+            Term::Constant(0),
+            Term::Constant(0)
+        ),
+        filters: vec![],
+    };
+    kg.add_constraint(constraint);
+
+    // Query with inconsistency tolerance
+    let query = (
+        Term::Variable("X".to_string()),
+        Term::Constant(kg.dictionary.encode("isA")),
+        Term::Variable("Y".to_string())
+    );
+    
+    let results = kg.query_with_repairs(&query);
+    // This will return only consistent results
+    println!("{:?}", results);
+}
+
 fn main() {
     knowledge_graph();
     println!("=======================================");
@@ -213,5 +255,7 @@ fn main() {
     test();
     println!("=======================================");
     test2();
+    println!("=======================================");
+    inconsistency();
 }
 

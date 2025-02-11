@@ -191,6 +191,70 @@ impl PyKnowledgeGraph {
     fn encode_term(&mut self, term: &str) -> u32 {
         self.inner.dictionary.encode(term)
     }
+
+    fn add_constraint(&mut self, rule: PyRule) {
+        let converted_rule = shared::rule::Rule {
+            premise: rule.premise
+                .into_iter()
+                .map(|p| (convert_term(p.subject), convert_term(p.predicate), convert_term(p.object)))
+                .collect(),
+
+            filters: rule.filters
+                .into_iter()
+                .map(|f| shared::rule::FilterCondition {
+                    variable: f.variable,
+                    operator: f.operator,
+                    value: f.value,
+                })
+                .collect(),
+
+            conclusion: (
+                convert_term(rule.conclusion.subject),
+                convert_term(rule.conclusion.predicate),
+                convert_term(rule.conclusion.object),
+            ),
+        };
+
+        self.inner.add_constraint(converted_rule);
+    }
+
+    fn query_with_repairs(&mut self, query: PyTriplePattern) -> Vec<HashMap<String, PyTerm>> {
+        let rust_query = (
+            convert_term(query.subject),
+            convert_term(query.predicate),
+            convert_term(query.object),
+        );
+
+        // `results` is Vec<HashMap<String, u32>>
+        let results = self.inner.query_with_repairs(&rust_query);
+
+        results
+            .into_iter()
+            .map(|bindings| {
+                bindings
+                    .into_iter()
+                    .map(|(key, value)| {
+                        // Wrap u32 in Term::Constant
+                        let term = shared::terms::Term::Constant(value);
+                        (key, convert_term_back(term))
+                    })
+                    .collect()
+            })
+            .collect()
+    }
+
+    fn infer_new_facts_semi_naive_with_repairs(&mut self) -> Vec<(String, String, String)> {
+        let inferred = self.inner.infer_new_facts_semi_naive_with_repairs();
+        inferred
+            .into_iter()
+            .map(|triple| {
+                let s = self.inner.dictionary.decode(triple.subject).unwrap_or_default().to_string();
+                let p = self.inner.dictionary.decode(triple.predicate).unwrap_or_default().to_string();
+                let o = self.inner.dictionary.decode(triple.object).unwrap_or_default().to_string();
+                (s, p, o)
+            })
+            .collect()
+    }
 }
 
 /// Converts `PyTerm` to `knowledge_graph::Term`

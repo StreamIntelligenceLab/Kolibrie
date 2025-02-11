@@ -680,35 +680,6 @@ impl SparqlDatabase {
         }
     }
 
-    pub fn apply_filters<'a>(
-        &self,
-        results: Vec<BTreeMap<&'a str, String>>,
-        filters: Vec<(&'a str, &'a str, &'a str)>,
-    ) -> Vec<BTreeMap<&'a str, String>> {
-        results
-            .into_iter()
-            .filter(|result| {
-                filters.iter().all(|(var, operator, value)| {
-                    if let Some(var_value) = result.get(var) {
-                        let var_value = var_value.parse::<i32>().unwrap_or(0);
-                        let filter_value = value.parse::<i32>().unwrap_or(0);
-                        match *operator {
-                            "=" => var_value == filter_value,
-                            "!=" => var_value != filter_value,
-                            ">" => var_value > filter_value,
-                            ">=" => var_value >= filter_value,
-                            "<" => var_value < filter_value,
-                            "<=" => var_value <= filter_value,
-                            _ => false,
-                        }
-                    } else {
-                        false
-                    }
-                })
-            })
-            .collect()
-    }
-
     pub fn apply_filters_simd<'a>(
         &self,
         results: Vec<BTreeMap<&'a str, String>>,

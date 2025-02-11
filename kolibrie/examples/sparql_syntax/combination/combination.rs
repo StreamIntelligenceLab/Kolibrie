@@ -97,8 +97,6 @@ WHERE {
         println!("{}", database.triple_to_string(triple, &database.dictionary));
         database.triples.insert(triple.clone());
     }
-    let updated_rdf_xml = database.generate_rdf_xml();
-    println!("Updated RDF/XML:\n{}", updated_rdf_xml);
     let query_results = execute_query(&combined_query_input, &mut database);
     println!("Query results: {:?}", query_results);
 }

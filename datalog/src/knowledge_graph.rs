@@ -18,6 +18,7 @@ pub struct KnowledgeGraph {
 
     pub index_manager: UnifiedIndex,
     pub rule_index: RuleIndex,
+    pub constraints: Vec<Rule>,
 }
 
 impl KnowledgeGraph {
@@ -27,6 +28,7 @@ impl KnowledgeGraph {
             rules: Vec::new(),
             index_manager: UnifiedIndex::new(),
             rule_index: RuleIndex::new(),
+            constraints: Vec::new(),
         }
     }
 
@@ -344,6 +346,163 @@ impl KnowledgeGraph {
                 results.push(vb);
             }
         }
+        results
+    }
+
+    /// Add new method to handle constraints
+    pub fn add_constraint(&mut self, constraint: Rule) {
+        self.constraints.push(constraint);
+    }
+
+    /// New method to check if a set of facts violates constraints
+    fn violates_constraints(&self, facts: &HashSet<Triple>) -> bool {
+        for constraint in &self.constraints {
+            let bindings = join_rule(constraint, facts, facts);
+            if !bindings.is_empty() {
+                return true;
+            }
+        }
+        false
+    }
+
+    /// New method to find repairs
+    fn compute_repairs(&self, facts: &HashSet<Triple>) -> Vec<HashSet<Triple>> {
+        let mut repairs = Vec::new();
+        let mut work_queue = vec![facts.clone()];
+        let mut seen = BTreeSet::new();  // Using BTreeSet instead of HashSet
+
+        while let Some(current_set) = work_queue.pop() {
+            // Convert current_set to a Vec for consistent ordering when inserting into seen
+            let current_vec: Vec<_> = current_set.iter().cloned().collect();
+            
+            // Skip if we've seen this combination before
+            if !seen.insert(current_vec.clone()) {
+                continue;
+            }
+
+            if !self.violates_constraints(&current_set) {
+                // Found a consistent subset
+                let is_maximal = repairs.iter().all(|repair: &HashSet<Triple>| {
+                    !repair.is_superset(&current_set) || repair == &current_set
+                });
+
+                if is_maximal {
+                    repairs.push(current_set);
+                }
+            } else {
+                // Try removing each fact to create new candidate repairs
+                for fact in current_set.iter() {
+                    let mut new_set = current_set.clone();
+                    new_set.remove(fact);
+                    
+                    // Convert new_set to Vec for checking seen
+                    let new_vec: Vec<_> = new_set.iter().cloned().collect();
+                    if !seen.contains(&new_vec) {
+                        work_queue.push(new_set);
+                    }
+                }
+            }
+        }
+        repairs
+    }
+
+    /// Modified infer_new_facts_semi_naive to handle inconsistencies
+    pub fn infer_new_facts_semi_naive_with_repairs(&mut self) -> Vec<Triple> {
+        let all_initial = self.index_manager.query(None, None, None);
+        let mut all_facts: HashSet<Triple> = all_initial.into_iter().collect();
+        let mut delta = all_facts.clone();
+        let mut inferred_so_far = Vec::new();
+    
+        loop {
+            let mut new_delta = HashSet::new();
+            
+            // Process each rule using the semi-naive approach
+            for rule in &self.rules {
+                let bindings = join_rule(rule, &all_facts, &delta);
+                for binding in bindings {
+                    if evaluate_filters(&binding, &rule.filters, &self.dictionary) {
+                        let inferred = construct_triple(&rule.conclusion, &binding);
+                        
+                        // Check if adding this fact would cause inconsistency
+                        let mut temp_facts = all_facts.clone();
+                        temp_facts.insert(inferred.clone());
+                        
+                        if !self.violates_constraints(&temp_facts) {
+                            // Only add if it doesn't cause inconsistency
+                            if self.index_manager.insert(&inferred) && !all_facts.contains(&inferred) {
+                                new_delta.insert(inferred.clone());
+                            }
+                        } else {
+                            // Compute repairs for the inconsistent state
+                            let repairs = self.compute_repairs(&temp_facts);
+                            
+                            // Choose the repair with maximum size
+                            if let Some(best_repair) = repairs.into_iter().max_by_key(|r| r.len()) {
+                                // Update facts to the repaired version
+                                let new_facts: HashSet<_> = best_repair.difference(&all_facts).collect();
+                                
+                                // Add new facts from repair to delta
+                                for fact in new_facts {
+                                    if !all_facts.contains(fact) {
+                                        new_delta.insert(fact.clone());
+                                        self.index_manager.insert(fact);
+                                    }
+                                }
+                                
+                                all_facts = best_repair;
+                            }
+                        }
+                    }
+                }
+            }
+    
+            // Terminate when no new facts were inferred
+            if new_delta.is_empty() {
+                break;
+            }
+    
+            // Update facts and record inferred facts
+            for fact in &new_delta {
+                all_facts.insert(fact.clone());
+                inferred_so_far.push(fact.clone());
+            }
+            delta = new_delta;
+        }
+    
+        inferred_so_far
+    }
+
+    /// New method: Query with inconsistency-tolerant semantics
+    pub fn query_with_repairs(&self, query: &TriplePattern) -> Vec<HashMap<String, u32>> {
+        let all_facts: HashSet<Triple> = self.index_manager.query(None, None, None)
+            .into_iter()
+            .collect();
+
+        // Compute all repairs
+        let repairs = self.compute_repairs(&all_facts);
+        
+        // IAR semantics: only return answers that are present in all repairs
+        let mut results = Vec::new();
+        if let Some(first_repair) = repairs.first() {
+            // Start with results from first repair
+            for fact in first_repair {
+                let mut vmap = HashMap::new();
+                if matches_rule_pattern(query, fact, &mut vmap) {
+                    results.push(vmap);
+                }
+            }
+
+            // Filter out results not present in all repairs
+            results.retain(|binding| {
+                repairs.iter().skip(1).all(|repair| {
+                    repair.iter().any(|fact| {
+                        let mut test_map = HashMap::new();
+                        matches_rule_pattern(query, fact, &mut test_map) && test_map == *binding
+                    })
+                })
+            });
+        }
+        
         results
     }            
 }

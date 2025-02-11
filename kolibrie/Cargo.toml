@@ -125,6 +125,10 @@ name = "datalog_example"
 path = "examples/sparql_syntax/knowledge_graph/datalog_example.rs"
 
 [[example]]
+name = "contradictions"
+path = "examples/sparql_syntax/knowledge_graph/contradictions.rs"
+
+[[example]]
 name = "n3_data_simple"
 path = "examples/sparql_syntax/n3_data/n3_data.rs"
 
