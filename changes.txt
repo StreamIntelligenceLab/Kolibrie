@@ -27,8 +27,9 @@
 26. Modify Datalog by adding inconsistency
 27. Add example in Rust and Python with inconsistency
 28. Fix problem with inconsistency
-29. 
+29. Fix SIMD part for ARM instructions
 30. 
+31. 
 
 0.1.0
 1. Parsing RDF/XML

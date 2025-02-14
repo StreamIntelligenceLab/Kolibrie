@@ -690,7 +690,7 @@ impl SparqlDatabase {
             .filter(|result| {
                 filters.iter().all(|(var, operator, value)| {
                     if let Some(var_value_str) = result.get(var) {
-                        // First, try parsing both values as numbers.
+                        // First, try parsing both values as numbers
                         let var_value_num = var_value_str.parse::<i32>();
                         let filter_value_num = value.parse::<i32>();
 
@@ -704,33 +704,33 @@ impl SparqlDatabase {
                             {
                                 unsafe {
                                     // Load values into SIMD registers
-                                    let var_value_simd = _mm_set1_epi32(var_value);
-                                    let filter_value_simd = _mm_set1_epi32(filter_value);
+                                    let var_simd = _mm_set1_epi32(var_value);
+                                    let filter_simd = _mm_set1_epi32(filter_value);
                                     return match *operator {
                                         "=" => _mm_movemask_epi8(_mm_cmpeq_epi32(
-                                            var_value_simd,
-                                            filter_value_simd,
+                                            var_simd,
+                                            filter_simd,
                                         )) == 0xFFFF,
                                         "!=" => _mm_movemask_epi8(_mm_cmpeq_epi32(
-                                            var_value_simd,
-                                            filter_value_simd,
+                                            var_simd,
+                                            filter_simd,
                                         )) != 0xFFFF,
                                         ">" => _mm_movemask_epi8(_mm_cmpgt_epi32(
-                                            var_value_simd,
-                                            filter_value_simd,
+                                            var_simd,
+                                            filter_simd,
                                         )) == 0xFFFF,
                                         ">=" => {
-                                            let eq = _mm_cmpeq_epi32(var_value_simd, filter_value_simd);
-                                            let gt = _mm_cmpgt_epi32(var_value_simd, filter_value_simd);
+                                            let eq = _mm_cmpeq_epi32(var_simd, filter_simd);
+                                            let gt = _mm_cmpgt_epi32(var_simd, filter_simd);
                                             _mm_movemask_epi8(_mm_or_si128(eq, gt)) == 0xFFFF
                                         }
                                         "<" => _mm_movemask_epi8(_mm_cmpgt_epi32(
-                                            filter_value_simd,
-                                            var_value_simd,
+                                            filter_simd,
+                                            var_simd,
                                         )) == 0xFFFF,
                                         "<=" => {
-                                            let eq = _mm_cmpeq_epi32(var_value_simd, filter_value_simd);
-                                            let lt = _mm_cmpgt_epi32(filter_value_simd, var_value_simd);
+                                            let eq = _mm_cmpeq_epi32(var_simd, filter_simd);
+                                            let lt = _mm_cmpgt_epi32(filter_simd, var_simd);
                                             _mm_movemask_epi8(_mm_or_si128(eq, lt)) == 0xFFFF
                                         }
                                         _ => false,
@@ -742,54 +742,54 @@ impl SparqlDatabase {
                             #[cfg(target_arch = "aarch64")]
                             {
                                 unsafe {
-                                    let var_value_neon = vdupq_n_s32(var_value);
-                                    let filter_value_neon = vdupq_n_s32(filter_value);
+                                    let var_neon = vdupq_n_s32(var_value);
+                                    let filter_neon = vdupq_n_s32(filter_value);
                                     return match *operator {
                                         "=" => {
-                                            let cmp = vceqq_s32(var_value_neon, filter_value_neon);
-                                            (vgetq_lane_s32(cmp, 0) == -1)
-                                                && (vgetq_lane_s32(cmp, 1) == -1)
-                                                && (vgetq_lane_s32(cmp, 2) == -1)
-                                                && (vgetq_lane_s32(cmp, 3) == -1)
+                                            let cmp = vceqq_s32(var_neon, filter_neon);
+                                            (vgetq_lane_u32(cmp, 0) == 0xFFFFFFFF)
+                                                && (vgetq_lane_u32(cmp, 1) == 0xFFFFFFFF)
+                                                && (vgetq_lane_u32(cmp, 2) == 0xFFFFFFFF)
+                                                && (vgetq_lane_u32(cmp, 3) == 0xFFFFFFFF)
                                         }
                                         "!=" => {
-                                            let cmp = vceqq_s32(var_value_neon, filter_value_neon);
-                                            !((vgetq_lane_s32(cmp, 0) == -1)
-                                                && (vgetq_lane_s32(cmp, 1) == -1)
-                                                && (vgetq_lane_s32(cmp, 2) == -1)
-                                                && (vgetq_lane_s32(cmp, 3) == -1))
+                                            let cmp = vceqq_s32(var_neon, filter_neon);
+                                            !((vgetq_lane_u32(cmp, 0) == 0xFFFFFFFF)
+                                                && (vgetq_lane_u32(cmp, 1) == 0xFFFFFFFF)
+                                                && (vgetq_lane_u32(cmp, 2) == 0xFFFFFFFF)
+                                                && (vgetq_lane_u32(cmp, 3) == 0xFFFFFFFF))
                                         }
                                         ">" => {
-                                            let cmp = vcgtq_s32(var_value_neon, filter_value_neon);
-                                            (vgetq_lane_s32(cmp, 0) == -1)
-                                                && (vgetq_lane_s32(cmp, 1) == -1)
-                                                && (vgetq_lane_s32(cmp, 2) == -1)
-                                                && (vgetq_lane_s32(cmp, 3) == -1)
+                                            let cmp = vcgtq_s32(var_neon, filter_neon);
+                                            (vgetq_lane_u32(cmp, 0) == 0xFFFFFFFF)
+                                                && (vgetq_lane_u32(cmp, 1) == 0xFFFFFFFF)
+                                                && (vgetq_lane_u32(cmp, 2) == 0xFFFFFFFF)
+                                                && (vgetq_lane_u32(cmp, 3) == 0xFFFFFFFF)
                                         }
                                         ">=" => {
-                                            let eq = vceqq_s32(var_value_neon, filter_value_neon);
-                                            let gt = vcgtq_s32(var_value_neon, filter_value_neon);
-                                            let cmp = vorrq_s32(eq, gt);
-                                            (vgetq_lane_s32(cmp, 0) == -1)
-                                                && (vgetq_lane_s32(cmp, 1) == -1)
-                                                && (vgetq_lane_s32(cmp, 2) == -1)
-                                                && (vgetq_lane_s32(cmp, 3) == -1)
+                                            let eq = vceqq_s32(var_neon, filter_neon);
+                                            let gt = vcgtq_s32(var_neon, filter_neon);
+                                            let cmp = vorrq_u32(eq, gt);
+                                            (vgetq_lane_u32(cmp, 0) == 0xFFFFFFFF)
+                                                && (vgetq_lane_u32(cmp, 1) == 0xFFFFFFFF)
+                                                && (vgetq_lane_u32(cmp, 2) == 0xFFFFFFFF)
+                                                && (vgetq_lane_u32(cmp, 3) == 0xFFFFFFFF)
                                         }
                                         "<" => {
-                                            let cmp = vcgtq_s32(filter_value_neon, var_value_neon);
-                                            (vgetq_lane_s32(cmp, 0) == -1)
-                                                && (vgetq_lane_s32(cmp, 1) == -1)
-                                                && (vgetq_lane_s32(cmp, 2) == -1)
-                                                && (vgetq_lane_s32(cmp, 3) == -1)
+                                            let cmp = vcgtq_s32(filter_neon, var_neon);
+                                            (vgetq_lane_u32(cmp, 0) == 0xFFFFFFFF)
+                                                && (vgetq_lane_u32(cmp, 1) == 0xFFFFFFFF)
+                                                && (vgetq_lane_u32(cmp, 2) == 0xFFFFFFFF)
+                                                && (vgetq_lane_u32(cmp, 3) == 0xFFFFFFFF)
                                         }
                                         "<=" => {
-                                            let eq = vceqq_s32(var_value_neon, filter_value_neon);
-                                            let lt = vcgtq_s32(filter_value_neon, var_value_neon);
-                                            let cmp = vorrq_s32(eq, lt);
-                                            (vgetq_lane_s32(cmp, 0) == -1)
-                                                && (vgetq_lane_s32(cmp, 1) == -1)
-                                                && (vgetq_lane_s32(cmp, 2) == -1)
-                                                && (vgetq_lane_s32(cmp, 3) == -1)
+                                            let eq = vceqq_s32(var_neon, filter_neon);
+                                            let lt = vcgtq_s32(filter_neon, var_neon);
+                                            let cmp = vorrq_u32(eq, lt);
+                                            (vgetq_lane_u32(cmp, 0) == 0xFFFFFFFF)
+                                                && (vgetq_lane_u32(cmp, 1) == 0xFFFFFFFF)
+                                                && (vgetq_lane_u32(cmp, 2) == 0xFFFFFFFF)
+                                                && (vgetq_lane_u32(cmp, 3) == 0xFFFFFFFF)
                                         }
                                         _ => false,
                                     }
@@ -833,8 +833,8 @@ impl SparqlDatabase {
                             let mut i = 0;
                             #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
                             {
-                                while i + 16 <= var_len {
-                                    unsafe {
+                                unsafe {
+                                    while i + 16 <= var_len {
                                         let var_chunk = _mm_loadu_si128(
                                             var_bytes[i..].as_ptr() as *const __m128i,
                                         );
@@ -850,34 +850,30 @@ impl SparqlDatabase {
                                                 _ => false,
                                             };
                                         }
+                                        i += 16;
                                     }
-                                    i += 16;
                                 }
                             }
 
                             #[cfg(target_arch = "aarch64")]
                             {
-                                while i + 16 <= var_len {
-                                    unsafe {
+                                unsafe {
+                                    while i + 16 <= var_len {
                                         let var_chunk = vld1q_u8(var_bytes[i..].as_ptr());
                                         let filter_chunk = vld1q_u8(filter_bytes[i..].as_ptr());
                                         let cmp = vceqq_u8(var_chunk, filter_chunk);
-                                        let mut all_equal = true;
-                                        for j in 0..16 {
-                                            if vgetq_lane_u8(cmp, j) != 0xFF {
-                                                all_equal = false;
-                                                break;
-                                            }
-                                        }
-                                        if !all_equal {
+                                        // Instead of using vgetq_lane_u8 in a loop (which requires a constant index),
+                                        // transmute the vector into an array and iterate over it.
+                                        let cmp_arr: [u8; 16] = std::mem::transmute(cmp);
+                                        if cmp_arr.iter().any(|&lane| lane != 0xFF) {
                                             return match *operator {
                                                 "=" => false,
                                                 "!=" => true,
                                                 _ => false,
                                             };
                                         }
+                                        i += 16;
                                     }
-                                    i += 16;
                                 }
                             }
 
