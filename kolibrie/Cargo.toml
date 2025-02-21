@@ -31,6 +31,7 @@ crossbeam = { workspace = true }
 gpu = { path = "../gpu" }
 shared = { path = "../shared" }
 datalog =  { path = "../datalog" }
+ml = { path = "../ml" }
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2.161"
@@ -195,3 +196,11 @@ path = "examples/sparql_syntax/nested_query/nested_query.rs"
 [[example]]
 name = "combination"
 path = "examples/sparql_syntax/combination/combination.rs"
+
+[[example]]
+name = "combination_logic_extend"
+path = "examples/sparql_syntax/combination/combination_logic_extend.rs"
+
+[[example]]
+name = "combination_ml"
+path = "examples/sparql_syntax/combination/combination_ml.rs"

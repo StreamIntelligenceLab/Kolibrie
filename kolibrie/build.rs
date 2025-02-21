@@ -3,10 +3,10 @@ use std::path::Path;
 use std::process::Command;
 
 fn main() {
-     if env::var("CARGO_FEATURE_CUDA").is_ok() {
+    if env::var("CARGO_FEATURE_CUDA").is_ok() {
         // Determine the root of the crate
         let project_root = Path::new(env!("CARGO_MANIFEST_DIR"));
-        
+
         // Dynamically set the path to the CUDA source directory
         let cuda_dir = project_root.join("src").join("cuda");
 
@@ -35,7 +35,10 @@ fn build_with_cmake(cuda_dir: &Path, target_os: String) {
     cmake_configure
         .current_dir(&cuda_dir)
         .arg("-DCMAKE_BUILD_TYPE=Release")
-        .arg(format!("-DCMAKE_LIBRARY_OUTPUT_DIRECTORY={}", output_dir.to_str().unwrap()))
+        .arg(format!(
+            "-DCMAKE_LIBRARY_OUTPUT_DIRECTORY={}",
+            output_dir.to_str().unwrap()
+        ))
         .arg(".");
 
     if target_os == "windows" {
@@ -50,7 +53,11 @@ fn build_with_cmake(cuda_dir: &Path, target_os: String) {
     // Step 2: Build using CMake
     let mut cmake_build = Command::new("cmake");
     cmake_build.current_dir(&cuda_dir).arg("--build").arg(".");
-    if !cmake_build.status().expect("Failed to build with CMake").success() {
+    if !cmake_build
+        .status()
+        .expect("Failed to build with CMake")
+        .success()
+    {
         panic!("CMake build failed");
     }
 

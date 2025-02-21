@@ -2,7 +2,7 @@ use crate::sparql_database::SparqlDatabase;
 use shared::triple::Triple;
 use nom::{
     branch::alt,
-    bytes::complete::{tag, take_while1},
+    bytes::complete::{tag, take_while1, take_until},
     character::complete::{char, multispace0, multispace1, space0, space1},
     combinator::{opt, recognize},
     multi::{many0, separated_list1},
@@ -54,16 +54,24 @@ pub struct RuleHead<'a> {
 }
 
 #[derive(Debug, Clone)]
+pub struct MLPredictClause<'a> {
+    pub model: &'a str,
+    pub input: &'a str, // you might later decide to parse this into a full SPARQL AST
+    pub output: &'a str,
+}
+
+#[derive(Debug, Clone)]
 pub struct CombinedRule<'a> {
     pub head: RuleHead<'a>,
     pub body: (
-        Vec<(&'a str, &'a str, &'a str)>,
-        Vec<(&'a str, &'a str, &'a str)>,
+        Vec<(&'a str, &'a str, &'a str)>, // triple patterns from WHERE
+        Vec<(&'a str, &'a str, &'a str)>, // filters
         Option<ValuesClause<'a>>,
-        Vec<(&'a str, Vec<&'a str>, &'a str)>,
-        Vec<SubQuery<'a>>,
+        Vec<(&'a str, Vec<&'a str>, &'a str)>, // BIND clauses
+        Vec<SubQuery<'a>>, // subqueries
     ),
     pub conclusion: Vec<(&'a str, &'a str, &'a str)>,
+    pub ml_predict: Option<MLPredictClause<'a>>, // new field for ML.PREDICT clause
 }
 
 #[derive(Debug, Clone)]
@@ -714,6 +722,119 @@ pub fn execute_query(sparql: &str, database: &mut SparqlDatabase) -> Vec<Vec<Str
 
         // Process each pattern in the WHERE clause
         for (subject_var, predicate, object_var) in patterns {
+            if predicate == "RULECALL" {
+                let rule_name = if subject_var.starts_with(':') {
+                    &subject_var[1..]
+                } else {
+                    subject_var
+                };
+                let rule_key = rule_name.to_lowercase();
+                
+                let expanded_rule_predicate = database.rule_map.get(&rule_key)
+                    .cloned()
+                    .unwrap_or_else(|| {
+                        prefixes.get("ex")
+                            .map(|prefix| format!("{}{}", prefix, rule_name))
+                            .unwrap_or_else(|| rule_name.to_string())
+                    });
+
+                // Parse variables from the rule call
+                let vars: Vec<&str> = object_var.split(',')
+                    .map(|s| s.trim())
+                    .collect();
+
+                // First find all subjects that match the rule predicate
+                let mut matched_subjects = Vec::new();
+                for triple in database.triples.iter() {
+                    if let (Some(subj), Some(pred), Some(obj)) = (
+                        database.dictionary.decode(triple.subject),
+                        database.dictionary.decode(triple.predicate),
+                        database.dictionary.decode(triple.object)
+                    ) {
+                        if pred == expanded_rule_predicate && obj == "true" {
+                            matched_subjects.push(subj);
+                        }
+                    }
+                }
+
+                // Reset final_results for rule-based query
+                final_results = Vec::new();
+
+                // For each matched subject
+                for subject in matched_subjects {
+                    let mut result = BTreeMap::new();
+                    let mut found_all_vars = true;
+
+                    // Add the first variable (subject/room variable)
+                    if !vars.is_empty() {
+                        result.insert(vars[0], subject.to_string());
+                    }
+
+                    // For the second variable (usually value/temperature), find the highest value
+                    if vars.len() > 1 {
+                        let mut highest_value: Option<(i64, String)> = None;
+
+                        // First, find all sensors/readings for this room
+                        for triple in database.triples.iter() {
+                            if let (Some(rel_subj), Some(rel_pred), Some(rel_obj)) = (
+                                database.dictionary.decode(triple.subject),
+                                database.dictionary.decode(triple.predicate),
+                                database.dictionary.decode(triple.object)
+                            ) {
+                                // Find sensors that relate to our room
+                                if rel_pred.ends_with("room") && rel_obj == subject {
+                                    let sensor_id = rel_subj;
+                                    
+                                    // Now find this sensor's values
+                                    for value_triple in database.triples.iter() {
+                                        if let (Some(val_subj), Some(val_pred), Some(val_obj)) = (
+                                            database.dictionary.decode(value_triple.subject),
+                                            database.dictionary.decode(value_triple.predicate),
+                                            database.dictionary.decode(value_triple.object)
+                                        ) {
+                                            if val_subj == sensor_id {
+                                                let var_name = if vars[1].starts_with('?') {
+                                                    &vars[1][1..]
+                                                } else {
+                                                    vars[1]
+                                                };
+
+                                                if val_pred.contains(var_name) {
+                                                    if let Ok(num_val) = val_obj.parse::<i64>() {
+                                                        match highest_value {
+                                                            None => highest_value = Some((num_val, val_obj.to_string())),
+                                                            Some((current, _)) if num_val > current => {
+                                                                highest_value = Some((num_val, val_obj.to_string()))
+                                                            },
+                                                            _ => {}
+                                                        }
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+
+                        // Add the highest value if found
+                        if let Some((_, value)) = highest_value {
+                            result.insert(vars[1], value);
+                        } else {
+                            found_all_vars = false;
+                        }
+                    }
+
+                    // Only add the result if we found all variables
+                    if found_all_vars && result.len() == vars.len() {
+                        final_results.push(result);
+                    }
+                }
+                
+                continue;
+            }
+
+            // Handle non-RULECALL patterns...
             let (join_subject, join_predicate, join_object) = if predicate == "RULECALL" {
                 let rule_name = if subject_var.starts_with(':') {
                     &subject_var[1..]
@@ -835,7 +956,14 @@ pub fn execute_query(sparql: &str, database: &mut SparqlDatabase) -> Vec<Vec<Str
         .map(|result| {
             selected_variables
                 .iter()
-                .map(|(_, var)| result.get(var.as_str()).cloned().unwrap_or_default())
+                .map(|(_, var)| {
+                    let var_name = if var.starts_with('?') {
+                        var
+                    } else {
+                        &format!("?{}", var)
+                    };
+                    result.get(var_name.as_str()).cloned().unwrap_or_default()
+                })
                 .collect()
         })
         .collect()
@@ -946,7 +1074,14 @@ pub fn parse_rule_call(input: &str) -> IResult<&str, RuleHead> {
     let (input, pred) = predicate(input)?;
     let (input, args) = delimited(
         char('('),
-        separated_list1(alt((tag(","), space1)), variable),
+        separated_list1(
+            tuple((
+                multispace0, 
+                char(','), 
+                multispace0
+            )),
+            variable
+        ),
         char(')')
     )(input)?;
     Ok((input, RuleHead { predicate: pred, arguments: args }))
@@ -956,11 +1091,55 @@ pub fn parse_rule_head(input: &str) -> IResult<&str, RuleHead> {
     let (input, pred) = predicate(input)?;
     let (input, args) = opt(delimited(
         char('('),
-        separated_list1(alt((tag(","), space1)), variable),
+        separated_list1(
+            tuple((
+                multispace0, 
+                char(','), 
+                multispace0
+            )),
+            variable
+        ),
         char(')')
     ))(input)?;
     let arguments = args.unwrap_or_else(|| vec![]);
     Ok((input, RuleHead { predicate: pred, arguments }))
+}
+
+pub fn parse_ml_predict(input: &str) -> IResult<&str, MLPredictClause> {
+    let (input, _) = multispace0(input)?;
+    let (input, _) = tag("ML.PREDICT")(input)?;
+    let (input, _) = multispace0(input)?;
+    let (input, _) = char('(')(input)?;
+    let (input, _) = multispace0(input)?;
+    // Parse MODEL clause
+    let (input, _) = tag("MODEL")(input)?;
+    let (input, _) = multispace1(input)?;
+    let (input, model) = predicate(input)?;
+    let (input, _) = multispace0(input)?;
+    let (input, _) = char(',')(input)?;
+    let (input, _) = multispace0(input)?;
+    // Parse INPUT clause
+    let (input, _) = tag("INPUT")(input)?;
+    let (input, _) = multispace0(input)?;
+    let (input, input_query) = delimited(
+        char('{'),
+        take_until("}"),
+        char('}')
+    )(input)?;
+    let (input, _) = multispace0(input)?;
+    let (input, _) = char(',')(input)?;
+    let (input, _) = multispace0(input)?;
+    // Parse OUTPUT clause
+    let (input, _) = tag("OUTPUT")(input)?;
+    let (input, _) = multispace1(input)?;
+    let (input, output_var) = variable(input)?;
+    let (input, _) = multispace0(input)?;
+    let (input, _) = char(')')(input)?;
+    Ok((input, MLPredictClause {
+        model,
+        input: input_query,
+        output: output_var,
+    }))
 }
 
 /// Parse a complete rule:
@@ -986,7 +1165,9 @@ pub fn parse_rule(input: &str) -> IResult<&str, CombinedRule> {
     )(input)?;
     let (input, _) = multispace0(input)?;
     let (input, _) = char('.')(input)?;
-    Ok((input, CombinedRule { head, body, conclusion }))
+    // Optionally parse ML.PREDICT block if it exists
+    let (input, ml_predict) = opt(parse_ml_predict)(input)?;
+    Ok((input, CombinedRule { head, body, conclusion, ml_predict }))
 }
 
 /// The combined query parser parses SPARQL + LP

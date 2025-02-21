@@ -1437,6 +1437,449 @@ impl SparqlDatabase {
         results.into_inner().unwrap()
     }
 
+    pub fn perform_join_par_simd_with_strict_filter_2<'a>(
+        &self,
+        subject_var: &'a str,
+        predicate: String,
+        object_var: &'a str,
+        triples: Vec<Triple>,
+        dictionary: &'a Dictionary,
+        final_results: Vec<BTreeMap<&'a str, String>>,
+        literal_filter: Option<String>,
+    ) -> Vec<BTreeMap<&'a str, String>> {
+        if final_results.is_empty() {
+            return Vec::new();
+        }
+
+        let predicate_bytes = predicate.as_bytes();
+        let literal_filter_bytes = literal_filter.as_ref().map(|s| s.as_bytes());
+
+        // Partition final_results into groups based on variable bindings.
+        let mut both_vars_bound: HashMap<(String, String), Vec<BTreeMap<&'a str, String>>> = HashMap::new();
+        let mut subject_var_bound: HashMap<String, Vec<BTreeMap<&'a str, String>>> = HashMap::new();
+        let mut object_var_bound: HashMap<String, Vec<BTreeMap<&'a str, String>>> = HashMap::new();
+        let mut neither_var_bound: Vec<BTreeMap<&'a str, String>> = Vec::new();
+
+        for result in final_results {
+            let subject_binding = result.get(subject_var).cloned();
+            let object_binding = result.get(object_var).cloned();
+
+            match (subject_binding, object_binding) {
+                (Some(subj_val), Some(obj_val)) => {
+                    both_vars_bound
+                        .entry((subj_val.clone(), obj_val.clone()))
+                        .or_default()
+                        .push(result);
+                }
+                (Some(subj_val), None) => {
+                    subject_var_bound.entry(subj_val.clone()).or_default().push(result);
+                }
+                (None, Some(obj_val)) => {
+                    object_var_bound.entry(obj_val.clone()).or_default().push(result);
+                }
+                (None, None) => {
+                    neither_var_bound.push(result);
+                }
+            }
+        }
+
+        // Pre-allocate output vector.
+        let results = Mutex::new(Vec::new());
+
+        // Using Rayon for parallel processing.
+        triples.par_chunks(256).for_each(|chunk| {
+            let mut local_results = Vec::new();
+
+            for triple in chunk {
+                if let (Some(subject), Some(pred), Some(object)) = (
+                    dictionary.decode(triple.subject),
+                    dictionary.decode(triple.predicate),
+                    dictionary.decode(triple.object),
+                ) {
+                    // SIMD predicate comparison using simd_eq.
+                    if !unsafe { simd_eq(pred.as_bytes(), predicate_bytes) } {
+                        continue;
+                    }
+
+                    // SIMD literal filter comparison.
+                    if let Some(filter_bytes) = literal_filter_bytes {
+                        if !unsafe { simd_eq(object.as_bytes(), filter_bytes) } {
+                            continue;
+                        }
+                    }
+
+                    // Process group both_vars_bound.
+                    {
+                        let key = (subject.to_string(), object.to_string());
+                        if let Some(results_vec) = both_vars_bound.get(&key) {
+                            for result in results_vec {
+                                local_results.push(result.clone());
+                            }
+                        }
+                    }
+
+                    // Process group subject_var_bound.
+                    {
+                        if let Some(results_vec) = subject_var_bound.get(subject) {
+                            for result in results_vec {
+                                let mut extended_result = result.clone();
+                                // Extend object_var.
+                                if let Some(existing_object) = extended_result.get(object_var) {
+                                    if existing_object != &object {
+                                        continue; // Inconsistent variable binding.
+                                    }
+                                } else {
+                                    extended_result.insert(object_var, object.to_string());
+                                }
+                                local_results.push(extended_result);
+                            }
+                        }
+                    }
+
+                    // Process group object_var_bound.
+                    {
+                        if let Some(results_vec) = object_var_bound.get(object) {
+                            for result in results_vec {
+                                let mut extended_result = result.clone();
+                                // Extend subject_var.
+                                if let Some(existing_subject) = extended_result.get(subject_var) {
+                                    if existing_subject != &subject {
+                                        continue; // Inconsistent variable binding.
+                                    }
+                                } else {
+                                    extended_result.insert(subject_var, subject.to_string());
+                                }
+                                local_results.push(extended_result);
+                            }
+                        }
+                    }
+
+                    // Process group neither_var_bound.
+                    for result in &neither_var_bound {
+                        let mut extended_result = result.clone();
+                        // Extend subject_var.
+                        if let Some(existing_subject) = extended_result.get(subject_var) {
+                            if existing_subject != &subject {
+                                continue; // Inconsistent variable binding.
+                            }
+                        } else {
+                            extended_result.insert(subject_var, subject.to_string());
+                        }
+                        // Extend object_var.
+                        if let Some(existing_object) = extended_result.get(object_var) {
+                            if existing_object != &object {
+                                continue; // Inconsistent variable binding.
+                            }
+                        } else {
+                            extended_result.insert(object_var, object.to_string());
+                        }
+                        local_results.push(extended_result);
+                    }
+                }
+            }
+
+            // Push local results to the shared results vector.
+            let mut global_results = results.lock().unwrap();
+            global_results.extend(local_results);
+        });
+
+        results.into_inner().unwrap()
+    }
+
+    pub fn perform_join_sequential<'a>(
+        &self,
+        subject_var: &'a str,
+        predicate: String,
+        object_var: &'a str,
+        triples: Vec<Triple>,
+        dictionary: &'a Dictionary,
+        final_results: Vec<BTreeMap<&'a str, String>>,
+        literal_filter: Option<String>,
+    ) -> Vec<BTreeMap<&'a str, String>> {
+        if final_results.is_empty() {
+            return Vec::new();
+        }
+
+        let predicate_bytes = predicate.as_bytes();
+        let literal_filter_bytes = literal_filter.as_ref().map(|s| s.as_bytes());
+
+        // Partition final_results into groups based on variable bindings.
+        let mut both_vars_bound: HashMap<(String, String), Vec<BTreeMap<&'a str, String>>> =
+            HashMap::new();
+        let mut subject_var_bound: HashMap<String, Vec<BTreeMap<&'a str, String>>> = HashMap::new();
+        let mut object_var_bound: HashMap<String, Vec<BTreeMap<&'a str, String>>> = HashMap::new();
+        let mut neither_var_bound: Vec<BTreeMap<&'a str, String>> = Vec::new();
+
+        for result in final_results {
+            let subject_binding = result.get(subject_var).cloned();
+            let object_binding = result.get(object_var).cloned();
+
+            match (subject_binding, object_binding) {
+                (Some(subj_val), Some(obj_val)) => {
+                    both_vars_bound
+                        .entry((subj_val.clone(), obj_val.clone()))
+                        .or_default()
+                        .push(result);
+                }
+                (Some(subj_val), None) => {
+                    subject_var_bound
+                        .entry(subj_val.clone())
+                        .or_default()
+                        .push(result);
+                }
+                (None, Some(obj_val)) => {
+                    object_var_bound
+                        .entry(obj_val.clone())
+                        .or_default()
+                        .push(result);
+                }
+                (None, None) => {
+                    neither_var_bound.push(result);
+                }
+            }
+        }
+
+        let mut results = Vec::new();
+
+        // Process triples sequentially.
+        for triple in triples {
+            if let (Some(subject), Some(pred), Some(object)) = (
+                dictionary.decode(triple.subject),
+                dictionary.decode(triple.predicate),
+                dictionary.decode(triple.object),
+            ) {
+                // Check if the predicate matches.
+                if pred.as_bytes() != predicate_bytes {
+                    continue;
+                }
+
+                // Check the literal filter if provided.
+                if let Some(filter_bytes) = literal_filter_bytes {
+                    if object.as_bytes() != filter_bytes {
+                        continue;
+                    }
+                }
+
+                // Process group where both variables are already bound.
+                {
+                    let key = (subject.to_string(), object.to_string());
+                    if let Some(results_vec) = both_vars_bound.get(&key) {
+                        for result in results_vec {
+                            results.push(result.clone());
+                        }
+                    }
+                }
+
+                // Process group where only subject_var is bound.
+                {
+                    if let Some(results_vec) = subject_var_bound.get(subject) {
+                        for result in results_vec {
+                            let mut extended_result = result.clone();
+                            // Extend the object_var binding.
+                            if let Some(existing_object) = extended_result.get(object_var) {
+                                if existing_object != &object {
+                                    continue; // Inconsistent variable binding.
+                                }
+                            } else {
+                                extended_result.insert(object_var, object.to_string());
+                            }
+                            results.push(extended_result);
+                        }
+                    }
+                }
+
+                // Process group where only object_var is bound.
+                {
+                    if let Some(results_vec) = object_var_bound.get(object) {
+                        for result in results_vec {
+                            let mut extended_result = result.clone();
+                            // Extend the subject_var binding.
+                            if let Some(existing_subject) = extended_result.get(subject_var) {
+                                if existing_subject != &subject {
+                                    continue; // Inconsistent variable binding.
+                                }
+                            } else {
+                                extended_result.insert(subject_var, subject.to_string());
+                            }
+                            results.push(extended_result);
+                        }
+                    }
+                }
+
+                // Process group where neither variable is bound.
+                for result in &neither_var_bound {
+                    let mut extended_result = result.clone();
+                    // Extend the subject_var binding.
+                    if let Some(existing_subject) = extended_result.get(subject_var) {
+                        if existing_subject != &subject {
+                            continue; // Inconsistent variable binding.
+                        }
+                    } else {
+                        extended_result.insert(subject_var, subject.to_string());
+                    }
+                    // Extend the object_var binding.
+                    if let Some(existing_object) = extended_result.get(object_var) {
+                        if existing_object != &object {
+                            continue; // Inconsistent variable binding.
+                        }
+                    } else {
+                        extended_result.insert(object_var, object.to_string());
+                    }
+                    results.push(extended_result);
+                }
+            }
+        }
+
+        results
+    }
+
+    pub fn perform_join_sequential_simd<'a>(
+        &self,
+        subject_var: &'a str,
+        predicate: String,
+        object_var: &'a str,
+        triples: Vec<Triple>,
+        dictionary: &'a Dictionary,
+        final_results: Vec<BTreeMap<&'a str, String>>,
+        literal_filter: Option<String>,
+    ) -> Vec<BTreeMap<&'a str, String>> {
+        if final_results.is_empty() {
+            return Vec::new();
+        }
+
+        let predicate_bytes = predicate.as_bytes();
+        let literal_filter_bytes = literal_filter.as_ref().map(|s| s.as_bytes());
+
+        // Partition final_results into groups based on variable bindings.
+        let mut both_vars_bound: HashMap<(String, String), Vec<BTreeMap<&'a str, String>>> =
+            HashMap::new();
+        let mut subject_var_bound: HashMap<String, Vec<BTreeMap<&'a str, String>>> = HashMap::new();
+        let mut object_var_bound: HashMap<String, Vec<BTreeMap<&'a str, String>>> = HashMap::new();
+        let mut neither_var_bound: Vec<BTreeMap<&'a str, String>> = Vec::new();
+
+        for result in final_results {
+            let subject_binding = result.get(subject_var).cloned();
+            let object_binding = result.get(object_var).cloned();
+
+            match (subject_binding, object_binding) {
+                (Some(subj_val), Some(obj_val)) => {
+                    both_vars_bound
+                        .entry((subj_val.clone(), obj_val.clone()))
+                        .or_default()
+                        .push(result);
+                }
+                (Some(subj_val), None) => {
+                    subject_var_bound
+                        .entry(subj_val.clone())
+                        .or_default()
+                        .push(result);
+                }
+                (None, Some(obj_val)) => {
+                    object_var_bound
+                        .entry(obj_val.clone())
+                        .or_default()
+                        .push(result);
+                }
+                (None, None) => {
+                    neither_var_bound.push(result);
+                }
+            }
+        }
+
+        let mut results = Vec::new();
+
+        // Process triples sequentially.
+        for triple in triples {
+            if let (Some(subject), Some(pred), Some(object)) = (
+                dictionary.decode(triple.subject),
+                dictionary.decode(triple.predicate),
+                dictionary.decode(triple.object),
+            ) {
+                // Use SIMD-based comparison for the predicate.
+                if !simd_bytes_eq(pred.as_bytes(), predicate_bytes) {
+                    continue;
+                }
+
+                // Use SIMD-based comparison for the literal filter if provided.
+                if let Some(filter_bytes) = literal_filter_bytes {
+                    if !simd_bytes_eq(object.as_bytes(), filter_bytes) {
+                        continue;
+                    }
+                }
+
+                // Process group where both variables are already bound.
+                {
+                    let key = (subject.to_string(), object.to_string());
+                    if let Some(results_vec) = both_vars_bound.get(&key) {
+                        for result in results_vec {
+                            results.push(result.clone());
+                        }
+                    }
+                }
+
+                // Process group where only subject_var is bound.
+                {
+                    if let Some(results_vec) = subject_var_bound.get(subject) {
+                        for result in results_vec {
+                            let mut extended_result = result.clone();
+                            // Extend the object_var binding.
+                            if let Some(existing_object) = extended_result.get(object_var) {
+                                if existing_object != &object {
+                                    continue; // Inconsistent variable binding.
+                                }
+                            } else {
+                                extended_result.insert(object_var, object.to_string());
+                            }
+                            results.push(extended_result);
+                        }
+                    }
+                }
+
+                // Process group where only object_var is bound.
+                {
+                    if let Some(results_vec) = object_var_bound.get(object) {
+                        for result in results_vec {
+                            let mut extended_result = result.clone();
+                            // Extend the subject_var binding.
+                            if let Some(existing_subject) = extended_result.get(subject_var) {
+                                if existing_subject != &subject {
+                                    continue; // Inconsistent variable binding.
+                                }
+                            } else {
+                                extended_result.insert(subject_var, subject.to_string());
+                            }
+                            results.push(extended_result);
+                        }
+                    }
+                }
+
+                // Process group where neither variable is bound.
+                for result in &neither_var_bound {
+                    let mut extended_result = result.clone();
+                    // Extend the subject_var binding.
+                    if let Some(existing_subject) = extended_result.get(subject_var) {
+                        if existing_subject != &subject {
+                            continue; // Inconsistent variable binding.
+                        }
+                    } else {
+                        extended_result.insert(subject_var, subject.to_string());
+                    }
+                    // Extend the object_var binding.
+                    if let Some(existing_object) = extended_result.get(object_var) {
+                        if existing_object != &object {
+                            continue; // Inconsistent variable binding.
+                        }
+                    } else {
+                        extended_result.insert(object_var, object.to_string());
+                    }
+                    results.push(extended_result);
+                }
+            }
+        }
+
+        results
+    }
+
     pub fn join_by_conditions_with_filters<F>(
         &self,
         other: &SparqlDatabase,
@@ -2034,5 +2477,110 @@ impl SparqlDatabase {
         let predicate = dict.decode(triple.predicate);
         let object = dict.decode(triple.object);
         format!("{} {} {}", subject.unwrap(), predicate.unwrap(), object.unwrap())
+    }
+}
+
+#[cfg_attr(any(target_arch = "x86", target_arch = "x86_64"), target_feature(enable = "sse2"))]
+#[cfg_attr(target_arch = "aarch64", target_feature(enable = "neon"))]
+pub unsafe fn simd_eq(a: &[u8], b: &[u8]) -> bool {
+    if a.len() != b.len() {
+        return false;
+    }
+
+    // SSE2 implementation for x86/x86_64
+    #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+    {
+        let len = a.len();
+        let chunks = len / 16;
+        let mut i = 0;
+        while i < chunks * 16 {
+            let pa = a.as_ptr().add(i) as *const __m128i;
+            let pb = b.as_ptr().add(i) as *const __m128i;
+            let va = _mm_loadu_si128(pa);
+            let vb = _mm_loadu_si128(pb);
+            let cmp = _mm_cmpeq_epi8(va, vb);
+            let mask = _mm_movemask_epi8(cmp);
+            if mask != 0xFFFF {
+                return false;
+            }
+            i += 16;
+        }
+        // Compare any remaining bytes
+        for j in (chunks * 16)..len {
+            if a[j] != b[j] {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    // NEON implementation for aarch64
+    #[cfg(target_arch = "aarch64")]
+    {
+        let len = a.len();
+        let chunks = len / 16;
+        let mut i = 0;
+        while i < chunks * 16 {
+            let pa = a.as_ptr().add(i);
+            let pb = b.as_ptr().add(i);
+            let va = vld1q_u8(pa);
+            let vb = vld1q_u8(pb);
+            let cmp = vceqq_u8(va, vb);
+            let cmp_u64 = vreinterpretq_u64_u8(cmp);
+            let low = vgetq_lane_u64(cmp_u64, 0);
+            let high = vgetq_lane_u64(cmp_u64, 1);
+            if low != u64::MAX || high != u64::MAX {
+                return false;
+            }
+            i += 16;
+        }
+        // Compare any remaining bytes
+        for j in (chunks * 16)..len {
+            if a[j] != b[j] {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    // Fallback for other architectures
+    #[cfg(not(any(target_arch = "x86", target_arch = "x86_64", target_arch = "aarch64")))]
+    {
+        return a == b;
+    }
+}
+
+#[inline]
+fn simd_bytes_eq(a: &[u8], b: &[u8]) -> bool {
+    if a.len() != b.len() {
+        return false;
+    }
+    #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+    unsafe {
+        use std::arch::x86_64::*;
+        let mut i = 0;
+        let len = a.len();
+        while i + 16 <= len {
+            let a_chunk = _mm_loadu_si128(a.as_ptr().add(i) as *const __m128i);
+            let b_chunk = _mm_loadu_si128(b.as_ptr().add(i) as *const __m128i);
+            let cmp = _mm_cmpeq_epi8(a_chunk, b_chunk);
+            // If all 16 bytes match, _mm_movemask_epi8 returns 0xFFFF.
+            if _mm_movemask_epi8(cmp) != 0xFFFF {
+                return false;
+            }
+            i += 16;
+        }
+        // Compare any remaining bytes.
+        for j in i..len {
+            if a[j] != b[j] {
+                return false;
+            }
+        }
+        true
+    }
+    #[cfg(not(any(target_arch = "x86", target_arch = "x86_64")))]
+    {
+        // Fallback on non-x86 architectures.
+        a == b
     }
 }

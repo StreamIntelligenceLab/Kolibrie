@@ -28,8 +28,8 @@
 27. Add example in Rust and Python with inconsistency
 28. Fix problem with inconsistency
 29. Fix SIMD part for ARM instructions
-30. 
-31. 
+30. Modify SPARQL + LP syntax by adding multiple parameter set
+31. Add parsing for machine learning SPARQL + LP + ML
 
 0.1.0
 1. Parsing RDF/XML

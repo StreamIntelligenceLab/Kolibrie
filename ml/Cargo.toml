@@ -1,0 +1,9 @@
+[package]
+name = "ml"
+version = "0.1.0"
+edition = "2021"
+description = "Machine Learning"
+
+[dependencies]
+serde_json = { workspace = true }
+pyo3 = { workspace = true }
