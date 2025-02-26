@@ -30,6 +30,7 @@
 29. Fix SIMD part for ARM instructions
 30. Modify SPARQL + LP syntax by adding multiple parameter set
 31. Add parsing for machine learning SPARQL + LP + ML
+32. Ability to use machine learning models
 
 0.1.0
 1. Parsing RDF/XML

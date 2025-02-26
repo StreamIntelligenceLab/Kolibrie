@@ -1,22 +1,22 @@
 use crate::sparql_database::SparqlDatabase;
-use shared::triple::Triple;
+use nom::sequence::terminated;
 use nom::{
     branch::alt,
-    bytes::complete::{tag, take_while1, take_until},
+    bytes::complete::{tag, take_while1},
     character::complete::{char, multispace0, multispace1, space0, space1},
     combinator::{opt, recognize},
     multi::{many0, separated_list1},
     sequence::{delimited, preceded, tuple},
     IResult, Parser,
 };
-use nom::sequence::terminated;
 use rayon::str;
-use std::collections::{BTreeMap, BTreeSet, HashMap};
-use shared::GPU_MODE_ENABLED;
 use shared::dictionary::Dictionary;
-use shared::terms::*;
-use shared::rule::Rule;
 use shared::rule::FilterCondition;
+use shared::rule::Rule;
+use shared::terms::*;
+use shared::triple::Triple;
+use shared::GPU_MODE_ENABLED;
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 
 // Define the Value enum to represent terms or UNDEF in VALUES clause
 #[derive(Debug, Clone)]
@@ -44,7 +44,7 @@ pub struct SubQuery<'a> {
     patterns: Vec<(&'a str, &'a str, &'a str)>,          // WHERE patterns
     filters: Vec<(&'a str, &'a str, &'a str)>,           // FILTER conditions
     binds: Vec<(&'a str, Vec<&'a str>, &'a str)>,        // BIND clauses
-    _values_clause: Option<ValuesClause<'a>>,                  // VALUES clause
+    _values_clause: Option<ValuesClause<'a>>,            // VALUES clause
 }
 
 #[derive(Debug, Clone)]
@@ -68,7 +68,7 @@ pub struct CombinedRule<'a> {
         Vec<(&'a str, &'a str, &'a str)>, // filters
         Option<ValuesClause<'a>>,
         Vec<(&'a str, Vec<&'a str>, &'a str)>, // BIND clauses
-        Vec<SubQuery<'a>>, // subqueries
+        Vec<SubQuery<'a>>,                     // subqueries
     ),
     pub conclusion: Vec<(&'a str, &'a str, &'a str)>,
     pub ml_predict: Option<MLPredictClause<'a>>, // new field for ML.PREDICT clause
@@ -104,9 +104,9 @@ pub fn prefixed_identifier(input: &str) -> IResult<&str, &str> {
 // Parser for a predicate (either prefixed or unprefixed)
 pub fn predicate(input: &str) -> IResult<&str, &str> {
     alt((
-        recognize(tuple((char(':'), identifier))), 
-        prefixed_identifier, 
-        identifier
+        recognize(tuple((char(':'), identifier))),
+        prefixed_identifier,
+        identifier,
     ))(input)
 }
 
@@ -136,23 +136,23 @@ pub fn parse_predicate_object(input: &str) -> IResult<&str, (&str, &str)> {
 pub fn parse_triple_block(input: &str) -> IResult<&str, Vec<(&str, &str, &str)>> {
     let (input, subject) = alt((parse_uri, variable))(input)?;
     let (input, _) = multispace1(input)?;
-    
+
     // First predicate-object pair
     let (input, first_po) = parse_predicate_object(input)?;
-    
+
     // Zero or more additional predicate-object pairs separated by semicolon
     let (input, rest_po) = many0(preceded(
         tuple((multispace0, char(';'), multispace0)),
         parse_predicate_object,
     ))(input)?;
-    
+
     // Gather all (predicate, object) pairs
     let mut pairs = vec![first_po];
     pairs.extend(rest_po);
-    
+
     // Convert each pair into a triple by reusing the same subject
     let triples = pairs.into_iter().map(|(p, o)| (subject, p, o)).collect();
-    
+
     Ok((input, triples))
 }
 
@@ -306,23 +306,26 @@ pub fn parse_subquery<'a>(input: &'a str) -> IResult<&'a str, SubQuery<'a>> {
     let (input, _) = multispace0::<&str, nom::error::Error<&str>>(input)?;
     let (input, _) = char('{')(input)?;
     let (input, _) = multispace0::<&str, nom::error::Error<&str>>(input)?;
-    
+
     // Parse SELECT clause
     let (input, variables) = parse_select(input)?;
-    
+
     // Parse WHERE clause (recursive)
     let (input, (patterns, filters, values_clause, binds, _)) = parse_where(input)?;
-    
+
     let (input, _) = multispace0::<&str, nom::error::Error<&str>>(input)?;
     let (input, _) = char('}')(input)?;
-    
-    Ok((input, SubQuery {
-        variables,
-        patterns,
-        filters,
-        binds,
-        _values_clause: values_clause,
-    }))
+
+    Ok((
+        input,
+        SubQuery {
+            variables,
+            patterns,
+            filters,
+            binds,
+            _values_clause: values_clause,
+        },
+    ))
 }
 
 pub fn parse_where(
@@ -334,7 +337,7 @@ pub fn parse_where(
         Vec<(&str, &str, &str)>,
         Option<ValuesClause>,
         Vec<(&str, Vec<&str>, &str)>,
-        Vec<SubQuery>,  // Add subqueries to the return type
+        Vec<SubQuery>, // Add subqueries to the return type
     ),
 > {
     let (input, _) = multispace0(input)?;
@@ -379,7 +382,11 @@ pub fn parse_where(
             new_input
         } else if let Ok((new_input, rule_call)) = parse_rule_call(current_input) {
             let arg_str = rule_call.arguments.join(",");
-            patterns.push((rule_call.predicate, "RULECALL", Box::leak(arg_str.into_boxed_str())));
+            patterns.push((
+                rule_call.predicate,
+                "RULECALL",
+                Box::leak(arg_str.into_boxed_str()),
+            ));
             new_input
         } else {
             return Err(nom::Err::Error(nom::error::Error::new(
@@ -393,7 +400,8 @@ pub fn parse_where(
             space0::<&str, nom::error::Error<&str>>,
             char::<&str, nom::error::Error<&str>>('.'),
             space0::<&str, nom::error::Error<&str>>,
-        ))(current_input) {
+        ))(current_input)
+        {
             current_input = new_input;
         }
     }
@@ -435,10 +443,8 @@ pub fn parse_insert(input: &str) -> IResult<&str, InsertClause> {
 
     // Parse one or more triple blocks separated by dots.
     // Each triple block can contain multiple predicate-object pairs separated by semicolons.
-    let (input, triple_blocks) = separated_list1(
-        tuple((space0, char('.'), space0)),
-        parse_triple_block,
-    )(input)?;
+    let (input, triple_blocks) =
+        separated_list1(tuple((space0, char('.'), space0)), parse_triple_block)(input)?;
 
     let (input, _) = multispace0(input)?;
     let (input, _) = char('}')(input)?;
@@ -461,7 +467,7 @@ pub fn parse_sparql_query(
         Vec<&str>,                       // group_vars
         HashMap<String, String>,         // prefixes
         Option<ValuesClause>,
-        Vec<(&str, Vec<&str>, &str)>,    // BIND clauses
+        Vec<(&str, Vec<&str>, &str)>, // BIND clauses
         Vec<SubQuery>,
     ),
 > {
@@ -518,7 +524,7 @@ pub fn parse_sparql_query(
             prefixes,
             values_clause,
             binds,
-            subqueries
+            subqueries,
         ),
     ))
 }
@@ -531,13 +537,13 @@ pub fn execute_subquery<'a>(
 ) -> Vec<BTreeMap<&'a str, String>> {
     // Execute subquery patterns
     let mut results = current_results;
-    
+
     for (subject_var, predicate, object_var) in &subquery.patterns {
         let triples_vec: Vec<Triple> = database.triples.iter().cloned().collect();
 
         // IMPORTANT: resolve the prefixed name to its full IRI
         let resolved_predicate = database.resolve_query_term(predicate, prefixes);
-        
+
         // If object_var is not a variable, also resolve that if needed:
         let literal_filter = if !object_var.starts_with('?') {
             Some(database.resolve_query_term(object_var, prefixes))
@@ -555,10 +561,10 @@ pub fn execute_subquery<'a>(
             literal_filter,
         );
     }
-    
+
     // Apply filters
     results = database.apply_filters_simd(results, subquery.filters.clone());
-    
+
     // Process BIND clauses
     for (func_name, args, new_var) in subquery.binds.clone() {
         if func_name == "CONCAT" {
@@ -597,7 +603,7 @@ pub fn execute_subquery<'a>(
             eprintln!("UDF {} not found", func_name);
         }
     }
-    
+
     // Return only the variables specified in the SELECT clause
     results
         .into_iter()
@@ -729,19 +735,20 @@ pub fn execute_query(sparql: &str, database: &mut SparqlDatabase) -> Vec<Vec<Str
                     subject_var
                 };
                 let rule_key = rule_name.to_lowercase();
-                
-                let expanded_rule_predicate = database.rule_map.get(&rule_key)
+
+                let expanded_rule_predicate = database
+                    .rule_map
+                    .get(&rule_key)
                     .cloned()
                     .unwrap_or_else(|| {
-                        prefixes.get("ex")
+                        prefixes
+                            .get("ex")
                             .map(|prefix| format!("{}{}", prefix, rule_name))
                             .unwrap_or_else(|| rule_name.to_string())
                     });
 
                 // Parse variables from the rule call
-                let vars: Vec<&str> = object_var.split(',')
-                    .map(|s| s.trim())
-                    .collect();
+                let vars: Vec<&str> = object_var.split(',').map(|s| s.trim()).collect();
 
                 // First find all subjects that match the rule predicate
                 let mut matched_subjects = Vec::new();
@@ -749,7 +756,7 @@ pub fn execute_query(sparql: &str, database: &mut SparqlDatabase) -> Vec<Vec<Str
                     if let (Some(subj), Some(pred), Some(obj)) = (
                         database.dictionary.decode(triple.subject),
                         database.dictionary.decode(triple.predicate),
-                        database.dictionary.decode(triple.object)
+                        database.dictionary.decode(triple.object),
                     ) {
                         if pred == expanded_rule_predicate && obj == "true" {
                             matched_subjects.push(subj);
@@ -779,18 +786,18 @@ pub fn execute_query(sparql: &str, database: &mut SparqlDatabase) -> Vec<Vec<Str
                             if let (Some(rel_subj), Some(rel_pred), Some(rel_obj)) = (
                                 database.dictionary.decode(triple.subject),
                                 database.dictionary.decode(triple.predicate),
-                                database.dictionary.decode(triple.object)
+                                database.dictionary.decode(triple.object),
                             ) {
                                 // Find sensors that relate to our room
                                 if rel_pred.ends_with("room") && rel_obj == subject {
                                     let sensor_id = rel_subj;
-                                    
+
                                     // Now find this sensor's values
                                     for value_triple in database.triples.iter() {
                                         if let (Some(val_subj), Some(val_pred), Some(val_obj)) = (
                                             database.dictionary.decode(value_triple.subject),
                                             database.dictionary.decode(value_triple.predicate),
-                                            database.dictionary.decode(value_triple.object)
+                                            database.dictionary.decode(value_triple.object),
                                         ) {
                                             if val_subj == sensor_id {
                                                 let var_name = if vars[1].starts_with('?') {
@@ -802,10 +809,20 @@ pub fn execute_query(sparql: &str, database: &mut SparqlDatabase) -> Vec<Vec<Str
                                                 if val_pred.contains(var_name) {
                                                     if let Ok(num_val) = val_obj.parse::<i64>() {
                                                         match highest_value {
-                                                            None => highest_value = Some((num_val, val_obj.to_string())),
-                                                            Some((current, _)) if num_val > current => {
-                                                                highest_value = Some((num_val, val_obj.to_string()))
-                                                            },
+                                                            None => {
+                                                                highest_value = Some((
+                                                                    num_val,
+                                                                    val_obj.to_string(),
+                                                                ))
+                                                            }
+                                                            Some((current, _))
+                                                                if num_val > current =>
+                                                            {
+                                                                highest_value = Some((
+                                                                    num_val,
+                                                                    val_obj.to_string(),
+                                                                ))
+                                                            }
                                                             _ => {}
                                                         }
                                                     }
@@ -830,7 +847,7 @@ pub fn execute_query(sparql: &str, database: &mut SparqlDatabase) -> Vec<Vec<Str
                         final_results.push(result);
                     }
                 }
-                
+
                 continue;
             }
 
@@ -843,17 +860,22 @@ pub fn execute_query(sparql: &str, database: &mut SparqlDatabase) -> Vec<Vec<Str
                 };
                 let rule_key = rule_name.to_lowercase();
                 // Look up the expanded predicate in the rule_map
-                let expanded_rule_predicate = if let Some(expanded) = database.rule_map.get(&rule_key) {
-                    expanded.clone()
-                } else {
-                    // Fallback: if the rule name is not already prefixed, prepend default prefix "ex"
-                    if let Some(default_uri) = prefixes.get("ex") {
-                        format!("{}{}", default_uri, rule_name)
+                let expanded_rule_predicate =
+                    if let Some(expanded) = database.rule_map.get(&rule_key) {
+                        expanded.clone()
                     } else {
-                        rule_name.to_string()
-                    }
-                };
-                (object_var.to_string(), expanded_rule_predicate, "true".to_string())
+                        // Fallback: if the rule name is not already prefixed, prepend default prefix "ex"
+                        if let Some(default_uri) = prefixes.get("ex") {
+                            format!("{}{}", default_uri, rule_name)
+                        } else {
+                            rule_name.to_string()
+                        }
+                    };
+                (
+                    object_var.to_string(),
+                    expanded_rule_predicate,
+                    "true".to_string(),
+                )
             } else {
                 // For a normal triple pattern, resolve predicate and object using the prefixes.
                 let resolved_predicate = database.resolve_query_term(predicate, &prefixes);
@@ -876,7 +898,11 @@ pub fn execute_query(sparql: &str, database: &mut SparqlDatabase) -> Vec<Vec<Str
                         triples_vec.clone(),
                         &database.dictionary,
                         final_results,
-                        if !join_object_static.starts_with('?') { Some(join_object_static.to_string()) } else { None },
+                        if !join_object_static.starts_with('?') {
+                            Some(join_object_static.to_string())
+                        } else {
+                            None
+                        },
                     );
                 }
             } else {
@@ -888,7 +914,11 @@ pub fn execute_query(sparql: &str, database: &mut SparqlDatabase) -> Vec<Vec<Str
                     triples_vec.clone(),
                     &database.dictionary,
                     final_results,
-                    if !join_object_static.starts_with('?') { Some(join_object_static.to_string()) } else { None },
+                    if !join_object_static.starts_with('?') {
+                        Some(join_object_static.to_string())
+                    } else {
+                        None
+                    },
                 );
             }
         }
@@ -898,7 +928,8 @@ pub fn execute_query(sparql: &str, database: &mut SparqlDatabase) -> Vec<Vec<Str
 
         // Process subqueries first
         for subquery in subqueries {
-            let subquery_results = execute_subquery(&subquery, database, &prefixes, final_results.clone());
+            let subquery_results =
+                execute_subquery(&subquery, database, &prefixes, final_results.clone());
             final_results = merge_results(final_results, subquery_results);
         }
 
@@ -943,7 +974,8 @@ pub fn execute_query(sparql: &str, database: &mut SparqlDatabase) -> Vec<Vec<Str
 
         // Apply GROUP BY and aggregations
         if !group_by_variables.is_empty() {
-            final_results = group_and_aggregate_results(final_results, &group_by_variables, &aggregation_vars);
+            final_results =
+                group_and_aggregate_results(final_results, &group_by_variables, &aggregation_vars);
         }
     } else {
         eprintln!("Failed to parse the query.");
@@ -1074,35 +1106,54 @@ pub fn parse_rule_call(input: &str) -> IResult<&str, RuleHead> {
     let (input, pred) = predicate(input)?;
     let (input, args) = delimited(
         char('('),
-        separated_list1(
-            tuple((
-                multispace0, 
-                char(','), 
-                multispace0
-            )),
-            variable
-        ),
-        char(')')
+        separated_list1(tuple((multispace0, char(','), multispace0)), variable),
+        char(')'),
     )(input)?;
-    Ok((input, RuleHead { predicate: pred, arguments: args }))
+    Ok((
+        input,
+        RuleHead {
+            predicate: pred,
+            arguments: args,
+        },
+    ))
 }
 
 pub fn parse_rule_head(input: &str) -> IResult<&str, RuleHead> {
     let (input, pred) = predicate(input)?;
     let (input, args) = opt(delimited(
         char('('),
-        separated_list1(
-            tuple((
-                multispace0, 
-                char(','), 
-                multispace0
-            )),
-            variable
-        ),
-        char(')')
+        separated_list1(tuple((multispace0, char(','), multispace0)), variable),
+        char(')'),
     ))(input)?;
     let arguments = args.unwrap_or_else(|| vec![]);
-    Ok((input, RuleHead { predicate: pred, arguments }))
+    Ok((
+        input,
+        RuleHead {
+            predicate: pred,
+            arguments,
+        },
+    ))
+}
+
+fn parse_balanced(input: &str) -> IResult<&str, &str> {
+    let mut depth = 1;
+    for (i, c) in input.char_indices() {
+        match c {
+            '{' => depth += 1,
+            '}' => {
+                depth -= 1;
+                if depth == 0 {
+                    // Return the content inside the balanced block
+                    return Ok((&input[i + 1..], &input[..i]));
+                }
+            }
+            _ => {}
+        }
+    }
+    Err(nom::Err::Error(nom::error::Error::new(
+        input,
+        nom::error::ErrorKind::Tag,
+    )))
 }
 
 pub fn parse_ml_predict(input: &str) -> IResult<&str, MLPredictClause> {
@@ -1118,14 +1169,18 @@ pub fn parse_ml_predict(input: &str) -> IResult<&str, MLPredictClause> {
     let (input, _) = multispace0(input)?;
     let (input, _) = char(',')(input)?;
     let (input, _) = multispace0(input)?;
-    // Parse INPUT clause
+    // Parse INPUT clause using the inclusive balanced parser
     let (input, _) = tag("INPUT")(input)?;
     let (input, _) = multispace0(input)?;
-    let (input, input_query) = delimited(
-        char('{'),
-        take_until("}"),
-        char('}')
-    )(input)?;
+    let (input, input_query) = preceded(char('{'), parse_balanced)(input)?;
+
+    // TODO: Parse the input query to extract patterns, filters, values, binds, and subqueries
+    if let Some(idx) = input_query.find("WHERE") {
+        let where_clause_slice = &input_query[idx..];
+        let (_rest, (_patterns, _filters, _values_clause, _binds, _subqueries)) =
+            parse_where(where_clause_slice)?;
+    }
+
     let (input, _) = multispace0(input)?;
     let (input, _) = char(',')(input)?;
     let (input, _) = multispace0(input)?;
@@ -1135,11 +1190,15 @@ pub fn parse_ml_predict(input: &str) -> IResult<&str, MLPredictClause> {
     let (input, output_var) = variable(input)?;
     let (input, _) = multispace0(input)?;
     let (input, _) = char(')')(input)?;
-    Ok((input, MLPredictClause {
-        model,
-        input: input_query,
-        output: output_var,
-    }))
+
+    Ok((
+        input,
+        MLPredictClause {
+            model,
+            input: input_query, // full nested query content (you might store the parsed parts too)
+            output: output_var,
+        },
+    ))
 }
 
 /// Parse a complete rule:
@@ -1159,15 +1218,23 @@ pub fn parse_rule(input: &str) -> IResult<&str, CombinedRule> {
         char('{'),
         preceded(
             multispace0,
-            terminated(parse_triple_block, opt(tuple((multispace0, char('.')))))
+            terminated(parse_triple_block, opt(tuple((multispace0, char('.'))))),
         ),
-        preceded(multispace0, char('}'))
+        preceded(multispace0, char('}')),
     )(input)?;
     let (input, _) = multispace0(input)?;
     let (input, _) = char('.')(input)?;
     // Optionally parse ML.PREDICT block if it exists
     let (input, ml_predict) = opt(parse_ml_predict)(input)?;
-    Ok((input, CombinedRule { head, body, conclusion, ml_predict }))
+    Ok((
+        input,
+        CombinedRule {
+            head,
+            body,
+            conclusion,
+            ml_predict,
+        },
+    ))
 }
 
 /// The combined query parser parses SPARQL + LP
@@ -1190,7 +1257,14 @@ pub fn parse_combined_query(input: &str) -> IResult<&str, CombinedQuery> {
     let (input, rule_opt) = opt(parse_rule)(input)?;
     let (input, _) = multispace0(input)?;
     let (input, sparql_parse) = parse_sparql_query(input)?;
-    Ok((input, CombinedQuery { prefixes, rule: rule_opt, sparql: sparql_parse }))
+    Ok((
+        input,
+        CombinedQuery {
+            prefixes,
+            rule: rule_opt,
+            sparql: sparql_parse,
+        },
+    ))
 }
 
 fn resolve_term_with_prefix(term: &str, prefixes: &HashMap<String, String>) -> String {
@@ -1239,13 +1313,18 @@ pub fn convert_combined_rule<'a>(
         .collect::<Vec<TriplePattern>>();
 
     // Convert filter conditions
-    let filter_conditions = cr.body.1.into_iter().map(|(var, op, value)| {
-        FilterCondition {
-            variable: var.trim_start_matches('?').to_string(), // Remove the leading '?'
-            operator: op.to_string(),
-            value: value.to_string(),
-        }
-    }).collect();
+    let filter_conditions = cr
+        .body
+        .1
+        .into_iter()
+        .map(|(var, op, value)| {
+            FilterCondition {
+                variable: var.trim_start_matches('?').to_string(), // Remove the leading '?'
+                operator: op.to_string(),
+                value: value.to_string(),
+            }
+        })
+        .collect();
 
     let conclusion_triple = if let Some(first) = cr.conclusion.first() {
         convert_triple_pattern(*first, dict, prefixes)
@@ -1259,3 +1338,4 @@ pub fn convert_combined_rule<'a>(
         conclusion: conclusion_triple,
     }
 }
+

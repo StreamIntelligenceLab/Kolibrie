@@ -12,10 +12,14 @@ target/
 
 *.lib
 *.dll
+*.so
 
 # Old files
 kolibrie/src/old_new.rs
 kolibrie/src/old.rs
+
+ml/src/models
+__pycache__/
 
 # Some unnecessary python directories
 py_tests/
@@ -39,6 +43,7 @@ thesis.org
 unused_joins.txt
 TODO.txt
 DONE.txt
+IMPORTANT.txt
 
 # Png files and images
 graphics.png

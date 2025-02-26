@@ -5,5 +5,9 @@ edition = "2021"
 description = "Machine Learning"
 
 [dependencies]
+serde = { workspace = true }
 serde_json = { workspace = true }
 pyo3 = { workspace = true }
+
+[build-dependencies]
+pyo3-build-config = "0.23.3"

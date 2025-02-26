@@ -28,6 +28,7 @@ url = { workspace = true }
 percent-encoding = { workspace = true }
 httparse = { workspace = true }
 crossbeam = { workspace = true }
+pyo3 = { workspace = true }
 gpu = { path = "../gpu" }
 shared = { path = "../shared" }
 datalog =  { path = "../datalog" }
