@@ -169,4 +169,3 @@ xmlns:ds=\"https://data.cityofchicago.org/resource/xzkq-xp2w/\">\n",
 
     Ok(())
 }
-
