@@ -50,6 +50,11 @@ path = "src/lib.rs"
 # When the "cuda" feature is enabled, all CUDA code is compiled in
 cuda = []
 
+[[bench]]
+name = "my_benchmark"
+path = "benches/my_benchmark.rs"
+harness = false
+
 [[example]]
 name = "test"
 path = "examples/example.rs"

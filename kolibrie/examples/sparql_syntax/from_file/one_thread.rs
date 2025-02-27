@@ -1,4 +1,4 @@
-use kolibrie::parser::*;
+use kolibrie::execute_query::*;
 use kolibrie::sparql_database::SparqlDatabase;
 
 fn simple_select_synth_data(file_path: &str) {

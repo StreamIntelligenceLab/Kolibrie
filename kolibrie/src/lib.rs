@@ -5,3 +5,4 @@ pub mod utils;
 pub mod volcano_optimizer;
 pub mod lsm_tree;
 pub mod cuda;
+pub mod execute_query;

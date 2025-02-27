@@ -1,4 +1,4 @@
-use kolibrie::parser::*;
+use kolibrie::execute_query::*;
 use kolibrie::sparql_database::*;
 
 fn avg() {

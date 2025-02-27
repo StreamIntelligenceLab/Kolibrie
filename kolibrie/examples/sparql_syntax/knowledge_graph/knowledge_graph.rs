@@ -117,7 +117,7 @@ fn backward_chaining() {
     for res in results {
         if let Some(ancestor_term) = res.get("A") {
             if let Term::Constant(ancestor_id) = resolve_term(ancestor_term, &res) {
-                if let Some(ancestor_name) = dict.decode(ancestor_id) {
+                if let Some(ancestor_name) = kg.dictionary.decode(ancestor_id) {
                     println!("Ancestor: {}", ancestor_name);
                 }
             }

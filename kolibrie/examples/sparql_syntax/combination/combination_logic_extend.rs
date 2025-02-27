@@ -1,4 +1,5 @@
 use kolibrie::parser::*;
+use kolibrie::execute_query::*;
 use kolibrie::sparql_database::SparqlDatabase;
 use datalog::knowledge_graph::KnowledgeGraph;
 use shared::terms::Term;
