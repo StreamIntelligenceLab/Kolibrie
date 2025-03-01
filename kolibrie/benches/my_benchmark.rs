@@ -63,11 +63,35 @@ fn execute_sample_query_rayon_simd(database: &mut SparqlDatabase) {
     execute_query_rayon_simd(sparql, database);
 }
 
+fn execute_sample_query_rayon_parallel1(database: &mut SparqlDatabase) {
+    let sparql = r#"
+    PREFIX ds: <https://data.cityofchicago.org/resource/xzkq-xp2w/>
+    PREFIX foaf: <http://xmlns.com/foaf/0.1/>
+    SELECT ?employee ?workplaceHomepage ?salary
+    WHERE {
+        ?employee foaf:workplaceHomepage ?workplaceHomepage .
+        ?employee ds:annual_salary ?salary
+    }"#;
+    execute_query_rayon_parallel1(sparql, database);
+}
+
+fn execute_sample_query_rayon_parallel2(database: &mut SparqlDatabase) {
+    let sparql = r#"
+    PREFIX ds: <https://data.cityofchicago.org/resource/xzkq-xp2w/>
+    PREFIX foaf: <http://xmlns.com/foaf/0.1/>
+    SELECT ?employee ?workplaceHomepage ?salary
+    WHERE {
+        ?employee foaf:workplaceHomepage ?workplaceHomepage .
+        ?employee ds:annual_salary ?salary
+    }"#;
+    execute_query_rayon_parallel2(sparql, database);
+}
+
 fn my_benchmark(c: &mut Criterion) {
     let mut db = setup_database();
 
     // Benchmark for executing SPARQL query
-    c.bench_function("execute_query_join", |b| {
+    c.bench_function("execute_query_join parallel", |b| {
         b.iter(|| execute_sample_query(&mut db))
     });
 
@@ -81,6 +105,14 @@ fn my_benchmark(c: &mut Criterion) {
 
     c.bench_function("execute_query_rayon_simd", |b| {
         b.iter(|| execute_sample_query_rayon_simd(&mut db))
+    });
+
+    c.bench_function("execute_query_rayon_parallel 1", |b| {
+        b.iter(|| execute_sample_query_rayon_parallel1(&mut db))
+    });
+
+    c.bench_function("execute_query_rayon_parallel 2", |b| {
+        b.iter(|| execute_sample_query_rayon_parallel2(&mut db))
     });
 }
 

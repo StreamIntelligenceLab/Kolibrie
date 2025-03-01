@@ -24,6 +24,12 @@ use std::sync::Arc;
 use std::sync::{Mutex, RwLock};
 use url::Url;
 
+const MIN_CHUNK_SIZE: usize = 1024;
+const HASHMAP_INITIAL_CAPACITY: usize = 4096;
+
+const MIN_CHUNK_SIZE1: usize = 1024;
+const HASHMAP_INITIAL_CAPACITY1: usize = 1024;
+
 #[derive(Debug, Clone)]
 pub struct SparqlDatabase {
     pub triples: BTreeSet<Triple>,
@@ -1899,6 +1905,257 @@ impl SparqlDatabase {
         results
     }
 
+    pub fn perform_join_par_simd_with_strict_filter_3<'a>(
+        &self,
+        subject_var: &'a str,
+        predicate: String,
+        object_var: &'a str,
+        triples: Vec<Triple>,
+        dictionary: &'a Dictionary,
+        final_results: Vec<BTreeMap<&'a str, String>>,
+        literal_filter: Option<String>,
+    ) -> Vec<BTreeMap<&'a str, String>> {
+        // Early return for empty joins
+        if final_results.is_empty() {
+            return Vec::new();
+        }
+
+        // Pre-fetch predicate and filter bytes to avoid string comparisons
+        let predicate_bytes = predicate.as_bytes();
+        let literal_filter_bytes = literal_filter.as_ref().map(|s| s.as_bytes());
+
+        // Preallocate with capacity estimation to avoid rehashing
+        let estimated_capacity = (final_results.len() / 4).max(HASHMAP_INITIAL_CAPACITY);
+        
+        // Use with_capacity to preallocate hashmap space
+        let mut both_vars_bound: HashMap<(String, String), Vec<usize>> = 
+            HashMap::with_capacity(estimated_capacity);
+        let mut subject_var_bound: HashMap<String, Vec<usize>> = 
+            HashMap::with_capacity(estimated_capacity);
+        let mut object_var_bound: HashMap<String, Vec<usize>> = 
+            HashMap::with_capacity(estimated_capacity);
+        let mut neither_var_bound: Vec<usize> = Vec::with_capacity(final_results.len() / 2);
+
+        // Pre-compute and classify bindings - this is serial but much faster than doing it in parallel
+        for (idx, result) in final_results.iter().enumerate() {
+            let subject_binding = result.get(subject_var);
+            let object_binding = result.get(object_var);
+
+            match (subject_binding, object_binding) {
+                (Some(subj_val), Some(obj_val)) => {
+                    both_vars_bound
+                        .entry((subj_val.clone(), obj_val.clone()))
+                        .or_insert_with(|| Vec::with_capacity(4))
+                        .push(idx);
+                }
+                (Some(subj_val), None) => {
+                    subject_var_bound
+                        .entry(subj_val.clone())
+                        .or_insert_with(|| Vec::with_capacity(8))
+                        .push(idx);
+                }
+                (None, Some(obj_val)) => {
+                    object_var_bound
+                        .entry(obj_val.clone())
+                        .or_insert_with(|| Vec::with_capacity(8))
+                        .push(idx);
+                }
+                (None, None) => {
+                    neither_var_bound.push(idx);
+                }
+            }
+        }
+
+        // Immutable shared references for threading
+        let final_results_arc = Arc::new(final_results);
+        let both_vars_bound_arc = Arc::new(both_vars_bound);
+        let subject_var_bound_arc = Arc::new(subject_var_bound);
+        let object_var_bound_arc = Arc::new(object_var_bound);
+        let neither_var_bound_arc = Arc::new(neither_var_bound);
+
+        // Calculate optimal chunk size based on available processors and dataset size
+        let chunk_size = (triples.len() / rayon::current_num_threads()).max(MIN_CHUNK_SIZE);
+        
+        // Process triples in chunks for better cache locality and load balancing
+        let results = triples
+            .par_chunks(chunk_size)
+            .flat_map(|triple_chunk| {
+                // Preallocate result vector for this chunk based on estimated hit rate
+                let mut local_results = Vec::with_capacity(triple_chunk.len() / 4);
+                
+                // Process each triple in the chunk
+                for triple in triple_chunk {
+                    // Step 1: Quick predicate check first (early filter)
+                    let pred_opt = dictionary.decode(triple.predicate);
+                    if pred_opt.is_none() || pred_opt.as_ref().unwrap().as_bytes() != predicate_bytes {
+                        continue;
+                    }
+                    
+                    // Step 2: Filter check if needed
+                    if let Some(filter_bytes) = &literal_filter_bytes {
+                        let obj_opt = dictionary.decode(triple.object);
+                        if obj_opt.is_none() || obj_opt.as_ref().unwrap().as_bytes() != *filter_bytes {
+                            continue;
+                        }
+                        
+                        // Decode subject only if predicate and object pass filters
+                        if let Some(subj) = dictionary.decode(triple.subject) {
+                            process_join(
+                                &subj,
+                                obj_opt.unwrap(),
+                                subject_var,
+                                object_var,
+                                &both_vars_bound_arc,
+                                &subject_var_bound_arc,
+                                &object_var_bound_arc,
+                                &neither_var_bound_arc,
+                                &final_results_arc,
+                                &mut local_results,
+                            );
+                        }
+                    } else {
+                        // No filter - decode both subject and object
+                        let subj_opt = dictionary.decode(triple.subject);
+                        let obj_opt = dictionary.decode(triple.object);
+                        
+                        if let (Some(subj), Some(obj)) = (subj_opt, obj_opt) {
+                            process_join(
+                                &subj,
+                                &obj,
+                                subject_var,
+                                object_var,
+                                &both_vars_bound_arc,
+                                &subject_var_bound_arc,
+                                &object_var_bound_arc,
+                                &neither_var_bound_arc,
+                                &final_results_arc,
+                                &mut local_results,
+                            );
+                        }
+                    }
+                }
+                
+                local_results
+            })
+            .collect();
+
+        results
+    }
+
+    pub fn perform_join_par_simd_with_strict_filter_4<'a>(
+        &self,
+        subject_var: &'a str,
+        predicate: String,
+        object_var: &'a str,
+        triples: Vec<Triple>,
+        dictionary: &'a Dictionary,
+        final_results: Vec<BTreeMap<&'a str, String>>,
+        literal_filter: Option<String>,
+    ) -> Vec<BTreeMap<&'a str, String>> {
+        // Early return for empty joins
+        if final_results.is_empty() {
+            return Vec::new();
+        }
+
+        // Pre-fetch predicate and filter bytes to avoid string comparisons
+        let predicate_bytes = predicate.as_bytes();
+        let literal_filter_bytes = literal_filter.as_ref().map(|s| s.as_bytes());
+
+        let estimated_capacity = (final_results.len() / 3).max(HASHMAP_INITIAL_CAPACITY1);
+        
+        let mut both_vars_bound: HashMap<(String, String), Vec<usize>> = 
+            HashMap::with_capacity(estimated_capacity / 2);  // This tends to be smaller
+        let mut subject_var_bound: HashMap<String, Vec<usize>> = 
+            HashMap::with_capacity(estimated_capacity);
+        let mut object_var_bound: HashMap<String, Vec<usize>> = 
+            HashMap::with_capacity(estimated_capacity);
+        let mut neither_var_bound: Vec<usize> = Vec::with_capacity(final_results.len() / 2);
+
+        // Pre-compute and classify bindings - this is serial but much faster than doing it in parallel
+        for (idx, result) in final_results.iter().enumerate() {
+            let subject_binding = result.get(subject_var);
+            let object_binding = result.get(object_var);
+
+            match (subject_binding, object_binding) {
+                (Some(subj_val), Some(obj_val)) => {
+                    both_vars_bound
+                        .entry((subj_val.clone(), obj_val.clone()))
+                        .or_insert_with(|| Vec::with_capacity(4))
+                        .push(idx);
+                }
+                (Some(subj_val), None) => {
+                    subject_var_bound
+                        .entry(subj_val.clone())
+                        .or_insert_with(|| Vec::with_capacity(8))
+                        .push(idx);
+                }
+                (None, Some(obj_val)) => {
+                    object_var_bound
+                        .entry(obj_val.clone())
+                        .or_insert_with(|| Vec::with_capacity(8))
+                        .push(idx);
+                }
+                (None, None) => {
+                    neither_var_bound.push(idx);
+                }
+            }
+        }
+
+        // Immutable shared references for threading
+        let final_results_arc = Arc::new(final_results);
+        let both_vars_bound_arc = Arc::new(both_vars_bound);
+        let subject_var_bound_arc = Arc::new(subject_var_bound);
+        let object_var_bound_arc = Arc::new(object_var_bound);
+        let neither_var_bound_arc = Arc::new(neither_var_bound);
+
+        let chunk_size = ((triples.len() / rayon::current_num_threads()) * 3 / 2).max(MIN_CHUNK_SIZE1);
+        
+        let results = triples
+            .par_chunks(chunk_size)
+            .fold(
+                || Vec::with_capacity(chunk_size / 4),  // Local vector capacity based on chunk size
+                |mut local_results, triple_chunk| {
+                    // Create a local result buffer
+                    process_triple_chunk(
+                        triple_chunk,
+                        predicate_bytes,
+                        &literal_filter_bytes,
+                        subject_var,
+                        object_var,
+                        &both_vars_bound_arc,
+                        &subject_var_bound_arc,
+                        &object_var_bound_arc,
+                        &neither_var_bound_arc,
+                        &final_results_arc,
+                        &mut local_results,
+                        dictionary,
+                    );
+                    
+                    local_results
+                },
+            )
+            .reduce(
+                || Vec::new(),
+                |mut acc, mut chunk| {
+                    if acc.is_empty() {
+                        return chunk;
+                    }
+                    if chunk.is_empty() {
+                        return acc;
+                    }
+                    
+                    // Pre-allocate to avoid reallocation during append
+                    if acc.capacity() < acc.len() + chunk.len() {
+                        acc.reserve(chunk.len());
+                    }
+                    acc.append(&mut chunk);
+                    acc
+                },
+            );
+
+        results
+    }
+
     pub fn join_by_conditions_with_filters<F>(
         &self,
         other: &SparqlDatabase,
@@ -2601,5 +2858,237 @@ fn simd_bytes_eq(a: &[u8], b: &[u8]) -> bool {
     {
         // Fallback on non-x86 architectures.
         a == b
+    }
+}
+
+#[inline(always)]
+fn process_join<'a>(
+    subject: &str,
+    object: &str,
+    subject_var: &'a str,
+    object_var: &'a str,
+    both_vars_bound: &Arc<HashMap<(String, String), Vec<usize>>>,
+    subject_var_bound: &Arc<HashMap<String, Vec<usize>>>,
+    object_var_bound: &Arc<HashMap<String, Vec<usize>>>,
+    neither_var_bound: &Arc<Vec<usize>>,
+    final_results_arc: &Arc<Vec<BTreeMap<&'a str, String>>>,
+    local_results: &mut Vec<BTreeMap<&'a str, String>>,
+) {
+    // Check both_vars_bound - most restrictive case first
+    if let Some(result_indices) = both_vars_bound.get(&(subject.to_string(), object.to_string())) {
+        for &idx in result_indices {
+            local_results.push(final_results_arc[idx].clone());
+        }
+    }
+
+    // Process subject_var_bound
+    if let Some(result_indices) = subject_var_bound.get(subject) {
+        for &idx in result_indices {
+            let base_result = &final_results_arc[idx];
+            // Check for object consistency if it exists
+            if let Some(existing_object) = base_result.get(object_var) {
+                if existing_object == object {
+                    local_results.push(base_result.clone());
+                }
+            } else {
+                // Bind the object variable
+                let mut extended_result = base_result.clone();
+                extended_result.insert(object_var, object.to_string());
+                local_results.push(extended_result);
+            }
+        }
+    }
+
+    // Process object_var_bound
+    if let Some(result_indices) = object_var_bound.get(object) {
+        for &idx in result_indices {
+            let base_result = &final_results_arc[idx];
+            // Check for subject consistency if it exists
+            if let Some(existing_subject) = base_result.get(subject_var) {
+                if existing_subject == subject {
+                    local_results.push(base_result.clone());
+                }
+            } else {
+                // Bind the subject variable
+                let mut extended_result = base_result.clone();
+                extended_result.insert(subject_var, subject.to_string());
+                local_results.push(extended_result);
+            }
+        }
+    }
+
+    // Process neither_var_bound - least restrictive case last
+    for &idx in neither_var_bound.iter() {
+        let base_result = &final_results_arc[idx];
+        
+        // Check both consistency constraints
+        let subject_consistent = base_result
+            .get(subject_var)
+            .map_or(true, |existing| existing == subject);
+        let object_consistent = base_result
+            .get(object_var)
+            .map_or(true, |existing| existing == object);
+
+        if subject_consistent && object_consistent {
+            let mut extended_result = base_result.clone();
+            
+            // Only insert if not already present
+            if !base_result.contains_key(subject_var) {
+                extended_result.insert(subject_var, subject.to_string());
+            }
+            if !base_result.contains_key(object_var) {
+                extended_result.insert(object_var, object.to_string());
+            }
+            
+            local_results.push(extended_result);
+        }
+    }
+}
+
+#[inline(always)]
+fn process_triple_chunk<'a>(
+    triple_chunk: &[Triple],
+    predicate_bytes: &[u8],
+    literal_filter_bytes: &Option<&[u8]>,
+    subject_var: &'a str,
+    object_var: &'a str,
+    both_vars_bound: &Arc<HashMap<(String, String), Vec<usize>>>,
+    subject_var_bound: &Arc<HashMap<String, Vec<usize>>>,
+    object_var_bound: &Arc<HashMap<String, Vec<usize>>>,
+    neither_var_bound: &Arc<Vec<usize>>,
+    final_results_arc: &Arc<Vec<BTreeMap<&'a str, String>>>,
+    local_results: &mut Vec<BTreeMap<&'a str, String>>,
+    dictionary: &'a Dictionary,
+) {
+    // Pre-filter triples to avoid unnecessary decoding
+    for triple in triple_chunk {
+        let pred_opt = dictionary.decode(triple.predicate);
+        if pred_opt.is_none() || pred_opt.as_ref().unwrap().as_bytes() != predicate_bytes {
+            continue;
+        }
+        
+        if let Some(filter_bytes) = literal_filter_bytes {
+            let obj_opt = dictionary.decode(triple.object);
+            if obj_opt.is_none() || obj_opt.as_ref().unwrap().as_bytes() != *filter_bytes {
+                continue;
+            }
+            
+            if let Some(subj) = dictionary.decode(triple.subject) {
+                process_join_efficiently(
+                    &subj,
+                    obj_opt.unwrap(),
+                    subject_var,
+                    object_var,
+                    both_vars_bound,
+                    subject_var_bound,
+                    object_var_bound,
+                    neither_var_bound,
+                    final_results_arc,
+                    local_results,
+                );
+            }
+        } else {
+            let subj_opt = dictionary.decode(triple.subject);
+            let obj_opt = dictionary.decode(triple.object);
+            
+            if let (Some(subj), Some(obj)) = (subj_opt, obj_opt) {
+                process_join_efficiently(
+                    &subj,
+                    &obj,
+                    subject_var,
+                    object_var,
+                    both_vars_bound,
+                    subject_var_bound,
+                    object_var_bound,
+                    neither_var_bound,
+                    final_results_arc,
+                    local_results,
+                );
+            }
+        }
+    }
+}
+
+
+#[inline(always)]
+fn process_join_efficiently<'a>(
+    subject: &str,
+    object: &str,
+    subject_var: &'a str,
+    object_var: &'a str,
+    both_vars_bound: &Arc<HashMap<(String, String), Vec<usize>>>,
+    subject_var_bound: &Arc<HashMap<String, Vec<usize>>>,
+    object_var_bound: &Arc<HashMap<String, Vec<usize>>>,
+    neither_var_bound: &Arc<Vec<usize>>,
+    final_results_arc: &Arc<Vec<BTreeMap<&'a str, String>>>,
+    local_results: &mut Vec<BTreeMap<&'a str, String>>,
+) {
+    if let Some(result_indices) = both_vars_bound.get(&(subject.to_string(), object.to_string())) {
+        for &idx in result_indices {
+            // Clone efficiently with pre-allocation
+            let result = final_results_arc[idx].clone();
+            local_results.push(result);
+        }
+        return; // Early return after handling the most restrictive case
+    }
+
+    // Check for subject var bound - second most restrictive
+    if let Some(result_indices) = subject_var_bound.get(subject) {
+        for &idx in result_indices {
+            let base_result = &final_results_arc[idx];
+            // Check for object consistency if it exists
+            if let Some(existing_object) = base_result.get(object_var) {
+                if existing_object == object {
+                    local_results.push(base_result.clone());
+                }
+            } else {
+                let mut extended_result = base_result.clone();
+                extended_result.insert(object_var, object.to_string());
+                local_results.push(extended_result);
+            }
+        }
+    }
+
+    // Check for object var bound
+    if let Some(result_indices) = object_var_bound.get(object) {
+        for &idx in result_indices {
+            let base_result = &final_results_arc[idx];
+            if let Some(existing_subject) = base_result.get(subject_var) {
+                if existing_subject == subject {
+                    local_results.push(base_result.clone());
+                }
+            } else {
+                let mut extended_result = base_result.clone();
+                extended_result.insert(subject_var, subject.to_string());
+                local_results.push(extended_result);
+            }
+        }
+    }
+
+    // Process least restrictive case - neither var bound
+    for &idx in neither_var_bound.iter() {
+        let base_result = &final_results_arc[idx];
+        
+        // Check both consistency constraints
+        let subject_consistent = base_result
+            .get(subject_var)
+            .map_or(true, |existing| existing == subject);
+        let object_consistent = base_result
+            .get(object_var)
+            .map_or(true, |existing| existing == object);
+
+        if subject_consistent && object_consistent {
+            let mut extended_result = base_result.clone();
+            
+            // Only insert if not already present
+            if !base_result.contains_key(subject_var) {
+                extended_result.insert(subject_var, subject.to_string());
+            }
+            if !base_result.contains_key(object_var) {
+                extended_result.insert(object_var, object.to_string());
+            }
+            
+            local_results.push(extended_result);
+        }
     }
 }

@@ -616,6 +616,266 @@ pub fn execute_query_rayon_simd(sparql: &str, database: &mut SparqlDatabase) -> 
     format_results(final_results, &selected_variables)
 }
 
+pub fn execute_query_rayon_parallel1(sparql: &str, database: &mut SparqlDatabase) -> Vec<Vec<String>> {
+    let sparql = normalize_query(sparql);
+
+    // Prepare variables to hold the query processing state.
+    let mut final_results: Vec<BTreeMap<&str, String>>;
+    let mut selected_variables: Vec<(String, String)> = Vec::new();
+    let mut aggregation_vars: Vec<(&str, &str, &str)> = Vec::new();
+    let group_by_variables: Vec<&str>;
+    let prefixes;
+
+    if let Ok((
+        _,
+        (
+            insert_clause,
+            mut variables,
+            patterns,
+            filters,
+            group_vars,
+            parsed_prefixes,
+            values_clause,
+            binds,
+            subqueries,
+        ),
+    )) = parse_sparql_query(sparql)
+    {
+        prefixes = parsed_prefixes;
+
+        // Process the INSERT clause if present
+        process_insert_clause(insert_clause, database);
+
+        // If SELECT * is used, gather all variables from patterns
+        if variables == vec![("*", "*", None)] {
+            let mut all_vars = BTreeSet::new();
+            for (subject_var, _, object_var) in &patterns {
+                all_vars.insert(*subject_var);
+                all_vars.insert(*object_var);
+            }
+            variables = all_vars.into_iter().map(|var| ("VAR", var, None)).collect();
+        }
+
+        // Process variables for aggregation
+        process_variables(&mut selected_variables, &mut aggregation_vars, variables);
+
+        group_by_variables = group_vars;
+
+        // Convert BTreeSet to a vector of Triple
+        let triples_vec: Vec<Triple> = database.triples.iter().cloned().collect();
+
+        // Initialize final_results based on the VALUES clause
+        final_results = initialize_results(&values_clause);
+
+        // Process each pattern in the WHERE clause
+        for (subject_var, predicate, object_var) in patterns {
+            if predicate == "RULECALL" {
+                final_results = process_rule_call(subject_var, object_var, database, &prefixes);
+                continue;
+            }
+
+            // Handle non-RULECALL patterns
+            let (join_subject, join_predicate, join_object) = resolve_triple_pattern(
+                subject_var, predicate, object_var, database, &prefixes
+            );
+
+            // To satisfy lifetime requirements, leak the computed join_subject and join_object
+            let join_subject_static: &'static str = Box::leak(join_subject.into_boxed_str());
+            let join_object_static: &'static str = Box::leak(join_object.into_boxed_str());
+
+            if GPU_MODE_ENABLED.load(std::sync::atomic::Ordering::SeqCst) {
+                println!("CUDA");
+                #[cfg(feature = "cuda")]
+                {
+                    final_results = database.perform_hash_join_cuda_wrapper(
+                        join_subject_static,
+                        join_predicate,
+                        join_object_static,
+                        triples_vec.clone(),
+                        &database.dictionary,
+                        final_results,
+                        if !join_object_static.starts_with('?') {
+                            Some(join_object_static.to_string())
+                        } else {
+                            None
+                        },
+                    );
+                }
+            } else {
+                // println!("NORM");
+                final_results = database.perform_join_par_simd_with_strict_filter_3(
+                    join_subject_static,
+                    join_predicate,
+                    join_object_static,
+                    triples_vec.clone(),
+                    &database.dictionary,
+                    final_results,
+                    if !join_object_static.starts_with('?') {
+                        Some(join_object_static.to_string())
+                    } else {
+                        None
+                    },
+                );
+            }
+        }
+
+        // Apply filters
+        final_results = database.apply_filters_simd(final_results, filters);
+
+        // Process subqueries first
+        for subquery in subqueries {
+            let subquery_results =
+                execute_subquery(&subquery, database, &prefixes, final_results.clone());
+            final_results = merge_results(final_results, subquery_results);
+        }
+
+        // Apply BIND (UDF) clauses
+        process_bind_clauses(&mut final_results, binds, database);
+
+        // Apply GROUP BY and aggregations
+        if !group_by_variables.is_empty() {
+            final_results =
+                group_and_aggregate_results(final_results, &group_by_variables, &aggregation_vars);
+        }
+    } else {
+        eprintln!("Failed to parse the query.");
+        return Vec::new();
+    }
+
+    // Convert the final BTreeMap results into Vec<Vec<String>>
+    format_results(final_results, &selected_variables)
+}
+
+pub fn execute_query_rayon_parallel2(sparql: &str, database: &mut SparqlDatabase) -> Vec<Vec<String>> {
+    let sparql = normalize_query(sparql);
+
+    // Prepare variables to hold the query processing state.
+    let mut final_results: Vec<BTreeMap<&str, String>>;
+    let mut selected_variables: Vec<(String, String)> = Vec::new();
+    let mut aggregation_vars: Vec<(&str, &str, &str)> = Vec::new();
+    let group_by_variables: Vec<&str>;
+    let prefixes;
+
+    if let Ok((
+        _,
+        (
+            insert_clause,
+            mut variables,
+            patterns,
+            filters,
+            group_vars,
+            parsed_prefixes,
+            values_clause,
+            binds,
+            subqueries,
+        ),
+    )) = parse_sparql_query(sparql)
+    {
+        prefixes = parsed_prefixes;
+
+        // Process the INSERT clause if present
+        process_insert_clause(insert_clause, database);
+
+        // If SELECT * is used, gather all variables from patterns
+        if variables == vec![("*", "*", None)] {
+            let mut all_vars = BTreeSet::new();
+            for (subject_var, _, object_var) in &patterns {
+                all_vars.insert(*subject_var);
+                all_vars.insert(*object_var);
+            }
+            variables = all_vars.into_iter().map(|var| ("VAR", var, None)).collect();
+        }
+
+        // Process variables for aggregation
+        process_variables(&mut selected_variables, &mut aggregation_vars, variables);
+
+        group_by_variables = group_vars;
+
+        // Convert BTreeSet to a vector of Triple
+        let triples_vec: Vec<Triple> = database.triples.iter().cloned().collect();
+
+        // Initialize final_results based on the VALUES clause
+        final_results = initialize_results(&values_clause);
+
+        // Process each pattern in the WHERE clause
+        for (subject_var, predicate, object_var) in patterns {
+            if predicate == "RULECALL" {
+                final_results = process_rule_call(subject_var, object_var, database, &prefixes);
+                continue;
+            }
+
+            // Handle non-RULECALL patterns
+            let (join_subject, join_predicate, join_object) = resolve_triple_pattern(
+                subject_var, predicate, object_var, database, &prefixes
+            );
+
+            // To satisfy lifetime requirements, leak the computed join_subject and join_object
+            let join_subject_static: &'static str = Box::leak(join_subject.into_boxed_str());
+            let join_object_static: &'static str = Box::leak(join_object.into_boxed_str());
+
+            if GPU_MODE_ENABLED.load(std::sync::atomic::Ordering::SeqCst) {
+                println!("CUDA");
+                #[cfg(feature = "cuda")]
+                {
+                    final_results = database.perform_hash_join_cuda_wrapper(
+                        join_subject_static,
+                        join_predicate,
+                        join_object_static,
+                        triples_vec.clone(),
+                        &database.dictionary,
+                        final_results,
+                        if !join_object_static.starts_with('?') {
+                            Some(join_object_static.to_string())
+                        } else {
+                            None
+                        },
+                    );
+                }
+            } else {
+                // println!("NORM");
+                final_results = database.perform_join_par_simd_with_strict_filter_4(
+                    join_subject_static,
+                    join_predicate,
+                    join_object_static,
+                    triples_vec.clone(),
+                    &database.dictionary,
+                    final_results,
+                    if !join_object_static.starts_with('?') {
+                        Some(join_object_static.to_string())
+                    } else {
+                        None
+                    },
+                );
+            }
+        }
+
+        // Apply filters
+        final_results = database.apply_filters_simd(final_results, filters);
+
+        // Process subqueries first
+        for subquery in subqueries {
+            let subquery_results =
+                execute_subquery(&subquery, database, &prefixes, final_results.clone());
+            final_results = merge_results(final_results, subquery_results);
+        }
+
+        // Apply BIND (UDF) clauses
+        process_bind_clauses(&mut final_results, binds, database);
+
+        // Apply GROUP BY and aggregations
+        if !group_by_variables.is_empty() {
+            final_results =
+                group_and_aggregate_results(final_results, &group_by_variables, &aggregation_vars);
+        }
+    } else {
+        eprintln!("Failed to parse the query.");
+        return Vec::new();
+    }
+
+    // Convert the final BTreeMap results into Vec<Vec<String>>
+    format_results(final_results, &selected_variables)
+}
+
 // Convert the final BTreeMap results into Vec<Vec<String>>
 fn format_results(
     final_results: Vec<BTreeMap<&str, String>>,
