@@ -29,16 +29,25 @@ struct Prediction {
 fn execute_ml_prediction(room_data: &[RoomData]) -> Result<Vec<Prediction>, Box<dyn Error>> {
     let mut ml_handler = MLHandler::new()?;
 
-    let model_path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .parent()
-        .unwrap()
-        .parent()
-        .unwrap()
-        .join("Stream_Reasoning")
-        .join("ml")
-        .join("src")
-        .join("models")
-        .join("temperature_predictor.pkl");
+    let model_path = {
+        let mut path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+        
+        // Go up directories
+        loop {
+            let ml_dir = path.join("ml");
+            if ml_dir.exists() && ml_dir.is_dir() {
+                break ml_dir.join("src").join("models").join("temperature_predictor.pkl");
+            }
+            
+            if !path.pop() {
+                // Couldn't find the ml directory in any parent - use a fallback path
+                eprintln!("Warning: Could not locate 'ml' directory in any parent directory!");
+                break std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                    .join("models")
+                    .join("temperature_predictor.pkl");
+            }
+        }
+    };
 
     if !model_path.exists() {
         return Err(format!("Model file not found at {}", model_path.display()).into());
