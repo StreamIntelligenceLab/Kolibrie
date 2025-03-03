@@ -32,6 +32,6 @@ fn main() {
     // Set current directory to the root of the project
     std::env::set_current_dir(std::path::Path::new(env!("CARGO_MANIFEST_DIR")))
         .expect("Failed to set project root as current directory");
-    let file_path = "datasets/synthetic_data_employee_100K.rdf";
+    let file_path = "../datasets/synthetic_data_employee_100K.rdf";
     simple_select_synth_data(file_path);
 }

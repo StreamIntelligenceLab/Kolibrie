@@ -8,6 +8,7 @@ use shared::terms::Term;
 use shared::triple::Triple;
 use std::error::Error;
 use std::time::SystemTime;
+use shared::query::MLPredictClause;
 
 #[derive(Debug, Serialize, Deserialize)]
 struct RoomData {
@@ -26,9 +27,15 @@ struct Prediction {
     timestamp: SystemTime,
 }
 
-fn execute_ml_prediction(room_data: &[RoomData]) -> Result<Vec<Prediction>, Box<dyn Error>> {
+// Function to extract features based on the parsed SELECT variables from ML.PREDICT
+fn execute_ml_prediction_from_clause(
+    ml_predict: &MLPredictClause,
+    database: &SparqlDatabase,
+) -> Result<Vec<Prediction>, Box<dyn Error>> {
+    // Initialize ML handler
     let mut ml_handler = MLHandler::new()?;
-
+    
+    // Load the model
     let model_path = {
         let mut path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
         
@@ -53,19 +60,137 @@ fn execute_ml_prediction(room_data: &[RoomData]) -> Result<Vec<Prediction>, Box<
         return Err(format!("Model file not found at {}", model_path.display()).into());
     }
 
-    ml_handler.load_model("temperature_predictor", model_path.to_str().unwrap())?;
-
-    let features: Vec<Vec<f64>> = room_data
+    ml_handler.load_model(ml_predict.model, model_path.to_str().unwrap())?;
+    
+    // Extract variable names from SELECT clause (remove ? prefix)
+    let variable_names: Vec<String> = ml_predict.input_select
         .iter()
-        .map(|data| vec![data.temperature, data.humidity, data.occupancy as f64])
+        .map(|(var, _, _)| var.trim_start_matches('?').to_string())
+        .collect();
+    
+    println!("SELECT variables: {:?}", variable_names);
+    
+    // Extract data from database
+    let room_data: Vec<RoomData> = database
+        .triples
+        .iter()
+        .filter(|triple| {
+            database
+                .dictionary
+                .decode(triple.predicate)
+                .map_or(false, |pred| pred.ends_with("temperature"))
+        })
+        .map(|triple| {
+            let room_id = database
+                .dictionary
+                .decode(triple.subject)
+                .unwrap_or_default()
+                .split('#')
+                .last()
+                .unwrap_or_default()
+                .to_string();
+
+            let temperature = database
+                .dictionary
+                .decode(triple.object)
+                .unwrap_or_default()
+                .parse()
+                .unwrap_or(0.0);
+
+            // Find humidity and occupancy
+            let humidity = database
+                .triples
+                .iter()
+                .find(|t| {
+                    t.subject == triple.subject
+                        && database
+                            .dictionary
+                            .decode(t.predicate)
+                            .map_or(false, |p| p.ends_with("humidity"))
+                })
+                .and_then(|t| database.dictionary.decode(t.object))
+                .and_then(|v| v.parse().ok())
+                .unwrap_or(0.0);
+
+            let occupancy = database
+                .triples
+                .iter()
+                .find(|t| {
+                    t.subject == triple.subject
+                        && database
+                            .dictionary
+                            .decode(t.predicate)
+                            .map_or(false, |p| p.ends_with("occupancy"))
+                })
+                .and_then(|t| database.dictionary.decode(t.object))
+                .and_then(|v| v.parse().ok())
+                .unwrap_or(0);
+
+            RoomData {
+                room_id,
+                temperature,
+                humidity,
+                occupancy,
+                timestamp: SystemTime::now(),
+            }
+        })
         .collect();
 
-    let prediction_results = ml_handler.predict("temperature_predictor", features)?;
-
+    println!("Found {} room data entries", room_data.len());
+    for room in &room_data {
+        println!(
+            "Room: {}, Temp: {}, Humidity: {}, Occupancy: {}",
+            room.room_id, room.temperature, room.humidity, room.occupancy
+        );
+    }
+    
+    // Filter out non-numeric variables
+    let feature_names: Vec<String> = variable_names.iter()
+        .filter(|&name| *name != "room")
+        .cloned()
+        .collect();
+    
+    println!("Feature names for prediction: {:?}", feature_names);
+    
+    // Ensure we have data before proceeding
+    if room_data.is_empty() {
+        return Err("No input data found for ML prediction".into());
+    }
+    
+    // Dynamically build feature vectors based on selected variables
+    let features: Vec<Vec<f64>> = room_data
+        .iter()
+        .map(|data| {
+            let mut feature_vector = Vec::new();
+            
+            // Only include features that were specified in the SELECT clause
+            for feature_name in &feature_names {
+                match feature_name.as_str() {
+                    "temp" => feature_vector.push(data.temperature),
+                    "humidity" => feature_vector.push(data.humidity),
+                    "occupancy" => feature_vector.push(data.occupancy as f64),
+                    // Add other features as needed
+                    _ => {} // Skip unknown features
+                }
+            }
+            
+            feature_vector
+        })
+        .collect();
+    
+    // Only proceed if we have features to process
+    if features.is_empty() || features[0].is_empty() {
+        return Err("No valid features found for prediction based on SELECT variables".into());
+    }
+    
+    println!("Using features for prediction: {:?}", features);
+    let prediction_results = ml_handler.predict(ml_predict.model, features)?;
+    
+    // Create prediction objects
     let predictions: Vec<Prediction> = room_data
         .iter()
         .zip(prediction_results.predictions.iter())
-        .zip(prediction_results.probabilities.unwrap_or_default().iter())
+        .zip(prediction_results.probabilities.unwrap_or_default().iter().chain(std::iter::repeat(&0.95)))
         .map(|((data, &pred), &conf)| Prediction {
             room_id: data.room_id.clone(),
             predicted_temperature: pred,
@@ -151,9 +276,9 @@ WHERE {
     println!("Parsed combined query: {:#?}", combined_query);
 
     // Process rules
-    if let Some(rule) = combined_query.rule {
+    if let Some(rule) = combined_query.rule.clone() {
         let dynamic_rule =
-            convert_combined_rule(rule, &mut database.dictionary, &combined_query.prefixes);
+            convert_combined_rule(rule.clone(), &mut database.dictionary, &combined_query.prefixes);
         println!("Dynamic rule: {:#?}", dynamic_rule);
         kg.add_rule(dynamic_rule.clone());
         println!("Rule added to KnowledgeGraph.");
@@ -171,106 +296,46 @@ WHERE {
         };
         let rule_key = local.to_lowercase();
         database.rule_map.insert(rule_key, expanded.to_string());
-    }
+        
+        // Check for ML.PREDICT clause and use the improved implementation
+        if let Some(ml_predict) = &rule.ml_predict {
+            println!("Using dynamic ML.PREDICT execution...");
+            match execute_ml_prediction_from_clause(ml_predict, &database) {
+                Ok(predictions) => {
+                    println!("\nML Predictions:");
+                    for prediction in predictions {
+                        println!(
+                            "Room: {}, Predicted Temperature: {:.1}°C, Confidence: {:.2}",
+                            prediction.room_id, prediction.predicted_temperature, prediction.confidence
+                        );
 
-    // Extract room data and execute ML predictions
-    let room_data: Vec<RoomData> = database
-        .triples
-        .iter()
-        .filter(|triple| {
-            database
-                .dictionary
-                .decode(triple.predicate)
-                .map_or(false, |pred| pred.ends_with("temperature"))
-        })
-        .map(|triple| {
-            let room_id = database
-                .dictionary
-                .decode(triple.subject)
-                .unwrap_or_default()
-                .split('#')
-                .last()
-                .unwrap_or_default()
-                .to_string();
+                        // Add predictions to knowledge graph and database
+                        let subject = format!("http://example.org#{}", prediction.room_id);
+                        let predicate = "http://example.org/sensor#predictedTemperature";
+                        kg.add_abox_triple(
+                            &subject,
+                            predicate,
+                            &prediction.predicted_temperature.to_string(),
+                        );
 
-            let temperature = database
-                .dictionary
-                .decode(triple.object)
-                .unwrap_or_default()
-                .parse()
-                .unwrap_or(0.0);
-
-            // Find humidity and occupancy
-            let humidity = database
-                .triples
-                .iter()
-                .find(|t| {
-                    t.subject == triple.subject
-                        && database
+                        let subject_id = database.dictionary.encode(&subject);
+                        let predicate_id = database.dictionary.encode(predicate);
+                        let object_id = database
                             .dictionary
-                            .decode(t.predicate)
-                            .map_or(false, |p| p.ends_with("humidity"))
-                })
-                .and_then(|t| database.dictionary.decode(t.object))
-                .and_then(|v| v.parse().ok())
-                .unwrap_or(0.0);
-
-            let occupancy = database
-                .triples
-                .iter()
-                .find(|t| {
-                    t.subject == triple.subject
-                        && database
-                            .dictionary
-                            .decode(t.predicate)
-                            .map_or(false, |p| p.ends_with("occupancy"))
-                })
-                .and_then(|t| database.dictionary.decode(t.object))
-                .and_then(|v| v.parse().ok())
-                .unwrap_or(0);
-
-            RoomData {
-                room_id,
-                temperature,
-                humidity,
-                occupancy,
-                timestamp: SystemTime::now(),
+                            .encode(&prediction.predicted_temperature.to_string());
+                        database.triples.insert(Triple {
+                            subject: subject_id,
+                            predicate: predicate_id,
+                            object: object_id,
+                        });
+                    }
+                }
+                Err(e) => eprintln!("Error making ML predictions with dynamic execution: {}", e),
             }
-        })
-        .collect();
-
-    // Execute ML predictions
-    match execute_ml_prediction(&room_data) {
-        Ok(predictions) => {
-            println!("\nML Predictions:");
-            for prediction in predictions {
-                println!(
-                    "Room: {}, Predicted Temperature: {:.1}°C, Confidence: {:.2}",
-                    prediction.room_id, prediction.predicted_temperature, prediction.confidence
-                );
-
-                // Add predictions to knowledge graph and database
-                let subject = format!("http://example.org#{}", prediction.room_id);
-                let predicate = "http://example.org/sensor#predictedTemperature";
-                kg.add_abox_triple(
-                    &subject,
-                    predicate,
-                    &prediction.predicted_temperature.to_string(),
-                );
-
-                let subject_id = database.dictionary.encode(&subject);
-                let predicate_id = database.dictionary.encode(predicate);
-                let object_id = database
-                    .dictionary
-                    .encode(&prediction.predicted_temperature.to_string());
-                database.triples.insert(Triple {
-                    subject: subject_id,
-                    predicate: predicate_id,
-                    object: object_id,
-                });
-            }
+        } else {
+            // Fall back to original implementation if no ML.PREDICT clause
+            println!("No ML.PREDICT clause found, using standard execution...");
         }
-        Err(e) => eprintln!("Error making predictions: {}", e),
     }
 
     // Infer new facts

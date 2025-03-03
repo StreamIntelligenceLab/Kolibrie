@@ -7,3 +7,4 @@ pub mod index_manager;
 pub mod terms;
 pub mod rule_index;
 pub mod rule;
+pub mod query;

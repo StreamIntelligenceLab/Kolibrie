@@ -1,6 +1,7 @@
 use crate::sparql_database::SparqlDatabase;
 use shared::triple::Triple;
 use shared::GPU_MODE_ENABLED;
+use shared::query::*;
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use crate::parser::*;
 

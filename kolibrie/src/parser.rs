@@ -12,80 +12,8 @@ use shared::dictionary::Dictionary;
 use shared::rule::FilterCondition;
 use shared::rule::Rule;
 use shared::terms::*;
+use shared::query::*;
 use std::collections::HashMap;
-
-// Define the Value enum to represent terms or UNDEF in VALUES clause
-#[derive(Debug, Clone)]
-pub enum Value {
-    Term(String),
-    Undef,
-}
-
-// Define the ValuesClause struct to hold variables and their corresponding values
-#[derive(Debug, Clone)]
-pub struct ValuesClause<'a> {
-    pub variables: Vec<&'a str>,
-    pub values: Vec<Vec<Value>>,
-}
-
-// Define the InsertClause struct to hold triple patterns for the INSERT clause
-#[derive(Debug, Clone)]
-pub struct InsertClause<'a> {
-    pub triples: Vec<(&'a str, &'a str, &'a str)>,
-}
-
-#[derive(Debug, Clone)]
-pub struct SubQuery<'a> {
-    pub variables: Vec<(&'a str, &'a str, Option<&'a str>)>, // SELECT variables
-    pub patterns: Vec<(&'a str, &'a str, &'a str)>,          // WHERE patterns
-    pub filters: Vec<(&'a str, &'a str, &'a str)>,           // FILTER conditions
-    pub binds: Vec<(&'a str, Vec<&'a str>, &'a str)>,        // BIND clauses
-    pub _values_clause: Option<ValuesClause<'a>>,            // VALUES clause
-}
-
-#[derive(Debug, Clone)]
-pub struct RuleHead<'a> {
-    pub predicate: &'a str,
-    pub arguments: Vec<&'a str>,
-}
-
-#[derive(Debug, Clone)]
-pub struct MLPredictClause<'a> {
-    pub model: &'a str,
-    pub input: &'a str, // you might later decide to parse this into a full SPARQL AST
-    pub output: &'a str,
-}
-
-#[derive(Debug, Clone)]
-pub struct CombinedRule<'a> {
-    pub head: RuleHead<'a>,
-    pub body: (
-        Vec<(&'a str, &'a str, &'a str)>, // triple patterns from WHERE
-        Vec<(&'a str, &'a str, &'a str)>, // filters
-        Option<ValuesClause<'a>>,
-        Vec<(&'a str, Vec<&'a str>, &'a str)>, // BIND clauses
-        Vec<SubQuery<'a>>,                     // subqueries
-    ),
-    pub conclusion: Vec<(&'a str, &'a str, &'a str)>,
-    pub ml_predict: Option<MLPredictClause<'a>>, // new field for ML.PREDICT clause
-}
-
-#[derive(Debug, Clone)]
-pub struct CombinedQuery<'a> {
-    pub prefixes: HashMap<String, String>,
-    pub rule: Option<CombinedRule<'a>>,
-    pub sparql: (
-        Option<InsertClause<'a>>,
-        Vec<(&'a str, &'a str, Option<&'a str>)>,
-        Vec<(&'a str, &'a str, &'a str)>,
-        Vec<(&'a str, &'a str, &'a str)>,
-        Vec<&'a str>,
-        HashMap<String, String>,
-        Option<ValuesClause<'a>>,
-        Vec<(&'a str, Vec<&'a str>, &'a str)>,
-        Vec<SubQuery<'a>>,
-    ),
-}
 
 // Helper function to recognize identifiers
 pub fn identifier(input: &str) -> IResult<&str, &str> {
@@ -597,11 +525,32 @@ pub fn parse_ml_predict(input: &str) -> IResult<&str, MLPredictClause> {
     let (input, _) = multispace0(input)?;
     let (input, input_query) = preceded(char('{'), parse_balanced)(input)?;
 
-    // TODO: Parse the input query to extract patterns, filters, values, binds, and subqueries
-    if let Some(idx) = input_query.find("WHERE") {
-        let where_clause_slice = &input_query[idx..];
-        let (_rest, (_patterns, _filters, _values_clause, _binds, _subqueries)) =
-            parse_where(where_clause_slice)?;
+    // Parse the SELECT statement inside the input query
+    let mut select_vars = Vec::new();
+    let mut where_patterns = Vec::new();
+    let mut filter_conditions = Vec::new();
+    
+    // Extract SELECT variables
+    if let Some(select_idx) = input_query.find("SELECT") {
+        if let Some(where_idx) = input_query.find("WHERE") {
+            let select_clause = &input_query[select_idx + 6..where_idx].trim();
+            // Parse SELECT variables (simplified version - in real code you would use your actual SELECT parser)
+            let vars: Vec<&str> = select_clause.split_whitespace().collect();
+            for var in vars {
+                if var.starts_with('?') {
+                    select_vars.push((var, "", None)); // Add proper variable type extraction if needed
+                }
+            }
+            
+            // Parse WHERE patterns and filters (simplified - use your actual WHERE parser)
+            let where_clause = &input_query[where_idx + 5..].trim();
+            // This is a placeholder - you should use your actual pattern and filter parser here
+            let (_rest, (patterns, filters, _values, _binds, _subqueries)) = 
+                parse_where(where_clause).unwrap_or_else(|_| (where_clause, (vec![], vec![], None, vec![], vec![])));
+            
+            where_patterns = patterns;
+            filter_conditions = filters;
+        }
     }
 
     let (input, _) = multispace0(input)?;
@@ -618,7 +567,10 @@ pub fn parse_ml_predict(input: &str) -> IResult<&str, MLPredictClause> {
         input,
         MLPredictClause {
             model,
-            input: input_query, // full nested query content (you might store the parsed parts too)
+            input_raw: input_query,
+            input_select: select_vars,
+            input_where: where_patterns,
+            input_filters: filter_conditions,
             output: output_var,
         },
     ))

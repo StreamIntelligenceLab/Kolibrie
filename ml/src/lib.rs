@@ -125,4 +125,58 @@ with open(r'{}', 'rb') as f:
             })
         })
     }
+
+    pub fn predict_dynamic(
+        &self, 
+        model_name: &str, 
+        variable_names: Vec<String>,
+        input_data: Vec<std::collections::HashMap<String, f64>>
+    ) -> PyResult<MLPredictionResult> {
+        Python::with_gil(|py| {
+            let model = self.model_cache.get(model_name).ok_or_else(|| {
+                PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(
+                    format!("Model {} not found in cache", model_name)
+                )
+            })?;
+
+            // Convert input data to Python list of feature vectors based on variable names
+            let rows: PyResult<Vec<PyObject>> = input_data
+                .iter()
+                .map(|row_map| {
+                    // Extract values in the order of variable_names
+                    let features: Vec<f64> = variable_names
+                        .iter()
+                        .map(|name| *row_map.get(name).unwrap_or(&0.0))
+                        .collect();
+                    
+                    let py_row = PyList::new(py, features.iter())?;
+                    Ok(py_row.into())
+                })
+                .collect();
+            let rows = rows?;
+            let py_input = PyList::new(py, rows)?;
+
+            // Make prediction
+            let predictions = model.call_method1(py, "predict", (py_input.clone(),))?;
+            let predictions: Vec<f64> = predictions.extract(py)?;
+
+            // Try to get probabilities if available
+            let probabilities = model
+                .call_method1(py, "predict_proba", (py_input,))
+                .and_then(|probs| probs.extract::<Vec<f64>>(py))
+                .ok();
+
+            // Try to get feature importance if available
+            let feature_importance = model
+                .getattr(py, "feature_importances_")
+                .and_then(|fi| fi.extract::<Vec<f64>>(py))
+                .ok();
+
+            Ok(MLPredictionResult {
+                predictions,
+                probabilities,
+                feature_importance,
+            })
+        })
+    }
 }
