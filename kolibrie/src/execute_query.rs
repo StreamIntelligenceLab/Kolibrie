@@ -4,7 +4,7 @@ use shared::GPU_MODE_ENABLED;
 use shared::query::*;
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use crate::parser::*;
-
+use crate::custom_error::format_parse_error;
 pub fn execute_subquery<'a>(
     subquery: &SubQuery<'a>,
     database: &SparqlDatabase,
@@ -107,6 +107,8 @@ pub fn execute_query(sparql: &str, database: &mut SparqlDatabase) -> Vec<Vec<Str
     let group_by_variables: Vec<&str>;
     let prefixes;
 
+    let parse_result = parse_sparql_query(sparql);
+
     if let Ok((
         _,
         (
@@ -120,7 +122,7 @@ pub fn execute_query(sparql: &str, database: &mut SparqlDatabase) -> Vec<Vec<Str
             binds,
             subqueries,
         ),
-    )) = parse_sparql_query(sparql)
+    )) = parse_result
     {
         prefixes = parsed_prefixes;
 
@@ -219,7 +221,13 @@ pub fn execute_query(sparql: &str, database: &mut SparqlDatabase) -> Vec<Vec<Str
                 group_and_aggregate_results(final_results, &group_by_variables, &aggregation_vars);
         }
     } else {
-        eprintln!("Failed to parse the query.");
+        // Enhanced error reporting while keeping the same function signature
+        if let Err(err) = parse_result {
+            let error_message = format_parse_error(sparql, err);
+            eprintln!("Failed to parse the query: {}", error_message);
+        } else {
+            eprintln!("Failed to parse the query with an unknown error.");
+        }
         return Vec::new();
     }
 
