@@ -94,15 +94,13 @@ fn execute_sample_query_complex(database: &mut SparqlDatabase) {
     let sparql = r#"
     PREFIX foaf: <http://xmlns.com/foaf/0.1/>
     PREFIX ds: <https://data.cityofchicago.org/resource/xzkq-xp2w/>
-    SELECT ?employee ?title ?salary ?otherEmployeeTitle
+    SELECT ?title
     WHERE {
-        ?employee foaf:title "Developer" .
-        ?employee foaf:title ?title .
-        ?employee ds:annual_salary ?salary
         {
-            SELECT ?otherEmployeeTitle
+            SELECT ?title
             WHERE {
-                ?otherEmployee foaf:title ?otherEmployeeTitle
+                ?employee foaf:title ?title .
+                ?employee foaf:title "Developer" .
             }
         }
     }"#;
@@ -113,15 +111,13 @@ fn execute_sample_query_normal_complex(database: &mut SparqlDatabase) {
     let sparql = r#"
     PREFIX foaf: <http://xmlns.com/foaf/0.1/>
     PREFIX ds: <https://data.cityofchicago.org/resource/xzkq-xp2w/>
-    SELECT ?employee ?title ?salary ?otherEmployeeTitle
+    SELECT ?title
     WHERE {
-        ?employee foaf:title "Developer" .
-        ?employee foaf:title ?title .
-        ?employee ds:annual_salary ?salary
         {
-            SELECT ?otherEmployeeTitle
+            SELECT ?title
             WHERE {
-                ?otherEmployee foaf:title ?otherEmployeeTitle
+                ?employee foaf:title ?title .
+                ?employee foaf:title "Developer" .
             }
         }
     }"#;
@@ -132,15 +128,13 @@ fn execute_sample_query_normal_simd_complex(database: &mut SparqlDatabase) {
     let sparql = r#"
     PREFIX foaf: <http://xmlns.com/foaf/0.1/>
     PREFIX ds: <https://data.cityofchicago.org/resource/xzkq-xp2w/>
-    SELECT ?employee ?title ?salary ?otherEmployeeTitle
+    SELECT ?title
     WHERE {
-        ?employee foaf:title "Developer" .
-        ?employee foaf:title ?title .
-        ?employee ds:annual_salary ?salary
         {
-            SELECT ?otherEmployeeTitle
+            SELECT ?title
             WHERE {
-                ?otherEmployee foaf:title ?otherEmployeeTitle
+                ?employee foaf:title ?title .
+                ?employee foaf:title "Developer" .
             }
         }
     }"#;
@@ -151,15 +145,13 @@ fn execute_sample_query_rayon_simd_complex(database: &mut SparqlDatabase) {
     let sparql = r#"
     PREFIX foaf: <http://xmlns.com/foaf/0.1/>
     PREFIX ds: <https://data.cityofchicago.org/resource/xzkq-xp2w/>
-    SELECT ?employee ?title ?salary ?otherEmployeeTitle
+    SELECT ?title
     WHERE {
-        ?employee foaf:title "Developer" .
-        ?employee foaf:title ?title .
-        ?employee ds:annual_salary ?salary
         {
-            SELECT ?otherEmployeeTitle
+            SELECT ?title
             WHERE {
-                ?otherEmployee foaf:title ?otherEmployeeTitle
+                ?employee foaf:title ?title .
+                ?employee foaf:title "Developer" .
             }
         }
     }"#;
@@ -170,15 +162,13 @@ fn execute_sample_query_rayon_parallel1_complex(database: &mut SparqlDatabase) {
     let sparql = r#"
     PREFIX foaf: <http://xmlns.com/foaf/0.1/>
     PREFIX ds: <https://data.cityofchicago.org/resource/xzkq-xp2w/>
-    SELECT ?employee ?title ?salary ?otherEmployeeTitle
+    SELECT ?title
     WHERE {
-        ?employee foaf:title "Developer" .
-        ?employee foaf:title ?title .
-        ?employee ds:annual_salary ?salary
         {
-            SELECT ?otherEmployeeTitle
+            SELECT ?title
             WHERE {
-                ?otherEmployee foaf:title ?otherEmployeeTitle
+                ?employee foaf:title ?title .
+                ?employee foaf:title "Developer" .
             }
         }
     }"#;
@@ -189,15 +179,13 @@ fn execute_sample_query_rayon_parallel2_complex(database: &mut SparqlDatabase) {
     let sparql = r#"
     PREFIX foaf: <http://xmlns.com/foaf/0.1/>
     PREFIX ds: <https://data.cityofchicago.org/resource/xzkq-xp2w/>
-    SELECT ?employee ?title ?salary ?otherEmployeeTitle
+    SELECT ?title
     WHERE {
-        ?employee foaf:title "Developer" .
-        ?employee foaf:title ?title .
-        ?employee ds:annual_salary ?salary
         {
-            SELECT ?otherEmployeeTitle
+            SELECT ?title
             WHERE {
-                ?otherEmployee foaf:title ?otherEmployeeTitle
+                ?employee foaf:title ?title .
+                ?employee foaf:title "Developer" .
             }
         }
     }"#;

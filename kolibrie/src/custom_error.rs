@@ -1,17 +1,14 @@
 use std::collections::HashSet;
 
-// ----------------------------------------------------------------------------
-// Top-level function
-// ----------------------------------------------------------------------------
 pub fn format_parse_error(input: &str, err: nom::Err<nom::error::Error<&str>>) -> String {
     match err {
         nom::Err::Error(e) | nom::Err::Failure(e) => {
-            // 1) Run manual SPARQL checks
+            // Run manual SPARQL checks
             if let Some(error_msg) = scan_for_specific_errors(input) {
                 return error_msg;
             }
 
-            // 2) Fallback to nom-specific error
+            // Fallback to nom-specific error
             let error_pos = e.input;
             let error_description = match e.code {
                 nom::error::ErrorKind::Tag => ". Expected a specific tag or token",
@@ -58,58 +55,56 @@ pub fn format_parse_error(input: &str, err: nom::Err<nom::error::Error<&str>>) -
     }
 }
 
-// ----------------------------------------------------------------------------
 // Aggregator of custom checks
-// ----------------------------------------------------------------------------
 fn scan_for_specific_errors(input: &str) -> Option<String> {
     let lines: Vec<&str> = input.lines().collect();
 
-    // 0) Check for prefix errors (including missing colon in prefix declarations)
+    // Check for prefix errors (including missing colon in prefix declarations)
     if let Some(error_msg) = check_for_prefix_errors(&lines) {
         return Some(error_msg);
     }
 
-    // 1) Check for invalid characters in predicates
+    // Check for invalid characters in predicates
     if let Some(error_msg) = check_for_invalid_predicate_char(&lines) {
         return Some(error_msg);
     }
 
-    // 2) Check for mismatched braces
+    // Check for mismatched braces
     if let Some(error_msg) = check_for_mismatched_braces(&lines) {
         return Some(error_msg);
     }
 
-    // 3) Check for mismatched parentheses
+    // Check for mismatched parentheses
     if let Some(error_msg) = check_for_mismatched_parentheses(&lines) {
         return Some(error_msg);
     }
 
-    // 4) Check for unterminated string literals
+    // Check for unterminated string literals
     if let Some(error_msg) = check_for_unterminated_strings(&lines) {
         return Some(error_msg);
     }
 
-    // 5) Check for missing separators (e.g., '.' or ';') between triple patterns
+    // Check for missing separators (e.g., '.' or ';') between triple patterns
     if let Some(error_msg) = check_for_missing_separators(&lines) {
         return Some(error_msg);
     }
 
-    // 6) Naive check for SELECT queries missing WHERE
+    // Naive check for SELECT queries missing WHERE
     if let Some(error_msg) = check_for_select_missing_where(input) {
         return Some(error_msg);
     }
 
-    // 7) Check for incomplete triple patterns
+    // Check for incomplete triple patterns
     if let Some(error_msg) = check_for_incomplete_triples(&lines) {
         return Some(error_msg);
     }
 
-    // 8) Check for BIND statements missing 'AS'
+    // Check for BIND statements missing 'AS'
     if let Some(error_msg) = check_for_bind_missing_as(&lines) {
         return Some(error_msg);
     }
 
-    // 9) Check for OPTIONAL without braces
+    // Check for OPTIONAL without braces
     if let Some(error_msg) = check_for_optional_without_braces(&lines) {
         return Some(error_msg);
     }
@@ -117,9 +112,7 @@ fn scan_for_specific_errors(input: &str) -> Option<String> {
     None
 }
 
-// ----------------------------------------------------------------------------
-// 0) Check for prefix errors, including missing colon in usage
-// ----------------------------------------------------------------------------
+// Check for prefix errors, including missing colon in usage
 fn check_for_prefix_errors(lines: &[&str]) -> Option<String> {
     let mut declared_prefixes = HashSet::new();
     
@@ -129,7 +122,7 @@ fn check_for_prefix_errors(lines: &[&str]) -> Option<String> {
         declared_prefixes.insert(p.to_string());
     }
 
-    // 1) Gather prefixes from lines like "PREFIX ex: <http://example.org/>"
+    // Gather prefixes from lines like "PREFIX ex: <http://example.org/>"
     for (line_idx, line) in lines.iter().enumerate() {
         let trimmed = line.trim();
 
@@ -150,7 +143,7 @@ fn check_for_prefix_errors(lines: &[&str]) -> Option<String> {
             // "ex:" is typically the second token
             let prefix_candidate = parts[1];  // e.g. "ex:"
 
-            // If there's no colon in that second token (like "ex"), that’s an error
+            // If there's no colon in that second token (like "ex")
             if !prefix_candidate.contains(':') {
                 return Some(format!(
                     "\nMissing colon in prefix declaration at line {}:\n{}\n    \
@@ -178,9 +171,6 @@ fn check_for_prefix_errors(lines: &[&str]) -> Option<String> {
         }
     }
 
-    // 2) Now detect usage that *might* be missing a colon. 
-    //    E.g., "?person exknows ?friend" might be a typo for "ex:knows".
-    //    We'll look for any token that starts with a declared prefix but has no colon.
     for (line_idx, line) in lines.iter().enumerate() {
         let trimmed = line.trim();
         if trimmed.is_empty() || trimmed.starts_with('#') {
@@ -199,16 +189,13 @@ fn check_for_prefix_errors(lines: &[&str]) -> Option<String> {
             .collect();
 
         for token in tokens {
-            // For each *declared* prefix, check if token *starts with* that prefix but does not have a colon
             // Example: prefix = "ex", token = "exknows"
             for prefix in &declared_prefixes {
-                // We only proceed if the token indeed starts with the prefix
+                // Check if the token indeed starts with the prefix
                 // AND the character right after the prefix is neither `:` nor end-of-string
                 if token.starts_with(prefix) {
                     let after_prefix = &token[prefix.len()..];
-                    // 'exknows' => after_prefix = 'knows'
-                    // If it starts with ":" or is ":" => that means "ex:" is present. OK. 
-                    // But if it's something else => likely missing colon
+                    // If it starts with ":" or is ":"
                     if !after_prefix.is_empty() && !after_prefix.starts_with(':') {
                         // e.g. "exknows" => missing colon
                         return Some(format!(
@@ -231,9 +218,7 @@ fn check_for_prefix_errors(lines: &[&str]) -> Option<String> {
     None
 }
 
-// ----------------------------------------------------------------------------
-// 1) Invalid characters in predicate positions
-// ----------------------------------------------------------------------------
+// Invalid characters in predicate positions
 fn check_for_invalid_predicate_char(lines: &[&str]) -> Option<String> {
     for (line_idx, line) in lines.iter().enumerate() {
         if line.trim().is_empty() || line.trim().starts_with('#') {
@@ -268,9 +253,7 @@ fn find_invalid_predicate_character(line: &str) -> Option<(usize, char)> {
     None
 }
 
-// ----------------------------------------------------------------------------
-// 2) Mismatched braces
-// ----------------------------------------------------------------------------
+// Mismatched braces
 fn check_for_mismatched_braces(lines: &[&str]) -> Option<String> {
     let input = lines.join("\n");
     
@@ -315,9 +298,7 @@ fn check_for_mismatched_braces(lines: &[&str]) -> Option<String> {
     None
 }
 
-// ----------------------------------------------------------------------------
-// 3) Mismatched parentheses
-// ----------------------------------------------------------------------------
+// Mismatched parentheses
 fn check_for_mismatched_parentheses(lines: &[&str]) -> Option<String> {
     let mut paren_count = 0;
 
@@ -349,9 +330,7 @@ fn check_for_mismatched_parentheses(lines: &[&str]) -> Option<String> {
     None
 }
 
-// ----------------------------------------------------------------------------
-// 4) Unterminated string literals
-// ----------------------------------------------------------------------------
+// Unterminated string literals
 fn check_for_unterminated_strings(lines: &[&str]) -> Option<String> {
     for (line_idx, line) in lines.iter().enumerate() {
         let mut in_string = false;
@@ -380,9 +359,7 @@ fn check_for_unterminated_strings(lines: &[&str]) -> Option<String> {
     None
 }
 
-// ----------------------------------------------------------------------------
-// 5) Missing separators (e.g., '.' or ';') between triple patterns
-// ----------------------------------------------------------------------------
+// Missing separators (e.g., '.' or ';') between triple patterns
 fn check_for_missing_separators(lines: &[&str]) -> Option<String> {
     let mut in_nested_query = false;
 
@@ -464,9 +441,7 @@ fn find_missing_separator(line: &str) -> Option<(usize, &'static str)> {
     None
 }
 
-// ----------------------------------------------------------------------------
-// 6) Naive check for SELECT queries missing WHERE
-// ----------------------------------------------------------------------------
+// Naive check for SELECT queries missing WHERE
 fn check_for_select_missing_where(input: &str) -> Option<String> {
     let lower = input.to_lowercase();
     if lower.contains("select") && !lower.contains("where") {
@@ -479,9 +454,7 @@ fn check_for_select_missing_where(input: &str) -> Option<String> {
     None
 }
 
-// ----------------------------------------------------------------------------
-// 7) Check for incomplete triple patterns
-// ----------------------------------------------------------------------------
+// Check for incomplete triple patterns
 fn check_for_incomplete_triples(lines: &[&str]) -> Option<String> {
     let keywords = [
         "PREFIX", "BASE", "SELECT", "ASK", "CONSTRUCT", "DESCRIBE", "FILTER", 
@@ -516,7 +489,7 @@ fn check_for_incomplete_triples(lines: &[&str]) -> Option<String> {
                 line
             ));
         } else if tokens.len() >= 3 {
-            // If it doesn't end with '.' or ';' or ',' we might be missing a terminator
+            // If it doesn't end with '.' or ';' or ','
             if !trimmed.ends_with('.') && !trimmed.ends_with(';') && !trimmed.ends_with(',') {
                 return Some(format!(
                     "\nTriple pattern at line {} may be missing a terminating '.' or ';':\n{}\n",
@@ -529,9 +502,7 @@ fn check_for_incomplete_triples(lines: &[&str]) -> Option<String> {
     None
 }
 
-// ----------------------------------------------------------------------------
-// 8) Check for BIND statements missing 'AS'
-// ----------------------------------------------------------------------------
+// Check for BIND statements missing 'AS'
 fn check_for_bind_missing_as(lines: &[&str]) -> Option<String> {
     for (idx, line) in lines.iter().enumerate() {
         let upper = line.to_uppercase();
@@ -546,9 +517,7 @@ fn check_for_bind_missing_as(lines: &[&str]) -> Option<String> {
     None
 }
 
-// ----------------------------------------------------------------------------
-// 9) Check for OPTIONAL blocks without braces
-// ----------------------------------------------------------------------------
+// Check for OPTIONAL blocks without braces
 fn check_for_optional_without_braces(lines: &[&str]) -> Option<String> {
     for (idx, line) in lines.iter().enumerate() {
         let trimmed = line.trim().to_uppercase();
