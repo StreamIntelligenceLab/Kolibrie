@@ -2,6 +2,7 @@ use shared::dictionary::Dictionary;
 use crate::sliding_window::SlidingWindow;
 use shared::triple::TimestampedTriple;
 use shared::triple::Triple;
+use shared::query::FilterExpression;
 use crate::utils;
 use crate::utils::current_timestamp;
 use crate::utils::ClonableFn;
@@ -708,226 +709,292 @@ impl SparqlDatabase {
     pub fn apply_filters_simd<'a>(
         &self,
         results: Vec<BTreeMap<&'a str, String>>,
-        filters: Vec<(&'a str, &'a str, &'a str)>,
+        filters: Vec<FilterExpression<'a>>,
     ) -> Vec<BTreeMap<&'a str, String>> {
         results
             .into_iter()
             .filter(|result| {
-                filters.iter().all(|(var, operator, value)| {
-                    if let Some(var_value_str) = result.get(var) {
-                        // First, try parsing both values as numbers
-                        let var_value_num = var_value_str.parse::<i32>();
-                        let filter_value_num = value.parse::<i32>();
+                filters.iter().all(|filter_expr| {
+                    match filter_expr {
+                        FilterExpression::Comparison(var, operator, value) => {
+                            if let Some(var_value_str) = result.get(var) {
+                                // First, try parsing both values as numbers
+                                let var_value_num = var_value_str.parse::<i32>();
+                                let filter_value_num = value.parse::<i32>();
 
-                        if var_value_num.is_ok() && filter_value_num.is_ok() {
-                            // Both values are numeric, perform SIMD numeric comparison
-                            let var_value = var_value_num.unwrap();
-                            let filter_value = filter_value_num.unwrap();
+                                if var_value_num.is_ok() && filter_value_num.is_ok() {
+                                    // Both values are numeric, perform SIMD numeric comparison
+                                    let var_value = var_value_num.unwrap();
+                                    let filter_value = filter_value_num.unwrap();
 
-                            // On x86 (SSE2) or x86_64 (SSE2) use SIMD intrinsics
-                            #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
-                            {
-                                unsafe {
-                                    // Load values into SIMD registers
-                                    let var_simd = _mm_set1_epi32(var_value);
-                                    let filter_simd = _mm_set1_epi32(filter_value);
-                                    return match *operator {
-                                        "=" => _mm_movemask_epi8(_mm_cmpeq_epi32(
-                                            var_simd,
-                                            filter_simd,
-                                        )) == 0xFFFF,
-                                        "!=" => _mm_movemask_epi8(_mm_cmpeq_epi32(
-                                            var_simd,
-                                            filter_simd,
-                                        )) != 0xFFFF,
-                                        ">" => _mm_movemask_epi8(_mm_cmpgt_epi32(
-                                            var_simd,
-                                            filter_simd,
-                                        )) == 0xFFFF,
-                                        ">=" => {
-                                            let eq = _mm_cmpeq_epi32(var_simd, filter_simd);
-                                            let gt = _mm_cmpgt_epi32(var_simd, filter_simd);
-                                            _mm_movemask_epi8(_mm_or_si128(eq, gt)) == 0xFFFF
-                                        }
-                                        "<" => _mm_movemask_epi8(_mm_cmpgt_epi32(
-                                            filter_simd,
-                                            var_simd,
-                                        )) == 0xFFFF,
-                                        "<=" => {
-                                            let eq = _mm_cmpeq_epi32(var_simd, filter_simd);
-                                            let lt = _mm_cmpgt_epi32(filter_simd, var_simd);
-                                            _mm_movemask_epi8(_mm_or_si128(eq, lt)) == 0xFFFF
-                                        }
-                                        _ => false,
-                                    };
-                                }
-                            }
-
-                            // On ARM (aarch64) use NEON intrinsics
-                            #[cfg(target_arch = "aarch64")]
-                            {
-                                unsafe {
-                                    let var_neon = vdupq_n_s32(var_value);
-                                    let filter_neon = vdupq_n_s32(filter_value);
-                                    return match *operator {
-                                        "=" => {
-                                            let cmp = vceqq_s32(var_neon, filter_neon);
-                                            (vgetq_lane_u32(cmp, 0) == 0xFFFFFFFF)
-                                                && (vgetq_lane_u32(cmp, 1) == 0xFFFFFFFF)
-                                                && (vgetq_lane_u32(cmp, 2) == 0xFFFFFFFF)
-                                                && (vgetq_lane_u32(cmp, 3) == 0xFFFFFFFF)
-                                        }
-                                        "!=" => {
-                                            let cmp = vceqq_s32(var_neon, filter_neon);
-                                            !((vgetq_lane_u32(cmp, 0) == 0xFFFFFFFF)
-                                                && (vgetq_lane_u32(cmp, 1) == 0xFFFFFFFF)
-                                                && (vgetq_lane_u32(cmp, 2) == 0xFFFFFFFF)
-                                                && (vgetq_lane_u32(cmp, 3) == 0xFFFFFFFF))
-                                        }
-                                        ">" => {
-                                            let cmp = vcgtq_s32(var_neon, filter_neon);
-                                            (vgetq_lane_u32(cmp, 0) == 0xFFFFFFFF)
-                                                && (vgetq_lane_u32(cmp, 1) == 0xFFFFFFFF)
-                                                && (vgetq_lane_u32(cmp, 2) == 0xFFFFFFFF)
-                                                && (vgetq_lane_u32(cmp, 3) == 0xFFFFFFFF)
-                                        }
-                                        ">=" => {
-                                            let eq = vceqq_s32(var_neon, filter_neon);
-                                            let gt = vcgtq_s32(var_neon, filter_neon);
-                                            let cmp = vorrq_u32(eq, gt);
-                                            (vgetq_lane_u32(cmp, 0) == 0xFFFFFFFF)
-                                                && (vgetq_lane_u32(cmp, 1) == 0xFFFFFFFF)
-                                                && (vgetq_lane_u32(cmp, 2) == 0xFFFFFFFF)
-                                                && (vgetq_lane_u32(cmp, 3) == 0xFFFFFFFF)
-                                        }
-                                        "<" => {
-                                            let cmp = vcgtq_s32(filter_neon, var_neon);
-                                            (vgetq_lane_u32(cmp, 0) == 0xFFFFFFFF)
-                                                && (vgetq_lane_u32(cmp, 1) == 0xFFFFFFFF)
-                                                && (vgetq_lane_u32(cmp, 2) == 0xFFFFFFFF)
-                                                && (vgetq_lane_u32(cmp, 3) == 0xFFFFFFFF)
-                                        }
-                                        "<=" => {
-                                            let eq = vceqq_s32(var_neon, filter_neon);
-                                            let lt = vcgtq_s32(filter_neon, var_neon);
-                                            let cmp = vorrq_u32(eq, lt);
-                                            (vgetq_lane_u32(cmp, 0) == 0xFFFFFFFF)
-                                                && (vgetq_lane_u32(cmp, 1) == 0xFFFFFFFF)
-                                                && (vgetq_lane_u32(cmp, 2) == 0xFFFFFFFF)
-                                                && (vgetq_lane_u32(cmp, 3) == 0xFFFFFFFF)
-                                        }
-                                        _ => false,
-                                    }
-                                }
-                            }
-
-                            // Fallback (or if compiled for a non‐SIMD platform)
-                            #[cfg(not(any(
-                                target_arch = "x86",
-                                target_arch = "x86_64",
-                                target_arch = "aarch64"
-                            )))]
-                            {
-                                return match *operator {
-                                    "=" => var_value == filter_value,
-                                    "!=" => var_value != filter_value,
-                                    ">" => var_value > filter_value,
-                                    ">=" => var_value >= filter_value,
-                                    "<" => var_value < filter_value,
-                                    "<=" => var_value <= filter_value,
-                                    _ => false,
-                                };
-                            }
-                        } else {
-                            // At least one value is a string, perform SIMD string comparison
-                            let var_bytes = var_value_str.as_bytes();
-                            let filter_bytes = value.as_bytes();
-
-                            let var_len = var_bytes.len();
-                            let filter_len = filter_bytes.len();
-
-                            // If lengths differ, they can't be equal
-                            if var_len != filter_len {
-                                return match *operator {
-                                    "=" => false,
-                                    "!=" => true,
-                                    _ => false, // Other operators are not supported for strings
-                                };
-                            }
-
-                            let mut i = 0;
-                            #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
-                            {
-                                unsafe {
-                                    while i + 16 <= var_len {
-                                        let var_chunk = _mm_loadu_si128(
-                                            var_bytes[i..].as_ptr() as *const __m128i,
-                                        );
-                                        let filter_chunk = _mm_loadu_si128(
-                                            filter_bytes[i..].as_ptr() as *const __m128i,
-                                        );
-                                        let cmp = _mm_cmpeq_epi8(var_chunk, filter_chunk);
-                                        let mask = _mm_movemask_epi8(cmp);
-                                        if mask != 0xFFFF {
+                                    // On x86 (SSE2) or x86_64 (SSE2) use SIMD intrinsics
+                                    #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+                                    {
+                                        unsafe {
+                                            // Load values into SIMD registers
+                                            let var_simd = _mm_set1_epi32(var_value);
+                                            let filter_simd = _mm_set1_epi32(filter_value);
                                             return match *operator {
-                                                "=" => false,
-                                                "!=" => true,
+                                                "=" => _mm_movemask_epi8(_mm_cmpeq_epi32(
+                                                    var_simd,
+                                                    filter_simd,
+                                                )) == 0xFFFF,
+                                                "!=" => _mm_movemask_epi8(_mm_cmpeq_epi32(
+                                                    var_simd,
+                                                    filter_simd,
+                                                )) != 0xFFFF,
+                                                ">" => _mm_movemask_epi8(_mm_cmpgt_epi32(
+                                                    var_simd,
+                                                    filter_simd,
+                                                )) == 0xFFFF,
+                                                ">=" => {
+                                                    let eq = _mm_cmpeq_epi32(var_simd, filter_simd);
+                                                    let gt = _mm_cmpgt_epi32(var_simd, filter_simd);
+                                                    _mm_movemask_epi8(_mm_or_si128(eq, gt)) == 0xFFFF
+                                                }
+                                                "<" => _mm_movemask_epi8(_mm_cmpgt_epi32(
+                                                    filter_simd,
+                                                    var_simd,
+                                                )) == 0xFFFF,
+                                                "<=" => {
+                                                    let eq = _mm_cmpeq_epi32(var_simd, filter_simd);
+                                                    let lt = _mm_cmpgt_epi32(filter_simd, var_simd);
+                                                    _mm_movemask_epi8(_mm_or_si128(eq, lt)) == 0xFFFF
+                                                }
                                                 _ => false,
                                             };
                                         }
-                                        i += 16;
                                     }
-                                }
-                            }
 
-                            #[cfg(target_arch = "aarch64")]
-                            {
-                                unsafe {
-                                    while i + 16 <= var_len {
-                                        let var_chunk = vld1q_u8(var_bytes[i..].as_ptr());
-                                        let filter_chunk = vld1q_u8(filter_bytes[i..].as_ptr());
-                                        let cmp = vceqq_u8(var_chunk, filter_chunk);
-                                        // Instead of using vgetq_lane_u8 in a loop (which requires a constant index),
-                                        // transmute the vector into an array and iterate over it.
-                                        let cmp_arr: [u8; 16] = std::mem::transmute(cmp);
-                                        if cmp_arr.iter().any(|&lane| lane != 0xFF) {
+                                    // On ARM (aarch64) use NEON intrinsics
+                                    #[cfg(target_arch = "aarch64")]
+                                    {
+                                        unsafe {
+                                            let var_neon = vdupq_n_s32(var_value);
+                                            let filter_neon = vdupq_n_s32(filter_value);
                                             return match *operator {
-                                                "=" => false,
-                                                "!=" => true,
+                                                "=" => {
+                                                    let cmp = vceqq_s32(var_neon, filter_neon);
+                                                    (vgetq_lane_u32(cmp, 0) == 0xFFFFFFFF)
+                                                        && (vgetq_lane_u32(cmp, 1) == 0xFFFFFFFF)
+                                                        && (vgetq_lane_u32(cmp, 2) == 0xFFFFFFFF)
+                                                        && (vgetq_lane_u32(cmp, 3) == 0xFFFFFFFF)
+                                                }
+                                                "!=" => {
+                                                    let cmp = vceqq_s32(var_neon, filter_neon);
+                                                    !((vgetq_lane_u32(cmp, 0) == 0xFFFFFFFF)
+                                                        && (vgetq_lane_u32(cmp, 1) == 0xFFFFFFFF)
+                                                        && (vgetq_lane_u32(cmp, 2) == 0xFFFFFFFF)
+                                                        && (vgetq_lane_u32(cmp, 3) == 0xFFFFFFFF))
+                                                }
+                                                ">" => {
+                                                    let cmp = vcgtq_s32(var_neon, filter_neon);
+                                                    (vgetq_lane_u32(cmp, 0) == 0xFFFFFFFF)
+                                                        && (vgetq_lane_u32(cmp, 1) == 0xFFFFFFFF)
+                                                        && (vgetq_lane_u32(cmp, 2) == 0xFFFFFFFF)
+                                                        && (vgetq_lane_u32(cmp, 3) == 0xFFFFFFFF)
+                                                }
+                                                ">=" => {
+                                                    let eq = vceqq_s32(var_neon, filter_neon);
+                                                    let gt = vcgtq_s32(var_neon, filter_neon);
+                                                    let cmp = vorrq_u32(eq, gt);
+                                                    (vgetq_lane_u32(cmp, 0) == 0xFFFFFFFF)
+                                                        && (vgetq_lane_u32(cmp, 1) == 0xFFFFFFFF)
+                                                        && (vgetq_lane_u32(cmp, 2) == 0xFFFFFFFF)
+                                                        && (vgetq_lane_u32(cmp, 3) == 0xFFFFFFFF)
+                                                }
+                                                "<" => {
+                                                    let cmp = vcgtq_s32(filter_neon, var_neon);
+                                                    (vgetq_lane_u32(cmp, 0) == 0xFFFFFFFF)
+                                                        && (vgetq_lane_u32(cmp, 1) == 0xFFFFFFFF)
+                                                        && (vgetq_lane_u32(cmp, 2) == 0xFFFFFFFF)
+                                                        && (vgetq_lane_u32(cmp, 3) == 0xFFFFFFFF)
+                                                }
+                                                "<=" => {
+                                                    let eq = vceqq_s32(var_neon, filter_neon);
+                                                    let lt = vcgtq_s32(filter_neon, var_neon);
+                                                    let cmp = vorrq_u32(eq, lt);
+                                                    (vgetq_lane_u32(cmp, 0) == 0xFFFFFFFF)
+                                                        && (vgetq_lane_u32(cmp, 1) == 0xFFFFFFFF)
+                                                        && (vgetq_lane_u32(cmp, 2) == 0xFFFFFFFF)
+                                                        && (vgetq_lane_u32(cmp, 3) == 0xFFFFFFFF)
+                                                }
                                                 _ => false,
-                                            };
+                                            }
                                         }
-                                        i += 16;
                                     }
-                                }
-                            }
 
-                            // Handle remaining bytes
-                            if i < var_len {
-                                for j in i..var_len {
-                                    if var_bytes[j] != filter_bytes[j] {
+                                    // Fallback (or if compiled for a non‐SIMD platform)
+                                    #[cfg(not(any(
+                                        target_arch = "x86",
+                                        target_arch = "x86_64",
+                                        target_arch = "aarch64"
+                                    )))]
+                                    {
                                         return match *operator {
-                                            "=" => false,
-                                            "!=" => true,
+                                            "=" => var_value == filter_value,
+                                            "!=" => var_value != filter_value,
+                                            ">" => var_value > filter_value,
+                                            ">=" => var_value >= filter_value,
+                                            "<" => var_value < filter_value,
+                                            "<=" => var_value <= filter_value,
                                             _ => false,
                                         };
                                     }
-                                }
-                            }
+                                } else {
+                                    // At least one value is a string, perform string comparison
+                                    let var_bytes = var_value_str.as_bytes();
+                                    let filter_bytes = value.as_bytes();
 
-                            // Strings are equal
-                            match *operator {
-                                "=" => true,
-                                "!=" => false,
-                                _ => false, // Other operators not supported for strings
+                                    let var_len = var_bytes.len();
+                                    let filter_len = filter_bytes.len();
+
+                                    // If lengths differ, they can't be equal
+                                    if var_len != filter_len {
+                                        return match *operator {
+                                            "=" => false,
+                                            "!=" => true,
+                                            _ => false, // Other operators are not supported for strings
+                                        };
+                                    }
+
+                                    let mut i = 0;
+                                    #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+                                    {
+                                        unsafe {
+                                            while i + 16 <= var_len {
+                                                let var_chunk = _mm_loadu_si128(
+                                                    var_bytes[i..].as_ptr() as *const __m128i,
+                                                );
+                                                let filter_chunk = _mm_loadu_si128(
+                                                    filter_bytes[i..].as_ptr() as *const __m128i,
+                                                );
+                                                let cmp = _mm_cmpeq_epi8(var_chunk, filter_chunk);
+                                                let mask = _mm_movemask_epi8(cmp);
+                                                if mask != 0xFFFF {
+                                                    return match *operator {
+                                                        "=" => false,
+                                                        "!=" => true,
+                                                        _ => false,
+                                                    };
+                                                }
+                                                i += 16;
+                                            }
+                                        }
+                                    }
+
+                                    #[cfg(target_arch = "aarch64")]
+                                    {
+                                        unsafe {
+                                            while i + 16 <= var_len {
+                                                let var_chunk = vld1q_u8(var_bytes[i..].as_ptr());
+                                                let filter_chunk = vld1q_u8(filter_bytes[i..].as_ptr());
+                                                let cmp = vceqq_u8(var_chunk, filter_chunk);
+                                                let cmp_arr: [u8; 16] = std::mem::transmute(cmp);
+                                                if cmp_arr.iter().any(|&lane| lane != 0xFF) {
+                                                    return match *operator {
+                                                        "=" => false,
+                                                        "!=" => true,
+                                                        _ => false,
+                                                    };
+                                                }
+                                                i += 16;
+                                            }
+                                        }
+                                    }
+
+                                    // Handle remaining bytes
+                                    if i < var_len {
+                                        for j in i..var_len {
+                                            if var_bytes[j] != filter_bytes[j] {
+                                                return match *operator {
+                                                    "=" => false,
+                                                    "!=" => true,
+                                                    _ => false,
+                                                };
+                                            }
+                                        }
+                                    }
+
+                                    // Strings are equal
+                                    match *operator {
+                                        "=" => true,
+                                        "!=" => false,
+                                        _ => false, // Other operators not supported for strings
+                                    }
+                                }
+                            } else {
+                                false
                             }
+                        },
+                        FilterExpression::And(left, right) => {
+                            self.evaluate_filter_expression(result, left) && 
+                            self.evaluate_filter_expression(result, right)
+                        },
+                        FilterExpression::Or(left, right) => {
+                            self.evaluate_filter_expression(result, left) || 
+                            self.evaluate_filter_expression(result, right)
+                        },
+                        FilterExpression::Not(expr) => {
+                            !self.evaluate_filter_expression(result, expr)
                         }
-                    } else {
-                        false
                     }
                 })
             })
             .collect()
+    }
+
+    // Helper method to evaluate a filter expression against a result
+    fn evaluate_filter_expression<'a>(
+        &self,
+        result: &BTreeMap<&'a str, String>,
+        filter_expr: &FilterExpression<'a>
+    ) -> bool {
+        match filter_expr {
+            FilterExpression::Comparison(var, operator, value) => {
+                if let Some(var_value_str) = result.get(var) {
+                    // Similar to your existing comparison logic, but without SIMD for simplicity
+                    let var_value_num = var_value_str.parse::<i32>();
+                    let filter_value_num = value.parse::<i32>();
+
+                    if var_value_num.is_ok() && filter_value_num.is_ok() {
+                        // Both values are numeric
+                        let var_value = var_value_num.unwrap();
+                        let filter_value = filter_value_num.unwrap();
+                        
+                        match *operator {
+                            "=" => var_value == filter_value,
+                            "!=" => var_value != filter_value,
+                            ">" => var_value > filter_value,
+                            ">=" => var_value >= filter_value,
+                            "<" => var_value < filter_value,
+                            "<=" => var_value <= filter_value,
+                            _ => false,
+                        }
+                    } else {
+                        // At least one value is a string
+                        match *operator {
+                            "=" => var_value_str == value,
+                            "!=" => var_value_str != value,
+                            _ => false, // Other operators not supported for strings
+                        }
+                    }
+                } else {
+                    false
+                }
+            },
+            FilterExpression::And(left, right) => {
+                self.evaluate_filter_expression(result, left) && 
+                self.evaluate_filter_expression(result, right)
+            },
+            FilterExpression::Or(left, right) => {
+                self.evaluate_filter_expression(result, left) || 
+                self.evaluate_filter_expression(result, right)
+            },
+            FilterExpression::Not(expr) => {
+                !self.evaluate_filter_expression(result, expr)
+            }
+        }
     }
 
     pub fn select_by_value(&mut self, value: &str) -> BTreeSet<Triple> {

@@ -174,32 +174,116 @@ pub fn parse_select(input: &str) -> IResult<&str, Vec<(&str, &str, Option<&str>)
     Ok((input, variables))
 }
 
-pub fn parse_filter(input: &str) -> IResult<&str, (&str, &str, &str)> {
-    let (input, _) = tag("FILTER")(input)?;
+// Parse a single comparison expression like ?var > 10
+fn parse_comparison(input: &str) -> IResult<&str, FilterExpression> {
     let (input, _) = multispace0(input)?;
-    let (input, _) = char('(')(input)?;
-    let (input, var) = variable(input)?;
+
+    // Parse variable or literal on left side
+    let (input, left) = alt((
+        variable,
+        parse_literal,
+        take_while1(|c: char| c.is_digit(10)),
+    ))(input)?;
+    
     let (input, _) = multispace0(input)?;
+    
+    // Parse operator
     let (input, operator) = alt((
         tag("="),
         tag("!="),
-        tag(">"),
         tag(">="),
-        tag("<"),
         tag("<="),
+        tag(">"),
+        tag("<"),
     ))(input)?;
+    
     let (input, _) = multispace0(input)?;
-
-    // Parse value as either a number or a double-quoted string
-    let (input, value) = alt((
-        // Parse as a string literal in double quotes
+    
+    // Parse variable or literal on right side
+    let (input, right) = alt((
+        variable,
         parse_literal,
-        // Parse as a numeric literal
         take_while1(|c: char| c.is_digit(10)),
     ))(input)?;
-    let (input, _) = char(')')(input)?;
+    
+    let (input, _) = multispace0(input)?;
+    
+    Ok((input, FilterExpression::Comparison(left, operator, right)))
+}
 
-    Ok((input, (var, operator, value)))
+// Parse an expression in parentheses
+fn parse_parenthesized(input: &str) -> IResult<&str, FilterExpression> {
+    let (input, _) = multispace0(input)?;
+    let (input, _) = char('(')(input)?;
+    let (input, expr) = parse_filter_expression(input)?;
+    let (input, _) = multispace0(input)?;
+    let (input, _) = char(')')(input)?;
+    let (input, _) = multispace0(input)?;
+    
+    Ok((input, expr))
+}
+
+// Parse a negation (NOT)
+fn parse_not(input: &str) -> IResult<&str, FilterExpression> {
+    let (input, _) = multispace0(input)?;
+    let (input, _) = char('!')(input)?;
+    let (input, _) = multispace0(input)?;
+    
+    let (input, expr) = parse_term(input)?;
+    Ok((input, FilterExpression::Not(Box::new(expr))))
+}
+
+// Parse a basic term (comparison, parenthesized expression, or negation)
+fn parse_term(input: &str) -> IResult<&str, FilterExpression> {
+    alt((
+        parse_comparison,
+        parse_parenthesized,
+        parse_not,
+    ))(input)
+}
+
+// Parse AND expressions
+fn parse_and(input: &str) -> IResult<&str, FilterExpression> {
+    let (input, left) = parse_term(input)?;
+    let (input, _) = multispace0(input)?;
+    
+    if let Ok((input, _)) = tag::<_, _, nom::error::Error<_>>("&&")(input) {
+        let (input, _) = multispace0(input)?;
+        let (input, right) = parse_and(input)?;
+        Ok((input, FilterExpression::And(Box::new(left), Box::new(right))))
+    } else {
+        Ok((input, left))
+    }
+}
+
+// Parse OR expressions
+fn parse_or(input: &str) -> IResult<&str, FilterExpression> {
+    let (input, left) = parse_and(input)?;
+    let (input, _) = multispace0(input)?;
+    
+    if let Ok((input, _)) = tag::<_, _, nom::error::Error<_>>("||")(input) {
+        let (input, _) = multispace0(input)?;
+        let (input, right) = parse_or(input)?;
+        Ok((input, FilterExpression::Or(Box::new(left), Box::new(right))))
+    } else {
+        Ok((input, left))
+    }
+}
+
+// Main entry point for parsing filter expressions
+fn parse_filter_expression(input: &str) -> IResult<&str, FilterExpression> {
+    parse_or(input)
+}
+
+// Parse a complete FILTER clause
+pub fn parse_filter(input: &str) -> IResult<&str, FilterExpression> {
+    let (input, _) = tag("FILTER")(input)?;
+    let (input, _) = multispace0(input)?;
+    let (input, _) = char('(')(input)?;
+    let (input, expr) = parse_filter_expression(input)?;
+    let (input, _) = char(')')(input)?;
+    
+    Ok((input, expr))
 }
 
 // Parser for BIND clauses: BIND(funcName(?var, "literal") AS ?newVar)
@@ -258,10 +342,10 @@ pub fn parse_where(
     &str,
     (
         Vec<(&str, &str, &str)>,
-        Vec<(&str, &str, &str)>,
+        Vec<FilterExpression>,
         Option<ValuesClause>,
         Vec<(&str, Vec<&str>, &str)>,
-        Vec<SubQuery>, // Add subqueries to the return type
+        Vec<SubQuery>,
     ),
 > {
     let (input, _) = multispace0(input)?;
@@ -387,7 +471,7 @@ pub fn parse_sparql_query(
         Option<InsertClause>,
         Vec<(&str, &str, Option<&str>)>, // variables
         Vec<(&str, &str, &str)>,         // patterns
-        Vec<(&str, &str, &str)>,         // filters
+        Vec<FilterExpression>,         // filters
         Vec<&str>,                       // group_vars
         HashMap<String, String>,         // prefixes
         Option<ValuesClause>,
@@ -687,16 +771,23 @@ pub fn convert_combined_rule<'a>(
         .map(|triple| convert_triple_pattern(triple, dict, prefixes))
         .collect::<Vec<TriplePattern>>();
 
-    // Convert filter conditions
+    // Convert filter expressions to filter conditions
     let filter_conditions = cr
         .body
         .1
         .into_iter()
-        .map(|(var, op, value)| {
-            FilterCondition {
-                variable: var.trim_start_matches('?').to_string(), // Remove the leading '?'
-                operator: op.to_string(),
-                value: value.to_string(),
+        .map(|filter_expr| {
+            match filter_expr {
+                FilterExpression::Comparison(var, op, value) => {
+                    FilterCondition {
+                        variable: var.trim_start_matches('?').to_string(), // Remove the leading '?'
+                        operator: op.to_string(),
+                        value: value.to_string(),
+                    }
+                },
+                // For complex expressions (AND, OR, NOT), you might need to decide how to handle them
+                // For now, let's only support basic comparisons
+                _ => panic!("Complex filter expressions not supported in rules yet")
             }
         })
         .collect();

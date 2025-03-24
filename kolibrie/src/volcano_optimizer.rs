@@ -1,6 +1,7 @@
 use shared::dictionary::Dictionary;
 use crate::sparql_database::SparqlDatabase;
 use shared::triple::Triple;
+use shared::query::FilterExpression;
 use std::collections::{BTreeMap, HashMap, HashSet};
 
 // Define logical operators
@@ -1091,7 +1092,7 @@ fn extract_pattern(op: &PhysicalOperator) -> Option<&TriplePattern> {
 pub fn build_logical_plan(
     variables: Vec<(&str, &str)>,
     patterns: Vec<(&str, &str, &str)>,
-    filters: Vec<(&str, &str, &str)>,
+    filters: Vec<FilterExpression>,
     prefixes: &HashMap<String, String>,
     database: &SparqlDatabase,
 ) -> LogicalOperator {
@@ -1123,16 +1124,29 @@ pub fn build_logical_plan(
     }
 
     // Apply filters
-    for (var, operator, value) in filters {
-        let condition = Condition {
-            variable: var.to_string(),
-            operator: operator.to_string(),
-            value: value.to_string(),
-        };
-        current_op = LogicalOperator::Selection {
-            predicate: Box::new(current_op),
-            condition,
-        };
+    for filter in filters {
+        match filter {
+            FilterExpression::Comparison(var, operator, value) => {
+                let condition = Condition {
+                    variable: var.to_string(),
+                    operator: operator.to_string(),
+                    value: value.to_string(),
+                };
+                current_op = LogicalOperator::Selection {
+                    predicate: Box::new(current_op),
+                    condition,
+                };
+            },
+            FilterExpression::And(_, _) => {
+                // TODO: Handle AND logic
+            },
+            FilterExpression::Or(_, _) => {
+                // TODO: Handle OR logic
+            },
+            FilterExpression::Not(_) => {
+                // TODO: Handle NOT logic
+            }
+        }
     }
 
     // Extract variable names from variables

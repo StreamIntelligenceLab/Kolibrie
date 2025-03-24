@@ -36,6 +36,8 @@
 35. Minor fix of example with backward chaining
 36. Modify machine learning execution, more depend on query
 37. Add error handling
+38. Modify ML handler to use MLSchema and ability to run multiple ML models
+39. Modify FILTER to have such epxression: ?age > 10 && ?age < 15 or ?age < 10 || ?age > 15
 
 0.1.0
 1. Parsing RDF/XML

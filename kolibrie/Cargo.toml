@@ -33,6 +33,7 @@ gpu = { path = "../gpu" }
 shared = { path = "../shared" }
 datalog =  { path = "../datalog" }
 ml = { path = "../ml" }
+chrono = "0.4.40"
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2.161"
@@ -118,6 +119,10 @@ path = "examples/sparql_syntax/filter/simple_filter.rs"
 [[example]]
 name = "filter_char"
 path = "examples/sparql_syntax/filter/filter_char.rs"
+
+[[example]]
+name = "filter_complex"
+path = "examples/sparql_syntax/filter/filter_complex.rs"
 
 [[example]]
 name = "knowledge_graph"
@@ -210,3 +215,7 @@ path = "examples/sparql_syntax/combination/combination_logic_extend.rs"
 [[example]]
 name = "combination_ml"
 path = "examples/sparql_syntax/combination/combination_ml.rs"
+
+[[example]]
+name = "real_scenario"
+path = "examples/sparql_syntax/combination/real_scenario.rs"

@@ -35,32 +35,71 @@ fn execute_ml_prediction_from_clause(
     // Initialize ML handler
     let mut ml_handler = MLHandler::new()?;
     
-    // Load the model
-    let model_path = {
+    // Define model paths
+    let model_dir = {
         let mut path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
         
         // Go up directories
         loop {
             let ml_dir = path.join("ml");
             if ml_dir.exists() && ml_dir.is_dir() {
-                break ml_dir.join("src").join("models").join("temperature_predictor.pkl");
+                break ml_dir.join("src").join("models");
             }
             
             if !path.pop() {
                 // Couldn't find the ml directory in any parent - use a fallback path
                 eprintln!("Warning: Could not locate 'ml' directory in any parent directory!");
                 break std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-                    .join("models")
-                    .join("temperature_predictor.pkl");
+                    .join("models");
             }
         }
     };
-
-    if !model_path.exists() {
-        return Err(format!("Model file not found at {}", model_path.display()).into());
+    
+    // Load two models with schema
+    let rf_model_path = model_dir.join("rf_temperature_predictor.pkl");
+    let gb_model_path = model_dir.join("gb_temperature_predictor.pkl");
+    
+    if !rf_model_path.exists() || !gb_model_path.exists() {
+        return Err(format!("Model files not found at {} or {}", 
+            rf_model_path.display(), gb_model_path.display()).into());
     }
-
-    ml_handler.load_model(ml_predict.model, model_path.to_str().unwrap())?;
+    
+    // Load both models with schema
+    let rf_metrics = ml_handler.load_model_with_schema("rf_model", rf_model_path.to_str().unwrap())?;
+    let gb_metrics = ml_handler.load_model_with_schema("gb_model", gb_model_path.to_str().unwrap())?;
+    
+    // Print performance comparison
+    println!("\nModel Performance Comparison:");
+    println!("RandomForest Model:");
+    println!("  Training Time: {:.4} seconds", rf_metrics.training_time);
+    println!("  Prediction Time: {:.4} seconds", rf_metrics.prediction_time);
+    println!("  Memory Usage: {:.2} MB", rf_metrics.memory_usage_mb);
+    println!("  CPU Usage: {:.2}%", rf_metrics.cpu_usage_percent);
+    if let Some(r2) = rf_metrics.r2_score {
+        println!("  R² Score: {:.4}", r2);
+    }
+    if let Some(mse) = rf_metrics.mse {
+        println!("  MSE: {:.4}", mse);
+    }
+    
+    println!("\nGradientBoosting Model:");
+    println!("  Training Time: {:.4} seconds", gb_metrics.training_time);
+    println!("  Prediction Time: {:.4} seconds", gb_metrics.prediction_time);
+    println!("  Memory Usage: {:.2} MB", gb_metrics.memory_usage_mb);
+    println!("  CPU Usage: {:.2}%", gb_metrics.cpu_usage_percent);
+    if let Some(r2) = gb_metrics.r2_score {
+        println!("  R² Score: {:.4}", r2);
+    }
+    if let Some(mse) = gb_metrics.mse {
+        println!("  MSE: {:.4}", mse);
+    }
+    
+    // Compare models and select the best one
+    let model_names = ["rf_model", "gb_model"];
+    let best_model = ml_handler.compare_models(&model_names)
+        .unwrap_or("rf_model"); // Default to RandomForest if comparison fails
+    
+    println!("\nSelected best model: {}", best_model);
     
     // Extract variable names from SELECT clause (remove ? prefix)
     let variable_names: Vec<String> = ml_predict.input_select
@@ -184,7 +223,15 @@ fn execute_ml_prediction_from_clause(
     }
     
     println!("Using features for prediction: {:?}", features);
-    let prediction_results = ml_handler.predict(ml_predict.model, features)?;
+    
+    // Use the selected best model
+    let prediction_results = ml_handler.predict(best_model, features)?;
+    
+    // Print performance of the selected model during this prediction
+    println!("\nPerformance during prediction:");
+    println!("  Prediction Time: {:.4} seconds", prediction_results.performance_metrics.prediction_time);
+    println!("  Memory Usage: {:.2} MB", prediction_results.performance_metrics.memory_usage_mb);
+    println!("  CPU Usage: {:.2}%", prediction_results.performance_metrics.cpu_usage_percent);
     
     // Create prediction objects
     let predictions: Vec<Prediction> = room_data
@@ -299,7 +346,7 @@ WHERE {
         
         // Check for ML.PREDICT clause and use the improved implementation
         if let Some(ml_predict) = &rule.ml_predict {
-            println!("Using dynamic ML.PREDICT execution...");
+            println!("Using enhanced ML.PREDICT execution with model comparison...");
             match execute_ml_prediction_from_clause(ml_predict, &database) {
                 Ok(predictions) => {
                     println!("\nML Predictions:");

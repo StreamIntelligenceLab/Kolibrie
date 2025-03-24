@@ -44,5 +44,6 @@ fn simple_select() {
 }
 
 fn main() {
-  simple_select();
+    simple_select();
 }
+

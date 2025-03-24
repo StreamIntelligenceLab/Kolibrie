@@ -1,5 +1,13 @@
 use std::collections::HashMap;
 
+#[derive(Debug, Clone)]
+pub enum FilterExpression<'a> {
+    Comparison(&'a str, &'a str, &'a str),
+    And(Box<FilterExpression<'a>>, Box<FilterExpression<'a>>),
+    Or(Box<FilterExpression<'a>>, Box<FilterExpression<'a>>),
+    Not(Box<FilterExpression<'a>>),
+}
+
 // Define the Value enum to represent terms or UNDEF in VALUES clause
 #[derive(Debug, Clone)]
 pub enum Value {
@@ -24,7 +32,7 @@ pub struct InsertClause<'a> {
 pub struct SubQuery<'a> {
     pub variables: Vec<(&'a str, &'a str, Option<&'a str>)>, // SELECT variables
     pub patterns: Vec<(&'a str, &'a str, &'a str)>,          // WHERE patterns
-    pub filters: Vec<(&'a str, &'a str, &'a str)>,           // FILTER conditions
+    pub filters: Vec<FilterExpression<'a>>,           // FILTER conditions
     pub binds: Vec<(&'a str, Vec<&'a str>, &'a str)>,        // BIND clauses
     pub _values_clause: Option<ValuesClause<'a>>,            // VALUES clause
 }
@@ -41,7 +49,7 @@ pub struct MLPredictClause<'a> {
     pub input_raw: &'a str,                                 // Raw input query string
     pub input_select: Vec<(&'a str, &'a str, Option<&'a str>)>, // Parsed SELECT variables
     pub input_where: Vec<(&'a str, &'a str, &'a str)>,      // Parsed WHERE patterns
-    pub input_filters: Vec<(&'a str, &'a str, &'a str)>,    // Parsed FILTER conditions
+    pub input_filters: Vec<FilterExpression<'a>>,    // Parsed FILTER conditions
     pub output: &'a str,
 }
 
@@ -50,7 +58,7 @@ pub struct CombinedRule<'a> {
     pub head: RuleHead<'a>,
     pub body: (
         Vec<(&'a str, &'a str, &'a str)>, // triple patterns from WHERE
-        Vec<(&'a str, &'a str, &'a str)>, // filters
+        Vec<FilterExpression<'a>>, // filters
         Option<ValuesClause<'a>>,
         Vec<(&'a str, Vec<&'a str>, &'a str)>, // BIND clauses
         Vec<SubQuery<'a>>,                     // subqueries
@@ -67,7 +75,7 @@ pub struct CombinedQuery<'a> {
         Option<InsertClause<'a>>,
         Vec<(&'a str, &'a str, Option<&'a str>)>,
         Vec<(&'a str, &'a str, &'a str)>,
-        Vec<(&'a str, &'a str, &'a str)>,
+        Vec<FilterExpression<'a>>,
         Vec<&'a str>,
         HashMap<String, String>,
         Option<ValuesClause<'a>>,

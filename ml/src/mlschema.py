@@ -1,5 +1,6 @@
 from rdflib import Graph, Literal, RDF, URIRef, Namespace, BNode
 from rdflib.namespace import RDF, XSD, RDFS, OWL
+from rdflib import XSD, Literal as RDFLiteral
 
 # Optional imports for framework detection
 try:
@@ -214,14 +215,15 @@ class MLSchema:
                     for metric_name, metric_value in metrics.items():
                         if isinstance(metric_value, (float, int)):
                             self._add_single_evaluation(f'{metric_name} {label}', metric_value, eval_spec_uri, run_uri, measure_uri_name=f'{metric_name}_{label_name}')
-    
+
+    # Then update the _add_single_evaluation method
     def _add_single_evaluation(self, metric_name, metric_value, eval_spec_uri, run_uri, measure_uri_name=None):
         if measure_uri_name is None:
             measure_uri_name = metric_name.replace(' ', '_')
         eval_measure_uri = self.EX[measure_uri_name]
         self.g.add((eval_measure_uri, RDF.type, OWL.NamedIndividual))
         self.g.add((eval_measure_uri, RDF.type, self.MLS.EvaluationMeasure))
-        self.g.add((eval_measure_uri, RDFS.label, Literal(metric_name)))
+        self.g.add((eval_measure_uri, RDFS.label, RDFLiteral(metric_name)))
         self.g.add((eval_spec_uri, self.MLS.hasPart, eval_measure_uri))
         
         model_eval_uri = self.EX[f'modelEvaluation{self.model_eval_counter}']
@@ -229,7 +231,10 @@ class MLSchema:
         self.g.add((model_eval_uri, RDF.type, OWL.NamedIndividual))
         self.g.add((model_eval_uri, RDF.type, self.MLS.ModelEvaluation))
         self.g.add((model_eval_uri, self.MLS.specifiedBy, eval_measure_uri))
-        self.g.add((model_eval_uri, self.MLS.hasValue, Literal(metric_value, datatype=XSD.decimal)))
+        
+        # Ensure metric_value is a float and use XSD.double datatype
+        metric_value_float = float(metric_value)
+        self.g.add((model_eval_uri, self.MLS.hasValue, RDFLiteral(metric_value_float, datatype=XSD.double)))
         self.g.add((run_uri, self.MLS.hasOutput, model_eval_uri))
 
     def _add_model_characteristics(self, model, model_uri, feature_names, class_names):
