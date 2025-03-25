@@ -1,14 +1,15 @@
+use kolibrie::execute_query::execute_query;
 use kolibrie::parser::*;
 use kolibrie::sparql_database::SparqlDatabase;
 use datalog::knowledge_graph::KnowledgeGraph;
 use shared::terms::Term;
 
 fn main() {
-    // Define the RDF/XML data for the virtual room with sensors - without grid sections
+    // Extended RDF/XML data
     let rdf_xml_data = r#"
         <?xml version="1.0"?>
         <rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#"
-                xmlns:ex="http://example.org#">
+                  xmlns:ex="http://example.org#">
           
           <!-- Room definition -->
           <rdf:Description rdf:about="http://example.org#VirtualRoom">
@@ -79,6 +80,54 @@ fn main() {
             <ex:isDark>false</ex:isDark>
             <ex:isActive>true</ex:isActive>
           </rdf:Description>
+
+          <!-- Category A with allowed time windows -->
+          <rdf:Description rdf:about="http://example.org#CategoryA">
+            <ex:allowedTimeSlots rdf:parseType="Collection">
+              <rdf:Description>
+                <ex:startTime>08:00</ex:startTime>
+                <ex:endTime>12:00</ex:endTime>
+              </rdf:Description>
+              <rdf:Description>
+                <ex:startTime>14:00</ex:startTime>
+                <ex:endTime>18:00</ex:endTime>
+              </rdf:Description>
+              <!-- Shared time slot for both A and B -->
+              <rdf:Description>
+                <ex:startTime>10:00</ex:startTime>
+                <ex:endTime>10:30</ex:endTime>
+              </rdf:Description>
+            </ex:allowedTimeSlots>
+          </rdf:Description>
+
+          <!-- Category B with allowed time windows -->
+          <rdf:Description rdf:about="http://example.org#CategoryB">
+            <ex:allowedTimeSlots rdf:parseType="Collection">
+              <rdf:Description>
+                <ex:startTime>09:00</ex:startTime>
+                <ex:endTime>11:00</ex:endTime>
+              </rdf:Description>
+              <rdf:Description>
+                <ex:startTime>15:00</ex:startTime>
+                <ex:endTime>19:00</ex:endTime>
+              </rdf:Description>
+              <!-- Shared time slot for both A and B -->
+              <rdf:Description>
+                <ex:startTime>10:00</ex:startTime>
+                <ex:endTime>10:30</ex:endTime>
+              </rdf:Description>
+            </ex:allowedTimeSlots>
+          </rdf:Description>
+
+          <!-- Example detection event: Category A detected at 07:30 -->
+          <rdf:Description rdf:about="http://example.org#DetectionEvent1">
+            <ex:detectedCategory rdf:resource="http://example.org#CategoryA"/>
+            <ex:timeOfDetection>07:30</ex:timeOfDetection>
+            <!-- Link it to a sensor or a room if needed -->
+            <ex:detectedBy rdf:resource="http://example.org#Camera1"/>
+            <ex:room rdf:resource="http://example.org#VirtualRoom"/>
+          </rdf:Description>
+
         </rdf:RDF>
     "#;
 
@@ -160,8 +209,45 @@ WHERE {
     :UseCameraIdentification(?room) 
 }"#;
 
+    // Mark all detection events as unauthorized:
+    let rule_mark_all_unauthorized = r#"PREFIX ex: <http://example.org#>
+RULE :MarkAllEventsUnauthorized(?event) :-
+    WHERE {
+        ?event ex:detectedCategory ?person .
+    }
+    =>
+    {
+        ?event ex:unauthorized "true" .
+    }.
+SELECT ?event
+WHERE {
+    :MarkAllEventsUnauthorized(?event)
+}"#;
+
+    // Override to authorized if event is within the allowed time slot:
+    let rule_mark_authorized_if_within_schedule = r#"PREFIX ex: <http://example.org#>
+RULE :MarkAllEventsUnauthorized(?event) :-
+    WHERE {
+        ?event ex:detectedCategory ?person .
+    }
+    =>
+    {
+        ?event ex:unauthorized "true" .
+    }.
+SELECT ?event
+WHERE {
+    :MarkAllEventsUnauthorized(?event)
+}"#;
+
     // Execute rules
-    let rules = [rule1, rule2, rule3a, rule3b];
+    let rules = [
+        rule1, 
+        rule2, 
+        rule3a, 
+        rule3b, 
+        rule_mark_all_unauthorized,
+        rule_mark_authorized_if_within_schedule
+    ];
     
     for rule in rules.iter() {
         let (_rest, combined_query) = parse_combined_query(rule)
@@ -172,21 +258,14 @@ WHERE {
             println!("Dynamic rule: {:#?}", dynamic_rule);
             kg.add_rule(dynamic_rule.clone());
             
-            let expanded = match dynamic_rule.conclusion.1 {
-                Term::Constant(code) => {
-                    database.dictionary.decode(code).unwrap_or_else(|| "")
-                },
-                _ => "",
-            };
-            let local = if let Some(idx) = expanded.rfind('#') {
-                &expanded[idx + 1..]
-            } else if let Some(idx) = expanded.rfind(':') {
-                &expanded[idx + 1..]
-            } else {
-                &expanded
-            };
-            let rule_key = local.to_lowercase();
-            database.rule_map.insert(rule_key, expanded.to_string());
+            if let Term::Constant(code) = dynamic_rule.conclusion.1 {
+                if let Some(expanded) = database.dictionary.decode(code) {
+                    if let Some(idx) = expanded.rfind('#') {
+                        let local = &expanded[idx + 1..];
+                        database.rule_map.insert(local.to_lowercase(), expanded.to_string());
+                    }
+                }
+            }
         }
     }
     
@@ -196,5 +275,18 @@ WHERE {
     for triple in inferred_facts.iter() {
         println!("{}", database.triple_to_string(triple, &database.dictionary));
         database.triples.insert(triple.clone());
+    }
+
+    let query_unauthorized = r#"PREFIX ex: <http://example.org#>
+    SELECT ?event ?time
+    WHERE {
+        ?event ex:unauthorized "true" ;
+                ex:timeOfDetection ?time .
+    }"#;
+
+    let unauthorized_results = execute_query(query_unauthorized, &mut database);
+    println!("\n==> Unauthorized detection events:");
+    for row in unauthorized_results {
+        println!("{:?}", row);
     }
 }
