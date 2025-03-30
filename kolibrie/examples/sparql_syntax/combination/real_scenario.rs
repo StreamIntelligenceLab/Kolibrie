@@ -3,99 +3,186 @@ use kolibrie::parser::*;
 use kolibrie::sparql_database::SparqlDatabase;
 use datalog::knowledge_graph::KnowledgeGraph;
 use shared::terms::Term;
+use rand::Rng;
+use chrono::Utc;
 
-fn main() {
-    // Extended RDF/XML data
-    let rdf_xml_data = r#"
+/// Generates RDF/XML data with random sensor values but fixed grid positions
+fn generate_rdf_xml() -> String {
+    // Create random number generator
+    let mut rng = rand::thread_rng();
+    
+    // Get current timestamp
+    let now = Utc::now();
+    let current_datetime = now.format("%Y-%m-%d %H:%M:%S").to_string();
+    
+    // Random light and noise levels for room
+    let room_light_level = rng.gen_range(60..95);
+    let room_noise_level = rng.gen_range(20..35);
+    
+    // Generate random motion detection status and other sensor attributes
+    let camera1_motion = rng.gen_bool(0.7);
+    let camera2_motion = rng.gen_bool(0.4);
+    let motion1_detection = rng.gen_bool(0.8);
+    let motion2_detection = rng.gen_bool(0.5);
+    let motion3_detection = rng.gen_bool(0.7);
+    let noise1_detection = rng.gen_bool(0.3);
+    let noise2_detection = rng.gen_bool(0.4);
+    
+    // Random noise levels for noise sensors
+    let noise1_level = rng.gen_range(5..20);
+    let noise2_level = rng.gen_range(8..25);
+    
+    // Random camera attributes
+    let camera1_coverage = match rng.gen_range(0..3) {
+        0 => "Narrow",
+        1 => "Medium",
+        2 => "Wide",
+        _ => "Standard"
+    };
+    
+    let camera2_angle = rng.gen_range(0..360);
+    
+    // Generate random time for an event
+    let random_hour = rng.gen_range(0..24);
+    let random_minute = rng.gen_range(0..60);
+    let random_event_time = format!("{:02}:{:02}", random_hour, random_minute);
+    
+    // System user identifier (anonymous)
+    let system_user = "system";
+    
+    // Generate random time slots for allowed access
+    let cat_a_slot1_start = format!("{:02}:00", rng.gen_range(7..10));
+    let cat_a_slot1_end = format!("{:02}:00", rng.gen_range(11..14));
+    let cat_a_slot2_start = format!("{:02}:00", rng.gen_range(13..16));
+    let cat_a_slot2_end = format!("{:02}:00", rng.gen_range(17..20));
+    
+    let cat_b_slot1_start = format!("{:02}:00", rng.gen_range(8..11));
+    let cat_b_slot1_end = format!("{:02}:00", rng.gen_range(12..15));
+    let cat_b_slot2_start = format!("{:02}:00", rng.gen_range(14..17));
+    let cat_b_slot2_end = format!("{:02}:00", rng.gen_range(18..21));
+    
+    // Shared time slot
+    let shared_slot_start = "10:00";
+    let shared_slot_end = "10:30";
+    
+    // Build the RDF/XML content
+    format!(r#"
         <?xml version="1.0"?>
         <rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#"
                   xmlns:ex="http://example.org#">
           
           <!-- Room definition -->
           <rdf:Description rdf:about="http://example.org#VirtualRoom">
-            <ex:lightLevel>75</ex:lightLevel>
-            <ex:noiseLevel>25</ex:noiseLevel>
+            <ex:lightLevel>{}</ex:lightLevel>
+            <ex:noiseLevel>{}</ex:noiseLevel>
+            <ex:gridWidth>150</ex:gridWidth>
+            <ex:gridHeight>150</ex:gridHeight>
+            <ex:gridUnit>cm</ex:gridUnit>
+            <ex:lastUpdated>{}</ex:lastUpdated>
+            <ex:lastUpdatedBy>{}</ex:lastUpdatedBy>
           </rdf:Description>
           
-          <!-- Camera in the left up corner -->
+          <!-- Camera in the left up corner (SensorA at 0,0) -->
           <rdf:Description rdf:about="http://example.org#Camera1">
             <ex:type>Camera</ex:type>
-            <ex:position>LeftUp</ex:position>
-            <ex:detectedMotion>true</ex:detectedMotion>
-            <ex:coverage>Wide</ex:coverage>
+            <ex:sensorId>SensorA</ex:sensorId>
+            <ex:gridX>0</ex:gridX>
+            <ex:gridY>0</ex:gridY>
+            <ex:detectedMotion>{}</ex:detectedMotion>
+            <ex:coverage>{}</ex:coverage>
             <ex:isActive>true</ex:isActive>
+            <ex:lastChecked>{}</ex:lastChecked>
           </rdf:Description>
           
-          <!-- Rotating camera on right side -->
+          <!-- Movable camera (SensorG) -->
           <rdf:Description rdf:about="http://example.org#Camera2">
             <ex:type>RotatingCamera</ex:type>
-            <ex:position>RightSide</ex:position>
-            <ex:detectedMotion>false</ex:detectedMotion>
+            <ex:sensorId>SensorG</ex:sensorId>
+            <ex:gridX>150</ex:gridX>
+            <ex:gridY>100</ex:gridY>
+            <ex:detectedMotion>{}</ex:detectedMotion>
             <ex:coverage>Rotating</ex:coverage>
-            <ex:currentAngle>45</ex:currentAngle>
+            <ex:currentAngle>{}</ex:currentAngle>
             <ex:isActive>true</ex:isActive>
+            <ex:isMovable>true</ex:isMovable>
+            <ex:lastChecked>{}</ex:lastChecked>
           </rdf:Description>
           
-          <!-- Motion sensor in left down corner -->
+          <!-- Motion sensor (SensorC) -->
           <rdf:Description rdf:about="http://example.org#MotionSensor1">
             <ex:type>MotionSensor</ex:type>
-            <ex:position>LeftDown</ex:position>
-            <ex:detectedMotion>true</ex:detectedMotion>
-            <ex:sensitivity>High</ex:sensitivity>
+            <ex:sensorId>SensorC</ex:sensorId>
+            <ex:gridX>0</ex:gridX>
+            <ex:gridY>150</ex:gridY>
+            <ex:detectedMotion>{}</ex:detectedMotion>
+            <ex:sensitivity>{}</ex:sensitivity>
             <ex:isActive>true</ex:isActive>
+            <ex:lastChecked>{}</ex:lastChecked>
           </rdf:Description>
           
-          <!-- Motion sensor in right up corner -->
+          <!-- Motion sensor (SensorB) -->
           <rdf:Description rdf:about="http://example.org#MotionSensor2">
             <ex:type>MotionSensor</ex:type>
-            <ex:position>RightUp</ex:position>
-            <ex:detectedMotion>false</ex:detectedMotion>
-            <ex:sensitivity>Medium</ex:sensitivity>
+            <ex:sensorId>SensorB</ex:sensorId>
+            <ex:gridX>150</ex:gridX>
+            <ex:gridY>0</ex:gridY>
+            <ex:detectedMotion>{}</ex:detectedMotion>
+            <ex:sensitivity>{}</ex:sensitivity>
             <ex:isActive>true</ex:isActive>
+            <ex:lastChecked>{}</ex:lastChecked>
           </rdf:Description>
           
-          <!-- Motion sensor in right down corner -->
+          <!-- Motion sensor (SensorF) -->
           <rdf:Description rdf:about="http://example.org#MotionSensor3">
             <ex:type>MotionSensor</ex:type>
-            <ex:position>RightDown</ex:position>
-            <ex:detectedMotion>true</ex:detectedMotion>
-            <ex:sensitivity>High</ex:sensitivity>
+            <ex:sensorId>SensorF</ex:sensorId>
+            <ex:gridX>150</ex:gridX>
+            <ex:gridY>150</ex:gridY>
+            <ex:detectedMotion>{}</ex:detectedMotion>
+            <ex:sensitivity>{}</ex:sensitivity>
             <ex:isActive>true</ex:isActive>
+            <ex:lastChecked>{}</ex:lastChecked>
           </rdf:Description>
           
-          <!-- Noise sensor in the middle down -->
+          <!-- Noise sensor (SensorE) -->
           <rdf:Description rdf:about="http://example.org#NoiseSensor1">
             <ex:type>NoiseSensor</ex:type>
-            <ex:position>MiddleDown</ex:position>
-            <ex:detectedNoise>false</ex:detectedNoise>
-            <ex:noiseLevel>10</ex:noiseLevel>
+            <ex:sensorId>SensorE</ex:sensorId>
+            <ex:gridX>50</ex:gridX>
+            <ex:gridY>150</ex:gridY>
+            <ex:detectedNoise>{}</ex:detectedNoise>
+            <ex:noiseLevel>{}</ex:noiseLevel>
             <ex:isActive>true</ex:isActive>
+            <ex:lastChecked>{}</ex:lastChecked>
           </rdf:Description>
           
-          <!-- Light sensor data -->
-          <rdf:Description rdf:about="http://example.org#LightSensor1">
-            <ex:type>LightSensor</ex:type>
-            <ex:position>MiddleUp</ex:position>
-            <ex:lightLevel>85</ex:lightLevel>
-            <ex:isDark>false</ex:isDark>
+          <!-- Noise sensor (SensorD) -->
+          <rdf:Description rdf:about="http://example.org#NoiseSensor2">
+            <ex:type>NoiseSensor</ex:type>
+            <ex:sensorId>SensorD</ex:sensorId>
+            <ex:gridX>50</ex:gridX>
+            <ex:gridY>50</ex:gridY>
+            <ex:detectedNoise>{}</ex:detectedNoise>
+            <ex:noiseLevel>{}</ex:noiseLevel>
             <ex:isActive>true</ex:isActive>
+            <ex:lastChecked>{}</ex:lastChecked>
           </rdf:Description>
 
           <!-- Category A with allowed time windows -->
           <rdf:Description rdf:about="http://example.org#CategoryA">
             <ex:allowedTimeSlots rdf:parseType="Collection">
               <rdf:Description>
-                <ex:startTime>08:00</ex:startTime>
-                <ex:endTime>12:00</ex:endTime>
+                <ex:startTime>{}</ex:startTime>
+                <ex:endTime>{}</ex:endTime>
               </rdf:Description>
               <rdf:Description>
-                <ex:startTime>14:00</ex:startTime>
-                <ex:endTime>18:00</ex:endTime>
+                <ex:startTime>{}</ex:startTime>
+                <ex:endTime>{}</ex:endTime>
               </rdf:Description>
               <!-- Shared time slot for both A and B -->
               <rdf:Description>
-                <ex:startTime>10:00</ex:startTime>
-                <ex:endTime>10:30</ex:endTime>
+                <ex:startTime>{}</ex:startTime>
+                <ex:endTime>{}</ex:endTime>
               </rdf:Description>
             </ex:allowedTimeSlots>
           </rdf:Description>
@@ -104,36 +191,85 @@ fn main() {
           <rdf:Description rdf:about="http://example.org#CategoryB">
             <ex:allowedTimeSlots rdf:parseType="Collection">
               <rdf:Description>
-                <ex:startTime>09:00</ex:startTime>
-                <ex:endTime>11:00</ex:endTime>
+                <ex:startTime>{}</ex:startTime>
+                <ex:endTime>{}</ex:endTime>
               </rdf:Description>
               <rdf:Description>
-                <ex:startTime>15:00</ex:startTime>
-                <ex:endTime>19:00</ex:endTime>
+                <ex:startTime>{}</ex:startTime>
+                <ex:endTime>{}</ex:endTime>
               </rdf:Description>
               <!-- Shared time slot for both A and B -->
               <rdf:Description>
-                <ex:startTime>10:00</ex:startTime>
-                <ex:endTime>10:30</ex:endTime>
+                <ex:startTime>{}</ex:startTime>
+                <ex:endTime>{}</ex:endTime>
               </rdf:Description>
             </ex:allowedTimeSlots>
           </rdf:Description>
 
-          <!-- Example detection event: Category A detected at 07:30 -->
+          <!-- Example detection event: Category A detected -->
           <rdf:Description rdf:about="http://example.org#DetectionEvent1">
             <ex:detectedCategory rdf:resource="http://example.org#CategoryA"/>
-            <ex:timeOfDetection>07:30</ex:timeOfDetection>
+            <ex:timeOfDetection>{}</ex:timeOfDetection>
             <!-- Link it to a sensor or a room if needed -->
             <ex:detectedBy rdf:resource="http://example.org#Camera1"/>
             <ex:room rdf:resource="http://example.org#VirtualRoom"/>
+            <ex:recordedAt>{}</ex:recordedAt>
           </rdf:Description>
 
         </rdf:RDF>
-    "#;
+    "#, 
+    // Room attributes
+    room_light_level, room_noise_level, current_datetime, system_user,
+    
+    // Camera1 attributes
+    camera1_motion, camera1_coverage, current_datetime,
+    
+    // Camera2 attributes
+    camera2_motion, camera2_angle, current_datetime,
+    
+    // MotionSensor1 attributes
+    motion1_detection, 
+    if rng.gen_bool(0.5) { "High" } else { "Medium" }, 
+    current_datetime,
+    
+    // MotionSensor2 attributes
+    motion2_detection, 
+    if rng.gen_bool(0.5) { "High" } else { "Medium" }, 
+    current_datetime,
+    
+    // MotionSensor3 attributes
+    motion3_detection, 
+    if rng.gen_bool(0.5) { "High" } else { "Medium" }, 
+    current_datetime,
+    
+    // NoiseSensor1 attributes
+    noise1_detection, noise1_level, current_datetime,
+    
+    // NoiseSensor2 attributes
+    noise2_detection, noise2_level, current_datetime,
+    
+    // CategoryA time slots
+    cat_a_slot1_start, cat_a_slot1_end,
+    cat_a_slot2_start, cat_a_slot2_end,
+    shared_slot_start, shared_slot_end,
+    
+    // CategoryB time slots
+    cat_b_slot1_start, cat_b_slot1_end,
+    cat_b_slot2_start, cat_b_slot2_end,
+    shared_slot_start, shared_slot_end,
+    
+    // Detection event time and timestamp
+    random_event_time, current_datetime
+    )
+}
+
+fn main() {
+    // Generate RDF/XML data
+    let rdf_xml_data = generate_rdf_xml();
 
     // Create and populate the database
     let mut database = SparqlDatabase::new();
-    database.parse_rdf(rdf_xml_data);
+    database.parse_rdf(&rdf_xml_data);
     println!("Database RDF triples: {:#?}", database.triples);
 
     // Load data into knowledge graph
@@ -277,6 +413,22 @@ WHERE {
         database.triples.insert(triple.clone());
     }
 
+    // Query for sensors by grid position
+    let query_grid_sensors = r#"PREFIX ex: <http://example.org#>
+    SELECT ?sensor ?type ?x ?y
+    WHERE {
+        ?sensor ex:type ?type ;
+                ex:gridX ?x ;
+                ex:gridY ?y .
+    }"#;
+
+    let grid_sensor_results = execute_query(query_grid_sensors, &mut database);
+    println!("\n==> Sensors in grid coordinates:");
+    for row in grid_sensor_results {
+        println!("{:?}", row);
+    }
+
+    // Original unauthorized query
     let query_unauthorized = r#"PREFIX ex: <http://example.org#>
     SELECT ?event ?time
     WHERE {
