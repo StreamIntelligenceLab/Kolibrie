@@ -29,11 +29,11 @@ fn test1() {
                 Term::Variable("z".to_string()),
             ),
         ],
-        conclusion: (
+        conclusion: vec![(
             Term::Variable("x".to_string()),
             Term::Constant(kg.dictionary.clone().encode("likes")),
             Term::Variable("z".to_string()),
-        ),
+        )],
         filters: vec![],
     });
 
@@ -44,11 +44,11 @@ fn test1() {
             Term::Constant(kg.dictionary.clone().encode("likes")),
             Term::Variable("y".to_string()),
         )],
-        conclusion: (
+        conclusion: vec![(
             Term::Variable("y".to_string()),
             Term::Constant(kg.dictionary.clone().encode("likes")),
             Term::Variable("x".to_string()),
-        ),
+        )],
         filters: vec![],
     });
 
@@ -95,11 +95,13 @@ fn test2() {
             Term::Constant(kg.dictionary.encode("type")),
             Term::Constant(kg.dictionary.encode(&format!("Class{}", i))),
         );
-        let conclusion_pattern: TriplePattern = (
-            Term::Variable("x".to_string()),
-            Term::Constant(kg.dictionary.encode("type")),
-            Term::Constant(kg.dictionary.encode(&format!("Class{}", i + 1))),
-        );
+        let conclusion_pattern: Vec<TriplePattern> = vec![
+            (
+                Term::Variable("x".to_string()),
+                Term::Constant(kg.dictionary.encode("type")),
+                Term::Constant(kg.dictionary.encode(&format!("Class{}", i + 1))),
+            ),
+        ];
         let rule = Rule {
             premise: vec![premise_pattern],
             conclusion: conclusion_pattern,

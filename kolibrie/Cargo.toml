@@ -34,6 +34,7 @@ shared = { path = "../shared" }
 datalog =  { path = "../datalog" }
 ml = { path = "../ml" }
 chrono = "0.4.40"
+rumqttc = "0.21.0"
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2.161"
@@ -217,5 +218,17 @@ name = "combination_ml"
 path = "examples/sparql_syntax/combination/combination_ml.rs"
 
 [[example]]
+name = "multiple_conclusions"
+path = "examples/sparql_syntax/combination/multiple_conclusions.rs"
+
+[[example]]
 name = "real_scenario"
-path = "examples/sparql_syntax/combination/real_scenario.rs"
+path = "examples/real_scenario/real_scenario.rs"
+
+[[example]]
+name = "mqtt_example"
+path = "examples/real_scenario/mqtt_example.rs"
+
+[[example]]
+name = "mqtt_real_scenario"
+path = "examples/real_scenario/mqtt_real_scenario.rs"

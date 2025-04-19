@@ -42,11 +42,13 @@ def knowledge_graph():
             )
         ],
         filters=[],  # No filters
-        conclusion=py_knowledge_graph.PyTriplePattern(
-            py_knowledge_graph.PyTerm.Variable("X"),
-            py_knowledge_graph.PyTerm.Constant(has_grandparent_const),
-            py_knowledge_graph.PyTerm.Variable("Z"),
-        )
+        conclusion=[  # Changed from single pattern to list of patterns
+            py_knowledge_graph.PyTriplePattern(
+                py_knowledge_graph.PyTerm.Variable("X"),
+                py_knowledge_graph.PyTerm.Constant(has_grandparent_const),
+                py_knowledge_graph.PyTerm.Variable("Z"),
+            )
+        ]
     )
 
     # Add the rule to the knowledge graph

@@ -38,6 +38,7 @@
 37. Add error handling
 38. Modify ML handler to use MLSchema and ability to run multiple ML models
 39. Modify FILTER to have such epxression: ?age > 10 && ?age < 15 or ?age < 10 || ?age > 15
+40. Add multiple conclusion, add example with mqtt (real scenario)
 
 0.1.0
 1. Parsing RDF/XML

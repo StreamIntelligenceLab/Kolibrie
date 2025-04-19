@@ -77,7 +77,8 @@ fn parse_unresolved_clause_block(input: &str) -> IResult<&str, Vec<UnresolvedTri
     })(input)
 }
 
-fn parse_unresolved_rule(input: &str) -> IResult<&str, (Vec<UnresolvedTriple>, UnresolvedTriple)> {
+// Updated to parse multiple conclusion triples
+fn parse_unresolved_rule(input: &str) -> IResult<&str, (Vec<UnresolvedTriple>, Vec<UnresolvedTriple>)> {
     let (input, _) = multispace0(input)?;
     
     // Parse premise
@@ -91,13 +92,14 @@ fn parse_unresolved_rule(input: &str) -> IResult<&str, (Vec<UnresolvedTriple>, U
     let (input, _) = tag("=>")(input)?;
     let (input, _) = multispace0(input)?;
     
-    let (input, conclusion) = delimited(
+    // Parse multiple conclusions
+    let (input, conclusion_triples) = delimited(
         tag("{"),
-        parse_unresolved_triple,
+        parse_unresolved_clause_block,  // Using the same parser for multiple triples
         preceded(multispace0, tag("}")),
     )(input)?;
     
-    Ok((input, (premise_triples, conclusion)))
+    Ok((input, (premise_triples, conclusion_triples)))
 }
 
 /// Parsing into unresolved terms
@@ -107,8 +109,8 @@ pub fn parse_n3_rule<'a>(
 ) -> IResult<&'a str, (Vec<(&'a str, &'a str)>, Rule)> {
     let (input, prefixes) = separated_list1(multispace1, parse_prefix)(input)?;
 
-    // Parse to an intermediate unresolved form
-    let (input, (premise_triples, conclusion_triple)) = parse_unresolved_rule(input)?;
+    // Parse to an intermediate unresolved form with multiple conclusions
+    let (input, (premise_triples, conclusion_triples)) = parse_unresolved_rule(input)?;
     
     // Convert from unresolved string-based data to final `Term` with dictionary encoding
     let premise_parsed: Vec<TriplePattern> = premise_triples
@@ -122,16 +124,22 @@ pub fn parse_n3_rule<'a>(
         })
         .collect();
 
-    let conclusion_parsed = (
-        to_term(conclusion_triple.0, graph),
-        to_term(conclusion_triple.1, graph),
-        to_term(conclusion_triple.2, graph),
-    );
+    // Convert all conclusions
+    let conclusions_parsed: Vec<TriplePattern> = conclusion_triples
+        .into_iter()
+        .map(|(s, p, o)| {
+            (
+                to_term(s, graph),
+                to_term(p, graph),
+                to_term(o, graph),
+            )
+        })
+        .collect();
 
     let rule = Rule {
         premise: premise_parsed,
-        conclusion: conclusion_parsed,
         filters: vec![],
+        conclusion: conclusions_parsed,  // Updated to use plural field name
     };
 
     Ok((input, (prefixes, rule)))

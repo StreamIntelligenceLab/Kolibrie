@@ -68,13 +68,13 @@ struct PyRule {
     filters: Vec<PyFilterCondition>,
     
     #[pyo3(get, set)]
-    conclusion: PyTriplePattern,
+    conclusion: Vec<PyTriplePattern>, // Changed from single PyTriplePattern to Vec<PyTriplePattern>
 }
 
 #[pymethods]
 impl PyRule {
     #[new]
-    fn new(premise: Vec<PyTriplePattern>, filters: Vec<PyFilterCondition>, conclusion: PyTriplePattern) -> Self {
+    fn new(premise: Vec<PyTriplePattern>, filters: Vec<PyFilterCondition>, conclusion: Vec<PyTriplePattern>) -> Self {
         Self { premise, filters, conclusion }
     }
 }
@@ -132,11 +132,11 @@ impl PyKnowledgeGraph {
                 })
                 .collect(),
 
-            conclusion: (
-                convert_term(rule.conclusion.subject),
-                convert_term(rule.conclusion.predicate),
-                convert_term(rule.conclusion.object),
-            ),
+            // Changed to collect multiple conclusion triples
+            conclusion: rule.conclusion
+                .into_iter()
+                .map(|c| (convert_term(c.subject), convert_term(c.predicate), convert_term(c.object)))
+                .collect(),
         };
 
         self.inner.add_rule(converted_rule);
@@ -208,11 +208,11 @@ impl PyKnowledgeGraph {
                 })
                 .collect(),
 
-            conclusion: (
-                convert_term(rule.conclusion.subject),
-                convert_term(rule.conclusion.predicate),
-                convert_term(rule.conclusion.object),
-            ),
+            // Changed to collect multiple conclusion triples
+            conclusion: rule.conclusion
+                .into_iter()
+                .map(|c| (convert_term(c.subject), convert_term(c.predicate), convert_term(c.object)))
+                .collect(),
         };
 
         self.inner.add_constraint(converted_rule);

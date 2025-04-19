@@ -673,7 +673,9 @@ pub fn parse_rule(input: &str) -> IResult<&str, CombinedRule> {
     let (input, _) = multispace0(input)?;
     let (input, _) = tag("=>")(input)?;
     let (input, _) = multispace0(input)?;
-    let (input, conclusion) = delimited(
+    
+    // Parse multiple conclusion triples
+    let (input, conclusions) = delimited(
         char('{'),
         preceded(
             multispace0,
@@ -681,16 +683,19 @@ pub fn parse_rule(input: &str) -> IResult<&str, CombinedRule> {
         ),
         preceded(multispace0, char('}')),
     )(input)?;
+    
     let (input, _) = multispace0(input)?;
     let (input, _) = char('.')(input)?;
+    
     // Optionally parse ML.PREDICT block if it exists
     let (input, ml_predict) = opt(parse_ml_predict)(input)?;
+    
     Ok((
         input,
         CombinedRule {
             head,
             body,
-            conclusion,
+            conclusion: conclusions, // This now contains multiple conclusion triples
             ml_predict,
         },
     ))
@@ -708,14 +713,19 @@ pub fn parse_combined_query(input: &str) -> IResult<&str, CombinedQuery> {
         let (i, uri) = delimited(char('<'), take_while1(|c| c != '>'), char('>'))(i)?;
         Ok((i, (p, uri)))
     })(input)?;
+    
     let mut prefixes = HashMap::new();
     for (p, uri) in prefix_list {
         prefixes.insert(p.to_string(), uri.to_string());
     }
+    
     let (input, _) = multispace0(input)?;
     let (input, rule_opt) = opt(parse_rule)(input)?;
     let (input, _) = multispace0(input)?;
+    
+    // Important: If we have a SPARQL query following the rule, pass the prefixes to it
     let (input, sparql_parse) = parse_sparql_query(input)?;
+    
     Ok((
         input,
         CombinedQuery {
@@ -747,7 +757,7 @@ fn convert_term(term: &str, dict: &mut Dictionary, prefixes: &HashMap<String, St
 }
 
 /// Convert a triple (subject, predicate, object) from &str into a TriplePattern
-fn convert_triple_pattern(
+pub fn convert_triple_pattern(
     triple: (&str, &str, &str),
     dict: &mut Dictionary,
     prefixes: &HashMap<String, String>,
@@ -776,32 +786,96 @@ pub fn convert_combined_rule<'a>(
         .body
         .1
         .into_iter()
-        .map(|filter_expr| {
+        .flat_map(|filter_expr| {
             match filter_expr {
                 FilterExpression::Comparison(var, op, value) => {
-                    FilterCondition {
-                        variable: var.trim_start_matches('?').to_string(), // Remove the leading '?'
+                    vec![FilterCondition {
+                        variable: var.trim_start_matches('?').to_string(),
                         operator: op.to_string(),
                         value: value.to_string(),
-                    }
+                    }]
                 },
-                // For complex expressions (AND, OR, NOT), you might need to decide how to handle them
-                // For now, let's only support basic comparisons
-                _ => panic!("Complex filter expressions not supported in rules yet")
+                FilterExpression::Or(left, right) => {
+                    // Handle OR expressions
+                    let mut conditions = Vec::new();
+                    
+                    if let FilterExpression::Comparison(var, op, value) = *left {
+                        conditions.push(FilterCondition {
+                            variable: var.trim_start_matches('?').to_string(),
+                            operator: format!("OR:{}", op.to_string()),
+                            value: value.to_string(),
+                        });
+                    }
+                    
+                    if let FilterExpression::Comparison(var, op, value) = *right {
+                        conditions.push(FilterCondition {
+                            variable: var.trim_start_matches('?').to_string(),
+                            operator: format!("OR:{}", op.to_string()),
+                            value: value.to_string(),
+                        });
+                    } else if let FilterExpression::Or(nested_left, nested_right) = *right {
+                        // Handle nested OR expressions (common with multiple OR conditions)
+                        if let FilterExpression::Comparison(var, op, value) = *nested_left {
+                            conditions.push(FilterCondition {
+                                variable: var.trim_start_matches('?').to_string(),
+                                operator: format!("OR:{}", op.to_string()),
+                                value: value.to_string(),
+                            });
+                        }
+                        
+                        if let FilterExpression::Comparison(var, op, value) = *nested_right {
+                            conditions.push(FilterCondition {
+                                variable: var.trim_start_matches('?').to_string(),
+                                operator: format!("OR:{}", op.to_string()),
+                                value: value.to_string(),
+                            });
+                        }
+                    }
+                    
+                    conditions
+                },
+                FilterExpression::And(left, right) => {
+                    // Handle AND expressions
+                    let mut conditions = Vec::new();
+                    
+                    if let FilterExpression::Comparison(var, op, value) = *left {
+                        conditions.push(FilterCondition {
+                            variable: var.trim_start_matches('?').to_string(),
+                            operator: op.to_string(), 
+                            value: value.to_string(),
+                        });
+                    }
+                    
+                    if let FilterExpression::Comparison(var, op, value) = *right {
+                        conditions.push(FilterCondition {
+                            variable: var.trim_start_matches('?').to_string(),
+                            operator: op.to_string(),
+                            value: value.to_string(),
+                        });
+                    }
+                    
+                    conditions
+                },
+                // For other complex expressions (NOT), you can add handling logic here
+                _ => {
+                    // Return an empty vector instead of panicking
+                    println!("Warning: Unsupported filter expression type - skipping");
+                    vec![]
+                }
             }
         })
         .collect();
 
-    let conclusion_triple = if let Some(first) = cr.conclusion.first() {
-        convert_triple_pattern(*first, dict, prefixes)
-    } else {
-        panic!("No conclusion triple found in the combined rule")
-    };
+    // Convert all conclusion triples, preserving their structure
+    let conclusion_triples = cr.conclusion
+        .into_iter()
+        .map(|triple| convert_triple_pattern(triple, dict, prefixes))
+        .collect();
 
     Rule {
         premise: premise_patterns,
         filters: filter_conditions,
-        conclusion: conclusion_triple,
+        conclusion: conclusion_triples,
     }
 }
 

@@ -15,9 +15,9 @@ fn main() {
                           Term::Constant(kg.dictionary.encode("parent")), 
                           Term::Variable("Y".to_string())),
         ],
-        conclusion: (Term::Variable("X".to_string()), 
+        conclusion: vec![(Term::Variable("X".to_string()), 
                                   Term::Constant(kg.dictionary.encode("ancestor")), 
-                                  Term::Variable("Y".to_string())),
+                                  Term::Variable("Y".to_string())),],
         filters: vec![],
     };
     
@@ -30,9 +30,9 @@ fn main() {
                           Term::Constant(kg.dictionary.encode("ancestor")), 
                           Term::Variable("Z".to_string())),
         ],
-        conclusion: (Term::Variable("X".to_string()), 
+        conclusion: vec![(Term::Variable("X".to_string()), 
                                   Term::Constant(kg.dictionary.encode("ancestor")), 
-                                  Term::Variable("Z".to_string())),
+                                  Term::Variable("Z".to_string())),],
         filters: vec![],
     };
     

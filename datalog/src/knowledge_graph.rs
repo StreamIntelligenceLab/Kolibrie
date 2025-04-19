@@ -79,8 +79,11 @@ impl KnowledgeGraph {
                     for triple in &all_facts {
                         let mut variable_bindings = HashMap::new();
                         if matches_rule_pattern(&rule.premise[0], triple, &mut variable_bindings) {
-                            let inferred = construct_triple(&rule.conclusion, &variable_bindings);
-                            inferred_facts.push(inferred);
+                            // Now handle multiple conclusions
+                            for conclusion in &rule.conclusion {
+                                let inferred = construct_triple(conclusion, &variable_bindings);
+                                inferred_facts.push(inferred);
+                            }
                         }
                     }
                 }
@@ -94,8 +97,11 @@ impl KnowledgeGraph {
                             if matches_rule_pattern(&rule.premise[0], triple1, &mut variable_bindings)
                                 && matches_rule_pattern(&rule.premise[1], triple2, &mut variable_bindings)
                             {
-                                let inferred = construct_triple(&rule.conclusion, &variable_bindings);
-                                inferred_facts.push(inferred);
+                                // Now handle multiple conclusions
+                                for conclusion in &rule.conclusion {
+                                    let inferred = construct_triple(conclusion, &variable_bindings);
+                                    inferred_facts.push(inferred);
+                                }
                             }
                         }
                     }
@@ -124,10 +130,13 @@ impl KnowledgeGraph {
                 for binding in bindings {
                     // Check that filters pass
                     if evaluate_filters(&binding, &rule.filters, &self.dictionary) {
-                        let inferred = construct_triple(&rule.conclusion, &binding);
-                        // Insert into the index; if the fact is new, add it to new_delta
-                        if self.index_manager.insert(&inferred) && !all_facts.contains(&inferred) {
-                            new_delta.insert(inferred.clone());
+                        // Process each conclusion
+                        for conclusion in &rule.conclusion {
+                            let inferred = construct_triple(conclusion, &binding);
+                            // Insert into the index; if the fact is new, add it to new_delta
+                            if self.index_manager.insert(&inferred) && !all_facts.contains(&inferred) {
+                                new_delta.insert(inferred.clone());
+                            }
                         }
                     }
                 }
@@ -153,13 +162,13 @@ impl KnowledgeGraph {
         // Collect all known facts
         let all_initial = self.index_manager.query(None, None, None);
         let mut all_facts: HashSet<Triple> = all_initial.into_iter().collect();
-    
+
         // Delta = all the initial facts
         let mut delta = all_facts.clone();
-    
+
         // Keep track of newly inferred facts so we can return them later
         let mut inferred_so_far = Vec::new();
-    
+
         // Repeat until no new facts are inferred
         loop {
             // Wrap all_facts in an Arc for shared read-only access in parallel
@@ -182,56 +191,74 @@ impl KnowledgeGraph {
                                     // Single-premise rule
                                     let mut variable_bindings = HashMap::new();
                                     if matches_rule_pattern(&rule.premise[0], triple1, &mut variable_bindings) {
-                                        let inferred = construct_triple(&rule.conclusion, &variable_bindings);
-                                        if !all_facts_arc.contains(&inferred) {
-                                            local_set.insert(inferred);
+                                        // Process each conclusion
+                                        for conclusion in &rule.conclusion {
+                                            let inferred = construct_triple(conclusion, &variable_bindings);
+                                            if !all_facts_arc.contains(&inferred) {
+                                                local_set.insert(inferred);
+                                            }
                                         }
                                     }
                                 }
-    
+
                                 2 => {
                                     // Two-premise rule
                                     let mut variable_bindings_1 = HashMap::new();
                                     if matches_rule_pattern(&rule.premise[0], triple1, &mut variable_bindings_1) {
-                                        // Process join in parallel over all_facts.
+                                        // Process join in parallel over all_facts
                                         let local_new: HashSet<Triple> = all_facts_arc
                                             .par_iter()
-                                            .filter_map(|triple2| {
+                                            .flat_map(|triple2| {
                                                 let mut variable_bindings_2 = variable_bindings_1.clone();
                                                 if matches_rule_pattern(&rule.premise[1], triple2, &mut variable_bindings_2) {
-                                                    let inferred = construct_triple(&rule.conclusion, &variable_bindings_2);
-                                                    if !all_facts_arc.contains(&inferred) {
-                                                        return Some(inferred);
-                                                    }
+                                                    // Process each conclusion
+                                                    rule.conclusion.iter()
+                                                        .filter_map(|conclusion| {
+                                                            let inferred = construct_triple(conclusion, &variable_bindings_2);
+                                                            if !all_facts_arc.contains(&inferred) {
+                                                                Some(inferred)
+                                                            } else {
+                                                                None
+                                                            }
+                                                        })
+                                                        .collect::<Vec<_>>()
+                                                } else {
+                                                    Vec::new()
                                                 }
-                                                None
                                             })
                                             .collect();
                                         local_set.extend(local_new);
                                     }
-    
+
                                     // Option 2: Assume triple1 matches the second premise
                                     let mut variable_bindings_1b = HashMap::new();
                                     if matches_rule_pattern(&rule.premise[1], triple1, &mut variable_bindings_1b) {
                                         let local_new: HashSet<Triple> = all_facts_arc
                                             .par_iter()
-                                            .filter_map(|triple2| {
+                                            .flat_map(|triple2| {
                                                 let mut variable_bindings_2b = variable_bindings_1b.clone();
                                                 if matches_rule_pattern(&rule.premise[0], triple2, &mut variable_bindings_2b) {
-                                                    let inferred = construct_triple(&rule.conclusion, &variable_bindings_2b);
-                                                    if !all_facts_arc.contains(&inferred) {
-                                                        return Some(inferred);
-                                                    }
+                                                    // Process each conclusion
+                                                    rule.conclusion.iter()
+                                                        .filter_map(|conclusion| {
+                                                            let inferred = construct_triple(conclusion, &variable_bindings_2b);
+                                                            if !all_facts_arc.contains(&inferred) {
+                                                                Some(inferred)
+                                                            } else {
+                                                                None
+                                                            }
+                                                        })
+                                                        .collect::<Vec<_>>()
+                                                } else {
+                                                    Vec::new()
                                                 }
-                                                None
                                             })
                                             .collect();
                                         local_set.extend(local_new);
                                     }
                                 }
-    
-                                _ => {
-                                }
+
+                                _ => {}
                             }
                         }
                         local_set
@@ -244,7 +271,7 @@ impl KnowledgeGraph {
                         acc
                     },
                 );
-    
+
             // If no new facts were found, we've reached a fixpoint
             if new_facts.is_empty() {
                 break;
@@ -257,7 +284,7 @@ impl KnowledgeGraph {
                 delta = new_facts;
             }
         }
-    
+
         inferred_so_far
     }
 
@@ -296,18 +323,21 @@ impl KnowledgeGraph {
         for rule in &self.rules {
             let renamed_rule = rename_rule_variables(rule, variable_counter);
 
-            if let Some(rb) = unify_patterns(&renamed_rule.conclusion, &substituted, bindings) {
-                // We have a match => we need all premises to succeed
-                let mut premise_results = vec![rb.clone()];
-                for prem in &renamed_rule.premise {
-                    let mut new_premise_results = Vec::new();
-                    for b in &premise_results {
-                        let sub_res = self.backward_chaining_helper(prem, b, depth + 1, variable_counter);
-                        new_premise_results.extend(sub_res);
+            // Try to unify with each conclusion in the rule
+            for conclusion in &renamed_rule.conclusion {
+                if let Some(rb) = unify_patterns(conclusion, &substituted, bindings) {
+                    // We have a match => we need all premises to succeed
+                    let mut premise_results = vec![rb.clone()];
+                    for prem in &renamed_rule.premise {
+                        let mut new_premise_results = Vec::new();
+                        for b in &premise_results {
+                            let sub_res = self.backward_chaining_helper(prem, b, depth + 1, variable_counter);
+                            new_premise_results.extend(sub_res);
+                        }
+                        premise_results = new_premise_results;
                     }
-                    premise_results = new_premise_results;
+                    results.extend(premise_results);
                 }
-                results.extend(premise_results);
             }
         }
 
@@ -426,7 +456,7 @@ impl KnowledgeGraph {
 
         let mut delta = all_facts.clone();
         let mut inferred_so_far = Vec::new();
-    
+
         loop {
             let mut new_delta = HashSet::new();
             
@@ -435,23 +465,26 @@ impl KnowledgeGraph {
                 let bindings = join_rule(rule, &all_facts, &delta);
                 for binding in bindings {
                     if evaluate_filters(&binding, &rule.filters, &self.dictionary) {
-                        let inferred = construct_triple(&rule.conclusion, &binding);
-                        
-                        // Check if adding this fact would cause inconsistency
-                        let mut temp_facts = all_facts.clone();
-                        temp_facts.insert(inferred.clone());
-                        
-                        if !self.violates_constraints(&temp_facts) {
-                            if self.index_manager.insert(&inferred) && !all_facts.contains(&inferred) {
-                                new_delta.insert(inferred.clone());
-                                all_facts.insert(inferred.clone());
-                                inferred_so_far.push(inferred);
+                        // Process each conclusion
+                        for conclusion in &rule.conclusion {
+                            let inferred = construct_triple(conclusion, &binding);
+                            
+                            // Check if adding this fact would cause inconsistency
+                            let mut temp_facts = all_facts.clone();
+                            temp_facts.insert(inferred.clone());
+                            
+                            if !self.violates_constraints(&temp_facts) {
+                                if self.index_manager.insert(&inferred) && !all_facts.contains(&inferred) {
+                                    new_delta.insert(inferred.clone());
+                                    all_facts.insert(inferred.clone());
+                                    inferred_so_far.push(inferred);
+                                }
                             }
                         }
                     }
                 }
             }
-    
+
             // Terminate when no new facts were inferred
             if new_delta.is_empty() {
                 break;
@@ -459,7 +492,7 @@ impl KnowledgeGraph {
             
             delta = new_delta;
         }
-    
+
         inferred_so_far
     }
 
@@ -609,13 +642,18 @@ fn rename_rule_variables(rule: &Rule, counter: &mut usize) -> Rule {
         new_premise.push((s, p_term, o));
     }
 
-    let conclusion_s = rename_term(&rule.conclusion.0, &mut var_map, counter);
-    let conclusion_p = rename_term(&rule.conclusion.1, &mut var_map, counter);
-    let conclusion_o = rename_term(&rule.conclusion.2, &mut var_map, counter);
+    // Rename all conclusions
+    let mut new_conclusions = Vec::new();
+    for conclusion in &rule.conclusion {
+        let conclusion_s = rename_term(&conclusion.0, &mut var_map, counter);
+        let conclusion_p = rename_term(&conclusion.1, &mut var_map, counter);
+        let conclusion_o = rename_term(&conclusion.2, &mut var_map, counter);
+        new_conclusions.push((conclusion_s, conclusion_p, conclusion_o));
+    }
 
     Rule {
         premise: new_premise,
-        conclusion: (conclusion_s, conclusion_p, conclusion_o),
+        conclusion: new_conclusions,
         filters: rule.filters.clone(),
     }
 }
@@ -651,10 +689,13 @@ impl DatalogEngine {
                         for fact in &current_facts {
                             let mut vmap = HashMap::new();
                             if matches_rule_pattern(p, fact, &mut vmap) {
-                                let inferred = construct_triple(&rule.conclusion, &vmap);
-                                // Insert if new
-                                if self.facts.insert(&inferred) {
-                                    changed = true;
+                                // Process each conclusion
+                                for conclusion in &rule.conclusion {
+                                    let inferred = construct_triple(conclusion, &vmap);
+                                    // Insert if new
+                                    if self.facts.insert(&inferred) {
+                                        changed = true;
+                                    }
                                 }
                             }
                         }
@@ -673,9 +714,12 @@ impl DatalogEngine {
                                 if matches_rule_pattern(p1, f1, &mut vmap)
                                     && matches_rule_pattern(p2, f2, &mut vmap)
                                 {
-                                    let inferred = construct_triple(&rule.conclusion, &vmap);
-                                    if self.facts.insert(&inferred) {
-                                        changed = true;
+                                    // Process each conclusion
+                                    for conclusion in &rule.conclusion {
+                                        let inferred = construct_triple(conclusion, &vmap);
+                                        if self.facts.insert(&inferred) {
+                                            changed = true;
+                                        }
                                     }
                                 }
                             }

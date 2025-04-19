@@ -25,11 +25,11 @@ fn knowledge_graph() {
                 Term::Variable("Z".to_string()),
             ),
         ],
-        conclusion: (
+        conclusion: vec![(
             Term::Variable("X".to_string()),
             Term::Constant(graph.dictionary.encode("hasGrandparent")),
             Term::Variable("Z".to_string()),
-        ),
+        )],
         filters: vec![],
     };
 
@@ -71,11 +71,11 @@ fn backward_chaining() {
             Term::Constant(parent),
             Term::Variable("Y".to_string()),
         )],
-        conclusion: (
+        conclusion: vec![(
             Term::Variable("X".to_string()),
             Term::Constant(ancestor),
             Term::Variable("Y".to_string()),
-        ),
+        )],
         filters: vec![],
     };
 
@@ -93,11 +93,11 @@ fn backward_chaining() {
                 Term::Variable("Z".to_string()),
             ),
         ],
-        conclusion: (
+        conclusion: vec![(
             Term::Variable("X".to_string()),
             Term::Constant(ancestor),
             Term::Variable("Z".to_string()),
-        ),
+        )],
         filters: vec![],
     };
 
@@ -226,11 +226,11 @@ fn inconsistency() {
                 Term::Constant(kg.dictionary.encode("student"))
             )
         ],
-        conclusion: (
+        conclusion: vec![(
             Term::Constant(0), // Dummy values for constraint
             Term::Constant(0),
             Term::Constant(0)
-        ),
+        )],
         filters: vec![],
     };
     kg.add_constraint(constraint);

@@ -25,11 +25,14 @@ fn example_with_contradictions() -> KnowledgeGraph {
                 Term::Constant(kg.dictionary.encode("student"))
             )
         ],
-        conclusion: (
-            Term::Constant(0),
-            Term::Constant(0),
-            Term::Constant(0)
-        ),
+        // Using a conclusions vector with a single element for the constraint
+        conclusion: vec![
+            (
+                Term::Constant(0),
+                Term::Constant(0),
+                Term::Constant(0)
+            )
+        ],
         filters: vec![],
     };
     kg.add_constraint(constraint);
@@ -41,11 +44,14 @@ fn example_with_contradictions() -> KnowledgeGraph {
             Term::Constant(kg.dictionary.encode("teaches")),
             Term::Variable("Y".to_string())
         )],
-        conclusion: (
-            Term::Variable("X".to_string()),
-            Term::Constant(kg.dictionary.encode("isA")),
-            Term::Constant(kg.dictionary.encode("professor"))
-        ),
+        // Using a conclusions vector with a single element for the professor rule
+        conclusion: vec![
+            (
+                Term::Variable("X".to_string()),
+                Term::Constant(kg.dictionary.encode("isA")),
+                Term::Constant(kg.dictionary.encode("professor"))
+            )
+        ],
         filters: vec![],
     };
     kg.add_rule(professor_rule);
@@ -56,11 +62,14 @@ fn example_with_contradictions() -> KnowledgeGraph {
             Term::Constant(kg.dictionary.encode("enrolledIn")),
             Term::Variable("Y".to_string())
         )],
-        conclusion: (
-            Term::Variable("X".to_string()),
-            Term::Constant(kg.dictionary.encode("isA")),
-            Term::Constant(kg.dictionary.encode("student"))
-        ),
+        // Using a conclusions vector with a single element for the student rule
+        conclusion: vec![
+            (
+                Term::Variable("X".to_string()),
+                Term::Constant(kg.dictionary.encode("isA")),
+                Term::Constant(kg.dictionary.encode("student"))
+            )
+        ],
         filters: vec![],
     };
     kg.add_rule(student_rule);

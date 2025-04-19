@@ -34,11 +34,13 @@ def example_with_contradictions():
             object=PyTerm.Constant(kg.encode_term("student")),
         ),
     ]
-    constraint_conclusion = PyTriplePattern(
-        subject=PyTerm.Constant(0),
-        predicate=PyTerm.Constant(0),
-        object=PyTerm.Constant(0),
-    )
+    constraint_conclusion = [  # Changed to a list containing one triple pattern
+        PyTriplePattern(
+            subject=PyTerm.Constant(0),
+            predicate=PyTerm.Constant(0),
+            object=PyTerm.Constant(0),
+        )
+    ]
     constraint_rule = PyRule(
         premise=constraint_premise,
         filters=[],
@@ -54,11 +56,13 @@ def example_with_contradictions():
             object=PyTerm.Variable("Y"),
         )
     ]
-    professor_rule_conclusion = PyTriplePattern(
-        subject=PyTerm.Variable("X"),
-        predicate=PyTerm.Constant(kg.encode_term("isA")),
-        object=PyTerm.Constant(kg.encode_term("professor")),
-    )
+    professor_rule_conclusion = [  # Changed to a list containing one triple pattern
+        PyTriplePattern(
+            subject=PyTerm.Variable("X"),
+            predicate=PyTerm.Constant(kg.encode_term("isA")),
+            object=PyTerm.Constant(kg.encode_term("professor")),
+        )
+    ]
     professor_rule = PyRule(
         premise=professor_rule_premise,
         filters=[],
@@ -74,11 +78,13 @@ def example_with_contradictions():
             object=PyTerm.Variable("Y"),
         )
     ]
-    student_rule_conclusion = PyTriplePattern(
-        subject=PyTerm.Variable("X"),
-        predicate=PyTerm.Constant(kg.encode_term("isA")),
-        object=PyTerm.Constant(kg.encode_term("student")),
-    )
+    student_rule_conclusion = [  # Changed to a list containing one triple pattern
+        PyTriplePattern(
+            subject=PyTerm.Variable("X"),
+            predicate=PyTerm.Constant(kg.encode_term("isA")),
+            object=PyTerm.Constant(kg.encode_term("student")),
+        )
+    ]
     student_rule = PyRule(
         premise=student_rule_premise,
         filters=[],

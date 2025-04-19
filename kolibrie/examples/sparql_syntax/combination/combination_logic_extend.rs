@@ -76,11 +76,15 @@ WHERE {
         kg.add_rule(dynamic_rule.clone());
         println!("Rule added to KnowledgeGraph.");
     
-        let expanded = match dynamic_rule.conclusion.1 {
-            Term::Constant(code) => {
-                database.dictionary.decode(code).unwrap_or_else(|| "")
-            },
-            _ => "",
+        let expanded = if let Some(first_conclusion) = dynamic_rule.conclusion.first() {
+            match first_conclusion.1 {
+                Term::Constant(code) => {
+                    database.dictionary.decode(code).unwrap_or_else(|| "")
+                },
+                _ => "",
+            }
+        } else {
+            ""
         };
         let local = if let Some(idx) = expanded.rfind('#') {
             &expanded[idx + 1..]

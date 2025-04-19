@@ -394,11 +394,13 @@ WHERE {
             println!("Dynamic rule: {:#?}", dynamic_rule);
             kg.add_rule(dynamic_rule.clone());
             
-            if let Term::Constant(code) = dynamic_rule.conclusion.1 {
-                if let Some(expanded) = database.dictionary.decode(code) {
-                    if let Some(idx) = expanded.rfind('#') {
-                        let local = &expanded[idx + 1..];
-                        database.rule_map.insert(local.to_lowercase(), expanded.to_string());
+            if let Some(first_conclusion) = &dynamic_rule.conclusion.first() {
+                if let Term::Constant(code) = first_conclusion.1 {
+                    if let Some(expanded) = database.dictionary.decode(code) {
+                        if let Some(idx) = expanded.rfind('#') {
+                            let local = &expanded[idx + 1..];
+                            database.rule_map.insert(local.to_lowercase(), expanded.to_string());
+                        }
                     }
                 }
             }

@@ -11,5 +11,5 @@ pub struct FilterCondition {
 pub struct Rule {
     pub premise: Vec<TriplePattern>,
     pub filters: Vec<FilterCondition>,
-    pub conclusion: TriplePattern,
+    pub conclusion: Vec<TriplePattern>,
 }

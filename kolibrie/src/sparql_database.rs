@@ -646,7 +646,13 @@ impl SparqlDatabase {
             let mut parts = term.splitn(2, ':');
             let prefix = parts.next().unwrap();
             let local_name = parts.next().unwrap_or("");
+            
+            // First check the passed prefixes map
             if let Some(uri) = prefixes.get(prefix) {
+                format!("{}{}", uri, local_name)
+            } 
+            // Then check the database's own prefixes map as a fallback
+            else if let Some(uri) = self.prefixes.get(prefix) {
                 format!("{}{}", uri, local_name)
             } else {
                 eprintln!("Unknown prefix in query: {}", prefix);

@@ -1162,11 +1162,24 @@ fn resolve_triple_pattern(
         
         (object_var.to_string(), expanded_rule_predicate, "true".to_string())
     } else {
+        // Resolve subject if it's not a variable
+        let resolved_subject = if subject_var.starts_with('?') {
+            subject_var.to_string()
+        } else {
+            database.resolve_query_term(subject_var, prefixes)
+        };
+        
         // For a normal triple pattern, resolve predicate and object
         let resolved_predicate = database.resolve_query_term(predicate, prefixes);
-        let resolved_object = database.resolve_query_term(object_var, prefixes);
         
-        (subject_var.to_string(), resolved_predicate, resolved_object)
+        // Resolve object if it's not a variable
+        let resolved_object = if object_var.starts_with('?') {
+            object_var.to_string()
+        } else {
+            database.resolve_query_term(object_var, prefixes)
+        };
+        
+        (resolved_subject, resolved_predicate, resolved_object)
     }
 }
 
