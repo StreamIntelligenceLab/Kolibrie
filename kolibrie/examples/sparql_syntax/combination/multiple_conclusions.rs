@@ -2,7 +2,6 @@ use kolibrie::parser::*;
 use kolibrie::execute_query::*;
 use kolibrie::sparql_database::SparqlDatabase;
 use datalog::knowledge_graph::KnowledgeGraph;
-use shared::terms::Term;
 
 fn main() {
     std::env::set_var("RUST_BACKTRACE", "1");
@@ -40,11 +39,7 @@ fn main() {
 
     let mut database = SparqlDatabase::new();
     database.parse_rdf(rdf_xml_data);
-    println!("Database RDF triples: {:#?}", database.triples);
-
-    // Explicitly register the prefixes BEFORE processing any queries
-    database.prefixes.insert("ex".to_string(), "http://example.org#".to_string());
-    database.prefixes.insert("alert".to_string(), "http://example.org/alerts#".to_string());
+    println!("Database RDF triples loaded.");
 
     let mut kg = KnowledgeGraph::new();
     for triple in database.triples.iter() {
@@ -78,57 +73,27 @@ WHERE {
     ?room alert:requiresAction ?action .
 }"#;
 
-    let (_rest, combined_query) = parse_combined_query(combined_query_input)
-        .expect("Failed to parse combined query");
-    println!("Combined query parsed successfully.");
-    println!("Parsed combined query prefixes: {:?}", combined_query.prefixes);
+    // Process the combined query
+    match process_combined_query(combined_query_input, &mut database, &mut kg) {
+        Ok((rule_result, inferred_facts, prefixes)) => {
+            println!("Combined query processed successfully.");
+            println!("Prefixes: {:?}", prefixes);
 
-    // Make sure to update the database prefixes with ones from the query
-    for (prefix, uri) in &combined_query.prefixes {
-        database.prefixes.insert(prefix.clone(), uri.clone());
-    }
+            if let Some(rule) = rule_result {
+                println!("Rule processed: {:?}", rule);
+            }
 
-    // Debug the prefixes
-    println!("Database prefixes after update: {:?}", database.prefixes);
-
-    if let Some(rule) = combined_query.rule {
-        let dynamic_rule = convert_combined_rule(rule, &mut database.dictionary, &combined_query.prefixes);
-        println!("Dynamic rule: {:#?}", dynamic_rule);
-        kg.add_rule(dynamic_rule.clone());
-        println!("Rule added to KnowledgeGraph.");
-    
-        // Process and store all conclusions in the rule_map
-        for conclusion in &dynamic_rule.conclusion {
-            if let Term::Constant(code) = conclusion.1 {
-                let expanded = database.dictionary.decode(code).unwrap_or_else(|| "");
-                let local = if let Some(idx) = expanded.rfind('#') {
-                    &expanded[idx + 1..]
-                } else if let Some(idx) = expanded.rfind(':') {
-                    &expanded[idx + 1..]
-                } else {
-                    &expanded
-                };
-                let rule_key = local.to_lowercase();
-                database.rule_map.insert(rule_key, expanded.to_string());
+            println!("Inferred {} new fact(s):", inferred_facts.len());
+            for triple in inferred_facts.iter() {
+                println!("{}", database.triple_to_string(triple, &database.dictionary));
             }
         }
+        Err(error) => {
+            eprintln!("Error processing combined query: {}", error);
+        }
     }
-    
-    let inferred_facts = kg.infer_new_facts_semi_naive();
-    println!("Inferred {} new fact(s):", inferred_facts.len());
-    for triple in inferred_facts.iter() {
-        println!("{}", database.triple_to_string(triple, &database.dictionary));
-        database.triples.insert(triple.clone());
-    }
-    
-    // Split the query into separate parts
-    let parts: Vec<&str> = combined_query_input.split("SELECT").collect();
-    let mut select_query = String::from("PREFIX ex: <http://example.org#>\nPREFIX alert: <http://example.org/alerts#>\n\nSELECT");
-    if parts.len() > 1 {
-        select_query.push_str(parts[1]);
-    }
-    
-    println!("Executing query with explicit prefixes: {}", select_query);
-    let query_results = execute_query(&select_query, &mut database);
+
+    // Execute the SELECT query
+    let query_results = execute_query(combined_query_input, &mut database);
     println!("Query results: {:?}", query_results);
 }

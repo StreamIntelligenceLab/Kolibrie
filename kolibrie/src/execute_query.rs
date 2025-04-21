@@ -98,6 +98,9 @@ pub fn execute_subquery<'a>(
 }
 
 pub fn execute_query(sparql: &str, database: &mut SparqlDatabase) -> Vec<Vec<String>> {
+    // Register prefixes from the query string first
+    database.register_prefixes_from_query(sparql);
+
     let sparql = normalize_query(sparql);
 
     // Prepare variables to hold the query processing state.
@@ -105,7 +108,7 @@ pub fn execute_query(sparql: &str, database: &mut SparqlDatabase) -> Vec<Vec<Str
     let mut selected_variables: Vec<(String, String)> = Vec::new();
     let mut aggregation_vars: Vec<(&str, &str, &str)> = Vec::new();
     let group_by_variables: Vec<&str>;
-    let prefixes;
+    let mut prefixes;
 
     let parse_result = parse_sparql_query(sparql);
 
@@ -125,6 +128,9 @@ pub fn execute_query(sparql: &str, database: &mut SparqlDatabase) -> Vec<Vec<Str
     )) = parse_result
     {
         prefixes = parsed_prefixes;
+
+        // Ensure prefixes from the database are also available
+        database.share_prefixes_with(&mut prefixes);
 
         // Process the INSERT clause if present
         process_insert_clause(insert_clause, database);

@@ -8,6 +8,9 @@ use nom::{
     IResult, Parser,
 };
 use rayon::str;
+use crate::sparql_database::SparqlDatabase;
+use datalog::knowledge_graph::KnowledgeGraph;
+use shared::triple::Triple;
 use shared::dictionary::Dictionary;
 use shared::rule::FilterCondition;
 use shared::rule::Rule;
@@ -879,3 +882,65 @@ pub fn convert_combined_rule<'a>(
     }
 }
 
+pub fn process_combined_query(
+    query_input: &str,
+    database: &mut SparqlDatabase,
+    kg: &mut KnowledgeGraph,
+) -> Result<(Option<Rule>, Vec<Triple>, HashMap<String, String>), String> {
+    // First, register any prefixes from the query with the database
+    database.register_prefixes_from_query(query_input);
+
+    // Parse the combined query
+    let parse_result = parse_combined_query(query_input);
+
+    if let Ok((_rest, combined_query)) = parse_result {
+        // Ensure all prefixes from the combined query are in the database
+        for (prefix, uri) in &combined_query.prefixes {
+            database.prefixes.insert(prefix.clone(), uri.clone());
+        }
+
+        let mut inferred_facts = vec![];
+        let mut rule_result = None;
+
+        // Process the rule if present
+        if let Some(rule) = combined_query.rule {
+            // Convert the rule, ensuring it has access to all prefixes
+            let mut rule_prefixes = combined_query.prefixes.clone();
+            database.share_prefixes_with(&mut rule_prefixes);
+
+            let dynamic_rule = convert_combined_rule(rule, &mut database.dictionary, &rule_prefixes);
+
+            // Add the rule to the knowledge graph
+            kg.add_rule(dynamic_rule.clone());
+            rule_result = Some(dynamic_rule.clone());
+
+            // Register all predicates from the conclusions for rule resolution
+            for conclusion in &dynamic_rule.conclusion {
+                if let Term::Constant(code) = conclusion.1 {
+                    let expanded = database.dictionary.decode(code).unwrap_or_else(|| "");
+                    let local = if let Some(idx) = expanded.rfind('#') {
+                        &expanded[idx + 1..]
+                    } else if let Some(idx) = expanded.rfind(':') {
+                        &expanded[idx + 1..]
+                    } else {
+                        &expanded
+                    };
+                    let rule_key = local.to_lowercase();
+                    database.rule_map.insert(rule_key, expanded.to_string());
+                }
+            }
+
+            // Infer new facts based on the rule
+            inferred_facts = kg.infer_new_facts_semi_naive();
+
+            // Add inferred facts to the database
+            for triple in inferred_facts.iter() {
+                database.triples.insert(triple.clone());
+            }
+        }
+
+        Ok((rule_result, inferred_facts, combined_query.prefixes))
+    } else {
+        Err("Failed to parse combined query".to_string())
+    }
+}

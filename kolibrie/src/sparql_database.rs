@@ -632,6 +632,27 @@ impl SparqlDatabase {
         }
     }
 
+    // Method to automatically extract and register prefixes from a query string
+    pub fn register_prefixes_from_query(&mut self, query: &str) {
+        // Simple regex to extract PREFIX declarations
+        let prefix_pattern = regex::Regex::new(r"PREFIX\s+([a-zA-Z0-9_]+):\s*<([^>]+)>").unwrap();
+        
+        for captures in prefix_pattern.captures_iter(query) {
+            if captures.len() >= 3 {
+                let prefix = captures[1].to_string();
+                let uri = captures[2].to_string();
+                self.prefixes.insert(prefix, uri);
+            }
+        }
+    }
+    
+    // Method to ensure prefixes are properly shared between components
+    pub fn share_prefixes_with(&self, prefixes: &mut HashMap<String, String>) {
+        for (prefix, uri) in &self.prefixes {
+            prefixes.insert(prefix.clone(), uri.clone());
+        }
+    }
+
     pub fn resolve_query_term(&self, term: &str, prefixes: &HashMap<String, String>) -> String {
         if term.starts_with('<') && term.ends_with('>') {
             term.trim_start_matches('<')
