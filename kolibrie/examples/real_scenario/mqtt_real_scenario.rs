@@ -170,7 +170,7 @@ fn start_mqtt_collection(
     mqtt_client: Arc<Mutex<Option<Client>>>,
 ) -> thread::JoinHandle<()> {
     thread::spawn(move || {
-        let mqtt_broker = "192.168.0.168"; // Use the specified broker
+        let mqtt_broker = "YOUR_IP_ADDRESS"; // Use the specified broker
         let mqtt_port = 1883;
         let client_id = "rust_security_client";
 
