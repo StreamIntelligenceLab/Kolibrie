@@ -120,7 +120,7 @@ impl SecurityState {
         false
     }
 
-    // New method: Check if enough time has passed to send a new alarm
+    // Check if enough time has passed to send a new alarm
     fn can_send_alarm(&self) -> bool {
         match self.last_alarm_sent.elapsed() {
             Ok(elapsed) => elapsed >= self.alarm_cooldown,
@@ -128,7 +128,6 @@ impl SecurityState {
         }
     }
 
-    // New method: Generate an alarm message
     // Generate an alarm message with specific field order
     fn generate_alarm_message(
         &self,
@@ -187,14 +186,13 @@ impl SecurityState {
     }
 }
 
-// Start MQTT subscription in a background thread
-// Modify start_mqtt_collection function to subscribe to PIR topics
+// Start MQTT subscription in a background thread, subscribe to PIR topics
 fn start_mqtt_collection(
     security_state: Arc<Mutex<SecurityState>>,
     mqtt_client: Arc<Mutex<Option<Client>>>,
 ) -> thread::JoinHandle<()> {
     thread::spawn(move || {
-        let mqtt_broker = "192.168.0.168"; // Use the specified broker
+        let mqtt_broker = "YOUR_IP_ADDRESS"; // Use the specified broker
         let mqtt_port = 1883;
         let client_id = "rust_security_client";
 
@@ -207,9 +205,8 @@ fn start_mqtt_collection(
         mqttoptions.set_keep_alive(Duration::from_secs(5));
         mqttoptions.set_clean_session(true);
 
-        // For testing when broker is unavailable, you can add dummy data
         let mut last_dummy_update = Instant::now();
-        let dummy_update_interval = Duration::from_secs(10); // Add dummy data every 10 seconds
+        let dummy_update_interval = Duration::from_secs(10);
 
         loop {
             // Create a new client connection without using catch_unwind
@@ -364,7 +361,6 @@ fn start_mqtt_collection(
                 if let Err(e) = &subscription_result_pir_nw {
                     println!("  - sensors/pir/sensor_nw_pir: {:?}", e);
                 }
-                // Display other PIR subscription errors...
 
                 // During broker connectivity issues, insert dummy data for testing
                 if last_dummy_update.elapsed() > dummy_update_interval {
@@ -910,7 +906,6 @@ WHERE {
                 {
                     let mut state = security_state.lock().unwrap();
                     
-                    // Determine if PIR sensors should be used 
                     // Use PIR for morning, afternoon, and night (but NOT evening)
                     let use_pir_sensors = is_morning || is_afternoon || is_night_time || 
                                          time_of_day == "morning" || time_of_day == "afternoon" || time_of_day == "night";
@@ -1083,7 +1078,7 @@ WHERE {
                         })
                         .collect();
 
-                    // Just log without sending a message
+                    // Just log
                     println!("Detection during allowed hours (from SPARQL): {:?}", types);
 
                     for row in authorized_results {
