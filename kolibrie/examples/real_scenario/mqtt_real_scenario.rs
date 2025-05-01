@@ -452,7 +452,7 @@ fn detections_to_rdf(security_state: &SecurityState, test_time: Option<&str>) ->
     );
 
     // Get current time or use the test time if provided
-    let (current_time_str, hour, minute, date_str) = if let Some(test_time) = test_time {
+    let (current_time_str, hour, _minute, date_str) = if let Some(test_time) = test_time {
         // Parse the test time in format HH:MM
         let parts: Vec<&str> = test_time.split(':').collect();
         if parts.len() == 2 {

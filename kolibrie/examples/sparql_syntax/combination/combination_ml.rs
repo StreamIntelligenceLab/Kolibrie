@@ -2,6 +2,7 @@ use datalog::knowledge_graph::KnowledgeGraph;
 use kolibrie::parser::*;
 use kolibrie::sparql_database::SparqlDatabase;
 use ml::MLHandler;
+use ml::generate_ml_models;
 use pyo3::prepare_freethreaded_python;
 use serde::{Deserialize, Serialize};
 use shared::terms::Term;
@@ -55,49 +56,110 @@ fn execute_ml_prediction_from_clause(
         }
     };
     
-    // Load two models with schema
-    let rf_model_path = model_dir.join("rf_temperature_predictor.pkl");
-    let gb_model_path = model_dir.join("gb_temperature_predictor.pkl");
+    // Ensure models directory exists
+    std::fs::create_dir_all(&model_dir)?;
     
-    if !rf_model_path.exists() || !gb_model_path.exists() {
-        return Err(format!("Model files not found at {} or {}", 
-            rf_model_path.display(), gb_model_path.display()).into());
+    println!("Looking for models in: {}", model_dir.display());
+    
+    // Check if models need to be generated
+    let models_exist = std::fs::read_dir(&model_dir)?
+        .filter_map(Result::ok)
+        .filter(|entry| {
+            let path = entry.path();
+            path.is_file() && path.extension().map_or(false, |ext| ext == "pkl") &&
+            path.file_stem().and_then(|s| s.to_str()).map_or(false, |stem| stem.ends_with("_temperature_predictor"))
+        })
+        .count() >= 3; // We expect at least 3 models: rf, gb, and lr
+    
+    // If models don't exist or are outdated, generate them
+    if !models_exist {
+        println!("Models not found or outdated. Generating models...");
+        generate_ml_models(&model_dir)?;
     }
     
-    // Load both models with schema
-    let rf_metrics = ml_handler.load_model_with_schema("rf_model", rf_model_path.to_str().unwrap())?;
-    let gb_metrics = ml_handler.load_model_with_schema("gb_model", gb_model_path.to_str().unwrap())?;
+    // Continue with model discovery and loading as before
+    let mut model_paths = Vec::new();
+    let mut model_ids = Vec::new();
     
-    // Print performance comparison
+    if let Ok(entries) = std::fs::read_dir(&model_dir) {
+        for entry in entries.filter_map(Result::ok) {
+            let path = entry.path();
+            if path.is_file() && path.extension().map_or(false, |ext| ext == "pkl") {
+                if let Some(file_stem) = path.file_stem().and_then(|s| s.to_str()) {
+                    if file_stem.ends_with("_temperature_predictor") {
+                        // Get model type prefix from filename (rf_, gb_, lr_, etc.)
+                        let model_type = file_stem.split('_').next().unwrap_or("unknown");
+                        let model_id = format!("{}_model", model_type);
+                        
+                        println!("Found model: {} at {}", model_id, path.display());
+                        model_paths.push(path);
+                        model_ids.push(model_id);
+                    }
+                }
+            }
+        }
+    }
+    
+    if model_paths.is_empty() {
+        return Err("No temperature predictor models found in the models directory".into());
+    }
+    
+    // Load all discovered models with their schemas
+    println!("\nLoading {} models:", model_paths.len());
+    
+    let mut model_metrics = Vec::new();
+    
+    for (model_id, model_path) in model_ids.iter().zip(model_paths.iter()) {
+        if !model_path.exists() {
+            eprintln!("Warning: Model file not found at {}", model_path.display());
+            continue;
+        }
+        
+        match ml_handler.load_model_with_schema(model_id, model_path.to_str().unwrap(), Some("predictor")) {
+            Ok(metrics) => {
+                model_metrics.push((model_id.clone(), metrics));
+                println!("Successfully loaded model: {}", model_id);
+            },
+            Err(e) => {
+                eprintln!("Error loading model {}: {}", model_id, e);
+            }
+        }
+    }
+    
+    if model_metrics.is_empty() {
+        return Err("Failed to load any valid models".into());
+    }
+    
+    // Rest of your existing function (comparison, prediction, etc.)
+    // ...
+
+    // Print performance comparison for all loaded models
     println!("\nModel Performance Comparison:");
-    println!("RandomForest Model:");
-    println!("  Training Time: {:.4} seconds", rf_metrics.training_time);
-    println!("  Prediction Time: {:.4} seconds", rf_metrics.prediction_time);
-    println!("  Memory Usage: {:.2} MB", rf_metrics.memory_usage_mb);
-    println!("  CPU Usage: {:.2}%", rf_metrics.cpu_usage_percent);
-    if let Some(r2) = rf_metrics.r2_score {
-        println!("  R² Score: {:.4}", r2);
-    }
-    if let Some(mse) = rf_metrics.mse {
-        println!("  MSE: {:.4}", mse);
-    }
-    
-    println!("\nGradientBoosting Model:");
-    println!("  Training Time: {:.4} seconds", gb_metrics.training_time);
-    println!("  Prediction Time: {:.4} seconds", gb_metrics.prediction_time);
-    println!("  Memory Usage: {:.2} MB", gb_metrics.memory_usage_mb);
-    println!("  CPU Usage: {:.2}%", gb_metrics.cpu_usage_percent);
-    if let Some(r2) = gb_metrics.r2_score {
-        println!("  R² Score: {:.4}", r2);
-    }
-    if let Some(mse) = gb_metrics.mse {
-        println!("  MSE: {:.4}", mse);
+    for (model_id, metrics) in &model_metrics {
+        println!("\n{} Model:", model_id);
+        println!("  Training Time: {:.4} seconds", metrics.training_time);
+        println!("  Prediction Time: {:.4} seconds", metrics.prediction_time);
+        println!("  Memory Usage: {:.2} MB", metrics.memory_usage_mb);
+        println!("  CPU Usage: {:.2}%", metrics.cpu_usage_percent);
+        if let Some(r2) = metrics.r2_score {
+            println!("  R² Score: {:.4}", r2);
+        }
+        if let Some(mse) = metrics.mse {
+            println!("  MSE: {:.4}", mse);
+        }
     }
     
-    // Compare models and select the best one
-    let model_names = ["rf_model", "gb_model"];
-    let best_model = ml_handler.compare_models(&model_names)
-        .unwrap_or("rf_model"); // Default to RandomForest if comparison fails
+    // Convert model_ids from Vec<String> to Vec<&str> to satisfy compare_models
+    let model_id_refs: Vec<&str> = model_ids.iter().map(|s| s.as_str()).collect();
+    
+    // Compare all loaded models and select the best one
+    let best_model = match ml_handler.compare_models(&model_id_refs) {
+        Some(model) => model.to_string(),
+        None => {
+            // Default to first model if comparison fails
+            model_ids.first().unwrap_or(&String::from("unknown")).clone()
+        }
+    };
     
     println!("\nSelected best model: {}", best_model);
     
@@ -225,7 +287,7 @@ fn execute_ml_prediction_from_clause(
     println!("Using features for prediction: {:?}", features);
     
     // Use the selected best model
-    let prediction_results = ml_handler.predict(best_model, features)?;
+    let prediction_results = ml_handler.predict(&best_model, features)?;
     
     // Print performance of the selected model during this prediction
     println!("\nPerformance during prediction:");

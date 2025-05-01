@@ -41,6 +41,7 @@
 40. Add multiple conclusion, add example with mqtt (real scenario)
 41. Modify multiple conclusion
 42. Fix mqtt real scenario
+43. Modify ML handler for using different machine learning algorithms
 
 0.1.0
 1. Parsing RDF/XML

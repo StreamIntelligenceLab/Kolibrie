@@ -115,60 +115,60 @@ impl MLHandler {
         })
     }
 
-    pub fn load_model_with_schema(&mut self, model_name: &str, model_path: &str) -> PyResult<ModelPerformanceMetrics> {
-    // Load the model
-    self.load_model(model_name, model_path)?;
-    
-    // Get performance metrics directly from the model
-    let metrics = Python::with_gil(|py| -> PyResult<ModelPerformanceMetrics> {
-        let model = self.model_cache.get(model_name).ok_or_else(|| {
-            PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(
-                format!("Model {} not found in cache", model_name)
-            )
-        })?;
+    pub fn load_model_with_schema(&mut self, model_name: &str, model_path: &str, module_name: Option<&str>) -> PyResult<ModelPerformanceMetrics> {
+        // Load the model
+        self.load_model(model_name, model_path, module_name)?;
         
-        // Call get_performance_metrics directly on the model
-        let metrics = model.call_method0(py, "get_performance_metrics")?;
-        let perf_dict: BTreeMap<String, f64> = metrics.extract(py)?;
-        
-        let mut performance_metrics = ModelPerformanceMetrics::default();
-        
-        if let Some(&val) = perf_dict.get("training_time") {
-            performance_metrics.training_time = val;
-        }
-        if let Some(&val) = perf_dict.get("prediction_time") {
-            performance_metrics.prediction_time = val;
-        }
-        if let Some(&val) = perf_dict.get("memory_usage_mb") {
-            performance_metrics.memory_usage_mb = val;
-        }
-        if let Some(&val) = perf_dict.get("cpu_usage_percent") {
-            performance_metrics.cpu_usage_percent = val;
-        }
-        
-        // Try to get R2 and MSE if they exist in the model's attributes
-        if let Ok(metrics_dict) = model.call_method1(py, "get", ("evaluation_metrics",)) {
-            let metrics_dict: PyResult<BTreeMap<String, f64>> = metrics_dict.extract(py);
-            if let Ok(eval_metrics) = metrics_dict {
-                if let Some(&r2) = eval_metrics.get("r2") {
-                    performance_metrics.r2_score = Some(r2);
-                }
-                if let Some(&mse) = eval_metrics.get("mse") {
-                    performance_metrics.mse = Some(mse);
+        // Get performance metrics directly from the model
+        let metrics = Python::with_gil(|py| -> PyResult<ModelPerformanceMetrics> {
+            let model = self.model_cache.get(model_name).ok_or_else(|| {
+                PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(
+                    format!("Model {} not found in cache", model_name)
+                )
+            })?;
+            
+            // Call get_performance_metrics directly on the model
+            let metrics = model.call_method0(py, "get_performance_metrics")?;
+            let perf_dict: BTreeMap<String, f64> = metrics.extract(py)?;
+            
+            let mut performance_metrics = ModelPerformanceMetrics::default();
+            
+            if let Some(&val) = perf_dict.get("training_time") {
+                performance_metrics.training_time = val;
+            }
+            if let Some(&val) = perf_dict.get("prediction_time") {
+                performance_metrics.prediction_time = val;
+            }
+            if let Some(&val) = perf_dict.get("memory_usage_mb") {
+                performance_metrics.memory_usage_mb = val;
+            }
+            if let Some(&val) = perf_dict.get("cpu_usage_percent") {
+                performance_metrics.cpu_usage_percent = val;
+            }
+            
+            // Try to get R2 and MSE if they exist in the model's attributes
+            if let Ok(metrics_dict) = model.call_method1(py, "get", ("evaluation_metrics",)) {
+                let metrics_dict: PyResult<BTreeMap<String, f64>> = metrics_dict.extract(py);
+                if let Ok(eval_metrics) = metrics_dict {
+                    if let Some(&r2) = eval_metrics.get("r2") {
+                        performance_metrics.r2_score = Some(r2);
+                    }
+                    if let Some(&mse) = eval_metrics.get("mse") {
+                        performance_metrics.mse = Some(mse);
+                    }
                 }
             }
-        }
+            
+            Ok(performance_metrics)
+        })?;
         
-        Ok(performance_metrics)
-    })?;
-    
-    // Store metrics in cache
-    self.schema_cache.insert(model_name.to_string(), metrics.clone());
-    
-    Ok(metrics)
-}
+        // Store metrics in cache
+        self.schema_cache.insert(model_name.to_string(), metrics.clone());
+        
+        Ok(metrics)
+    }
 
-    pub fn load_model(&mut self, model_name: &str, model_path: &str) -> PyResult<()> {
+    pub fn load_model(&mut self, model_name: &str, model_path: &str, module_name: Option<&str>) -> PyResult<()> {
         Python::with_gil(|py| {
             // Add the Python path
             let sys = py.import("sys")?;
@@ -189,24 +189,61 @@ impl MLHandler {
             // Import required modules
             let builtins = py.import("builtins")?;
             let pickle = py.import("pickle")?;
-            let predictor = py.import("predictor")?;
             
             // Create globals dictionary and populate it
             let globals = PyDict::new(py);
-            globals.set_item("__builtins__", builtins)?;
+            globals.set_item("__builtins__", builtins.clone())?;
             globals.set_item("pickle", pickle)?;
-            globals.set_item("predictor", &predictor)?;
             globals.set_item("__name__", "__main__")?;
             
-            // Add predictor classes to globals
-            let rf_predictor = predictor.getattr("RandomForestPredictor")?;
-            globals.set_item("RandomForestPredictor", rf_predictor)?;
+            // Import the module (either specified or try to detect from model file)
+            let module_name = module_name.unwrap_or_else(|| {
+                // Try to guess module name from model file
+                let filename = model_path.file_name()
+                    .and_then(|name| name.to_str())
+                    .unwrap_or("");
+                
+                if filename.contains("rf") || filename.contains("random_forest") {
+                    "predictor"
+                } else if filename.contains("gb") || filename.contains("gradient") {
+                    "predictor"
+                } else if filename.contains("linear") || filename.contains("regression") {
+                    "linear_models"
+                } else {
+                    "predictor" // default fallback
+                }
+            });
             
-            let gb_predictor = predictor.getattr("GradientBoostingPredictor")?;
-            globals.set_item("GradientBoostingPredictor", gb_predictor)?;
-            
-            let base_predictor = predictor.getattr("BasePredictor")?;
-            globals.set_item("BasePredictor", base_predictor)?;
+            // Dynamically import the module
+            match py.import(module_name) {
+                Ok(module) => {
+                    // Clone the module before adding it to globals
+                    let module_clone = module.clone();
+                    globals.set_item(module_name, &module_clone)?;
+                    
+                    // Use a reference to module in call_method1
+                    if let Ok(dir_result) = builtins.call_method1("dir", (&module,)) {
+                        let class_names: Vec<String> = dir_result.extract()?;
+                        
+                        // Filter for actual classes (typically CamelCase)
+                        for class_name in class_names.iter() {
+                            // Skip private attributes and non-class members
+                            if class_name.starts_with('_') || class_name.chars().next().map_or(true, |c| !c.is_uppercase()) {
+                                continue;
+                            }
+                            
+                            // Use the original module to get attributes
+                            if let Ok(class_obj) = module.getattr(class_name) {
+                                globals.set_item(class_name, class_obj)?;
+                            }
+                        }
+                    }
+                },
+                Err(e) => {
+                    eprintln!("Warning: Could not import module {}: {}", module_name, e);
+                    // Continue with loading the model even if we couldn't import the module
+                }
+            }
             
             // Create and execute the Python code to load the model
             let model_path_str = model_path.to_str().unwrap().replace('\\', "/");
@@ -354,4 +391,79 @@ with open(r'{}', 'rb') as f:
         
         result
     }
+}
+
+pub fn generate_ml_models(model_dir: &std::path::Path) -> Result<(), Box<dyn std::error::Error>> {
+    println!("Generating ML models...");
+    
+    // Get the path to the predictor.py script
+    let src_dir = model_dir.parent().unwrap_or_else(|| std::path::Path::new("."));
+    let predictor_script = src_dir.join("predictor.py");
+    
+    if !predictor_script.exists() {
+        return Err(format!("Predictor script not found at {}", predictor_script.display()).into());
+    }
+    
+    // Run the Python script using Python's C API through pyo3
+    Python::with_gil(|py| {
+        // Add src_dir to Python path
+        let sys = py.import("sys")?;
+        let path = sys.getattr("path")?;
+        path.call_method1("insert", (0, src_dir.to_str().unwrap()))?;
+        
+        // Get the current working directory
+        let os = py.import("os")?;
+        let cwd = os.call_method0("getcwd")?;
+        println!("Current working directory: {}", cwd);
+
+        // Import and run the predictor module
+        println!("Running predictor.py to generate models...");
+        
+        // Method 1: Import the module and execute it
+        let result = std::panic::catch_unwind(|| {
+            let _predictor = py.import("predictor")?;
+            println!("Successfully imported predictor module");
+            Ok::<_, PyErr>(())
+        });
+        
+        if result.is_err() {
+            println!("Failed to import predictor module directly, trying alternate method...");
+            
+            // Method 2: Execute the script directly
+            let subprocess = py.import("subprocess")?;
+            let python_exe = sys.getattr("executable")?;
+            let args = (python_exe.clone(), predictor_script.to_str().unwrap());
+            
+            println!("Executing: {} {}", python_exe, predictor_script.display());
+            let result = subprocess.call_method1("run", args)?;
+            
+            let return_code = result.getattr("returncode")?;
+            if !return_code.is_truthy()? {
+                println!("Successfully generated models using subprocess");
+            } else {
+                return Err(PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(
+                    format!("Failed to generate models, return code: {}", return_code)
+                ));
+            }
+        }
+        
+        Ok(())
+    })?;
+    
+    // Verify that models were created
+    let model_count = std::fs::read_dir(model_dir)?
+        .filter_map(Result::ok)
+        .filter(|entry| {
+            let path = entry.path();
+            path.is_file() && path.extension().map_or(false, |ext| ext == "pkl") &&
+            path.file_stem().and_then(|s| s.to_str()).map_or(false, |stem| stem.ends_with("_temperature_predictor"))
+        })
+        .count();
+    
+    if model_count < 3 {
+        return Err(format!("Expected at least 3 models to be generated, but found {}", model_count).into());
+    }
+    
+    println!("Successfully generated {} ML models", model_count);
+    Ok(())
 }
