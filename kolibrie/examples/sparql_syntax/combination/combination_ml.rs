@@ -130,9 +130,6 @@ fn execute_ml_prediction_from_clause(
         return Err("Failed to load any valid models".into());
     }
     
-    // Rest of your existing function (comparison, prediction, etc.)
-    // ...
-
     // Print performance comparison for all loaded models
     println!("\nModel Performance Comparison:");
     for (model_id, metrics) in &model_metrics {

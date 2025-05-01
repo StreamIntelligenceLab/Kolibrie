@@ -419,7 +419,7 @@ pub fn generate_ml_models(model_dir: &std::path::Path) -> Result<(), Box<dyn std
         // Import and run the predictor module
         println!("Running predictor.py to generate models...");
         
-        // Method 1: Import the module and execute it
+        // Import the module and execute it
         let result = std::panic::catch_unwind(|| {
             let _predictor = py.import("predictor")?;
             println!("Successfully imported predictor module");
@@ -429,7 +429,7 @@ pub fn generate_ml_models(model_dir: &std::path::Path) -> Result<(), Box<dyn std
         if result.is_err() {
             println!("Failed to import predictor module directly, trying alternate method...");
             
-            // Method 2: Execute the script directly
+            // Execute the script directly
             let subprocess = py.import("subprocess")?;
             let python_exe = sys.getattr("executable")?;
             let args = (python_exe.clone(), predictor_script.to_str().unwrap());
