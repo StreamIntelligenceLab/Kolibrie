@@ -25,8 +25,8 @@ pub struct ModelPerformanceMetrics {
 }
 
 pub struct MLHandler {
-    model_cache: BTreeMap<String, PyObject>,
-    schema_cache: BTreeMap<String, ModelPerformanceMetrics>,
+    pub model_cache: BTreeMap<String, PyObject>,
+    pub schema_cache: BTreeMap<String, ModelPerformanceMetrics>,
 }
 
 #[allow(dead_code)]
@@ -393,12 +393,12 @@ with open(r'{}', 'rb') as f:
     }
 }
 
-pub fn generate_ml_models(model_dir: &std::path::Path) -> Result<(), Box<dyn std::error::Error>> {
+pub fn generate_ml_models(model_dir: &std::path::Path, model: &str) -> Result<(), Box<dyn std::error::Error>> {
     println!("Generating ML models...");
     
     // Get the path to the predictor.py script
     let src_dir = model_dir.parent().unwrap_or_else(|| std::path::Path::new("."));
-    let predictor_script = src_dir.join("predictor.py");
+    let predictor_script = src_dir.join(model);
     
     if !predictor_script.exists() {
         return Err(format!("Predictor script not found at {}", predictor_script.display()).into());

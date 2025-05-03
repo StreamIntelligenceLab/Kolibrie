@@ -7,3 +7,4 @@ pub mod lsm_tree;
 pub mod cuda;
 pub mod execute_query;
 pub mod custom_error;
+pub mod execute_ml;
