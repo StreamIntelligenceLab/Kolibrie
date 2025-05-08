@@ -18,8 +18,12 @@ target/
 kolibrie/src/old_new.rs
 kolibrie/src/old.rs
 
+# Python
 ml/src/models
+ml/examples/models
 __pycache__/
+*.egg-info/
+*.egg
 
 # Some unnecessary python directories
 py_tests/

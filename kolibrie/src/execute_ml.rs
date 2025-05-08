@@ -26,7 +26,7 @@ where
         loop {
             let ml_dir = path.join("ml");
             if ml_dir.exists() && ml_dir.is_dir() {
-                break ml_dir.join("src").join("models");
+                break ml_dir.join("examples").join("models");
             }
             
             if !path.pop() {

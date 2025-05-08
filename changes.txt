@@ -43,6 +43,7 @@
 42. Fix mqtt real scenario
 43. Modify ML handler for using different machine learning algorithms
 44. Modify ML execution to make it more generic
+45. Modify ML handler by making MLSchema global, clean some parts of ML
 
 0.1.0
 1. Parsing RDF/XML

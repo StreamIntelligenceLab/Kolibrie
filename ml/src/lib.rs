@@ -456,7 +456,7 @@ pub fn generate_ml_models(model_dir: &std::path::Path, model: &str) -> Result<()
         .filter(|entry| {
             let path = entry.path();
             path.is_file() && path.extension().map_or(false, |ext| ext == "pkl") &&
-            path.file_stem().and_then(|s| s.to_str()).map_or(false, |stem| stem.ends_with("_temperature_predictor"))
+            path.file_stem().and_then(|s| s.to_str()).map_or(false, |stem| stem.ends_with("_predictor"))
         })
         .count();
     
