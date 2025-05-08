@@ -45,6 +45,7 @@
 44. Modify ML execution to make it more generic
 45. Modify ML handler by making MLSchema global, clean some parts of ML
 46. Minor update of ML handler
+47. Fix problem with handling different ML models
 
 0.1.0
 1. Parsing RDF/XML

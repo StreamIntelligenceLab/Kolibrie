@@ -100,7 +100,7 @@ where
             continue;
         }
         
-        match ml_handler.load_model_with_schema(model_id, model_path.to_str().unwrap(), Some("predictor")) {
+        match ml_handler.load_model_with_schema(model_id, model_path.to_str().unwrap(), Some(model)) {
             Ok(metrics) => {
                 model_metrics.push((model_id.clone(), metrics));
                 println!("Successfully loaded model: {}", model_id);

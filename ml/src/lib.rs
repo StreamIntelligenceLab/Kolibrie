@@ -437,7 +437,8 @@ pub fn generate_ml_models(model_dir: &std::path::Path, model: &str) -> Result<()
         
         // Import the module and execute it
         let result = std::panic::catch_unwind(|| {
-            let _predictor = py.import("predictor")?;
+            let module_name = model.trim_end_matches(".py");
+            let _predictor = py.import(module_name)?;
             println!("Successfully imported predictor module");
             Ok::<_, PyErr>(())
         });

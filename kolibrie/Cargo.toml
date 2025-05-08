@@ -218,6 +218,10 @@ name = "combination_ml"
 path = "examples/sparql_syntax/combination/combination_ml.rs"
 
 [[example]]
+name = "combination_ml_savings"
+path = "examples/sparql_syntax/combination/combination_ml_savings.rs"
+
+[[example]]
 name = "multiple_conclusions"
 path = "examples/sparql_syntax/combination/multiple_conclusions.rs"
 
