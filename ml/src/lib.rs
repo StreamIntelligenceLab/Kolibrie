@@ -189,63 +189,16 @@ impl MLHandler {
             // Import required modules
             let builtins = py.import("builtins")?;
             let pickle = py.import("pickle")?;
+            let importlib = py.import("importlib")?;
             
             // Create globals dictionary and populate it
             let globals = PyDict::new(py);
             globals.set_item("__builtins__", builtins.clone())?;
             globals.set_item("pickle", pickle)?;
+            globals.set_item("importlib", importlib)?;
             globals.set_item("__name__", "__main__")?;
             
-            // Import the module (either specified or try to detect from model file)
-            let module_name = module_name.unwrap_or_else(|| {
-                // Try to guess module name from model file
-                let filename = model_path.file_name()
-                    .and_then(|name| name.to_str())
-                    .unwrap_or("");
-                
-                if filename.contains("rf") || filename.contains("random_forest") {
-                    "predictor"
-                } else if filename.contains("gb") || filename.contains("gradient") {
-                    "predictor"
-                } else if filename.contains("linear") || filename.contains("regression") {
-                    "linear_models"
-                } else {
-                    "predictor" // default fallback
-                }
-            });
-            
-            // Dynamically import the module
-            match py.import(module_name) {
-                Ok(module) => {
-                    // Clone the module before adding it to globals
-                    let module_clone = module.clone();
-                    globals.set_item(module_name, &module_clone)?;
-                    
-                    // Use a reference to module in call_method1
-                    if let Ok(dir_result) = builtins.call_method1("dir", (&module,)) {
-                        let class_names: Vec<String> = dir_result.extract()?;
-                        
-                        // Filter for actual classes (typically CamelCase)
-                        for class_name in class_names.iter() {
-                            // Skip private attributes and non-class members
-                            if class_name.starts_with('_') || class_name.chars().next().map_or(true, |c| !c.is_uppercase()) {
-                                continue;
-                            }
-                            
-                            // Use the original module to get attributes
-                            if let Ok(class_obj) = module.getattr(class_name) {
-                                globals.set_item(class_name, class_obj)?;
-                            }
-                        }
-                    }
-                },
-                Err(e) => {
-                    eprintln!("Warning: Could not import module {}: {}", module_name, e);
-                    // Continue with loading the model even if we couldn't import the module
-                }
-            }
-            
-            // Create and execute the Python code to load the model
+            // First load the model to inspect its class
             let model_path_str = model_path.to_str().unwrap().replace('\\', "/");
             let code = format!(
                 r#"
@@ -256,7 +209,7 @@ with open(r'{}', 'rb') as f:
                 model_path_str
             );
             
-            // Execute the code
+            // Execute the code to load the model
             let code_cstring = CString::new(code).expect("Failed to convert code to CString");
             py.run(code_cstring.as_c_str(), Some(&globals), None)?;
             
@@ -266,8 +219,71 @@ with open(r'{}', 'rb') as f:
                 PyErr::new::<pyo3::exceptions::PyRuntimeError, _>("Failed to load model")
             })?;
             
+            // Determine module name based on provided value, model class name, or model attributes
+            let actual_module_name = match module_name {
+                // Use explicitly provided module name if available
+                Some(name) => name.to_string(),
+                None => {
+                    // Try to determine module from model class
+                    let get_module_code = r#"
+module_name = getattr(model, '__module__', '').split('.')[0]
+if not module_name or module_name == '__main__' or module_name == 'builtins':
+    # Try to get algorithm type from model attributes
+    if hasattr(model, 'algorithm_type'):
+        module_name = model.algorithm_type
+    # Look for common model attributes that might indicate the type
+    elif hasattr(model, 'feature_importances_'):
+        module_name = 'predictor'  # Tree-based models
+    elif hasattr(model, 'coef_'):
+        module_name = 'linear_models'  # Linear models
+    else:
+        # Inspect the class name for clues
+        class_name = model.__class__.__name__.lower()
+        if 'forest' in class_name or 'tree' in class_name or 'boost' in class_name:
+            module_name = 'predictor'
+        elif 'linear' in class_name or 'regress' in class_name:
+            module_name = 'linear_models'
+        else:
+            module_name = 'predictor'  # Default
+                    "#;
+                    
+                    let code_cstring = CString::new(get_module_code).expect("Failed to convert module detection code to CString");
+                    py.run(code_cstring.as_c_str(), Some(&globals), None)?;
+                    
+                    let module_name = globals.get_item("module_name")?;
+                    let module_name_obj = module_name.ok_or_else(|| {
+                        PyErr::new::<pyo3::exceptions::PyRuntimeError, _>("Failed to determine module name")
+                    })?;
+                    
+                    module_name_obj.extract::<String>()?
+                }
+            };
+            
+            // Dynamically import the determined module
+            let import_code = format!(
+                r#"
+try:
+    # Try to use importlib for a cleaner import
+    imported_module = importlib.import_module('{}')
+    # Get all the classes from the module
+    for attr_name in dir(imported_module):
+        if not attr_name.startswith('_') and attr_name[0].isupper():
+            # Add class attributes to globals
+            globals()[attr_name] = getattr(imported_module, attr_name)
+except ImportError:
+    print(f"Warning: Could not import module {{'{}'}}. Using model as is.")
+                "#,
+                actual_module_name, actual_module_name
+            );
+            
+            // Execute the import code
+            let import_cstring = CString::new(import_code).expect("Failed to convert import code to CString");
+            let _ = py.run(import_cstring.as_c_str(), Some(&globals), None);
+            
             // Store the model in cache
             self.model_cache.insert(model_name.to_string(), model.into());
+            
+            println!("Loaded model '{}' from module '{}'", model_name, actual_module_name);
             Ok(())
         })
     }
