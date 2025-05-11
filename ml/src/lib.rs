@@ -27,6 +27,7 @@ pub struct ModelPerformanceMetrics {
 pub struct MLHandler {
     pub model_cache: BTreeMap<String, PyObject>,
     pub schema_cache: BTreeMap<String, ModelPerformanceMetrics>,
+    pub best_model: Option<String>,
 }
 
 #[allow(dead_code)]
@@ -35,6 +36,7 @@ impl MLHandler {
         Ok(MLHandler {
             model_cache: BTreeMap::new(),
             schema_cache: BTreeMap::new(),
+            best_model: None,
         })
     }
 
@@ -115,54 +117,21 @@ impl MLHandler {
         })
     }
 
-    pub fn load_model_with_schema(&mut self, model_name: &str, model_path: &str, module_name: Option<&str>) -> PyResult<ModelPerformanceMetrics> {
-        // Load the model
-        self.load_model(model_name, model_path, module_name)?;
+    pub fn load_model_with_schema(&mut self, model_name: &str, model_path: &str) -> PyResult<ModelPerformanceMetrics> {
+        // Get the TTL file path by replacing .pkl extension with .ttl
+        let schema_file_path = model_path.replace(".pkl", ".ttl");
         
-        // Get performance metrics directly from the model
-        let metrics = Python::with_gil(|py| -> PyResult<ModelPerformanceMetrics> {
-            let model = self.model_cache.get(model_name).ok_or_else(|| {
-                PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(
-                    format!("Model {} not found in cache", model_name)
-                )
-            })?;
-            
-            // Call get_performance_metrics directly on the model
-            let metrics = model.call_method0(py, "get_performance_metrics")?;
-            let perf_dict: BTreeMap<String, f64> = metrics.extract(py)?;
-            
-            let mut performance_metrics = ModelPerformanceMetrics::default();
-            
-            if let Some(&val) = perf_dict.get("training_time") {
-                performance_metrics.training_time = val;
+        // Parse the schema file to get performance metrics directly from TTL
+        let metrics = match self.parse_schema_file(&schema_file_path) {
+            Ok(m) => m,
+            Err(e) => {
+                eprintln!("Error parsing schema file {}: {}", schema_file_path, e);
+                // Create default metrics if TTL parsing fails
+                ModelPerformanceMetrics::default()
             }
-            if let Some(&val) = perf_dict.get("prediction_time") {
-                performance_metrics.prediction_time = val;
-            }
-            if let Some(&val) = perf_dict.get("memory_usage_mb") {
-                performance_metrics.memory_usage_mb = val;
-            }
-            if let Some(&val) = perf_dict.get("cpu_usage_percent") {
-                performance_metrics.cpu_usage_percent = val;
-            }
-            
-            // Try to get R2 and MSE if they exist in the model's attributes
-            if let Ok(metrics_dict) = model.call_method1(py, "get", ("evaluation_metrics",)) {
-                let metrics_dict: PyResult<BTreeMap<String, f64>> = metrics_dict.extract(py);
-                if let Ok(eval_metrics) = metrics_dict {
-                    if let Some(&r2) = eval_metrics.get("r2") {
-                        performance_metrics.r2_score = Some(r2);
-                    }
-                    if let Some(&mse) = eval_metrics.get("mse") {
-                        performance_metrics.mse = Some(mse);
-                    }
-                }
-            }
-            
-            Ok(performance_metrics)
-        })?;
+        };
         
-        // Store metrics in cache
+        // Store metrics in cache without loading the model yet
         self.schema_cache.insert(model_name.to_string(), metrics.clone());
         
         Ok(metrics)
@@ -292,7 +261,8 @@ except ImportError:
         self.schema_cache.get(model_name).cloned()
     }
 
-    pub fn compare_models<'a>(&self, model_names: &[&'a str]) -> Option<&'a str> {
+    // Modified to prioritize lowest resource usage
+    pub fn compare_models<'a>(&mut self, model_names: &[&'a str]) -> Option<&'a str> {
         if model_names.is_empty() {
             return None;
         }
@@ -301,47 +271,58 @@ except ImportError:
         let mut best_model = model_names[0];
         let mut best_score = std::f64::MAX;
 
+        println!("\nComparing models based on resource usage (lower is better):");
         for &model_name in model_names {
             if let Some(metrics) = self.schema_cache.get(model_name) {
-                // Create a combined score (lower is better)
-                // Weighted combination of time, memory usage, and error metric (MSE)
-                let time_weight = 0.3;
-                let memory_weight = 0.3;
-                let mse_weight = 0.4;
+                // Prioritize CPU and memory usage
+                let cpu_weight = 0.5;
+                let memory_weight = 0.4;
+                let time_weight = 0.1;
                 
-                let mut score = 
-                    time_weight * metrics.prediction_time + 
-                    memory_weight * metrics.memory_usage_mb;
+                let resource_score = 
+                    cpu_weight * metrics.cpu_usage_percent + 
+                    memory_weight * metrics.memory_usage_mb +
+                    time_weight * metrics.prediction_time;
                 
-                // Add MSE if available (lower is better)
-                if let Some(mse) = metrics.mse {
-                    score += mse_weight * mse;
-                }
+                println!("{} Model:", model_name);
+                println!("  CPU Usage: {:.2}%", metrics.cpu_usage_percent);
+                println!("  Memory Usage: {:.2} MB", metrics.memory_usage_mb);
+                println!("  Prediction Time: {:.4} seconds", metrics.prediction_time);
+                println!("  Combined Resource Score: {:.2}", resource_score);
                 
-                // If we have R2 score (higher is better), subtract it to make lower score better
-                if let Some(r2) = metrics.r2_score {
-                    score -= mse_weight * r2;
-                }
-                
-                if score < best_score {
-                    best_score = score;
+                if resource_score < best_score {
+                    best_score = resource_score;
                     best_model = model_name;
                 }
             }
         }
-
+        
+        // Store the best model name for future use
+        self.best_model = Some(best_model.to_string());
+        println!("\nSelected model with lowest resource usage: {}", best_model);
+        
         Some(best_model)
     }
 
     pub fn predict(&self, model_name: &str, input_data: Vec<Vec<f64>>) -> PyResult<MLPredictionResult> {
+        // If best_model is set, use that instead of the provided model_name
+        let actual_model_name = if let Some(ref best_model) = self.best_model {
+            best_model
+        } else {
+            model_name
+        };
+        
+        // Check if the model is loaded, if not, return an error
+        if !self.model_cache.contains_key(actual_model_name) {
+            return Err(PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(
+                format!("Model {} not found in cache. Call load_model first.", actual_model_name)
+            ));
+        }
+        
         let start = Instant::now();
         
         let mut result = Python::with_gil(|py| {
-            let model = self.model_cache.get(model_name).ok_or_else(|| {
-                PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(
-                    format!("Model {} not found in cache", model_name)
-                )
-            })?;
+            let model = self.model_cache.get(actual_model_name).unwrap();
 
             // Convert input data to Python list
             let rows: PyResult<Vec<PyObject>> = input_data
@@ -371,25 +352,11 @@ except ImportError:
                 .and_then(|fi| fi.extract::<Vec<f64>>(py))
                 .ok();
 
-            // Get performance metrics
-            let metrics = model.call_method0(py, "get_performance_metrics")?;
-            let py_metrics: PyObject = metrics.into();
-            let perf_dict: BTreeMap<String, PyObject> = py_metrics.extract(py)?;
-            
-            let mut performance_metrics = ModelPerformanceMetrics::default();
-            
-            if let Some(val) = perf_dict.get("training_time") {
-                performance_metrics.training_time = val.extract(py)?;
-            }
-            if let Some(val) = perf_dict.get("prediction_time") {
-                performance_metrics.prediction_time = val.extract(py)?;
-            }
-            if let Some(val) = perf_dict.get("memory_usage_mb") {
-                performance_metrics.memory_usage_mb = val.extract(py)?;
-            }
-            if let Some(val) = perf_dict.get("cpu_usage_percent") {
-                performance_metrics.cpu_usage_percent = val.extract(py)?;
-            }
+            // Use performance metrics from TTL instead of measuring them at runtime
+            let performance_metrics = match self.schema_cache.get(actual_model_name) {
+                Some(metrics) => metrics.clone(),
+                None => ModelPerformanceMetrics::default(),
+            };
 
             Ok(MLPredictionResult {
                 predictions,
@@ -399,13 +366,75 @@ except ImportError:
             })
         });
         
-        // Track prediction time
+        // Only track prediction time for logging, but don't use it for model selection
         let elapsed = start.elapsed();
-        if let Ok(ref mut res) = result {
-            res.performance_metrics.prediction_time = elapsed.as_secs_f64();
+        if let Ok(ref mut _res) = result {
+            println!("Actual prediction time: {:.4} seconds", elapsed.as_secs_f64());
         }
         
         result
+    }
+    
+    // Utility function to discover and load all models and their TTL schemas at once
+    pub fn discover_and_load_models(&mut self, model_dir: &Path, model_module: &str) -> PyResult<Vec<String>> {
+        let mut model_ids = Vec::new();
+        
+        if let Ok(entries) = std::fs::read_dir(model_dir) {
+            // First pass: Only load schemas from TTL files without loading models
+            for entry in entries.filter_map(Result::ok) {
+                let path = entry.path();
+                if path.is_file() && path.extension().map_or(false, |ext| ext == "pkl") {
+                    if let Some(file_stem) = path.file_stem().and_then(|s| s.to_str()) {
+                        if file_stem.ends_with("_predictor") {
+                            // Get model type prefix from filename (rf_, gb_, lr_, etc.)
+                            let model_type = file_stem.split('_').next().unwrap_or("unknown");
+                            let model_id = format!("{}_model", model_type);
+                            
+                            println!("Loading schema for model: {} from {}", model_id, path.display());
+                            match self.load_model_with_schema(&model_id, path.to_str().unwrap()) {
+                                Ok(_) => {
+                                    model_ids.push(model_id);
+                                },
+                                Err(e) => {
+                                    eprintln!("Error loading schema for {}: {}", model_id, e);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            
+            // Compare models to find the one with lowest resource usage
+            let model_id_refs: Vec<&str> = model_ids.iter().map(|s| s.as_str()).collect();
+            if let Some(best_model) = self.compare_models(&model_id_refs) {
+                // Second pass: Only load the best model to save resources
+                for entry in std::fs::read_dir(model_dir).unwrap().filter_map(Result::ok) {
+                    let path = entry.path();
+                    if path.is_file() && path.extension().map_or(false, |ext| ext == "pkl") {
+                        if let Some(file_stem) = path.file_stem().and_then(|s| s.to_str()) {
+                            let model_type = file_stem.split('_').next().unwrap_or("unknown");
+                            let model_id = format!("{}_model", model_type);
+                            
+                            // Only load the best model
+                            if model_id == best_model {
+                                println!("Loading only the best model: {} from {}", model_id, path.display());
+                                match self.load_model(&model_id, path.to_str().unwrap(), Some(model_module)) {
+                                    Ok(_) => {
+                                        self.best_model = Some(model_id.clone());
+                                    },
+                                    Err(e) => {
+                                        eprintln!("Error loading best model {}: {}", model_id, e);
+                                    }
+                                }
+                                break;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        
+        Ok(model_ids)
     }
 }
 

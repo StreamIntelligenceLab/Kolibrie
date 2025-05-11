@@ -62,88 +62,13 @@ where
         generate_ml_models(&model_dir, model)?;
     }
     
-    // Continue with model discovery and loading as before
-    let mut model_paths = Vec::new();
-    let mut model_ids = Vec::new();
+    // Discover, load TTL schemas, and find the best model in one step
+    println!("\nDiscovering models and analyzing schemas...");
+    let model_ids = ml_handler.discover_and_load_models(&model_dir, model)?;
     
-    if let Ok(entries) = std::fs::read_dir(&model_dir) {
-        for entry in entries.filter_map(Result::ok) {
-            let path = entry.path();
-            if path.is_file() && path.extension().map_or(false, |ext| ext == "pkl") {
-                if let Some(file_stem) = path.file_stem().and_then(|s| s.to_str()) {
-                    if file_stem.ends_with("_predictor") {
-                        // Get model type prefix from filename (rf_, gb_, lr_, etc.)
-                        let model_type = file_stem.split('_').next().unwrap_or("unknown");
-                        let model_id = format!("{}_model", model_type);
-                        
-                        println!("Found model: {} at {}", model_id, path.display());
-                        model_paths.push(path);
-                        model_ids.push(model_id);
-                    }
-                }
-            }
-        }
+    if model_ids.is_empty() {
+        return Err("No valid models found with TTL schemas".into());
     }
-    
-    if model_paths.is_empty() {
-        return Err("No predictor models found in the models directory".into());
-    }
-    
-    // Load all discovered models with their schemas
-    println!("\nLoading {} models:", model_paths.len());
-    
-    let mut model_metrics = Vec::new();
-    
-    for (model_id, model_path) in model_ids.iter().zip(model_paths.iter()) {
-        if !model_path.exists() {
-            eprintln!("Warning: Model file not found at {}", model_path.display());
-            continue;
-        }
-        
-        match ml_handler.load_model_with_schema(model_id, model_path.to_str().unwrap(), Some(model)) {
-            Ok(metrics) => {
-                model_metrics.push((model_id.clone(), metrics));
-                println!("Successfully loaded model: {}", model_id);
-            },
-            Err(e) => {
-                eprintln!("Error loading model {}: {}", model_id, e);
-            }
-        }
-    }
-    
-    if model_metrics.is_empty() {
-        return Err("Failed to load any valid models".into());
-    }
-    
-    // Print performance comparison for all loaded models
-    println!("\nModel Performance Comparison:");
-    for (model_id, metrics) in &model_metrics {
-        println!("\n{} Model:", model_id);
-        println!("  Training Time: {:.4} seconds", metrics.training_time);
-        println!("  Prediction Time: {:.4} seconds", metrics.prediction_time);
-        println!("  Memory Usage: {:.2} MB", metrics.memory_usage_mb);
-        println!("  CPU Usage: {:.2}%", metrics.cpu_usage_percent);
-        if let Some(r2) = metrics.r2_score {
-            println!("  R² Score: {:.4}", r2);
-        }
-        if let Some(mse) = metrics.mse {
-            println!("  MSE: {:.4}", mse);
-        }
-    }
-    
-    // Convert model_ids from Vec<String> to Vec<&str> to satisfy compare_models
-    let model_id_refs: Vec<&str> = model_ids.iter().map(|s| s.as_str()).collect();
-    
-    // Compare all loaded models and select the best one
-    let best_model = match ml_handler.compare_models(&model_id_refs) {
-        Some(model) => model.to_string(),
-        None => {
-            // Default to first model if comparison fails
-            model_ids.first().unwrap_or(&String::from("unknown")).clone()
-        }
-    };
-    
-    println!("\nSelected best model: {}", best_model);
     
     // Extract variable names from SELECT clause (remove ? prefix)
     let variable_names: Vec<String> = ml_predict.input_select
@@ -164,6 +89,9 @@ where
     
     println!("Feature names for prediction: {:?}", feature_names);
     
-    // Use the provided prediction function 
-    predict(&ml_handler, &best_model, &data, &feature_names)
+    // Get the name of the best model stored in the handler
+    let best_model_name = ml_handler.best_model.as_deref().unwrap_or(&model_ids[0]);
+    
+    // Use the prediction function with the best model
+    predict(&ml_handler, best_model_name, &data, &feature_names)
 }
