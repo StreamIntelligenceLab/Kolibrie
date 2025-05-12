@@ -47,6 +47,7 @@
 46. Minor update of ML handler
 47. Fix problem with handling different ML models
 48. Modify ML handler by taking and compare models from Turtle file
+49. Modify FILTER by adding arithmetic epxression
 
 0.1.0
 1. Parsing RDF/XML

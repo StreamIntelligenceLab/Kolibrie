@@ -1,6 +1,6 @@
 use nom::{
     branch::alt,
-    bytes::complete::{tag, take_while1},
+    bytes::complete::{tag, take_while1, take_until},
     character::complete::{char, multispace0, multispace1, space0, space1},
     combinator::{opt, recognize},
     multi::{many0, separated_list1},
@@ -177,6 +177,175 @@ pub fn parse_select(input: &str) -> IResult<&str, Vec<(&str, &str, Option<&str>)
     Ok((input, variables))
 }
 
+// Parse a basic arithmetic operand (variable, literal, or number)
+fn parse_operand(input: &str) -> IResult<&str, ArithmeticExpression> {
+    let (input, _) = multispace0(input)?;
+    
+    let (input, operand) = alt((
+        variable,
+        parse_literal,
+        take_while1(|c: char| c.is_digit(10) || c == '.'),
+    ))(input)?;
+    
+    let (input, _) = multispace0(input)?;
+    
+    Ok((input, ArithmeticExpression::Operand(operand)))
+}
+
+// Parse a parenthesized arithmetic expression
+fn parse_arith_parenthesized(input: &str) -> IResult<&str, ArithmeticExpression> {
+    let (input, _) = multispace0(input)?;
+    let (input, _) = char('(')(input)?;
+    let (input, expr) = parse_arithmetic_expression(input)?;
+    let (input, _) = multispace0(input)?;
+    let (input, _) = char(')')(input)?;
+    let (input, _) = multispace0(input)?;
+    
+    Ok((input, expr))
+}
+
+// Parse a basic arithmetic term (operand or parenthesized expression)
+fn parse_arith_term(input: &str) -> IResult<&str, ArithmeticExpression> {
+    alt((
+        parse_operand,
+        parse_arith_parenthesized,
+    ))(input)
+}
+
+// Parse multiplication and division
+fn parse_arith_factor(input: &str) -> IResult<&str, ArithmeticExpression> {
+    let (mut input, mut left) = parse_arith_term(input)?;
+    
+    // Process all multiplication and division operations in sequence
+    loop {
+        let (remaining, _) = multispace0(input)?;
+        
+        // Match a multiplication or division operator
+        match alt((char::<&str, nom::error::Error<&str>>('*'), char::<&str, nom::error::Error<&str>>('/')))(remaining) {
+            Ok((after_op, op)) => {
+                // Parse the right-hand term
+                let (after_space, _) = multispace0(after_op)?;
+                let (new_input, right) = parse_arith_term(after_space)?;
+                
+                left = match op {
+                    '*' => ArithmeticExpression::Multiply(Box::new(left), Box::new(right)),
+                    '/' => ArithmeticExpression::Divide(Box::new(left), Box::new(right)),
+                    _ => unreachable!(),
+                };
+                
+                // Update input
+                input = new_input;
+            },
+            Err(_) => break,
+        }
+    }
+    
+    Ok((input, left))
+}
+
+// Parse addition and subtraction
+pub fn parse_arithmetic_expression(input: &str) -> IResult<&str, ArithmeticExpression> {
+    let (mut input, mut left) = parse_arith_factor(input)?;
+    
+    // Process all addition and subtraction operations in sequence
+    loop {
+        let (remaining, _) = multispace0(input)?;
+        
+        // Match an addition or subtraction operator
+        match alt((char::<&str, nom::error::Error<&str>>('+'), char::<&str, nom::error::Error<&str>>('-')))(remaining) {
+            Ok((after_op, op)) => {
+                // Parse the right-hand factor
+                let (after_space, _) = multispace0(after_op)?;
+                let (new_input, right) = parse_arith_factor(after_space)?;
+                
+                left = match op {
+                    '+' => ArithmeticExpression::Add(Box::new(left), Box::new(right)),
+                    '-' => ArithmeticExpression::Subtract(Box::new(left), Box::new(right)),
+                    _ => unreachable!(),
+                };
+                
+                // Update input
+                input = new_input;
+            },
+            Err(_) => break,
+        }
+    }
+    
+    Ok((input, left))
+}
+
+fn parse_arithmetic_comparison(input: &str) -> IResult<&str, FilterExpression> {
+    let (input, _) = multispace0(input)?;
+
+    // Parse left side expression
+    let (input, left_str) = alt((
+        // Recognize an arithmetic expression (variable followed by operators)
+        recognize(tuple((
+            alt((
+                variable,                  // Variable name
+                parse_literal,             // String literal
+                take_while1(|c: char| c.is_digit(10) || c == '.'), // Number
+            )),
+            multispace0,
+            alt((char('+'), char('-'), char('*'), char('/'))), // Operator
+        ))),
+        // variable/literal/number
+        variable,
+        parse_literal,
+        take_while1(|c: char| c.is_digit(10) || c == '.'),
+        // parenthesized expression
+        recognize(delimited(
+            char('('),
+            take_until(")"),
+            char(')')
+        ))
+    ))(input)?;
+
+    let (input, _) = multispace0(input)?;
+    
+    // Parse the comparison operator
+    let (input, operator) = alt((
+        tag("="), tag("!="), tag(">="),
+        tag("<="), tag(">"), tag("<"),
+    ))(input)?;
+
+    let (input, _) = multispace0(input)?;
+    
+    // Parse right side expression
+    let (input, right_str) = alt((
+        // Recognize a parenthesized arithmetic expression
+        recognize(delimited(
+            char('('),
+            take_until(")"),
+            char(')')
+        )),
+        // variable/literal/number
+        variable,
+        parse_literal,
+        take_while1(|c: char| c.is_digit(10) || c == '.'),
+        // arithmetic expression
+        recognize(tuple((
+            alt((
+                variable,
+                parse_literal,
+                take_while1(|c: char| c.is_digit(10) || c == '.'),
+            )),
+            multispace0,
+            alt((char('+'), char('-'), char('*'), char('/'))),
+        ))),
+    ))(input)?;
+
+    let (input, _) = multispace0(input)?;
+
+    let result = FilterExpression::Comparison(
+        left_str,
+        operator,
+        right_str,
+    );
+
+    Ok((input, result))
+}
+
 // Parse a single comparison expression like ?var > 10
 fn parse_comparison(input: &str) -> IResult<&str, FilterExpression> {
     let (input, _) = multispace0(input)?;
@@ -240,6 +409,7 @@ fn parse_not(input: &str) -> IResult<&str, FilterExpression> {
 fn parse_term(input: &str) -> IResult<&str, FilterExpression> {
     alt((
         parse_comparison,
+        parse_arithmetic_comparison,
         parse_parenthesized,
         parse_not,
     ))(input)

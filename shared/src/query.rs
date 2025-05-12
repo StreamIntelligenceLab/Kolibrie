@@ -6,6 +6,16 @@ pub enum FilterExpression<'a> {
     And(Box<FilterExpression<'a>>, Box<FilterExpression<'a>>),
     Or(Box<FilterExpression<'a>>, Box<FilterExpression<'a>>),
     Not(Box<FilterExpression<'a>>),
+    ArithmeticExpr(&'a str),
+}
+
+#[derive(Debug, Clone)]
+pub enum ArithmeticExpression<'a> {
+    Operand(&'a str), // Variable, literal, or number
+    Add(Box<ArithmeticExpression<'a>>, Box<ArithmeticExpression<'a>>),
+    Subtract(Box<ArithmeticExpression<'a>>, Box<ArithmeticExpression<'a>>),
+    Multiply(Box<ArithmeticExpression<'a>>, Box<ArithmeticExpression<'a>>),
+    Divide(Box<ArithmeticExpression<'a>>, Box<ArithmeticExpression<'a>>),
 }
 
 // Define the Value enum to represent terms or UNDEF in VALUES clause

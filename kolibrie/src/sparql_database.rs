@@ -3,6 +3,7 @@ use crate::sliding_window::SlidingWindow;
 use shared::triple::TimestampedTriple;
 use shared::triple::Triple;
 use shared::query::FilterExpression;
+use crate::parser;
 use crate::utils;
 use crate::utils::current_timestamp;
 use crate::utils::ClonableFn;
@@ -744,214 +745,243 @@ impl SparqlDatabase {
                 filters.iter().all(|filter_expr| {
                     match filter_expr {
                         FilterExpression::Comparison(var, operator, value) => {
-                            if let Some(var_value_str) = result.get(var) {
-                                // First, try parsing both values as numbers
-                                let var_value_num = var_value_str.parse::<i32>();
-                                let filter_value_num = value.parse::<i32>();
-
-                                if var_value_num.is_ok() && filter_value_num.is_ok() {
-                                    // Both values are numeric, perform SIMD numeric comparison
-                                    let var_value = var_value_num.unwrap();
-                                    let filter_value = filter_value_num.unwrap();
-
-                                    // On x86 (SSE2) or x86_64 (SSE2) use SIMD intrinsics
-                                    #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
-                                    {
-                                        unsafe {
-                                            // Load values into SIMD registers
-                                            let var_simd = _mm_set1_epi32(var_value);
-                                            let filter_simd = _mm_set1_epi32(filter_value);
-                                            return match *operator {
-                                                "=" => _mm_movemask_epi8(_mm_cmpeq_epi32(
-                                                    var_simd,
-                                                    filter_simd,
-                                                )) == 0xFFFF,
-                                                "!=" => _mm_movemask_epi8(_mm_cmpeq_epi32(
-                                                    var_simd,
-                                                    filter_simd,
-                                                )) != 0xFFFF,
-                                                ">" => _mm_movemask_epi8(_mm_cmpgt_epi32(
-                                                    var_simd,
-                                                    filter_simd,
-                                                )) == 0xFFFF,
-                                                ">=" => {
-                                                    let eq = _mm_cmpeq_epi32(var_simd, filter_simd);
-                                                    let gt = _mm_cmpgt_epi32(var_simd, filter_simd);
-                                                    _mm_movemask_epi8(_mm_or_si128(eq, gt)) == 0xFFFF
-                                                }
-                                                "<" => _mm_movemask_epi8(_mm_cmpgt_epi32(
-                                                    filter_simd,
-                                                    var_simd,
-                                                )) == 0xFFFF,
-                                                "<=" => {
-                                                    let eq = _mm_cmpeq_epi32(var_simd, filter_simd);
-                                                    let lt = _mm_cmpgt_epi32(filter_simd, var_simd);
-                                                    _mm_movemask_epi8(_mm_or_si128(eq, lt)) == 0xFFFF
-                                                }
-                                                _ => false,
-                                            };
-                                        }
-                                    }
-
-                                    // On ARM (aarch64) use NEON intrinsics
-                                    #[cfg(target_arch = "aarch64")]
-                                    {
-                                        unsafe {
-                                            let var_neon = vdupq_n_s32(var_value);
-                                            let filter_neon = vdupq_n_s32(filter_value);
-                                            return match *operator {
-                                                "=" => {
-                                                    let cmp = vceqq_s32(var_neon, filter_neon);
-                                                    (vgetq_lane_u32(cmp, 0) == 0xFFFFFFFF)
-                                                        && (vgetq_lane_u32(cmp, 1) == 0xFFFFFFFF)
-                                                        && (vgetq_lane_u32(cmp, 2) == 0xFFFFFFFF)
-                                                        && (vgetq_lane_u32(cmp, 3) == 0xFFFFFFFF)
-                                                }
-                                                "!=" => {
-                                                    let cmp = vceqq_s32(var_neon, filter_neon);
-                                                    !((vgetq_lane_u32(cmp, 0) == 0xFFFFFFFF)
-                                                        && (vgetq_lane_u32(cmp, 1) == 0xFFFFFFFF)
-                                                        && (vgetq_lane_u32(cmp, 2) == 0xFFFFFFFF)
-                                                        && (vgetq_lane_u32(cmp, 3) == 0xFFFFFFFF))
-                                                }
-                                                ">" => {
-                                                    let cmp = vcgtq_s32(var_neon, filter_neon);
-                                                    (vgetq_lane_u32(cmp, 0) == 0xFFFFFFFF)
-                                                        && (vgetq_lane_u32(cmp, 1) == 0xFFFFFFFF)
-                                                        && (vgetq_lane_u32(cmp, 2) == 0xFFFFFFFF)
-                                                        && (vgetq_lane_u32(cmp, 3) == 0xFFFFFFFF)
-                                                }
-                                                ">=" => {
-                                                    let eq = vceqq_s32(var_neon, filter_neon);
-                                                    let gt = vcgtq_s32(var_neon, filter_neon);
-                                                    let cmp = vorrq_u32(eq, gt);
-                                                    (vgetq_lane_u32(cmp, 0) == 0xFFFFFFFF)
-                                                        && (vgetq_lane_u32(cmp, 1) == 0xFFFFFFFF)
-                                                        && (vgetq_lane_u32(cmp, 2) == 0xFFFFFFFF)
-                                                        && (vgetq_lane_u32(cmp, 3) == 0xFFFFFFFF)
-                                                }
-                                                "<" => {
-                                                    let cmp = vcgtq_s32(filter_neon, var_neon);
-                                                    (vgetq_lane_u32(cmp, 0) == 0xFFFFFFFF)
-                                                        && (vgetq_lane_u32(cmp, 1) == 0xFFFFFFFF)
-                                                        && (vgetq_lane_u32(cmp, 2) == 0xFFFFFFFF)
-                                                        && (vgetq_lane_u32(cmp, 3) == 0xFFFFFFFF)
-                                                }
-                                                "<=" => {
-                                                    let eq = vceqq_s32(var_neon, filter_neon);
-                                                    let lt = vcgtq_s32(filter_neon, var_neon);
-                                                    let cmp = vorrq_u32(eq, lt);
-                                                    (vgetq_lane_u32(cmp, 0) == 0xFFFFFFFF)
-                                                        && (vgetq_lane_u32(cmp, 1) == 0xFFFFFFFF)
-                                                        && (vgetq_lane_u32(cmp, 2) == 0xFFFFFFFF)
-                                                        && (vgetq_lane_u32(cmp, 3) == 0xFFFFFFFF)
-                                                }
-                                                _ => false,
-                                            }
-                                        }
-                                    }
-
-                                    // Fallback (or if compiled for a non‐SIMD platform)
-                                    #[cfg(not(any(
-                                        target_arch = "x86",
-                                        target_arch = "x86_64",
-                                        target_arch = "aarch64"
-                                    )))]
-                                    {
-                                        return match *operator {
-                                            "=" => var_value == filter_value,
-                                            "!=" => var_value != filter_value,
-                                            ">" => var_value > filter_value,
-                                            ">=" => var_value >= filter_value,
-                                            "<" => var_value < filter_value,
-                                            "<=" => var_value <= filter_value,
+                            // Check if either side contains arithmetic operations
+                            let has_arithmetic = var.contains('+') || var.contains('-') || 
+                                                var.contains('*') || var.contains('/') ||
+                                                value.contains('+') || value.contains('-') || 
+                                                value.contains('*') || value.contains('/');
+                            
+                            if has_arithmetic {
+                                // Use the non-SIMD arithmetic expression evaluator for complex expressions
+                                let left_result = self.evaluate_arithmetic_string(result, var);
+                                let right_result = self.evaluate_arithmetic_string(result, value);
+                                
+                                match (left_result, right_result) {
+                                    (Ok(left_val), Ok(right_val)) => {
+                                        // Both sides are numeric, perform comparison
+                                        match *operator {
+                                            "=" => left_val == right_val,
+                                            "!=" => left_val != right_val,
+                                            ">" => left_val > right_val,
+                                            ">=" => left_val >= right_val,
+                                            "<" => left_val < right_val,
+                                            "<=" => left_val <= right_val,
                                             _ => false,
-                                        };
-                                    }
-                                } else {
-                                    // At least one value is a string, perform string comparison
-                                    let var_bytes = var_value_str.as_bytes();
-                                    let filter_bytes = value.as_bytes();
-
-                                    let var_len = var_bytes.len();
-                                    let filter_len = filter_bytes.len();
-
-                                    // If lengths differ, they can't be equal
-                                    if var_len != filter_len {
-                                        return match *operator {
-                                            "=" => false,
-                                            "!=" => true,
-                                            _ => false, // Other operators are not supported for strings
-                                        };
-                                    }
-
-                                    let mut i = 0;
-                                    #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
-                                    {
-                                        unsafe {
-                                            while i + 16 <= var_len {
-                                                let var_chunk = _mm_loadu_si128(
-                                                    var_bytes[i..].as_ptr() as *const __m128i,
-                                                );
-                                                let filter_chunk = _mm_loadu_si128(
-                                                    filter_bytes[i..].as_ptr() as *const __m128i,
-                                                );
-                                                let cmp = _mm_cmpeq_epi8(var_chunk, filter_chunk);
-                                                let mask = _mm_movemask_epi8(cmp);
-                                                if mask != 0xFFFF {
-                                                    return match *operator {
-                                                        "=" => false,
-                                                        "!=" => true,
-                                                        _ => false,
-                                                    };
-                                                }
-                                                i += 16;
-                                            }
                                         }
-                                    }
-
-                                    #[cfg(target_arch = "aarch64")]
-                                    {
-                                        unsafe {
-                                            while i + 16 <= var_len {
-                                                let var_chunk = vld1q_u8(var_bytes[i..].as_ptr());
-                                                let filter_chunk = vld1q_u8(filter_bytes[i..].as_ptr());
-                                                let cmp = vceqq_u8(var_chunk, filter_chunk);
-                                                let cmp_arr: [u8; 16] = std::mem::transmute(cmp);
-                                                if cmp_arr.iter().any(|&lane| lane != 0xFF) {
-                                                    return match *operator {
-                                                        "=" => false,
-                                                        "!=" => true,
-                                                        _ => false,
-                                                    };
-                                                }
-                                                i += 16;
-                                            }
-                                        }
-                                    }
-
-                                    // Handle remaining bytes
-                                    if i < var_len {
-                                        for j in i..var_len {
-                                            if var_bytes[j] != filter_bytes[j] {
+                                    },
+                                    _ => false // At least one expression couldn't be evaluated
+                                }
+                            } else {
+                                // For simple expressions without arithmetic operators, use the SIMD approach
+                                if let Some(var_value_str) = result.get(var) {
+                                    // First, try parsing both values as numbers
+                                    let var_value_num = var_value_str.parse::<i32>();
+                                    let filter_value_num = value.parse::<i32>();
+    
+                                    if var_value_num.is_ok() && filter_value_num.is_ok() {
+                                        // Both values are numeric, perform SIMD numeric comparison
+                                        let var_value = var_value_num.unwrap();
+                                        let filter_value = filter_value_num.unwrap();
+    
+                                        // On x86 (SSE2) or x86_64 (SSE2) use SIMD intrinsics
+                                        #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+                                        {
+                                            unsafe {
+                                                // Load values into SIMD registers
+                                                let var_simd = _mm_set1_epi32(var_value);
+                                                let filter_simd = _mm_set1_epi32(filter_value);
                                                 return match *operator {
-                                                    "=" => false,
-                                                    "!=" => true,
+                                                    "=" => _mm_movemask_epi8(_mm_cmpeq_epi32(
+                                                        var_simd,
+                                                        filter_simd,
+                                                    )) == 0xFFFF,
+                                                    "!=" => _mm_movemask_epi8(_mm_cmpeq_epi32(
+                                                        var_simd,
+                                                        filter_simd,
+                                                    )) != 0xFFFF,
+                                                    ">" => _mm_movemask_epi8(_mm_cmpgt_epi32(
+                                                        var_simd,
+                                                        filter_simd,
+                                                    )) == 0xFFFF,
+                                                    ">=" => {
+                                                        let eq = _mm_cmpeq_epi32(var_simd, filter_simd);
+                                                        let gt = _mm_cmpgt_epi32(var_simd, filter_simd);
+                                                        _mm_movemask_epi8(_mm_or_si128(eq, gt)) == 0xFFFF
+                                                    }
+                                                    "<" => _mm_movemask_epi8(_mm_cmpgt_epi32(
+                                                        filter_simd,
+                                                        var_simd,
+                                                    )) == 0xFFFF,
+                                                    "<=" => {
+                                                        let eq = _mm_cmpeq_epi32(var_simd, filter_simd);
+                                                        let lt = _mm_cmpgt_epi32(filter_simd, var_simd);
+                                                        _mm_movemask_epi8(_mm_or_si128(eq, lt)) == 0xFFFF
+                                                    }
                                                     _ => false,
                                                 };
                                             }
                                         }
+    
+                                        // On ARM (aarch64) use NEON intrinsics
+                                        #[cfg(target_arch = "aarch64")]
+                                        {
+                                            unsafe {
+                                                let var_neon = vdupq_n_s32(var_value);
+                                                let filter_neon = vdupq_n_s32(filter_value);
+                                                return match *operator {
+                                                    "=" => {
+                                                        let cmp = vceqq_s32(var_neon, filter_neon);
+                                                        (vgetq_lane_u32(cmp, 0) == 0xFFFFFFFF)
+                                                            && (vgetq_lane_u32(cmp, 1) == 0xFFFFFFFF)
+                                                            && (vgetq_lane_u32(cmp, 2) == 0xFFFFFFFF)
+                                                            && (vgetq_lane_u32(cmp, 3) == 0xFFFFFFFF)
+                                                    }
+                                                    "!=" => {
+                                                        let cmp = vceqq_s32(var_neon, filter_neon);
+                                                        !((vgetq_lane_u32(cmp, 0) == 0xFFFFFFFF)
+                                                            && (vgetq_lane_u32(cmp, 1) == 0xFFFFFFFF)
+                                                            && (vgetq_lane_u32(cmp, 2) == 0xFFFFFFFF)
+                                                            && (vgetq_lane_u32(cmp, 3) == 0xFFFFFFFF))
+                                                    }
+                                                    ">" => {
+                                                        let cmp = vcgtq_s32(var_neon, filter_neon);
+                                                        (vgetq_lane_u32(cmp, 0) == 0xFFFFFFFF)
+                                                            && (vgetq_lane_u32(cmp, 1) == 0xFFFFFFFF)
+                                                            && (vgetq_lane_u32(cmp, 2) == 0xFFFFFFFF)
+                                                            && (vgetq_lane_u32(cmp, 3) == 0xFFFFFFFF)
+                                                    }
+                                                    ">=" => {
+                                                        let eq = vceqq_s32(var_neon, filter_neon);
+                                                        let gt = vcgtq_s32(var_neon, filter_neon);
+                                                        let cmp = vorrq_u32(eq, gt);
+                                                        (vgetq_lane_u32(cmp, 0) == 0xFFFFFFFF)
+                                                            && (vgetq_lane_u32(cmp, 1) == 0xFFFFFFFF)
+                                                            && (vgetq_lane_u32(cmp, 2) == 0xFFFFFFFF)
+                                                            && (vgetq_lane_u32(cmp, 3) == 0xFFFFFFFF)
+                                                    }
+                                                    "<" => {
+                                                        let cmp = vcgtq_s32(filter_neon, var_neon);
+                                                        (vgetq_lane_u32(cmp, 0) == 0xFFFFFFFF)
+                                                            && (vgetq_lane_u32(cmp, 1) == 0xFFFFFFFF)
+                                                            && (vgetq_lane_u32(cmp, 2) == 0xFFFFFFFF)
+                                                            && (vgetq_lane_u32(cmp, 3) == 0xFFFFFFFF)
+                                                    }
+                                                    "<=" => {
+                                                        let eq = vceqq_s32(var_neon, filter_neon);
+                                                        let lt = vcgtq_s32(filter_neon, var_neon);
+                                                        let cmp = vorrq_u32(eq, lt);
+                                                        (vgetq_lane_u32(cmp, 0) == 0xFFFFFFFF)
+                                                            && (vgetq_lane_u32(cmp, 1) == 0xFFFFFFFF)
+                                                            && (vgetq_lane_u32(cmp, 2) == 0xFFFFFFFF)
+                                                            && (vgetq_lane_u32(cmp, 3) == 0xFFFFFFFF)
+                                                    }
+                                                    _ => false,
+                                                }
+                                            }
+                                        }
+    
+                                        // Fallback (or if compiled for a non‐SIMD platform)
+                                        #[cfg(not(any(
+                                            target_arch = "x86",
+                                            target_arch = "x86_64",
+                                            target_arch = "aarch64"
+                                        )))]
+                                        {
+                                            return match *operator {
+                                                "=" => var_value == filter_value,
+                                                "!=" => var_value != filter_value,
+                                                ">" => var_value > filter_value,
+                                                ">=" => var_value >= filter_value,
+                                                "<" => var_value < filter_value,
+                                                "<=" => var_value <= filter_value,
+                                                _ => false,
+                                            };
+                                        }
+                                    } else {
+                                        // At least one value is a string, perform string comparison
+                                        let var_bytes = var_value_str.as_bytes();
+                                        let filter_bytes = value.as_bytes();
+    
+                                        let var_len = var_bytes.len();
+                                        let filter_len = filter_bytes.len();
+    
+                                        // If lengths differ, they can't be equal
+                                        if var_len != filter_len {
+                                            return match *operator {
+                                                "=" => false,
+                                                "!=" => true,
+                                                _ => false, // Other operators are not supported for strings
+                                            };
+                                        }
+    
+                                        let mut i = 0;
+                                        #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+                                        {
+                                            unsafe {
+                                                while i + 16 <= var_len {
+                                                    let var_chunk = _mm_loadu_si128(
+                                                        var_bytes[i..].as_ptr() as *const __m128i,
+                                                    );
+                                                    let filter_chunk = _mm_loadu_si128(
+                                                        filter_bytes[i..].as_ptr() as *const __m128i,
+                                                    );
+                                                    let cmp = _mm_cmpeq_epi8(var_chunk, filter_chunk);
+                                                    let mask = _mm_movemask_epi8(cmp);
+                                                    if mask != 0xFFFF {
+                                                        return match *operator {
+                                                            "=" => false,
+                                                            "!=" => true,
+                                                            _ => false,
+                                                        };
+                                                    }
+                                                    i += 16;
+                                                }
+                                            }
+                                        }
+    
+                                        #[cfg(target_arch = "aarch64")]
+                                        {
+                                            unsafe {
+                                                while i + 16 <= var_len {
+                                                    let var_chunk = vld1q_u8(var_bytes[i..].as_ptr());
+                                                    let filter_chunk = vld1q_u8(filter_bytes[i..].as_ptr());
+                                                    let cmp = vceqq_u8(var_chunk, filter_chunk);
+                                                    let cmp_arr: [u8; 16] = std::mem::transmute(cmp);
+                                                    if cmp_arr.iter().any(|&lane| lane != 0xFF) {
+                                                        return match *operator {
+                                                            "=" => false,
+                                                            "!=" => true,
+                                                            _ => false,
+                                                        };
+                                                    }
+                                                    i += 16;
+                                                }
+                                            }
+                                        }
+    
+                                        // Handle remaining bytes
+                                        if i < var_len {
+                                            for j in i..var_len {
+                                                if var_bytes[j] != filter_bytes[j] {
+                                                    return match *operator {
+                                                        "=" => false,
+                                                        "!=" => true,
+                                                        _ => false,
+                                                    };
+                                                }
+                                            }
+                                        }
+    
+                                        // Strings are equal
+                                        match *operator {
+                                            "=" => true,
+                                            "!=" => false,
+                                            _ => false, // Other operators not supported for strings
+                                        }
                                     }
-
-                                    // Strings are equal
-                                    match *operator {
-                                        "=" => true,
-                                        "!=" => false,
-                                        _ => false, // Other operators not supported for strings
-                                    }
+                                } else {
+                                    false
                                 }
-                            } else {
-                                false
                             }
                         },
                         FilterExpression::And(left, right) => {
@@ -964,11 +994,130 @@ impl SparqlDatabase {
                         },
                         FilterExpression::Not(expr) => {
                             !self.evaluate_filter_expression(result, expr)
+                        },
+                        FilterExpression::ArithmeticExpr(expr_str) => {
+                            // True if it's non-zero
+                            match self.evaluate_arithmetic_string(result, expr_str) {
+                                Ok(val) => val != 0.0,
+                                Err(_) => false,
+                            }
                         }
                     }
                 })
             })
             .collect()
+    }
+
+    // Helper function to evaluate an arithmetic expression
+    fn evaluate_arithmetic_expression<'a>(
+        &self,
+        result: &BTreeMap<&'a str, String>,
+        expr: &shared::query::ArithmeticExpression<'a>
+    ) -> Result<f64, String> {
+        match expr {
+            shared::query::ArithmeticExpression::Operand(operand) => {
+                // Check if it's a variable
+                if operand.starts_with('?') {
+                    if let Some(var_value) = result.get(*operand) {
+                        // Parse the variable value as a number
+                        var_value.parse::<f64>().map_err(|_| format!("Cannot parse '{}' as a number", var_value))
+                    } else {
+                        Err(format!("Variable '{}' not found", operand))
+                    }
+                } 
+                // Check if it's a numeric literal
+                else if operand.chars().all(|c| c.is_digit(10) || c == '.') {
+                    operand.parse::<f64>().map_err(|_| format!("Cannot parse '{}' as a number", operand))
+                } 
+                // Check if it's a string literal
+                else if operand.starts_with('"') && operand.ends_with('"') {
+                    Err(format!("Cannot perform arithmetic on string literal '{}'", operand))
+                } 
+                // Parse it as a number
+                else {
+                    operand.parse::<f64>().map_err(|_| format!("Cannot parse '{}' as a number", operand))
+                }
+            },
+            shared::query::ArithmeticExpression::Add(left, right) => {
+                let left_val = self.evaluate_arithmetic_expression(result, left)?;
+                let right_val = self.evaluate_arithmetic_expression(result, right)?;
+                Ok(left_val + right_val)
+            },
+            shared::query::ArithmeticExpression::Subtract(left, right) => {
+                let left_val = self.evaluate_arithmetic_expression(result, left)?;
+                let right_val = self.evaluate_arithmetic_expression(result, right)?;
+                Ok(left_val - right_val)
+            },
+            shared::query::ArithmeticExpression::Multiply(left, right) => {
+                let left_val = self.evaluate_arithmetic_expression(result, left)?;
+                let right_val = self.evaluate_arithmetic_expression(result, right)?;
+                Ok(left_val * right_val)
+            },
+            shared::query::ArithmeticExpression::Divide(left, right) => {
+                let left_val = self.evaluate_arithmetic_expression(result, left)?;
+                let right_val = self.evaluate_arithmetic_expression(result, right)?;
+                if right_val == 0.0 {
+                    Err("Division by zero".to_string())
+                } else {
+                    Ok(left_val / right_val)
+                }
+            }
+        }
+    }
+
+    // Helper function to parse and evaluate an arithmetic expression from a string
+    fn evaluate_arithmetic_string<'a>(
+        &self,
+        result: &BTreeMap<&'a str, String>,
+        expr_str: &'a str
+    ) -> Result<f64, String> {
+        // Check for parenthesized expressions and remove them if needed
+        let expr_to_parse = if expr_str.starts_with('(') && expr_str.ends_with(')') {
+            &expr_str[1..expr_str.len()-1]
+        } else {
+            expr_str
+        };
+        
+        if expr_to_parse.contains('+') || expr_to_parse.contains('-') || 
+           expr_to_parse.contains('*') || expr_to_parse.contains('/') {
+            // Parse the expression string into an ArithmeticExpression
+            match parser::parse_arithmetic_expression(expr_to_parse) {
+                Ok((_, arithmetic_expr)) => {
+                    // Evaluate the parsed expression
+                    self.evaluate_arithmetic_expression(result, &arithmetic_expr)
+                },
+                Err(e) => {
+                    // Print the error
+                    eprintln!("Failed to parse arithmetic expression '{}': {:?}", expr_to_parse, e);
+                    
+                    // If parsing fails, try to treat it as a simple operand
+                    if expr_to_parse.starts_with('?') {
+                        // It's a variable
+                        if let Some(var_value) = result.get(expr_to_parse) {
+                            var_value.parse::<f64>().map_err(|_| format!("Cannot parse '{}' as a number", var_value))
+                        } else {
+                            Err(format!("Variable '{}' not found", expr_to_parse))
+                        }
+                    } else {
+                        // Parse as a number
+                        expr_to_parse.parse::<f64>().map_err(|_| format!("Cannot parse '{}' as a number", expr_to_parse))
+                    }
+                }
+            }
+        } else {
+            // No arithmetic operators, treat as simple operand
+            if expr_to_parse.starts_with('?') {
+                // It's a variable
+                if let Some(var_value) = result.get(expr_to_parse) {
+                    var_value.parse::<f64>().map_err(|_| format!("Cannot parse '{}' as a number", var_value))
+                } else {
+                    Err(format!("Variable '{}' not found", expr_to_parse))
+                }
+            } else {
+                // Parse as a number
+                expr_to_parse.parse::<f64>().map_err(|_| format!("Cannot parse '{}' as a number", expr_to_parse))
+            }
+        }
     }
 
     // Helper method to evaluate a filter expression against a result
@@ -978,36 +1127,51 @@ impl SparqlDatabase {
         filter_expr: &FilterExpression<'a>
     ) -> bool {
         match filter_expr {
-            FilterExpression::Comparison(var, operator, value) => {
-                if let Some(var_value_str) = result.get(var) {
-                    // Similar to your existing comparison logic, but without SIMD for simplicity
-                    let var_value_num = var_value_str.parse::<i32>();
-                    let filter_value_num = value.parse::<i32>();
-
-                    if var_value_num.is_ok() && filter_value_num.is_ok() {
-                        // Both values are numeric
-                        let var_value = var_value_num.unwrap();
-                        let filter_value = filter_value_num.unwrap();
-                        
+            FilterExpression::Comparison(left, operator, right) => {
+                // Evaluate both sides as arithmetic expressions
+                let left_result = self.evaluate_arithmetic_string(result, left);
+                let right_result = self.evaluate_arithmetic_string(result, right);
+                
+                match (left_result, right_result) {
+                    (Ok(left_val), Ok(right_val)) => {
+                        // Both sides are numeric, perform numeric comparison
                         match *operator {
-                            "=" => var_value == filter_value,
-                            "!=" => var_value != filter_value,
-                            ">" => var_value > filter_value,
-                            ">=" => var_value >= filter_value,
-                            "<" => var_value < filter_value,
-                            "<=" => var_value <= filter_value,
+                            "=" => left_val == right_val,
+                            "!=" => left_val != right_val,
+                            ">" => left_val > right_val,
+                            ">=" => left_val >= right_val,
+                            "<" => left_val < right_val,
+                            "<=" => left_val <= right_val,
                             _ => false,
                         }
-                    } else {
-                        // At least one value is a string
+                    },
+                    _ => {
+                        let left_str = if left.starts_with('?') {
+                            // Fix for the type mismatch error - convert to string
+                            match result.get(left) {
+                                Some(val) => val.as_str(),
+                                None => left,
+                            }
+                        } else {
+                            left
+                        };
+                        
+                        let right_str = if right.starts_with('?') {
+                            // Fix for the type mismatch error - convert to string
+                            match result.get(right) {
+                                Some(val) => val.as_str(),
+                                None => right,
+                            }
+                        } else {
+                            right
+                        };
+                        
                         match *operator {
-                            "=" => var_value_str == value,
-                            "!=" => var_value_str != value,
+                            "=" => left_str == right_str,
+                            "!=" => left_str != right_str,
                             _ => false, // Other operators not supported for strings
                         }
                     }
-                } else {
-                    false
                 }
             },
             FilterExpression::And(left, right) => {
@@ -1020,6 +1184,13 @@ impl SparqlDatabase {
             },
             FilterExpression::Not(expr) => {
                 !self.evaluate_filter_expression(result, expr)
+            },
+            FilterExpression::ArithmeticExpr(expr_str) => {
+                // An arithmetic expression by itself is evaluated to true if it's non-zero
+                match self.evaluate_arithmetic_string(result, expr_str) {
+                    Ok(val) => val != 0.0,
+                    Err(_) => false,
+                }
             }
         }
     }

@@ -1146,6 +1146,10 @@ pub fn build_logical_plan(
             FilterExpression::Not(_) => {
                 // TODO: Handle NOT logic
             }
+
+            FilterExpression::ArithmeticExpr(_) => {
+                // TODO: Handle arithmetic expressions
+            }
         }
     }
 
