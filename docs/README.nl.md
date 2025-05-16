@@ -5,7 +5,7 @@
 </p>
 
 <!-- ![GitHub Workflow Status](https://img.shields.io/github/commit-activity/t/ladroid/goku) -->
-![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)
+![License: MPL 2.0](https://img.shields.io/badge/License-MPL_2.0-brightgreen.svg)
 ![Rust Version](https://img.shields.io/badge/Rust-1.60+-blue.svg)
 ![Build Status](https://img.shields.io/badge/build-passing-brightgreen.svg)
 ![Crates.io](https://img.shields.io/crates/v/sparql_database.svg)
@@ -766,8 +766,8 @@ Iedereen die de code handmatig test en bugs of suggesties voor verbeteringen rap
 ### Pull Requests Indienen
 Patches/fixes worden geaccepteerd in de vorm van pull requests (PRs). Zorg ervoor dat het issue dat de pull request adresseert, open staat in de Issue Tracker.
 
-Ingediende pull request wordt geacht akkoord te zijn gegaan met publiceren onder de MIT-licentie.
+Ingediende pull requests worden geacht akkoord te zijn gegaan met publicatie onder de Mozilla Public License Version 2.0.
 
 ## Licentie
 
-Kolibrie is gelicenseerd onder de [MIT License](LICENSE).
+Kolibrie is gelicenseerd onder de [MPL-2.0 License](LICENSE).

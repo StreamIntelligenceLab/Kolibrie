@@ -1,12 +1,24 @@
+/*
+ * Copyright © 2024 ladroid
+ * KU Leuven — Stream Intelligence Lab, Belgium
+ *
+ * This Source Code Form is subject to the terms of the Mozilla Public
+ * License, v. 2.0. If a copy of the MPL was not distributed with this file,
+ * you can obtain one at https://mozilla.org/MPL/2.0/.
+ */
+
 extern crate kolibrie;
 use std::fs::File;
 use std::io::Read;
 use kolibrie::sparql_database::*;
 
 fn filter_example() {
+    use std::collections::{HashSet, HashMap};
+    
     let project_root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
-    let rdf_file_path = project_root.join("datasets/xzkq-xp2w.rdf");
-    let mut file = File::open(rdf_file_path).expect("Unable to open file");
+    let rdf_file_path = project_root.join("../datasets/synthetic_data_employee_4.rdf");
+    
+    let mut file = File::open(&rdf_file_path).expect("Unable to open file");
     let mut rdf_data = String::new();
     file.read_to_string(&mut rdf_data)
         .expect("Unable to read file");
@@ -14,62 +26,58 @@ fn filter_example() {
     let mut database = SparqlDatabase::new();
     database.parse_rdf(&rdf_data);
 
-    // Filter triples where the predicate is "salary" and the object (salary value) is greater than 100000
-    let filtered_db = database.filter(|triple| {
-        let predicate = database.dictionary.decode(triple.predicate).unwrap();
-        let object = database.dictionary.decode(triple.object).unwrap();
-        predicate.ends_with("annual_salary") && object.parse::<f64>().unwrap_or(0.0) > 100000.0
-    });
-
-    // Iterate over the filtered triples and print the name and salary
-    for triple in filtered_db.triples {
-        let subject = &triple.subject;
-        let salary = database.dictionary.decode(triple.object).unwrap();
-
-        // Find the name associated with the subject
-        let name_triple = database.triples.iter().find(|t| {
-            t.subject == *subject
-                && database
-                    .dictionary
-                    .decode(t.predicate)
-                    .unwrap()
-                    .ends_with("name")
-        });
-
-        if let Some(name_triple) = name_triple {
-            let name = database.dictionary.decode(name_triple.object).unwrap();
-            println!("Name: {}, Salary: {}", name, salary);
-        }
+    // Use the full predicate ending to be more flexible with namespaces
+    let high_salary_triples = database.query()
+        .filter(|triple| {
+            // First check if this is a salary predicate
+            if let Some(predicate) = database.dictionary.decode(triple.predicate) {
+                if predicate.ends_with("annual_salary") {
+                    // Then check if salary > 80000
+                    if let Some(object) = database.dictionary.decode(triple.object) {
+                        if let Ok(salary) = object.parse::<f64>() {
+                            return salary > 80000.0;
+                        }
+                    }
+                }
+            }
+            false
+        })
+        .get_triples();
+    
+    // Create a set of subject IDs with high salaries for lookup
+    let mut high_salary_subjects = HashSet::new();
+    let mut subject_to_salary = HashMap::new();
+    
+    for triple in &high_salary_triples {
+        let subject = triple.subject;
+        let salary = database.dictionary.decode(triple.object).unwrap_or("0.0");
+        high_salary_subjects.insert(subject);
+        subject_to_salary.insert(subject, salary.to_string());
     }
-}
-
-fn join_example() {
-    let project_root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
-    let rdf_file_path = project_root.join("datasets/xzkq-xp2w.rdf");
-    let mut file = File::open(rdf_file_path).expect("Unable to open file");
-    let mut rdf_data = String::new();
-    file.read_to_string(&mut rdf_data)
-        .expect("Unable to read file");
-
-    let mut db = SparqlDatabase::new();
-    db.parse_rdf(&rdf_data);
-
-    let file2_path = project_root.join("datasets/synthetic_employee_data12.rdf");
-    let mut file2 = File::open(file2_path).expect("Unable to open file");
-    let mut rdf_data2 = String::new();
-    file2
-        .read_to_string(&mut rdf_data2)
-        .expect("Unable to read file");
-
-    let mut db2 = SparqlDatabase::new();
-    db2.parse_rdf(&rdf_data2);
-
-    let mut merged_db = db.union(&db2);
-    let joined_db_merged = merged_db.par_join(&merged_db.clone(), "foaf:workplaceHomepage");
-    joined_db_merged.print("Joined Triples (Merged Datasets):", false);
+    
+    // Find the names associated with the high-salary subjects
+    let name_triples = database.query()
+        .filter(|triple| {
+            // Check if this is a name predicate for a high-salary subject
+            if let Some(predicate) = database.dictionary.decode(triple.predicate) {
+                if predicate.ends_with("name") && high_salary_subjects.contains(&triple.subject) {
+                    return true;
+                }
+            }
+            false
+        })
+        .get_triples();
+    
+    // Print name and salary
+    println!("Employees with salary > 80000:");
+    for triple in name_triples.clone() {
+        let subject = triple.subject;
+        let name = database.dictionary.decode(triple.object).unwrap_or("");
+        let salary = subject_to_salary.get(&subject).cloned().unwrap_or_else(|| "Unknown".to_string());
+        println!("Name: {}, Salary: {}", name, salary);
+    }
 }
 
 fn main() {
     filter_example();
-    join_example();
 }

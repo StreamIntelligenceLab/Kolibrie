@@ -1,3 +1,12 @@
+/*
+ * Copyright © 2024 ladroid
+ * KU Leuven — Stream Intelligence Lab, Belgium
+ *
+ * This Source Code Form is subject to the terms of the Mozilla Public
+ * License, v. 2.0. If a copy of the MPL was not distributed with this file,
+ * you can obtain one at https://mozilla.org/MPL/2.0/.
+ */
+
 extern crate kolibrie;
 use kolibrie::sparql_database::*;
 
@@ -20,16 +29,23 @@ fn main() {
     "#;
     db.parse_turtle(turtle_data);
 
-    // Filter employees with salary greater than 5000
-    let filtered_db = db.filter(|triple| {
-        let predicate = db.dictionary.decode(triple.predicate).unwrap();
-        if predicate == "<http://example.org/salary>" {
-            let object = db.dictionary.decode(triple.object).unwrap();
-            return object.parse::<i32>().unwrap_or(0) > 5000;
-        }
-        false
-    });
+    // Filter employees with salary greater than 5000 using QueryBuilder
+    let filtered_triples = db.query()
+        .with_predicate("<http://example.org/salary>")
+        .filter(|triple| {
+            if let Some(object) = db.dictionary.decode(triple.object) {
+                return object.parse::<i32>().unwrap_or(0) > 5000;
+            }
+            false
+        })
+        .get_triples();
 
     // Print the filtered triples
-    filtered_db.print("Filtered Triples:", false);
+    println!("Filtered Triples:");
+    for triple in filtered_triples.clone() {
+        let subject = db.dictionary.decode(triple.subject).unwrap_or("");
+        let predicate = db.dictionary.decode(triple.predicate).unwrap_or("");
+        let object = db.dictionary.decode(triple.object).unwrap_or("");
+        println!("{} {} {} .", subject, predicate, object);
+    }
 }

@@ -5,10 +5,11 @@ edition = "2021"
 description = "Python Binding"
 
 [lib]
-name = "py_knowledge_graph"  # Ensure this matches your #[pymodule] function
+name = "py_kolibrie"  # Ensure this matches your #[pymodule] function
 crate-type = ["cdylib"]
 
 [dependencies]
 pyo3 = { workspace = true }
 datalog = { path = "../datalog" }
 shared = { path = "../shared" }
+kolibrie = { path = "../kolibrie" }

@@ -5,7 +5,7 @@
 </p>
 
 <!-- ![GitHub Workflow Status](https://img.shields.io/github/commit-activity/t/StreamIntelligenceLab/Kolibri) -->
-![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)
+![License: MPL 2.0](https://img.shields.io/badge/License-MPL_2.0-brightgreen.svg)
 ![Rust Version](https://img.shields.io/badge/Rust-1.60+-blue.svg)
 ![Build Status](https://img.shields.io/badge/build-passing-brightgreen.svg)
 ![Crates.io](https://img.shields.io/crates/v/sparql_database.svg)
@@ -778,8 +778,8 @@ Anyone manually testing the code and reporting bugs or suggestions for enhanceme
 ### Submitting Pull Requests
 Patches/fixes are accepted in form of pull requests (PRs). Make sure the issue the pull request addresses is open in the Issue Tracker.
 
-Submitted pull request is deemed to have agreed to publish under MIT License.
+Submitted pull request is deemed to have agreed to publish under Mozilla Public License Version 2.0.
 
 ## License
 
-Kolibrie is licensed under the [MIT License](LICENSE).
+Kolibrie is licensed under the [MPL-2.0 License](LICENSE).

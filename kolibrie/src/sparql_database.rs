@@ -1,3 +1,12 @@
+/*
+ * Copyright © 2024 ladroid
+ * KU Leuven — Stream Intelligence Lab, Belgium
+ *
+ * This Source Code Form is subject to the terms of the Mozilla Public
+ * License, v. 2.0. If a copy of the MPL was not distributed with this file,
+ * you can obtain one at https://mozilla.org/MPL/2.0/.
+ */
+
 use shared::dictionary::Dictionary;
 use crate::sliding_window::SlidingWindow;
 use shared::triple::TimestampedTriple;
@@ -10,6 +19,7 @@ use crate::utils::ClonableFn;
 #[cfg(feature = "cuda")]
 use crate::cuda::cuda_join::*;
 use shared::index_manager::UnifiedIndex;
+use crate::query_builder::QueryBuilder;
 use crossbeam::channel::unbounded;
 use crossbeam::scope;
 use percent_encoding::percent_decode;
@@ -57,6 +67,10 @@ impl SparqlDatabase {
             index_manager: UnifiedIndex::new(),
             rule_map: HashMap::new(),
         }
+    }
+
+    pub fn query(&self) -> QueryBuilder {
+        QueryBuilder::new(self)
     }
 
     pub fn add_triple(&mut self, triple: Triple) {
@@ -697,43 +711,6 @@ impl SparqlDatabase {
             .collect()
     }
 
-    pub fn filter<F>(&self, predicate: F) -> Self
-    where
-        F: Fn(&&Triple) -> bool,
-    {
-        let filtered_triples = self.triples.iter().filter(predicate).cloned().collect();
-        Self {
-            triples: filtered_triples,
-            streams: self.streams.clone(),
-            sliding_window: self.sliding_window.clone(),
-            dictionary: self.dictionary.clone(),
-            prefixes: self.prefixes.clone(),
-            udfs: HashMap::new(),
-            index_manager: UnifiedIndex::new(),
-            rule_map: HashMap::new(),
-        }
-    }
-
-    pub fn filter_by_value(&mut self, value: &str) -> Self {
-        let value_id = self.dictionary.encode(value);
-        let filtered_triples = self
-            .triples
-            .iter()
-            .filter(|triple| triple.object == value_id)
-            .cloned()
-            .collect();
-        Self {
-            triples: filtered_triples,
-            streams: self.streams.clone(),
-            sliding_window: self.sliding_window.clone(),
-            dictionary: self.dictionary.clone(),
-            prefixes: self.prefixes.clone(),
-            udfs: HashMap::new(),
-            index_manager: UnifiedIndex::new(),
-            rule_map: HashMap::new(),
-        }
-    }
-
     pub fn apply_filters_simd<'a>(
         &self,
         results: Vec<BTreeMap<&'a str, String>>,
@@ -1195,108 +1172,6 @@ impl SparqlDatabase {
         }
     }
 
-    pub fn select_by_value(&mut self, value: &str) -> BTreeSet<Triple> {
-        let mut results = BTreeSet::new();
-        let mut subjects = BTreeSet::new();
-
-        let value_id = self.dictionary.encode(value);
-
-        // First, find all subjects where the object matches the specified value
-        for triple in &self.triples {
-            if triple.object == value_id {
-                subjects.insert(triple.subject);
-            }
-        }
-
-        // Then, find all triples related to the matched subjects
-        for subject in subjects {
-            for triple in &self.triples {
-                if triple.subject == subject {
-                    results.insert(triple.clone());
-                }
-            }
-        }
-
-        results
-    }
-
-    pub fn select_by_variable(
-        &self,
-        subject_var: Option<&str>,
-        predicate_var: Option<&str>,
-        object_var: Option<&str>,
-    ) -> BTreeSet<Triple> {
-        let mut results = BTreeSet::new();
-        for triple in &self.triples {
-            let subject_matches = match subject_var {
-                Some(var) => self
-                    .dictionary
-                    .decode(triple.subject)
-                    .map_or(false, |s| s.contains(var)),
-                None => true,
-            };
-            let predicate_matches = match predicate_var {
-                Some(var) => self
-                    .dictionary
-                    .decode(triple.predicate)
-                    .map_or(false, |p| p.contains(var)),
-                None => true,
-            };
-            let object_matches = match object_var {
-                Some(var) => self
-                    .dictionary
-                    .decode(triple.object)
-                    .map_or(false, |o| o.contains(var)),
-                None => true,
-            };
-
-            if subject_matches && predicate_matches && object_matches {
-                results.insert(triple.clone());
-            }
-        }
-        results
-    }
-
-    pub fn distinct(&self) -> Self {
-        // This will automatically ensure that only unique triples are retained
-        let distinct_triples: BTreeSet<Triple> = self.triples.iter().cloned().collect();
-
-        Self {
-            triples: distinct_triples,
-            streams: self.streams.clone(),
-            sliding_window: self.sliding_window.clone(),
-            dictionary: self.dictionary.clone(),
-            prefixes: self.prefixes.clone(),
-            udfs: HashMap::new(),
-            index_manager: UnifiedIndex::new(),
-            rule_map: HashMap::new(),
-        }
-    }
-
-    pub fn order_by<F>(&self, key: F) -> Vec<Triple>
-    where
-        F: Fn(&Triple) -> String,
-    {
-        let mut sorted_triples: Vec<Triple> = self.triples.iter().cloned().collect();
-        sorted_triples.sort_by_key(key);
-        sorted_triples
-    }
-
-    pub fn group_by<F>(&self, key: F) -> BTreeMap<String, Vec<Triple>>
-    where
-        F: Fn(&Triple) -> String,
-    {
-        let mut groups = BTreeMap::new();
-        for triple in &self.triples {
-            let group_key = key(triple);
-            groups
-                .entry(group_key)
-                .or_insert_with(Vec::new)
-                .push(triple.clone());
-        }
-        groups
-    }
-
     pub fn union(&mut self, other: &SparqlDatabase) -> Self {
         // Create a new dictionary by merging the dictionaries of both databases
         let mut merged_dictionary = self.dictionary.clone();
@@ -1407,107 +1282,6 @@ impl SparqlDatabase {
                     set1
                 },
             );
-
-        Self {
-            triples: joined_triples,
-            streams: self.streams.clone(),
-            sliding_window: self.sliding_window.clone(),
-            dictionary: self.dictionary.clone(),
-            prefixes: self.prefixes.clone(),
-            udfs: HashMap::new(),
-            index_manager: UnifiedIndex::new(),
-            rule_map: HashMap::new(),
-        }
-    }
-
-    pub fn join(&mut self, other: &SparqlDatabase, predicate: &str) -> Self {
-        let predicate_id = self.dictionary.encode(predicate);
-        let mut joined_triples = BTreeSet::new();
-
-        let mut other_map = BTreeMap::new();
-        for other_triple in &other.triples {
-            if other_triple.predicate == predicate_id {
-                other_map
-                    .entry(&other_triple.subject)
-                    .or_insert_with(Vec::new)
-                    .push(other_triple);
-                other_map
-                    .entry(&other_triple.object)
-                    .or_insert_with(Vec::new)
-                    .push(other_triple);
-            }
-        }
-
-        for triple in &self.triples {
-            if triple.predicate == predicate_id {
-                if let Some(matching_triples) = other_map.get(&triple.object) {
-                    for other_triple in matching_triples {
-                        joined_triples.insert(Triple {
-                            subject: triple.subject,
-                            predicate: other_triple.predicate,
-                            object: other_triple.object,
-                        });
-                    }
-                }
-            }
-        }
-
-        Self {
-            triples: joined_triples,
-            streams: self.streams.clone(),
-            sliding_window: self.sliding_window.clone(),
-            dictionary: self.dictionary.clone(),
-            prefixes: self.prefixes.clone(),
-            udfs: HashMap::new(),
-            index_manager: UnifiedIndex::new(),
-            rule_map: HashMap::new(),
-        }
-    }
-
-    pub fn join_by_variable(
-        &self,
-        other: &SparqlDatabase,
-        subject_var: Option<&str>,
-        predicate_var: Option<&str>,
-        object_var: Option<&str>,
-    ) -> Self {
-        let mut joined_triples = BTreeSet::new();
-
-        let mut btree_map = BTreeMap::new();
-        for other_triple in &other.triples {
-            let key = (
-                subject_var.map_or("", |_| {
-                    &self.dictionary.decode(other_triple.subject).unwrap()
-                }),
-                predicate_var.map_or("", |_| {
-                    &self.dictionary.decode(other_triple.predicate).unwrap()
-                }),
-                object_var.map_or("", |_| {
-                    &self.dictionary.decode(other_triple.object).unwrap()
-                }),
-            );
-            btree_map
-                .entry(key)
-                .or_insert_with(Vec::new)
-                .push(other_triple);
-        }
-
-        self.triples.iter().for_each(|triple| {
-            let key = (
-                subject_var.map_or("", |_| &self.dictionary.decode(triple.subject).unwrap()),
-                predicate_var.map_or("", |_| &self.dictionary.decode(triple.predicate).unwrap()),
-                object_var.map_or("", |_| &self.dictionary.decode(triple.object).unwrap()),
-            );
-            if let Some(matching_triples) = btree_map.get(&key) {
-                for other_triple in matching_triples {
-                    joined_triples.insert(Triple {
-                        subject: triple.subject,
-                        predicate: other_triple.predicate,
-                        object: other_triple.object,
-                    });
-                }
-            }
-        });
 
         Self {
             triples: joined_triples,
@@ -2421,75 +2195,6 @@ impl SparqlDatabase {
         results
     }
 
-    pub fn join_by_conditions_with_filters<F>(
-        &self,
-        other: &SparqlDatabase,
-        conditions: Vec<(Option<&str>, Option<&str>, Option<&str>)>,
-        filter: F,
-    ) -> Self
-    where
-        F: Fn(&Triple, &Triple) -> bool,
-    {
-        let mut joined_triples = BTreeSet::new();
-
-        for condition in &conditions {
-            let mut btree_map = BTreeMap::new();
-            for other_triple in &other.triples {
-                let key = (
-                    condition.0.map_or("", |_| {
-                        &self.dictionary.decode(other_triple.subject).unwrap()
-                    }),
-                    condition.1.map_or("", |_| {
-                        &self.dictionary.decode(other_triple.predicate).unwrap()
-                    }),
-                    condition.2.map_or("", |_| {
-                        &self.dictionary.decode(other_triple.object).unwrap()
-                    }),
-                );
-                btree_map
-                    .entry(key)
-                    .or_insert_with(Vec::new)
-                    .push(other_triple.clone());
-            }
-
-            self.triples.iter().for_each(|triple| {
-                let key = (
-                    condition
-                        .0
-                        .map_or("", |_| &self.dictionary.decode(triple.subject).unwrap()),
-                    condition
-                        .1
-                        .map_or("", |_| &self.dictionary.decode(triple.predicate).unwrap()),
-                    condition
-                        .2
-                        .map_or("", |_| &self.dictionary.decode(triple.object).unwrap()),
-                );
-                if let Some(matching_triples) = btree_map.get(&key) {
-                    for other_triple in matching_triples {
-                        if filter(triple, other_triple) {
-                            joined_triples.insert(Triple {
-                                subject: triple.subject,
-                                predicate: other_triple.predicate,
-                                object: other_triple.object,
-                            });
-                        }
-                    }
-                }
-            });
-        }
-
-        Self {
-            triples: joined_triples,
-            streams: self.streams.clone(),
-            sliding_window: self.sliding_window.clone(),
-            dictionary: self.dictionary.clone(),
-            prefixes: self.prefixes.clone(),
-            udfs: HashMap::new(),
-            index_manager: UnifiedIndex::new(),
-            rule_map: HashMap::new(),
-        }
-    }
-
     pub fn istream(&self, last_timestamp: u64) -> Vec<Triple> {
         let mut new_triples = vec![];
         for ts_triple in &self.streams {
@@ -2526,38 +2231,6 @@ impl SparqlDatabase {
         }
 
         current_triples.into_iter().collect()
-    }
-
-    pub fn print(&self, title: &str, grouped: bool) {
-        println!("{}", title);
-        if grouped {
-            let groups = self.group_by(|triple| {
-                self.dictionary
-                    .decode(triple.predicate)
-                    .unwrap()
-                    .to_string()
-            });
-            for (key, triples) in groups {
-                println!("Group: {}", key);
-                for triple in triples {
-                    println!(
-                        "  Subject: {}, Predicate: {}, Object: {}",
-                        self.dictionary.decode(triple.subject).unwrap(),
-                        self.dictionary.decode(triple.predicate).unwrap(),
-                        self.dictionary.decode(triple.object).unwrap()
-                    );
-                }
-            }
-        } else {
-            for triple in &self.triples {
-                println!(
-                    "  Subject: {}, Predicate: {}, Object: {}",
-                    self.dictionary.decode(triple.subject).unwrap(),
-                    self.dictionary.decode(triple.predicate).unwrap(),
-                    self.dictionary.decode(triple.object).unwrap()
-                );
-            }
-        }
     }
 
     pub fn set_sliding_window(&mut self, width: u64, slide: u64) {
@@ -3018,6 +2691,14 @@ impl SparqlDatabase {
         let predicate = dict.decode(triple.predicate);
         let object = dict.decode(triple.object);
         format!("{} {} {}", subject.unwrap(), predicate.unwrap(), object.unwrap())
+    }
+
+    pub fn decode_triple(&self, triple: &Triple) -> Option<(&str, &str, &str)> {
+        let subject = self.dictionary.decode(triple.subject)?;
+        let predicate = self.dictionary.decode(triple.predicate)?;
+        let object = self.dictionary.decode(triple.object)?;
+        
+        Some((subject, predicate, object))
     }
 }
 

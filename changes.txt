@@ -48,6 +48,10 @@
 47. Fix problem with handling different ML models
 48. Modify ML handler by taking and compare models from Turtle file
 49. Modify FILTER by adding arithmetic epxression
+50. Clean SPARQL
+51. Design QueryBuilder class for functional API
+52. Add into Python wrapper QueryBuilder
+53. Modify License
 
 0.1.0
 1. Parsing RDF/XML

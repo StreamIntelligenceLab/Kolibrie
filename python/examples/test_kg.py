@@ -1,3 +1,12 @@
+# 
+# Copyright © 2024 ladroid
+# KU Leuven — Stream Intelligence Lab, Belgium
+# 
+# This Source Code Form is subject to the terms of the Mozilla Public
+# License, v. 2.0. If a copy of the MPL was not distributed with this file,
+# you can obtain one at https://mozilla.org/MPL/2.0/.
+# 
+
 '''
 Before running the test, run such commands in the terminal:
 1. cd python
@@ -7,11 +16,11 @@ Before running the test, run such commands in the terminal:
 5. run python script
 '''
 
-import py_knowledge_graph
+import py_kolibrie
 
 def knowledge_graph():
     # Create the knowledge graph instance
-    graph = py_knowledge_graph.PyKnowledgeGraph()
+    graph = py_kolibrie.PyKnowledgeGraph()
 
     # Add ABox triples (instance-level)
     graph.add_abox_triple("Alice", "hasParent", "Bob")
@@ -28,25 +37,25 @@ def knowledge_graph():
 
     # Define a dynamic rule:
     # If X hasParent Y and Y hasParent Z, then X hasGrandparent Z
-    grandparent_rule = py_knowledge_graph.PyRule(
+    grandparent_rule = py_kolibrie.PyRule(
         premise=[
-            py_knowledge_graph.PyTriplePattern(
-                py_knowledge_graph.PyTerm.Variable("X"),
-                py_knowledge_graph.PyTerm.Constant(has_parent_const),
-                py_knowledge_graph.PyTerm.Variable("Y"),
+            py_kolibrie.PyTriplePattern(
+                py_kolibrie.PyTerm.Variable("X"),
+                py_kolibrie.PyTerm.Constant(has_parent_const),
+                py_kolibrie.PyTerm.Variable("Y"),
             ),
-            py_knowledge_graph.PyTriplePattern(
-                py_knowledge_graph.PyTerm.Variable("Y"),
-                py_knowledge_graph.PyTerm.Constant(has_parent_const),
-                py_knowledge_graph.PyTerm.Variable("Z"),
+            py_kolibrie.PyTriplePattern(
+                py_kolibrie.PyTerm.Variable("Y"),
+                py_kolibrie.PyTerm.Constant(has_parent_const),
+                py_kolibrie.PyTerm.Variable("Z"),
             )
         ],
         filters=[],  # No filters
         conclusion=[  # Changed from single pattern to list of patterns
-            py_knowledge_graph.PyTriplePattern(
-                py_knowledge_graph.PyTerm.Variable("X"),
-                py_knowledge_graph.PyTerm.Constant(has_grandparent_const),
-                py_knowledge_graph.PyTerm.Variable("Z"),
+            py_kolibrie.PyTriplePattern(
+                py_kolibrie.PyTerm.Variable("X"),
+                py_kolibrie.PyTerm.Constant(has_grandparent_const),
+                py_kolibrie.PyTerm.Variable("Z"),
             )
         ]
     )

@@ -5,7 +5,7 @@
 </p>
 
 <!-- ![GitHub Workflow Status](https://img.shields.io/github/commit-activity/t/ladroid/goku) -->
-![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)
+![License: MPL 2.0](https://img.shields.io/badge/License-MPL_2.0-brightgreen.svg)
 ![Rust Version](https://img.shields.io/badge/Rust-1.60+-blue.svg)
 ![Build Status](https://img.shields.io/badge/build-passing-brightgreen.svg)
 ![Crates.io](https://img.shields.io/crates/v/sparql_database.svg)
@@ -1601,8 +1601,8 @@ Issue Trackerを使用して、バグ報告や新機能/改善のリクエスト
 
 パッチや修正はプルリクエスト（PR）の形式で受け付けています。プルリクエストが対処するIssueがIssue Trackerにオープンしていることを確認してください。
 
-提出されたプルリクエストは、MITライセンスの下で公開することに同意したとみなされます。
+提出されたプルリクエストは、Mozilla Public License Version 2.0 の下で公開することに同意したとみなされます。
 
 ## ライセンス
 
-Kolibrieは[MITライセンス](LICENSE)の下でライセンスされています。
+Kolibrieは[MPL-2.0ライセンス](LICENSE)の下でライセンスされています。

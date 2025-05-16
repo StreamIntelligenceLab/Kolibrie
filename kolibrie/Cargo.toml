@@ -6,7 +6,7 @@ description = """
 A SPARQL database and RDF toolkit
 """
 edition = "2021"
-license = "MIT"
+license = "MPL-2.0"
 categories = ["database", "database-implementations", "data-structures"]
 keywords = ["database", "rdf", "graph-database", "sparql", "sql"]
 readme = "README.md"
