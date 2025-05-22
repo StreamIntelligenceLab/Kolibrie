@@ -7,6 +7,7 @@ members = [
   "datalog",
   "python",
   "ml",
+  "rsp",
 ]
 
 exclude = [
