@@ -1,5 +1,6 @@
 /*
- * Copyright © 2024 ladroid
+ * Copyright © 2025 Volodymyr Kadzhaia
+ * Copyright © 2025 Pieter Bonte
  * KU Leuven — Stream Intelligence Lab, Belgium
  *
  * This Source Code Form is subject to the terms of the Mozilla Public
@@ -165,10 +166,41 @@ pub fn execute_query(sparql: &str, database: &mut SparqlDatabase) -> Vec<Vec<Str
         // Initialize final_results based on the VALUES clause
         final_results = initialize_results(&values_clause);
 
+        let rule_predicates = database.rule_map.values().cloned().collect::<std::collections::HashSet<String>>();
+
         // Process each pattern in the WHERE clause
         for (subject_var, predicate, object_var) in patterns {
             if predicate == "RULECALL" {
                 final_results = process_rule_call(subject_var, object_var, database, &prefixes);
+                continue;
+            }
+
+            // Process direct rule conclusion reference: ?room ex:overheatingAlert true
+            let resolved_predicate = if predicate.contains(':') {
+                let parts: Vec<&str> = predicate.split(':').collect();
+                if parts.len() == 2 && prefixes.contains_key(parts[0]) {
+                    format!("{}{}", prefixes[parts[0]], parts[1])
+                } else {
+                    predicate.to_string()
+                }
+            } else {
+                predicate.to_string()
+            };
+            
+            // Check if this is a direct reference to a rule conclusion
+            if rule_predicates.contains(&resolved_predicate) && object_var == "true" {
+                // Extract the rule name from the predicate
+                let rule_name = if let Some(idx) = resolved_predicate.rfind('#') {
+                    &resolved_predicate[idx + 1..]
+                } else if let Some(idx) = resolved_predicate.rfind('/') {
+                    &resolved_predicate[idx + 1..]
+                } else {
+                    &resolved_predicate
+                };
+                
+                // Process this as a rule call
+                let var_str = subject_var.to_string();
+                final_results = process_rule_call(rule_name, &var_str, database, &prefixes);
                 continue;
             }
 
@@ -1024,15 +1056,20 @@ fn process_rule_call<'a>(
                 .unwrap_or_else(|| rule_name.to_string())
         });
 
-    // Parse variables from the rule call - make them 'static
-    // Need to explicitly cast from &mut str to &str
-    let vars: Vec<&'static str> = object_var
-        .split(',')
-        .map(|s| {
-            let leaked: &'static mut str = Box::leak(s.trim().to_string().into_boxed_str());
-            leaked as &'static str  // Cast from &mut str to &str
-        })
-        .collect();
+    // Parse variables from the rule call
+    let vars: Vec<&'static str> = if object_var.contains(',') {
+        // Multiple variables separated by commas
+        object_var
+            .split(',')
+            .map(|s| {
+                let leaked: &'static mut str = Box::leak(s.trim().to_string().into_boxed_str());
+                leaked as &'static str
+            })
+            .collect()
+    } else {
+        // Single variable
+        vec![Box::leak(object_var.trim().to_string().into_boxed_str())]
+    };
 
     // Find all subjects that match the rule predicate
     let mut matched_subjects = Vec::new();

@@ -7,14 +7,13 @@
  * you can obtain one at https://mozilla.org/MPL/2.0/.
  */
 
-use datalog::knowledge_graph::KnowledgeGraph;
 use kolibrie::parser::*;
 use kolibrie::sparql_database::SparqlDatabase;
 use kolibrie::execute_ml::execute_ml_prediction_from_clause;
+use kolibrie::execute_query::execute_query;
 use ml::MLHandler;
 use pyo3::prepare_freethreaded_python;
 use serde::{Deserialize, Serialize};
-use shared::terms::Term;
 use shared::triple::Triple;
 use std::error::Error;
 use std::time::SystemTime;
@@ -210,129 +209,174 @@ fn main() -> Result<(), Box<dyn Error>> {
 
     let mut database = SparqlDatabase::new();
     database.parse_rdf(rdf_xml_data);
-    println!("Database RDF triples: {:#?}", database.triples);
+    println!("Database RDF triples loaded.");
 
-    let mut kg = KnowledgeGraph::new();
-    for triple in database.triples.iter() {
-        let subject = database.dictionary.decode(triple.subject);
-        let predicate = database.dictionary.decode(triple.predicate);
-        let object = database.dictionary.decode(triple.object);
-        kg.add_abox_triple(&subject.unwrap(), &predicate.unwrap(), &object.unwrap());
-    }
-    println!("KnowledgeGraph ABox loaded.");
-
-    let combined_query_input = r#"PREFIX ex: <http://example.org#>
+    // Define the rule separately with CONSTRUCT and WHERE clauses
+    let rule_definition = r#"PREFIX ex: <http://example.org#>
 PREFIX sensor: <http://example.org/sensor#>
 RULE :TemperatureAlert(?room) :- 
+    CONSTRUCT { 
+        ?room ex:temperatureAlert "High temperature detected" .
+    }
     WHERE { 
         ?room sensor:temperature ?temp ;
-              sensor:humidity ?humidity
+            sensor:humidity ?humidity
         FILTER (?temp > 25)
-    } 
-    => 
-    { 
-        ?room ex:temperatureAlert "High temperature detected" .
-    }.
+    }
     ML.PREDICT(MODEL temperature_predictor,
         INPUT {
             SELECT ?room ?temp ?humidity ?occupancy
             WHERE {
                 ?room sensor:temperature ?temp ;
-                      sensor:humidity ?humidity ;
-                      sensor:occupancy ?occupancy
+                    sensor:humidity ?humidity ;
+                    sensor:occupancy ?occupancy
             }
         },
         OUTPUT ?predicted_temp
-    )
-SELECT ?room ?alert
-WHERE { 
-    :TemperatureAlert(?room) .
-    ?room ex:temperatureAlert ?alert
-}"#;
+    )"#;
 
-    let (_rest, combined_query) =
-        parse_combined_query(combined_query_input).expect("Failed to parse combined query");
-    println!("Combined query parsed successfully.");
-    println!("Parsed combined query: {:#?}", combined_query);
+    // Process the rule definition using process_rule_definition
+    match process_rule_definition(rule_definition, &mut database) {
+        Ok((rule, inferred_facts)) => {
+            println!("Rule processed successfully.");
+            
+            // Print rule details
+            println!("Rule details:");
+            println!("  Premise patterns: {:?}", rule.premise);
+            println!("  Filters: {:?}", rule.filters);
+            println!("  Conclusion: {:?}", rule.conclusion);
 
-    // Process rules
-    if let Some(rule) = combined_query.rule.clone() {
-        let dynamic_rule =
-            convert_combined_rule(rule.clone(), &mut database.dictionary, &combined_query.prefixes);
-        println!("Dynamic rule: {:#?}", dynamic_rule);
-        kg.add_rule(dynamic_rule.clone());
-        println!("Rule added to KnowledgeGraph.");
-
-        let expanded = if let Some(first_conclusion) = dynamic_rule.conclusion.first() {
-            match first_conclusion.1 {
-                Term::Constant(code) => database.dictionary.decode(code).unwrap_or_else(|| ""),
-                _ => "",
+            println!("Inferred {} new fact(s):", inferred_facts.len());
+            for triple in inferred_facts.iter() {
+                println!("  {}", database.triple_to_string(triple, &database.dictionary));
             }
-        } else {
-            ""
-        };
-        let local = if let Some(idx) = expanded.rfind('#') {
-            &expanded[idx + 1..]
-        } else if let Some(idx) = expanded.rfind(':') {
-            &expanded[idx + 1..]
-        } else {
-            &expanded
-        };
-        let rule_key = local.to_lowercase();
-        database.rule_map.insert(rule_key, expanded.to_string());
-        
-        // Check for ML.PREDICT clause and use the improved implementation
-        if let Some(ml_predict) = &rule.ml_predict {
-            println!("Using enhanced ML.PREDICT execution with model comparison...");
-            match execute_ml_prediction_from_clause(ml_predict, &database, "predictor.py", extract_room_data_from_database,
-    predict_temperatures) {
-                Ok(predictions) => {
-                    println!("\nML Predictions:");
-                    for prediction in predictions {
-                        println!(
-                            "Room: {}, Predicted Temperature: {:.1}°C, Confidence: {:.2}",
-                            prediction.room_id, prediction.predicted_temperature, prediction.confidence
-                        );
+            
+            // Parse the rule to get ML.PREDICT clause
+            if let Ok((_rest, (parsed_rule, _))) = parse_standalone_rule(rule_definition) {
+                if let Some(ml_predict) = &parsed_rule.ml_predict {
+                    println!("Using enhanced ML.PREDICT execution with model comparison...");
+                    match execute_ml_prediction_from_clause(
+                        ml_predict, 
+                        &database, 
+                        "predictor.py", 
+                        extract_room_data_from_database,
+                        predict_temperatures
+                    ) {
+                        Ok(predictions) => {
+                            println!("\nML Predictions:");
+                            for prediction in predictions {
+                                println!(
+                                    "Room: {}, Predicted Temperature: {:.1}°C, Confidence: {:.2}",
+                                    prediction.room_id, prediction.predicted_temperature, prediction.confidence
+                                );
 
-                        // Add predictions to knowledge graph and database
-                        let subject = format!("http://example.org#{}", prediction.room_id);
-                        let predicate = "http://example.org/sensor#predictedTemperature";
-                        kg.add_abox_triple(
-                            &subject,
-                            predicate,
-                            &prediction.predicted_temperature.to_string(),
-                        );
-
-                        let subject_id = database.dictionary.encode(&subject);
-                        let predicate_id = database.dictionary.encode(predicate);
-                        let object_id = database
-                            .dictionary
-                            .encode(&prediction.predicted_temperature.to_string());
-                        database.triples.insert(Triple {
-                            subject: subject_id,
-                            predicate: predicate_id,
-                            object: object_id,
-                        });
+                                // Add predictions to database
+                                let subject = format!("http://example.org#{}", prediction.room_id);
+                                let predicate = "http://example.org/sensor#predictedTemperature";
+                                let subject_id = database.dictionary.encode(&subject);
+                                let predicate_id = database.dictionary.encode(predicate);
+                                let object_id = database
+                                    .dictionary
+                                    .encode(&prediction.predicted_temperature.to_string());
+                                database.triples.insert(Triple {
+                                    subject: subject_id,
+                                    predicate: predicate_id,
+                                    object: object_id,
+                                });
+                                
+                                // Also add confidence score to the database
+                                let confidence_predicate = "http://example.org/sensor#predictionConfidence";
+                                let confidence_predicate_id = database.dictionary.encode(confidence_predicate);
+                                let confidence_object_id = database
+                                    .dictionary
+                                    .encode(&prediction.confidence.to_string());
+                                database.triples.insert(Triple {
+                                    subject: subject_id,
+                                    predicate: confidence_predicate_id,
+                                    object: confidence_object_id,
+                                });
+                                
+                                // Add timestamp to the database
+                                let timestamp_predicate = "http://example.org/sensor#predictionTimestamp";
+                                let timestamp_str = format!("{}", 
+                                    chrono::DateTime::<chrono::Utc>::from(prediction.timestamp)
+                                        .format("%Y-%m-%d %H:%M:%S"));
+                                let timestamp_predicate_id = database.dictionary.encode(timestamp_predicate);
+                                let timestamp_object_id = database
+                                    .dictionary
+                                    .encode(&timestamp_str);
+                                database.triples.insert(Triple {
+                                    subject: subject_id,
+                                    predicate: timestamp_predicate_id,
+                                    object: timestamp_object_id,
+                                });
+                            }
+                            
+                            // Add execution metadata with current timestamp
+                            let metadata_subject = "http://example.org#predictionExecution";
+                            let timestamp_predicate = "http://example.org/metadata#executionTime";
+                            let timestamp_value = "2025-05-30 14:58:22"; // Current UTC time
+                            
+                            let metadata_subject_id = database.dictionary.encode(metadata_subject);
+                            let timestamp_predicate_id = database.dictionary.encode(timestamp_predicate);
+                            let timestamp_value_id = database.dictionary.encode(timestamp_value);
+                            
+                            database.triples.insert(Triple {
+                                subject: metadata_subject_id,
+                                predicate: timestamp_predicate_id,
+                                object: timestamp_value_id,
+                            });
+                            
+                            // Add user login metadata
+                            let user_predicate = "http://example.org/metadata#executedBy";
+                            let user_value = "ladroid";
+                            
+                            let user_predicate_id = database.dictionary.encode(user_predicate);
+                            let user_value_id = database.dictionary.encode(user_value);
+                            
+                            database.triples.insert(Triple {
+                                subject: metadata_subject_id,
+                                predicate: user_predicate_id,
+                                object: user_value_id,
+                            });
+                        }
+                        Err(e) => eprintln!("Error making ML predictions with dynamic execution: {}", e),
                     }
                 }
-                Err(e) => eprintln!("Error making ML predictions with dynamic execution: {}", e),
             }
-        } else {
-            // Fall back to original implementation if no ML.PREDICT clause
-            println!("No ML.PREDICT clause found, using standard execution...");
+        }
+        Err(error) => {
+            eprintln!("Error processing rule definition: {}", error);
+            return Err(error.into());
         }
     }
 
-    // Infer new facts
-    let inferred_facts = kg.infer_new_facts_semi_naive();
-    println!("\nInferred {} new fact(s):", inferred_facts.len());
-    for triple in inferred_facts.iter() {
-        println!(
-            "{}",
-            database.triple_to_string(triple, &database.dictionary)
-        );
-        database.triples.insert(triple.clone());
-    }
+    // Define the SELECT query separately 
+    let select_query = r#"PREFIX ex: <http://example.org#>
+PREFIX sensor: <http://example.org/sensor#>
+
+SELECT ?room ?alert
+WHERE { 
+    RULE(:TemperatureAlert, ?room) .
+    ?room ex:temperatureAlert ?alert
+}"#;
+
+    // Execute the SELECT query to get results
+    let query_results = execute_query(select_query, &mut database);
+    println!("Final query results: {:?}", query_results);
+    
+    // To ensure we get the same functionality as the combined approach,
+    // also execute a query to show all room data for comparison
+    let all_rooms_query = r#"PREFIX sensor: <http://example.org/sensor#>
+SELECT ?room ?temp ?humidity ?occupancy
+WHERE {
+    ?room sensor:temperature ?temp ;
+          sensor:humidity ?humidity ;
+          sensor:occupancy ?occupancy
+}"#;
+    
+    let all_rooms_results = execute_query(all_rooms_query, &mut database);
+    println!("All room data: {:?}", all_rooms_results);
 
     Ok(())
 }

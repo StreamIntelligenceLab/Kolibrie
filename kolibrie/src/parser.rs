@@ -1,5 +1,6 @@
 /*
- * Copyright © 2024 ladroid
+ * Copyright © 2024 Volodymyr Kadzhaia
+ * Copyright © 2024 Pieter Bonte
  * KU Leuven — Stream Intelligence Lab, Belgium
  *
  * This Source Code Form is subject to the terms of the Mozilla Public
@@ -356,7 +357,7 @@ fn parse_arithmetic_comparison(input: &str) -> IResult<&str, FilterExpression> {
 }
 
 // Parse a single comparison expression like ?var > 10
-fn parse_comparison(input: &str) -> IResult<&str, FilterExpression> {
+pub fn parse_comparison(input: &str) -> IResult<&str, FilterExpression> {
     let (input, _) = multispace0(input)?;
 
     // Parse variable or literal on left side
@@ -645,6 +646,24 @@ pub fn parse_insert(input: &str) -> IResult<&str, InsertClause> {
     Ok((input, InsertClause { triples }))
 }
 
+pub fn parse_construct_clause(input: &str) -> IResult<&str, Vec<(&str, &str, &str)>> {
+    let (input, _) = multispace0(input)?;
+    let (input, _) = tag("CONSTRUCT")(input)?;
+    let (input, _) = multispace0(input)?;
+    
+    // Parse multiple conclusion triples in CONSTRUCT block
+    let (input, conclusions) = delimited(
+        char('{'),
+        preceded(
+            multispace0,
+            terminated(parse_triple_block, opt(tuple((multispace0, char('.'))))),
+        ),
+        preceded(multispace0, char('}')),
+    )(input)?;
+    
+    Ok((input, conclusions))
+}
+
 pub fn parse_sparql_query(
     input: &str,
 ) -> IResult<
@@ -719,18 +738,65 @@ pub fn parse_sparql_query(
     ))
 }
 
+pub fn parse_standalone_rule<'a>(
+    input: &'a str,
+) -> IResult<&'a str, (CombinedRule<'a>, HashMap<String, String>)> {
+    // Parse prefixes first
+    let (input, prefix_list) = many0(|i| {
+        let (i, _) = multispace0(i)?;
+        let (i, _) = tag("PREFIX")(i)?;
+        let (i, _) = space1(i)?;
+        let (i, p) = identifier(i)?;
+        let (i, _) = char(':')(i)?;
+        let (i, _) = space0(i)?;
+        let (i, uri) = delimited(char('<'), take_while1(|c| c != '>'), char('>'))(i)?;
+        Ok((i, (p, uri)))
+    })(input)?;
+    
+    let mut prefixes = HashMap::new();
+    for (p, uri) in prefix_list {
+        prefixes.insert(p.to_string(), uri.to_string());
+    }
+    
+    let (input, _) = multispace0(input)?;
+    
+    // Parse the rule
+    let (input, rule) = parse_rule(input)?;
+    
+    Ok((input, (rule, prefixes)))
+}
+
 pub fn parse_rule_call(input: &str) -> IResult<&str, RuleHead> {
+    let (input, _) = multispace0(input)?;
+    
+    // Parse the academic syntax: RULE(:Predicate, ?var1, ?var2, ...)
+    let (input, _) = tag("RULE")(input)?;
+    let (input, _) = preceded(char('('), multispace0)(input)?;
     let (input, pred) = predicate(input)?;
-    let (input, args) = delimited(
-        char('('),
-        separated_list1(tuple((multispace0, char(','), multispace0)), variable),
-        char(')'),
+    
+    // Parse the first variable
+    let (input, _) = tuple((multispace0, char(','), multispace0))(input)?;
+    let (input, first_var) = variable(input)?;
+    
+    // Parse additional variables if they exist
+    let (input, additional_vars) = many0(
+        preceded(
+            tuple((multispace0, char(','), multispace0)),
+            variable
+        )
     )(input)?;
+    
+    // Combine all variables
+    let mut all_vars = vec![first_var];
+    all_vars.extend(additional_vars);
+    
+    let (input, _) = preceded(multispace0, char(')'))(input)?;
+    
     Ok((
         input,
         RuleHead {
             predicate: pred,
-            arguments: args,
+            arguments: all_vars,
         },
     ))
 }
@@ -851,23 +917,18 @@ pub fn parse_rule(input: &str) -> IResult<&str, CombinedRule> {
     let (input, _) = space0(input)?;
     let (input, _) = tag(":-")(input)?;
     let (input, _) = multispace0(input)?;
+    
+    // Parse CONSTRUCT clause
+    let (input, conclusions) = parse_construct_clause(input)?;
+    
+    let (input, _) = multispace0(input)?;
+    
+    // Parse WHERE clause
     let (input, body) = parse_where(input)?;
-    let (input, _) = multispace0(input)?;
-    let (input, _) = tag("=>")(input)?;
-    let (input, _) = multispace0(input)?;
     
-    // Parse multiple conclusion triples
-    let (input, conclusions) = delimited(
-        char('{'),
-        preceded(
-            multispace0,
-            terminated(parse_triple_block, opt(tuple((multispace0, char('.'))))),
-        ),
-        preceded(multispace0, char('}')),
-    )(input)?;
-    
+    // Optional dot at the end of rule
+    let (input, _) = opt(preceded(multispace0, char('.')))(input)?;
     let (input, _) = multispace0(input)?;
-    let (input, _) = char('.')(input)?;
     
     // Optionally parse ML.PREDICT block if it exists
     let (input, ml_predict) = opt(parse_ml_predict)(input)?;
@@ -877,7 +938,7 @@ pub fn parse_rule(input: &str) -> IResult<&str, CombinedRule> {
         CombinedRule {
             head,
             body,
-            conclusion: conclusions, // This now contains multiple conclusion triples
+            conclusion: conclusions,
             ml_predict,
         },
     ))
@@ -902,10 +963,12 @@ pub fn parse_combined_query(input: &str) -> IResult<&str, CombinedQuery> {
     }
     
     let (input, _) = multispace0(input)?;
+    
+    // Parse the rule with ML.PREDICT if present
     let (input, rule_opt) = opt(parse_rule)(input)?;
     let (input, _) = multispace0(input)?;
     
-    // Important: If we have a SPARQL query following the rule, pass the prefixes to it
+    // Parse the SPARQL query part
     let (input, sparql_parse) = parse_sparql_query(input)?;
     
     Ok((
@@ -1038,7 +1101,6 @@ pub fn convert_combined_rule<'a>(
                     
                     conditions
                 },
-                // For other complex expressions (NOT), you can add handling logic here
                 _ => {
                     // Return an empty vector instead of panicking
                     println!("Warning: Unsupported filter expression type - skipping");
@@ -1061,65 +1123,67 @@ pub fn convert_combined_rule<'a>(
     }
 }
 
-pub fn process_combined_query(
-    query_input: &str,
+pub fn process_rule_definition(
+    rule_input: &str,
     database: &mut SparqlDatabase,
-    kg: &mut KnowledgeGraph,
-) -> Result<(Option<Rule>, Vec<Triple>, HashMap<String, String>), String> {
-    // First, register any prefixes from the query with the database
-    database.register_prefixes_from_query(query_input);
+) -> Result<(Rule, Vec<Triple>), String> {
+    // First, register any prefixes from the rule with the database
+    database.register_prefixes_from_query(rule_input);
 
-    // Parse the combined query
-    let parse_result = parse_combined_query(query_input);
+    let mut kg = KnowledgeGraph::new();
+    for triple in database.triples.iter() {
+        let subject = database.dictionary.decode(triple.subject);
+        let predicate = database.dictionary.decode(triple.predicate);
+        let object = database.dictionary.decode(triple.object);
+        if let (Some(s), Some(p), Some(o)) = (subject, predicate, object) {
+            kg.add_abox_triple(&s, &p, &o);
+        }
+    }
 
-    if let Ok((_rest, combined_query)) = parse_result {
-        // Ensure all prefixes from the combined query are in the database
-        for (prefix, uri) in &combined_query.prefixes {
+    // Parse the standalone rule
+    let parse_result = parse_standalone_rule(rule_input);
+
+    if let Ok((_rest, (rule, prefixes))) = parse_result {
+        // Ensure all prefixes from the rule are in the database
+        for (prefix, uri) in &prefixes {
             database.prefixes.insert(prefix.clone(), uri.clone());
         }
 
-        let mut inferred_facts = vec![];
-        let mut rule_result = None;
+        // Convert the rule, ensuring it has access to all prefixes
+        let mut rule_prefixes = prefixes.clone();
+        database.share_prefixes_with(&mut rule_prefixes);
 
-        // Process the rule if present
-        if let Some(rule) = combined_query.rule {
-            // Convert the rule, ensuring it has access to all prefixes
-            let mut rule_prefixes = combined_query.prefixes.clone();
-            database.share_prefixes_with(&mut rule_prefixes);
+        let dynamic_rule = convert_combined_rule(rule, &mut database.dictionary, &rule_prefixes);
 
-            let dynamic_rule = convert_combined_rule(rule, &mut database.dictionary, &rule_prefixes);
+        // Add the rule to the knowledge graph
+        kg.add_rule(dynamic_rule.clone());
 
-            // Add the rule to the knowledge graph
-            kg.add_rule(dynamic_rule.clone());
-            rule_result = Some(dynamic_rule.clone());
-
-            // Register all predicates from the conclusions for rule resolution
-            for conclusion in &dynamic_rule.conclusion {
-                if let Term::Constant(code) = conclusion.1 {
-                    let expanded = database.dictionary.decode(code).unwrap_or_else(|| "");
-                    let local = if let Some(idx) = expanded.rfind('#') {
-                        &expanded[idx + 1..]
-                    } else if let Some(idx) = expanded.rfind(':') {
-                        &expanded[idx + 1..]
-                    } else {
-                        &expanded
-                    };
-                    let rule_key = local.to_lowercase();
-                    database.rule_map.insert(rule_key, expanded.to_string());
-                }
-            }
-
-            // Infer new facts based on the rule
-            inferred_facts = kg.infer_new_facts_semi_naive();
-
-            // Add inferred facts to the database
-            for triple in inferred_facts.iter() {
-                database.triples.insert(triple.clone());
+        // Register all predicates from the conclusions for rule resolution
+        for conclusion in &dynamic_rule.conclusion {
+            if let Term::Constant(code) = conclusion.1 {
+                let expanded = database.dictionary.decode(code).unwrap_or_else(|| "");
+                let local = if let Some(idx) = expanded.rfind('#') {
+                    &expanded[idx + 1..]
+                } else if let Some(idx) = expanded.rfind(':') {
+                    &expanded[idx + 1..]
+                } else {
+                    &expanded
+                };
+                let rule_key = local.to_lowercase();
+                database.rule_map.insert(rule_key, expanded.to_string());
             }
         }
 
-        Ok((rule_result, inferred_facts, combined_query.prefixes))
+        // Infer new facts based on the rule
+        let inferred_facts = kg.infer_new_facts_semi_naive();
+
+        // Add inferred facts to the database
+        for triple in inferred_facts.iter() {
+            database.triples.insert(triple.clone());
+        }
+
+        Ok((dynamic_rule, inferred_facts))
     } else {
-        Err("Failed to parse combined query".to_string())
+        Err("Failed to parse rule definition".to_string())
     }
 }

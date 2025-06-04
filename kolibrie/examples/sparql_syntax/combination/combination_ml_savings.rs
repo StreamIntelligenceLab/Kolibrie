@@ -7,14 +7,13 @@
  * you can obtain one at https://mozilla.org/MPL/2.0/.
  */
 
-use datalog::knowledge_graph::KnowledgeGraph;
 use kolibrie::parser::*;
 use kolibrie::sparql_database::SparqlDatabase;
 use kolibrie::execute_ml::execute_ml_prediction_from_clause;
+use kolibrie::execute_query::execute_query;
 use ml::MLHandler;
 use pyo3::prepare_freethreaded_python;
 use serde::{Deserialize, Serialize};
-use shared::terms::Term;
 use shared::triple::Triple;
 use std::error::Error;
 use std::time::SystemTime;
@@ -218,212 +217,182 @@ fn main() -> Result<(), Box<dyn Error>> {
             <finance:income>5200.00</finance:income>
             <finance:spending>3600.00</finance:spending>
             <finance:savings_rate>0.15</finance:savings_rate>
-            <finance:last_updated>2025-05-01T10:30:00Z</finance:last_updated>
+            <finance:last_updated>2025-05-27T17:43:10Z</finance:last_updated>
         </rdf:Description>
         <rdf:Description rdf:about="http://example.org#User102">
             <finance:income>4800.00</finance:income>
             <finance:spending>4100.00</finance:spending>
             <finance:savings_rate>0.08</finance:savings_rate>
-            <finance:last_updated>2025-05-03T15:45:00Z</finance:last_updated>
+            <finance:last_updated>2025-05-27T17:43:10Z</finance:last_updated>
         </rdf:Description>
         <rdf:Description rdf:about="http://example.org#User103">
             <finance:income>7200.00</finance:income>
             <finance:spending>3900.00</finance:spending>
             <finance:savings_rate>0.22</finance:savings_rate>
-            <finance:last_updated>2025-05-06T08:15:00Z</finance:last_updated>
+            <finance:last_updated>2025-05-27T17:43:10Z</finance:last_updated>
         </rdf:Description>
         <rdf:Description rdf:about="http://example.org#User104">
             <finance:income>3800.00</finance:income>
             <finance:spending>3200.00</finance:spending>
             <finance:savings_rate>0.12</finance:savings_rate>
-            <finance:last_updated>2025-05-07T16:20:00Z</finance:last_updated>
+            <finance:last_updated>2025-05-27T17:43:10Z</finance:last_updated>
         </rdf:Description>
         <rdf:Description rdf:about="http://example.org#User105">
             <finance:income>6500.00</finance:income>
             <finance:spending>5900.00</finance:spending>
             <finance:savings_rate>0.05</finance:savings_rate>
-            <finance:last_updated>2025-05-08T07:10:00Z</finance:last_updated>
+            <finance:last_updated>2025-05-27T17:43:10Z</finance:last_updated>
         </rdf:Description>
         </rdf:RDF>
     "#;
 
     let mut database = SparqlDatabase::new();
     database.parse_rdf(rdf_xml_data);
-    println!("Database RDF triples: {:#?}", database.triples);
+    println!("Database RDF triples loaded.");
 
-    let mut kg = KnowledgeGraph::new();
-    for triple in database.triples.iter() {
-        let subject = database.dictionary.decode(triple.subject);
-        let predicate = database.dictionary.decode(triple.predicate);
-        let object = database.dictionary.decode(triple.object);
-        kg.add_abox_triple(&subject.unwrap(), &predicate.unwrap(), &object.unwrap());
-    }
-    println!("KnowledgeGraph ABox loaded.");
-
-    let combined_query_input = r#"PREFIX finance: <http://example.org/finance#>
-PREFIX ex: <http://example.org/>
+    // Define the rule separately with CONSTRUCT and WHERE clauses
+    let rule_definition = r#"PREFIX finance: <http://example.org/finance#>
+PREFIX ex: <http://example.org#>
 
 RULE :SavingsAlert(?user) :- 
+    CONSTRUCT { 
+        ?user ex:savingsAlert "High spending detected - savings at risk" .
+    }
     WHERE { 
         ?user finance:income ?income ;
-              finance:spending ?spending
+            finance:spending ?spending .
         FILTER (?spending > 5200)
-    } 
-    => 
-    { 
-        ?user ex:savingsAlert "High spending detected - savings at risk" .
-    }.
+    }
     ML.PREDICT(MODEL saving_predictor,
         INPUT {
             SELECT ?user ?income ?spending ?savings_rate
             WHERE {
                 ?user finance:income ?income ;
-                      finance:spending ?spending ;
-                      finance:savings_rate ?savings_rate
+                    finance:spending ?spending ;
+                    finance:savings_rate ?savings_rate
             }
         },
         OUTPUT ?predicted_savings
-    )
+    )"#;
 
-SELECT ?user ?alert ?predicted_savings
+    // Use process_rule_definition to process the rule
+    match process_rule_definition(rule_definition, &mut database) {
+        Ok((rule, inferred_facts)) => {
+            println!("Rule processed successfully.");
+            
+            // Print rule details
+            println!("Rule details:");
+            println!("  Premise patterns: {:?}", rule.premise);
+            println!("  Filters: {:?}", rule.filters);
+            println!("  Conclusion: {:?}", rule.conclusion);
+
+            println!("Inferred {} new fact(s):", inferred_facts.len());
+            for triple in inferred_facts.iter() {
+                println!("  {}", database.triple_to_string(triple, &database.dictionary));
+            }
+            
+            // Parse the rule to get ML.PREDICT clause
+            if let Ok((_rest, (parsed_rule, _))) = parse_standalone_rule(rule_definition) {
+                if let Some(ml_predict) = &parsed_rule.ml_predict {
+                    println!("Using enhanced ML.PREDICT execution with model comparison...");
+                    match execute_ml_prediction_from_clause(
+                        ml_predict, 
+                        &database, 
+                        "saving_predictor.py", 
+                        extract_financial_data_from_database, 
+                        predict_savings
+                    ) {
+                        Ok(predictions) => {
+                            println!("\nML Predictions:");
+                            for prediction in predictions {
+                                println!(
+                                    "User: {}, Predicted Savings: ${:.2}, Confidence: {:.2}",
+                                    prediction.user_id, prediction.predicted_savings, prediction.confidence
+                                );
+
+                                // Add predictions to database
+                                let subject = format!("http://example.org#{}", prediction.user_id);
+                                let predicate = "http://example.org/finance#predictedSavings";
+                                let subject_id = database.dictionary.encode(&subject);
+                                let predicate_id = database.dictionary.encode(predicate);
+                                let object_id = database
+                                    .dictionary
+                                    .encode(&prediction.predicted_savings.to_string());
+                                database.triples.insert(Triple {
+                                    subject: subject_id,
+                                    predicate: predicate_id,
+                                    object: object_id,
+                                });
+                                
+                                // Also add confidence score to the database
+                                let confidence_predicate = "http://example.org/finance#predictionConfidence";
+                                let confidence_predicate_id = database.dictionary.encode(confidence_predicate);
+                                let confidence_object_id = database
+                                    .dictionary
+                                    .encode(&prediction.confidence.to_string());
+                                database.triples.insert(Triple {
+                                    subject: subject_id,
+                                    predicate: confidence_predicate_id,
+                                    object: confidence_object_id,
+                                });
+                                
+                                // Add timestamp to the database
+                                let timestamp_predicate = "http://example.org/finance#predictionTimestamp";
+                                let timestamp_str = format!("{}", 
+                                    chrono::DateTime::<chrono::Utc>::from(prediction.timestamp)
+                                        .format("%Y-%m-%d %H:%M:%S"));
+                                let timestamp_predicate_id = database.dictionary.encode(timestamp_predicate);
+                                let timestamp_object_id = database
+                                    .dictionary
+                                    .encode(&timestamp_str);
+                                database.triples.insert(Triple {
+                                    subject: subject_id,
+                                    predicate: timestamp_predicate_id,
+                                    object: timestamp_object_id,
+                                });
+                            }
+                            
+                            // Add an execution metadata triple with current timestamp
+                            let metadata_subject = "http://example.org#predictionExecution";
+                            let timestamp_predicate = "http://example.org/metadata#executionTime";
+                            let timestamp_value = "2025-05-30 14:49:43"; // Current UTC time
+                            
+                            let metadata_subject_id = database.dictionary.encode(metadata_subject);
+                            let timestamp_predicate_id = database.dictionary.encode(timestamp_predicate);
+                            let timestamp_value_id = database.dictionary.encode(timestamp_value);
+                            
+                            database.triples.insert(Triple {
+                                subject: metadata_subject_id,
+                                predicate: timestamp_predicate_id,
+                                object: timestamp_value_id,
+                            });
+                        }
+                        Err(e) => eprintln!("Error making ML predictions with dynamic execution: {}", e),
+                    }
+                }
+            }
+        }
+        Err(error) => {
+            eprintln!("Error processing rule definition: {}", error);
+            return Err(error.into());
+        }
+    }
+
+    // Define the SELECT query separately - update to match original query exactly
+    let select_query = r#"PREFIX finance: <http://example.org/finance#>
+PREFIX ex: <http://example.org#>
+
+SELECT ?user ?income ?spending ?savings_rate
 WHERE { 
-    :SavingsAlert(?user) .
-    ?user ex:savingsAlert ?alert ;
-          finance:predictedSavings ?predicted_savings
+    ?user finance:income ?income ;
+         finance:spending ?spending ;
+         finance:savings_rate ?savings_rate
 }"#;
 
-    let (_rest, combined_query) =
-        parse_combined_query(combined_query_input).expect("Failed to parse combined query");
-    println!("Combined query parsed successfully.");
-    println!("Parsed combined query: {:#?}", combined_query);
-
-    // Process rules
-    if let Some(rule) = combined_query.rule.clone() {
-        let dynamic_rule =
-            convert_combined_rule(rule.clone(), &mut database.dictionary, &combined_query.prefixes);
-        println!("Dynamic rule: {:#?}", dynamic_rule);
-        kg.add_rule(dynamic_rule.clone());
-        println!("Rule added to KnowledgeGraph.");
-
-        let expanded = if let Some(first_conclusion) = dynamic_rule.conclusion.first() {
-            match first_conclusion.1 {
-                Term::Constant(code) => database.dictionary.decode(code).unwrap_or_else(|| ""),
-                _ => "",
-            }
-        } else {
-            ""
-        };
-        let local = if let Some(idx) = expanded.rfind('#') {
-            &expanded[idx + 1..]
-        } else if let Some(idx) = expanded.rfind(':') {
-            &expanded[idx + 1..]
-        } else {
-            &expanded
-        };
-        let rule_key = local.to_lowercase();
-        database.rule_map.insert(rule_key, expanded.to_string());
-        
-        // Check for ML.PREDICT clause and use the improved implementation
-        if let Some(ml_predict) = &rule.ml_predict {
-            println!("Using enhanced ML.PREDICT execution with model comparison...");
-            match execute_ml_prediction_from_clause(ml_predict, &database, "saving_predictor.py", extract_financial_data_from_database, predict_savings) {
-                Ok(predictions) => {
-                    println!("\nML Predictions:");
-                    for prediction in predictions {
-                        println!(
-                            "User: {}, Predicted Savings: ${:.2}, Confidence: {:.2}",
-                            prediction.user_id, prediction.predicted_savings, prediction.confidence
-                        );
-
-                        // Add predictions to knowledge graph and database
-                        let subject = format!("http://example.org#{}", prediction.user_id);
-                        let predicate = "http://example.org/finance#predictedSavings";
-                        kg.add_abox_triple(
-                            &subject,
-                            predicate,
-                            &prediction.predicted_savings.to_string(),
-                        );
-
-                        let subject_id = database.dictionary.encode(&subject);
-                        let predicate_id = database.dictionary.encode(predicate);
-                        let object_id = database
-                            .dictionary
-                            .encode(&prediction.predicted_savings.to_string());
-                        database.triples.insert(Triple {
-                            subject: subject_id,
-                            predicate: predicate_id,
-                            object: object_id,
-                        });
-                        
-                        // Also add confidence score to the database
-                        let confidence_predicate = "http://example.org/finance#predictionConfidence";
-                        let confidence_predicate_id = database.dictionary.encode(confidence_predicate);
-                        let confidence_object_id = database
-                            .dictionary
-                            .encode(&prediction.confidence.to_string());
-                        database.triples.insert(Triple {
-                            subject: subject_id,
-                            predicate: confidence_predicate_id,
-                            object: confidence_object_id,
-                        });
-                        
-                        // Add timestamp to the database
-                        let timestamp_predicate = "http://example.org/finance#predictionTimestamp";
-                        let timestamp_str = format!("{}", 
-                            chrono::DateTime::<chrono::Utc>::from(prediction.timestamp)
-                                .format("%Y-%m-%d %H:%M:%S"));
-                        let timestamp_predicate_id = database.dictionary.encode(timestamp_predicate);
-                        let timestamp_object_id = database
-                            .dictionary
-                            .encode(&timestamp_str);
-                        database.triples.insert(Triple {
-                            subject: subject_id,
-                            predicate: timestamp_predicate_id,
-                            object: timestamp_object_id,
-                        });
-                    }
-                    
-                    // Add an execution metadata triple with timestamp
-                    let metadata_subject = "http://example.org#predictionExecution";
-                    let timestamp_predicate = "http://example.org/metadata#executionTime";
-                    let timestamp_value = "2025-05-08 08:57:25"; // Current UTC time
-                    
-                    kg.add_abox_triple(
-                        metadata_subject,
-                        timestamp_predicate,
-                        timestamp_value,
-                    );
-                    
-                    let metadata_subject_id = database.dictionary.encode(metadata_subject);
-                    let timestamp_predicate_id = database.dictionary.encode(timestamp_predicate);
-                    let timestamp_value_id = database.dictionary.encode(timestamp_value);
-                    
-                    database.triples.insert(Triple {
-                        subject: metadata_subject_id,
-                        predicate: timestamp_predicate_id,
-                        object: timestamp_value_id,
-                    });
-                }
-                Err(e) => eprintln!("Error making ML predictions with dynamic execution: {}", e),
-            }
-        } else {
-            // Fall back to original implementation if no ML.PREDICT clause
-            println!("No ML.PREDICT clause found, using standard execution...");
-        }
-    } else {
-        println!("No rule found in the combined query.");
-    }
-
-    // Infer new facts
-    let inferred_facts = kg.infer_new_facts_semi_naive();
-    println!("\nInferred {} new fact(s):", inferred_facts.len());
-    for triple in inferred_facts.iter() {
-        println!(
-            "{}",
-            database.triple_to_string(triple, &database.dictionary)
-        );
-        database.triples.insert(triple.clone());
-    }
+    // Execute the SELECT query to get results - use the same query that worked previously
+    let query_results = execute_query(select_query, &mut database);
+    
+    println!("\nFinal query results: {:?}", query_results);
 
     Ok(())
 }

@@ -1,5 +1,6 @@
 /*
- * Copyright © 2024 ladroid
+ * Copyright © 2024 Volodymyr Kadzhaia
+ * Copyright © 2024 Pieter Bonte
  * KU Leuven — Stream Intelligence Lab, Belgium
  *
  * This Source Code Form is subject to the terms of the Mozilla Public

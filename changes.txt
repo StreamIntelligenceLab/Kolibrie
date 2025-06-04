@@ -52,6 +52,11 @@
 51. Design QueryBuilder class for functional API
 52. Add into Python wrapper QueryBuilder
 53. Modify License
+54. Add RSP
+55. Modify RULE syntax instead of N3 logic conclusion use CONSTRUCT
+56. Separate RULE syntax and SPARQL syntax
+57. Add tests for parser
+58. Improve License
 
 0.1.0
 1. Parsing RDF/XML
