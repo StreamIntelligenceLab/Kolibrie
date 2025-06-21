@@ -57,6 +57,9 @@
 56. Separate RULE syntax and SPARQL syntax
 57. Add tests for parser
 58. Improve License
+59. Add Dockerfile
+60. Minor fix in ML examples
+61. Minor fix of dependency vulnarability
 
 0.1.0
 1. Parsing RDF/XML

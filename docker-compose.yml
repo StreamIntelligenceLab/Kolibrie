@@ -1,0 +1,67 @@
+version: '3.8'
+
+services:
+  # GPU-enabled service (requires NVIDIA Docker runtime)
+  stream-reasoning-gpu:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        GPU_VENDOR: nvidia
+        CUDA_VERSION: "11.8"
+        BASE_TAG: "22.04"
+        BASE_IMAGE: nvidia/cuda:11.8-devel-ubuntu22.04
+    image: stream-reasoning:gpu
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+    volumes:
+      - ./data:/app/data
+      - ./models:/app/ml/examples/models
+    environment:
+      - CUDA_VISIBLE_DEVICES=all
+    profiles:
+      - gpu
+      - nvidia
+
+  # CPU-only service
+  stream-reasoning-cpu:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        GPU_VENDOR: none
+        BASE_TAG: "22.04"
+        BASE_IMAGE: ubuntu:22.04
+    image: stream-reasoning:cpu
+    volumes:
+      - ./data:/app/data
+      - ./models:/app/ml/examples/models
+    profiles:
+      - cpu
+      - default
+
+  # Development service (auto-detects based on available GPU)
+  stream-reasoning-dev:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        GPU_VENDOR: ${GPU_VENDOR:-none}
+        CUDA_VERSION: ${CUDA_VERSION:-11.8}
+        BASE_TAG: ${BASE_TAG:-22.04}
+        BASE_IMAGE: ${BASE_IMAGE:-ubuntu:22.04}
+    image: stream-reasoning:dev
+    volumes:
+      - .:/app
+      - ./data:/app/data
+      - ./models:/app/ml/examples/models
+      - ./scripts:/app/scripts  # Mount scripts directory
+    working_dir: /app
+    command: bash
+    profiles:
+      - dev

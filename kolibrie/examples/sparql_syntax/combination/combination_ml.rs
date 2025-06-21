@@ -351,22 +351,31 @@ RULE :TemperatureAlert(?room) :-
         }
     }
 
-    // Define the SELECT query separately 
+    // Define the SELECT query to get rooms with temperature alerts
     let select_query = r#"PREFIX ex: <http://example.org#>
 PREFIX sensor: <http://example.org/sensor#>
 
 SELECT ?room ?alert
 WHERE { 
-    RULE(:TemperatureAlert, ?room) .
-    ?room ex:temperatureAlert ?alert
+    ?room ex:temperatureAlert ?alert .
 }"#;
 
-    // Execute the SELECT query to get results
+    // Execute a query to get results
     let query_results = execute_query(select_query, &mut database);
-    println!("Final query results: {:?}", query_results);
+    println!("Final query results (rooms with temperature alerts): {:?}", query_results);
     
-    // To ensure we get the same functionality as the combined approach,
-    // also execute a query to show all room data for comparison
+    // Execute a query to show predictions for comparison
+    let predictions_query = r#"PREFIX sensor: <http://example.org/sensor#>
+SELECT ?room ?predicted_temp ?confidence
+WHERE {
+    ?room sensor:predictedTemperature ?predicted_temp ;
+          sensor:predictionConfidence ?confidence
+}"#;
+    
+    let predictions_results = execute_query(predictions_query, &mut database);
+    println!("ML Predictions in database: {:?}", predictions_results);
+    
+    // Execute a query to show all room data for comparison
     let all_rooms_query = r#"PREFIX sensor: <http://example.org/sensor#>
 SELECT ?room ?temp ?humidity ?occupancy
 WHERE {

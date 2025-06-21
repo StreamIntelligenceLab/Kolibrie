@@ -1,0 +1,149 @@
+# Git & version control
+.git
+.gitignore
+.gitattributes
+.gitmodules
+
+# Docker artifacts
+Dockerfile*
+.dockerignore
+docker-compose*.yml
+docker-compose*.yaml
+
+# Build artifacts & caches
+target/
+debug/
+build/
+dist/
+node_modules/
+.cargo/registry/
+.cargo/git/
+
+# Rust build-cache
+**/*.rs.bk
+*.pdb
+*.lib
+*.dll
+*.so
+
+# Rust metadata
+Cargo.lock
+.rustc_info.json
+
+# Python artifacts
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+*.egg
+.pytest_cache/
+.coverage
+.env*
+venv/
+env/
+python/.venv/
+
+# IDE & editor files
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+Thumbs.db
+
+# Logs & temp files
+*.log
+*.tmp
+*.temp
+logs/
+tmp/
+temp/
+
+# Test files & data
+tests/
+test/
+*_test.go
+*_test.rs
+*test*.py
+test_data/
+fixtures/
+py_tests/
+
+# CI/CD
+.github/
+.gitlab-ci.yml
+.travis.yml
+.circleci/
+Jenkinsfile
+
+# Package managers
+package-lock.json
+yarn.lock
+Pipfile.lock
+
+# OS-generated files
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+
+# Backup & old files
+*.bak
+*.backup
+*.old
+kolibrie/src/old_new.rs
+kolibrie/src/old.rs
+thesis.org
+unused_joins.txt
+TODO.txt
+DONE.txt
+IMPORTANT.txt
+
+# Large media & assets
+*.mp4
+*.avi
+*.mkv
+*.mov
+*.wmv
+*.flv
+*.webm
+*.m4v
+graphics.png
+flamegraph.svg
+/docs/logo/*
+
+# Model files
+*.model
+*.pkl
+*.joblib
+*.h5
+*.pb
+*.onnx
+*.tflite
+ml/src/models/
+ml/examples/models/
+
+# Data files
+*.rdf
+test_rdf.rdf
+synthetic_employee_data*.rdf
+*.csv
+*.json
+*.xml
+*.parquet
+datasets/
+data/
+
+# CUDA / CMake artifacts
+.cuda_status
+kolibrie/src/cuda/*.so
+kolibrie/src/cuda/*.dll
+kolibrie/src/cuda/cmake_install.cmake
+kolibrie/src/cuda/CMakeCache.txt
+kolibrie/src/cuda/output/
+kolibrie/src/cuda/CMakeFiles/
+kolibrie/src/cuda/Makefile
+kolibrie/src/cuda/cudajoin.*

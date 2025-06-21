@@ -378,21 +378,41 @@ RULE :SavingsAlert(?user) :-
         }
     }
 
-    // Define the SELECT query separately - update to match original query exactly
+    // Define the SELECT query to get users with savings alerts
     let select_query = r#"PREFIX finance: <http://example.org/finance#>
 PREFIX ex: <http://example.org#>
 
-SELECT ?user ?income ?spending ?savings_rate
+SELECT ?user ?alert
 WHERE { 
-    ?user finance:income ?income ;
-         finance:spending ?spending ;
-         finance:savings_rate ?savings_rate
+    ?user ex:savingsAlert ?alert .
 }"#;
 
-    // Execute the SELECT query to get results - use the same query that worked previously
+    // Execute the SELECT query to get results
     let query_results = execute_query(select_query, &mut database);
+    println!("Final query results (users with savings alerts): {:?}", query_results);
     
-    println!("\nFinal query results: {:?}", query_results);
+    // Execute a query to show predictions for comparison
+    let predictions_query = r#"PREFIX finance: <http://example.org/finance#>
+SELECT ?user ?predicted_savings ?confidence
+WHERE {
+    ?user finance:predictedSavings ?predicted_savings ;
+          finance:predictionConfidence ?confidence
+}"#;
+    
+    let predictions_results = execute_query(predictions_query, &mut database);
+    println!("ML Predictions in database: {:?}", predictions_results);
+    
+    // Execute a query to show all user financial data for comparison
+    let all_users_query = r#"PREFIX finance: <http://example.org/finance#>
+SELECT ?user ?income ?spending ?savings_rate
+WHERE {
+    ?user finance:income ?income ;
+          finance:spending ?spending ;
+          finance:savings_rate ?savings_rate
+}"#;
+    
+    let all_users_results = execute_query(all_users_query, &mut database);
+    println!("All user financial data: {:?}", all_users_results);
 
     Ok(())
 }
