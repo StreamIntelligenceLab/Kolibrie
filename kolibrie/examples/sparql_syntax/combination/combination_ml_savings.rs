@@ -263,7 +263,7 @@ RULE :SavingsAlert(?user) :-
             finance:spending ?spending .
         FILTER (?spending > 5200)
     }
-    ML.PREDICT(MODEL saving_predictor,
+    ML.PREDICT(MODEL "saving_predictor",
         INPUT {
             SELECT ?user ?income ?spending ?savings_rate
             WHERE {

@@ -91,7 +91,7 @@ impl KnowledgeGraph {
                         if matches_rule_pattern(&rule.premise[0], triple, &mut variable_bindings) {
                             // Now handle multiple conclusions
                             for conclusion in &rule.conclusion {
-                                let inferred = construct_triple(conclusion, &variable_bindings);
+                                let inferred = construct_triple(conclusion, &variable_bindings, &mut self.dictionary);
                                 inferred_facts.push(inferred);
                             }
                         }
@@ -109,7 +109,7 @@ impl KnowledgeGraph {
                             {
                                 // Now handle multiple conclusions
                                 for conclusion in &rule.conclusion {
-                                    let inferred = construct_triple(conclusion, &variable_bindings);
+                                    let inferred = construct_triple(conclusion, &variable_bindings, &mut self.dictionary);
                                     inferred_facts.push(inferred);
                                 }
                             }
@@ -142,7 +142,7 @@ impl KnowledgeGraph {
                     if evaluate_filters(&binding, &rule.filters, &self.dictionary) {
                         // Process each conclusion
                         for conclusion in &rule.conclusion {
-                            let inferred = construct_triple(conclusion, &binding);
+                            let inferred = construct_triple(conclusion, &binding, &mut self.dictionary);
                             // Insert into the index; if the fact is new, add it to new_delta
                             if self.index_manager.insert(&inferred) && !all_facts.contains(&inferred) {
                                 new_delta.insert(inferred.clone());
@@ -203,7 +203,7 @@ impl KnowledgeGraph {
                                     if matches_rule_pattern(&rule.premise[0], triple1, &mut variable_bindings) {
                                         // Process each conclusion
                                         for conclusion in &rule.conclusion {
-                                            let inferred = construct_triple(conclusion, &variable_bindings);
+                                            let inferred = construct_triple(conclusion, &variable_bindings, &mut self.dictionary.clone());
                                             if !all_facts_arc.contains(&inferred) {
                                                 local_set.insert(inferred);
                                             }
@@ -224,7 +224,7 @@ impl KnowledgeGraph {
                                                     // Process each conclusion
                                                     rule.conclusion.iter()
                                                         .filter_map(|conclusion| {
-                                                            let inferred = construct_triple(conclusion, &variable_bindings_2);
+                                                            let inferred = construct_triple(conclusion, &variable_bindings_2, &mut self.dictionary.clone());
                                                             if !all_facts_arc.contains(&inferred) {
                                                                 Some(inferred)
                                                             } else {
@@ -251,7 +251,7 @@ impl KnowledgeGraph {
                                                     // Process each conclusion
                                                     rule.conclusion.iter()
                                                         .filter_map(|conclusion| {
-                                                            let inferred = construct_triple(conclusion, &variable_bindings_2b);
+                                                            let inferred = construct_triple(conclusion, &variable_bindings_2b, &mut self.dictionary.clone());
                                                             if !all_facts_arc.contains(&inferred) {
                                                                 Some(inferred)
                                                             } else {
@@ -477,7 +477,7 @@ impl KnowledgeGraph {
                     if evaluate_filters(&binding, &rule.filters, &self.dictionary) {
                         // Process each conclusion
                         for conclusion in &rule.conclusion {
-                            let inferred = construct_triple(conclusion, &binding);
+                            let inferred = construct_triple(conclusion, &binding, &mut self.dictionary);
                             
                             // Check if adding this fact would cause inconsistency
                             let mut temp_facts = all_facts.clone();
@@ -672,6 +672,7 @@ fn rename_rule_variables(rule: &Rule, counter: &mut usize) -> Rule {
 pub struct DatalogEngine {
     pub facts: UnifiedIndex,
     pub rules: Vec<Rule>,
+    pub dictionary: Dictionary,
 }
 
 impl DatalogEngine {
@@ -680,6 +681,7 @@ impl DatalogEngine {
         Self {
             facts: kg.index_manager.clone(),
             rules: kg.rules.clone(),
+            dictionary: kg.dictionary.clone(),
         }
     }
 
@@ -701,7 +703,7 @@ impl DatalogEngine {
                             if matches_rule_pattern(p, fact, &mut vmap) {
                                 // Process each conclusion
                                 for conclusion in &rule.conclusion {
-                                    let inferred = construct_triple(conclusion, &vmap);
+                                    let inferred = construct_triple(conclusion, &vmap, &mut self.dictionary);
                                     // Insert if new
                                     if self.facts.insert(&inferred) {
                                         changed = true;
@@ -726,7 +728,7 @@ impl DatalogEngine {
                                 {
                                     // Process each conclusion
                                     for conclusion in &rule.conclusion {
-                                        let inferred = construct_triple(conclusion, &vmap);
+                                        let inferred = construct_triple(conclusion, &vmap, &mut self.dictionary);
                                         if self.facts.insert(&inferred) {
                                             changed = true;
                                         }
@@ -756,17 +758,41 @@ impl DatalogEngine {
 }
 
 /// Construct a new Triple from a conclusion pattern and bound variables
-fn construct_triple(conclusion: &TriplePattern, vars: &HashMap<String, u32>) -> Triple {
+fn construct_triple(
+    conclusion: &TriplePattern, 
+    vars: &HashMap<String, u32>, 
+    dict: &mut Dictionary
+) -> Triple {
     let subject = match &conclusion.0 {
-        Term::Variable(v) => *vars.get(v).unwrap(),
+        Term::Variable(v) => {
+            vars.get(v).copied().unwrap_or_else(|| {
+                eprintln!("Warning: Variable '{}' not found in bindings. Available variables: {:?}", v, vars.keys().collect::<Vec<_>>());
+                0
+            })
+        },
         Term::Constant(c) => *c,
     };
+    
     let predicate = match &conclusion.1 {
-        Term::Variable(v) => *vars.get(v).unwrap(),
+        Term::Variable(v) => {
+            vars.get(v).copied().unwrap_or_else(|| {
+                eprintln!("Warning: Variable '{}' not found in bindings. Available variables: {:?}", v, vars.keys().collect::<Vec<_>>());
+                0
+            })
+        },
         Term::Constant(c) => *c,
     };
+
     let object = match &conclusion.2 {
-        Term::Variable(v) => *vars.get(v).unwrap(),
+        Term::Variable(v) => {
+            // Check if this variable is bound in the current context
+            if let Some(&bound_value) = vars.get(v) {
+                bound_value
+            } else {
+                // If not bound, create a new placeholder in the dictionary
+                dict.encode(&format!("ml_output_placeholder_{}", v))
+            }
+        },
         Term::Constant(c) => *c,
     };
 

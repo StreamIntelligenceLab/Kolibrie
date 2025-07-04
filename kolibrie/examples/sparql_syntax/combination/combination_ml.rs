@@ -223,7 +223,7 @@ RULE :TemperatureAlert(?room) :-
             sensor:humidity ?humidity
         FILTER (?temp > 25)
     }
-    ML.PREDICT(MODEL temperature_predictor,
+    ML.PREDICT(MODEL "temperature_predictor",
         INPUT {
             SELECT ?room ?temp ?humidity ?occupancy
             WHERE {

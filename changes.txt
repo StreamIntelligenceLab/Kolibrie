@@ -60,6 +60,7 @@
 59. Add Dockerfile
 60. Minor fix in ML examples
 61. Minor fix of dependency vulnarability
+62. Modify ML by adding ability to link OUTPUT with CONSTRUCT clause
 
 0.1.0
 1. Parsing RDF/XML

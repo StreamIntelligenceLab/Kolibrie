@@ -845,10 +845,12 @@ pub fn parse_ml_predict(input: &str) -> IResult<&str, MLPredictClause> {
     let (input, _) = multispace0(input)?;
     let (input, _) = char('(')(input)?;
     let (input, _) = multispace0(input)?;
-    // Parse MODEL clause
+    // Parse MODEL clause with quoted name
     let (input, _) = tag("MODEL")(input)?;
     let (input, _) = multispace1(input)?;
-    let (input, model) = predicate(input)?;
+    let (input, _) = char('"')(input)?;  // Expect opening quote
+    let (input, model) = take_until("\"")(input)?;  // Take everything until closing quote
+    let (input, _) = char('"')(input)?;  // Expect closing quote
     let (input, _) = multispace0(input)?;
     let (input, _) = char(',')(input)?;
     let (input, _) = multispace0(input)?;
@@ -1111,10 +1113,53 @@ pub fn convert_combined_rule<'a>(
         .collect();
 
     // Convert all conclusion triples, preserving their structure
-    let conclusion_triples = cr.conclusion
+    let mut conclusion_triples: Vec<TriplePattern> = cr.conclusion
         .into_iter()
         .map(|triple| convert_triple_pattern(triple, dict, prefixes))
         .collect();
+
+    // Special handling for parameterless rules with ML.PREDICT
+    if let Some(ml_predict) = &cr.ml_predict {
+        if cr.head.arguments.is_empty() {
+            println!("Processing parameterless rule with ML.PREDICT");
+            
+            let ml_output_var = ml_predict.output.trim_start_matches('?');
+            println!("ML output variable: ?{}", ml_output_var);
+            
+            // Check if the conclusion triples contain the ML output variable
+            for (i, conclusion) in conclusion_triples.iter_mut().enumerate() {
+                println!("Checking conclusion pattern {}: {:?}", i, conclusion);
+                
+                // Check if the conclusion contains variables that need ML output
+                match &mut conclusion.2 {
+                    Term::Variable(var) if var == ml_output_var => {
+                        println!("Found ML output variable ?{} in conclusion object position", ml_output_var);
+                    },
+                    Term::Variable(var) if var == "level" => {
+                        // Replace generic 'level' variable with ML output variable
+                        *var = ml_output_var.to_string();
+                        println!("Replaced ?level with ML output variable ?{}", ml_output_var);
+                    },
+                    _ => {}
+                }
+                
+                // Also check subject and predicate positions
+                match &mut conclusion.0 {
+                    Term::Variable(var) if var == ml_output_var => {
+                        println!("Found ML output variable ?{} in conclusion subject position", ml_output_var);
+                    },
+                    _ => {}
+                }
+                
+                match &mut conclusion.1 {
+                    Term::Variable(var) if var == ml_output_var => {
+                        println!("Found ML output variable ?{} in conclusion predicate position", ml_output_var);
+                    },
+                    _ => {}
+                }
+            }
+        }
+    }
 
     Rule {
         premise: premise_patterns,
