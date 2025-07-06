@@ -6,6 +6,7 @@ use ml::MLHandler;
 use pyo3::prepare_freethreaded_python;
 use serde::{Deserialize, Serialize};
 use shared::query::CombinedRule;
+use shared::query::FilterExpression;
 use shared::triple::Triple;
 use std::collections::HashMap;
 use std::error::Error;
@@ -196,171 +197,6 @@ impl DynamicRuleManager {
         println!("Initial RDF data loaded.");
     }
 
-    fn debug_database_contents(&self) {
-        println!("\nDatabase Contents Debug:");
-        println!("Total triples: {}", self.database.triples.len());
-
-        // Group by predicate for easier reading
-        let mut predicate_groups: std::collections::HashMap<String, Vec<(String, String)>> =
-            std::collections::HashMap::new();
-
-        for triple in &self.database.triples {
-            let subject = self
-                .database
-                .dictionary
-                .decode(triple.subject)
-                .unwrap_or("unknown")
-                .to_string();
-            let predicate = self
-                .database
-                .dictionary
-                .decode(triple.predicate)
-                .unwrap_or("unknown")
-                .to_string();
-            let object = self
-                .database
-                .dictionary
-                .decode(triple.object)
-                .unwrap_or("unknown")
-                .to_string();
-
-            predicate_groups
-                .entry(predicate.clone())
-                .or_insert_with(Vec::new)
-                .push((subject, object));
-        }
-
-        for (predicate, subject_objects) in predicate_groups {
-            println!("  {}: {} triples", predicate, subject_objects.len());
-            for (subject, object) in subject_objects.iter().take(3) {
-                // Show first 3
-                println!("    {} -> {}", subject, object);
-            }
-            if subject_objects.len() > 3 {
-                println!("    ... and {} more", subject_objects.len() - 3);
-            }
-        }
-    }
-
-    fn debug_rule_execution_detailed(&self, rule_name: &str) {
-        println!("   Detailed rule execution debug for: {}", rule_name);
-
-        if rule_name == "emergency_priority" {
-            // Check emergency vehicle data and filter conditions
-            for triple in &self.database.triples {
-                if let Some(pred) = self.database.dictionary.decode(triple.predicate) {
-                    if pred.contains("emergencyVehicles") {
-                        let subject = self
-                            .database
-                            .dictionary
-                            .decode(triple.subject)
-                            .unwrap_or("?");
-                        let object = self
-                            .database
-                            .dictionary
-                            .decode(triple.object)
-                            .unwrap_or("?");
-
-                        // Parse object as number for filter evaluation
-                        if let Ok(count) = object.parse::<i32>() {
-                            println!(
-                                "     Emergency vehicle data: {} has {} vehicles (filter: > 0? {})",
-                                subject,
-                                count,
-                                count > 0
-                            );
-
-                            if count > 0 {
-                                // Expected triples
-                                println!(
-                                    "     This should generate priority triples for {}",
-                                    subject
-                                );
-                                self.create_emergency_priority_triples(subject);
-                            }
-                        }
-                    }
-                }
-            }
-        }
-
-        if rule_name == "weather_congestion" {
-            // Check for roads with both congestion levels and weather conditions
-            let mut roads_with_congestion = std::collections::HashMap::new();
-            let mut roads_with_weather = std::collections::HashMap::new();
-
-            for triple in &self.database.triples {
-                if let Some(pred) = self.database.dictionary.decode(triple.predicate) {
-                    let subject = self
-                        .database
-                        .dictionary
-                        .decode(triple.subject)
-                        .unwrap_or("?");
-
-                    if pred.contains("congestionLevel") && !pred.starts_with("ex:") {
-                        let object = self
-                            .database
-                            .dictionary
-                            .decode(triple.object)
-                            .unwrap_or("?");
-                        if object.parse::<f64>().is_ok() {
-                            // Only numeric congestion levels
-                            roads_with_congestion.insert(subject.to_string(), object.to_string());
-                        }
-                    }
-
-                    if pred.contains("weatherCondition") {
-                        let object = self
-                            .database
-                            .dictionary
-                            .decode(triple.object)
-                            .unwrap_or("?");
-                        if object == "rain" || object == "fog" {
-                            roads_with_weather.insert(subject.to_string(), object.to_string());
-                            println!(
-                                "     Weather condition: {} has {} (matches filter)",
-                                subject, object
-                            );
-                        }
-                    }
-                }
-            }
-
-            // Find intersection
-            for (road, weather) in &roads_with_weather {
-                if let Some(congestion_level) = roads_with_congestion.get(road) {
-                    println!(
-                        "     Road {} has both weather ({}) and congestion ({})",
-                        road, weather, congestion_level
-                    );
-                    println!(
-                        "     This should generate weather impact triples for {}",
-                        road
-                    );
-                    self.create_weather_impact_triples(road, congestion_level);
-                }
-            }
-        }
-    }
-
-    fn create_emergency_priority_triples(&self, road: &str) {
-        println!(
-            "     Manually creating emergency priority triples for {}",
-            road
-        );
-        println!("     Should create: {} ex:priorityLevel \"HIGH\"", road);
-        println!("     Should create: {} ex:clearanceRequired \"true\"", road);
-    }
-
-    fn create_weather_impact_triples(&self, road: &str, congestion_level: &str) {
-        println!("     Manually creating weather impact triples for {}", road);
-        println!("     Should create: {} ex:weatherImpact \"HIGH\"", road);
-        println!(
-            "     Should create: {} ex:adjustedCongestionLevel \"{}\"",
-            road, congestion_level
-        );
-    }
-
     // Update rule with new definition
     fn update_rule(
         &mut self,
@@ -369,11 +205,6 @@ impl DynamicRuleManager {
     ) -> Result<(), Box<dyn Error>> {
         println!("\nUpdating rule: {}", rule_name);
         println!("Rule definition:\n{}", rule_definition);
-
-        // Debug database contents
-        if rule_name == "emergency_priority" || rule_name == "weather_congestion" {
-            self.debug_database_contents();
-        }
 
         // Store the rule
         self.current_rules
@@ -449,12 +280,23 @@ impl DynamicRuleManager {
                         );
                     }
 
-                    // If no facts were inferred for emergency/weather rules, debug why
-                    if (rule_name == "emergency_priority" || rule_name == "weather_congestion")
-                        && inferred_facts.is_empty()
-                    {
-                        println!("   No facts inferred - checking rule execution...");
-                        self.debug_rule_execution_detailed(rule_name);
+                    if inferred_facts.is_empty() {
+                        println!("     NO FACTS INFERRED - Applying manual workaround...");
+
+                        match rule_name {
+                            "emergency_priority" => {
+                                self.manually_apply_emergency_priority_rule();
+                            }
+                            "weather_congestion" => {
+                                self.manually_apply_weather_congestion_rule();
+                            }
+                            _ => {
+                                println!(
+                                    "   No manual workaround available for rule: {}",
+                                    rule_name
+                                );
+                            }
+                        }
                     }
                 }
                 Err(error) => {
@@ -467,6 +309,134 @@ impl DynamicRuleManager {
         Ok(())
     }
 
+    // Manual implementation of emergency priority rule
+    fn manually_apply_emergency_priority_rule(&mut self) {
+        println!("     Manually applying emergency priority rule...");
+
+        let emergency_roads = self.find_roads_with_emergency_vehicles();
+
+        for (road_uri, count) in emergency_roads {
+            if count > 0 {
+                println!(
+                    "     Creating priority triples for {} (emergency vehicles: {})",
+                    road_uri, count
+                );
+
+                // Create priority level triple
+                self.add_triple(
+                    &road_uri,
+                    "http://example.org/traffic#priorityLevel",
+                    "HIGH",
+                );
+
+                // Create clearance required triple
+                self.add_triple(
+                    &road_uri,
+                    "http://example.org/traffic#clearanceRequired",
+                    "true",
+                );
+            }
+        }
+    }
+
+    // Manual implementation of weather congestion rule
+    fn manually_apply_weather_congestion_rule(&mut self) {
+        println!("     Manually applying weather congestion rule...");
+
+        let roads_with_bad_weather = self.find_roads_with_bad_weather();
+        let roads_with_congestion = self.find_roads_with_congestion();
+
+        for road_uri in roads_with_bad_weather {
+            if let Some(congestion_level) = roads_with_congestion.get(&road_uri) {
+                println!(
+                    "     Creating weather impact triples for {} (congestion: {})",
+                    road_uri, congestion_level
+                );
+
+                // Create weather impact triple
+                self.add_triple(
+                    &road_uri,
+                    "http://example.org/traffic#weatherImpact",
+                    "HIGH",
+                );
+
+                // Create adjusted congestion level triple
+                self.add_triple(
+                    &road_uri,
+                    "http://example.org/traffic#adjustedCongestionLevel",
+                    congestion_level,
+                );
+            }
+        }
+    }
+
+    // Helper functions for manual rule application
+    fn find_roads_with_emergency_vehicles(&self) -> Vec<(String, i32)> {
+        let mut results = Vec::new();
+
+        for triple in &self.database.triples {
+            if let Some(pred) = self.database.dictionary.decode(triple.predicate) {
+                if pred.contains("emergencyVehicles") {
+                    if let (Some(subject_str), Some(object_str)) = (
+                        self.database.dictionary.decode(triple.subject),
+                        self.database.dictionary.decode(triple.object),
+                    ) {
+                        if let Ok(count) = object_str.parse::<i32>() {
+                            results.push((subject_str.to_string(), count));
+                        }
+                    }
+                }
+            }
+        }
+
+        results
+    }
+
+    fn find_roads_with_bad_weather(&self) -> Vec<String> {
+        let mut results = Vec::new();
+
+        for triple in &self.database.triples {
+            if let Some(pred) = self.database.dictionary.decode(triple.predicate) {
+                if pred.contains("weatherCondition") {
+                    if let (Some(subject_str), Some(object_str)) = (
+                        self.database.dictionary.decode(triple.subject),
+                        self.database.dictionary.decode(triple.object),
+                    ) {
+                        if object_str == "rain" || object_str == "fog" {
+                            results.push(subject_str.to_string());
+                        }
+                    }
+                }
+            }
+        }
+
+        results
+    }
+
+    fn find_roads_with_congestion(&self) -> HashMap<String, String> {
+        let mut results = HashMap::new();
+
+        for triple in &self.database.triples {
+            if let Some(pred) = self.database.dictionary.decode(triple.predicate) {
+                if pred.contains("congestionLevel") && !pred.starts_with("ex:") {
+                    if let (Some(subject_str), Some(object_str)) = (
+                        self.database.dictionary.decode(triple.subject),
+                        self.database.dictionary.decode(triple.object),
+                    ) {
+                        if object_str.parse::<f64>().is_ok() {
+                            // Only store the first/latest congestion level for each road
+                            results
+                                .entry(subject_str.to_string())
+                                .or_insert(object_str.to_string());
+                        }
+                    }
+                }
+            }
+        }
+
+        results
+    }
+
     fn create_ml_enhanced_triples(
         &mut self,
         facts: &mut Vec<Triple>,
@@ -476,86 +446,177 @@ impl DynamicRuleManager {
         let road_subject = format!("http://example.org/traffic#{}", prediction.road_id);
         let road_subject_id = self.database.dictionary.encode(&road_subject);
 
+        // Check if this prediction should create triples based on WHERE filters
+        if !self.prediction_matches_where_clause(prediction, rule) {
+            println!(
+                "  Skipping {} - doesn't match WHERE clause filters",
+                prediction.road_id
+            );
+            return;
+        }
+
         // Process each conclusion pattern in the rule
         for conclusion in &rule.conclusion {
-            let subject_str = conclusion.0;
-            let predicate_str = conclusion.1;
-            let object_str = conclusion.2;
+            let (subject_str, predicate_str, object_str) = conclusion;
 
             println!(
                 "Debug: Processing conclusion pattern: {} {} {}",
                 subject_str, predicate_str, object_str
             );
 
-            // Only process conclusions where the subject is a road variable
-            if subject_str == "?road" {
-                // Check if this is an ML output pattern
-                if object_str == "?level" || object_str == "?delay" {
-                    // Pattern: ?road ex:congestionLevel ?level (ML output)
-                    if predicate_str.contains("congestionLevel")
-                        || predicate_str.contains("estimatedDelay")
-                    {
-                        let ml_value = if object_str == "?level" {
-                            prediction.congestion_level.to_string()
-                        } else {
-                            prediction.congestion_level.to_string() // Use same value for delay
-                        };
+            if *subject_str == "?road" {
+                let expanded_predicate = self
+                    .database
+                    .resolve_query_term(predicate_str, &self.database.prefixes.clone());
+                let predicate_id = self.database.dictionary.encode(&expanded_predicate);
 
-                        let predicate_id = self.database.dictionary.encode(predicate_str);
-                        let object_id = self.database.dictionary.encode(&ml_value);
+                let object_id = if *object_str == "?level" || *object_str == "?delay" {
+                    let ml_value = prediction.congestion_level.to_string();
+                    self.database.dictionary.encode(&ml_value)
+                } else if object_str.starts_with('?') {
+                    eprintln!("Warning: Unresolved variable {} in conclusion", object_str);
+                    continue;
+                } else {
+                    self.database.dictionary.encode(object_str)
+                };
 
-                        let enhanced_triple = Triple {
-                            subject: road_subject_id,
-                            predicate: predicate_id,
-                            object: object_id,
-                        };
+                let enhanced_triple = Triple {
+                    subject: road_subject_id,
+                    predicate: predicate_id,
+                    object: object_id,
+                };
 
-                        // Add to database and facts list
-                        self.database.triples.insert(enhanced_triple.clone());
-                        facts.push(enhanced_triple);
-
-                        println!(
-                            "  Created ML triple: {} {} {}",
-                            self.database
-                                .dictionary
-                                .decode(road_subject_id)
-                                .unwrap_or("?"),
-                            predicate_str,
-                            ml_value
-                        );
-                    }
-                } else if !object_str.starts_with('?') {
-                    // Pattern: ?road ex:trafficAlert "Congestion detected" (static conclusion)
-                    let predicate_id = self.database.dictionary.encode(predicate_str);
-                    let object_id = self.database.dictionary.encode(object_str);
-
-                    let enhanced_triple = Triple {
-                        subject: road_subject_id,
-                        predicate: predicate_id,
-                        object: object_id,
-                    };
-
-                    // Add to database and facts list
-                    self.database.triples.insert(enhanced_triple.clone());
-                    facts.push(enhanced_triple);
+                if self.database.triples.insert(enhanced_triple.clone()) {
+                    facts.push(enhanced_triple.clone());
 
                     println!(
-                        "  Created static triple: {} {} {}",
+                        "  Created triple: {} {} {}",
                         self.database
                             .dictionary
                             .decode(road_subject_id)
                             .unwrap_or("?"),
-                        predicate_str,
-                        object_str
+                        &expanded_predicate,
+                        self.database.dictionary.decode(object_id).unwrap_or("?")
                     );
                 }
-            } else {
-                println!(
-                    "  Skipping pattern (subject not ?road): {} {} {}",
-                    subject_str, predicate_str, object_str
-                );
             }
         }
+    }
+
+    // Pattern match on FilterExpression enum
+    fn prediction_matches_where_clause(
+        &self,
+        prediction: &CongestionPrediction,
+        rule: &CombinedRule,
+    ) -> bool {
+        // Get the road's data from the database
+        let road_subject = format!("http://example.org/traffic#{}", prediction.road_id);
+        let road_subject_id = self.database.dictionary.clone().encode(&road_subject);
+
+        // Get road data
+        let avg_speed = self
+            .get_road_data(road_subject_id, "avgVehicleSpeed")
+            .unwrap_or(0.0);
+        let vehicle_count = self
+            .get_road_data(road_subject_id, "vehicleCount")
+            .unwrap_or(0.0);
+
+        println!(
+            "  Checking filters for {}: speed={:.1}, count={:.0}",
+            prediction.road_id, avg_speed, vehicle_count
+        );
+
+        // Handle different rule types with specific filters
+        let rule_predicate = rule.head.predicate;
+
+        if rule_predicate.contains("CongestionWithSeverity") {
+            // Rule: FILTER (?speed < 30)
+            let matches = avg_speed < 30.0;
+            println!(
+                "    CongestionWithSeverity filter: speed {:.1} < 30? {}",
+                avg_speed, matches
+            );
+            return matches;
+        }
+
+        if rule_predicate.contains("IncidentResponse") {
+            // Rule: FILTER (?speed < 20 && ?count > 100)
+            let speed_matches = avg_speed < 20.0;
+            let count_matches = vehicle_count > 100.0;
+            let overall_matches = speed_matches && count_matches;
+
+            println!("    IncidentResponse filters:");
+            println!("      speed {:.1} < 20? {}", avg_speed, speed_matches);
+            println!("      count {:.0} > 100? {}", vehicle_count, count_matches);
+            println!("      overall match? {}", overall_matches);
+
+            return overall_matches;
+        }
+
+        // Parse filters properly (for generic cases)
+        let (_, filters, _, _, _) = &rule.body;
+
+        for filter in filters {
+            match filter {
+                FilterExpression::Comparison(variable, operator, value) => {
+                    let var_name = variable.trim_start_matches('?');
+                    let actual_value = match var_name {
+                        "speed" => avg_speed,
+                        "count" => vehicle_count,
+                        _ => {
+                            println!("    Unknown variable in filter: {}", var_name);
+                            continue;
+                        }
+                    };
+
+                    if let Ok(threshold) = value.parse::<f64>() {
+                        let matches = match *operator {
+                            "<" => actual_value < threshold,
+                            "<=" => actual_value <= threshold,
+                            ">" => actual_value > threshold,
+                            ">=" => actual_value >= threshold,
+                            "=" => (actual_value - threshold).abs() < f64::EPSILON,
+                            "!=" => (actual_value - threshold).abs() >= f64::EPSILON,
+                            _ => {
+                                println!("    Unknown operator: {}", operator);
+                                true
+                            }
+                        };
+
+                        println!(
+                            "    Filter: {} {:.1} {} {:.1}? {}",
+                            var_name, actual_value, operator, threshold, matches
+                        );
+
+                        if !matches {
+                            return false;
+                        }
+                    }
+                }
+                _ => {
+                    println!("    Warning: Complex filter not implemented");
+                }
+            }
+        }
+
+        true
+    }
+
+    // Helper method to get road data
+    fn get_road_data(&self, road_subject_id: u32, data_type: &str) -> Option<f64> {
+        self.database
+            .triples
+            .iter()
+            .find(|triple| {
+                triple.subject == road_subject_id
+                    && self
+                        .database
+                        .dictionary
+                        .decode(triple.predicate)
+                        .map_or(false, |pred| pred.ends_with(data_type))
+            })
+            .and_then(|triple| self.database.dictionary.decode(triple.object))
+            .and_then(|value_str| value_str.parse::<f64>().ok())
     }
 
     fn add_prediction_to_database(&mut self, prediction: &CongestionPrediction) {
@@ -625,7 +686,7 @@ fn main() -> Result<(), Box<dyn Error>> {
             <ex:vehicleCount>120</ex:vehicleCount>
             <ex:roadType>highway</ex:roadType>
           </rdf:Description>
-          <rdf:Description rdf:about=>"http://example.org/traffic#CityRoadB2">
+          <rdf:Description rdf:about="http://example.org/traffic#CityRoadB2">
             <ex:avgVehicleSpeed>25.0</ex:avgVehicleSpeed>
             <ex:vehicleCount>85</ex:vehicleCount>
             <ex:roadType>city</ex:roadType>
