@@ -545,6 +545,187 @@ impl SparqlDatabase {
         }
     }
 
+    // New parse_ntriples function
+    pub fn parse_ntriples(&mut self, ntriples_data: &str) {
+        let lines: Vec<&str> = ntriples_data.lines().collect();
+        let chunk_size = 1000;
+        let chunks: Vec<&[&str]> = lines.chunks(chunk_size).collect();
+
+        let partial_results: Vec<Vec<(String, String, String)>> = chunks
+            .par_iter()
+            .map(|chunk| {
+                let mut local_triples = Vec::new();
+
+                for line in chunk.iter() {
+                    let line = line.trim();
+                    
+                    // Skip empty lines and comments
+                    if line.is_empty() || line.starts_with('#') {
+                        continue;
+                    }
+                    
+                    // N-Triples must end with a dot
+                    if !line.ends_with('.') {
+                        eprintln!("Invalid N-Triples line (missing dot): {}", line);
+                        continue;
+                    }
+                    
+                    // Remove the trailing dot
+                    let line_without_dot = &line[..line.len() - 1].trim();
+                    
+                    // Parse the triple
+                    if let Some((subject, predicate, object)) = self.parse_ntriples_line(line_without_dot) {
+                        local_triples.push((subject, predicate, object));
+                    }
+                }
+                
+                local_triples
+            })
+            .collect();
+
+        // Merge results with main dictionary
+        for triple_strings in partial_results {
+            for (subject, predicate, object) in triple_strings {
+                let main_triple = Triple {
+                    subject: self.dictionary.encode(&subject),
+                    predicate: self.dictionary.encode(&predicate),
+                    object: self.dictionary.encode(&object),
+                };
+                self.triples.insert(main_triple);
+            }
+        }
+    }
+
+    // Helper method to parse a single N-Triples line
+    fn parse_ntriples_line(&self, line: &str) -> Option<(String, String, String)> {
+        let mut parts = Vec::new();
+        let mut current_part = String::new();
+        let mut in_uri = false;
+        let mut in_literal = false;
+        let mut escaped = false;
+        let mut chars = line.chars().peekable();
+
+        while let Some(ch) = chars.next() {
+            match ch {
+                '<' if !in_literal && !escaped => {
+                    in_uri = true;
+                    current_part.push(ch);
+                }
+                '>' if in_uri && !escaped => {
+                    in_uri = false;
+                    current_part.push(ch);
+                    parts.push(current_part.trim().to_string());
+                    current_part.clear();
+                }
+                '"' if !in_uri && !escaped => {
+                    in_literal = !in_literal;
+                    current_part.push(ch);
+                    if !in_literal {
+                        // Check for datatype or language tag after closing quote
+                        while let Some(&next_ch) = chars.peek() {
+                            if next_ch == '^' || next_ch == '@' {
+                                current_part.push(chars.next().unwrap());
+                                // Handle ^^ for datatypes
+                                if next_ch == '^' {
+                                    if let Some(&second_caret) = chars.peek() {
+                                        if second_caret == '^' {
+                                            current_part.push(chars.next().unwrap());
+                                            // Now consume the datatype URI
+                                            while let Some(&datatype_ch) = chars.peek() {
+                                                if datatype_ch == '<' {
+                                                    // Start of datatype URI
+                                                    current_part.push(chars.next().unwrap());
+                                                    let mut in_datatype_uri = true;
+                                                    while let Some(&uri_ch) = chars.peek() {
+                                                        current_part.push(chars.next().unwrap());
+                                                        if uri_ch == '>' {
+                                                            in_datatype_uri = false;
+                                                            break;
+                                                        }
+                                                    }
+                                                    if !in_datatype_uri {
+                                                        break;
+                                                    }
+                                                } else if datatype_ch.is_whitespace() {
+                                                    break;
+                                                } else {
+                                                    current_part.push(chars.next().unwrap());
+                                                }
+                                            }
+                                        }
+                                    }
+                                } else if next_ch == '@' {
+                                    // Language tag
+                                    while let Some(&lang_ch) = chars.peek() {
+                                        if lang_ch.is_alphanumeric() || lang_ch == '-' {
+                                            current_part.push(chars.next().unwrap());
+                                        } else {
+                                            break;
+                                        }
+                                    }
+                                }
+                                break;
+                            } else if next_ch.is_whitespace() {
+                                break;
+                            } else {
+                                // Unexpected character after literal
+                                break;
+                            }
+                        }
+                        parts.push(current_part.trim().to_string());
+                        current_part.clear();
+                    }
+                }
+                '\\' if (in_uri || in_literal) && !escaped => {
+                    escaped = true;
+                    current_part.push(ch);
+                }
+                ' ' | '\t' if !in_uri && !in_literal && !escaped => {
+                    if !current_part.is_empty() {
+                        parts.push(current_part.trim().to_string());
+                        current_part.clear();
+                    }
+                }
+                _ => {
+                    escaped = false;
+                    current_part.push(ch);
+                }
+            }
+        }
+
+        if !current_part.is_empty() {
+            parts.push(current_part.trim().to_string());
+        }
+
+        if parts.len() == 3 {
+            let subject = self.clean_ntriples_term(&parts[0]);
+            let predicate = self.clean_ntriples_term(&parts[1]);
+            let object = self.clean_ntriples_term(&parts[2]);
+            Some((subject, predicate, object))
+        } else {
+            eprintln!("Invalid N-Triples line (expected 3 parts, got {}): {}", parts.len(), line);
+            None
+        }
+    }
+
+    // Helper method to clean N-Triples terms
+    fn clean_ntriples_term(&self, term: &str) -> String {
+        let term = term.trim();
+        
+        // Handle URIs
+        if term.starts_with('<') && term.ends_with('>') {
+            return term[1..term.len()-1].to_string();
+        }
+        
+        // Handle literals (keep quotes and datatype/language info)
+        if term.starts_with('"') {
+            return term.to_string();
+        }
+        
+        // Return as-is for other cases
+        term.to_string()
+    }
+
     fn parse_statement(&mut self, statement: &str) {
         let mut tokens = statement.split_whitespace().peekable();
         let mut subject = String::new();

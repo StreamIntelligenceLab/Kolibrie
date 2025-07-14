@@ -67,6 +67,8 @@
 66. Add tests for QueryBuilder
 67. Modify wrapper of QueryBuilder by adding RSP
 68. Add an example in Python for RSP
+69. Add N-Triples parser
+70. Add in some files license header
 
 0.1.0
 1. Parsing RDF/XML
