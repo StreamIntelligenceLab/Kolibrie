@@ -685,6 +685,7 @@ dependencies = [
  "rand",
  "rayon",
  "regex",
+ "rsp",
  "rumqttc",
  "serde",
  "serde_json",
@@ -1006,6 +1007,7 @@ dependencies = [
  "datalog",
  "kolibrie",
  "pyo3",
+ "rsp",
  "shared",
 ]
 

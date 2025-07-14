@@ -9,9 +9,32 @@
  */
 
 use crate::sparql_database::SparqlDatabase;
+use rsp::r2s::{Relation2StreamOperator, StreamOperator};
+use rsp::s2r::{CSPARQLWindow, ContentContainer, Report, ReportStrategy, Tick, WindowTriple};
 use shared::triple::Triple;
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, HashSet};
 use std::fmt;
+use std::sync::mpsc::Receiver;
+use std::sync::{Arc, Mutex};
+
+#[derive(Debug, Clone)]
+pub struct WindowConfig {
+    pub width: usize,
+    pub slide: usize,
+    pub report_strategies: Vec<ReportStrategy>,
+    pub tick_strategy: Tick,
+}
+
+impl Default for WindowConfig {
+    fn default() -> Self {
+        Self {
+            width: 100,
+            slide: 10,
+            report_strategies: vec![ReportStrategy::OnWindowClose],
+            tick_strategy: Tick::TimeDriven,
+        }
+    }
+}
 
 pub struct QueryBuilder<'a> {
     db: &'a SparqlDatabase,
@@ -26,25 +49,45 @@ pub struct QueryBuilder<'a> {
     sort_direction: SortDirection,
     limit: Option<usize>,
     offset: Option<usize>,
+
+    // RSP Integration fields
+    window_config: Option<WindowConfig>,
+    stream_operator: Option<StreamOperator>,
+    r2s_operator: Option<Relation2StreamOperator<Triple>>,
+    window_instance: Option<CSPARQLWindow<WindowTriple>>,
+    window_receiver: Option<Receiver<ContentContainer<WindowTriple>>>,
+    stream_results: Arc<Mutex<Vec<Vec<Triple>>>>,
+    current_timestamp: usize,
+    is_streaming: bool,
 }
 
 impl<'a> Clone for QueryBuilder<'a> {
     fn clone(&self) -> Self {
         QueryBuilder {
-            db:             self.db,
+            db: self.db,
             subject_filter: self.subject_filter.clone(),
             predicate_filter: self.predicate_filter.clone(),
-            object_filter:  self.object_filter.clone(),
+            object_filter: self.object_filter.clone(),
             // we cannot clone custom closures, so we just drop them:
-            custom_filter:  None,
+            custom_filter: None,
             join_conditions: self.join_conditions.clone(),
-            join_db:        self.join_db,
+            join_db: self.join_db,
             distinct_results: self.distinct_results,
             // likewise drop any sort_key:
-            sort_key:       None,
+            sort_key: None,
             sort_direction: self.sort_direction,
-            limit:          self.limit,
-            offset:         self.offset,
+            limit: self.limit,
+            offset: self.offset,
+
+            // RSP fields - reset for cloned instance
+            window_config: self.window_config.clone(),
+            stream_operator: self.stream_operator.clone(),
+            r2s_operator: None,    // Will be recreated if needed
+            window_instance: None, // Will be recreated if needed
+            window_receiver: None,
+            stream_results: Arc::new(Mutex::new(Vec::new())),
+            current_timestamp: 0,
+            is_streaming: false,
         }
     }
 }
@@ -109,10 +152,10 @@ impl fmt::Debug for JoinCondition {
 impl Clone for JoinCondition {
     fn clone(&self) -> Self {
         match self {
-            JoinCondition::OnSubject    => JoinCondition::OnSubject,
-            JoinCondition::OnPredicate  => JoinCondition::OnPredicate,
-            JoinCondition::OnObject     => JoinCondition::OnObject,
-            JoinCondition::Custom(_)    => {
+            JoinCondition::OnSubject => JoinCondition::OnSubject,
+            JoinCondition::OnPredicate => JoinCondition::OnPredicate,
+            JoinCondition::OnObject => JoinCondition::OnObject,
+            JoinCondition::Custom(_) => {
                 panic!("Cannot clone JoinCondition::Custom")
             }
         }
@@ -127,8 +170,6 @@ pub enum SortDirection {
 }
 
 impl<'a> QueryBuilder<'a> {
-    // Rest of the implementation remains the same...
-    
     /// Creates a new QueryBuilder for the given SparqlDatabase
     pub fn new(db: &'a SparqlDatabase) -> Self {
         Self {
@@ -144,9 +185,19 @@ impl<'a> QueryBuilder<'a> {
             sort_direction: SortDirection::Ascending,
             limit: None,
             offset: None,
+
+            // RSP fields
+            window_config: None,
+            stream_operator: None,
+            r2s_operator: None,
+            window_instance: None,
+            window_receiver: None,
+            stream_results: Arc::new(Mutex::new(Vec::new())),
+            current_timestamp: 0,
+            is_streaming: false,
         }
     }
-    
+
     /// Filter triples by exact subject value
     pub fn with_subject(mut self, subject: &str) -> Self {
         self.subject_filter = Some(TripleFilter::Exact(subject.to_string()));
@@ -302,7 +353,12 @@ impl<'a> QueryBuilder<'a> {
     
     /// Get the raw triple results
     pub fn get_triples(self) -> BTreeSet<Triple> {
-        self.apply_filters()
+        if self.is_streaming {
+            // For streaming queries, return empty set as results come through stream
+            BTreeSet::new()
+        } else {
+            self.apply_filters()
+        }
     }
     
     /// Get results as decoded (subject, predicate, object) tuples
@@ -418,8 +474,6 @@ impl<'a> QueryBuilder<'a> {
         groups
     }
     
-    // PRIVATE HELPER METHODS
-    
     // Applies all the configured filters and returns the matching triples
     fn apply_filters(self) -> BTreeSet<Triple> {
         let mut results = BTreeSet::new();
@@ -477,17 +531,12 @@ impl<'a> QueryBuilder<'a> {
             }
         }
         
-        // Apply distinct if requested
-        // (BTreeSet already ensures uniqueness)
-        
         // Apply sorting if specified
         if let Some(key_fn) = self.sort_key {
             let mut sorted: Vec<Triple> = results.into_iter().collect();
             match self.sort_direction {
                 SortDirection::Ascending => sorted.sort_by_key(|t| key_fn(t)),
-                SortDirection::Descending => {
-                    sorted.sort_by(|a, b| key_fn(b).cmp(&key_fn(a)))
-                }
+                SortDirection::Descending => sorted.sort_by(|a, b| key_fn(b).cmp(&key_fn(a))),
             }
             results = sorted.into_iter().collect();
         }
@@ -581,5 +630,254 @@ impl<'a> QueryBuilder<'a> {
         }
         
         joined_triples
+    }
+
+    /// Configure windowing for stream processing
+    pub fn window(mut self, width: usize, slide: usize) -> Self {
+        let mut config = self.window_config.unwrap_or_default();
+        config.width = width;
+        config.slide = slide;
+        self.window_config = Some(config);
+        self
+    }
+
+    /// Add a report strategy for window processing
+    pub fn with_report_strategy(mut self, strategy: ReportStrategy) -> Self {
+        let mut config = self.window_config.unwrap_or_default();
+        config.report_strategies.push(strategy);
+        self.window_config = Some(config);
+        self
+    }
+
+    /// Set the tick strategy for window processing
+    pub fn with_tick_strategy(mut self, tick: Tick) -> Self {
+        let mut config = self.window_config.unwrap_or_default();
+        config.tick_strategy = tick;
+        self.window_config = Some(config);
+        self
+    }
+
+    /// Configure stream operator (RSTREAM, ISTREAM, DSTREAM)
+    pub fn with_stream_operator(mut self, operator: StreamOperator) -> Self {
+        self.stream_operator = Some(operator);
+        self
+    }
+
+    /// Initialize streaming mode
+    pub fn as_stream(mut self) -> Result<Self, String> {
+        // Initialize window if configured
+        if let Some(config) = &self.window_config {
+            let mut report = Report::new();
+            for strategy in &config.report_strategies {
+                match strategy {
+                    ReportStrategy::OnWindowClose => report.add(ReportStrategy::OnWindowClose),
+                    ReportStrategy::NonEmptyContent => report.add(ReportStrategy::NonEmptyContent),
+                    ReportStrategy::OnContentChange => report.add(ReportStrategy::OnContentChange),
+                    ReportStrategy::Periodic(p) => report.add(ReportStrategy::Periodic(*p)),
+                }
+            }
+
+            let mut window = CSPARQLWindow::new(
+                config.width,
+                config.slide,
+                report,
+                config.tick_strategy.clone(),
+            );
+            let receiver = window.register();
+            self.window_receiver = Some(receiver);
+            self.window_instance = Some(window);
+        }
+
+        // Initialize stream operator if configured
+        if let Some(ref stream_op) = self.stream_operator {
+            self.r2s_operator = Some(Relation2StreamOperator::new(
+                stream_op.clone(),
+                self.current_timestamp,
+            ));
+        }
+
+        self.is_streaming = true;
+        Ok(self)
+    }
+
+    /// Add a streaming triple
+    pub fn add_stream_triple(
+        &mut self,
+        subject: &str,
+        predicate: &str,
+        object: &str,
+        timestamp: usize,
+    ) -> Result<(), String> {
+        if !self.is_streaming {
+            return Err("Query not in streaming mode. Call as_stream() first.".to_string());
+        }
+
+        if let Some(ref mut window) = self.window_instance {
+            let triple = WindowTriple {
+                s: subject.to_string(),
+                p: predicate.to_string(),
+                o: object.to_string(),
+            };
+
+            window.add_to_window(triple, timestamp);
+            self.current_timestamp = timestamp;
+            Ok(())
+        } else {
+            Err("No window configured for streaming.".to_string())
+        }
+    }
+
+    /// Process pending window results and return streaming query results
+    pub fn get_stream_results(&mut self) -> Vec<Vec<Triple>> {
+        if !self.is_streaming {
+            return Vec::new();
+        }
+
+        let mut results = Vec::new();
+
+        if let Some(ref receiver) = self.window_receiver {
+            // Process all available window results
+            while let Ok(content) = receiver.try_recv() {
+                // Execute query on window content
+                let window_results = self.execute_query_on_window_content(&content);
+
+                // Apply stream operator if configured
+                if let Some(ref mut r2s_op) = self.r2s_operator {
+                    let stream_results = r2s_op.eval(window_results, self.current_timestamp);
+                    if !stream_results.is_empty() {
+                        results.push(stream_results);
+                    }
+                } else {
+                    if !window_results.is_empty() {
+                        results.push(window_results);
+                    }
+                }
+            }
+        }
+
+        // Store results
+        if !results.is_empty() {
+            let mut stored_results = self.stream_results.lock().unwrap();
+            stored_results.extend(results.clone());
+        }
+
+        results
+    }
+
+    /// Get all accumulated streaming results
+    pub fn get_all_stream_results(&self) -> Vec<Vec<Triple>> {
+        self.stream_results.lock().unwrap().clone()
+    }
+
+    /// Clear accumulated streaming results
+    pub fn clear_stream_results(&mut self) {
+        self.stream_results.lock().unwrap().clear();
+    }
+
+    /// Stop streaming mode
+    pub fn stop_stream(&mut self) {
+        if let Some(ref mut window) = self.window_instance {
+            window.stop();
+        }
+        self.is_streaming = false;
+    }
+
+    /// Check if currently in streaming mode
+    pub fn is_streaming(&self) -> bool {
+        self.is_streaming
+    }
+
+    // Helper method to execute query on window content
+    fn execute_query_on_window_content(
+        &self,
+        content: &ContentContainer<WindowTriple>,
+    ) -> Vec<Triple> {
+        let mut matching_triples = Vec::new();
+
+        // Convert WindowTriple to Triple and apply filters
+        for window_triple in content.iter() {
+            // Check if this triple matches our filters
+            let mut matches = true;
+
+            // Apply subject filter
+            if let Some(filter) = &self.subject_filter {
+                matches &= Self::apply_filter(filter, &window_triple.s);
+            }
+
+            // Apply predicate filter
+            if matches {
+                if let Some(filter) = &self.predicate_filter {
+                    matches &= Self::apply_filter(filter, &window_triple.p);
+                }
+            }
+
+            // Apply object filter
+            if matches {
+                if let Some(filter) = &self.object_filter {
+                    matches &= Self::apply_filter(filter, &window_triple.o);
+                }
+            }
+
+            if matches {
+                // Convert to Triple (simplified encoding)
+                // In practice, you'd want to use proper dictionary encoding
+                let triple = Triple {
+                    subject: self.encode_string(&window_triple.s),
+                    predicate: self.encode_string(&window_triple.p),
+                    object: self.encode_string(&window_triple.o),
+                };
+
+                // Apply custom filter if present
+                if let Some(custom_filter) = &self.custom_filter {
+                    if custom_filter(&triple) {
+                        matching_triples.push(triple);
+                    }
+                } else {
+                    matching_triples.push(triple);
+                }
+            }
+        }
+
+        // Apply sorting, limiting, etc.
+        self.post_process_results(matching_triples)
+    }
+
+    // Helper method for string encoding (simplified)
+    fn encode_string(&self, s: &str) -> u32 {
+        // This is a simplified encoding - in practice use your dictionary
+        s.len() as u32
+    }
+
+    // Helper method to post-process results
+    fn post_process_results(&self, mut results: Vec<Triple>) -> Vec<Triple> {
+        // Apply distinct if requested
+        if self.distinct_results {
+            let mut seen = HashSet::new();
+            results.retain(|triple| seen.insert(triple.clone()));
+        }
+
+        // Apply sorting if specified
+        if let Some(key_fn) = &self.sort_key {
+            match self.sort_direction {
+                SortDirection::Ascending => results.sort_by_key(|t| key_fn(t)),
+                SortDirection::Descending => results.sort_by(|a, b| key_fn(b).cmp(&key_fn(a))),
+            }
+        }
+
+        // Apply offset and limit
+        let offset = self.offset.unwrap_or(0);
+        if offset < results.len() {
+            results = results[offset..].to_vec();
+        } else {
+            results.clear();
+        }
+
+        if let Some(limit) = self.limit {
+            if results.len() > limit {
+                results.truncate(limit);
+            }
+        }
+
+        results
     }
 }

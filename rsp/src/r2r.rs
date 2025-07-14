@@ -8,7 +8,6 @@
  * you can obtain one at https://mozilla.org/MPL/2.0/.
  */
 
-
 pub trait R2ROperator<I,R,O>: Send{
     fn load_triples(&mut self, data: &str, syntax: String) -> Result<(),String>;
     fn load_rules(&mut self, data: &str) -> Result<(),&'static str>;

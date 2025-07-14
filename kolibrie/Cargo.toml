@@ -32,6 +32,7 @@ pyo3 = { workspace = true }
 gpu = { path = "../gpu" }
 shared = { path = "../shared" }
 datalog =  { path = "../datalog" }
+rsp = { path = "../rsp" }
 ml = { path = "../ml" }
 chrono = "0.4.40"
 rumqttc = "0.21.0"

@@ -63,6 +63,10 @@
 62. Modify ML by adding ability to link OUTPUT with CONSTRUCT clause
 63. Add an ML example with link OUTPUT and CONSTRUCT clause
 64. Fix ML example with link OUTPUT and CONSTRUCT clause
+65. Integrate RSP with QueryBuilder
+66. Add tests for QueryBuilder
+67. Modify wrapper of QueryBuilder by adding RSP
+68. Add an example in Python for RSP
 
 0.1.0
 1. Parsing RDF/XML

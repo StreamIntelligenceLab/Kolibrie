@@ -7,21 +7,22 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this file,
  * you can obtain one at https://mozilla.org/MPL/2.0/.
  */
+
 use std::collections::{HashMap, HashSet};
 use std::{f64, mem};
 use std::sync::mpsc::{channel, Sender};
 use std::thread;
-use std::time::Duration;
 use std::sync::mpsc::Receiver;
 #[cfg(not(test))]
-use log::{info, warn, trace, debug}; // Use log crate when building application
+use log::{warn, debug}; // Use log crate when building application
 #[cfg(test)]
-use std::{println as info, println as warn, println as trace, println as debug};
+use std::{println as warn, println as debug};
 use std::collections::hash_set::{IntoIter, Iter};
 use std::fmt::Debug;
 use std::hash::Hash;
 use std::sync::{Arc, Mutex};
 
+#[derive(Clone, Debug)]
 pub enum ReportStrategy {
     NonEmptyContent,
     OnContentChange,
@@ -31,6 +32,7 @@ pub enum ReportStrategy {
 impl Default for ReportStrategy{
     fn default() -> Self { ReportStrategy::OnWindowClose }
 }
+#[derive(Clone, Debug)]
 pub enum Tick {
     TimeDriven,
     TupleDriven,
@@ -106,7 +108,6 @@ impl <I> ContentContainer<I>
     }
 }
 
-
 pub struct CSPARQLWindow<I> where I: Eq + PartialEq + Clone + Debug + Hash + Send{
     width: usize,
     slide: usize,
@@ -118,7 +119,6 @@ pub struct CSPARQLWindow<I> where I: Eq + PartialEq + Clone + Debug + Hash + Sen
     consumer: Option<Sender<ContentContainer<I>>>,
     call_back: Option<Box<dyn FnMut(ContentContainer<I>)->()>>
 }
-
 
 impl <I> CSPARQLWindow <I> where I: Eq + PartialEq + Clone + Debug + Hash + Send{
     pub fn new(width:usize, slide: usize, report: Report<I>, tick: Tick)-> CSPARQLWindow<I>{
@@ -143,7 +143,7 @@ impl <I> CSPARQLWindow <I> where I: Eq + PartialEq + Clone + Debug + Hash + Send
 
         let max = self.active_windows.iter()
             .filter(|(window, content)| self.report.report(window, content, ts))
-            .max_by(|(w1, c1), (w2, c2)| w1.close.cmp(&w2.close));
+            .max_by(|(w1, _), (w2, _)| w1.close.cmp(&w2.close));
         if let Some(max_window) = max {
             match self.tick {
                 Tick::TimeDriven => {
@@ -153,7 +153,9 @@ impl <I> CSPARQLWindow <I> where I: Eq + PartialEq + Clone + Debug + Hash + Send
                         debug!("Window triggers! {:?}", max_window);
                         // multithreaded consumer using channel
                         if let Some(sender) = &self.consumer{
-                            sender.send(max_window.1.clone());
+                            if let Err(e) = sender.send(max_window.1.clone()) {
+                                warn!("Failed to send window content to consumer: {:?}", e);
+                            }
                         }
                         // single threaded consumer using callback
                         if let Some(call_back) = &mut self.call_back{
@@ -169,8 +171,8 @@ impl <I> CSPARQLWindow <I> where I: Eq + PartialEq + Clone + Debug + Hash + Send
     }
     fn scope(&mut self, event_time: &usize) {
         // long c_sup = (long) Math.ceil(((double) Math.abs(t_e - t0) / (double) slide)) * slide;
-        let temp = (*event_time as f64 - self.t_0 as f64).abs();
-        let temp = ((*event_time as f64 - self.t_0 as f64).abs() / (self.slide as f64)).ceil();
+        let _temp = (*event_time as f64 - self.t_0 as f64).abs();
+        let _temp = ((*event_time as f64 - self.t_0 as f64).abs() / (self.slide as f64)).ceil();
         let c_sup = ((*event_time as f64 - self.t_0 as f64).abs() / (self.slide as f64)).ceil() * self.slide as f64;
         // long o_i = c_sup - width;
         let mut o_i = c_sup - self.width as f64;
@@ -200,12 +202,18 @@ impl <I> CSPARQLWindow <I> where I: Eq + PartialEq + Clone + Debug + Hash + Send
 
     }
 }
+
+#[allow(dead_code)]
 struct ConsumerInner<I>  where I: Eq + PartialEq + Clone + Debug + Hash + Send{
     data: Mutex<Vec<ContentContainer<I>>>
 }
+
+#[allow(dead_code)]
 struct Consumer<I> where I: Eq + PartialEq + Clone + Debug + Hash + Send{
     inner: Arc<ConsumerInner<I>>
 }
+
+#[allow(dead_code)]
 impl <I> Consumer <I> where I: Eq + PartialEq + Clone + Debug + Hash + Send + 'static{
     fn new() -> Consumer<I> {
         Consumer{inner: Arc::new(ConsumerInner{data: Mutex::new(Vec::new())})}
