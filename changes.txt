@@ -69,6 +69,7 @@
 68. Add an example in Python for RSP
 69. Add N-Triples parser
 70. Add in some files license header
+71. Ability to querying 10M triples
 
 0.1.0
 1. Parsing RDF/XML

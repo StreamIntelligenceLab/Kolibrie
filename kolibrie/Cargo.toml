@@ -151,6 +151,10 @@ name = "n_triples_data"
 path = "examples/sparql_syntax/n_triples_data/n_triples_data.rs"
 
 [[example]]
+name = "n_triple_10M"
+path = "examples/sparql_syntax/n_triples_data/n_triple_10M.rs"
+
+[[example]]
 name = "n3_data_simple"
 path = "examples/sparql_syntax/n3_data/n3_data.rs"
 
