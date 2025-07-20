@@ -267,18 +267,39 @@ impl VolcanoOptimizer {
     }
 
     fn estimate_cardinality(&self, pattern: &TriplePattern) -> u64 {
-        // Estimate cardinality based on pattern selectivity
+        let mut base_cardinality = self.stats.total_triples;
+    
+        // Count bound variables for better selectivity estimation
+        let bound_count = [
+            &pattern.subject,
+            &pattern.predicate, 
+            &pattern.object,
+        ].iter().filter(|var| {
+            var.as_ref().map(|v| !v.starts_with('?')).unwrap_or(false)
+        }).count();
+        
+        // More accurate selectivity based on bound variables
+        let selectivity = match bound_count {
+            0 => 1.0,     // No filtering
+            1 => 0.1,     // One bound field
+            2 => 0.01,    // Two bound fields  
+            3 => 0.001,   // Fully bound
+            _ => 1.0,
+        };
+        
+        // Use predicate cardinality if available and more specific
         if let Some(predicate) = &pattern.predicate {
             if !predicate.starts_with('?') {
-                return *self
-                    .stats
-                    .predicate_cardinalities
+                let predicate_cardinality = *self.stats.predicate_cardinalities
                     .get(predicate)
                     .unwrap_or(&self.stats.total_triples);
+                
+                // Use the more restrictive estimate
+                base_cardinality = base_cardinality.min(predicate_cardinality);
             }
         }
-        // If no specific predicate, return total triples
-        self.stats.total_triples
+        
+        (base_cardinality as f64 * selectivity) as u64
     }
 
     fn estimate_selectivity(&self, condition: &Condition) -> f64 {
@@ -536,25 +557,25 @@ impl PhysicalOperator {
         if let Some(pattern) = extract_pattern(right) {
             println!("WooHoo!!!");
             // Extract variables and predicate from the pattern
-            let subject_var = pattern.subject.as_deref().unwrap_or("");
-            let predicate = pattern.predicate.as_deref().unwrap_or("");
-            let object_var = pattern.object.as_deref().unwrap_or("");
+            let subject_var = pattern.subject.as_deref().unwrap_or("").to_string();
+            let predicate = pattern.predicate.as_deref().unwrap_or("").to_string();
+            let object_var = pattern.object.as_deref().unwrap_or("").to_string();
 
             // Get the triples from the database
             let triples_vec: Vec<Triple> = database.triples.iter().cloned().collect();
 
             // Convert final_results keys to &str
-            let final_results_ref: Vec<BTreeMap<&str, String>> = final_results
+            let final_results_ref: Vec<BTreeMap<String, String>> = final_results
                 .iter()
                 .map(|map| {
                     map.iter()
-                        .map(|(k, v)| (k.as_str(), v.clone()))
-                        .collect::<BTreeMap<&str, String>>()
+                        .map(|(k, v)| (k.clone(), v.clone()))
+                        .collect::<BTreeMap<String, String>>()
                 })
                 .collect();
 
             // Call perform_join_par_simd_with_strict_filter_1
-            let results = database.perform_join_par_simd_with_strict_filter_1(
+            let results = database.perform_join_par_simd_with_strict_filter_4_redesigned_streaming(
                 subject_var,
                 predicate.to_string(),
                 object_var,
@@ -603,7 +624,7 @@ impl PhysicalOperator {
         database: &mut SparqlDatabase,
         pattern: &TriplePattern,
     ) -> Vec<BTreeMap<String, String>> {
-        println!("**Executing IndexScan** for pattern = {:?}", pattern);
+        println!("**Executing Parallel IndexScan** for pattern = {:?}", pattern);
 
         // Convert any non-variable to encoded IDs.
         let subject_id = pattern.subject.as_ref().filter(|s| !s.starts_with('?'))
@@ -616,20 +637,20 @@ impl PhysicalOperator {
         match (subject_id, predicate_id, object_id) {
             // (S, P, -) => use SubjectPredicate index
             (Some(s), Some(p), None) => {
-                println!("**Using SubjectPredicate index**"); 
-                return self.scan_sp_index(database, s, p, pattern); 
+                println!("**Using Parallel SubjectPredicate index**"); 
+                return self.scan_sp_index_parallel(database, s, p, pattern); 
             }
 
             // (S, -, O) => use SubjectObject index
             (Some(s), None, Some(o)) => {
-                println!("**Using SubjectObject index**"); 
-                return self.scan_so_index(database, s, o, pattern); 
+                println!("**Using Parallel SubjectObject index**"); 
+                return self.scan_so_index_parallel(database, s, o, pattern); 
             }
 
             // (-, P, O) => use PredicateObject index
             (None, Some(p), Some(o)) => {
-                println!("**Using PredicateObject index**");
-                return self.scan_po_index(database, p, o, pattern);
+                println!("**Using Parallel PredicateObject index**");
+                return self.scan_po_index_parallel(database, p, o, pattern);
             }
 
             // (S, P, O) => fully bound; direct membership check
@@ -637,23 +658,19 @@ impl PhysicalOperator {
                 println!("**Fully bound triple; check membership directly**");
                 let triple = Triple { subject: s, predicate: p, object: o };
                 if database.triples.contains(&triple) {
-                    // Build a single-row binding
                     let mut row = BTreeMap::new();
                     if let Some(subj_str) = &pattern.subject {
                         if subj_str.starts_with('?') {
-                            println!("**Decoding subject**");
                             row.insert(subj_str.clone(), database.dictionary.decode(s as u32).unwrap().to_string());
                         }
                     }
                     if let Some(pred_str) = &pattern.predicate {
                         if pred_str.starts_with('?') {
-                            println!("**Decoding predicate**");
                             row.insert(pred_str.clone(), database.dictionary.decode(p as u32).unwrap().to_string());
                         }
                     }
                     if let Some(obj_str) = &pattern.object {
                         if obj_str.starts_with('?') {
-                            println!("**Decoding object**");
                             row.insert(obj_str.clone(), database.dictionary.decode(o as u32).unwrap().to_string());
                         }
                     }
@@ -663,20 +680,20 @@ impl PhysicalOperator {
                 }
             }
 
-            // Only subject bound => custom approach, or partial index usage
+            // Only subject bound
             (Some(s), None, None) => { 
-                println!("**Subject bound; custom approach**");
-                return self.scan_s_index(database, s, pattern); 
+                println!("**Parallel Subject bound scan**");
+                return self.scan_s_index_parallel(database, s, pattern); 
             }
             // Only predicate bound
             (None, Some(p), None) => {
-                println!("**Predicate bound; custom approach**");
-                return self.scan_p_index(database, p, pattern);
+                println!("**Parallel Predicate bound scan**");
+                return self.scan_p_index_parallel(database, p, pattern);
             }
             // Only object bound
             (None, None, Some(o)) => {
-                println!("**Object bound; custom approach**"); 
-                return self.scan_o_index(database, o, pattern);
+                println!("**Parallel Object bound scan**"); 
+                return self.scan_o_index_parallel(database, o, pattern);
             }
             // Nothing bound => fallback to table scan
             _ => {
@@ -686,346 +703,358 @@ impl PhysicalOperator {
         }
     }
 
-    // Helper functions that retrieve from the appropriate index in `IndexManager`.
-    fn scan_sp_index(
+    /// Parallel SubjectPredicate index scan
+    fn scan_sp_index_parallel(
         &self,
         database: &SparqlDatabase,
         s: u32,
         p: u32,
         pattern: &TriplePattern,
     ) -> Vec<BTreeMap<String, String>> {
-        let mut results = Vec::new();
+        use rayon::prelude::*;
+        
         if let Some(objects) = database.index_manager.scan_sp(s, p) {
-            for &obj in objects {
+            let subject_str = database.dictionary.decode(s).unwrap();
+            let predicate_str = database.dictionary.decode(p).unwrap();
+            
+            // Convert HashSet to Vec for parallel processing
+            let objects_vec: Vec<u32> = objects.iter().cloned().collect();
+            
+            objects_vec.par_iter().map(|&obj| {
                 let mut row = BTreeMap::new();
-                if let Some(subj_str) = &pattern.subject {
-                    if subj_str.starts_with('?') {
-                        row.insert(
-                            subj_str.clone(),
-                            database.dictionary.decode(s).unwrap().to_string(),
-                        );
+                
+                if let Some(subj_var) = &pattern.subject {
+                    if subj_var.starts_with('?') {
+                        row.insert(subj_var.clone(), subject_str.to_string());
                     }
                 }
-                if let Some(pred_str) = &pattern.predicate {
-                    if pred_str.starts_with('?') {
-                        row.insert(
-                            pred_str.clone(),
-                            database.dictionary.decode(p).unwrap().to_string(),
-                        );
+                if let Some(pred_var) = &pattern.predicate {
+                    if pred_var.starts_with('?') {
+                        row.insert(pred_var.clone(), predicate_str.to_string());
                     }
                 }
-                if let Some(obj_str) = &pattern.object {
-                    if obj_str.starts_with('?') {
+                if let Some(obj_var) = &pattern.object {
+                    if obj_var.starts_with('?') {
                         row.insert(
-                            obj_str.clone(),
+                            obj_var.clone(),
                             database.dictionary.decode(obj).unwrap().to_string(),
                         );
                     }
                 }
-                results.push(row);
-            }
+                row
+            }).collect()
+        } else {
+            Vec::new()
         }
-        results
     }
 
-    fn scan_so_index(
+    /// Parallel SubjectObject index scan
+    fn scan_so_index_parallel(
         &self,
         database: &SparqlDatabase,
         s: u32,
         o: u32,
         pattern: &TriplePattern,
     ) -> Vec<BTreeMap<String, String>> {
-        let mut results = Vec::new();
-        // Use the unified index's scan_so method
+        use rayon::prelude::*;
+        
         if let Some(predicates) = database.index_manager.scan_so(s, o) {
-            for &p in predicates {
+            let subject_str = database.dictionary.decode(s).unwrap();
+            let object_str = database.dictionary.decode(o).unwrap();
+            
+            // Convert HashSet to Vec for parallel processing
+            let predicates_vec: Vec<u32> = predicates.iter().cloned().collect();
+            
+            predicates_vec.par_iter().map(|&p| {
                 let mut row = BTreeMap::new();
-                if let Some(subj_str) = &pattern.subject {
-                    if subj_str.starts_with('?') {
-                        row.insert(
-                            subj_str.clone(),
-                            database.dictionary.decode(s).unwrap().to_string(),
-                        );
+                
+                if let Some(subj_var) = &pattern.subject {
+                    if subj_var.starts_with('?') {
+                        row.insert(subj_var.clone(), subject_str.to_string());
                     }
                 }
-                if let Some(pred_str) = &pattern.predicate {
-                    if pred_str.starts_with('?') {
+                if let Some(pred_var) = &pattern.predicate {
+                    if pred_var.starts_with('?') {
                         row.insert(
-                            pred_str.clone(),
+                            pred_var.clone(),
                             database.dictionary.decode(p).unwrap().to_string(),
                         );
                     }
                 }
-                if let Some(obj_str) = &pattern.object {
-                    if obj_str.starts_with('?') {
-                        row.insert(
-                            obj_str.clone(),
-                            database.dictionary.decode(o).unwrap().to_string(),
-                        );
+                if let Some(obj_var) = &pattern.object {
+                    if obj_var.starts_with('?') {
+                        row.insert(obj_var.clone(), object_str.to_string());
                     }
                 }
-                results.push(row);
-            }
+                row
+            }).collect()
+        } else {
+            Vec::new()
         }
-        results
     }
 
-    fn scan_po_index(
+    /// Parallel PredicateObject index scan
+    fn scan_po_index_parallel(
         &self,
         database: &SparqlDatabase,
         p: u32,
         o: u32,
         pattern: &TriplePattern,
     ) -> Vec<BTreeMap<String, String>> {
-        let mut results = Vec::new();
-        // Use the unified index's scan_po method
+        use rayon::prelude::*;
+        
         if let Some(subjects) = database.index_manager.scan_po(p, o) {
-            for &s in subjects {
+            let predicate_str = database.dictionary.decode(p).unwrap();
+            let object_str = database.dictionary.decode(o).unwrap();
+            
+            // Convert HashSet to Vec for parallel processing
+            let subjects_vec: Vec<u32> = subjects.iter().cloned().collect();
+            
+            subjects_vec.par_iter().map(|&s| {
                 let mut row = BTreeMap::new();
-                if let Some(subj_str) = &pattern.subject {
-                    if subj_str.starts_with('?') {
+                
+                if let Some(subj_var) = &pattern.subject {
+                    if subj_var.starts_with('?') {
                         row.insert(
-                            subj_str.clone(),
+                            subj_var.clone(),
                             database.dictionary.decode(s).unwrap().to_string(),
                         );
                     }
                 }
-                if let Some(pred_str) = &pattern.predicate {
-                    if pred_str.starts_with('?') {
-                        row.insert(
-                            pred_str.clone(),
-                            database.dictionary.decode(p).unwrap().to_string(),
-                        );
+                if let Some(pred_var) = &pattern.predicate {
+                    if pred_var.starts_with('?') {
+                        row.insert(pred_var.clone(), predicate_str.to_string());
                     }
                 }
-                if let Some(obj_str) = &pattern.object {
-                    if obj_str.starts_with('?') {
-                        row.insert(
-                            obj_str.clone(),
-                            database.dictionary.decode(o).unwrap().to_string(),
-                        );
+                if let Some(obj_var) = &pattern.object {
+                    if obj_var.starts_with('?') {
+                        row.insert(obj_var.clone(), object_str.to_string());
                     }
                 }
-                results.push(row);
-            }
+                row
+            }).collect()
+        } else {
+            Vec::new()
         }
-        results
     }
 
-    /// Example strategy if only `subject` is bound. For demonstration,
-    /// we do a partial range scan on the SubjectPredicate and SubjectObject indexes.
-    /// Only `subject` is bound: use the SubjectPredicate index (SP) and inline-filter the predicate/object.
-    fn scan_s_index(
+    /// Parallel Subject-only index scan
+    fn scan_s_index_parallel(
         &self,
         database: &mut SparqlDatabase,
         s: u32,
         pattern: &TriplePattern,
     ) -> Vec<BTreeMap<String, String>> {
-        let mut results = Vec::new();
-
-        // Use the spo index directly since we're only bound on subject
+        use rayon::prelude::*;
+        
         if let Some(pred_map) = database.index_manager.spo.get(&s) {
-            for (&pred, objects) in pred_map {
-                // Check predicate pattern if specified
-                if let Some(ref p_str) = pattern.predicate {
-                    if !p_str.starts_with('?') {
-                        let bound_p = database.dictionary.encode(p_str);
-                        if pred != bound_p {
-                            continue;
-                        }
-                    }
-                }
-
-                for &obj in objects {
-                    // Check object pattern if specified
-                    if let Some(ref o_str) = pattern.object {
-                        if !o_str.starts_with('?') {
-                            let bound_o = database.dictionary.encode(o_str);
-                            if obj != bound_o {
-                                continue;
+            let subject_str = database.dictionary.decode(s).unwrap().to_string();
+            
+            // Collect all (predicate, object) pairs and pre-decode strings
+            let pred_obj_pairs: Vec<(String, String)> = pred_map
+                .iter()
+                .flat_map(|(&pred, objects)| {
+                    // Apply predicate filter if specified
+                    if let Some(ref p_str) = pattern.predicate {
+                        if !p_str.starts_with('?') {
+                            let bound_p = database.dictionary.encode(p_str);
+                            if pred != bound_p {
+                                return Vec::new();
                             }
                         }
                     }
+                    
+                    let pred_str = database.dictionary.decode(pred).unwrap().to_string();
+                    
+                    objects.iter().filter_map(|&obj| {
+                        // Apply object filter if specified
+                        if let Some(ref o_str) = pattern.object {
+                            if !o_str.starts_with('?') {
+                                let bound_o = database.dictionary.encode(o_str);
+                                if obj != bound_o {
+                                    return None;
+                                }
+                            }
+                        }
+                        
+                        let obj_str = database.dictionary.decode(obj).unwrap().to_string();
+                        Some((pred_str.clone(), obj_str))
+                    }).collect()
+                })
+                .collect();
 
-                    let mut row = BTreeMap::new();
-                    
-                    // Add variables to result row
-                    if let Some(s_var) = &pattern.subject {
-                        if s_var.starts_with('?') {
-                            row.insert(
-                                s_var.clone(),
-                                database.dictionary.decode(s).unwrap().to_string(),
-                            );
-                        }
+            pred_obj_pairs.par_iter().map(|(pred_str, obj_str)| {
+                let mut row = BTreeMap::new();
+                
+                if let Some(s_var) = &pattern.subject {
+                    if s_var.starts_with('?') {
+                        row.insert(s_var.clone(), subject_str.clone());
                     }
-                    
-                    if let Some(p_var) = &pattern.predicate {
-                        if p_var.starts_with('?') {
-                            row.insert(
-                                p_var.clone(),
-                                database.dictionary.decode(pred).unwrap().to_string(),
-                            );
-                        }
-                    }
-                    
-                    if let Some(o_var) = &pattern.object {
-                        if o_var.starts_with('?') {
-                            row.insert(
-                                o_var.clone(),
-                                database.dictionary.decode(obj).unwrap().to_string(),
-                            );
-                        }
-                    }
-
-                    results.push(row);
                 }
-            }
+                
+                if let Some(p_var) = &pattern.predicate {
+                    if p_var.starts_with('?') {
+                        row.insert(p_var.clone(), pred_str.clone());
+                    }
+                }
+                
+                if let Some(o_var) = &pattern.object {
+                    if o_var.starts_with('?') {
+                        row.insert(o_var.clone(), obj_str.clone());
+                    }
+                }
+                
+                row
+            }).collect()
+        } else {
+            Vec::new()
         }
-        
-        results
     }
 
-    /// Only `predicate` is bound: use the PredicateSubject index (PS), and inline-filter the subject/object.
-    fn scan_p_index(
+    /// Parallel Predicate-only index scan
+    fn scan_p_index_parallel(
         &self,
         database: &mut SparqlDatabase,
         p: u32,
         pattern: &TriplePattern,
     ) -> Vec<BTreeMap<String, String>> {
-        let mut results = Vec::new();
-
-        // Use the pso index directly since we're only bound on predicate
-        if let Some(subj_map) = database.index_manager.pso.get(&p) {
-            for (&subj, objects) in subj_map {
-                // Check subject pattern if specified
-                if let Some(ref s_str) = pattern.subject {
-                    if !s_str.starts_with('?') {
-                        let bound_s = database.dictionary.encode(s_str);
-                        if subj != bound_s {
-                            continue;
-                        }
-                    }
-                }
-
-                for &obj in objects {
-                    // Check object pattern if specified
-                    if let Some(ref o_str) = pattern.object {
-                        if !o_str.starts_with('?') {
-                            let bound_o = database.dictionary.encode(o_str);
-                            if obj != bound_o {
-                                continue;
-                            }
-                        }
-                    }
-
-                    let mut row = BTreeMap::new();
-                    
-                    // Add variables to result row
-                    if let Some(s_var) = &pattern.subject {
-                        if s_var.starts_with('?') {
-                            row.insert(
-                                s_var.clone(),
-                                database.dictionary.decode(subj).unwrap().to_string(),
-                            );
-                        }
-                    }
-                    
-                    if let Some(p_var) = &pattern.predicate {
-                        if p_var.starts_with('?') {
-                            row.insert(
-                                p_var.clone(),
-                                database.dictionary.decode(p).unwrap().to_string(),
-                            );
-                        }
-                    }
-                    
-                    if let Some(o_var) = &pattern.object {
-                        if o_var.starts_with('?') {
-                            row.insert(
-                                o_var.clone(),
-                                database.dictionary.decode(obj).unwrap().to_string(),
-                            );
-                        }
-                    }
-
-                    results.push(row);
-                }
-            }
-        }
+        use rayon::prelude::*;
         
-        results
-    }
-
-
-    /// Only `object` is bound: use the ObjectSubject index (OS), and inline-filter the subject/predicate.
-    fn scan_o_index(
-        &self,
-        database: &mut SparqlDatabase,
-        o: u32,
-        pattern: &TriplePattern,
-    ) -> Vec<BTreeMap<String, String>> {
-        let mut results = Vec::new();
-
-        // Use the ops index directly since we're only bound on object
-        if let Some(pred_map) = database.index_manager.ops.get(&o) {
-            for (&pred, subjects) in pred_map {
-                // Check predicate pattern if specified
-                if let Some(ref p_str) = pattern.predicate {
-                    if !p_str.starts_with('?') {
-                        let bound_p = database.dictionary.encode(p_str);
-                        if pred != bound_p {
-                            continue;
-                        }
-                    }
-                }
-
-                for &subj in subjects {
-                    // Check subject pattern if specified
+        if let Some(subj_map) = database.index_manager.pso.get(&p) {
+            let predicate_str = database.dictionary.decode(p).unwrap().to_string();
+            
+            // Collect all (subject, object) pairs and pre-decode strings
+            let subj_obj_pairs: Vec<(String, String)> = subj_map
+                .iter()
+                .flat_map(|(&subj, objects)| {
+                    // Apply subject filter if specified
                     if let Some(ref s_str) = pattern.subject {
                         if !s_str.starts_with('?') {
                             let bound_s = database.dictionary.encode(s_str);
                             if subj != bound_s {
-                                continue;
+                                return Vec::new();
                             }
                         }
                     }
+                    
+                    let subj_str = database.dictionary.decode(subj).unwrap().to_string();
+                    
+                    objects.iter().filter_map(|&obj| {
+                        // Apply object filter if specified
+                        if let Some(ref o_str) = pattern.object {
+                            if !o_str.starts_with('?') {
+                                let bound_o = database.dictionary.encode(o_str);
+                                if obj != bound_o {
+                                    return None;
+                                }
+                            }
+                        }
+                        
+                        let obj_str = database.dictionary.decode(obj).unwrap().to_string();
+                        Some((subj_str.clone(), obj_str))
+                    }).collect()
+                })
+                .collect();
 
-                    let mut row = BTreeMap::new();
-                    
-                    // Add variables to result row
-                    if let Some(s_var) = &pattern.subject {
-                        if s_var.starts_with('?') {
-                            row.insert(
-                                s_var.clone(),
-                                database.dictionary.decode(subj).unwrap().to_string(),
-                            );
-                        }
+            subj_obj_pairs.par_iter().map(|(subj_str, obj_str)| {
+                let mut row = BTreeMap::new();
+                
+                if let Some(s_var) = &pattern.subject {
+                    if s_var.starts_with('?') {
+                        row.insert(s_var.clone(), subj_str.clone());
                     }
-                    
-                    if let Some(p_var) = &pattern.predicate {
-                        if p_var.starts_with('?') {
-                            row.insert(
-                                p_var.clone(),
-                                database.dictionary.decode(pred).unwrap().to_string(),
-                            );
-                        }
-                    }
-                    
-                    if let Some(o_var) = &pattern.object {
-                        if o_var.starts_with('?') {
-                            row.insert(
-                                o_var.clone(),
-                                database.dictionary.decode(o).unwrap().to_string(),
-                            );
-                        }
-                    }
-
-                    results.push(row);
                 }
-            }
+                
+                if let Some(p_var) = &pattern.predicate {
+                    if p_var.starts_with('?') {
+                        row.insert(p_var.clone(), predicate_str.clone());
+                    }
+                }
+                
+                if let Some(o_var) = &pattern.object {
+                    if o_var.starts_with('?') {
+                        row.insert(o_var.clone(), obj_str.clone());
+                    }
+                }
+                
+                row
+            }).collect()
+        } else {
+            Vec::new()
         }
+    }
+
+    /// Parallel Object-only index scan
+    fn scan_o_index_parallel(
+        &self,
+        database: &mut SparqlDatabase,
+        o: u32,
+        pattern: &TriplePattern,
+    ) -> Vec<BTreeMap<String, String>> {
+        use rayon::prelude::*;
         
-        results
+        if let Some(pred_map) = database.index_manager.ops.get(&o) {
+            let object_str = database.dictionary.decode(o).unwrap().to_string();
+            
+            // Collect all (predicate, subject) pairs and pre-decode strings
+            let pred_subj_pairs: Vec<(String, String)> = pred_map
+                .iter()
+                .flat_map(|(&pred, subjects)| {
+                    // Apply predicate filter if specified
+                    if let Some(ref p_str) = pattern.predicate {
+                        if !p_str.starts_with('?') {
+                            let bound_p = database.dictionary.encode(p_str);
+                            if pred != bound_p {
+                                return Vec::new();
+                            }
+                        }
+                    }
+                    
+                    let pred_str = database.dictionary.decode(pred).unwrap().to_string();
+                    
+                    subjects.iter().filter_map(|&subj| {
+                        // Apply subject filter if specified
+                        if let Some(ref s_str) = pattern.subject {
+                            if !s_str.starts_with('?') {
+                                let bound_s = database.dictionary.encode(s_str);
+                                if subj != bound_s {
+                                    return None;
+                                }
+                            }
+                        }
+                        
+                        let subj_str = database.dictionary.decode(subj).unwrap().to_string();
+                        Some((pred_str.clone(), subj_str))
+                    }).collect()
+                })
+                .collect();
+
+            pred_subj_pairs.par_iter().map(|(pred_str, subj_str)| {
+                let mut row = BTreeMap::new();
+                
+                if let Some(s_var) = &pattern.subject {
+                    if s_var.starts_with('?') {
+                        row.insert(s_var.clone(), subj_str.clone());
+                    }
+                }
+                
+                if let Some(p_var) = &pattern.predicate {
+                    if p_var.starts_with('?') {
+                        row.insert(p_var.clone(), pred_str.clone());
+                    }
+                }
+                
+                if let Some(o_var) = &pattern.object {
+                    if o_var.starts_with('?') {
+                        row.insert(o_var.clone(), object_str.clone());
+                    }
+                }
+                
+                row
+            }).collect()
+        } else {
+            Vec::new()
+        }
     }
 }
 

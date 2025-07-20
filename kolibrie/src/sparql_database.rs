@@ -2854,16 +2854,35 @@ impl SparqlDatabase {
     pub fn build_all_indexes(&mut self) {
         // Clear existing indexes
         self.index_manager.clear();
-
-        // Create a snapshot of all the triples so that we're not borrowing `self` in the loop
-        let triple_list: Vec<Triple> = self.triples.iter().cloned().collect();
-
-        // Populate indexes for each triple
-        for triple in &triple_list {
-            self.index_manager.insert(triple);
+        
+        // Get all triples as a vector for parallel processing
+        let triples: Vec<Triple> = self.triples.iter().cloned().collect();
+        
+        // Calculate optimal chunk size based on available cores and data size
+        let num_threads = rayon::current_num_threads();
+        let chunk_size = (triples.len() / num_threads).max(1000);
+        
+        println!("Processing {} triples with {} threads, chunk size: {}", 
+                 triples.len(), num_threads, chunk_size);
+        
+        // Build indexes in parallel chunks
+        let partial_indexes: Vec<_> = triples
+            .par_chunks(chunk_size)
+            .map(|chunk| {
+                let mut local_index = shared::index_manager::UnifiedIndex::new();
+                for triple in chunk {
+                    local_index.insert(triple);
+                }
+                local_index
+            })
+            .collect();
+        
+        // Merge all partial indexes
+        for partial_index in partial_indexes {
+            self.index_manager.merge_from(partial_index);
         }
-
-        // Sort + deduplicate all index values
+        
+        // Optimize the final merged index
         self.index_manager.optimize();
     }
 
@@ -2898,83 +2917,69 @@ impl SparqlDatabase {
             return Vec::new();
         }
 
-        // More generous limits for streaming processing
-        const MAX_CHUNK_RESULTS: usize = 50_000;  // Higher limit per chunk
-        const MAX_BINDINGS_PER_GROUP: usize = 1000; // Limit bindings per group
+        const MAX_CHUNK_RESULTS: usize = 50_000;
+        const MAX_BINDINGS_PER_GROUP: usize = 1000;
         
-        let predicate_bytes = predicate.as_bytes();
-        let literal_filter_bytes = literal_filter.as_ref().map(|s| s.as_bytes());
+        // Encode predicate and literal filter to IDs for faster comparison
+        let predicate_id = dictionary.string_to_id.get(&predicate).copied();
+        let literal_filter_id = literal_filter.as_ref()
+            .and_then(|s| dictionary.string_to_id.get(s).copied());
 
-        // Efficient binding classification with size limits
-        let mut both_vars_bound: HashMap<(String, String), Vec<usize>> = HashMap::new();
-        let mut subject_var_bound: HashMap<String, Vec<usize>> = HashMap::new();
-        let mut object_var_bound: HashMap<String, Vec<usize>> = HashMap::new();
-        let mut neither_var_bound: Vec<usize> = Vec::new();
+        // Sort final_results by join keys for merge join
+        let sorted_bindings = sort_bindings_for_merge_join(
+            &final_results,
+            &subject_var,
+            &object_var,
+            MAX_BINDINGS_PER_GROUP,
+            dictionary,
+        );
 
-        // Pre-compute bindings with memory-aware grouping
-        for (idx, result) in final_results.iter().enumerate() {
-            let subject_binding = result.get(&subject_var);
-            let object_binding = result.get(&object_var);
-
-            match (subject_binding, object_binding) {
-                (Some(s), Some(o)) => {
-                    let key = (s.clone(), o.clone());
-                    let entry = both_vars_bound.entry(key).or_insert_with(Vec::new);
-                    if entry.len() < MAX_BINDINGS_PER_GROUP {
-                        entry.push(idx);
+        // Filter and sort triples by predicate first using IDs
+        let mut filtered_triples: Vec<Triple> = triples
+            .into_iter()
+            .filter(|triple| {
+                // Early predicate filtering using ID comparison
+                if let Some(pred_id) = predicate_id {
+                    if triple.predicate != pred_id {
+                        return false;
+                    }
+                } else {
+                    return false;
+                }
+                
+                // Handle literal filter using ID comparison
+                if let Some(filter_id) = literal_filter_id {
+                    if triple.object != filter_id {
+                        return false;
                     }
                 }
-                (Some(s), None) => {
-                    let entry = subject_var_bound.entry(s.clone()).or_insert_with(Vec::new);
-                    if entry.len() < MAX_BINDINGS_PER_GROUP {
-                        entry.push(idx);
-                    }
-                }
-                (None, Some(o)) => {
-                    let entry = object_var_bound.entry(o.clone()).or_insert_with(Vec::new);
-                    if entry.len() < MAX_BINDINGS_PER_GROUP {
-                        entry.push(idx);
-                    }
-                }
-                (None, None) => {
-                    if neither_var_bound.len() < MAX_BINDINGS_PER_GROUP {
-                        neither_var_bound.push(idx);
-                    }
-                }
-            }
-        }
+                
+                true
+            })
+            .collect();
 
-        // Parallel processing with better memory distribution
-        let final_results_arc = Arc::new(final_results);
-        let both_vars_bound_arc = Arc::new(both_vars_bound);
-        let subject_var_bound_arc = Arc::new(subject_var_bound);
-        let object_var_bound_arc = Arc::new(object_var_bound);
-        let neither_var_bound_arc = Arc::new(neither_var_bound);
+        // Sort triples by subject, then object for efficient merge
+        filtered_triples.sort_by(|a, b| {
+            a.subject.cmp(&b.subject).then_with(|| a.object.cmp(&b.object))
+        });
 
-        // Smaller chunks for better memory locality
-        let chunk_size = (triples.len() / (rayon::current_num_threads() * 2)).max(100);
+        // Parallel merge join with sorted data
+        let chunk_size = (filtered_triples.len() / (rayon::current_num_threads() * 2)).max(100);
         
-        let results = triples
+        let results = filtered_triples
             .par_chunks(chunk_size)
             .fold(
                 || Vec::with_capacity(1000),
                 |mut local_results, triple_chunk| {
                     process_triple_chunk_redesigned_streaming(
                         triple_chunk,
-                        predicate_bytes,
-                        &literal_filter_bytes,
                         &subject_var,
                         &object_var,
-                        &both_vars_bound_arc,
-                        &subject_var_bound_arc,
-                        &object_var_bound_arc,
-                        &neither_var_bound_arc,
-                        &final_results_arc,
+                        &sorted_bindings,
                         &mut local_results,
                         dictionary,
                     );
                     
-                    // Limit chunk results to prevent memory explosion
                     if local_results.len() > MAX_CHUNK_RESULTS {
                         local_results.truncate(MAX_CHUNK_RESULTS);
                     }
@@ -3331,147 +3336,312 @@ fn process_join_efficiently<'a>(
     }
 }
 
-// Streaming-optimized triple processing
 #[inline(always)]
 fn process_triple_chunk_redesigned_streaming(
     triple_chunk: &[Triple],
-    predicate_bytes: &[u8],
-    literal_filter_bytes: &Option<&[u8]>,
     subject_var: &str,
     object_var: &str,
-    both_vars_bound: &Arc<HashMap<(String, String), Vec<usize>>>,
-    subject_var_bound: &Arc<HashMap<String, Vec<usize>>>,
-    object_var_bound: &Arc<HashMap<String, Vec<usize>>>,
-    neither_var_bound: &Arc<Vec<usize>>,
-    final_results_arc: &Arc<Vec<BTreeMap<String, String>>>,
+    sorted_bindings: &SortedBindings,
     local_results: &mut Vec<BTreeMap<String, String>>,
     dictionary: &Dictionary,
 ) {
-    // Pre-allocate string buffers for efficiency
-    let mut subject_buffer = String::with_capacity(128);
-    let mut object_buffer = String::with_capacity(128);
-    
-    const MAX_LOCAL_RESULTS: usize = 10_000; // Limit per thread
+    const MAX_LOCAL_RESULTS: usize = 10_000;
     
     for triple in triple_chunk {
         if local_results.len() >= MAX_LOCAL_RESULTS {
-            break; // Prevent excessive memory usage per thread
+            break;
         }
         
-        // Early predicate filtering
-        if let Some(pred) = dictionary.decode(triple.predicate) {
-            if pred.as_bytes() != predicate_bytes {
-                continue;
-            }
-        } else {
-            continue;
-        }
-        
-        // Handle literal filter
-        if let Some(filter_bytes) = literal_filter_bytes {
-            if let Some(obj) = dictionary.decode(triple.object) {
-                if obj.as_bytes() != *filter_bytes {
-                    continue;
+        // Process each triple efficiently
+        process_join_efficiently_redesigned_streaming(
+            triple.subject,
+            triple.object,
+            subject_var,
+            object_var,
+            sorted_bindings,
+            local_results,
+            dictionary,
+        );
+    }
+}
+
+#[inline(always)]
+fn process_join_efficiently_redesigned_streaming(
+    subject_id: u32,
+    object_id: u32,
+    subject_var: &str,
+    object_var: &str,
+    sorted_bindings: &SortedBindings,
+    local_results: &mut Vec<BTreeMap<String, String>>,
+    dictionary: &Dictionary,
+) {
+    const MAX_MATCHES_PER_PATTERN: usize = 100;
+    
+    // Use sorted-merge join based on binding pattern, working with IDs
+    match (&sorted_bindings.both_vars_bound, &sorted_bindings.subject_var_bound, &sorted_bindings.object_var_bound) {
+        // Direct lookup in sorted structure using IDs
+        (Some(both_bound), _, _) => {
+            let key = (subject_id, object_id);
+            if let Some(indices) = binary_search_both_bound(both_bound, &key) {
+                for &idx in indices.iter().take(MAX_MATCHES_PER_PATTERN) {
+                    local_results.push(sorted_bindings.final_results[idx].clone());
                 }
-            } else {
-                continue;
             }
         }
         
-        // Efficient string handling
-        if let (Some(subj), Some(obj)) = (
-            dictionary.decode(triple.subject),
-            dictionary.decode(triple.object)
-        ) {
-            subject_buffer.clear();
-            subject_buffer.push_str(subj);
-            object_buffer.clear();
-            object_buffer.push_str(obj);
-            
-            process_join_efficiently_redesigned_streaming(
-                &subject_buffer,
-                &object_buffer,
+        // Merge with sorted subject bindings using IDs
+        (_, Some(subject_bound), _) => {
+            if let Some(indices) = binary_search_subject_bound(subject_bound, subject_id) {
+                merge_join_subject_bound(
+                    indices,
+                    object_id,
+                    object_var,
+                    &sorted_bindings.final_results,
+                    local_results,
+                    MAX_MATCHES_PER_PATTERN,
+                    dictionary,
+                );
+            }
+        }
+        
+        // Merge with sorted object bindings using IDs
+        (_, _, Some(object_bound)) => {
+            if let Some(indices) = binary_search_object_bound(object_bound, object_id) {
+                merge_join_object_bound(
+                    indices,
+                    subject_id,
+                    subject_var,
+                    &sorted_bindings.final_results,
+                    local_results,
+                    MAX_MATCHES_PER_PATTERN,
+                    dictionary,
+                );
+            }
+        }
+        
+        // Cartesian product with sorted iteration using IDs
+        _ => {
+            merge_join_neither_bound(
+                subject_id,
+                object_id,
                 subject_var,
                 object_var,
-                both_vars_bound,
-                subject_var_bound,
-                object_var_bound,
-                neither_var_bound,
-                final_results_arc,
+                &sorted_bindings.neither_var_bound,
+                &sorted_bindings.final_results,
                 local_results,
+                MAX_MATCHES_PER_PATTERN / 2,
+                dictionary,
             );
         }
     }
 }
 
-// Streaming-optimized join processing
-#[inline(always)]
-fn process_join_efficiently_redesigned_streaming(
-    subject: &str,
-    object: &str,
+// Supporting data structures modified to use IDs
+#[derive(Debug)]
+struct SortedBindings {
+    both_vars_bound: Option<Vec<((u32, u32), Vec<usize>)>>,
+    subject_var_bound: Option<Vec<(u32, Vec<usize>)>>,
+    object_var_bound: Option<Vec<(u32, Vec<usize>)>>,
+    neither_var_bound: Vec<usize>,
+    final_results: Arc<Vec<BTreeMap<String, String>>>,
+}
+
+fn sort_bindings_for_merge_join(
+    final_results: &[BTreeMap<String, String>],
     subject_var: &str,
     object_var: &str,
-    both_vars_bound: &Arc<HashMap<(String, String), Vec<usize>>>,
-    subject_var_bound: &Arc<HashMap<String, Vec<usize>>>,
-    object_var_bound: &Arc<HashMap<String, Vec<usize>>>,
-    neither_var_bound: &Arc<Vec<usize>>,
-    final_results_arc: &Arc<Vec<BTreeMap<String, String>>>,
+    max_bindings_per_group: usize,
+    dictionary: &Dictionary,
+) -> SortedBindings {
+    let mut both_vars_bound: HashMap<(u32, u32), Vec<usize>> = HashMap::new();
+    let mut subject_var_bound: HashMap<u32, Vec<usize>> = HashMap::new();
+    let mut object_var_bound: HashMap<u32, Vec<usize>> = HashMap::new();
+    let mut neither_var_bound: Vec<usize> = Vec::new();
+
+    // Classify bindings using IDs for faster comparison
+    for (idx, result) in final_results.iter().enumerate() {
+        let subject_binding_id = result.get(subject_var)
+            .and_then(|s| dictionary.string_to_id.get(s).copied());
+        let object_binding_id = result.get(object_var)
+            .and_then(|o| dictionary.string_to_id.get(o).copied());
+
+        match (subject_binding_id, object_binding_id) {
+            (Some(s_id), Some(o_id)) => {
+                let key = (s_id, o_id);
+                let entry = both_vars_bound.entry(key).or_insert_with(Vec::new);
+                if entry.len() < max_bindings_per_group {
+                    entry.push(idx);
+                }
+            }
+            (Some(s_id), None) => {
+                let entry = subject_var_bound.entry(s_id).or_insert_with(Vec::new);
+                if entry.len() < max_bindings_per_group {
+                    entry.push(idx);
+                }
+            }
+            (None, Some(o_id)) => {
+                let entry = object_var_bound.entry(o_id).or_insert_with(Vec::new);
+                if entry.len() < max_bindings_per_group {
+                    entry.push(idx);
+                }
+            }
+            (None, None) => {
+                if neither_var_bound.len() < max_bindings_per_group {
+                    neither_var_bound.push(idx);
+                }
+            }
+        }
+    }
+
+    // Convert to sorted vectors for efficient binary search and merge
+    let sorted_both_vars = if !both_vars_bound.is_empty() {
+        let mut sorted: Vec<_> = both_vars_bound.into_iter().collect();
+        sorted.sort_by(|a, b| a.0.cmp(&b.0));
+        Some(sorted)
+    } else {
+        None
+    };
+
+    let sorted_subject_var = if !subject_var_bound.is_empty() {
+        let mut sorted: Vec<_> = subject_var_bound.into_iter().collect();
+        sorted.sort_by(|a, b| a.0.cmp(&b.0));
+        Some(sorted)
+    } else {
+        None
+    };
+
+    let sorted_object_var = if !object_var_bound.is_empty() {
+        let mut sorted: Vec<_> = object_var_bound.into_iter().collect();
+        sorted.sort_by(|a, b| a.0.cmp(&b.0));
+        Some(sorted)
+    } else {
+        None
+    };
+
+    SortedBindings {
+        both_vars_bound: sorted_both_vars,
+        subject_var_bound: sorted_subject_var,
+        object_var_bound: sorted_object_var,
+        neither_var_bound,
+        final_results: Arc::new(final_results.to_vec()),
+    }
+}
+
+// Binary search functions modified to use IDs
+fn binary_search_both_bound<'a>(
+    sorted_bindings: &'a [((u32, u32), Vec<usize>)],
+    key: &(u32, u32),
+) -> Option<&'a Vec<usize>> {
+    sorted_bindings
+        .binary_search_by(|probe| probe.0.cmp(key))
+        .ok()
+        .map(|idx| &sorted_bindings[idx].1)
+}
+
+fn binary_search_subject_bound<'a>(
+    sorted_bindings: &'a [(u32, Vec<usize>)],
+    subject_id: u32,
+) -> Option<&'a Vec<usize>> {
+    sorted_bindings
+        .binary_search_by(|probe| probe.0.cmp(&subject_id))
+        .ok()
+        .map(|idx| &sorted_bindings[idx].1)
+}
+
+fn binary_search_object_bound<'a>(
+    sorted_bindings: &'a [(u32, Vec<usize>)],
+    object_id: u32,
+) -> Option<&'a Vec<usize>> {
+    sorted_bindings
+        .binary_search_by(|probe| probe.0.cmp(&object_id))
+        .ok()
+        .map(|idx| &sorted_bindings[idx].1)
+}
+
+fn merge_join_subject_bound(
+    indices: &[usize],
+    object_id: u32,
+    object_var: &str,
+    final_results: &[BTreeMap<String, String>],
     local_results: &mut Vec<BTreeMap<String, String>>,
+    max_matches: usize,
+    dictionary: &Dictionary,
 ) {
-    const MAX_MATCHES_PER_PATTERN: usize = 100; // Limit matches per pattern
-    
-    let key = (subject.to_string(), object.to_string());
-    
-    // Process most restrictive first
-    if let Some(result_indices) = both_vars_bound.get(&key) {
-        for &idx in result_indices.iter().take(MAX_MATCHES_PER_PATTERN) {
-            local_results.push(final_results_arc[idx].clone());
-        }
-        return;
-    }
-
-    // Process subject bound
-    if let Some(result_indices) = subject_var_bound.get(subject) {
-        for &idx in result_indices.iter().take(MAX_MATCHES_PER_PATTERN) {
-            let base_result = &final_results_arc[idx];
-            if let Some(existing_object) = base_result.get(object_var) {
-                if existing_object == object {
+    for &idx in indices.iter().take(max_matches) {
+        let base_result = &final_results[idx];
+        if let Some(existing_object) = base_result.get(object_var) {
+            // Compare using ID instead of string
+            if let Some(existing_object_id) = dictionary.string_to_id.get(existing_object) {
+                if *existing_object_id == object_id {
                     local_results.push(base_result.clone());
                 }
-            } else {
-                let mut extended_result = base_result.clone();
-                extended_result.insert(object_var.to_string(), object.to_string());
+            }
+        } else {
+            let mut extended_result = base_result.clone();
+            // Only decode to string when needed for result
+            if let Some(object_str) = dictionary.decode(object_id) {
+                extended_result.insert(object_var.to_string(), object_str.to_string());
                 local_results.push(extended_result);
             }
         }
     }
+}
 
-    // Process object bound
-    if let Some(result_indices) = object_var_bound.get(object) {
-        for &idx in result_indices.iter().take(MAX_MATCHES_PER_PATTERN) {
-            let base_result = &final_results_arc[idx];
-            if let Some(existing_subject) = base_result.get(subject_var) {
-                if existing_subject == subject {
+fn merge_join_object_bound(
+    indices: &[usize],
+    subject_id: u32,
+    subject_var: &str,
+    final_results: &[BTreeMap<String, String>],
+    local_results: &mut Vec<BTreeMap<String, String>>,
+    max_matches: usize,
+    dictionary: &Dictionary,
+) {
+    for &idx in indices.iter().take(max_matches) {
+        let base_result = &final_results[idx];
+        if let Some(existing_subject) = base_result.get(subject_var) {
+            // Compare using ID instead of string
+            if let Some(existing_subject_id) = dictionary.string_to_id.get(existing_subject) {
+                if *existing_subject_id == subject_id {
                     local_results.push(base_result.clone());
                 }
-            } else {
-                let mut extended_result = base_result.clone();
-                extended_result.insert(subject_var.to_string(), subject.to_string());
+            }
+        } else {
+            let mut extended_result = base_result.clone();
+            // Only decode to string when needed for result
+            if let Some(subject_str) = dictionary.decode(subject_id) {
+                extended_result.insert(subject_var.to_string(), subject_str.to_string());
                 local_results.push(extended_result);
             }
         }
     }
+}
 
-    // Process neither bound (most expensive)
-    for &idx in neither_var_bound.iter().take(MAX_MATCHES_PER_PATTERN / 2) {
-        let base_result = &final_results_arc[idx];
+fn merge_join_neither_bound(
+    subject_id: u32,
+    object_id: u32,
+    subject_var: &str,
+    object_var: &str,
+    neither_indices: &[usize],
+    final_results: &[BTreeMap<String, String>],
+    local_results: &mut Vec<BTreeMap<String, String>>,
+    max_matches: usize,
+    dictionary: &Dictionary,
+) {
+    for &idx in neither_indices.iter().take(max_matches) {
+        let base_result = &final_results[idx];
         let mut extended_result = base_result.clone();
         
         if !base_result.contains_key(subject_var) {
-            extended_result.insert(subject_var.to_string(), subject.to_string());
+            // Only decode to string when needed for result
+            if let Some(subject_str) = dictionary.decode(subject_id) {
+                extended_result.insert(subject_var.to_string(), subject_str.to_string());
+            }
         }
         if !base_result.contains_key(object_var) {
-            extended_result.insert(object_var.to_string(), object.to_string());
+            // Only decode to string when needed for result
+            if let Some(object_str) = dictionary.decode(object_id) {
+                extended_result.insert(object_var.to_string(), object_str.to_string());
+            }
         }
         
         local_results.push(extended_result);

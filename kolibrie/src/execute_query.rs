@@ -8,6 +8,7 @@
  * you can obtain one at https://mozilla.org/MPL/2.0/.
  */
 
+use crate::volcano_optimizer::*;
 use crate::sparql_database::SparqlDatabase;
 use crate::sparql_database::compact_results;
 use shared::triple::Triple;
@@ -931,6 +932,194 @@ pub fn execute_query_rayon_parallel2(sparql: &str, database: &mut SparqlDatabase
 
     // Convert the final BTreeMap results into Vec<Vec<String>>
     format_results(final_results, &selected_variables)
+}
+
+pub fn execute_query_rayon_parallel2_volcano(sparql: &str, database: &mut SparqlDatabase) -> Vec<Vec<String>> {
+    let sparql = normalize_query(sparql);
+    
+    // Register prefixes from the query string first
+    database.register_prefixes_from_query(&sparql);
+    
+    let parse_result = parse_sparql_query(sparql);
+    
+    if let Ok((
+        _, 
+        (
+            insert_clause, 
+            mut variables, 
+            patterns, 
+            filters, 
+            group_vars,
+            parsed_prefixes, 
+            values_clause,
+            binds,
+            subqueries,
+        ),
+    )) = parse_result {
+        
+        let mut prefixes = parsed_prefixes;
+        database.share_prefixes_with(&mut prefixes);
+        
+        // Process the INSERT clause if present using the existing helper function
+        process_insert_clause(insert_clause, database);
+        
+        // If SELECT * is used, gather all variables from patterns
+        if variables == vec![("*", "*", None)] {
+            let mut all_vars = BTreeSet::new();
+            for (subject_var, _, object_var) in &patterns {
+                all_vars.insert(*subject_var);
+                all_vars.insert(*object_var);
+            }
+            variables = all_vars.into_iter().map(|var| ("VAR", var, None)).collect();
+        }
+        
+        // Process variables for aggregation using the existing helper function
+        let mut selected_variables: Vec<(String, String)> = Vec::new();
+        let mut aggregation_vars: Vec<(&str, &str, &str)> = Vec::new();
+        process_variables(&mut selected_variables, &mut aggregation_vars, variables);
+        
+        // Build indexes before optimization - this is crucial for performance
+        database.build_all_indexes();
+        
+        // Check if we should use GPU mode for execution
+        if GPU_MODE_ENABLED.load(std::sync::atomic::Ordering::SeqCst) {
+            println!("CUDA with Volcano Optimizer");
+            
+            // Use Volcano optimizer for plan generation
+            let logical_plan = build_logical_plan(
+                selected_variables.iter().map(|(t, v)| (t.as_str(), v.as_str())).collect(),
+                patterns,
+                filters,
+                &prefixes,
+                database,
+            );
+            
+            let mut optimizer = VolcanoOptimizer::new(database);
+            let _optimized_plan = optimizer.find_best_plan(&logical_plan);
+            
+            #[cfg(feature = "cuda")]
+            {
+                // For now, fall back to the original GPU implementation
+                // until execute_gpu is properly implemented for the optimized plan
+                
+                // Initialize final_results based on the VALUES clause
+                let mut final_results = initialize_results(&values_clause);
+                
+                // Convert BTreeSet to a vector of Triple
+                let triples_vec: Vec<Triple> = database.triples.iter().cloned().collect();
+                
+                // Process each pattern in the WHERE clause
+                for (subject_var, predicate, object_var) in patterns {
+                    if predicate == "RULECALL" {
+                        final_results = process_rule_call(subject_var, object_var, database, &prefixes);
+                        continue;
+                    }
+                    
+                    // Handle non-RULECALL patterns
+                    let (join_subject, join_predicate, join_object) = resolve_triple_pattern(
+                        subject_var, predicate, object_var, database, &prefixes
+                    );
+                    
+                    // To satisfy lifetime requirements, leak the computed join_subject and join_object
+                    let join_subject_static: &'static str = Box::leak(join_subject.into_boxed_str());
+                    let join_object_static: &'static str = Box::leak(join_object.into_boxed_str());
+                    
+                    final_results = database.perform_hash_join_cuda_wrapper(
+                        join_subject_static,
+                        join_predicate,
+                        join_object_static,
+                        triples_vec.clone(),
+                        &database.dictionary,
+                        final_results,
+                        if !join_object_static.starts_with('?') {
+                            Some(join_object_static.to_string())
+                        } else {
+                            None
+                        },
+                    );
+                }
+                
+                // Apply filters
+                final_results = database.apply_filters_simd(final_results, filters);
+                
+                // Process subqueries
+                for subquery in subqueries {
+                    let subquery_results = execute_subquery(&subquery, database, &prefixes, final_results.clone());
+                    final_results = merge_results(final_results, subquery_results);
+                }
+                
+                // Apply BIND (UDF) clauses
+                process_bind_clauses(&mut final_results, binds, database);
+                
+                // Apply GROUP BY and aggregations
+                if !group_vars.is_empty() {
+                    final_results = group_and_aggregate_results(final_results, &group_vars, &aggregation_vars);
+                }
+                
+                return format_results(final_results, &selected_variables);
+            }
+            
+            #[cfg(not(feature = "cuda"))]
+            {
+                eprintln!("CUDA feature not enabled");
+                return Vec::new();
+            }
+        } else {
+            // Use Volcano optimizer for CPU execution
+            let logical_plan = build_logical_plan(
+                selected_variables.iter().map(|(t, v)| (t.as_str(), v.as_str())).collect(),
+                patterns,
+                filters,
+                &prefixes,
+                database,
+            );
+            
+            let mut optimizer = VolcanoOptimizer::new(database);
+            let optimized_plan = optimizer.find_best_plan(&logical_plan);
+            let results = optimized_plan.execute(database);
+            
+            // Convert results to owned strings first to avoid lifetime issues
+            let results_owned: Vec<BTreeMap<String, String>> = results
+                .into_iter()
+                .collect();
+            
+            // Initialize with VALUES clause for consistency with GPU path
+            let mut final_results = initialize_results(&values_clause);
+            
+            // Merge optimizer results with VALUES clause results
+            let optimizer_results: Vec<BTreeMap<&str, String>> = results_owned
+                .iter()
+                .map(|result| {
+                    result.iter().map(|(k, v)| (k.as_str(), v.clone())).collect()
+                })
+                .collect();
+            
+            // If we have optimizer results, use them; otherwise keep VALUES results
+            if !optimizer_results.is_empty() {
+                final_results = optimizer_results;
+            }
+            
+            // Process subqueries if any
+            for subquery in subqueries {
+                let subquery_results = execute_subquery(&subquery, database, &prefixes, final_results.clone());
+                final_results = merge_results(final_results, subquery_results);
+            }
+            
+            // Apply BIND (UDF) clauses
+            process_bind_clauses(&mut final_results, binds, database);
+            
+            // Apply GROUP BY and aggregations
+            if !group_vars.is_empty() {
+                final_results = group_and_aggregate_results(final_results, &group_vars, &aggregation_vars);
+            }
+            
+            return format_results(final_results, &selected_variables);
+        }
+        
+    } else {
+        eprintln!("Failed to parse the query.");
+        return Vec::new();
+    }
 }
 
 pub fn execute_query_rayon_parallel2_redesign_streaming(

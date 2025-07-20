@@ -57,10 +57,172 @@ impl UnifiedIndex {
 
     /// Bulk-build the index from a list of triples
     pub fn build_from_triples(&mut self, triples: &[Triple]) {
+        use rayon::prelude::*;
+    
         self.clear();
-        for t in triples {
-            self.insert(t);
+        
+        if triples.is_empty() {
+            return;
         }
+        
+        // Pre-allocate with capacity estimates
+        let capacity = triples.len() / 100;
+        
+        self.spo.reserve(capacity);
+        self.pos.reserve(capacity);
+        self.osp.reserve(capacity);
+        self.pso.reserve(capacity);
+        self.ops.reserve(capacity);
+        self.sop.reserve(capacity);
+        
+        // Build indexes in parallel by creating partial indexes and merging
+        let num_threads = rayon::current_num_threads();
+        let chunk_size = (triples.len() / num_threads).max(10_000);
+        
+        let partial_indexes: Vec<UnifiedIndex> = triples
+            .par_chunks(chunk_size)
+            .map(|chunk| {
+                let mut local_index = UnifiedIndex::new();
+                
+                // Pre-allocate local index
+                let local_capacity = chunk.len() / 50;
+                local_index.spo.reserve(local_capacity);
+                local_index.pos.reserve(local_capacity);
+                local_index.osp.reserve(local_capacity);
+                local_index.pso.reserve(local_capacity);
+                local_index.ops.reserve(local_capacity);
+                local_index.sop.reserve(local_capacity);
+                
+                // Insert triples into local index
+                for triple in chunk {
+                    local_index.insert_optimized(triple);
+                }
+                
+                local_index
+            })
+            .collect();
+        
+        // Sequentially merge partial indexes
+        for partial_index in partial_indexes {
+            self.merge_from(partial_index);
+        }
+        
+        // Optimize memory layout after building
+        self.optimize_post_build();
+    }
+    
+    #[inline]
+    fn insert_optimized(&mut self, triple: &Triple) -> bool {
+        let Triple { subject: s, predicate: p, object: o } = *triple;
+        
+        // Check for duplicates only in SPO index (most selective)
+        if let Some(pred_map) = self.spo.get(&s) {
+            if let Some(objects) = pred_map.get(&p) {
+                if objects.contains(&o) {
+                    return false;
+                }
+            }
+        }
+        
+        // Batch insert into all indexes
+        self.spo.entry(s).or_insert_with(|| HashMap::with_capacity(8))
+               .entry(p).or_insert_with(|| HashSet::with_capacity(16))
+               .insert(o);
+        
+        self.pos.entry(p).or_insert_with(|| HashMap::with_capacity(16))
+               .entry(o).or_insert_with(|| HashSet::with_capacity(8))
+               .insert(s);
+        
+        self.osp.entry(o).or_insert_with(|| HashMap::with_capacity(8))
+               .entry(s).or_insert_with(|| HashSet::with_capacity(16))
+               .insert(p);
+        
+        self.pso.entry(p).or_insert_with(|| HashMap::with_capacity(16))
+               .entry(s).or_insert_with(|| HashSet::with_capacity(8))
+               .insert(o);
+        
+        self.ops.entry(o).or_insert_with(|| HashMap::with_capacity(16))
+               .entry(p).or_insert_with(|| HashSet::with_capacity(8))
+               .insert(s);
+        
+        self.sop.entry(s).or_insert_with(|| HashMap::with_capacity(8))
+               .entry(o).or_insert_with(|| HashSet::with_capacity(16))
+               .insert(p);
+        
+        true
+    }
+    
+    fn optimize_post_build(&mut self) {
+        use rayon::prelude::*;
+        
+        // Parallelize the optimization of each index
+        rayon::scope(|s| {
+            s.spawn(|_| {
+                // SPO index
+                self.spo.par_iter_mut().for_each(|(_, pred_map)| {
+                    pred_map.shrink_to_fit();
+                    pred_map.par_iter_mut().for_each(|(_, obj_set)| {
+                        obj_set.shrink_to_fit();
+                    });
+                });
+                self.spo.shrink_to_fit();
+            });
+            
+            s.spawn(|_| {
+                // POS index
+                self.pos.par_iter_mut().for_each(|(_, obj_map)| {
+                    obj_map.shrink_to_fit();
+                    obj_map.par_iter_mut().for_each(|(_, subj_set)| {
+                        subj_set.shrink_to_fit();
+                    });
+                });
+                self.pos.shrink_to_fit();
+            });
+            
+            s.spawn(|_| {
+                // OSP index
+                self.osp.par_iter_mut().for_each(|(_, subj_map)| {
+                    subj_map.shrink_to_fit();
+                    subj_map.par_iter_mut().for_each(|(_, pred_set)| {
+                        pred_set.shrink_to_fit();
+                    });
+                });
+                self.osp.shrink_to_fit();
+            });
+            
+            s.spawn(|_| {
+                // PSO index
+                self.pso.par_iter_mut().for_each(|(_, subj_map)| {
+                    subj_map.shrink_to_fit();
+                    subj_map.par_iter_mut().for_each(|(_, obj_set)| {
+                        obj_set.shrink_to_fit();
+                    });
+                });
+                self.pso.shrink_to_fit();
+            });
+            
+            s.spawn(|_| {
+                // OPS index
+                self.ops.par_iter_mut().for_each(|(_, pred_map)| {
+                    pred_map.shrink_to_fit();
+                    pred_map.par_iter_mut().for_each(|(_, subj_set)| {
+                        subj_set.shrink_to_fit();
+                    });
+                });
+                self.ops.shrink_to_fit();
+            });
+            
+            s.spawn(|_| {
+                // SOP index
+                self.sop.par_iter_mut().for_each(|(_, obj_map)| {
+                    obj_map.shrink_to_fit();
+                    obj_map.par_iter_mut().for_each(|(_, pred_set)| {
+                        pred_set.shrink_to_fit();
+                    });
+                });
+                self.sop.shrink_to_fit();
+            });
+        });
     }
 
     /// Query the index
@@ -221,11 +383,112 @@ impl UnifiedIndex {
             .and_then(|pred_map| pred_map.get(&p))
     }
 
-    pub fn optimize(&mut self) {
-        for (_s, pmap) in &mut self.spo {
-            for (_p, obj_set) in pmap {
-                obj_set.shrink_to_fit();
+    /// Efficiently merge another index into this one using parallel processing where possible
+    pub fn merge_from(&mut self, other: UnifiedIndex) {
+        // Merge SPO index
+        for (s, pred_map) in other.spo {
+            let entry = self.spo.entry(s).or_insert_with(HashMap::new);
+            for (p, obj_set) in pred_map {
+                entry.entry(p).or_insert_with(HashSet::new).extend(obj_set);
             }
         }
+        
+        // Merge PSO index  
+        for (p, subj_map) in other.pso {
+            let entry = self.pso.entry(p).or_insert_with(HashMap::new);
+            for (s, obj_set) in subj_map {
+                entry.entry(s).or_insert_with(HashSet::new).extend(obj_set);
+            }
+        }
+        
+        // Merge OPS index
+        for (o, pred_map) in other.ops {
+            let entry = self.ops.entry(o).or_insert_with(HashMap::new);
+            for (p, subj_set) in pred_map {
+                entry.entry(p).or_insert_with(HashSet::new).extend(subj_set);
+            }
+        }
+        
+        // Merge POS index
+        for (p, obj_map) in other.pos {
+            let entry = self.pos.entry(p).or_insert_with(HashMap::new);
+            for (o, subj_set) in obj_map {
+                entry.entry(o).or_insert_with(HashSet::new).extend(subj_set);
+            }
+        }
+        
+        // Merge OSP index
+        for (o, subj_map) in other.osp {
+            let entry = self.osp.entry(o).or_insert_with(HashMap::new);
+            for (s, pred_set) in subj_map {
+                entry.entry(s).or_insert_with(HashSet::new).extend(pred_set);
+            }
+        }
+        
+        // Merge SOP index
+        for (s, obj_map) in other.sop {
+            let entry = self.sop.entry(s).or_insert_with(HashMap::new);
+            for (o, pred_set) in obj_map {
+                entry.entry(o).or_insert_with(HashSet::new).extend(pred_set);
+            }
+        }
+    }
+
+    pub fn optimize(&mut self) {
+        use rayon::prelude::*;
+        
+        // Optimize SPO index
+        self.spo.par_iter_mut().for_each(|(_, pred_map)| {
+            pred_map.par_iter_mut().for_each(|(_, obj_set)| {
+                obj_set.shrink_to_fit();
+            });
+            pred_map.shrink_to_fit();
+        });
+        self.spo.shrink_to_fit();
+        
+        // Optimize PSO index
+        self.pso.par_iter_mut().for_each(|(_, subj_map)| {
+            subj_map.par_iter_mut().for_each(|(_, obj_set)| {
+                obj_set.shrink_to_fit();
+            });
+            subj_map.shrink_to_fit();
+        });
+        self.pso.shrink_to_fit();
+        
+        // Optimize OPS index
+        self.ops.par_iter_mut().for_each(|(_, pred_map)| {
+            pred_map.par_iter_mut().for_each(|(_, subj_set)| {
+                subj_set.shrink_to_fit();
+            });
+            pred_map.shrink_to_fit();
+        });
+        self.ops.shrink_to_fit();
+        
+        // Optimize POS index
+        self.pos.par_iter_mut().for_each(|(_, obj_map)| {
+            obj_map.par_iter_mut().for_each(|(_, subj_set)| {
+                subj_set.shrink_to_fit();
+            });
+            obj_map.shrink_to_fit();
+        });
+        self.pos.shrink_to_fit();
+        
+        // Optimize OSP index
+        self.osp.par_iter_mut().for_each(|(_, subj_map)| {
+            subj_map.par_iter_mut().for_each(|(_, pred_set)| {
+                pred_set.shrink_to_fit();
+            });
+            subj_map.shrink_to_fit();
+        });
+        self.osp.shrink_to_fit();
+        
+        // Optimize SOP index
+        self.sop.par_iter_mut().for_each(|(_, obj_map)| {
+            obj_map.par_iter_mut().for_each(|(_, pred_set)| {
+                pred_set.shrink_to_fit();
+            });
+            obj_map.shrink_to_fit();
+        });
+        self.sop.shrink_to_fit();
     }
 }

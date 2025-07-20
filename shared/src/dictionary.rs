@@ -14,9 +14,9 @@ use crate::triple::Triple;
 // Dictionary for encoding and decoding strings
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct Dictionary {
-    string_to_id: HashMap<String, u32>,
-    id_to_string: HashMap<u32, String>,
-    next_id: u32,
+    pub string_to_id: HashMap<String, u32>,
+    pub id_to_string: HashMap<u32, String>,
+    pub next_id: u32,
 }
 
 impl Dictionary {

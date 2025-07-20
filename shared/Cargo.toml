@@ -5,3 +5,4 @@ edition = "2021"
 description = "Shared utilities and global state for the workspace"
 
 [dependencies]
+rayon = { workspace = true }

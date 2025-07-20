@@ -41,7 +41,7 @@ fn parse_large_ntriples_file(file_path: &str) -> Result<SparqlDatabase, Box<dyn 
     
     let mut line_count = 0;
     let mut batch_lines = Vec::new();
-    const BATCH_SIZE: usize = 1_000; // Much smaller batch size
+    const BATCH_SIZE: usize = 10_000; // Much smaller batch size
     
     for line_result in reader.lines() {
         let line = line_result?;
@@ -78,28 +78,53 @@ fn parse_large_ntriples_file(file_path: &str) -> Result<SparqlDatabase, Box<dyn 
         let batch_data = batch_lines.join("\n");
         db.parse_ntriples(&batch_data);
     }
-    
+
     println!("Finished parsing {} triples in {:.2} seconds", 
              line_count, start_time.elapsed().as_secs_f64());
+
+    // Build indexes after parsing - this is where the magic happens
+    println!("Building indexes...");
+    let index_start = Instant::now();
+    db.build_all_indexes();
+    println!("Indexes built in {:.2} seconds", index_start.elapsed().as_secs_f64());
     
     Ok(db)
 }
 
 fn run_sample_query(db: &mut SparqlDatabase) {
-    println!("\nRunning sample query...");
     let query_start = Instant::now();
 
     let sparql_query = r#"PREFIX wsdbm: <http://db.uwaterloo.ca/~galuc/wsdbm/>
-    PREFIX sorg: <http://schema.org/>
-    SELECT ?v0 ?v2 ?v3 
-    WHERE {
-        ?v0 wsdbm:subscribes ?v1 .
-        ?v2 sorg:caption ?v3 .
-        ?v0 wsdbm:likes ?v2
-    }"#;
+PREFIX sorg: <http://schema.org/>
+PREFIX dc: <http://purl.org/dc/terms/>
+PREFIX foaf: <http://xmlns.com/foaf/>
+PREFIX gr: <http://purl.org/goodrelations/>
+PREFIX gn: <http://www.geonames.org/ontology#>
+PREFIX mo: <http://purl.org/ontology/mo/>
+PREFIX og: <http://ogp.me/ns#>
+PREFIX rev: <http://purl.org/stuff/rev#>
+PREFIX rdf: <http://www.w3.org/1999/02/22-rdf-syntax-ns#>
+PREFIX rdfs: <http://www.w3.org/2000/01/rdf-schema#>
+SELECT ?v0 
+WHERE {
+  ?v0	wsdbm:likes	?v1 .
+  ?v0	wsdbm:friendOf	?v2 .
+  ?v0	dc:Location	?v3 .
+  ?v0	foaf:age	?v4 .
+  ?v0	wsdbm:gender	?v5 .
+  ?v0	foaf:givenName	?v6 .
+}"#;
     
-    let _ = execute_query_rayon_parallel2_redesign_streaming(sparql_query, db);
+    // Use the existing Volcano Optimizer instead of the streaming function
+    let result = execute_query_rayon_parallel2_volcano(sparql_query, db);
     let query_time = query_start.elapsed();
+
+    // result limited to 10 for demonstration purposes
+    for result in result.iter().take(10) {
+        if let [v0] = &result[..] {
+            println!("{}", v0);
+        }
+    }
     
     println!("Query executed in {:.3} seconds", query_time.as_secs_f64());
 }

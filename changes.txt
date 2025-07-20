@@ -70,6 +70,9 @@
 69. Add N-Triples parser
 70. Add in some files license header
 71. Ability to querying 10M triples
+72. Improve optimizer and joining algorithm for processing 10M triples
+73. Use sorted-merge join algorithm instead of nested loop for big data
+74. Modify sorted-merge join algorithm by using IDs instead of string
 
 0.1.0
 1. Parsing RDF/XML
