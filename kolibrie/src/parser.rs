@@ -910,13 +910,131 @@ pub fn parse_ml_predict(input: &str) -> IResult<&str, MLPredictClause> {
     ))
 }
 
+// Parser for stream type
+pub fn parse_stream_type(input: &str) -> IResult<&str, StreamType> {
+    let (input, _) = multispace0(input)?;
+    let (input, stream_type) = alt((
+        tag("RSTREAM").map(|_| StreamType::RStream),
+        tag("ISTREAM").map(|_| StreamType::IStream),
+        tag("DSTREAM").map(|_| StreamType::DStream),
+        identifier.map(|s| StreamType::Custom(s)),
+    ))(input)?;
+    Ok((input, stream_type))
+}
+
+// Parser for window specification
+pub fn parse_window_spec(input: &str) -> IResult<&str, WindowSpec> {
+    let (input, _) = multispace0(input)?;
+    let (input, _) = char('[')(input)?;
+    let (input, _) = multispace0(input)?;
+    
+    // Parse window type and parameters
+    let (input, window_type) = alt((
+        tag("RANGE").map(|_| WindowType::Range),
+        tag("TUMBLING").map(|_| WindowType::Tumbling),
+        tag("SLIDING").map(|_| WindowType::Sliding),
+    ))(input)?;
+    
+    let (input, _) = multispace1(input)?;
+    let (input, width) = take_while1(|c: char| c.is_digit(10))(input)?;
+    let width = width.parse::<usize>().unwrap_or(0);
+    
+    // Optional slide parameter for sliding windows
+    let (input, slide) = opt(preceded(
+        tuple((multispace1, tag("SLIDE"), multispace1)),
+        take_while1(|c: char| c.is_digit(10))
+    ))(input)?;
+    let slide = slide.and_then(|s| s.parse::<usize>().ok());
+    
+    // Optional report strategy
+    let (input, report_strategy) = opt(preceded(
+        tuple((multispace1, tag("REPORT"), multispace1)),
+        alt((
+            tag("ON_WINDOW_CLOSE"),
+            tag("ON_CONTENT_CHANGE"),
+            tag("NON_EMPTY_CONTENT"),
+            tag("PERIODIC"),
+        ))
+    ))(input)?;
+    
+    // Optional tick strategy
+    let (input, tick) = opt(preceded(
+        tuple((multispace1, tag("TICK"), multispace1)),
+        alt((
+            tag("TIME_DRIVEN"),
+            tag("TUPLE_DRIVEN"),
+            tag("BATCH_DRIVEN"),
+        ))
+    ))(input)?;
+    
+    let (input, _) = multispace0(input)?;
+    let (input, _) = char(']')(input)?;
+    
+    Ok((input, WindowSpec {
+        window_type,
+        width,
+        slide,
+        report_strategy,
+        tick,
+    }))
+}
+
+// Parser for FROM NAMED WINDOW clause
+pub fn parse_from_named_window(input: &str) -> IResult<&str, WindowClause> {
+    let (input, _) = multispace0(input)?;
+    let (input, _) = tag("FROM")(input)?;
+    let (input, _) = multispace1(input)?;
+    let (input, _) = tag("NAMED")(input)?;
+    let (input, _) = multispace1(input)?;
+    let (input, _) = tag("WINDOW")(input)?;
+    let (input, _) = multispace1(input)?;
+    
+    // Parse window IRI in angle brackets
+    let (input, window_iri) = delimited(
+        char('<'),
+        take_while1(|c| c != '>'),
+        char('>')
+    )(input)?;
+    
+    let (input, _) = multispace1(input)?;
+    let (input, _) = tag("ON")(input)?;
+    let (input, _) = multispace1(input)?;
+    
+    // Parse stream IRI in angle brackets
+    let (input, stream_iri) = delimited(
+        char('<'),
+        take_while1(|c| c != '>'),
+        char('>')
+    )(input)?;
+    
+    let (input, _) = multispace1(input)?;
+    
+    // Parse window specification
+    let (input, window_spec) = parse_window_spec(input)?;
+    
+    Ok((input, WindowClause {
+        window_iri,
+        stream_iri,
+        window_spec,
+    }))
+}
+
 /// Parse a complete rule:
 ///   RULE :OverheatingAlert(?room) :- WHERE { ... } => { ... } .
 pub fn parse_rule(input: &str) -> IResult<&str, CombinedRule> {
     let (input, _) = tag("RULE")(input)?;
     let (input, _) = space1(input)?;
     let (input, head) = parse_rule_head(input)?;
-    let (input, _) = space0(input)?;
+    let (input, _) = multispace0(input)?;
+    
+    // Optional stream type
+    let (input, stream_type) = opt(parse_stream_type)(input)?;
+    let (input, _) = multispace0(input)?;
+    
+    // Optional FROM NAMED WINDOW clause
+    let (input, window_clause) = opt(parse_from_named_window)(input)?;
+    let (input, _) = multispace0(input)?;
+    
     let (input, _) = tag(":-")(input)?;
     let (input, _) = multispace0(input)?;
     
@@ -939,6 +1057,8 @@ pub fn parse_rule(input: &str) -> IResult<&str, CombinedRule> {
         input,
         CombinedRule {
             head,
+            stream_type,
+            window_clause,
             body,
             conclusion: conclusions,
             ml_predict,
@@ -1117,6 +1237,29 @@ pub fn convert_combined_rule<'a>(
         .into_iter()
         .map(|triple| convert_triple_pattern(triple, dict, prefixes))
         .collect();
+
+    // Handle windowing information if present
+    if let Some(window_clause) = &cr.window_clause {
+        println!("Processing rule with windowing:");
+        println!("  Window IRI: {}", window_clause.window_iri);
+        println!("  Stream IRI: {}", window_clause.stream_iri);
+        println!("  Window Type: {:?}", window_clause.window_spec.window_type);
+        println!("  Width: {}", window_clause.window_spec.width);
+        if let Some(slide) = window_clause.window_spec.slide {
+            println!("  Slide: {}", slide);
+        }
+        if let Some(report) = window_clause.window_spec.report_strategy {
+            println!("  Report Strategy: {}", report);
+        }
+        if let Some(tick) = window_clause.window_spec.tick {
+            println!("  Tick: {}", tick);
+        }
+    }
+
+    // Handle stream type if present
+    if let Some(stream_type) = &cr.stream_type {
+        println!("Stream Type: {:?}", stream_type);
+    }
 
     // Special handling for parameterless rules with ML.PREDICT
     if let Some(ml_predict) = &cr.ml_predict {

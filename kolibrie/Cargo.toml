@@ -223,6 +223,10 @@ name = "combination"
 path = "examples/sparql_syntax/combination/combination.rs"
 
 [[example]]
+name = "combination_stream"
+path = "examples/sparql_syntax/combination/combination_stream.rs"
+
+[[example]]
 name = "combination_logic_extend"
 path = "examples/sparql_syntax/combination/combination_logic_extend.rs"
 

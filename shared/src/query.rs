@@ -73,9 +73,44 @@ pub struct MLPredictClause<'a> {
     pub output: &'a str,
 }
 
-#[derive(Debug, Clone)]
+// Add new structs for windowing support
+#[derive(Clone, Debug)]
+pub struct WindowClause<'a> {
+    pub window_iri: &'a str,
+    pub stream_iri: &'a str,
+    pub window_spec: WindowSpec<'a>,
+}
+
+#[derive(Clone, Debug)]
+pub struct WindowSpec<'a> {
+    pub window_type: WindowType,
+    pub width: usize,
+    pub slide: Option<usize>,
+    pub report_strategy: Option<&'a str>,
+    pub tick: Option<&'a str>,
+}
+
+#[derive(Clone, Debug)]
+pub enum WindowType {
+    Range,
+    Tumbling,
+    Sliding,
+}
+
+#[derive(Clone, Debug)]
+pub enum StreamType<'a> {
+    RStream,
+    IStream, 
+    DStream,
+    Custom(&'a str),
+}
+
+// Modified CombinedRule to include windowing
+#[derive(Clone, Debug)]
 pub struct CombinedRule<'a> {
     pub head: RuleHead<'a>,
+    pub stream_type: Option<StreamType<'a>>,
+    pub window_clause: Option<WindowClause<'a>>,
     pub body: (
         Vec<(&'a str, &'a str, &'a str)>, // triple patterns from WHERE
         Vec<FilterExpression<'a>>, // filters
