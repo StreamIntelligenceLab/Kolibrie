@@ -74,6 +74,7 @@
 73. Use sorted-merge join algorithm instead of nested loop for big data
 74. Modify sorted-merge join algorithm by using IDs instead of string
 75. Integrate RSP with a parser
+76. Minor fix of RULE syntax
 
 0.1.0
 1. Parsing RDF/XML

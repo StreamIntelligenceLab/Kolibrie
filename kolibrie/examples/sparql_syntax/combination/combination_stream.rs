@@ -58,10 +58,9 @@ fn main() {
     let rsp_rule_basic = r#"PREFIX ex: <http://example.org#>
 PREFIX stream: <http://example.org/stream#>
 
-RULE :TemperatureAlert(?room)
+RULE :TemperatureAlert(?room) :- 
 RSTREAM
-FROM NAMED WINDOW <http://example.org/window1> ON <http://example.org/temperatureStream> [SLIDING 10 SLIDE 2 REPORT ON_WINDOW_CLOSE TICK TIME_DRIVEN]
-:- 
+FROM NAMED WINDOW <http://example.org/window1> ON <http://example.org/temperatureStream> [SLIDING 10 SLIDE 2 REPORT ON_WINDOW_CLOSE TICK TIME_DRIVEN] 
 CONSTRUCT { 
     ?room ex:hasAlert "high_temperature" .
 }
@@ -91,10 +90,9 @@ WHERE {
     let rsp_rule_istream = r#"PREFIX ex: <http://example.org#>
 PREFIX stream: <http://example.org/stream#>
 
-RULE :NewHighTemp(?room)
+RULE :NewHighTemp(?room) :- 
 ISTREAM
-FROM NAMED WINDOW <http://example.org/window2> ON <http://example.org/tempStream> [TUMBLING 5 REPORT NON_EMPTY_CONTENT TICK TUPLE_DRIVEN]
-:- 
+FROM NAMED WINDOW <http://example.org/window2> ON <http://example.org/tempStream> [TUMBLING 5 REPORT NON_EMPTY_CONTENT TICK TUPLE_DRIVEN] 
 CONSTRUCT { 
     ?room ex:newHighReading ?temp .
 }
@@ -123,10 +121,9 @@ WHERE {
     let rsp_rule_ml = r#"PREFIX ex: <http://example.org#>
 PREFIX stream: <http://example.org/stream#>
 
-RULE :PredictiveAlert
+RULE :PredictiveAlert :- 
 DSTREAM
 FROM NAMED WINDOW <http://example.org/window3> ON <http://example.org/sensorStream> [RANGE 15 REPORT PERIODIC TICK TIME_DRIVEN]
-:- 
 CONSTRUCT { 
     ?room ex:predictedLevel ?level .
 }
@@ -136,7 +133,6 @@ WHERE {
              ex:timestamp ?time .
     FILTER (?temp > 70)
 }
-
 ML.PREDICT(
     MODEL "temperature_predictor",
     INPUT {
@@ -162,7 +158,7 @@ ML.PREDICT(
                 println!("  {}", database.triple_to_string(triple, &database.dictionary));
             }
         },
-        Err(e) => println!("❌ Failed to process DSTREAM + ML rule: {}", e),
+        Err(e) => println!("Failed to process DSTREAM + ML rule: {}", e),
     }
 
     // Test 4: Test parsing individual components

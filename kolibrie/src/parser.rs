@@ -1026,6 +1026,9 @@ pub fn parse_rule(input: &str) -> IResult<&str, CombinedRule> {
     let (input, _) = space1(input)?;
     let (input, head) = parse_rule_head(input)?;
     let (input, _) = multispace0(input)?;
+
+    let (input, _) = tag(":-")(input)?;
+    let (input, _) = multispace0(input)?;
     
     // Optional stream type
     let (input, stream_type) = opt(parse_stream_type)(input)?;
@@ -1033,9 +1036,6 @@ pub fn parse_rule(input: &str) -> IResult<&str, CombinedRule> {
     
     // Optional FROM NAMED WINDOW clause
     let (input, window_clause) = opt(parse_from_named_window)(input)?;
-    let (input, _) = multispace0(input)?;
-    
-    let (input, _) = tag(":-")(input)?;
     let (input, _) = multispace0(input)?;
     
     // Parse CONSTRUCT clause
