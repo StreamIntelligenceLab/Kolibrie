@@ -88,7 +88,7 @@ impl <I> ContentContainer<I>
     fn new() -> ContentContainer<I> {
         ContentContainer { elements: HashSet::new(), last_timestamp_changed: 0 }
     }
-    fn len(&self) -> usize {
+    pub fn len(&self) -> usize {
         self.elements.len()
     }
     fn add(&mut self, triple: I, ts: usize) {

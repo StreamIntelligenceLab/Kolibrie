@@ -26,6 +26,9 @@ use shared::rule::FilterCondition;
 use shared::rule::Rule;
 use shared::terms::*;
 use shared::query::*;
+// Add RSP imports
+use rsp::s2r::{CSPARQLWindow, Report, ReportStrategy, Tick, WindowTriple, ContentContainer};
+use rsp::r2s::{Relation2StreamOperator, StreamOperator};
 use std::collections::HashMap;
 
 // Helper function to recognize identifiers
@@ -1341,26 +1344,86 @@ pub fn process_rule_definition(
         let mut rule_prefixes = prefixes.clone();
         database.share_prefixes_with(&mut rule_prefixes);
 
-        let dynamic_rule = convert_combined_rule(rule, &mut database.dictionary, &rule_prefixes);
+        let dynamic_rule = convert_combined_rule(rule.clone(), &mut database.dictionary, &rule_prefixes);
 
-        // Add the rule to the knowledge graph
-        kg.add_rule(dynamic_rule.clone());
-
-        // Register all predicates from the conclusions for rule resolution
-        for conclusion in &dynamic_rule.conclusion {
-            if let Term::Constant(code) = conclusion.1 {
-                let expanded = database.dictionary.decode(code).unwrap_or_else(|| "");
-                let local = if let Some(idx) = expanded.rfind('#') {
-                    &expanded[idx + 1..]
-                } else if let Some(idx) = expanded.rfind(':') {
-                    &expanded[idx + 1..]
-                } else {
-                    &expanded
+        // Check if this rule has windowing - if so, set up RSP processing
+        if let Some(window_clause) = &rule.window_clause {
+            println!("Setting up RSP window processing for rule");
+            
+            // Create RSP window based on parsed specifications
+            let mut rsp_window = create_rsp_window(&window_clause.window_spec)?;
+            
+            // Set up stream operator based on parsed stream type
+            let stream_operator = match &rule.stream_type {
+                Some(StreamType::RStream) => StreamOperator::RSTREAM,
+                Some(StreamType::IStream) => StreamOperator::ISTREAM,
+                Some(StreamType::DStream) => StreamOperator::DSTREAM,
+                _ => StreamOperator::RSTREAM, // Default
+            };
+            
+            let mut r2s_operator = Relation2StreamOperator::new(stream_operator.clone(), 0);
+            
+            // Process existing triples through the window
+            let mut current_time = 1;
+            for triple in database.triples.iter() {
+                let window_triple = WindowTriple {
+                    s: database.dictionary.decode(triple.subject).unwrap_or("").to_string(),
+                    p: database.dictionary.decode(triple.predicate).unwrap_or("").to_string(),
+                    o: database.dictionary.decode(triple.object).unwrap_or("").to_string(),
                 };
-                let rule_key = local.to_lowercase();
-                database.rule_map.insert(rule_key, expanded.to_string());
+                
+                // Add to window
+                rsp_window.add_to_window(window_triple, current_time);
+                current_time += 1;
             }
+            
+            // Register a callback to process windowed results
+            let kg_clone = kg.clone();
+            let rule_clone = dynamic_rule.clone();
+            
+            rsp_window.register_callback(Box::new(move |content: ContentContainer<WindowTriple>| {
+                println!("Processing window content with {} triples", content.len());
+                
+                // Convert window content back to Knowledge Graph format
+                let mut window_kg = kg_clone.clone();
+                for window_triple in content.iter() {
+                    window_kg.add_abox_triple(&window_triple.s, &window_triple.p, &window_triple.o);
+                }
+                
+                // Apply the rule to windowed data
+                window_kg.add_rule(rule_clone.clone());
+                let window_inferred = window_kg.infer_new_facts_semi_naive();
+                
+                println!("Window processing inferred {} facts", window_inferred.len());
+            }));
+            
+            // Add the rule to the main knowledge graph
+            kg.add_rule(dynamic_rule.clone());
+            
+            // For immediate processing, also infer from current data
+            let inferred_facts = kg.infer_new_facts_semi_naive();
+            
+            // Apply stream operator to results
+            let stream_results = r2s_operator.eval(inferred_facts.clone(), current_time);
+            
+            println!("Stream operator ({:?}) produced {} results", stream_operator.clone(), stream_results.len());
+            
+            // Add inferred facts to the database
+            for triple in stream_results.iter() {
+                database.triples.insert(triple.clone());
+            }
+            
+            // Register rule predicates
+            register_rule_predicates(&dynamic_rule, database);
+            
+            return Ok((dynamic_rule, stream_results));
         }
+
+        // Non-windowed rule processing (existing logic)
+        kg.add_rule(dynamic_rule.clone());
+        
+        // Register rule predicates
+        register_rule_predicates(&dynamic_rule, database);
 
         // Infer new facts based on the rule
         let inferred_facts = kg.infer_new_facts_semi_naive();
@@ -1373,5 +1436,62 @@ pub fn process_rule_definition(
         Ok((dynamic_rule, inferred_facts))
     } else {
         Err("Failed to parse rule definition".to_string())
+    }
+}
+
+// Helper function to create RSP window from parsed specification
+fn create_rsp_window(window_spec: &WindowSpec) -> Result<CSPARQLWindow<WindowTriple>, String> {
+    // Create report strategy
+    let mut report = Report::new();
+    
+    let report_strategy = match window_spec.report_strategy {
+        Some("NON_EMPTY_CONTENT") => ReportStrategy::NonEmptyContent,
+        Some("ON_CONTENT_CHANGE") => ReportStrategy::OnContentChange,
+        Some("ON_WINDOW_CLOSE") => ReportStrategy::OnWindowClose,
+        Some("PERIODIC") => ReportStrategy::Periodic(5), // Default period
+        _ => ReportStrategy::OnWindowClose, // Default
+    };
+    report.add(report_strategy);
+    
+    // Create tick strategy
+    let tick = match window_spec.tick {
+        Some("TIME_DRIVEN") => Tick::TimeDriven,
+        Some("TUPLE_DRIVEN") => Tick::TupleDriven,
+        Some("BATCH_DRIVEN") => Tick::BatchDriven,
+        _ => Tick::TimeDriven, // Default
+    };
+    
+    // Handle different window types
+    match window_spec.window_type {
+        WindowType::Sliding => {
+            let slide = window_spec.slide.unwrap_or(1);
+            Ok(CSPARQLWindow::new(window_spec.width, slide, report, tick))
+        },
+        WindowType::Tumbling => {
+            // Tumbling window: slide = width
+            Ok(CSPARQLWindow::new(window_spec.width, window_spec.width, report, tick))
+        },
+        WindowType::Range => {
+            // Range window: slide = 1 (continuous)
+            Ok(CSPARQLWindow::new(window_spec.width, 1, report, tick))
+        }
+    }
+}
+
+// Helper function to register rule predicates
+fn register_rule_predicates(rule: &Rule, database: &mut SparqlDatabase) {
+    for conclusion in &rule.conclusion {
+        if let Term::Constant(code) = conclusion.1 {
+            let expanded = database.dictionary.decode(code).unwrap_or_else(|| "");
+            let local = if let Some(idx) = expanded.rfind('#') {
+                &expanded[idx + 1..]
+            } else if let Some(idx) = expanded.rfind(':') {
+                &expanded[idx + 1..]
+            } else {
+                &expanded
+            };
+            let rule_key = local.to_lowercase();
+            database.rule_map.insert(rule_key, expanded.to_string());
+        }
     }
 }

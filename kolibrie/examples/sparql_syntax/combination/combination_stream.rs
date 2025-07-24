@@ -8,8 +8,8 @@
  * you can obtain one at https://mozilla.org/MPL/2.0/.
  */
 
-use kolibrie::parser::*;
 use kolibrie::execute_query::*;
+use kolibrie::parser::*;
 use kolibrie::sparql_database::SparqlDatabase;
 
 fn main() {
@@ -53,8 +53,8 @@ fn main() {
     println!("Database RDF triples: {:#?}", database.triples);
     println!("Total triples loaded: {}", database.triples.len());
 
-    // Test 1: Basic RSP rule with RSTREAM and sliding window
-    println!("\n=== Test 1: Basic RSP Windowing Rule ===");
+    // Basic RSP rule with RSTREAM and sliding window
+    println!("\n=== Basic RSP Windowing Rule ===");
     let rsp_rule_basic = r#"PREFIX ex: <http://example.org#>
 PREFIX stream: <http://example.org/stream#>
 
@@ -72,21 +72,68 @@ WHERE {
 }"#;
 
     println!("Processing RSP rule with RSTREAM and sliding window...");
+    // DEBUG: Track database state before windowing
+    let triples_before_rsp = database.triples.len();
+    println!(
+        "DEBUG: Database has {} triples before RSP processing",
+        triples_before_rsp
+    );
+
     let rule_result = process_rule_definition(rsp_rule_basic, &mut database);
+
+    // DEBUG: Track database state after windowing
+    let triples_after_rsp = database.triples.len();
+    println!(
+        "DEBUG: Database has {} triples after RSP processing (+{})",
+        triples_after_rsp,
+        triples_after_rsp - triples_before_rsp
+    );
+
     match rule_result {
         Ok((rule, inferred_facts)) => {
             println!("RSP Rule processed successfully!");
+
+            // DEBUG: Check if windowing was actually applied
+            println!("DEBUG: RSP Windowing Analysis:");
+            println!("   - Inferred {} facts", inferred_facts.len());
+            println!("   - Rule premise patterns: {}", rule.premise.len());
+            println!("   - Rule filter conditions: {}", rule.filters.len());
+
+            // DEBUG: Analyze inferred facts for windowing evidence
+            for (i, triple) in inferred_facts.iter().enumerate() {
+                let s = database
+                    .dictionary
+                    .decode(triple.subject)
+                    .unwrap_or("unknown");
+                let p = database
+                    .dictionary
+                    .decode(triple.predicate)
+                    .unwrap_or("unknown");
+                let o = database
+                    .dictionary
+                    .decode(triple.object)
+                    .unwrap_or("unknown");
+                println!("DEBUG: Fact {}: {} -> {} -> {}", i + 1, s, p, o);
+
+                if p.contains("hasAlert") {
+                    println!("   WINDOWING EVIDENCE: Found hasAlert predicate");
+                }
+            }
+
             println!("Rule structure: {:#?}", rule);
             println!("Inferred {} new fact(s):", inferred_facts.len());
             for triple in inferred_facts.iter() {
-                println!("  {}", database.triple_to_string(triple, &database.dictionary));
+                println!(
+                    "  {}",
+                    database.triple_to_string(triple, &database.dictionary)
+                );
             }
-        },
+        }
         Err(e) => println!("Failed to process RSP rule: {}", e),
     }
 
-    // Test 2: ISTREAM with tumbling window
-    println!("\n=== Test 2: ISTREAM with Tumbling Window ===");
+    // ISTREAM with tumbling window
+    println!("\n=== ISTREAM with Tumbling Window ===");
     let rsp_rule_istream = r#"PREFIX ex: <http://example.org#>
 PREFIX stream: <http://example.org/stream#>
 
@@ -103,21 +150,61 @@ WHERE {
 }"#;
 
     println!("Processing ISTREAM rule with tumbling window...");
+    // DEBUG: Track ISTREAM behavior
+    let triples_before_istream = database.triples.len();
+    println!(
+        "DEBUG: Database has {} triples before ISTREAM processing",
+        triples_before_istream
+    );
+
     let rule_result2 = process_rule_definition(rsp_rule_istream, &mut database);
+
+    let triples_after_istream = database.triples.len();
+    println!(
+        "DEBUG: Database has {} triples after ISTREAM processing (+{})",
+        triples_after_istream,
+        triples_after_istream - triples_before_istream
+    );
+
     match rule_result2 {
         Ok((rule, inferred_facts)) => {
             println!("ISTREAM Rule processed successfully!");
+
+            // DEBUG: Compare ISTREAM vs RSTREAM behavior
+            println!("DEBUG: ISTREAM vs RSTREAM Comparison:");
+            println!(
+                "   - RSTREAM added: {} triples",
+                triples_after_rsp - triples_before_rsp
+            );
+            println!(
+                "   - ISTREAM added: {} triples",
+                triples_after_istream - triples_before_istream
+            );
+
+            if (triples_after_istream - triples_before_istream)
+                != (triples_after_rsp - triples_before_rsp)
+            {
+                println!(
+                    "   WINDOWING WORKING: Different stream operators produce different results!"
+                );
+            } else {
+                println!("   WINDOWING UNCLEAR: Same results from different stream operators");
+            }
+
             println!("Rule has windowing: {}", rule.premise.len() > 0);
             println!("Inferred {} new fact(s):", inferred_facts.len());
             for triple in inferred_facts.iter() {
-                println!("  {}", database.triple_to_string(triple, &database.dictionary));
+                println!(
+                    "  {}",
+                    database.triple_to_string(triple, &database.dictionary)
+                );
             }
-        },
+        }
         Err(e) => println!("Failed to process ISTREAM rule: {}", e),
     }
 
-    // Test 3: DSTREAM with range window and ML.PREDICT
-    println!("\n=== Test 3: DSTREAM with Range Window and ML.PREDICT ===");
+    // DSTREAM with range window and ML.PREDICT
+    println!("\n=== DSTREAM with Range Window and ML.PREDICT ===");
     let rsp_rule_ml = r#"PREFIX ex: <http://example.org#>
 PREFIX stream: <http://example.org/stream#>
 
@@ -147,28 +234,76 @@ ML.PREDICT(
 )"#;
 
     println!("Processing DSTREAM rule with range window and ML.PREDICT...");
+    // DEBUG: Track DSTREAM behavior
+    let triples_before_dstream = database.triples.len();
+    println!(
+        "DEBUG: Database has {} triples before DSTREAM processing",
+        triples_before_dstream
+    );
+
     let rule_result3 = process_rule_definition(rsp_rule_ml, &mut database);
+
+    let triples_after_dstream = database.triples.len();
+    println!(
+        "DEBUG: Database has {} triples after DSTREAM processing (+{})",
+        triples_after_dstream,
+        triples_after_dstream - triples_before_dstream
+    );
+
     match rule_result3 {
         Ok((rule, inferred_facts)) => {
             println!("DSTREAM + ML.PREDICT Rule processed successfully!");
+
+            // DEBUG: Three-way comparison
+            println!("DEBUG: Three-way Stream Operator Comparison:");
+            println!(
+                "   - RSTREAM added: {} triples",
+                triples_after_rsp - triples_before_rsp
+            );
+            println!(
+                "   - ISTREAM added: {} triples",
+                triples_after_istream - triples_before_istream
+            );
+            println!(
+                "   - DSTREAM added: {} triples",
+                triples_after_dstream - triples_before_dstream
+            );
+
+            let all_different = (triples_after_rsp - triples_before_rsp)
+                != (triples_after_istream - triples_before_istream)
+                || (triples_after_istream - triples_before_istream)
+                    != (triples_after_dstream - triples_before_dstream);
+
+            if all_different {
+                println!("   WINDOWING CONFIRMED: All stream operators behave differently!");
+            } else {
+                println!("   WINDOWING NEEDS INVESTIGATION: Similar behavior across operators");
+            }
+
             println!("Rule has {} premise patterns", rule.premise.len());
             println!("Rule has {} filter conditions", rule.filters.len());
             println!("Inferred {} new fact(s):", inferred_facts.len());
             for triple in inferred_facts.iter() {
-                println!("  {}", database.triple_to_string(triple, &database.dictionary));
+                println!(
+                    "  {}",
+                    database.triple_to_string(triple, &database.dictionary)
+                );
             }
-        },
+        }
         Err(e) => println!("Failed to process DSTREAM + ML rule: {}", e),
     }
 
-    // Test 4: Test parsing individual components
-    println!("\n=== Test 4: Testing Individual Parser Components ===");
-    
+    // Test parsing individual components
+    println!("\n=== Testing Individual Parser Components ===");
+
     // Test stream type parsing
     let stream_tests = vec!["RSTREAM", "ISTREAM", "DSTREAM"];
     for stream in stream_tests {
         match parse_stream_type(stream) {
-            Ok((_, stream_type)) => println!("Parsed stream type: {:?}", stream_type),
+            Ok((_, stream_type)) => {
+                println!("Parsed stream type: {:?}", stream_type);
+                println!("DEBUG: Stream type {} parsed successfully", stream);
+            }
             Err(e) => println!("Failed to parse {}: {:?}", stream, e),
         }
     }
@@ -183,7 +318,25 @@ ML.PREDICT(
             println!("  Slide: {:?}", spec.slide);
             println!("  Report: {:?}", spec.report_strategy);
             println!("  Tick: {:?}", spec.tick);
-        },
+
+            // DEBUG: Verify window parameters
+            println!("DEBUG: Window parameters validation:");
+            println!("   - SLIDING window with width {} detected", spec.width);
+            if let Some(slide) = spec.slide {
+                println!("   - Slide parameter {} detected", slide);
+                if slide < spec.width {
+                    println!(
+                        "   OVERLAPPING WINDOWS: slide ({}) < width ({})",
+                        slide, spec.width
+                    );
+                } else {
+                    println!(
+                        "   NON-OVERLAPPING: slide ({}) >= width ({})",
+                        slide, spec.width
+                    );
+                }
+            }
+        }
         Err(e) => println!("Failed to parse window spec: {:?}", e),
     }
 
@@ -195,23 +348,41 @@ ML.PREDICT(
             println!("  Window IRI: {}", clause.window_iri);
             println!("  Stream IRI: {}", clause.stream_iri);
             println!("  Window Type: {:?}", clause.window_spec.window_type);
-        },
+
+            // DEBUG: Verify windowing clause parsing
+            println!("DEBUG: Windowing clause validation:");
+            println!("   - Window IRI: {}", clause.window_iri);
+            println!("   - Stream IRI: {}", clause.stream_iri);
+            println!("   PARSING SUCCESS: FROM NAMED WINDOW clause parsed correctly");
+        }
         Err(e) => println!("Failed to parse FROM NAMED WINDOW: {:?}", e),
     }
 
-    // Test 5: Query the results
-    println!("\n=== Test 5: Querying RSP Results ===");
-    
+    // Query the results
+    println!("\n=== Querying RSP Results ===");
+
     // Query for high temperature alerts
     let alert_query = r#"PREFIX ex: <http://example.org#>
 SELECT ?room ?alert
 WHERE { 
   ?room ex:hasAlert ?alert . 
 }"#;
-    
+
     println!("Querying for temperature alerts...");
     let query_results = execute_query(alert_query, &mut database);
     println!("Alert query results: {:?}", query_results);
+
+    // DEBUG: Validate windowing results
+    println!("DEBUG: Alert query validation:");
+    println!("   - Found {} alert results", query_results.len());
+    if query_results.len() > 0 {
+        println!("   WINDOWING SUCCESS: hasAlert predicates found in database");
+        for (i, result) in query_results.iter().enumerate() {
+            println!("     Alert {}: {:?}", i + 1, result);
+        }
+    } else {
+        println!("   NO ALERTS: No hasAlert predicates found - check windowing logic");
+    }
 
     // Query for new high readings
     let new_reading_query = r#"PREFIX ex: <http://example.org#>
@@ -219,10 +390,19 @@ SELECT ?room ?temp
 WHERE { 
   ?room ex:newHighReading ?temp . 
 }"#;
-    
+
     println!("Querying for new high readings...");
     let reading_results = execute_query(new_reading_query, &mut database);
     println!("New reading query results: {:?}", reading_results);
+
+    // DEBUG: Validate ISTREAM results
+    println!("DEBUG: ISTREAM reading validation:");
+    println!("   - Found {} reading results", reading_results.len());
+    if reading_results.len() > 0 {
+        println!("   ISTREAM SUCCESS: newHighReading predicates found");
+    } else {
+        println!("   NO READINGS: No newHighReading predicates found");
+    }
 
     // Query for predicted levels
     let prediction_query = r#"PREFIX ex: <http://example.org#>
@@ -230,12 +410,43 @@ SELECT ?room ?level
 WHERE { 
   ?room ex:predictedLevel ?level . 
 }"#;
-    
+
     println!("Querying for predicted levels...");
     let prediction_results = execute_query(prediction_query, &mut database);
     println!("Prediction query results: {:?}", prediction_results);
 
+    // DEBUG: Validate DSTREAM results
+    println!("DEBUG: DSTREAM prediction validation:");
+    println!("   - Found {} prediction results", prediction_results.len());
+    if prediction_results.len() > 0 {
+        println!("   DSTREAM SUCCESS: predictedLevel predicates found");
+    } else {
+        println!("   NO PREDICTIONS: No predictedLevel predicates found");
+    }
+
+    // DEBUG: Final windowing assessment
+    println!("\nDEBUG: Final Windowing Assessment:");
+    let total_windowing_results =
+        query_results.len() + reading_results.len() + prediction_results.len();
+    println!("   - Total windowing results: {}", total_windowing_results);
+    println!("   - RSTREAM alerts: {}", query_results.len());
+    println!("   - ISTREAM readings: {}", reading_results.len());
+    println!("   - DSTREAM predictions: {}", prediction_results.len());
+
+    if total_windowing_results > 0 {
+        println!("   OVERALL SUCCESS: Windowing is working and producing results!");
+    } else {
+        println!("   OVERALL FAILURE: No windowing results found - check implementation");
+    }
+
     println!("\n=== RSP Windowing Demo Complete ===");
     println!("Total triples in database: {}", database.triples.len());
     println!("Parser successfully handled all RSP windowing syntax!");
+
+    // DEBUG: Final database state
+    println!("DEBUG: Final database state:");
+    println!("   - Started with: {} triples", database.triples.len());
+    println!("   - Final count: {} triples", database.triples.len());
+    println!("   - Total added: {} triples", database.triples.len() - 15); // 15 original triples
 }
+

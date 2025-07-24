@@ -75,6 +75,7 @@
 74. Modify sorted-merge join algorithm by using IDs instead of string
 75. Integrate RSP with a parser
 76. Minor fix of RULE syntax
+77. Modify parser for execution when RSP
 
 0.1.0
 1. Parsing RDF/XML
