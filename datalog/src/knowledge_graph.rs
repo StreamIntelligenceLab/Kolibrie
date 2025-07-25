@@ -758,7 +758,7 @@ impl DatalogEngine {
 }
 
 /// Construct a new Triple from a conclusion pattern and bound variables
-fn construct_triple(
+pub fn construct_triple(
     conclusion: &TriplePattern, 
     vars: &HashMap<String, u32>, 
     dict: &mut Dictionary
@@ -803,7 +803,7 @@ fn construct_triple(
     }
 }
 
-fn matches_rule_pattern(
+pub fn matches_rule_pattern(
     pattern: &TriplePattern,
     fact: &Triple,
     variable_bindings: &mut HashMap<String, u32>,

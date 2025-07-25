@@ -76,6 +76,7 @@
 75. Integrate RSP with a parser
 76. Minor fix of RULE syntax
 77. Modify parser for execution when RSP
+78. Add Hierarchy reasoning
 
 0.1.0
 1. Parsing RDF/XML

@@ -143,6 +143,10 @@ name = "datalog_example"
 path = "examples/sparql_syntax/knowledge_graph/datalog_example.rs"
 
 [[example]]
+name = "hierarchy_reasoning"
+path = "examples/sparql_syntax/knowledge_graph/hierarchy_reasoning.rs"
+
+[[example]]
 name = "contradictions"
 path = "examples/sparql_syntax/knowledge_graph/contradictions.rs"
 
