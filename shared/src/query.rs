@@ -55,6 +55,7 @@ pub struct SubQuery<'a> {
     pub filters: Vec<FilterExpression<'a>>,           // FILTER conditions
     pub binds: Vec<(&'a str, Vec<&'a str>, &'a str)>,        // BIND clauses
     pub _values_clause: Option<ValuesClause<'a>>,            // VALUES clause
+    pub limit: Option<usize>, // Add LIMIT support
 }
 
 #[derive(Debug, Clone)]
@@ -136,5 +137,6 @@ pub struct CombinedQuery<'a> {
         Option<ValuesClause<'a>>,
         Vec<(&'a str, Vec<&'a str>, &'a str)>,
         Vec<SubQuery<'a>>,
+        Option<usize>,
     ),
 }

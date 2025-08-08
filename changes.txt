@@ -78,6 +78,8 @@
 77. Modify parser for execution when RSP
 78. Add Hierarchy reasoning
 79. Major update hierarchy reasoning
+80. Add LIMIT
+81. Major fix of RULE syntax
 
 0.1.0
 1. Parsing RDF/XML

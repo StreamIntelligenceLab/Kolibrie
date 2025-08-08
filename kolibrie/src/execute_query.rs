@@ -121,6 +121,7 @@ pub fn execute_query(sparql: &str, database: &mut SparqlDatabase) -> Vec<Vec<Str
     let mut aggregation_vars: Vec<(&str, &str, &str)> = Vec::new();
     let group_by_variables: Vec<&str>;
     let mut prefixes;
+    let limit_clause: Option<usize>;
 
     let parse_result = parse_sparql_query(sparql);
 
@@ -136,10 +137,12 @@ pub fn execute_query(sparql: &str, database: &mut SparqlDatabase) -> Vec<Vec<Str
             values_clause,
             binds,
             subqueries,
+            limit,
         ),
     )) = parse_result
     {
         prefixes = parsed_prefixes;
+        limit_clause = limit;
 
         // Ensure prefixes from the database are also available
         database.share_prefixes_with(&mut prefixes);
@@ -269,6 +272,12 @@ pub fn execute_query(sparql: &str, database: &mut SparqlDatabase) -> Vec<Vec<Str
             final_results =
                 group_and_aggregate_results(final_results, &group_by_variables, &aggregation_vars);
         }
+
+        if let Some(limit_value) = limit_clause {
+            if limit_value > 0 {
+                final_results.truncate(limit_value);
+            }
+        }
     } else {
         // Enhanced error reporting while keeping the same function signature
         if let Err(err) = parse_result {
@@ -292,6 +301,7 @@ pub fn execute_query_normal(sparql: &str, database: &mut SparqlDatabase) -> Vec<
     let mut selected_variables: Vec<(String, String)> = Vec::new();
     let mut aggregation_vars: Vec<(&str, &str, &str)> = Vec::new();
     let group_by_variables: Vec<&str>;
+    let limit_clause: Option<usize>;
     let prefixes;
 
     if let Ok((
@@ -306,10 +316,12 @@ pub fn execute_query_normal(sparql: &str, database: &mut SparqlDatabase) -> Vec<
             values_clause,
             binds,
             subqueries,
+            limit,
         ),
     )) = parse_sparql_query(sparql)
     {
         prefixes = parsed_prefixes;
+        limit_clause = limit;
 
         // Process the INSERT clause if present
         process_insert_clause(insert_clause, database);
@@ -405,6 +417,12 @@ pub fn execute_query_normal(sparql: &str, database: &mut SparqlDatabase) -> Vec<
             final_results =
                 group_and_aggregate_results(final_results, &group_by_variables, &aggregation_vars);
         }
+
+        if let Some(limit_value) = limit_clause {
+            if limit_value > 0 {
+                final_results.truncate(limit_value);
+            }
+        }
     } else {
         eprintln!("Failed to parse the query.");
         return Vec::new();
@@ -422,6 +440,7 @@ pub fn execute_query_normal_simd(sparql: &str, database: &mut SparqlDatabase) ->
     let mut selected_variables: Vec<(String, String)> = Vec::new();
     let mut aggregation_vars: Vec<(&str, &str, &str)> = Vec::new();
     let group_by_variables: Vec<&str>;
+    let limit_clause: Option<usize>;
     let prefixes;
 
     if let Ok((
@@ -436,10 +455,12 @@ pub fn execute_query_normal_simd(sparql: &str, database: &mut SparqlDatabase) ->
             values_clause,
             binds,
             subqueries,
+            limit,
         ),
     )) = parse_sparql_query(sparql)
     {
         prefixes = parsed_prefixes;
+        limit_clause = limit;
 
         // Process the INSERT clause if present
         process_insert_clause(insert_clause, database);
@@ -535,6 +556,12 @@ pub fn execute_query_normal_simd(sparql: &str, database: &mut SparqlDatabase) ->
             final_results =
                 group_and_aggregate_results(final_results, &group_by_variables, &aggregation_vars);
         }
+
+        if let Some(limit_value) = limit_clause {
+            if limit_value > 0 {
+                final_results.truncate(limit_value);
+            }
+        }
     } else {
         eprintln!("Failed to parse the query.");
         return Vec::new();
@@ -552,6 +579,7 @@ pub fn execute_query_rayon_simd(sparql: &str, database: &mut SparqlDatabase) -> 
     let mut selected_variables: Vec<(String, String)> = Vec::new();
     let mut aggregation_vars: Vec<(&str, &str, &str)> = Vec::new();
     let group_by_variables: Vec<&str>;
+    let limit_clause: Option<usize>;
     let prefixes;
 
     if let Ok((
@@ -566,10 +594,12 @@ pub fn execute_query_rayon_simd(sparql: &str, database: &mut SparqlDatabase) -> 
             values_clause,
             binds,
             subqueries,
+            limit,
         ),
     )) = parse_sparql_query(sparql)
     {
         prefixes = parsed_prefixes;
+        limit_clause = limit;
 
         // Process the INSERT clause if present
         process_insert_clause(insert_clause, database);
@@ -665,6 +695,12 @@ pub fn execute_query_rayon_simd(sparql: &str, database: &mut SparqlDatabase) -> 
             final_results =
                 group_and_aggregate_results(final_results, &group_by_variables, &aggregation_vars);
         }
+
+        if let Some(limit_value) = limit_clause {
+            if limit_value > 0 {
+                final_results.truncate(limit_value);
+            }
+        }
     } else {
         eprintln!("Failed to parse the query.");
         return Vec::new();
@@ -682,6 +718,7 @@ pub fn execute_query_rayon_parallel1(sparql: &str, database: &mut SparqlDatabase
     let mut selected_variables: Vec<(String, String)> = Vec::new();
     let mut aggregation_vars: Vec<(&str, &str, &str)> = Vec::new();
     let group_by_variables: Vec<&str>;
+    let limit_clause: Option<usize>;
     let prefixes;
 
     if let Ok((
@@ -696,10 +733,12 @@ pub fn execute_query_rayon_parallel1(sparql: &str, database: &mut SparqlDatabase
             values_clause,
             binds,
             subqueries,
+            limit,
         ),
     )) = parse_sparql_query(sparql)
     {
         prefixes = parsed_prefixes;
+        limit_clause = limit;
 
         // Process the INSERT clause if present
         process_insert_clause(insert_clause, database);
@@ -795,6 +834,12 @@ pub fn execute_query_rayon_parallel1(sparql: &str, database: &mut SparqlDatabase
             final_results =
                 group_and_aggregate_results(final_results, &group_by_variables, &aggregation_vars);
         }
+
+        if let Some(limit_value) = limit_clause {
+            if limit_value > 0 {
+                final_results.truncate(limit_value);
+            }
+        }
     } else {
         eprintln!("Failed to parse the query.");
         return Vec::new();
@@ -812,6 +857,7 @@ pub fn execute_query_rayon_parallel2(sparql: &str, database: &mut SparqlDatabase
     let mut selected_variables: Vec<(String, String)> = Vec::new();
     let mut aggregation_vars: Vec<(&str, &str, &str)> = Vec::new();
     let group_by_variables: Vec<&str>;
+    let limit_clause: Option<usize>;
     let prefixes;
 
     if let Ok((
@@ -826,10 +872,12 @@ pub fn execute_query_rayon_parallel2(sparql: &str, database: &mut SparqlDatabase
             values_clause,
             binds,
             subqueries,
+            limit,
         ),
     )) = parse_sparql_query(sparql)
     {
         prefixes = parsed_prefixes;
+        limit_clause = limit;
 
         // Process the INSERT clause if present
         process_insert_clause(insert_clause, database);
@@ -925,6 +973,12 @@ pub fn execute_query_rayon_parallel2(sparql: &str, database: &mut SparqlDatabase
             final_results =
                 group_and_aggregate_results(final_results, &group_by_variables, &aggregation_vars);
         }
+
+        if let Some(limit_value) = limit_clause {
+            if limit_value > 0 {
+                final_results.truncate(limit_value);
+            }
+        }
     } else {
         eprintln!("Failed to parse the query.");
         return Vec::new();
@@ -936,7 +990,8 @@ pub fn execute_query_rayon_parallel2(sparql: &str, database: &mut SparqlDatabase
 
 pub fn execute_query_rayon_parallel2_volcano(sparql: &str, database: &mut SparqlDatabase) -> Vec<Vec<String>> {
     let sparql = normalize_query(sparql);
-    
+
+    let limit_clause: Option<usize>;
     // Register prefixes from the query string first
     database.register_prefixes_from_query(&sparql);
     
@@ -954,12 +1009,15 @@ pub fn execute_query_rayon_parallel2_volcano(sparql: &str, database: &mut Sparql
             values_clause,
             binds,
             subqueries,
+            limit,
         ),
     )) = parse_result {
         
         let mut prefixes = parsed_prefixes;
         database.share_prefixes_with(&mut prefixes);
         
+        limit_clause = limit;
+
         // Process the INSERT clause if present using the existing helper function
         process_insert_clause(insert_clause, database);
         
@@ -1055,7 +1113,14 @@ pub fn execute_query_rayon_parallel2_volcano(sparql: &str, database: &mut Sparql
                 if !group_vars.is_empty() {
                     final_results = group_and_aggregate_results(final_results, &group_vars, &aggregation_vars);
                 }
-                
+
+                // Apply LIMIT clause
+                if let Some(limit_value) = limit_clause {
+                    if limit_value > 0 {
+                        final_results.truncate(limit_value);
+                    }
+                }
+
                 return format_results(final_results, &selected_variables);
             }
             
@@ -1112,7 +1177,13 @@ pub fn execute_query_rayon_parallel2_volcano(sparql: &str, database: &mut Sparql
             if !group_vars.is_empty() {
                 final_results = group_and_aggregate_results(final_results, &group_vars, &aggregation_vars);
             }
-            
+
+            if let Some(limit_value) = limit_clause {
+                if limit_value > 0 {
+                    final_results.truncate(limit_value);
+                }
+            }
+
             return format_results(final_results, &selected_variables);
         }
         
@@ -1133,6 +1204,7 @@ pub fn execute_query_rayon_parallel2_redesign_streaming(
     let mut selected_variables: Vec<(String, String)> = Vec::new();
     let mut aggregation_vars: Vec<(&str, &str, &str)> = Vec::new();
     let group_by_variables: Vec<&str>;
+    let limit_clause: Option<usize>;
     let prefixes;
 
     if let Ok((
@@ -1147,11 +1219,15 @@ pub fn execute_query_rayon_parallel2_redesign_streaming(
             values_clause, 
             binds, 
             subqueries,
+            limit,
         ),
     )) = parse_sparql_query(sparql) 
     {
         
         prefixes = parsed_prefixes;
+
+        // Initialize the limit clause
+        limit_clause = limit;
 
         // Process the INSERT clause if present
         process_insert_clause(insert_clause, database);
@@ -1241,6 +1317,13 @@ pub fn execute_query_rayon_parallel2_redesign_streaming(
         if !group_by_variables.is_empty() {
             final_results =
                 group_and_aggregate_results(final_results, &group_by_variables, &aggregation_vars);
+        }
+
+        // Apply LIMIT clause
+        if let Some(limit_value) = limit_clause {
+            if limit_value > 0 {
+                final_results.truncate(limit_value);
+            }
         }
     } else {
         eprintln!("Failed to parse the query.");

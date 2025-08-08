@@ -115,6 +115,10 @@ name = "filter_int"
 path = "examples/sparql_syntax/filter/filter_int.rs"
 
 [[example]]
+name = "filter_limit"
+path = "examples/sparql_syntax/filter/filter_limit.rs"
+
+[[example]]
 name = "filter_int_arithm"
 path = "examples/sparql_syntax/filter/filter_int_arithmetic.rs"
 

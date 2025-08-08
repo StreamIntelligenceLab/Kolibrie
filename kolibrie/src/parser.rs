@@ -507,6 +507,8 @@ pub fn parse_subquery<'a>(input: &'a str) -> IResult<&'a str, SubQuery<'a>> {
     // Parse WHERE clause (recursive)
     let (input, (patterns, filters, values_clause, binds, _)) = parse_where(input)?;
 
+    let (input, limit) = opt(preceded(multispace0, parse_limit))(input)?;
+
     let (input, _) = multispace0::<&str, nom::error::Error<&str>>(input)?;
     let (input, _) = char('}')(input)?;
 
@@ -518,6 +520,7 @@ pub fn parse_subquery<'a>(input: &'a str) -> IResult<&'a str, SubQuery<'a>> {
             filters,
             binds,
             _values_clause: values_clause,
+            limit,
         },
     ))
 }
@@ -667,6 +670,18 @@ pub fn parse_construct_clause(input: &str) -> IResult<&str, Vec<(&str, &str, &st
     Ok((input, conclusions))
 }
 
+// Add LIMIT parser
+pub fn parse_limit(input: &str) -> IResult<&str, usize> {
+    let (input, _) = multispace0(input)?;
+    let (input, _) = tag("LIMIT")(input)?;
+    let (input, _) = space1(input)?;
+    let (input, limit_str) = take_while1(|c: char| c.is_digit(10))(input)?;
+    let (input, _) = multispace0(input)?;
+    
+    let limit = limit_str.parse::<usize>().unwrap_or(0);
+    Ok((input, limit))
+}
+
 pub fn parse_sparql_query(
     input: &str,
 ) -> IResult<
@@ -681,6 +696,7 @@ pub fn parse_sparql_query(
         Option<ValuesClause>,
         Vec<(&str, Vec<&str>, &str)>, // BIND clauses
         Vec<SubQuery>,
+        Option<usize>,                  // limit
     ),
 > {
     let mut input = input;
@@ -725,6 +741,8 @@ pub fn parse_sparql_query(
             (input, vec![])
         };
 
+    let (input, limit) = opt(preceded(multispace0, parse_limit))(input)?;
+
     Ok((
         input,
         (
@@ -737,6 +755,7 @@ pub fn parse_sparql_query(
             values_clause,
             binds,
             subqueries,
+            limit,
         ),
     ))
 }
@@ -1033,13 +1052,32 @@ pub fn parse_rule(input: &str) -> IResult<&str, CombinedRule> {
     let (input, _) = tag(":-")(input)?;
     let (input, _) = multispace0(input)?;
     
-    // Optional stream type
-    let (input, stream_type) = opt(parse_stream_type)(input)?;
-    let (input, _) = multispace0(input)?;
+    // Look ahead to determine parsing path
+    let lookahead_input = input;
+    let (lookahead_input, _) = multispace0(lookahead_input)?;
     
-    // Optional FROM NAMED WINDOW clause
-    let (input, window_clause) = opt(parse_from_named_window)(input)?;
-    let (input, _) = multispace0(input)?;
+    // Check if we have RSP elements or direct CONSTRUCT
+    let has_rsp_elements = matches!(
+        alt::<_, _, nom::error::Error<_>, _>((
+            tag::<_, _, nom::error::Error<_>>("RSTREAM"),
+            tag::<_, _, nom::error::Error<_>>("ISTREAM"), 
+            tag::<_, _, nom::error::Error<_>>("DSTREAM"),
+            tag::<_, _, nom::error::Error<_>>("FROM")
+        ))(lookahead_input),
+        Ok(_)
+    );
+    
+    let (input, stream_type, window_clause) = if has_rsp_elements {
+        // RSP parsing path
+        let (input, stream_type) = opt(parse_stream_type)(input)?;
+        let (input, _) = multispace0(input)?;
+        let (input, window_clause) = opt(parse_from_named_window)(input)?;
+        let (input, _) = multispace0(input)?;
+        (input, stream_type, window_clause)
+    } else {
+        // Basic parsing path - no RSP elements
+        (input, None, None)
+    };
     
     // Parse CONSTRUCT clause
     let (input, conclusions) = parse_construct_clause(input)?;
