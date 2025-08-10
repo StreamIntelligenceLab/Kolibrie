@@ -39,6 +39,8 @@ Voor meer informatie over ons onderzoek en lopende projecten, bezoek de [Stream 
 
 ## Installatie
 
+### Native Installatie
+
 Zorg ervoor dat je [Rust](https://www.rust-lang.org/tools/install) geïnstalleerd hebt (versie 1.60 of hoger).
 
 Voeg **Kolibrie** toe aan je `Cargo.toml`:
@@ -52,6 +54,33 @@ Include het vervolgens in je project:
 
 ```rust
 use kolibrie::SparqlDatabase;
+```
+
+### Docker Installatie
+
+**Kolibrie** biedt Docker-ondersteuning met meerdere configuraties voor verschillende gebruikssituaties. De Docker-setup behandelt automatisch alle afhankelijkheden inclusief Rust, CUDA (voor GPU builds), en Python ML frameworks.
+
+#### Vereisten
+
+- [Docker](https://docs.docker.com/get-docker/) geïnstalleerd
+- [Docker Compose](https://docs.docker.com/compose/install/) geïnstalleerd
+- Voor GPU-ondersteuning: [NVIDIA Docker runtime](https://github.com/NVIDIA/nvidia-docker) geïnstalleerd
+
+#### Snelstart
+
+1. **Alleen CPU build** (aanbevolen voor de meeste gebruikers):
+```bash
+docker compose --profile cpu up --build
+```
+
+2. **GPU-enabled build** (vereist NVIDIA GPU en nvidia-docker):
+```bash
+docker compose --profile gpu up --build
+```
+
+3. **Development build** (detecteert automatisch GPU-beschikbaarheid):
+```bash
+docker compose --profile dev up --build
 ```
 
 ## Gebruik

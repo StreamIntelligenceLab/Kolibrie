@@ -39,6 +39,8 @@ Pour plus d'informations sur notre recherche et nos projets en cours, veuillez v
 
 ## Installation
 
+### Installation Native
+
 Assurez-vous d'avoir [Rust](https://www.rust-lang.org/tools/install) installé (version 1.60 ou supérieure).
 
 Ajoutez **Kolibrie** à votre `Cargo.toml` :
@@ -52,6 +54,33 @@ Ensuite, incluez-le dans votre projet :
 
 ```rust
 use kolibrie::SparqlDatabase;
+```
+
+### Installation Docker
+
+**Kolibrie** fournit un support Docker avec plusieurs configurations pour différents cas d'usage. La configuration Docker gère automatiquement toutes les dépendances incluant Rust, CUDA (pour les builds GPU), et les frameworks Python ML.
+
+#### Prérequis
+
+- [Docker](https://docs.docker.com/get-docker/) installé
+- [Docker Compose](https://docs.docker.com/compose/install/) installé
+- Pour le support GPU : [NVIDIA Docker runtime](https://github.com/NVIDIA/nvidia-docker) installé
+
+#### Démarrage Rapide
+
+1. **Build CPU uniquement** (recommandé pour la plupart des utilisateurs) :
+```bash
+docker compose --profile cpu up --build
+```
+
+2. **Build avec GPU activé** (nécessite GPU NVIDIA et nvidia-docker) :
+```bash
+docker compose --profile gpu up --build
+```
+
+3. **Build de développement** (détecte automatiquement la disponibilité GPU) :
+```bash
+docker compose --profile dev up --build
 ```
 
 ## Utilisation

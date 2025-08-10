@@ -62,17 +62,17 @@ def test_istream_operator():
     print("\nAdding triples over multiple time points...")
     
     stream_query.add_stream_triple("Alice", "knows", "Bob", 1)
-    print("✓ Added: Alice -> knows -> Bob (timestamp: 1)")
+    print("Added: Alice -> knows -> Bob (timestamp: 1)")
         
     results1 = stream_query.get_stream_results()
-    print(f"✓ Retrieved results1: {len(results1)} batches")
+    print(f"Retrieved results1: {len(results1)} batches")
         
     # Second triple
     stream_query.add_stream_triple("Alice", "knows", "Charlie", 5)
-    print("✓ Added: Alice -> knows -> Charlie (timestamp: 5)")
+    print("Added: Alice -> knows -> Charlie (timestamp: 5)")
         
     results2 = stream_query.get_stream_results()
-    print(f"✓ Retrieved results2: {len(results2)} batches")
+    print(f"Retrieved results2: {len(results2)} batches")
     
     print("\nDecoding and displaying ISTREAM results...")
     
@@ -127,13 +127,13 @@ def test_istream_operator():
             else:
                 other_count += 1
     
-    print(f"\n✓ Subjects containing 'Alice': {alice_count}")
-    print(f"✓ Other subjects: {other_count}")
+    print(f"\n Subjects containing 'Alice': {alice_count}")
+    print(f" Other subjects: {other_count}")
     
     if other_count == 0:
-        print("✓ Subject filtering working correctly!")
+        print(" Subject filtering working correctly!")
     else:
-        print("⚠ Warning: Some non-Alice subjects found")
+        print(" Warning: Some non-Alice subjects found")
     
     # Clean up
     stream_query.stop_stream()

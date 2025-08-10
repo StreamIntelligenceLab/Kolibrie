@@ -80,6 +80,7 @@
 79. Major update hierarchy reasoning
 80. Add LIMIT
 81. Major fix of RULE syntax
+82. Update README and minor change
 
 0.1.0
 1. Parsing RDF/XML
