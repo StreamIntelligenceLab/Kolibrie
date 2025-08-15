@@ -1,35 +1,3 @@
-<?xml version="1.0" encoding="UTF-8"?>
-<rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#" xmlns:rdfs="http://www.w3.org/2000/01/rdf-schema#" xmlns:socrata="http://www.socrata.com/rdf/terms#" xmlns:dcat="http://www.w3.org/ns/dcat#" xmlns:ods="http://open-data-standards.github.com/2012/01/open-data-standards#" xmlns:dcterm="http://purl.org/dc/terms/" xmlns:geo="http://www.w3.org/2003/01/geo/wgs84_pos#" xmlns:skos="http://www.w3.org/2004/02/skos/core#" xmlns:foaf="http://xmlns.com/foaf/0.1/" xmlns:dsbase="https://data.cityofchicago.org/resource/" xmlns:ds="https://data.cityofchicago.org/resource/xzkq-xp2w/">
-<rdf:Description rdf:about="http://example.org/employee1">
-        <foaf:name>http://example.org/employee1</foaf:name>
-        <foaf:title>Developer</foaf:title>
-        <foaf:workplaceHomepage>Company Name</foaf:workplaceHomepage>
-        <ds:full_or_part_time>F</ds:full_or_part_time>
-        <ds:salary_or_hourly>SALARY</ds:salary_or_hourly>
-        <ds:annual_salary>73681</ds:annual_salary>
-    </rdf:Description>
-<rdf:Description rdf:about="http://example.org/employee2">
-        <foaf:name>http://example.org/employee2</foaf:name>
-        <foaf:title>Developer</foaf:title>
-        <foaf:workplaceHomepage>Company Name</foaf:workplaceHomepage>
-        <ds:full_or_part_time>F</ds:full_or_part_time>
-        <ds:salary_or_hourly>SALARY</ds:salary_or_hourly>
-        <ds:annual_salary>83504</ds:annual_salary>
-    </rdf:Description>
-<rdf:Description rdf:about="http://example.org/employee3">
-        <foaf:name>http://example.org/employee3</foaf:name>
-        <foaf:title>Developer</foaf:title>
-        <foaf:workplaceHomepage>Company Name</foaf:workplaceHomepage>
-        <ds:full_or_part_time>F</ds:full_or_part_time>
-        <ds:salary_or_hourly>SALARY</ds:salary_or_hourly>
-        <ds:annual_salary>90065</ds:annual_salary>
-    </rdf:Description>
-<rdf:Description rdf:about="http://example.org/employee4">
-        <foaf:name>http://example.org/employee4</foaf:name>
-        <foaf:title>Manager</foaf:title>
-        <foaf:workplaceHomepage>Company Name</foaf:workplaceHomepage>
-        <ds:full_or_part_time>F</ds:full_or_part_time>
-        <ds:salary_or_hourly>SALARY</ds:salary_or_hourly>
-        <ds:annual_salary>67751</ds:annual_salary>
-    </rdf:Description>
-</rdf:RDF>
+version https://git-lfs.github.com/spec/v1
+oid sha256:86be3e54256d66f61c0e863ad7e4d9f8c6e1f47d338fce6ed2269234831f22f1
+size 2345
