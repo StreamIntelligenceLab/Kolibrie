@@ -81,6 +81,8 @@
 80. Add LIMIT
 81. Major fix of RULE syntax
 82. Update README and minor change
+83. Add CLI for Kolibrie
+84. Update one dependency to a new version
 
 0.1.0
 1. Parsing RDF/XML
