@@ -16,6 +16,7 @@ use nom::{
     multi::{many0, separated_list1},
     sequence::{delimited, preceded, tuple, terminated},
     IResult, Parser,
+    error::ParseError,
 };
 use rayon::str;
 use crate::sparql_database::SparqlDatabase;
@@ -33,12 +34,12 @@ use std::collections::HashMap;
 
 // Helper function to recognize identifiers
 pub fn identifier(input: &str) -> IResult<&str, &str> {
-    take_while1(|c: char| c.is_alphanumeric() || c == '_')(input)
+    take_while1(|c: char| c.is_alphanumeric() || c == '_').parse(input)
 }
 
 // Parser for a prefixed identifier like ex:worksAt
 pub fn prefixed_identifier(input: &str) -> IResult<&str, &str> {
-    recognize(tuple((identifier, char(':'), identifier)))(input)
+    recognize(tuple((identifier, char(':'), identifier))).parse(input)
 }
 
 // Parser for a predicate (either prefixed or unprefixed)
@@ -47,35 +48,35 @@ pub fn predicate(input: &str) -> IResult<&str, &str> {
         recognize(tuple((char(':'), identifier))),
         prefixed_identifier,
         identifier,
-    ))(input)
+    )).parse(input)
 }
 
 // Parser for variables (e.g., ?person)
 pub fn variable(input: &str) -> IResult<&str, &str> {
-    recognize(tuple((char('?'), identifier)))(input)
+    recognize(tuple((char('?'), identifier))).parse(input)
 }
 
 // Parser for a literal value within double quotes
 pub fn parse_literal(input: &str) -> IResult<&str, &str> {
-    delimited(char('"'), take_while1(|c| c != '"'), char('"'))(input)
+    delimited(char('"'), take_while1(|c| c != '"'), char('"')).parse(input)
 }
 
 // Parser for a URI within angle brackets
 pub fn parse_uri(input: &str) -> IResult<&str, &str> {
-    delimited(char('<'), take_while1(|c| c != '>'), char('>'))(input)
+    delimited(char('<'), take_while1(|c| c != '>'), char('>')).parse(input)
 }
 
 // Helper parser to parse a single predicate-object pair.
 pub fn parse_predicate_object(input: &str) -> IResult<&str, (&str, &str)> {
     let (input, p) = predicate(input)?;
-    let (input, _) = multispace1(input)?;
-    let (input, o) = alt((parse_uri, variable, parse_literal, identifier))(input)?;
+    let (input, _) = multispace1.parse(input)?;
+    let (input, o) = alt((parse_uri, variable, parse_literal, identifier)).parse(input)?;
     Ok((input, (p, o)))
 }
 
 pub fn parse_triple_block(input: &str) -> IResult<&str, Vec<(&str, &str, &str)>> {
-    let (input, subject) = alt((parse_uri, variable))(input)?;
-    let (input, _) = multispace1(input)?;
+    let (input, subject) = alt((parse_uri, variable)).parse(input)?;
+    let (input, _) = multispace1.parse(input)?;
 
     // First predicate-object pair
     let (input, first_po) = parse_predicate_object(input)?;
@@ -84,7 +85,7 @@ pub fn parse_triple_block(input: &str) -> IResult<&str, Vec<(&str, &str, &str)>>
     let (input, rest_po) = many0(preceded(
         tuple((multispace0, char(';'), multispace0)),
         parse_predicate_object,
-    ))(input)?;
+    )).parse(input)?;
 
     // Gather all (predicate, object) pairs
     let mut pairs = vec![first_po];
@@ -109,24 +110,24 @@ pub fn parse_value_term(input: &str) -> IResult<&str, Value> {
         prefixed_identifier.map(|s| Value::Term(s.to_string())),
         // Parse identifier
         identifier.map(|s: &str| Value::Term(s.to_string())),
-    ))(input)
+    )).parse(input)
 }
 
 // Parser for the VALUES clause
 pub fn parse_values(input: &str) -> IResult<&str, ValuesClause> {
-    let (input, _) = tag("VALUES")(input)?;
-    let (input, _) = space1(input)?;
+    let (input, _) = tag("VALUES").parse(input)?;
+    let (input, _) = space1.parse(input)?;
 
     let (input, vars) = alt((
         // Single variable
         variable.map(|var| vec![var]),
         // Multiple variables in parentheses
         delimited(char('('), separated_list1(space1, variable), char(')')),
-    ))(input)?;
+    )).parse(input)?;
 
-    let (input, _) = space1(input)?;
-    let (input, _) = char('{')(input)?;
-    let (input, _) = multispace0(input)?;
+    let (input, _) = space1.parse(input)?;
+    let (input, _) = char('{').parse(input)?;
+    let (input, _) = multispace0.parse(input)?;
 
     let (input, values) = many0(preceded(
         multispace0,
@@ -143,10 +144,10 @@ pub fn parse_values(input: &str) -> IResult<&str, ValuesClause> {
             // For single variable, values are terms or UNDEF
             alt((parse_value_term, tag("UNDEF").map(|_| Value::Undef))).map(|v| vec![v]),
         )),
-    ))(input)?;
+    )).parse(input)?;
 
-    let (input, _) = multispace0(input)?;
-    let (input, _) = char('}')(input)?;
+    let (input, _) = multispace0.parse(input)?;
+    let (input, _) = char('}').parse(input)?;
 
     Ok((
         input,
@@ -158,26 +159,26 @@ pub fn parse_values(input: &str) -> IResult<&str, ValuesClause> {
 }
 
 pub fn parse_aggregate(input: &str) -> IResult<&str, (&str, &str, Option<&str>)> {
-    let (input, agg_type) = alt((tag("SUM"), tag("MIN"), tag("MAX"), tag("AVG")))(input)?;
-    let (input, _) = char('(')(input)?;
+    let (input, agg_type) = alt((tag("SUM"), tag("MIN"), tag("MAX"), tag("AVG"))).parse(input)?;
+    let (input, _) = char('(').parse(input)?;
     let (input, var) = variable(input)?;
-    let (input, _) = char(')')(input)?;
+    let (input, _) = char(')').parse(input)?;
 
     // Optional AS clause to name the aggregated result
     let (input, opt_as) = opt(preceded(
         space1,
         preceded(tag("AS"), preceded(space1, variable)),
-    ))(input)?;
+    )).parse(input)?;
 
     Ok((input, (agg_type, var, opt_as)))
 }
 
 pub fn parse_select(input: &str) -> IResult<&str, Vec<(&str, &str, Option<&str>)>> {
-    let (input, _) = tag("SELECT")(input)?;
-    let (input, _) = space1(input)?;
+    let (input, _) = tag("SELECT").parse(input)?;
+    let (input, _) = space1.parse(input)?;
 
     // Check if the next token is '*'
-    if let Ok((input, _)) = tag::<_, _, nom::error::Error<_>>("*")(input) {
+    if let Ok((input, _)) = tag::<_, _, nom::error::Error<&str>>("*").parse(input) {
         return Ok((input, vec![("*", "*", None)]));
     }
 
@@ -185,34 +186,34 @@ pub fn parse_select(input: &str) -> IResult<&str, Vec<(&str, &str, Option<&str>)
     let (input, variables) = separated_list1(
         space1,
         alt((variable.map(|var| ("VAR", var, None)), parse_aggregate)),
-    )(input)?;
+    ).parse(input)?;
 
     Ok((input, variables))
 }
 
 // Parse a basic arithmetic operand (variable, literal, or number)
 fn parse_operand(input: &str) -> IResult<&str, ArithmeticExpression> {
-    let (input, _) = multispace0(input)?;
+    let (input, _) = multispace0.parse(input)?;
     
     let (input, operand) = alt((
         variable,
         parse_literal,
         take_while1(|c: char| c.is_digit(10) || c == '.'),
-    ))(input)?;
+    )).parse(input)?;
     
-    let (input, _) = multispace0(input)?;
+    let (input, _) = multispace0.parse(input)?;
     
     Ok((input, ArithmeticExpression::Operand(operand)))
 }
 
 // Parse a parenthesized arithmetic expression
 fn parse_arith_parenthesized(input: &str) -> IResult<&str, ArithmeticExpression> {
-    let (input, _) = multispace0(input)?;
-    let (input, _) = char('(')(input)?;
+    let (input, _) = multispace0.parse(input)?;
+    let (input, _) = char('(').parse(input)?;
     let (input, expr) = parse_arithmetic_expression(input)?;
-    let (input, _) = multispace0(input)?;
-    let (input, _) = char(')')(input)?;
-    let (input, _) = multispace0(input)?;
+    let (input, _) = multispace0.parse(input)?;
+    let (input, _) = char(')').parse(input)?;
+    let (input, _) = multispace0.parse(input)?;
     
     Ok((input, expr))
 }
@@ -222,7 +223,7 @@ fn parse_arith_term(input: &str) -> IResult<&str, ArithmeticExpression> {
     alt((
         parse_operand,
         parse_arith_parenthesized,
-    ))(input)
+    )).parse(input)
 }
 
 // Parse multiplication and division
@@ -231,13 +232,16 @@ fn parse_arith_factor(input: &str) -> IResult<&str, ArithmeticExpression> {
     
     // Process all multiplication and division operations in sequence
     loop {
-        let (remaining, _) = multispace0(input)?;
+        let (remaining, _) = multispace0.parse(input)?;
         
-        // Match a multiplication or division operator
-        match alt((char::<&str, nom::error::Error<&str>>('*'), char::<&str, nom::error::Error<&str>>('/')))(remaining) {
+        // Match a multiplication or division operator with explicit error type
+        match alt((
+            char::<_, nom::error::Error<&str>>('*'), 
+            char::<_, nom::error::Error<&str>>('/')
+        )).parse(remaining) {
             Ok((after_op, op)) => {
                 // Parse the right-hand term
-                let (after_space, _) = multispace0(after_op)?;
+                let (after_space, _) = multispace0.parse(after_op)?;
                 let (new_input, right) = parse_arith_term(after_space)?;
                 
                 left = match op {
@@ -262,13 +266,16 @@ pub fn parse_arithmetic_expression(input: &str) -> IResult<&str, ArithmeticExpre
     
     // Process all addition and subtraction operations in sequence
     loop {
-        let (remaining, _) = multispace0(input)?;
+        let (remaining, _) = multispace0.parse(input)?;
         
-        // Match an addition or subtraction operator
-        match alt((char::<&str, nom::error::Error<&str>>('+'), char::<&str, nom::error::Error<&str>>('-')))(remaining) {
+        // Match an addition or subtraction operator with explicit error type
+        match alt((
+            char::<_, nom::error::Error<&str>>('+'), 
+            char::<_, nom::error::Error<&str>>('-')
+        )).parse(remaining) {
             Ok((after_op, op)) => {
                 // Parse the right-hand factor
-                let (after_space, _) = multispace0(after_op)?;
+                let (after_space, _) = multispace0.parse(after_op)?;
                 let (new_input, right) = parse_arith_factor(after_space)?;
                 
                 left = match op {
@@ -288,7 +295,7 @@ pub fn parse_arithmetic_expression(input: &str) -> IResult<&str, ArithmeticExpre
 }
 
 fn parse_arithmetic_comparison(input: &str) -> IResult<&str, FilterExpression> {
-    let (input, _) = multispace0(input)?;
+    let (input, _) = multispace0.parse(input)?;
 
     // Parse left side expression
     let (input, left_str) = alt((
@@ -312,17 +319,17 @@ fn parse_arithmetic_comparison(input: &str) -> IResult<&str, FilterExpression> {
             take_until(")"),
             char(')')
         ))
-    ))(input)?;
+    )).parse(input)?;
 
-    let (input, _) = multispace0(input)?;
+    let (input, _) = multispace0.parse(input)?;
     
     // Parse the comparison operator
     let (input, operator) = alt((
         tag("="), tag("!="), tag(">="),
         tag("<="), tag(">"), tag("<"),
-    ))(input)?;
+    )).parse(input)?;
 
-    let (input, _) = multispace0(input)?;
+    let (input, _) = multispace0.parse(input)?;
     
     // Parse right side expression
     let (input, right_str) = alt((
@@ -346,9 +353,9 @@ fn parse_arithmetic_comparison(input: &str) -> IResult<&str, FilterExpression> {
             multispace0,
             alt((char('+'), char('-'), char('*'), char('/'))),
         ))),
-    ))(input)?;
+    )).parse(input)?;
 
-    let (input, _) = multispace0(input)?;
+    let (input, _) = multispace0.parse(input)?;
 
     let result = FilterExpression::Comparison(
         left_str,
@@ -361,16 +368,16 @@ fn parse_arithmetic_comparison(input: &str) -> IResult<&str, FilterExpression> {
 
 // Parse a single comparison expression like ?var > 10
 pub fn parse_comparison(input: &str) -> IResult<&str, FilterExpression> {
-    let (input, _) = multispace0(input)?;
+    let (input, _) = multispace0.parse(input)?;
 
     // Parse variable or literal on left side
     let (input, left) = alt((
         variable,
         parse_literal,
         take_while1(|c: char| c.is_digit(10)),
-    ))(input)?;
+    )).parse(input)?;
     
-    let (input, _) = multispace0(input)?;
+    let (input, _) = multispace0.parse(input)?;
     
     // Parse operator
     let (input, operator) = alt((
@@ -380,39 +387,39 @@ pub fn parse_comparison(input: &str) -> IResult<&str, FilterExpression> {
         tag("<="),
         tag(">"),
         tag("<"),
-    ))(input)?;
+    )).parse(input)?;
     
-    let (input, _) = multispace0(input)?;
+    let (input, _) = multispace0.parse(input)?;
     
     // Parse variable or literal on right side
     let (input, right) = alt((
         variable,
         parse_literal,
         take_while1(|c: char| c.is_digit(10)),
-    ))(input)?;
+    )).parse(input)?;
     
-    let (input, _) = multispace0(input)?;
+    let (input, _) = multispace0.parse(input)?;
     
     Ok((input, FilterExpression::Comparison(left, operator, right)))
 }
 
 // Parse an expression in parentheses
 fn parse_parenthesized(input: &str) -> IResult<&str, FilterExpression> {
-    let (input, _) = multispace0(input)?;
-    let (input, _) = char('(')(input)?;
+    let (input, _) = multispace0.parse(input)?;
+    let (input, _) = char('(').parse(input)?;
     let (input, expr) = parse_filter_expression(input)?;
-    let (input, _) = multispace0(input)?;
-    let (input, _) = char(')')(input)?;
-    let (input, _) = multispace0(input)?;
+    let (input, _) = multispace0.parse(input)?;
+    let (input, _) = char(')').parse(input)?;
+    let (input, _) = multispace0.parse(input)?;
     
     Ok((input, expr))
 }
 
 // Parse a negation (NOT)
 fn parse_not(input: &str) -> IResult<&str, FilterExpression> {
-    let (input, _) = multispace0(input)?;
-    let (input, _) = char('!')(input)?;
-    let (input, _) = multispace0(input)?;
+    let (input, _) = multispace0.parse(input)?;
+    let (input, _) = char('!').parse(input)?;
+    let (input, _) = multispace0.parse(input)?;
     
     let (input, expr) = parse_term(input)?;
     Ok((input, FilterExpression::Not(Box::new(expr))))
@@ -425,16 +432,16 @@ fn parse_term(input: &str) -> IResult<&str, FilterExpression> {
         parse_arithmetic_comparison,
         parse_parenthesized,
         parse_not,
-    ))(input)
+    )).parse(input)
 }
 
 // Parse AND expressions
 fn parse_and(input: &str) -> IResult<&str, FilterExpression> {
     let (input, left) = parse_term(input)?;
-    let (input, _) = multispace0(input)?;
+    let (input, _) = multispace0.parse(input)?;
     
-    if let Ok((input, _)) = tag::<_, _, nom::error::Error<_>>("&&")(input) {
-        let (input, _) = multispace0(input)?;
+    if let Ok((input, _)) = tag::<_, _, nom::error::Error<&str>>("&&").parse(input) {
+        let (input, _) = multispace0.parse(input)?;
         let (input, right) = parse_and(input)?;
         Ok((input, FilterExpression::And(Box::new(left), Box::new(right))))
     } else {
@@ -445,10 +452,10 @@ fn parse_and(input: &str) -> IResult<&str, FilterExpression> {
 // Parse OR expressions
 fn parse_or(input: &str) -> IResult<&str, FilterExpression> {
     let (input, left) = parse_and(input)?;
-    let (input, _) = multispace0(input)?;
+    let (input, _) = multispace0.parse(input)?;
     
-    if let Ok((input, _)) = tag::<_, _, nom::error::Error<_>>("||")(input) {
-        let (input, _) = multispace0(input)?;
+    if let Ok((input, _)) = tag::<_, _, nom::error::Error<&str>>("||").parse(input) {
+        let (input, _) = multispace0.parse(input)?;
         let (input, right) = parse_or(input)?;
         Ok((input, FilterExpression::Or(Box::new(left), Box::new(right))))
     } else {
@@ -463,43 +470,43 @@ fn parse_filter_expression(input: &str) -> IResult<&str, FilterExpression> {
 
 // Parse a complete FILTER clause
 pub fn parse_filter(input: &str) -> IResult<&str, FilterExpression> {
-    let (input, _) = tag("FILTER")(input)?;
-    let (input, _) = multispace0(input)?;
-    let (input, _) = char('(')(input)?;
+    let (input, _) = tag("FILTER").parse(input)?;
+    let (input, _) = multispace0.parse(input)?;
+    let (input, _) = char('(').parse(input)?;
     let (input, expr) = parse_filter_expression(input)?;
-    let (input, _) = char(')')(input)?;
+    let (input, _) = char(')').parse(input)?;
     
     Ok((input, expr))
 }
 
 // Parser for BIND clauses: BIND(funcName(?var, "literal") AS ?newVar)
 pub fn parse_bind(input: &str) -> IResult<&str, (&str, Vec<&str>, &str)> {
-    let (input, _) = tag("BIND")(input)?;
-    let (input, _) = multispace0(input)?;
-    let (input, _) = char('(')(input)?;
+    let (input, _) = tag("BIND").parse(input)?;
+    let (input, _) = multispace0.parse(input)?;
+    let (input, _) = char('(').parse(input)?;
     let (input, func_name) = identifier(input)?;
-    let (input, _) = char('(')(input)?;
+    let (input, _) = char('(').parse(input)?;
 
     // Allow multiple arguments for CONCAT
     let (input, args) = separated_list1(
         tuple((multispace0, char(','), multispace0)),
         alt((variable, parse_literal)),
-    )(input)?;
+    ).parse(input)?;
 
-    let (input, _) = char(')')(input)?;
-    let (input, _) = multispace1(input)?;
-    let (input, _) = tag("AS")(input)?;
-    let (input, _) = multispace1(input)?;
+    let (input, _) = char(')').parse(input)?;
+    let (input, _) = multispace1.parse(input)?;
+    let (input, _) = tag("AS").parse(input)?;
+    let (input, _) = multispace1.parse(input)?;
     let (input, new_var) = variable(input)?;
-    let (input, _) = char(')')(input)?;
+    let (input, _) = char(')').parse(input)?;
 
     Ok((input, (func_name, args, new_var)))
 }
 
 pub fn parse_subquery<'a>(input: &'a str) -> IResult<&'a str, SubQuery<'a>> {
-    let (input, _) = multispace0::<&str, nom::error::Error<&str>>(input)?;
-    let (input, _) = char('{')(input)?;
-    let (input, _) = multispace0::<&str, nom::error::Error<&str>>(input)?;
+    let (input, _) = multispace0.parse(input)?;
+    let (input, _) = char('{').parse(input)?;
+    let (input, _) = multispace0.parse(input)?;
 
     // Parse SELECT clause
     let (input, variables) = parse_select(input)?;
@@ -507,10 +514,10 @@ pub fn parse_subquery<'a>(input: &'a str) -> IResult<&'a str, SubQuery<'a>> {
     // Parse WHERE clause (recursive)
     let (input, (patterns, filters, values_clause, binds, _)) = parse_where(input)?;
 
-    let (input, limit) = opt(preceded(multispace0, parse_limit))(input)?;
+    let (input, limit) = opt(preceded(multispace0, parse_limit)).parse(input)?;
 
-    let (input, _) = multispace0::<&str, nom::error::Error<&str>>(input)?;
-    let (input, _) = char('}')(input)?;
+    let (input, _) = multispace0.parse(input)?;
+    let (input, _) = char('}').parse(input)?;
 
     Ok((
         input,
@@ -537,11 +544,11 @@ pub fn parse_where(
         Vec<SubQuery>,
     ),
 > {
-    let (input, _) = multispace0(input)?;
-    let (input, _) = tag("WHERE")(input)?;
-    let (input, _) = multispace0(input)?;
-    let (input, _) = char('{')(input)?;
-    let (input, _) = multispace0(input)?;
+    let (input, _) = multispace0.parse(input)?;
+    let (input, _) = tag("WHERE").parse(input)?;
+    let (input, _) = multispace0.parse(input)?;
+    let (input, _) = char('{').parse(input)?;
+    let (input, _) = multispace0.parse(input)?;
 
     let mut patterns = Vec::new();
     let mut filters = Vec::new();
@@ -552,11 +559,11 @@ pub fn parse_where(
 
     // Parse components until we reach the closing brace
     loop {
-        let (new_input, _) = multispace0(current_input)?;
+        let (new_input, _) = multispace0.parse(current_input)?;
         current_input = new_input;
 
         // Try to match a closing brace
-        if let Ok((new_input, _)) = char::<_, nom::error::Error<_>>('}')(current_input) {
+        if let Ok((new_input, _)) = char::<_, nom::error::Error<&str>>('}').parse(current_input) {
             current_input = new_input;
             break;
         }
@@ -594,10 +601,10 @@ pub fn parse_where(
 
         // Consume any trailing dot
         if let Ok((new_input, _)) = tuple((
-            space0::<&str, nom::error::Error<&str>>,
-            char::<&str, nom::error::Error<&str>>('.'),
-            space0::<&str, nom::error::Error<&str>>,
-        ))(current_input)
+            space0::<_, nom::error::Error<&str>>,
+            char::<_, nom::error::Error<&str>>('.'),
+            space0::<_, nom::error::Error<&str>>,
+        )).parse(current_input)
         {
             current_input = new_input;
         }
@@ -610,41 +617,41 @@ pub fn parse_where(
 }
 
 pub fn parse_group_by(input: &str) -> IResult<&str, Vec<&str>> {
-    let (input, _) = tag("GROUPBY")(input)?;
-    let (input, _) = space1(input)?;
+    let (input, _) = tag("GROUPBY").parse(input)?;
+    let (input, _) = space1.parse(input)?;
 
     // Parse the variables to group by
-    let (input, group_vars) = separated_list1(space1, variable)(input)?;
+    let (input, group_vars) = separated_list1(space1, variable).parse(input)?;
     Ok((input, group_vars))
 }
 
 // Add a new parser for PREFIX declarations
 pub fn parse_prefix(input: &str) -> IResult<&str, (&str, &str)> {
-    let (input, _) = multispace0(input)?;
-    let (input, _) = tag("PREFIX")(input)?;
-    let (input, _) = space1(input)?;
+    let (input, _) = multispace0.parse(input)?;
+    let (input, _) = tag("PREFIX").parse(input)?;
+    let (input, _) = space1.parse(input)?;
     let (input, prefix) = identifier(input)?;
-    let (input, _) = char(':')(input)?;
-    let (input, _) = space0(input)?;
-    let (input, uri) = delimited(char('<'), take_while1(|c| c != '>'), char('>'))(input)?;
-    let (input, _) = multispace0(input)?;
+    let (input, _) = char(':').parse(input)?;
+    let (input, _) = space0.parse(input)?;
+    let (input, uri) = delimited(char('<'), take_while1(|c| c != '>'), char('>')).parse(input)?;
+    let (input, _) = multispace0.parse(input)?;
     Ok((input, (prefix, uri)))
 }
 
 // Modified parse_insert to handle literals and debug output
 pub fn parse_insert(input: &str) -> IResult<&str, InsertClause> {
-    let (input, _) = tag("INSERT")(input)?;
-    let (input, _) = multispace0(input)?;
-    let (input, _) = char('{')(input)?;
-    let (input, _) = multispace0(input)?;
+    let (input, _) = tag("INSERT").parse(input)?;
+    let (input, _) = multispace0.parse(input)?;
+    let (input, _) = char('{').parse(input)?;
+    let (input, _) = multispace0.parse(input)?;
 
     // Parse one or more triple blocks separated by dots.
     // Each triple block can contain multiple predicate-object pairs separated by semicolons.
     let (input, triple_blocks) =
-        separated_list1(tuple((space0, char('.'), space0)), parse_triple_block)(input)?;
+        separated_list1(tuple((space0, char('.'), space0)), parse_triple_block).parse(input)?;
 
-    let (input, _) = multispace0(input)?;
-    let (input, _) = char('}')(input)?;
+    let (input, _) = multispace0.parse(input)?;
+    let (input, _) = char('}').parse(input)?;
 
     // Flatten all the triple blocks into a single Vec
     let triples = triple_blocks.into_iter().flatten().collect();
@@ -653,9 +660,9 @@ pub fn parse_insert(input: &str) -> IResult<&str, InsertClause> {
 }
 
 pub fn parse_construct_clause(input: &str) -> IResult<&str, Vec<(&str, &str, &str)>> {
-    let (input, _) = multispace0(input)?;
-    let (input, _) = tag("CONSTRUCT")(input)?;
-    let (input, _) = multispace0(input)?;
+    let (input, _) = multispace0.parse(input)?;
+    let (input, _) = tag("CONSTRUCT").parse(input)?;
+    let (input, _) = multispace0.parse(input)?;
     
     // Parse multiple conclusion triples in CONSTRUCT block
     let (input, conclusions) = delimited(
@@ -665,18 +672,18 @@ pub fn parse_construct_clause(input: &str) -> IResult<&str, Vec<(&str, &str, &st
             terminated(parse_triple_block, opt(tuple((multispace0, char('.'))))),
         ),
         preceded(multispace0, char('}')),
-    )(input)?;
+    ).parse(input)?;
     
     Ok((input, conclusions))
 }
 
 // Add LIMIT parser
 pub fn parse_limit(input: &str) -> IResult<&str, usize> {
-    let (input, _) = multispace0(input)?;
-    let (input, _) = tag("LIMIT")(input)?;
-    let (input, _) = space1(input)?;
-    let (input, limit_str) = take_while1(|c: char| c.is_digit(10))(input)?;
-    let (input, _) = multispace0(input)?;
+    let (input, _) = multispace0.parse(input)?;
+    let (input, _) = tag("LIMIT").parse(input)?;
+    let (input, _) = space1.parse(input)?;
+    let (input, limit_str) = take_while1(|c: char| c.is_digit(10)).parse(input)?;
+    let (input, _) = multispace0.parse(input)?;
     
     let limit = limit_str.parse::<usize>().unwrap_or(0);
     Ok((input, limit))
@@ -715,8 +722,8 @@ pub fn parse_sparql_query(
     }
 
     // Optionally parse the INSERT clause
-    let (input, insert_clause) = opt(parse_insert)(input)?;
-    let (mut input, _) = multispace0(input)?;
+    let (input, insert_clause) = opt(parse_insert).parse(input)?;
+    let (mut input, _) = multispace0.parse(input)?;
 
     let mut variables = Vec::new();
     if insert_clause.is_none() {
@@ -724,24 +731,24 @@ pub fn parse_sparql_query(
         let (new_input, vars) = parse_select(input)?;
         variables = vars;
         input = new_input;
-        let (_input, _) = multispace1(input)?;
+        let (_input, _) = multispace1.parse(input)?;
     }
 
     // Ensure any spaces are consumed before parsing WHERE clause
-    let (input, _) = multispace0(input)?;
+    let (input, _) = multispace0.parse(input)?;
 
     // Parse WHERE clause
     let (input, (patterns, filters, values_clause, binds, subqueries)) = parse_where(input)?;
 
     // Optionally parse the GROUP BY clause
     let (input, group_vars) =
-        if let Ok((input, group_vars)) = preceded(multispace0, parse_group_by)(input) {
+        if let Ok((input, group_vars)) = preceded(multispace0, parse_group_by).parse(input) {
             (input, group_vars)
         } else {
             (input, vec![])
         };
 
-    let (input, limit) = opt(preceded(multispace0, parse_limit))(input)?;
+    let (input, limit) = opt(preceded(multispace0, parse_limit)).parse(input)?;
 
     Ok((
         input,
@@ -765,22 +772,22 @@ pub fn parse_standalone_rule<'a>(
 ) -> IResult<&'a str, (CombinedRule<'a>, HashMap<String, String>)> {
     // Parse prefixes first
     let (input, prefix_list) = many0(|i| {
-        let (i, _) = multispace0(i)?;
-        let (i, _) = tag("PREFIX")(i)?;
-        let (i, _) = space1(i)?;
+        let (i, _) = multispace0.parse(i)?;
+        let (i, _) = tag("PREFIX").parse(i)?;
+        let (i, _) = space1.parse(i)?;
         let (i, p) = identifier(i)?;
-        let (i, _) = char(':')(i)?;
-        let (i, _) = space0(i)?;
-        let (i, uri) = delimited(char('<'), take_while1(|c| c != '>'), char('>'))(i)?;
+        let (i, _) = char(':').parse(i)?;
+        let (i, _) = space0.parse(i)?;
+        let (i, uri) = delimited(char('<'), take_while1(|c| c != '>'), char('>')).parse(i)?;
         Ok((i, (p, uri)))
-    })(input)?;
+    }).parse(input)?;
     
     let mut prefixes = HashMap::new();
     for (p, uri) in prefix_list {
         prefixes.insert(p.to_string(), uri.to_string());
     }
     
-    let (input, _) = multispace0(input)?;
+    let (input, _) = multispace0.parse(input)?;
     
     // Parse the rule
     let (input, rule) = parse_rule(input)?;
@@ -789,15 +796,15 @@ pub fn parse_standalone_rule<'a>(
 }
 
 pub fn parse_rule_call(input: &str) -> IResult<&str, RuleHead> {
-    let (input, _) = multispace0(input)?;
+    let (input, _) = multispace0.parse(input)?;
     
     // Parse the academic syntax: RULE(:Predicate, ?var1, ?var2, ...)
-    let (input, _) = tag("RULE")(input)?;
-    let (input, _) = preceded(char('('), multispace0)(input)?;
+    let (input, _) = tag("RULE").parse(input)?;
+    let (input, _) = preceded(char('('), multispace0).parse(input)?;
     let (input, pred) = predicate(input)?;
     
     // Parse the first variable
-    let (input, _) = tuple((multispace0, char(','), multispace0))(input)?;
+    let (input, _) = tuple((multispace0, char(','), multispace0)).parse(input)?;
     let (input, first_var) = variable(input)?;
     
     // Parse additional variables if they exist
@@ -806,13 +813,13 @@ pub fn parse_rule_call(input: &str) -> IResult<&str, RuleHead> {
             tuple((multispace0, char(','), multispace0)),
             variable
         )
-    )(input)?;
+    ).parse(input)?;
     
     // Combine all variables
     let mut all_vars = vec![first_var];
     all_vars.extend(additional_vars);
     
-    let (input, _) = preceded(multispace0, char(')'))(input)?;
+    let (input, _) = preceded(multispace0, char(')')).parse(input)?;
     
     Ok((
         input,
@@ -829,7 +836,7 @@ pub fn parse_rule_head(input: &str) -> IResult<&str, RuleHead> {
         char('('),
         separated_list1(tuple((multispace0, char(','), multispace0)), variable),
         char(')'),
-    ))(input)?;
+    )).parse(input)?;
     let arguments = args.unwrap_or_else(|| vec![]);
     Ok((
         input,
@@ -862,24 +869,24 @@ fn parse_balanced(input: &str) -> IResult<&str, &str> {
 }
 
 pub fn parse_ml_predict(input: &str) -> IResult<&str, MLPredictClause> {
-    let (input, _) = multispace0(input)?;
-    let (input, _) = tag("ML.PREDICT")(input)?;
-    let (input, _) = multispace0(input)?;
-    let (input, _) = char('(')(input)?;
-    let (input, _) = multispace0(input)?;
+    let (input, _) = multispace0.parse(input)?;
+    let (input, _) = tag("ML.PREDICT").parse(input)?;
+    let (input, _) = multispace0.parse(input)?;
+    let (input, _) = char('(').parse(input)?;
+    let (input, _) = multispace0.parse(input)?;
     // Parse MODEL clause with quoted name
-    let (input, _) = tag("MODEL")(input)?;
-    let (input, _) = multispace1(input)?;
-    let (input, _) = char('"')(input)?;  // Expect opening quote
-    let (input, model) = take_until("\"")(input)?;  // Take everything until closing quote
-    let (input, _) = char('"')(input)?;  // Expect closing quote
-    let (input, _) = multispace0(input)?;
-    let (input, _) = char(',')(input)?;
-    let (input, _) = multispace0(input)?;
+    let (input, _) = tag("MODEL").parse(input)?;
+    let (input, _) = multispace1.parse(input)?;
+    let (input, _) = char('"').parse(input)?;  // Expect opening quote
+    let (input, model) = take_until("\"").parse(input)?;  // Take everything until closing quote
+    let (input, _) = char('"').parse(input)?;  // Expect closing quote
+    let (input, _) = multispace0.parse(input)?;
+    let (input, _) = char(',').parse(input)?;
+    let (input, _) = multispace0.parse(input)?;
     // Parse INPUT clause using the inclusive balanced parser
-    let (input, _) = tag("INPUT")(input)?;
-    let (input, _) = multispace0(input)?;
-    let (input, input_query) = preceded(char('{'), parse_balanced)(input)?;
+    let (input, _) = tag("INPUT").parse(input)?;
+    let (input, _) = multispace0.parse(input)?;
+    let (input, input_query) = preceded(char('{'), parse_balanced).parse(input)?;
 
     // Parse the SELECT statement inside the input query
     let mut select_vars = Vec::new();
@@ -909,15 +916,15 @@ pub fn parse_ml_predict(input: &str) -> IResult<&str, MLPredictClause> {
         }
     }
 
-    let (input, _) = multispace0(input)?;
-    let (input, _) = char(',')(input)?;
-    let (input, _) = multispace0(input)?;
+    let (input, _) = multispace0.parse(input)?;
+    let (input, _) = char(',').parse(input)?;
+    let (input, _) = multispace0.parse(input)?;
     // Parse OUTPUT clause
-    let (input, _) = tag("OUTPUT")(input)?;
-    let (input, _) = multispace1(input)?;
+    let (input, _) = tag("OUTPUT").parse(input)?;
+    let (input, _) = multispace1.parse(input)?;
     let (input, output_var) = variable(input)?;
-    let (input, _) = multispace0(input)?;
-    let (input, _) = char(')')(input)?;
+    let (input, _) = multispace0.parse(input)?;
+    let (input, _) = char(')').parse(input)?;
 
     Ok((
         input,
@@ -934,38 +941,38 @@ pub fn parse_ml_predict(input: &str) -> IResult<&str, MLPredictClause> {
 
 // Parser for stream type
 pub fn parse_stream_type(input: &str) -> IResult<&str, StreamType> {
-    let (input, _) = multispace0(input)?;
+    let (input, _) = multispace0.parse(input)?;
     let (input, stream_type) = alt((
         tag("RSTREAM").map(|_| StreamType::RStream),
         tag("ISTREAM").map(|_| StreamType::IStream),
         tag("DSTREAM").map(|_| StreamType::DStream),
         identifier.map(|s| StreamType::Custom(s)),
-    ))(input)?;
+    )).parse(input)?;
     Ok((input, stream_type))
 }
 
 // Parser for window specification
 pub fn parse_window_spec(input: &str) -> IResult<&str, WindowSpec> {
-    let (input, _) = multispace0(input)?;
-    let (input, _) = char('[')(input)?;
-    let (input, _) = multispace0(input)?;
+    let (input, _) = multispace0.parse(input)?;
+    let (input, _) = char('[').parse(input)?;
+    let (input, _) = multispace0.parse(input)?;
     
     // Parse window type and parameters
     let (input, window_type) = alt((
         tag("RANGE").map(|_| WindowType::Range),
         tag("TUMBLING").map(|_| WindowType::Tumbling),
         tag("SLIDING").map(|_| WindowType::Sliding),
-    ))(input)?;
+    )).parse(input)?;
     
-    let (input, _) = multispace1(input)?;
-    let (input, width) = take_while1(|c: char| c.is_digit(10))(input)?;
+    let (input, _) = multispace1.parse(input)?;
+    let (input, width) = take_while1(|c: char| c.is_digit(10)).parse(input)?;
     let width = width.parse::<usize>().unwrap_or(0);
     
     // Optional slide parameter for sliding windows
     let (input, slide) = opt(preceded(
         tuple((multispace1, tag("SLIDE"), multispace1)),
         take_while1(|c: char| c.is_digit(10))
-    ))(input)?;
+    )).parse(input)?;
     let slide = slide.and_then(|s| s.parse::<usize>().ok());
     
     // Optional report strategy
@@ -977,7 +984,7 @@ pub fn parse_window_spec(input: &str) -> IResult<&str, WindowSpec> {
             tag("NON_EMPTY_CONTENT"),
             tag("PERIODIC"),
         ))
-    ))(input)?;
+    )).parse(input)?;
     
     // Optional tick strategy
     let (input, tick) = opt(preceded(
@@ -987,10 +994,10 @@ pub fn parse_window_spec(input: &str) -> IResult<&str, WindowSpec> {
             tag("TUPLE_DRIVEN"),
             tag("BATCH_DRIVEN"),
         ))
-    ))(input)?;
+    )).parse(input)?;
     
-    let (input, _) = multispace0(input)?;
-    let (input, _) = char(']')(input)?;
+    let (input, _) = multispace0.parse(input)?;
+    let (input, _) = char(']').parse(input)?;
     
     Ok((input, WindowSpec {
         window_type,
@@ -1003,33 +1010,33 @@ pub fn parse_window_spec(input: &str) -> IResult<&str, WindowSpec> {
 
 // Parser for FROM NAMED WINDOW clause
 pub fn parse_from_named_window(input: &str) -> IResult<&str, WindowClause> {
-    let (input, _) = multispace0(input)?;
-    let (input, _) = tag("FROM")(input)?;
-    let (input, _) = multispace1(input)?;
-    let (input, _) = tag("NAMED")(input)?;
-    let (input, _) = multispace1(input)?;
-    let (input, _) = tag("WINDOW")(input)?;
-    let (input, _) = multispace1(input)?;
+    let (input, _) = multispace0.parse(input)?;
+    let (input, _) = tag("FROM").parse(input)?;
+    let (input, _) = multispace1.parse(input)?;
+    let (input, _) = tag("NAMED").parse(input)?;
+    let (input, _) = multispace1.parse(input)?;
+    let (input, _) = tag("WINDOW").parse(input)?;
+    let (input, _) = multispace1.parse(input)?;
     
     // Parse window IRI in angle brackets
     let (input, window_iri) = delimited(
         char('<'),
         take_while1(|c| c != '>'),
         char('>')
-    )(input)?;
+    ).parse(input)?;
     
-    let (input, _) = multispace1(input)?;
-    let (input, _) = tag("ON")(input)?;
-    let (input, _) = multispace1(input)?;
+    let (input, _) = multispace1.parse(input)?;
+    let (input, _) = tag("ON").parse(input)?;
+    let (input, _) = multispace1.parse(input)?;
     
     // Parse stream IRI in angle brackets
     let (input, stream_iri) = delimited(
         char('<'),
         take_while1(|c| c != '>'),
         char('>')
-    )(input)?;
+    ).parse(input)?;
     
-    let (input, _) = multispace1(input)?;
+    let (input, _) = multispace1.parse(input)?;
     
     // Parse window specification
     let (input, window_spec) = parse_window_spec(input)?;
@@ -1044,35 +1051,35 @@ pub fn parse_from_named_window(input: &str) -> IResult<&str, WindowClause> {
 /// Parse a complete rule:
 ///   RULE :OverheatingAlert(?room) :- WHERE { ... } => { ... } .
 pub fn parse_rule(input: &str) -> IResult<&str, CombinedRule> {
-    let (input, _) = tag("RULE")(input)?;
-    let (input, _) = space1(input)?;
+    let (input, _) = tag("RULE").parse(input)?;
+    let (input, _) = space1.parse(input)?;
     let (input, head) = parse_rule_head(input)?;
-    let (input, _) = multispace0(input)?;
+    let (input, _) = multispace0.parse(input)?;
 
-    let (input, _) = tag(":-")(input)?;
-    let (input, _) = multispace0(input)?;
+    let (input, _) = tag(":-").parse(input)?;
+    let (input, _) = multispace0.parse(input)?;
     
     // Look ahead to determine parsing path
     let lookahead_input = input;
-    let (lookahead_input, _) = multispace0(lookahead_input)?;
+    let (lookahead_input, _) = multispace0.parse(lookahead_input)?;
     
-    // Check if we have RSP elements or direct CONSTRUCT
+    // Check if we have RSP elements or direct CONSTRUCT - with explicit error types
     let has_rsp_elements = matches!(
-        alt::<_, _, nom::error::Error<_>, _>((
-            tag::<_, _, nom::error::Error<_>>("RSTREAM"),
-            tag::<_, _, nom::error::Error<_>>("ISTREAM"), 
-            tag::<_, _, nom::error::Error<_>>("DSTREAM"),
-            tag::<_, _, nom::error::Error<_>>("FROM")
-        ))(lookahead_input),
+        alt((
+            tag::<_, _, nom::error::Error<&str>>("RSTREAM"),
+            tag::<_, _, nom::error::Error<&str>>("ISTREAM"), 
+            tag::<_, _, nom::error::Error<&str>>("DSTREAM"),
+            tag::<_, _, nom::error::Error<&str>>("FROM")
+        )).parse(lookahead_input),
         Ok(_)
     );
     
     let (input, stream_type, window_clause) = if has_rsp_elements {
         // RSP parsing path
-        let (input, stream_type) = opt(parse_stream_type)(input)?;
-        let (input, _) = multispace0(input)?;
-        let (input, window_clause) = opt(parse_from_named_window)(input)?;
-        let (input, _) = multispace0(input)?;
+        let (input, stream_type) = opt(parse_stream_type).parse(input)?;
+        let (input, _) = multispace0.parse(input)?;
+        let (input, window_clause) = opt(parse_from_named_window).parse(input)?;
+        let (input, _) = multispace0.parse(input)?;
         (input, stream_type, window_clause)
     } else {
         // Basic parsing path - no RSP elements
@@ -1082,17 +1089,17 @@ pub fn parse_rule(input: &str) -> IResult<&str, CombinedRule> {
     // Parse CONSTRUCT clause
     let (input, conclusions) = parse_construct_clause(input)?;
     
-    let (input, _) = multispace0(input)?;
+    let (input, _) = multispace0.parse(input)?;
     
     // Parse WHERE clause
     let (input, body) = parse_where(input)?;
     
     // Optional dot at the end of rule
-    let (input, _) = opt(preceded(multispace0, char('.')))(input)?;
-    let (input, _) = multispace0(input)?;
+    let (input, _) = opt(preceded(multispace0, char('.'))).parse(input)?;
+    let (input, _) = multispace0.parse(input)?;
     
     // Optionally parse ML.PREDICT block if it exists
-    let (input, ml_predict) = opt(parse_ml_predict)(input)?;
+    let (input, ml_predict) = opt(parse_ml_predict).parse(input)?;
     
     Ok((
         input,
@@ -1110,26 +1117,26 @@ pub fn parse_rule(input: &str) -> IResult<&str, CombinedRule> {
 /// The combined query parser parses SPARQL + LP
 pub fn parse_combined_query(input: &str) -> IResult<&str, CombinedQuery> {
     let (input, prefix_list) = many0(|i| {
-        let (i, _) = multispace0(i)?;
-        let (i, _) = tag("PREFIX")(i)?;
-        let (i, _) = space1(i)?;
+        let (i, _) = multispace0.parse(i)?;
+        let (i, _) = tag("PREFIX").parse(i)?;
+        let (i, _) = space1.parse(i)?;
         let (i, p) = identifier(i)?;
-        let (i, _) = char(':')(i)?;
-        let (i, _) = space0(i)?;
-        let (i, uri) = delimited(char('<'), take_while1(|c| c != '>'), char('>'))(i)?;
+        let (i, _) = char(':').parse(i)?;
+        let (i, _) = space0.parse(i)?;
+        let (i, uri) = delimited(char('<'), take_while1(|c| c != '>'), char('>')).parse(i)?;
         Ok((i, (p, uri)))
-    })(input)?;
+    }).parse(input)?;
     
     let mut prefixes = HashMap::new();
     for (p, uri) in prefix_list {
         prefixes.insert(p.to_string(), uri.to_string());
     }
     
-    let (input, _) = multispace0(input)?;
+    let (input, _) = multispace0.parse(input)?;
     
     // Parse the rule with ML.PREDICT if present
-    let (input, rule_opt) = opt(parse_rule)(input)?;
-    let (input, _) = multispace0(input)?;
+    let (input, rule_opt) = opt(parse_rule).parse(input)?;
+    let (input, _) = multispace0.parse(input)?;
     
     // Parse the SPARQL query part
     let (input, sparql_parse) = parse_sparql_query(input)?;
@@ -1143,6 +1150,8 @@ pub fn parse_combined_query(input: &str) -> IResult<&str, CombinedQuery> {
         },
     ))
 }
+
+// Rest of the functions remain the same as they don't use nom combinators directly...
 
 fn resolve_term_with_prefix(term: &str, prefixes: &HashMap<String, String>) -> String {
     if let Some(idx) = term.find(':') {

@@ -132,160 +132,8 @@ impl SparqlDatabase {
         xml
     }
 
-    pub fn parse_rdf_from_file(&mut self, filename: &str) {
-        let file = std::fs::File::open(filename).expect("Cannot open file");
-        let reader = std::io::BufReader::new(file);
-        let mut xml_reader = Reader::from_reader(reader);
-        xml_reader.trim_text(true);
-        xml_reader.check_comments(false);
-        xml_reader.expand_empty_elements(false);
-
-        let mut current_subject = Vec::with_capacity(128);
-        let mut current_predicate = Vec::with_capacity(128);
-
-        // First, read prefixes before spawning worker threads
-        let mut buf = Vec::new();
-        loop {
-            match xml_reader.read_event_into(&mut buf) {
-                Ok(Event::Start(ref e)) => {
-                    if e.name() == QName(b"rdf:RDF") {
-                        // Read prefixes
-                        for attr in e.attributes().filter_map(Result::ok) {
-                            let key = attr.key;
-                            let value = attr.value;
-                            if key.as_ref().starts_with(b"xmlns:") {
-                                let prefix = std::str::from_utf8(&key.as_ref()[6..])
-                                    .unwrap_or("")
-                                    .to_string();
-                                let uri = std::str::from_utf8(&value).unwrap_or("").to_string();
-                                self.prefixes.insert(prefix, uri);
-                            } else if key.as_ref() == b"xmlns" {
-                                // Default namespace
-                                let uri = std::str::from_utf8(&value).unwrap_or("").to_string();
-                                self.prefixes.insert("".to_string(), uri);
-                            }
-                        }
-                        break; // We have read the prefixes, proceed to the rest
-                    }
-                }
-                Ok(Event::Eof) => {
-                    eprintln!("Reached EOF before reading prefixes.");
-                    break;
-                }
-                Err(e) => {
-                    eprintln!("Error reading XML: {:?}", e);
-                    break;
-                }
-                _ => {}
-            }
-            buf.clear();
-        }
-
-        // Continue reading and parsing the rest of the file
-        let mut triples = Vec::with_capacity(8192);
-        loop {
-            match xml_reader.read_event_into(&mut buf) {
-                Ok(Event::Start(ref e)) => match e.name() {
-                    QName(b"rdf:Description") => {
-                        for attr in e.attributes().filter_map(Result::ok) {
-                            if attr.key == QName(b"rdf:about") {
-                                current_subject.clear();
-                                current_subject.extend_from_slice(&attr.value);
-                            }
-                        }
-                    }
-                    QName(b"rdfs:Class") | QName(b"rdf:type") => {
-                        current_predicate.clear();
-                        current_predicate.extend_from_slice(b"rdf:type");
-                    }
-                    QName(b"rdfs:subClassOf") => {
-                        current_predicate.clear();
-                        current_predicate.extend_from_slice(b"rdfs:subClassOf");
-                    }
-                    QName(b"rdfs:label") => {
-                        current_predicate.clear();
-                        current_predicate.extend_from_slice(b"rdfs:label");
-                    }
-                    name => {
-                        let name_str = std::str::from_utf8(name.as_ref()).unwrap_or("").to_string();
-                        let resolved_predicate = self.resolve_term(&name_str);
-                        current_predicate = resolved_predicate.clone().into_bytes();
-                    }
-                },
-                Ok(Event::Empty(ref e)) => {
-                    if let Ok(predicate) = std::str::from_utf8(e.name().as_ref()) {
-                        let resolved_predicate = self.resolve_term(predicate);
-                        let mut object = Vec::with_capacity(128);
-                        for attr in e.attributes().filter_map(Result::ok) {
-                            if attr.key == QName(b"rdf:resource") {
-                                object.extend_from_slice(&attr.value);
-                            }
-                        }
-                        if !object.is_empty() {
-                            if let (Ok(subject_str), Ok(object_str)) = (
-                                std::str::from_utf8(&current_subject),
-                                std::str::from_utf8(&object),
-                            ) {
-                                let triple = Triple {
-                                    subject: self.dictionary.encode(subject_str),
-                                    predicate: self.dictionary.encode(&resolved_predicate),
-                                    object: self.dictionary.encode(object_str),
-                                };
-                                triples.push(triple);
-                            }
-                        }
-                    }
-                }
-                Ok(Event::Text(e)) => {
-                    if let Ok(object) = e.unescape() {
-                        if let Ok(subject_str) = std::str::from_utf8(&current_subject) {
-                            if let Ok(predicate_str) = std::str::from_utf8(&current_predicate) {
-                                let resolved_predicate = self.resolve_term(predicate_str);
-                                let triple = Triple {
-                                    subject: self.dictionary.encode(subject_str),
-                                    predicate: self.dictionary.encode(&resolved_predicate),
-                                    object: self.dictionary.encode(&object),
-                                };
-                                triples.push(triple);
-                            }
-                        }
-                    }
-                }
-                Ok(Event::End(ref e)) => {
-                    if e.name() == QName(b"rdf:Description") {
-                        current_subject.clear();
-                        current_predicate.clear();
-                    }
-                }
-                Ok(Event::Eof) => break,
-                Err(e) => {
-                    eprintln!("Error reading XML: {:?}", e);
-                    break;
-                }
-                _ => {}
-            }
-
-            buf.clear();
-
-            if triples.len() >= 8192 {
-                // Process triples in parallel using Rayon
-                let local_triples: BTreeSet<Triple> = triples.into_par_iter().collect();
-                self.triples.extend(local_triples);
-                triples = Vec::with_capacity(8192);
-            }
-        }
-
-        if !triples.is_empty() {
-            let local_triples: BTreeSet<Triple> = triples.into_par_iter().collect();
-            self.triples.extend(local_triples);
-        }
-    }
-
     pub fn parse_rdf(&mut self, rdf_xml: &str) {
         let mut reader = Reader::from_str(rdf_xml);
-        reader.trim_text(true);
-        reader.check_comments(false);
-        reader.expand_empty_elements(false);
 
         let mut current_subject = Vec::with_capacity(128);
         let mut current_predicate = Vec::with_capacity(128);
@@ -396,19 +244,24 @@ impl SparqlDatabase {
                         }
                     }
                     Ok(Event::Text(e)) => {
-                        if let Ok(object) = e.unescape() {
-                            if let Ok(subject_str) = std::str::from_utf8(&current_subject) {
-                                if let Ok(predicate_str) = std::str::from_utf8(&current_predicate) {
-                                    let resolved_predicate = self.resolve_term(predicate_str);
-                                    // Lock the dictionary for encoding
-                                    let mut dict = dictionary.write().unwrap();
-                                    let triple = Triple {
-                                        subject: dict.encode(subject_str),
-                                        predicate: dict.encode(&resolved_predicate),
-                                        object: dict.encode(&object),
-                                    };
-                                    drop(dict); // Release the lock
-                                    triples.push(triple);
+                        // Use Reader's decode method and trim whitespace
+                        if let Ok(object_str) = reader.decoder().decode(e.as_ref()) {
+                            let trimmed_object = object_str.trim();
+                            // Skip empty or whitespace-only text
+                            if !trimmed_object.is_empty() {
+                                if let Ok(subject_str) = std::str::from_utf8(&current_subject) {
+                                    if let Ok(predicate_str) = std::str::from_utf8(&current_predicate) {
+                                        let resolved_predicate = self.resolve_term(predicate_str);
+                                        // Lock the dictionary for encoding
+                                        let mut dict = dictionary.write().unwrap();
+                                        let triple = Triple {
+                                            subject: dict.encode(subject_str),
+                                            predicate: dict.encode(&resolved_predicate),
+                                            object: dict.encode(trimmed_object),
+                                        };
+                                        drop(dict); // Release the lock
+                                        triples.push(triple);
+                                    }
                                 }
                             }
                         }
@@ -452,6 +305,157 @@ impl SparqlDatabase {
 
         // Update the main dictionary
         self.dictionary = Arc::try_unwrap(dictionary).unwrap().into_inner().unwrap();
+    }
+
+    pub fn parse_rdf_from_file(&mut self, filename: &str) {
+        let file = std::fs::File::open(filename).expect("Cannot open file");
+        let reader = std::io::BufReader::new(file);
+        let mut xml_reader = Reader::from_reader(reader);
+
+        let mut current_subject = Vec::with_capacity(128);
+        let mut current_predicate = Vec::with_capacity(128);
+
+        // First, read prefixes before spawning worker threads
+        let mut buf = Vec::new();
+        loop {
+            match xml_reader.read_event_into(&mut buf) {
+                Ok(Event::Start(ref e)) => {
+                    if e.name() == QName(b"rdf:RDF") {
+                        // Read prefixes
+                        for attr in e.attributes().filter_map(Result::ok) {
+                            let key = attr.key;
+                            let value = attr.value;
+                            if key.as_ref().starts_with(b"xmlns:") {
+                                let prefix = std::str::from_utf8(&key.as_ref()[6..])
+                                    .unwrap_or("")
+                                    .to_string();
+                                let uri = std::str::from_utf8(&value).unwrap_or("").to_string();
+                                self.prefixes.insert(prefix, uri);
+                            } else if key.as_ref() == b"xmlns" {
+                                // Default namespace
+                                let uri = std::str::from_utf8(&value).unwrap_or("").to_string();
+                                self.prefixes.insert("".to_string(), uri);
+                            }
+                        }
+                        break; // We have read the prefixes, proceed to the rest
+                    }
+                }
+                Ok(Event::Eof) => {
+                    eprintln!("Reached EOF before reading prefixes.");
+                    break;
+                }
+                Err(e) => {
+                    eprintln!("Error reading XML: {:?}", e);
+                    break;
+                }
+                _ => {}
+            }
+            buf.clear();
+        }
+
+        // Continue reading and parsing the rest of the file
+        let mut triples = Vec::with_capacity(8192);
+        loop {
+            match xml_reader.read_event_into(&mut buf) {
+                Ok(Event::Start(ref e)) => match e.name() {
+                    QName(b"rdf:Description") => {
+                        for attr in e.attributes().filter_map(Result::ok) {
+                            if attr.key == QName(b"rdf:about") {
+                                current_subject.clear();
+                                current_subject.extend_from_slice(&attr.value);
+                            }
+                        }
+                    }
+                    QName(b"rdfs:Class") | QName(b"rdf:type") => {
+                        current_predicate.clear();
+                        current_predicate.extend_from_slice(b"rdf:type");
+                    }
+                    QName(b"rdfs:subClassOf") => {
+                        current_predicate.clear();
+                        current_predicate.extend_from_slice(b"rdfs:subClassOf");
+                    }
+                    QName(b"rdfs:label") => {
+                        current_predicate.clear();
+                        current_predicate.extend_from_slice(b"rdfs:label");
+                    }
+                    name => {
+                        let name_str = std::str::from_utf8(name.as_ref()).unwrap_or("").to_string();
+                        let resolved_predicate = self.resolve_term(&name_str);
+                        current_predicate = resolved_predicate.clone().into_bytes();
+                    }
+                },
+                Ok(Event::Empty(ref e)) => {
+                    if let Ok(predicate) = std::str::from_utf8(e.name().as_ref()) {
+                        let resolved_predicate = self.resolve_term(predicate);
+                        let mut object = Vec::with_capacity(128);
+                        for attr in e.attributes().filter_map(Result::ok) {
+                            if attr.key == QName(b"rdf:resource") {
+                                object.extend_from_slice(&attr.value);
+                            }
+                        }
+                        if !object.is_empty() {
+                            if let (Ok(subject_str), Ok(object_str)) = (
+                                std::str::from_utf8(&current_subject),
+                                std::str::from_utf8(&object),
+                            ) {
+                                let triple = Triple {
+                                    subject: self.dictionary.encode(subject_str),
+                                    predicate: self.dictionary.encode(&resolved_predicate),
+                                    object: self.dictionary.encode(object_str),
+                                };
+                                triples.push(triple);
+                            }
+                        }
+                    }
+                }
+                Ok(Event::Text(e)) => {
+                    // Use Reader's decode method and trim whitespace
+                    if let Ok(object_str) = xml_reader.decoder().decode(e.as_ref()) {
+                        let trimmed_object = object_str.trim();
+                        // Skip empty or whitespace-only text
+                        if !trimmed_object.is_empty() {
+                            if let Ok(subject_str) = std::str::from_utf8(&current_subject) {
+                                if let Ok(predicate_str) = std::str::from_utf8(&current_predicate) {
+                                    let resolved_predicate = self.resolve_term(predicate_str);
+                                    let triple = Triple {
+                                        subject: self.dictionary.encode(subject_str),
+                                        predicate: self.dictionary.encode(&resolved_predicate),
+                                        object: self.dictionary.encode(trimmed_object),
+                                    };
+                                    triples.push(triple);
+                                }
+                            }
+                        }
+                    }
+                }
+                Ok(Event::End(ref e)) => {
+                    if e.name() == QName(b"rdf:Description") {
+                        current_subject.clear();
+                        current_predicate.clear();
+                    }
+                }
+                Ok(Event::Eof) => break,
+                Err(e) => {
+                    eprintln!("Error reading XML: {:?}", e);
+                    break;
+                }
+                _ => {}
+            }
+
+            buf.clear();
+
+            if triples.len() >= 8192 {
+                // Process triples in parallel using Rayon
+                let local_triples: BTreeSet<Triple> = triples.into_par_iter().collect();
+                self.triples.extend(local_triples);
+                triples = Vec::with_capacity(8192);
+            }
+        }
+
+        if !triples.is_empty() {
+            let local_triples: BTreeSet<Triple> = triples.into_par_iter().collect();
+            self.triples.extend(local_triples);
+        }
     }
 
     // New parse_turtle function

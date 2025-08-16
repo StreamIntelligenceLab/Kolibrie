@@ -83,6 +83,7 @@
 82. Update README and minor change
 83. Add CLI for Kolibrie
 84. Update one dependency to a new version
+85. Update dependencies for parsing
 
 0.1.0
 1. Parsing RDF/XML
