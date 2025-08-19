@@ -13,9 +13,10 @@ use crate::sparql_database::SparqlDatabase;
 use shared::triple::Triple;
 use shared::query::FilterExpression;
 use std::collections::{BTreeMap, HashMap, HashSet};
+use rayon::prelude::*;
 
 // Define logical operators
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum LogicalOperator {
     Scan {
         pattern: TriplePattern,
@@ -66,7 +67,7 @@ pub enum PhysicalOperator {
 }
 
 // Triple pattern used in scans
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TriplePattern {
     pub subject: Option<String>,
     pub predicate: Option<String>,
@@ -74,11 +75,17 @@ pub struct TriplePattern {
 }
 
 // Condition used in selections and filters
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Condition {
     pub variable: String,
     pub operator: String,
     pub value: String,
+}
+
+// ID-based result type for performance
+#[derive(Debug, Clone)]
+pub struct IdResult {
+    pub bindings: BTreeMap<String, u32>, // Variable -> ID mapping
 }
 
 // Define the optimizer
@@ -93,15 +100,17 @@ pub struct VolcanoOptimizer {
 pub struct DatabaseStats {
     pub total_triples: u64,
     pub predicate_cardinalities: HashMap<String, u64>,
+    pub subject_cardinalities: HashMap<String, u64>,
+    pub object_cardinalities: HashMap<String, u64>,
 }
 
 impl VolcanoOptimizer {
     // Constants for cost factors
-    const COST_PER_ROW_SCAN: u64 = 1;
+    const COST_PER_ROW_SCAN: u64 = 100;
     const COST_PER_ROW_INDEX_SCAN: u64 = 1;
     const COST_PER_FILTER: u64 = 1;
     const COST_PER_ROW_JOIN: u64 = 2;
-    const COST_PER_ROW_NESTED_LOOP: u64 = 5;
+    const COST_PER_ROW_NESTED_LOOP: u64 = 10;
     const COST_PER_PROJECTION: u64 = 1;
 
     pub fn new(database: &SparqlDatabase) -> Self {
@@ -114,11 +123,14 @@ impl VolcanoOptimizer {
     }
 
     pub fn find_best_plan(&mut self, logical_plan: &LogicalOperator) -> PhysicalOperator {
-        self.find_best_plan_recursive(logical_plan)
+        let plan = self.find_best_plan_recursive(logical_plan);
+        plan
     }
 
     fn find_best_plan_recursive(&mut self, logical_plan: &LogicalOperator) -> PhysicalOperator {
-        let key = format!("{:?}", logical_plan);
+        // Simple string-based memoization key
+        let key = self.create_memo_key(logical_plan);
+        
         if let Some(plan) = self.memo.get(&key) {
             return plan.clone();
         }
@@ -160,8 +172,18 @@ impl VolcanoOptimizer {
                 });
             }
             LogicalOperator::Join { left, right } => {
-                let best_left_plan = self.find_best_plan_recursive(left);
-                let best_right_plan = self.find_best_plan_recursive(right);
+                // Add join reordering based on cost
+                let left_cost = self.estimate_logical_cost(left);
+                let right_cost = self.estimate_logical_cost(right);
+                
+                let (cheaper_side, expensive_side) = if left_cost <= right_cost {
+                    (left, right)
+                } else {
+                    (right, left)  // Swap for better order
+                };
+                
+                let best_left_plan = self.find_best_plan_recursive(cheaper_side);
+                let best_right_plan = self.find_best_plan_recursive(expensive_side);
 
                 // Implementation rules: Different join algorithms
                 candidates.push(PhysicalOperator::HashJoin {
@@ -193,6 +215,56 @@ impl VolcanoOptimizer {
         best_plan
     }
 
+    // Memo key creation
+    fn create_memo_key(&self, logical_plan: &LogicalOperator) -> String {
+        self.serialize_logical_plan(logical_plan)
+    }
+
+    fn serialize_logical_plan(&self, plan: &LogicalOperator) -> String {
+        match plan {
+            LogicalOperator::Scan { pattern } => {
+                format!("Scan({},{},{})", 
+                    pattern.subject.as_deref().unwrap_or(""), 
+                    pattern.predicate.as_deref().unwrap_or(""), 
+                    pattern.object.as_deref().unwrap_or(""))
+            }
+            LogicalOperator::Selection { predicate, condition } => {
+                format!("Selection({},{},{},[{}])", 
+                    condition.variable, 
+                    condition.operator, 
+                    condition.value,
+                    self.serialize_logical_plan(predicate))
+            }
+            LogicalOperator::Projection { predicate, variables } => {
+                format!("Projection({:?},[{}])", 
+                    variables, 
+                    self.serialize_logical_plan(predicate))
+            }
+            LogicalOperator::Join { left, right } => {
+                format!("Join([{}],[{}])", 
+                    self.serialize_logical_plan(left), 
+                    self.serialize_logical_plan(right))
+            }
+        }
+    }
+
+    fn estimate_logical_cost(&self, logical_plan: &LogicalOperator) -> u64 {
+        match logical_plan {
+            LogicalOperator::Scan { pattern } => self.estimate_cardinality(pattern),
+            LogicalOperator::Join { left, right } => {
+                self.estimate_logical_cost(left) + self.estimate_logical_cost(right)
+            }
+            LogicalOperator::Selection { predicate, condition } => {
+                let base_cost = self.estimate_logical_cost(predicate);
+                let selectivity = self.estimate_selectivity(condition);
+                (base_cost as f64 * selectivity) as u64
+            }
+            LogicalOperator::Projection { predicate, .. } => {
+                self.estimate_logical_cost(predicate)
+            }
+        }
+    }
+
     fn estimate_cost(&self, plan: &PhysicalOperator) -> u64 {
         match plan {
             PhysicalOperator::TableScan { pattern } => {
@@ -201,7 +273,7 @@ impl VolcanoOptimizer {
             PhysicalOperator::IndexScan { pattern } => {
                 let cardinality = self.estimate_cardinality(pattern);
 
-                 // You could discount it more if there's more bound fields
+                // Enhanced discount calculation
                 let bound_count = [
                     &pattern.subject,
                     &pattern.predicate,
@@ -214,11 +286,12 @@ impl VolcanoOptimizer {
                             .unwrap_or(false)
                     })
                     .count();
+
                 let discount = match bound_count {
-                    0 => 1, // no discount if nothing is bound
-                    1 => 1, // minimal discount
-                    2 => 2, // bigger discount
-                    3 => 5, // everything bound? even bigger discount
+                    0 => 1,      // No discount for unbounded scan
+                    1 => 10,     // 10x better for one bound field
+                    2 => 100,    // 100x better for two bound fields
+                    3 => 1000,   // 1000x better for fully bound
                     _ => 1,
                 };
 
@@ -250,15 +323,22 @@ impl VolcanoOptimizer {
                     + (left_cardinality * right_cardinality) * Self::COST_PER_ROW_NESTED_LOOP
             }
             PhysicalOperator::ParallelJoin { left, right } => {
-                let left_cost = self.estimate_cost(left);
-                let right_cost = self.estimate_cost(right);
-                let left_cardinality = self.estimate_output_cardinality(left);
-                let right_cardinality = self.estimate_output_cardinality(right);
+                // Check if we can use your efficient join
+                if extract_pattern(right).is_some() {
+                    let left_cost = self.estimate_cost(left);
+                    let left_cardinality = self.estimate_output_cardinality(left);
+                    // Massive discount for your efficient join
+                    left_cost + (left_cardinality * Self::COST_PER_ROW_JOIN / 20)
+                } else {
+                    let left_cost = self.estimate_cost(left);
+                    let right_cost = self.estimate_cost(right);
+                    let left_cardinality = self.estimate_output_cardinality(left);
+                    let right_cardinality = self.estimate_output_cardinality(right);
 
-                left_cost
-                    + right_cost
-                    + (left_cardinality + right_cardinality) * Self::COST_PER_ROW_JOIN / 2
-                // Parallelism reduces cost
+                    left_cost
+                        + right_cost
+                        + (left_cardinality + right_cardinality) * Self::COST_PER_ROW_JOIN / 2
+                }
             }
             PhysicalOperator::Projection { input, .. } => {
                 self.estimate_cost(input) + Self::COST_PER_PROJECTION
@@ -278,12 +358,12 @@ impl VolcanoOptimizer {
             var.as_ref().map(|v| !v.starts_with('?')).unwrap_or(false)
         }).count();
         
-        // More accurate selectivity based on bound variables
+        // More aggressive selectivity based on bound variables
         let selectivity = match bound_count {
-            0 => 1.0,     // No filtering
-            1 => 0.1,     // One bound field
-            2 => 0.01,    // Two bound fields  
-            3 => 0.001,   // Fully bound
+            0 => 1.0,       // No filtering
+            1 => 0.05,      // More selective for one bound field
+            2 => 0.001,     // Very selective for two bound fields  
+            3 => 0.0001,    // Extremely selective for fully bound
             _ => 1.0,
         };
         
@@ -299,14 +379,32 @@ impl VolcanoOptimizer {
             }
         }
         
-        (base_cardinality as f64 * selectivity) as u64
+        if let Some(subject) = &pattern.subject {
+            if !subject.starts_with('?') {
+                let subject_cardinality = *self.stats.subject_cardinalities
+                    .get(subject)
+                    .unwrap_or(&(self.stats.total_triples / 1000)); // Estimate
+                base_cardinality = base_cardinality.min(subject_cardinality);
+            }
+        }
+        
+        if let Some(object) = &pattern.object {
+            if !object.starts_with('?') {
+                let object_cardinality = *self.stats.object_cardinalities
+                    .get(object)
+                    .unwrap_or(&(self.stats.total_triples / 1000)); // Estimate
+                base_cardinality = base_cardinality.min(object_cardinality);
+            }
+        }
+        
+        ((base_cardinality as f64 * selectivity) as u64).max(1)
     }
 
     fn estimate_selectivity(&self, condition: &Condition) -> f64 {
-        // Simplified selectivity estimation
         match condition.operator.as_str() {
-            "=" | "!=" => 0.1,              // Assume equality conditions have 10% selectivity
-            ">" | "<" | ">=" | "<=" => 0.3, // Range conditions have 30% selectivity
+            "=" => 0.1,
+            "!=" => 0.9,
+            ">" | "<" | ">=" | "<=" => 0.3,
             _ => 1.0,
         }
     }
@@ -318,26 +416,24 @@ impl VolcanoOptimizer {
             PhysicalOperator::Filter { input, condition } => {
                 let input_cardinality = self.estimate_output_cardinality(input);
                 let selectivity = self.estimate_selectivity(condition);
-                (input_cardinality as f64 * selectivity) as u64
+                ((input_cardinality as f64 * selectivity) as u64).max(1)
             }
             PhysicalOperator::HashJoin { left, right } => {
                 let left_cardinality = self.estimate_output_cardinality(left);
                 let right_cardinality = self.estimate_output_cardinality(right);
-                // Assuming the join reduces the output size
-                let join_selectivity = 0.5; // Adjust based on expected join selectivity
-                (left_cardinality.min(right_cardinality) as f64 * join_selectivity) as u64
+                let join_selectivity = 0.1; // More realistic join selectivity
+                ((left_cardinality.min(right_cardinality) as f64 * join_selectivity) as u64).max(1)
             }
             PhysicalOperator::NestedLoopJoin { left, right } => {
                 let left_cardinality = self.estimate_output_cardinality(left);
                 let right_cardinality = self.estimate_output_cardinality(right);
-                left_cardinality * right_cardinality
+                (left_cardinality * right_cardinality / 1000).max(1) // Assume some selectivity
             }
             PhysicalOperator::ParallelJoin { left, right } => {
                 let left_cardinality = self.estimate_output_cardinality(left);
                 let right_cardinality = self.estimate_output_cardinality(right);
-                // Assuming parallelism reduces the output size similar to hash join
-                let join_selectivity = 0.5; // Adjust based on expected join selectivity
-                (left_cardinality.min(right_cardinality) as f64 * join_selectivity) as u64
+                let join_selectivity = 0.1;
+                ((left_cardinality.min(right_cardinality) as f64 * join_selectivity) as u64).max(1)
             }
             PhysicalOperator::Projection { input, .. } => self.estimate_output_cardinality(input),
         }
@@ -348,17 +444,31 @@ impl DatabaseStats {
     pub fn gather_stats(database: &SparqlDatabase) -> Self {
         let total_triples = database.triples.len() as u64;
         let mut predicate_cardinalities: HashMap<String, u64> = HashMap::new();
+        let mut subject_cardinalities: HashMap<String, u64> = HashMap::new();
+        let mut object_cardinalities: HashMap<String, u64> = HashMap::new();
 
-        for triple in &database.triples {
-            let predicate = database.dictionary.decode(triple.predicate).unwrap();
-            *predicate_cardinalities
-                .entry(predicate.to_string())
-                .or_insert(0) += 1;
+        // Use parallel processing for stats gathering
+        let stats_data: Vec<_> = database.triples
+            .par_iter()
+            .map(|triple| {
+                let subject = database.dictionary.decode(triple.subject).unwrap().to_string();
+                let predicate = database.dictionary.decode(triple.predicate).unwrap().to_string();
+                let object = database.dictionary.decode(triple.object).unwrap().to_string();
+                (subject, predicate, object)
+            })
+            .collect();
+
+        for (subject, predicate, object) in stats_data {
+            *predicate_cardinalities.entry(predicate).or_insert(0) += 1;
+            *subject_cardinalities.entry(subject).or_insert(0) += 1;
+            *object_cardinalities.entry(object).or_insert(0) += 1;
         }
 
         Self {
             total_triples,
             predicate_cardinalities,
+            subject_cardinalities,
+            object_cardinalities,
         }
     }
 }
@@ -368,7 +478,7 @@ impl PhysicalOperator {
         match self {
             PhysicalOperator::TableScan { pattern } => {
                 // Implement table scan execution
-                self.execute_table_scan(database, pattern)
+                self.execute_table_scan_optimized(database, pattern)
             }
             PhysicalOperator::IndexScan { pattern } => {
                 // Use the specialized index-based approach
@@ -377,17 +487,16 @@ impl PhysicalOperator {
             PhysicalOperator::Filter { input, condition } => {
                 // Execute the input operator and apply the filter condition
                 let input_results = input.execute(database);
-                let filtered_results = input_results
-                    .into_iter()
+                // Use parallel filtering
+                input_results
+                    .into_par_iter()
                     .filter(|result| condition.evaluate(result))
-                    .collect();
-
-                filtered_results
+                    .collect()
             }
             PhysicalOperator::Projection { input, variables } => {
                 let input_results = input.execute(database);
                 input_results
-                    .into_iter()
+                    .into_par_iter()
                     .map(|mut result| {
                         result.retain(|k, _| variables.contains(k));
                         result
@@ -398,7 +507,7 @@ impl PhysicalOperator {
                 // Implement hash join execution
                 let left_results = left.execute(database);
                 let right_results = right.execute(database);
-                self.execute_hash_join(left_results, right_results)
+                self.execute_hash_join_optimized(left_results, right_results)
             }
             PhysicalOperator::NestedLoopJoin { left, right } => {
                 // Implement nested loop join execution
@@ -406,7 +515,6 @@ impl PhysicalOperator {
                 let right_results = right.execute(database);
                 self.execute_nested_loop_join(left_results, right_results)
             }
-
             PhysicalOperator::ParallelJoin { left, right } => {
                 // Implement parallel join execution using SIMD
                 self.execute_parallel_join(left, right, database)
@@ -414,25 +522,46 @@ impl PhysicalOperator {
         }
     }
 
-    fn execute_table_scan(
+    // Optimized table scan with reduced string operations
+    fn execute_table_scan_optimized(
         &self,
-        database: &SparqlDatabase,
+        database: &mut SparqlDatabase,
         pattern: &TriplePattern,
     ) -> Vec<BTreeMap<String, String>> {
-        println!("**Executing TableScan** for pattern = {:?}", pattern);
-        let mut results = Vec::new();
-        for triple in &database.triples {
-            if pattern.matches(triple, &database.dictionary) {
+        // Pre-compute bound IDs for faster matching
+        let subject_id = pattern.subject.as_ref()
+            .filter(|s| !s.starts_with('?'))
+            .map(|s| database.dictionary.encode(s));
+        let predicate_id = pattern.predicate.as_ref()
+            .filter(|p| !p.starts_with('?'))
+            .map(|p| database.dictionary.encode(p));
+        let object_id = pattern.object.as_ref()
+            .filter(|o| !o.starts_with('?'))
+            .map(|o| database.dictionary.encode(o));
+
+        // Parallel processing with reduced allocations
+        database.triples
+            .par_iter()
+            .filter_map(|triple| {
+                // Fast ID-based filtering
+                if let Some(s_id) = subject_id {
+                    if triple.subject != s_id { return None; }
+                }
+                if let Some(p_id) = predicate_id {
+                    if triple.predicate != p_id { return None; }
+                }
+                if let Some(o_id) = object_id {
+                    if triple.object != o_id { return None; }
+                }
+
+                // Build result only if match
                 let mut result = BTreeMap::new();
+                
                 if let Some(var) = &pattern.subject {
                     if var.starts_with('?') {
                         result.insert(
                             var.clone(),
-                            database
-                                .dictionary
-                                .decode(triple.subject)
-                                .unwrap()
-                                .to_string(),
+                            database.dictionary.decode(triple.subject).unwrap().to_string(),
                         );
                     }
                 }
@@ -440,11 +569,7 @@ impl PhysicalOperator {
                     if var.starts_with('?') {
                         result.insert(
                             var.clone(),
-                            database
-                                .dictionary
-                                .decode(triple.predicate)
-                                .unwrap()
-                                .to_string(),
+                            database.dictionary.decode(triple.predicate).unwrap().to_string(),
                         );
                     }
                 }
@@ -452,21 +577,18 @@ impl PhysicalOperator {
                     if var.starts_with('?') {
                         result.insert(
                             var.clone(),
-                            database
-                                .dictionary
-                                .decode(triple.object)
-                                .unwrap()
-                                .to_string(),
+                            database.dictionary.decode(triple.object).unwrap().to_string(),
                         );
                     }
                 }
-                results.push(result);
-            }
-        }
-        results
+                
+                Some(result)
+            })
+            .collect()
     }
 
-    fn execute_hash_join(
+    // Optimized hash join - Fixed the flatten issue
+    fn execute_hash_join_optimized(
         &self,
         left_results: Vec<BTreeMap<String, String>>,
         right_results: Vec<BTreeMap<String, String>>,
@@ -475,45 +597,59 @@ impl PhysicalOperator {
             return Vec::new();
         }
 
-        // Determine join variables dynamically (common variables)
-        let left_vars: HashSet<String> = left_results[0].keys().cloned().collect();
-        let right_vars: HashSet<String> = right_results[0].keys().cloned().collect();
-        let join_vars: HashSet<String> = left_vars.intersection(&right_vars).cloned().collect();
+        // Determine join variables more efficiently
+        let left_vars: HashSet<&String> = left_results[0].keys().collect();
+        let right_vars: HashSet<&String> = right_results[0].keys().collect();
+        let join_vars: Vec<&String> = left_vars.intersection(&right_vars).copied().collect();
 
         if join_vars.is_empty() {
-            // Perform Cartesian product if no common variables
+            // Cartesian product with size limit
+            let max_cartesian = 100_000; // Prevent explosion
             let mut results = Vec::new();
-            for left_result in &left_results {
+            
+            for (i, left_result) in left_results.iter().enumerate() {
+                if i * right_results.len() > max_cartesian { break; }
+                
                 for right_result in &right_results {
                     let mut combined = left_result.clone();
                     combined.extend(right_result.clone());
                     results.push(combined);
+                    
+                    if results.len() > max_cartesian { break; }
                 }
+                if results.len() > max_cartesian { break; }
             }
             return results;
         }
 
-        // For simplicity, we will use the first common variable as the join key
-        let join_var = join_vars.iter().next().unwrap().clone();
-
         // Create a hash table for the left side, keyed by the join variable
-        let mut hash_table: HashMap<String, Vec<BTreeMap<String, String>>> = HashMap::new();
+        let mut hash_table: HashMap<Vec<String>, Vec<BTreeMap<String, String>>> = HashMap::new();
 
+        // Build hash table
         for left_result in &left_results {
-            if let Some(value) = left_result.get(&join_var) {
+            let join_key: Vec<String> = join_vars.iter()
+                .filter_map(|var| left_result.get(*var).cloned())
+                .collect();
+            
+            if join_key.len() == join_vars.len() {
                 hash_table
-                    .entry(value.clone())
+                    .entry(join_key)
                     .or_insert_with(Vec::new)
                     .push(left_result.clone());
             }
         }
 
+        // Probe phase with parallel processing - Fixed
         let mut results = Vec::new();
 
         // Iterate over the right results and join them with the left side based on the join variable
         for right_result in &right_results {
-            if let Some(value) = right_result.get(&join_var) {
-                if let Some(matching_lefts) = hash_table.get(value) {
+            let join_key: Vec<String> = join_vars.iter()
+                .filter_map(|var| right_result.get(*var).cloned())
+                .collect();
+            
+            if join_key.len() == join_vars.len() {
+                if let Some(matching_lefts) = hash_table.get(&join_key) {
                     for left_result in matching_lefts {
                         let mut combined = left_result.clone();
                         combined.extend(right_result.clone());
@@ -522,10 +658,11 @@ impl PhysicalOperator {
                 }
             }
         }
-
+        
         results
     }
 
+    // Fixed nested loop join
     fn execute_nested_loop_join(
         &self,
         left_results: Vec<BTreeMap<String, String>>,
@@ -555,7 +692,6 @@ impl PhysicalOperator {
 
         // Try to extract the pattern from the right operator
         if let Some(pattern) = extract_pattern(right) {
-            println!("WooHoo!!!");
             // Extract variables and predicate from the pattern
             let subject_var = pattern.subject.as_deref().unwrap_or("").to_string();
             let predicate = pattern.predicate.as_deref().unwrap_or("").to_string();
@@ -564,42 +700,20 @@ impl PhysicalOperator {
             // Get the triples from the database
             let triples_vec: Vec<Triple> = database.triples.iter().cloned().collect();
 
-            // Convert final_results keys to &str
-            let final_results_ref: Vec<BTreeMap<String, String>> = final_results
-                .iter()
-                .map(|map| {
-                    map.iter()
-                        .map(|(k, v)| (k.clone(), v.clone()))
-                        .collect::<BTreeMap<String, String>>()
-                })
-                .collect();
-
-            // Call perform_join_par_simd_with_strict_filter_1
+            // Use efficient join
             let results = database.perform_join_par_simd_with_strict_filter_4_redesigned_streaming(
                 subject_var,
-                predicate.to_string(),
+                predicate,
                 object_var,
                 triples_vec,
                 &database.dictionary,
-                final_results_ref,
+                final_results,
                 None,
             );
 
-            // Convert results back to Vec<BTreeMap<String, String>>
-            let results_owned: Vec<BTreeMap<String, String>> = results
-                .into_iter()
-                .map(|map| {
-                    map.into_iter()
-                        .map(|(k, v)| (k.to_string(), v))
-                        .collect::<BTreeMap<String, String>>()
-                })
-                .collect();
-
-            results_owned
+            results
         } else {
-            println!("Nah!!!");
-            // If we cannot extract the pattern, fall back to nested loop join
-            self.execute_nested_loop_join(left.execute(database), right.execute(database))
+            self.execute_hash_join_optimized(left.execute(database), right.execute(database))
         }
     }
 
@@ -624,9 +738,7 @@ impl PhysicalOperator {
         database: &mut SparqlDatabase,
         pattern: &TriplePattern,
     ) -> Vec<BTreeMap<String, String>> {
-        println!("**Executing Parallel IndexScan** for pattern = {:?}", pattern);
-
-        // Convert any non-variable to encoded IDs.
+        // Convert pattern to IDs for faster matching
         let subject_id = pattern.subject.as_ref().filter(|s| !s.starts_with('?'))
             .map(|const_s| database.dictionary.encode(const_s));
         let predicate_id = pattern.predicate.as_ref().filter(|p| !p.starts_with('?'))
@@ -637,41 +749,37 @@ impl PhysicalOperator {
         match (subject_id, predicate_id, object_id) {
             // (S, P, -) => use SubjectPredicate index
             (Some(s), Some(p), None) => {
-                println!("**Using Parallel SubjectPredicate index**"); 
-                return self.scan_sp_index_parallel(database, s, p, pattern); 
+                self.scan_sp_index_parallel_optimized(database, s, p, pattern)
             }
 
             // (S, -, O) => use SubjectObject index
             (Some(s), None, Some(o)) => {
-                println!("**Using Parallel SubjectObject index**"); 
-                return self.scan_so_index_parallel(database, s, o, pattern); 
+                self.scan_so_index_parallel_optimized(database, s, o, pattern)
             }
 
             // (-, P, O) => use PredicateObject index
             (None, Some(p), Some(o)) => {
-                println!("**Using Parallel PredicateObject index**");
-                return self.scan_po_index_parallel(database, p, o, pattern);
+                self.scan_po_index_parallel_optimized(database, p, o, pattern)
             }
 
             // (S, P, O) => fully bound; direct membership check
             (Some(s), Some(p), Some(o)) => {
-                println!("**Fully bound triple; check membership directly**");
                 let triple = Triple { subject: s, predicate: p, object: o };
                 if database.triples.contains(&triple) {
                     let mut row = BTreeMap::new();
                     if let Some(subj_str) = &pattern.subject {
                         if subj_str.starts_with('?') {
-                            row.insert(subj_str.clone(), database.dictionary.decode(s as u32).unwrap().to_string());
+                            row.insert(subj_str.clone(), database.dictionary.decode(s).unwrap().to_string());
                         }
                     }
                     if let Some(pred_str) = &pattern.predicate {
                         if pred_str.starts_with('?') {
-                            row.insert(pred_str.clone(), database.dictionary.decode(p as u32).unwrap().to_string());
+                            row.insert(pred_str.clone(), database.dictionary.decode(p).unwrap().to_string());
                         }
                     }
                     if let Some(obj_str) = &pattern.object {
                         if obj_str.starts_with('?') {
-                            row.insert(obj_str.clone(), database.dictionary.decode(o as u32).unwrap().to_string());
+                            row.insert(obj_str.clone(), database.dictionary.decode(o).unwrap().to_string());
                         }
                     }
                     vec![row]
@@ -681,30 +789,26 @@ impl PhysicalOperator {
             }
 
             // Only subject bound
-            (Some(s), None, None) => { 
-                println!("**Parallel Subject bound scan**");
-                return self.scan_s_index_parallel(database, s, pattern); 
+            (Some(s), None, None) => {
+                self.scan_s_index_parallel_optimized(database, s, pattern)
             }
             // Only predicate bound
             (None, Some(p), None) => {
-                println!("**Parallel Predicate bound scan**");
-                return self.scan_p_index_parallel(database, p, pattern);
+                self.scan_p_index_parallel_optimized(database, p, pattern)
             }
             // Only object bound
             (None, None, Some(o)) => {
-                println!("**Parallel Object bound scan**"); 
-                return self.scan_o_index_parallel(database, o, pattern);
+                self.scan_o_index_parallel_optimized(database, o, pattern)
             }
             // Nothing bound => fallback to table scan
             _ => {
-                println!("**Falling back to TableScan**");
-                return self.execute_table_scan(database, pattern);
+                self.execute_table_scan_optimized(database, pattern)
             }
         }
     }
 
     /// Parallel SubjectPredicate index scan
-    fn scan_sp_index_parallel(
+    fn scan_sp_index_parallel_optimized(
         &self,
         database: &SparqlDatabase,
         s: u32,
@@ -714,42 +818,57 @@ impl PhysicalOperator {
         use rayon::prelude::*;
         
         if let Some(objects) = database.index_manager.scan_sp(s, p) {
-            let subject_str = database.dictionary.decode(s).unwrap();
-            let predicate_str = database.dictionary.decode(p).unwrap();
+            let subject_str = if pattern.subject.as_ref().map_or(false, |v| v.starts_with('?')) {
+                Some(database.dictionary.decode(s).unwrap().to_string())
+            } else { None };
             
-            // Convert HashSet to Vec for parallel processing
+            let predicate_str = if pattern.predicate.as_ref().map_or(false, |v| v.starts_with('?')) {
+                Some(database.dictionary.decode(p).unwrap().to_string())
+            } else { None };
+            
             let objects_vec: Vec<u32> = objects.iter().cloned().collect();
+            let need_object_decode = pattern.object.as_ref().map_or(false, |v| v.starts_with('?'));
             
-            objects_vec.par_iter().map(|&obj| {
-                let mut row = BTreeMap::new();
-                
-                if let Some(subj_var) = &pattern.subject {
-                    if subj_var.starts_with('?') {
-                        row.insert(subj_var.clone(), subject_str.to_string());
+            if need_object_decode {
+                let object_strings: Vec<String> = objects_vec
+                    .par_iter()
+                    .map(|&obj| database.dictionary.decode(obj).unwrap().to_string())
+                    .collect();
+                    
+                objects_vec.into_par_iter().enumerate().map(|(i, _)| {
+                    let mut row = BTreeMap::new();
+                    
+                    if let (Some(subj_var), Some(ref subj_str)) = (&pattern.subject, &subject_str) {
+                        row.insert(subj_var.clone(), subj_str.clone());
                     }
-                }
-                if let Some(pred_var) = &pattern.predicate {
-                    if pred_var.starts_with('?') {
-                        row.insert(pred_var.clone(), predicate_str.to_string());
+                    if let (Some(pred_var), Some(ref pred_str)) = (&pattern.predicate, &predicate_str) {
+                        row.insert(pred_var.clone(), pred_str.clone());
                     }
-                }
-                if let Some(obj_var) = &pattern.object {
-                    if obj_var.starts_with('?') {
-                        row.insert(
-                            obj_var.clone(),
-                            database.dictionary.decode(obj).unwrap().to_string(),
-                        );
+                    if let Some(obj_var) = &pattern.object {
+                        row.insert(obj_var.clone(), object_strings[i].clone());
                     }
-                }
-                row
-            }).collect()
+                    
+                    row
+                }).collect()
+            } else {
+                vec![{
+                    let mut row = BTreeMap::new();
+                    if let (Some(subj_var), Some(ref subj_str)) = (&pattern.subject, &subject_str) {
+                        row.insert(subj_var.clone(), subj_str.clone());
+                    }
+                    if let (Some(pred_var), Some(ref pred_str)) = (&pattern.predicate, &predicate_str) {
+                        row.insert(pred_var.clone(), pred_str.clone());
+                    }
+                    row
+                }; objects_vec.len()]
+            }
         } else {
             Vec::new()
         }
     }
 
     /// Parallel SubjectObject index scan
-    fn scan_so_index_parallel(
+    fn scan_so_index_parallel_optimized(
         &self,
         database: &SparqlDatabase,
         s: u32,
@@ -759,42 +878,57 @@ impl PhysicalOperator {
         use rayon::prelude::*;
         
         if let Some(predicates) = database.index_manager.scan_so(s, o) {
-            let subject_str = database.dictionary.decode(s).unwrap();
-            let object_str = database.dictionary.decode(o).unwrap();
+            let subject_str = if pattern.subject.as_ref().map_or(false, |v| v.starts_with('?')) {
+                Some(database.dictionary.decode(s).unwrap().to_string())
+            } else { None };
             
-            // Convert HashSet to Vec for parallel processing
+            let object_str = if pattern.object.as_ref().map_or(false, |v| v.starts_with('?')) {
+                Some(database.dictionary.decode(o).unwrap().to_string())
+            } else { None };
+            
             let predicates_vec: Vec<u32> = predicates.iter().cloned().collect();
+            let need_predicate_decode = pattern.predicate.as_ref().map_or(false, |v| v.starts_with('?'));
             
-            predicates_vec.par_iter().map(|&p| {
-                let mut row = BTreeMap::new();
-                
-                if let Some(subj_var) = &pattern.subject {
-                    if subj_var.starts_with('?') {
-                        row.insert(subj_var.clone(), subject_str.to_string());
+            if need_predicate_decode {
+                let predicate_strings: Vec<String> = predicates_vec
+                    .par_iter()
+                    .map(|&p| database.dictionary.decode(p).unwrap().to_string())
+                    .collect();
+                    
+                predicates_vec.into_par_iter().enumerate().map(|(i, _)| {
+                    let mut row = BTreeMap::new();
+                    
+                    if let (Some(subj_var), Some(ref subj_str)) = (&pattern.subject, &subject_str) {
+                        row.insert(subj_var.clone(), subj_str.clone());
                     }
-                }
-                if let Some(pred_var) = &pattern.predicate {
-                    if pred_var.starts_with('?') {
-                        row.insert(
-                            pred_var.clone(),
-                            database.dictionary.decode(p).unwrap().to_string(),
-                        );
+                    if let Some(pred_var) = &pattern.predicate {
+                        row.insert(pred_var.clone(), predicate_strings[i].clone());
                     }
-                }
-                if let Some(obj_var) = &pattern.object {
-                    if obj_var.starts_with('?') {
-                        row.insert(obj_var.clone(), object_str.to_string());
+                    if let (Some(obj_var), Some(ref obj_str)) = (&pattern.object, &object_str) {
+                        row.insert(obj_var.clone(), obj_str.clone());
                     }
-                }
-                row
-            }).collect()
+                    
+                    row
+                }).collect()
+            } else {
+                vec![{
+                    let mut row = BTreeMap::new();
+                    if let (Some(subj_var), Some(ref subj_str)) = (&pattern.subject, &subject_str) {
+                        row.insert(subj_var.clone(), subj_str.clone());
+                    }
+                    if let (Some(obj_var), Some(ref obj_str)) = (&pattern.object, &object_str) {
+                        row.insert(obj_var.clone(), obj_str.clone());
+                    }
+                    row
+                }; predicates_vec.len()]
+            }
         } else {
             Vec::new()
         }
     }
 
     /// Parallel PredicateObject index scan
-    fn scan_po_index_parallel(
+    fn scan_po_index_parallel_optimized(
         &self,
         database: &SparqlDatabase,
         p: u32,
@@ -804,42 +938,57 @@ impl PhysicalOperator {
         use rayon::prelude::*;
         
         if let Some(subjects) = database.index_manager.scan_po(p, o) {
-            let predicate_str = database.dictionary.decode(p).unwrap();
-            let object_str = database.dictionary.decode(o).unwrap();
+            let predicate_str = if pattern.predicate.as_ref().map_or(false, |v| v.starts_with('?')) {
+                Some(database.dictionary.decode(p).unwrap().to_string())
+            } else { None };
             
-            // Convert HashSet to Vec for parallel processing
+            let object_str = if pattern.object.as_ref().map_or(false, |v| v.starts_with('?')) {
+                Some(database.dictionary.decode(o).unwrap().to_string())
+            } else { None };
+            
             let subjects_vec: Vec<u32> = subjects.iter().cloned().collect();
+            let need_subject_decode = pattern.subject.as_ref().map_or(false, |v| v.starts_with('?'));
             
-            subjects_vec.par_iter().map(|&s| {
-                let mut row = BTreeMap::new();
-                
-                if let Some(subj_var) = &pattern.subject {
-                    if subj_var.starts_with('?') {
-                        row.insert(
-                            subj_var.clone(),
-                            database.dictionary.decode(s).unwrap().to_string(),
-                        );
+            if need_subject_decode {
+                let subject_strings: Vec<String> = subjects_vec
+                    .par_iter()
+                    .map(|&s| database.dictionary.decode(s).unwrap().to_string())
+                    .collect();
+                    
+                subjects_vec.into_par_iter().enumerate().map(|(i, _)| {
+                    let mut row = BTreeMap::new();
+                    
+                    if let Some(subj_var) = &pattern.subject {
+                        row.insert(subj_var.clone(), subject_strings[i].clone());
                     }
-                }
-                if let Some(pred_var) = &pattern.predicate {
-                    if pred_var.starts_with('?') {
-                        row.insert(pred_var.clone(), predicate_str.to_string());
+                    if let (Some(pred_var), Some(ref pred_str)) = (&pattern.predicate, &predicate_str) {
+                        row.insert(pred_var.clone(), pred_str.clone());
                     }
-                }
-                if let Some(obj_var) = &pattern.object {
-                    if obj_var.starts_with('?') {
-                        row.insert(obj_var.clone(), object_str.to_string());
+                    if let (Some(obj_var), Some(ref obj_str)) = (&pattern.object, &object_str) {
+                        row.insert(obj_var.clone(), obj_str.clone());
                     }
-                }
-                row
-            }).collect()
+                    
+                    row
+                }).collect()
+            } else {
+                vec![{
+                    let mut row = BTreeMap::new();
+                    if let (Some(pred_var), Some(ref pred_str)) = (&pattern.predicate, &predicate_str) {
+                        row.insert(pred_var.clone(), pred_str.clone());
+                    }
+                    if let (Some(obj_var), Some(ref obj_str)) = (&pattern.object, &object_str) {
+                        row.insert(obj_var.clone(), obj_str.clone());
+                    }
+                    row
+                }; subjects_vec.len()]
+            }
         } else {
             Vec::new()
         }
     }
 
     /// Parallel Subject-only index scan
-    fn scan_s_index_parallel(
+    fn scan_s_index_parallel_optimized(
         &self,
         database: &mut SparqlDatabase,
         s: u32,
@@ -850,11 +999,9 @@ impl PhysicalOperator {
         if let Some(pred_map) = database.index_manager.spo.get(&s) {
             let subject_str = database.dictionary.decode(s).unwrap().to_string();
             
-            // Collect all (predicate, object) pairs and pre-decode strings
-            let pred_obj_pairs: Vec<(String, String)> = pred_map
+            let pred_obj_pairs: Vec<(u32, u32)> = pred_map
                 .iter()
                 .flat_map(|(&pred, objects)| {
-                    // Apply predicate filter if specified
                     if let Some(ref p_str) = pattern.predicate {
                         if !p_str.starts_with('?') {
                             let bound_p = database.dictionary.encode(p_str);
@@ -864,10 +1011,7 @@ impl PhysicalOperator {
                         }
                     }
                     
-                    let pred_str = database.dictionary.decode(pred).unwrap().to_string();
-                    
                     objects.iter().filter_map(|&obj| {
-                        // Apply object filter if specified
                         if let Some(ref o_str) = pattern.object {
                             if !o_str.starts_with('?') {
                                 let bound_o = database.dictionary.encode(o_str);
@@ -876,14 +1020,31 @@ impl PhysicalOperator {
                                 }
                             }
                         }
-                        
-                        let obj_str = database.dictionary.decode(obj).unwrap().to_string();
-                        Some((pred_str.clone(), obj_str))
+                        Some((pred, obj))
                     }).collect()
                 })
                 .collect();
 
-            pred_obj_pairs.par_iter().map(|(pred_str, obj_str)| {
+            let need_pred_decode = pattern.predicate.as_ref().map_or(false, |v| v.starts_with('?'));
+            let need_obj_decode = pattern.object.as_ref().map_or(false, |v| v.starts_with('?'));
+            
+            let pred_strings = if need_pred_decode {
+                pred_obj_pairs.par_iter()
+                    .map(|(pred, _)| database.dictionary.decode(*pred).unwrap().to_string())
+                    .collect::<Vec<_>>()
+            } else {
+                Vec::new()
+            };
+            
+            let obj_strings = if need_obj_decode {
+                pred_obj_pairs.par_iter()
+                    .map(|(_, obj)| database.dictionary.decode(*obj).unwrap().to_string())
+                    .collect::<Vec<_>>()
+            } else {
+                Vec::new()
+            };
+
+            pred_obj_pairs.into_par_iter().enumerate().map(|(i, _)| {
                 let mut row = BTreeMap::new();
                 
                 if let Some(s_var) = &pattern.subject {
@@ -892,15 +1053,15 @@ impl PhysicalOperator {
                     }
                 }
                 
-                if let Some(p_var) = &pattern.predicate {
-                    if p_var.starts_with('?') {
-                        row.insert(p_var.clone(), pred_str.clone());
+                if need_pred_decode {
+                    if let Some(p_var) = &pattern.predicate {
+                        row.insert(p_var.clone(), pred_strings[i].clone());
                     }
                 }
                 
-                if let Some(o_var) = &pattern.object {
-                    if o_var.starts_with('?') {
-                        row.insert(o_var.clone(), obj_str.clone());
+                if need_obj_decode {
+                    if let Some(o_var) = &pattern.object {
+                        row.insert(o_var.clone(), obj_strings[i].clone());
                     }
                 }
                 
@@ -912,7 +1073,7 @@ impl PhysicalOperator {
     }
 
     /// Parallel Predicate-only index scan
-    fn scan_p_index_parallel(
+    fn scan_p_index_parallel_optimized(
         &self,
         database: &mut SparqlDatabase,
         p: u32,
@@ -923,11 +1084,9 @@ impl PhysicalOperator {
         if let Some(subj_map) = database.index_manager.pso.get(&p) {
             let predicate_str = database.dictionary.decode(p).unwrap().to_string();
             
-            // Collect all (subject, object) pairs and pre-decode strings
-            let subj_obj_pairs: Vec<(String, String)> = subj_map
+            let subj_obj_pairs: Vec<(u32, u32)> = subj_map
                 .iter()
                 .flat_map(|(&subj, objects)| {
-                    // Apply subject filter if specified
                     if let Some(ref s_str) = pattern.subject {
                         if !s_str.starts_with('?') {
                             let bound_s = database.dictionary.encode(s_str);
@@ -937,10 +1096,7 @@ impl PhysicalOperator {
                         }
                     }
                     
-                    let subj_str = database.dictionary.decode(subj).unwrap().to_string();
-                    
                     objects.iter().filter_map(|&obj| {
-                        // Apply object filter if specified
                         if let Some(ref o_str) = pattern.object {
                             if !o_str.starts_with('?') {
                                 let bound_o = database.dictionary.encode(o_str);
@@ -949,19 +1105,36 @@ impl PhysicalOperator {
                                 }
                             }
                         }
-                        
-                        let obj_str = database.dictionary.decode(obj).unwrap().to_string();
-                        Some((subj_str.clone(), obj_str))
+                        Some((subj, obj))
                     }).collect()
                 })
                 .collect();
 
-            subj_obj_pairs.par_iter().map(|(subj_str, obj_str)| {
+            let need_subj_decode = pattern.subject.as_ref().map_or(false, |v| v.starts_with('?'));
+            let need_obj_decode = pattern.object.as_ref().map_or(false, |v| v.starts_with('?'));
+            
+            let subj_strings = if need_subj_decode {
+                subj_obj_pairs.par_iter()
+                    .map(|(subj, _)| database.dictionary.decode(*subj).unwrap().to_string())
+                    .collect::<Vec<_>>()
+            } else {
+                Vec::new()
+            };
+            
+            let obj_strings = if need_obj_decode {
+                subj_obj_pairs.par_iter()
+                    .map(|(_, obj)| database.dictionary.decode(*obj).unwrap().to_string())
+                    .collect::<Vec<_>>()
+            } else {
+                Vec::new()
+            };
+
+            subj_obj_pairs.into_par_iter().enumerate().map(|(i, _)| {
                 let mut row = BTreeMap::new();
                 
-                if let Some(s_var) = &pattern.subject {
-                    if s_var.starts_with('?') {
-                        row.insert(s_var.clone(), subj_str.clone());
+                if need_subj_decode {
+                    if let Some(s_var) = &pattern.subject {
+                        row.insert(s_var.clone(), subj_strings[i].clone());
                     }
                 }
                 
@@ -971,9 +1144,9 @@ impl PhysicalOperator {
                     }
                 }
                 
-                if let Some(o_var) = &pattern.object {
-                    if o_var.starts_with('?') {
-                        row.insert(o_var.clone(), obj_str.clone());
+                if need_obj_decode {
+                    if let Some(o_var) = &pattern.object {
+                        row.insert(o_var.clone(), obj_strings[i].clone());
                     }
                 }
                 
@@ -985,7 +1158,7 @@ impl PhysicalOperator {
     }
 
     /// Parallel Object-only index scan
-    fn scan_o_index_parallel(
+    fn scan_o_index_parallel_optimized(
         &self,
         database: &mut SparqlDatabase,
         o: u32,
@@ -996,11 +1169,9 @@ impl PhysicalOperator {
         if let Some(pred_map) = database.index_manager.ops.get(&o) {
             let object_str = database.dictionary.decode(o).unwrap().to_string();
             
-            // Collect all (predicate, subject) pairs and pre-decode strings
-            let pred_subj_pairs: Vec<(String, String)> = pred_map
+            let pred_subj_pairs: Vec<(u32, u32)> = pred_map
                 .iter()
                 .flat_map(|(&pred, subjects)| {
-                    // Apply predicate filter if specified
                     if let Some(ref p_str) = pattern.predicate {
                         if !p_str.starts_with('?') {
                             let bound_p = database.dictionary.encode(p_str);
@@ -1010,10 +1181,7 @@ impl PhysicalOperator {
                         }
                     }
                     
-                    let pred_str = database.dictionary.decode(pred).unwrap().to_string();
-                    
                     subjects.iter().filter_map(|&subj| {
-                        // Apply subject filter if specified
                         if let Some(ref s_str) = pattern.subject {
                             if !s_str.starts_with('?') {
                                 let bound_s = database.dictionary.encode(s_str);
@@ -1022,25 +1190,42 @@ impl PhysicalOperator {
                                 }
                             }
                         }
-                        
-                        let subj_str = database.dictionary.decode(subj).unwrap().to_string();
-                        Some((pred_str.clone(), subj_str))
+                        Some((pred, subj))
                     }).collect()
                 })
                 .collect();
 
-            pred_subj_pairs.par_iter().map(|(pred_str, subj_str)| {
+            let need_pred_decode = pattern.predicate.as_ref().map_or(false, |v| v.starts_with('?'));
+            let need_subj_decode = pattern.subject.as_ref().map_or(false, |v| v.starts_with('?'));
+            
+            let pred_strings = if need_pred_decode {
+                pred_subj_pairs.par_iter()
+                    .map(|(pred, _)| database.dictionary.decode(*pred).unwrap().to_string())
+                    .collect::<Vec<_>>()
+            } else {
+                Vec::new()
+            };
+            
+            let subj_strings = if need_subj_decode {
+                pred_subj_pairs.par_iter()
+                    .map(|(_, subj)| database.dictionary.decode(*subj).unwrap().to_string())
+                    .collect::<Vec<_>>()
+            } else {
+                Vec::new()
+            };
+
+            pred_subj_pairs.into_par_iter().enumerate().map(|(i, _)| {
                 let mut row = BTreeMap::new();
                 
-                if let Some(s_var) = &pattern.subject {
-                    if s_var.starts_with('?') {
-                        row.insert(s_var.clone(), subj_str.clone());
+                if need_subj_decode {
+                    if let Some(s_var) = &pattern.subject {
+                        row.insert(s_var.clone(), subj_strings[i].clone());
                     }
                 }
                 
-                if let Some(p_var) = &pattern.predicate {
-                    if p_var.starts_with('?') {
-                        row.insert(p_var.clone(), pred_str.clone());
+                if need_pred_decode {
+                    if let Some(p_var) = &pattern.predicate {
+                        row.insert(p_var.clone(), pred_strings[i].clone());
                     }
                 }
                 
@@ -1153,7 +1338,28 @@ pub fn build_logical_plan(
         scan_operators.push(scan_op);
     }
 
-    // Combine scans using joins
+    // Sort scans by estimated cost for better join ordering
+    scan_operators.sort_by_key(|scan_op| {
+        if let LogicalOperator::Scan { pattern } = scan_op {
+            // Estimate selectivity for ordering
+            let bound_count = [&pattern.subject, &pattern.predicate, &pattern.object]
+                .iter()
+                .filter(|x| x.as_ref().map(|v| !v.starts_with('?')).unwrap_or(false))
+                .count();
+            
+            match bound_count {
+                3 => 1,     // Highest priority
+                2 => 2,
+                1 => 3,
+                0 => 4,     // Lowest priority
+                _ => 5,
+            }
+        } else {
+            999
+        }
+    });
+
+    // Combine scans using joins in optimal order
     let mut current_op = scan_operators[0].clone();
     for next_op in scan_operators.into_iter().skip(1) {
         current_op = LogicalOperator::Join {

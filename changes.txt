@@ -84,6 +84,9 @@
 83. Add CLI for Kolibrie
 84. Update one dependency to a new version
 85. Update dependencies for parsing
+86. Add combination stream
+87. Add new queries for processing 10M triples
+88. Improve volcano optimizer
 
 0.1.0
 1. Parsing RDF/XML

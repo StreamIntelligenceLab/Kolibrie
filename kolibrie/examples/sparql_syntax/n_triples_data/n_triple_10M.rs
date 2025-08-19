@@ -95,36 +95,84 @@ fn run_sample_query(db: &mut SparqlDatabase) {
     let query_start = Instant::now();
 
     let sparql_query = r#"PREFIX wsdbm: <http://db.uwaterloo.ca/~galuc/wsdbm/>
-PREFIX sorg: <http://schema.org/>
-PREFIX dc: <http://purl.org/dc/terms/>
-PREFIX foaf: <http://xmlns.com/foaf/>
-PREFIX gr: <http://purl.org/goodrelations/>
-PREFIX gn: <http://www.geonames.org/ontology#>
-PREFIX mo: <http://purl.org/ontology/mo/>
-PREFIX og: <http://ogp.me/ns#>
-PREFIX rev: <http://purl.org/stuff/rev#>
-PREFIX rdf: <http://www.w3.org/1999/02/22-rdf-syntax-ns#>
-PREFIX rdfs: <http://www.w3.org/2000/01/rdf-schema#>
-SELECT ?v0 
-WHERE {
-  ?v0	wsdbm:likes	?v1 .
-  ?v0	wsdbm:friendOf	?v2 .
-  ?v0	dc:Location	?v3 .
-  ?v0	foaf:age	?v4 .
-  ?v0	wsdbm:gender	?v5 .
-  ?v0	foaf:givenName	?v6 .
-}"#;
+ PREFIX sorg: <http://schema.org/>
+ PREFIX dc: <http://purl.org/dc/terms/>
+ PREFIX foaf: <http://xmlns.com/foaf/>
+ PREFIX gr: <http://purl.org/goodrelations/>
+ PREFIX gn: <http://www.geonames.org/ontology#>
+ PREFIX mo: <http://purl.org/ontology/mo/>
+ PREFIX og: <http://ogp.me/ns#>
+ PREFIX rev: <http://purl.org/stuff/rev#>
+ PREFIX rdf: <http://www.w3.org/1999/02/22-rdf-syntax-ns#>
+ PREFIX rdfs: <http://www.w3.org/2000/01/rdf-schema#>
+ SELECT ?v0 
+ WHERE {
+   ?v0	wsdbm:likes	?v1 .
+   ?v0	wsdbm:friendOf	?v2 .
+   ?v0	dc:Location	?v3 .
+   ?v0	foaf:age	?v4 .
+   ?v0	wsdbm:gender	?v5 .
+   ?v0	foaf:givenName	?v6 .
+ }"#;
+
+//     let sparql_query = "PREFIX wsdbm: <http://db.uwaterloo.ca/~galuc/wsdbm/>
+// PREFIX sorg: <http://schema.org/>
+// PREFIX dc: <http://purl.org/dc/terms/>
+// PREFIX foaf: <http://xmlns.com/foaf/>
+// PREFIX gr: <http://purl.org/goodrelations/>
+// PREFIX gn: <http://www.geonames.org/ontology#>
+// PREFIX mo: <http://purl.org/ontology/mo/>
+// PREFIX og: <http://ogp.me/ns#>
+// PREFIX rev: <http://purl.org/stuff/rev#>
+// PREFIX rdf: <http://www.w3.org/1999/02/22-rdf-syntax-ns#>
+// PREFIX rdfs: <http://www.w3.org/2000/01/rdf-schema#>
+// SELECT ?v0 ?v4 ?v6 ?v7 
+// WHERE {
+// 	?v0	sorg:caption	?v1 .
+// 	?v0	sorg:text	?v2 .
+// 	?v0	sorg:contentRating	?v3 .
+// 	?v0	rev:hasReview	?v4 .
+// 	?v4	rev:title	?v5 .
+// 	?v4	rev:reviewer	?v6 .
+// 	?v7	sorg:actor	?v6 .
+// 	?v7	sorg:language	?v8 .
+// }";
+    
+//     let sparql_query = "PREFIX wsdbm: <http://db.uwaterloo.ca/~galuc/wsdbm/>
+// PREFIX sorg: <http://schema.org/>
+// PREFIX dc: <http://purl.org/dc/terms/>
+// PREFIX foaf: <http://xmlns.com/foaf/>
+// PREFIX gr: <http://purl.org/goodrelations/>
+// PREFIX gn: <http://www.geonames.org/ontology#>
+// PREFIX mo: <http://purl.org/ontology/mo/>
+// PREFIX og: <http://ogp.me/ns#>
+// PREFIX rev: <http://purl.org/stuff/rev#>
+// PREFIX rdf: <http://www.w3.org/1999/02/22-rdf-syntax-ns#>
+// PREFIX rdfs: <http://www.w3.org/2000/01/rdf-schema#>
+// SELECT ?v0 ?v3 ?v4 ?v8 
+// WHERE {
+// 	?v0	sorg:legalName	?v1 .
+// 	?v0	gr:offers	?v2 .
+// 	?v2	sorg:eligibleRegion	wsdbm:Country5 .
+// 	?v2	gr:includes	?v3 .
+// 	?v4	sorg:jobTitle	?v5 .
+// 	?v4	foaf:homepage	?v6 .
+// 	?v4	wsdbm:makesPurchase	?v7 .
+// 	?v7	wsdbm:purchaseFor	?v3 .
+// 	?v3	rev:hasReview	?v8 .
+// 	?v8	rev:totalVotes	?v9 .
+// }";
     
     // Use the existing Volcano Optimizer instead of the streaming function
-    let result = execute_query_rayon_parallel2_volcano(sparql_query, db);
+    let _ = execute_query_rayon_parallel2_volcano(sparql_query, db);
     let query_time = query_start.elapsed();
 
     // result limited to 10 for demonstration purposes
-    for result in result.iter().take(10) {
-        if let [v0] = &result[..] {
-            println!("{}", v0);
-        }
-    }
+    // for result in result.iter().take(10) {
+    //     if let [v0] = &result[..] {
+    //         println!("{}", v0);
+    //     }
+    // }
     
     println!("Query executed in {:.3} seconds", query_time.as_secs_f64());
 }

@@ -808,52 +808,61 @@ pub fn matches_rule_pattern(
     fact: &Triple,
     variable_bindings: &mut HashMap<String, u32>,
 ) -> bool {
+    // Create a copy of bindings to test against (rollback on failure)
+    let mut temp_bindings = variable_bindings.clone();
+    
     // Subject
     let s_ok = match &pattern.0 {
         Term::Variable(v) => {
-            if let Some(&bound) = variable_bindings.get(v) {
+            if let Some(&bound) = temp_bindings.get(v) {
                 bound == fact.subject
             } else {
-                variable_bindings.insert(v.clone(), fact.subject);
+                temp_bindings.insert(v.clone(), fact.subject);
                 true
             }
         }
         Term::Constant(c) => *c == fact.subject,
     };
     if !s_ok {
-        return false;
+        return false; // Don't modify original bindings on failure
     }
 
     // Predicate
     let p_ok = match &pattern.1 {
         Term::Variable(v) => {
-            if let Some(&bound) = variable_bindings.get(v) {
+            if let Some(&bound) = temp_bindings.get(v) {
                 bound == fact.predicate
             } else {
-                variable_bindings.insert(v.clone(), fact.predicate);
+                temp_bindings.insert(v.clone(), fact.predicate);
                 true
             }
         }
         Term::Constant(c) => *c == fact.predicate,
     };
     if !p_ok {
-        return false;
+        return false; // Don't modify original bindings on failure
     }
 
     // Object
     let o_ok = match &pattern.2 {
         Term::Variable(v) => {
-            if let Some(&bound) = variable_bindings.get(v) {
+            if let Some(&bound) = temp_bindings.get(v) {
                 bound == fact.object
             } else {
-                variable_bindings.insert(v.clone(), fact.object);
+                temp_bindings.insert(v.clone(), fact.object);
                 true
             }
         }
         Term::Constant(c) => *c == fact.object,
     };
 
-    s_ok && p_ok && o_ok
+    // Only if ALL parts match, commit the bindings
+    if s_ok && p_ok && o_ok {
+        *variable_bindings = temp_bindings;
+        true
+    } else {
+        false
+    }
 }
 
 fn evaluate_filters(

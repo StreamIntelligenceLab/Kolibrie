@@ -1037,7 +1037,7 @@ pub fn execute_query_rayon_parallel2_volcano(sparql: &str, database: &mut Sparql
         process_variables(&mut selected_variables, &mut aggregation_vars, variables);
         
         // Build indexes before optimization - this is crucial for performance
-        database.build_all_indexes();
+        // database.build_all_indexes();
         
         // Check if we should use GPU mode for execution
         if GPU_MODE_ENABLED.load(std::sync::atomic::Ordering::SeqCst) {
