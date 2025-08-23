@@ -475,26 +475,44 @@ impl DatabaseStats {
 
 impl PhysicalOperator {
     pub fn execute(&self, database: &mut SparqlDatabase) -> Vec<BTreeMap<String, String>> {
+        let id_results = self.execute_with_ids(database);
+        
+        // Convert ID results to string results only at the final step
+        id_results
+            .into_par_iter()
+            .map(|id_result| {
+                id_result
+                    .into_iter()
+                    .map(|(var, id)| {
+                        (var, database.dictionary.decode(id).unwrap().to_string())
+                    })
+                    .collect()
+            })
+            .collect()
+    }
+
+    // Internal execution method that works with IDs
+    pub fn execute_with_ids(&self, database: &mut SparqlDatabase) -> Vec<BTreeMap<String, u32>> {
         match self {
             PhysicalOperator::TableScan { pattern } => {
                 // Implement table scan execution
-                self.execute_table_scan_optimized(database, pattern)
+                self.execute_table_scan_with_ids(database, pattern)
             }
             PhysicalOperator::IndexScan { pattern } => {
                 // Use the specialized index-based approach
-                self.execute_index_scan(database, pattern)
+                self.execute_index_scan_with_ids(database, pattern)
             }
             PhysicalOperator::Filter { input, condition } => {
                 // Execute the input operator and apply the filter condition
-                let input_results = input.execute(database);
+                let input_results = input.execute_with_ids(database);
                 // Use parallel filtering
                 input_results
                     .into_par_iter()
-                    .filter(|result| condition.evaluate(result))
+                    .filter(|result| condition.evaluate_with_ids(result, &database.dictionary))
                     .collect()
             }
             PhysicalOperator::Projection { input, variables } => {
-                let input_results = input.execute(database);
+                let input_results = input.execute_with_ids(database);
                 input_results
                     .into_par_iter()
                     .map(|mut result| {
@@ -505,29 +523,29 @@ impl PhysicalOperator {
             }
             PhysicalOperator::HashJoin { left, right } => {
                 // Implement hash join execution
-                let left_results = left.execute(database);
-                let right_results = right.execute(database);
-                self.execute_hash_join_optimized(left_results, right_results)
+                let left_results = left.execute_with_ids(database);
+                let right_results = right.execute_with_ids(database);
+                self.execute_hash_join_with_ids(left_results, right_results)
             }
             PhysicalOperator::NestedLoopJoin { left, right } => {
                 // Implement nested loop join execution
-                let left_results = left.execute(database);
-                let right_results = right.execute(database);
-                self.execute_nested_loop_join(left_results, right_results)
+                let left_results = left.execute_with_ids(database);
+                let right_results = right.execute_with_ids(database);
+                self.execute_nested_loop_join_with_ids(left_results, right_results)
             }
             PhysicalOperator::ParallelJoin { left, right } => {
                 // Implement parallel join execution using SIMD
-                self.execute_parallel_join(left, right, database)
+                self.execute_parallel_join_with_ids(left, right, database)
             }
         }
     }
 
     // Optimized table scan with reduced string operations
-    fn execute_table_scan_optimized(
+    fn execute_table_scan_with_ids(
         &self,
         database: &mut SparqlDatabase,
         pattern: &TriplePattern,
-    ) -> Vec<BTreeMap<String, String>> {
+    ) -> Vec<BTreeMap<String, u32>> {
         // Pre-compute bound IDs for faster matching
         let subject_id = pattern.subject.as_ref()
             .filter(|s| !s.starts_with('?'))
@@ -559,26 +577,17 @@ impl PhysicalOperator {
                 
                 if let Some(var) = &pattern.subject {
                     if var.starts_with('?') {
-                        result.insert(
-                            var.clone(),
-                            database.dictionary.decode(triple.subject).unwrap().to_string(),
-                        );
+                        result.insert(var.clone(), triple.subject);
                     }
                 }
                 if let Some(var) = &pattern.predicate {
                     if var.starts_with('?') {
-                        result.insert(
-                            var.clone(),
-                            database.dictionary.decode(triple.predicate).unwrap().to_string(),
-                        );
+                        result.insert(var.clone(), triple.predicate);
                     }
                 }
                 if let Some(var) = &pattern.object {
                     if var.starts_with('?') {
-                        result.insert(
-                            var.clone(),
-                            database.dictionary.decode(triple.object).unwrap().to_string(),
-                        );
+                        result.insert(var.clone(), triple.object);
                     }
                 }
                 
@@ -588,11 +597,11 @@ impl PhysicalOperator {
     }
 
     // Optimized hash join - Fixed the flatten issue
-    fn execute_hash_join_optimized(
+    fn execute_hash_join_with_ids(
         &self,
-        left_results: Vec<BTreeMap<String, String>>,
-        right_results: Vec<BTreeMap<String, String>>,
-    ) -> Vec<BTreeMap<String, String>> {
+        left_results: Vec<BTreeMap<String, u32>>,
+        right_results: Vec<BTreeMap<String, u32>>,
+    ) -> Vec<BTreeMap<String, u32>> {
         if left_results.is_empty() || right_results.is_empty() {
             return Vec::new();
         }
@@ -604,7 +613,7 @@ impl PhysicalOperator {
 
         if join_vars.is_empty() {
             // Cartesian product with size limit
-            let max_cartesian = 100_000; // Prevent explosion
+            let max_cartesian = 100_000;
             let mut results = Vec::new();
             
             for (i, left_result) in left_results.iter().enumerate() {
@@ -623,12 +632,12 @@ impl PhysicalOperator {
         }
 
         // Create a hash table for the left side, keyed by the join variable
-        let mut hash_table: HashMap<Vec<String>, Vec<BTreeMap<String, String>>> = HashMap::new();
+        let mut hash_table: HashMap<Vec<u32>, Vec<BTreeMap<String, u32>>> = HashMap::new();
 
         // Build hash table
         for left_result in &left_results {
-            let join_key: Vec<String> = join_vars.iter()
-                .filter_map(|var| left_result.get(*var).cloned())
+            let join_key: Vec<u32> = join_vars.iter()
+                .filter_map(|var| left_result.get(*var).copied())
                 .collect();
             
             if join_key.len() == join_vars.len() {
@@ -642,10 +651,9 @@ impl PhysicalOperator {
         // Probe phase with parallel processing - Fixed
         let mut results = Vec::new();
 
-        // Iterate over the right results and join them with the left side based on the join variable
         for right_result in &right_results {
-            let join_key: Vec<String> = join_vars.iter()
-                .filter_map(|var| right_result.get(*var).cloned())
+            let join_key: Vec<u32> = join_vars.iter()
+                .filter_map(|var| right_result.get(*var).copied())
                 .collect();
             
             if join_key.len() == join_vars.len() {
@@ -663,15 +671,15 @@ impl PhysicalOperator {
     }
 
     // Fixed nested loop join
-    fn execute_nested_loop_join(
+    fn execute_nested_loop_join_with_ids(
         &self,
-        left_results: Vec<BTreeMap<String, String>>,
-        right_results: Vec<BTreeMap<String, String>>,
-    ) -> Vec<BTreeMap<String, String>> {
+        left_results: Vec<BTreeMap<String, u32>>,
+        right_results: Vec<BTreeMap<String, u32>>,
+    ) -> Vec<BTreeMap<String, u32>> {
         let mut results = Vec::new();
         for left_result in &left_results {
             for right_result in &right_results {
-                if self.can_join(left_result, right_result) {
+                if self.can_join_with_ids(left_result, right_result) {
                     let mut combined = left_result.clone();
                     combined.extend(right_result.clone());
                     results.push(combined);
@@ -681,14 +689,14 @@ impl PhysicalOperator {
         results
     }
 
-    fn execute_parallel_join(
+    fn execute_parallel_join_with_ids(
         &self,
         left: &PhysicalOperator,
         right: &PhysicalOperator,
         database: &mut SparqlDatabase,
-    ) -> Vec<BTreeMap<String, String>> {
+    ) -> Vec<BTreeMap<String, u32>> {
         // Execute the left operator to get final_results
-        let final_results = left.execute(database);
+        let id_results = left.execute_with_ids(database);
 
         // Try to extract the pattern from the right operator
         if let Some(pattern) = extract_pattern(right) {
@@ -697,9 +705,21 @@ impl PhysicalOperator {
             let predicate = pattern.predicate.as_deref().unwrap_or("").to_string();
             let object_var = pattern.object.as_deref().unwrap_or("").to_string();
 
-            // Get the triples from the database
-            let triples_vec: Vec<Triple> = database.triples.iter().cloned().collect();
+            // Convert ID results to string results only for the efficient join method
+            let string_results: Vec<BTreeMap<String, String>> = id_results
+                .into_par_iter()
+                .map(|id_result| {
+                    id_result
+                        .into_iter()
+                        .map(|(var, id)| {
+                            (var, database.dictionary.decode(id).unwrap().to_string())
+                        })
+                        .collect()
+                })
+                .collect();
 
+            let triples_vec: Vec<Triple> = database.triples.iter().cloned().collect();
+            
             // Use efficient join
             let results = database.perform_join_par_simd_with_strict_filter_4_redesigned_streaming(
                 subject_var,
@@ -707,24 +727,50 @@ impl PhysicalOperator {
                 object_var,
                 triples_vec,
                 &database.dictionary,
-                final_results,
+                string_results,
                 None,
             );
 
+            // Pre-encode all unique values to avoid mutable borrow in closure
+            let mut all_values = std::collections::HashSet::new();
+            for result in &results {
+                for (_, value) in result {
+                    all_values.insert(value.clone());
+                }
+            }
+            
+            // Create a mapping from string to ID
+            let mut value_to_id = HashMap::new();
+            for value in all_values {
+                let id = database.dictionary.encode(&value);
+                value_to_id.insert(value, id);
+            }
+
+            // Convert back to ID results using the pre-computed mapping
             results
+                .into_par_iter()
+                .map(|string_result| {
+                    string_result
+                        .into_iter()
+                        .map(|(var, value)| {
+                            (var, *value_to_id.get(&value).unwrap())
+                        })
+                        .collect()
+                })
+                .collect()
         } else {
-            self.execute_hash_join_optimized(left.execute(database), right.execute(database))
+            self.execute_hash_join_with_ids(left.execute_with_ids(database), right.execute_with_ids(database))
         }
     }
 
-    fn can_join(
+    fn can_join_with_ids(
         &self,
-        left_result: &BTreeMap<String, String>,
-        right_result: &BTreeMap<String, String>,
+        left_result: &BTreeMap<String, u32>,
+        right_result: &BTreeMap<String, u32>,
     ) -> bool {
-        for (key, left_value) in left_result {
-            if let Some(right_value) = right_result.get(key) {
-                if left_value != right_value {
+        for (key, left_id) in left_result {
+            if let Some(right_id) = right_result.get(key) {
+                if left_id != right_id {
                     return false;
                 }
             }
@@ -733,11 +779,11 @@ impl PhysicalOperator {
     }
 
     // --- Specialized IndexScan execution ---
-    fn execute_index_scan(
+    fn execute_index_scan_with_ids(
         &self,
         database: &mut SparqlDatabase,
         pattern: &TriplePattern,
-    ) -> Vec<BTreeMap<String, String>> {
+    ) -> Vec<BTreeMap<String, u32>> {
         // Convert pattern to IDs for faster matching
         let subject_id = pattern.subject.as_ref().filter(|s| !s.starts_with('?'))
             .map(|const_s| database.dictionary.encode(const_s));
@@ -749,17 +795,17 @@ impl PhysicalOperator {
         match (subject_id, predicate_id, object_id) {
             // (S, P, -) => use SubjectPredicate index
             (Some(s), Some(p), None) => {
-                self.scan_sp_index_parallel_optimized(database, s, p, pattern)
+                self.scan_sp_index_with_ids(database, s, p, pattern)
             }
 
             // (S, -, O) => use SubjectObject index
             (Some(s), None, Some(o)) => {
-                self.scan_so_index_parallel_optimized(database, s, o, pattern)
+                self.scan_so_index_with_ids(database, s, o, pattern)
             }
 
             // (-, P, O) => use PredicateObject index
             (None, Some(p), Some(o)) => {
-                self.scan_po_index_parallel_optimized(database, p, o, pattern)
+                self.scan_po_index_with_ids(database, p, o, pattern)
             }
 
             // (S, P, O) => fully bound; direct membership check
@@ -769,17 +815,17 @@ impl PhysicalOperator {
                     let mut row = BTreeMap::new();
                     if let Some(subj_str) = &pattern.subject {
                         if subj_str.starts_with('?') {
-                            row.insert(subj_str.clone(), database.dictionary.decode(s).unwrap().to_string());
+                            row.insert(subj_str.clone(), s);
                         }
                     }
                     if let Some(pred_str) = &pattern.predicate {
                         if pred_str.starts_with('?') {
-                            row.insert(pred_str.clone(), database.dictionary.decode(p).unwrap().to_string());
+                            row.insert(pred_str.clone(), p);
                         }
                     }
                     if let Some(obj_str) = &pattern.object {
                         if obj_str.starts_with('?') {
-                            row.insert(obj_str.clone(), database.dictionary.decode(o).unwrap().to_string());
+                            row.insert(obj_str.clone(), o);
                         }
                     }
                     vec![row]
@@ -790,215 +836,142 @@ impl PhysicalOperator {
 
             // Only subject bound
             (Some(s), None, None) => {
-                self.scan_s_index_parallel_optimized(database, s, pattern)
+                self.scan_s_index_with_ids(database, s, pattern)
             }
             // Only predicate bound
             (None, Some(p), None) => {
-                self.scan_p_index_parallel_optimized(database, p, pattern)
+                self.scan_p_index_with_ids(database, p, pattern)
             }
             // Only object bound
             (None, None, Some(o)) => {
-                self.scan_o_index_parallel_optimized(database, o, pattern)
+                self.scan_o_index_with_ids(database, o, pattern)
             }
             // Nothing bound => fallback to table scan
             _ => {
-                self.execute_table_scan_optimized(database, pattern)
+                self.execute_table_scan_with_ids(database, pattern)
             }
         }
     }
 
     /// Parallel SubjectPredicate index scan
-    fn scan_sp_index_parallel_optimized(
+    fn scan_sp_index_with_ids(
         &self,
         database: &SparqlDatabase,
         s: u32,
         p: u32,
         pattern: &TriplePattern,
-    ) -> Vec<BTreeMap<String, String>> {
-        use rayon::prelude::*;
-        
+    ) -> Vec<BTreeMap<String, u32>> {
         if let Some(objects) = database.index_manager.scan_sp(s, p) {
-            let subject_str = if pattern.subject.as_ref().map_or(false, |v| v.starts_with('?')) {
-                Some(database.dictionary.decode(s).unwrap().to_string())
-            } else { None };
-            
-            let predicate_str = if pattern.predicate.as_ref().map_or(false, |v| v.starts_with('?')) {
-                Some(database.dictionary.decode(p).unwrap().to_string())
-            } else { None };
-            
             let objects_vec: Vec<u32> = objects.iter().cloned().collect();
-            let need_object_decode = pattern.object.as_ref().map_or(false, |v| v.starts_with('?'));
             
-            if need_object_decode {
-                let object_strings: Vec<String> = objects_vec
-                    .par_iter()
-                    .map(|&obj| database.dictionary.decode(obj).unwrap().to_string())
-                    .collect();
-                    
-                objects_vec.into_par_iter().enumerate().map(|(i, _)| {
-                    let mut row = BTreeMap::new();
-                    
-                    if let (Some(subj_var), Some(ref subj_str)) = (&pattern.subject, &subject_str) {
-                        row.insert(subj_var.clone(), subj_str.clone());
+            objects_vec.into_par_iter().map(|obj| {
+                let mut row = BTreeMap::new();
+                
+                if let Some(subj_var) = &pattern.subject {
+                    if subj_var.starts_with('?') {
+                        row.insert(subj_var.clone(), s);
                     }
-                    if let (Some(pred_var), Some(ref pred_str)) = (&pattern.predicate, &predicate_str) {
-                        row.insert(pred_var.clone(), pred_str.clone());
+                }
+                if let Some(pred_var) = &pattern.predicate {
+                    if pred_var.starts_with('?') {
+                        row.insert(pred_var.clone(), p);
                     }
-                    if let Some(obj_var) = &pattern.object {
-                        row.insert(obj_var.clone(), object_strings[i].clone());
+                }
+                if let Some(obj_var) = &pattern.object {
+                    if obj_var.starts_with('?') {
+                        row.insert(obj_var.clone(), obj);
                     }
-                    
-                    row
-                }).collect()
-            } else {
-                vec![{
-                    let mut row = BTreeMap::new();
-                    if let (Some(subj_var), Some(ref subj_str)) = (&pattern.subject, &subject_str) {
-                        row.insert(subj_var.clone(), subj_str.clone());
-                    }
-                    if let (Some(pred_var), Some(ref pred_str)) = (&pattern.predicate, &predicate_str) {
-                        row.insert(pred_var.clone(), pred_str.clone());
-                    }
-                    row
-                }; objects_vec.len()]
-            }
+                }
+                
+                row
+            }).collect()
         } else {
             Vec::new()
         }
     }
 
     /// Parallel SubjectObject index scan
-    fn scan_so_index_parallel_optimized(
+    fn scan_so_index_with_ids(
         &self,
         database: &SparqlDatabase,
         s: u32,
         o: u32,
         pattern: &TriplePattern,
-    ) -> Vec<BTreeMap<String, String>> {
-        use rayon::prelude::*;
-        
+    ) -> Vec<BTreeMap<String, u32>> {
         if let Some(predicates) = database.index_manager.scan_so(s, o) {
-            let subject_str = if pattern.subject.as_ref().map_or(false, |v| v.starts_with('?')) {
-                Some(database.dictionary.decode(s).unwrap().to_string())
-            } else { None };
-            
-            let object_str = if pattern.object.as_ref().map_or(false, |v| v.starts_with('?')) {
-                Some(database.dictionary.decode(o).unwrap().to_string())
-            } else { None };
-            
             let predicates_vec: Vec<u32> = predicates.iter().cloned().collect();
-            let need_predicate_decode = pattern.predicate.as_ref().map_or(false, |v| v.starts_with('?'));
             
-            if need_predicate_decode {
-                let predicate_strings: Vec<String> = predicates_vec
-                    .par_iter()
-                    .map(|&p| database.dictionary.decode(p).unwrap().to_string())
-                    .collect();
-                    
-                predicates_vec.into_par_iter().enumerate().map(|(i, _)| {
-                    let mut row = BTreeMap::new();
-                    
-                    if let (Some(subj_var), Some(ref subj_str)) = (&pattern.subject, &subject_str) {
-                        row.insert(subj_var.clone(), subj_str.clone());
+            predicates_vec.into_par_iter().map(|pred| {
+                let mut row = BTreeMap::new();
+                
+                if let Some(subj_var) = &pattern.subject {
+                    if subj_var.starts_with('?') {
+                        row.insert(subj_var.clone(), s);
                     }
-                    if let Some(pred_var) = &pattern.predicate {
-                        row.insert(pred_var.clone(), predicate_strings[i].clone());
+                }
+                if let Some(pred_var) = &pattern.predicate {
+                    if pred_var.starts_with('?') {
+                        row.insert(pred_var.clone(), pred);
                     }
-                    if let (Some(obj_var), Some(ref obj_str)) = (&pattern.object, &object_str) {
-                        row.insert(obj_var.clone(), obj_str.clone());
+                }
+                if let Some(obj_var) = &pattern.object {
+                    if obj_var.starts_with('?') {
+                        row.insert(obj_var.clone(), o);
                     }
-                    
-                    row
-                }).collect()
-            } else {
-                vec![{
-                    let mut row = BTreeMap::new();
-                    if let (Some(subj_var), Some(ref subj_str)) = (&pattern.subject, &subject_str) {
-                        row.insert(subj_var.clone(), subj_str.clone());
-                    }
-                    if let (Some(obj_var), Some(ref obj_str)) = (&pattern.object, &object_str) {
-                        row.insert(obj_var.clone(), obj_str.clone());
-                    }
-                    row
-                }; predicates_vec.len()]
-            }
+                }
+                
+                row
+            }).collect()
         } else {
             Vec::new()
         }
     }
 
     /// Parallel PredicateObject index scan
-    fn scan_po_index_parallel_optimized(
+    fn scan_po_index_with_ids(
         &self,
         database: &SparqlDatabase,
         p: u32,
         o: u32,
         pattern: &TriplePattern,
-    ) -> Vec<BTreeMap<String, String>> {
-        use rayon::prelude::*;
-        
+    ) -> Vec<BTreeMap<String, u32>> {
         if let Some(subjects) = database.index_manager.scan_po(p, o) {
-            let predicate_str = if pattern.predicate.as_ref().map_or(false, |v| v.starts_with('?')) {
-                Some(database.dictionary.decode(p).unwrap().to_string())
-            } else { None };
-            
-            let object_str = if pattern.object.as_ref().map_or(false, |v| v.starts_with('?')) {
-                Some(database.dictionary.decode(o).unwrap().to_string())
-            } else { None };
-            
             let subjects_vec: Vec<u32> = subjects.iter().cloned().collect();
-            let need_subject_decode = pattern.subject.as_ref().map_or(false, |v| v.starts_with('?'));
             
-            if need_subject_decode {
-                let subject_strings: Vec<String> = subjects_vec
-                    .par_iter()
-                    .map(|&s| database.dictionary.decode(s).unwrap().to_string())
-                    .collect();
-                    
-                subjects_vec.into_par_iter().enumerate().map(|(i, _)| {
-                    let mut row = BTreeMap::new();
-                    
-                    if let Some(subj_var) = &pattern.subject {
-                        row.insert(subj_var.clone(), subject_strings[i].clone());
+            subjects_vec.into_par_iter().map(|subj| {
+                let mut row = BTreeMap::new();
+                
+                if let Some(subj_var) = &pattern.subject {
+                    if subj_var.starts_with('?') {
+                        row.insert(subj_var.clone(), subj);
                     }
-                    if let (Some(pred_var), Some(ref pred_str)) = (&pattern.predicate, &predicate_str) {
-                        row.insert(pred_var.clone(), pred_str.clone());
+                }
+                if let Some(pred_var) = &pattern.predicate {
+                    if pred_var.starts_with('?') {
+                        row.insert(pred_var.clone(), p);
                     }
-                    if let (Some(obj_var), Some(ref obj_str)) = (&pattern.object, &object_str) {
-                        row.insert(obj_var.clone(), obj_str.clone());
+                }
+                if let Some(obj_var) = &pattern.object {
+                    if obj_var.starts_with('?') {
+                        row.insert(obj_var.clone(), o);
                     }
-                    
-                    row
-                }).collect()
-            } else {
-                vec![{
-                    let mut row = BTreeMap::new();
-                    if let (Some(pred_var), Some(ref pred_str)) = (&pattern.predicate, &predicate_str) {
-                        row.insert(pred_var.clone(), pred_str.clone());
-                    }
-                    if let (Some(obj_var), Some(ref obj_str)) = (&pattern.object, &object_str) {
-                        row.insert(obj_var.clone(), obj_str.clone());
-                    }
-                    row
-                }; subjects_vec.len()]
-            }
+                }
+                
+                row
+            }).collect()
         } else {
             Vec::new()
         }
     }
 
     /// Parallel Subject-only index scan
-    fn scan_s_index_parallel_optimized(
+    fn scan_s_index_with_ids(
         &self,
         database: &mut SparqlDatabase,
         s: u32,
         pattern: &TriplePattern,
-    ) -> Vec<BTreeMap<String, String>> {
-        use rayon::prelude::*;
-        
+    ) -> Vec<BTreeMap<String, u32>> {
         if let Some(pred_map) = database.index_manager.spo.get(&s) {
-            let subject_str = database.dictionary.decode(s).unwrap().to_string();
-            
             let pred_obj_pairs: Vec<(u32, u32)> = pred_map
                 .iter()
                 .flat_map(|(&pred, objects)| {
@@ -1025,43 +998,24 @@ impl PhysicalOperator {
                 })
                 .collect();
 
-            let need_pred_decode = pattern.predicate.as_ref().map_or(false, |v| v.starts_with('?'));
-            let need_obj_decode = pattern.object.as_ref().map_or(false, |v| v.starts_with('?'));
-            
-            let pred_strings = if need_pred_decode {
-                pred_obj_pairs.par_iter()
-                    .map(|(pred, _)| database.dictionary.decode(*pred).unwrap().to_string())
-                    .collect::<Vec<_>>()
-            } else {
-                Vec::new()
-            };
-            
-            let obj_strings = if need_obj_decode {
-                pred_obj_pairs.par_iter()
-                    .map(|(_, obj)| database.dictionary.decode(*obj).unwrap().to_string())
-                    .collect::<Vec<_>>()
-            } else {
-                Vec::new()
-            };
-
-            pred_obj_pairs.into_par_iter().enumerate().map(|(i, _)| {
+            pred_obj_pairs.into_par_iter().map(|(pred, obj)| {
                 let mut row = BTreeMap::new();
                 
                 if let Some(s_var) = &pattern.subject {
                     if s_var.starts_with('?') {
-                        row.insert(s_var.clone(), subject_str.clone());
+                        row.insert(s_var.clone(), s);
                     }
                 }
                 
-                if need_pred_decode {
-                    if let Some(p_var) = &pattern.predicate {
-                        row.insert(p_var.clone(), pred_strings[i].clone());
+                if let Some(p_var) = &pattern.predicate {
+                    if p_var.starts_with('?') {
+                        row.insert(p_var.clone(), pred);
                     }
                 }
                 
-                if need_obj_decode {
-                    if let Some(o_var) = &pattern.object {
-                        row.insert(o_var.clone(), obj_strings[i].clone());
+                if let Some(o_var) = &pattern.object {
+                    if o_var.starts_with('?') {
+                        row.insert(o_var.clone(), obj);
                     }
                 }
                 
@@ -1073,17 +1027,13 @@ impl PhysicalOperator {
     }
 
     /// Parallel Predicate-only index scan
-    fn scan_p_index_parallel_optimized(
+    fn scan_p_index_with_ids(
         &self,
         database: &mut SparqlDatabase,
         p: u32,
         pattern: &TriplePattern,
-    ) -> Vec<BTreeMap<String, String>> {
-        use rayon::prelude::*;
-        
+    ) -> Vec<BTreeMap<String, u32>> {
         if let Some(subj_map) = database.index_manager.pso.get(&p) {
-            let predicate_str = database.dictionary.decode(p).unwrap().to_string();
-            
             let subj_obj_pairs: Vec<(u32, u32)> = subj_map
                 .iter()
                 .flat_map(|(&subj, objects)| {
@@ -1110,43 +1060,24 @@ impl PhysicalOperator {
                 })
                 .collect();
 
-            let need_subj_decode = pattern.subject.as_ref().map_or(false, |v| v.starts_with('?'));
-            let need_obj_decode = pattern.object.as_ref().map_or(false, |v| v.starts_with('?'));
-            
-            let subj_strings = if need_subj_decode {
-                subj_obj_pairs.par_iter()
-                    .map(|(subj, _)| database.dictionary.decode(*subj).unwrap().to_string())
-                    .collect::<Vec<_>>()
-            } else {
-                Vec::new()
-            };
-            
-            let obj_strings = if need_obj_decode {
-                subj_obj_pairs.par_iter()
-                    .map(|(_, obj)| database.dictionary.decode(*obj).unwrap().to_string())
-                    .collect::<Vec<_>>()
-            } else {
-                Vec::new()
-            };
-
-            subj_obj_pairs.into_par_iter().enumerate().map(|(i, _)| {
+            subj_obj_pairs.into_par_iter().map(|(subj, obj)| {
                 let mut row = BTreeMap::new();
                 
-                if need_subj_decode {
-                    if let Some(s_var) = &pattern.subject {
-                        row.insert(s_var.clone(), subj_strings[i].clone());
+                if let Some(s_var) = &pattern.subject {
+                    if s_var.starts_with('?') {
+                        row.insert(s_var.clone(), subj);
                     }
                 }
                 
                 if let Some(p_var) = &pattern.predicate {
                     if p_var.starts_with('?') {
-                        row.insert(p_var.clone(), predicate_str.clone());
+                        row.insert(p_var.clone(), p);
                     }
                 }
                 
-                if need_obj_decode {
-                    if let Some(o_var) = &pattern.object {
-                        row.insert(o_var.clone(), obj_strings[i].clone());
+                if let Some(o_var) = &pattern.object {
+                    if o_var.starts_with('?') {
+                        row.insert(o_var.clone(), obj);
                     }
                 }
                 
@@ -1158,17 +1089,13 @@ impl PhysicalOperator {
     }
 
     /// Parallel Object-only index scan
-    fn scan_o_index_parallel_optimized(
+    fn scan_o_index_with_ids(
         &self,
         database: &mut SparqlDatabase,
         o: u32,
         pattern: &TriplePattern,
-    ) -> Vec<BTreeMap<String, String>> {
-        use rayon::prelude::*;
-        
+    ) -> Vec<BTreeMap<String, u32>> {
         if let Some(pred_map) = database.index_manager.ops.get(&o) {
-            let object_str = database.dictionary.decode(o).unwrap().to_string();
-            
             let pred_subj_pairs: Vec<(u32, u32)> = pred_map
                 .iter()
                 .flat_map(|(&pred, subjects)| {
@@ -1195,43 +1122,24 @@ impl PhysicalOperator {
                 })
                 .collect();
 
-            let need_pred_decode = pattern.predicate.as_ref().map_or(false, |v| v.starts_with('?'));
-            let need_subj_decode = pattern.subject.as_ref().map_or(false, |v| v.starts_with('?'));
-            
-            let pred_strings = if need_pred_decode {
-                pred_subj_pairs.par_iter()
-                    .map(|(pred, _)| database.dictionary.decode(*pred).unwrap().to_string())
-                    .collect::<Vec<_>>()
-            } else {
-                Vec::new()
-            };
-            
-            let subj_strings = if need_subj_decode {
-                pred_subj_pairs.par_iter()
-                    .map(|(_, subj)| database.dictionary.decode(*subj).unwrap().to_string())
-                    .collect::<Vec<_>>()
-            } else {
-                Vec::new()
-            };
-
-            pred_subj_pairs.into_par_iter().enumerate().map(|(i, _)| {
+            pred_subj_pairs.into_par_iter().map(|(pred, subj)| {
                 let mut row = BTreeMap::new();
                 
-                if need_subj_decode {
-                    if let Some(s_var) = &pattern.subject {
-                        row.insert(s_var.clone(), subj_strings[i].clone());
+                if let Some(s_var) = &pattern.subject {
+                    if s_var.starts_with('?') {
+                        row.insert(s_var.clone(), subj);
                     }
                 }
                 
-                if need_pred_decode {
-                    if let Some(p_var) = &pattern.predicate {
-                        row.insert(p_var.clone(), pred_strings[i].clone());
+                if let Some(p_var) = &pattern.predicate {
+                    if p_var.starts_with('?') {
+                        row.insert(p_var.clone(), pred);
                     }
                 }
                 
                 if let Some(o_var) = &pattern.object {
                     if o_var.starts_with('?') {
-                        row.insert(o_var.clone(), object_str.clone());
+                        row.insert(o_var.clone(), o);
                     }
                 }
                 
@@ -1286,6 +1194,25 @@ impl Condition {
                 ">=" => value.parse::<i32>().unwrap_or(0) >= self.value.parse::<i32>().unwrap_or(0),
                 "<" => value.parse::<i32>().unwrap_or(0) < self.value.parse::<i32>().unwrap_or(0),
                 "<=" => value.parse::<i32>().unwrap_or(0) <= self.value.parse::<i32>().unwrap_or(0),
+                _ => false,
+            }
+        } else {
+            false
+        }
+    }
+
+    // New method to evaluate conditions with IDs
+    pub fn evaluate_with_ids(&self, result: &BTreeMap<String, u32>, dictionary: &Dictionary) -> bool {
+        if let Some(&id) = result.get(&self.variable) {
+            // Only decode when necessary for comparison
+            let decoded_value = dictionary.decode(id).unwrap();
+            match self.operator.as_str() {
+                "=" => decoded_value == self.value,
+                "!=" => decoded_value != self.value,
+                ">" => decoded_value.parse::<i32>().unwrap_or(0) > self.value.parse::<i32>().unwrap_or(0),
+                ">=" => decoded_value.parse::<i32>().unwrap_or(0) >= self.value.parse::<i32>().unwrap_or(0),
+                "<" => decoded_value.parse::<i32>().unwrap_or(0) < self.value.parse::<i32>().unwrap_or(0),
+                "<=" => decoded_value.parse::<i32>().unwrap_or(0) <= self.value.parse::<i32>().unwrap_or(0),
                 _ => false,
             }
         } else {

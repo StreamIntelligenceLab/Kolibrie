@@ -45,7 +45,7 @@ codegen-units = 256
 
 [profile.release]
 opt-level = 3
-debug = false
+debug = true
 strip = "none"
 debug-assertions = false
 overflow-checks = false

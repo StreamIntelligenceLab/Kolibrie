@@ -87,6 +87,7 @@
 86. Add combination stream
 87. Add new queries for processing 10M triples
 88. Improve volcano optimizer
+89. Improve volcano optimizer by using IDs instead of string
 
 0.1.0
 1. Parsing RDF/XML
