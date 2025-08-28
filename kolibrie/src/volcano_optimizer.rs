@@ -60,6 +60,10 @@ pub enum PhysicalOperator {
         left: Box<PhysicalOperator>,
         right: Box<PhysicalOperator>,
     },
+    OptimizedHashJoin {
+        left: Box<PhysicalOperator>,
+        right: Box<PhysicalOperator>,
+    },
     Projection {
         input: Box<PhysicalOperator>,
         variables: Vec<String>,
@@ -102,6 +106,8 @@ pub struct DatabaseStats {
     pub predicate_cardinalities: HashMap<String, u64>,
     pub subject_cardinalities: HashMap<String, u64>,
     pub object_cardinalities: HashMap<String, u64>,
+    pub join_selectivity_cache: HashMap<String, f64>,
+    pub predicate_histogram: HashMap<String, Vec<(String, u64)>>, // For better selectivity estimation
 }
 
 impl VolcanoOptimizer {
@@ -112,9 +118,10 @@ impl VolcanoOptimizer {
     const COST_PER_ROW_JOIN: u64 = 2;
     const COST_PER_ROW_NESTED_LOOP: u64 = 10;
     const COST_PER_PROJECTION: u64 = 1;
+    const COST_PER_ROW_OPTIMIZED_JOIN: u64 = 1; // New optimized join cost
 
     pub fn new(database: &SparqlDatabase) -> Self {
-        let stats = DatabaseStats::gather_stats(database);
+        let stats = DatabaseStats::gather_stats_fast(database);
         Self {
             memo: HashMap::new(),
             selected_variables: Vec::new(),
@@ -123,35 +130,27 @@ impl VolcanoOptimizer {
     }
 
     pub fn find_best_plan(&mut self, logical_plan: &LogicalOperator) -> PhysicalOperator {
-        let plan = self.find_best_plan_recursive(logical_plan);
-        plan
+        self.find_best_plan_recursive(logical_plan)
     }
 
     fn find_best_plan_recursive(&mut self, logical_plan: &LogicalOperator) -> PhysicalOperator {
-        // Simple string-based memoization key
         let key = self.create_memo_key(logical_plan);
         
         if let Some(plan) = self.memo.get(&key) {
             return plan.clone();
         }
 
-        // Generate possible physical plans
         let mut candidates = Vec::new();
 
         match logical_plan {
             LogicalOperator::Scan { pattern } => {
                 // Implementation rules: Map logical scan to physical scans
-                candidates.push(PhysicalOperator::TableScan {
-                    pattern: pattern.clone(),
-                });
-                // If an index is available
-                candidates.push(PhysicalOperator::IndexScan {
-                    pattern: pattern.clone(),
-                });
+                let best_scan = self.choose_best_scan(pattern);
+                candidates.push(best_scan);
             }
-            LogicalOperator::Selection {
-                predicate,
-                condition,
+            LogicalOperator::Selection { 
+                predicate, 
+                condition, 
             } => {
                 // Transformations: Push down selections
                 let best_child_plan = self.find_best_plan_recursive(predicate);
@@ -161,9 +160,9 @@ impl VolcanoOptimizer {
                     condition: condition.clone(),
                 });
             }
-            LogicalOperator::Projection {
-                predicate,
-                variables,
+            LogicalOperator::Projection { 
+                predicate, 
+                variables, 
             } => {
                 let best_child_plan = self.find_best_plan_recursive(predicate);
                 candidates.push(PhysicalOperator::Projection {
@@ -186,14 +185,26 @@ impl VolcanoOptimizer {
                 let best_right_plan = self.find_best_plan_recursive(expensive_side);
 
                 // Implementation rules: Different join algorithms
+                candidates.push(PhysicalOperator::OptimizedHashJoin {
+                    left: Box::new(best_left_plan.clone()),
+                    right: Box::new(best_right_plan.clone()),
+                });
+
                 candidates.push(PhysicalOperator::HashJoin {
                     left: Box::new(best_left_plan.clone()),
                     right: Box::new(best_right_plan.clone()),
                 });
-                candidates.push(PhysicalOperator::NestedLoopJoin {
-                    left: Box::new(best_left_plan.clone()),
-                    right: Box::new(best_right_plan.clone()),
-                });
+
+                // Only use nested loop for small datasets
+                let left_cardinality = self.estimate_output_cardinality_from_logical(cheaper_side);
+                let right_cardinality = self.estimate_output_cardinality_from_logical(expensive_side);
+                
+                if left_cardinality < 1000 && right_cardinality < 1000 {
+                    candidates.push(PhysicalOperator::NestedLoopJoin {
+                        left: Box::new(best_left_plan.clone()),
+                        right: Box::new(best_right_plan.clone()),
+                    });
+                }
 
                 // Add parallel join option
                 candidates.push(PhysicalOperator::ParallelJoin {
@@ -211,8 +222,35 @@ impl VolcanoOptimizer {
 
         // Memoize the best plan
         self.memo.insert(key, best_plan.clone());
-
         best_plan
+    }
+
+    // Enhanced scan selection
+    fn choose_best_scan(&self, pattern: &TriplePattern) -> PhysicalOperator {
+        let bound_vars = self.count_bound_variables(pattern);
+        let estimated_size = self.estimate_cardinality(pattern);
+        
+        match bound_vars {
+            3 => PhysicalOperator::IndexScan { pattern: pattern.clone() }, // Fully bound - always use index
+            2 => PhysicalOperator::IndexScan { pattern: pattern.clone() }, // Two bounds - index is better
+            1 => {
+                // Use index if result set is small enough
+                if estimated_size < 10000 {
+                    PhysicalOperator::IndexScan { pattern: pattern.clone() }
+                } else {
+                    PhysicalOperator::TableScan { pattern: pattern.clone() }
+                }
+            }
+            0 => PhysicalOperator::TableScan { pattern: pattern.clone() }, // Full scan
+            _ => PhysicalOperator::TableScan { pattern: pattern.clone() },
+        }
+    }
+
+    fn count_bound_variables(&self, pattern: &TriplePattern) -> usize {
+        [&pattern.subject, &pattern.predicate, &pattern.object]
+            .iter()
+            .filter(|x| x.as_ref().map(|v| !v.starts_with('?')).unwrap_or(false))
+            .count()
     }
 
     // Memo key creation
@@ -252,7 +290,14 @@ impl VolcanoOptimizer {
         match logical_plan {
             LogicalOperator::Scan { pattern } => self.estimate_cardinality(pattern),
             LogicalOperator::Join { left, right } => {
-                self.estimate_logical_cost(left) + self.estimate_logical_cost(right)
+                let left_cost = self.estimate_logical_cost(left);
+                let right_cost = self.estimate_logical_cost(right);
+                let left_card = self.estimate_output_cardinality_from_logical(left);
+                let right_card = self.estimate_output_cardinality_from_logical(right);
+                
+                // More sophisticated join cost estimation
+                let join_selectivity = self.estimate_join_selectivity(left, right);
+                left_cost + right_cost + ((left_card * right_card) as f64 * join_selectivity) as u64
             }
             LogicalOperator::Selection { predicate, condition } => {
                 let base_cost = self.estimate_logical_cost(predicate);
@@ -265,6 +310,30 @@ impl VolcanoOptimizer {
         }
     }
 
+    fn estimate_join_selectivity(&self, left: &LogicalOperator, right: &LogicalOperator) -> f64 {
+        0.1
+    }
+
+    fn estimate_output_cardinality_from_logical(&self, logical_plan: &LogicalOperator) -> u64 {
+        match logical_plan {
+            LogicalOperator::Scan { pattern } => self.estimate_cardinality(pattern),
+            LogicalOperator::Selection { predicate, condition } => {
+                let base_card = self.estimate_output_cardinality_from_logical(predicate);
+                let selectivity = self.estimate_selectivity(condition);
+                ((base_card as f64 * selectivity) as u64).max(1)
+            }
+            LogicalOperator::Projection { predicate, .. } => {
+                self.estimate_output_cardinality_from_logical(predicate)
+            }
+            LogicalOperator::Join { left, right } => {
+                let left_card = self.estimate_output_cardinality_from_logical(left);
+                let right_card = self.estimate_output_cardinality_from_logical(right);
+                let join_selectivity = self.estimate_join_selectivity(left, right);
+                ((left_card.min(right_card) as f64 * join_selectivity) as u64).max(1)
+            }
+        }
+    }
+
     fn estimate_cost(&self, plan: &PhysicalOperator) -> u64 {
         match plan {
             PhysicalOperator::TableScan { pattern } => {
@@ -272,20 +341,7 @@ impl VolcanoOptimizer {
             }
             PhysicalOperator::IndexScan { pattern } => {
                 let cardinality = self.estimate_cardinality(pattern);
-
-                // Enhanced discount calculation
-                let bound_count = [
-                    &pattern.subject,
-                    &pattern.predicate,
-                    &pattern.object,
-                ]
-                    .iter()
-                    .filter(|x| {
-                        x.as_ref()
-                            .map(|v| !v.starts_with('?'))
-                            .unwrap_or(false)
-                    })
-                    .count();
+                let bound_count = self.count_bound_variables(pattern);
 
                 let discount = match bound_count {
                     0 => 1,      // No discount for unbounded scan
@@ -302,15 +358,23 @@ impl VolcanoOptimizer {
                 let selectivity = self.estimate_selectivity(condition);
                 (input_cost as f64 * selectivity) as u64 + Self::COST_PER_FILTER
             }
+            PhysicalOperator::OptimizedHashJoin { left, right } => {
+                let left_cost = self.estimate_cost(left);
+                let right_cost = self.estimate_cost(right);
+                let left_cardinality = self.estimate_output_cardinality(left);
+                let right_cardinality = self.estimate_output_cardinality(right);
+
+                left_cost + right_cost + 
+                (left_cardinality + right_cardinality) * Self::COST_PER_ROW_OPTIMIZED_JOIN
+            }
             PhysicalOperator::HashJoin { left, right } => {
                 let left_cost = self.estimate_cost(left);
                 let right_cost = self.estimate_cost(right);
                 let left_cardinality = self.estimate_output_cardinality(left);
                 let right_cardinality = self.estimate_output_cardinality(right);
 
-                left_cost
-                    + right_cost
-                    + (left_cardinality + right_cardinality) * Self::COST_PER_ROW_JOIN
+                left_cost + right_cost + 
+                (left_cardinality + right_cardinality) * Self::COST_PER_ROW_JOIN
             }
             PhysicalOperator::NestedLoopJoin { left, right } => {
                 let left_cost = self.estimate_cost(left);
@@ -318,9 +382,8 @@ impl VolcanoOptimizer {
                 let left_cardinality = self.estimate_output_cardinality(left);
                 let right_cardinality = self.estimate_output_cardinality(right);
 
-                left_cost
-                    + right_cost
-                    + (left_cardinality * right_cardinality) * Self::COST_PER_ROW_NESTED_LOOP
+                left_cost + right_cost + 
+                (left_cardinality * right_cardinality) * Self::COST_PER_ROW_NESTED_LOOP
             }
             PhysicalOperator::ParallelJoin { left, right } => {
                 // Check if we can use your efficient join
@@ -351,49 +414,46 @@ impl VolcanoOptimizer {
     
         // Count bound variables for better selectivity estimation
         let bound_count = [
-            &pattern.subject,
+            &pattern.subject, 
             &pattern.predicate, 
-            &pattern.object,
-        ].iter().filter(|var| {
-            var.as_ref().map(|v| !v.starts_with('?')).unwrap_or(false)
-        }).count();
+            &pattern.object
+        ]
+            .iter()
+            .filter(|var| var.as_ref().map(|v| !v.starts_with('?')).unwrap_or(false))
+            .count();
         
         // More aggressive selectivity based on bound variables
         let selectivity = match bound_count {
             0 => 1.0,       // No filtering
-            1 => 0.05,      // More selective for one bound field
-            2 => 0.001,     // Very selective for two bound fields  
-            3 => 0.0001,    // Extremely selective for fully bound
+            1 => 0.01,      // More selective for one bound field
+            2 => 0.0001,     // Very selective for two bound fields  
+            3 => 0.00001,    // Extremely selective for fully bound
             _ => 1.0,
         };
         
         // Use predicate cardinality if available and more specific
         if let Some(predicate) = &pattern.predicate {
             if !predicate.starts_with('?') {
-                let predicate_cardinality = *self.stats.predicate_cardinalities
-                    .get(predicate)
-                    .unwrap_or(&self.stats.total_triples);
-                
-                // Use the more restrictive estimate
-                base_cardinality = base_cardinality.min(predicate_cardinality);
+                if let Some(&predicate_cardinality) = self.stats.predicate_cardinalities.get(predicate) {
+                    // Use the more restrictive estimate
+                    base_cardinality = base_cardinality.min(predicate_cardinality);
+                }
             }
         }
         
         if let Some(subject) = &pattern.subject {
             if !subject.starts_with('?') {
-                let subject_cardinality = *self.stats.subject_cardinalities
-                    .get(subject)
-                    .unwrap_or(&(self.stats.total_triples / 1000)); // Estimate
-                base_cardinality = base_cardinality.min(subject_cardinality);
+                if let Some(&subject_cardinality) = self.stats.subject_cardinalities.get(subject) {
+                    base_cardinality = base_cardinality.min(subject_cardinality);
+                }
             }
         }
         
         if let Some(object) = &pattern.object {
             if !object.starts_with('?') {
-                let object_cardinality = *self.stats.object_cardinalities
-                    .get(object)
-                    .unwrap_or(&(self.stats.total_triples / 1000)); // Estimate
-                base_cardinality = base_cardinality.min(object_cardinality);
+                if let Some(&object_cardinality) = self.stats.object_cardinalities.get(object) {
+                    base_cardinality = base_cardinality.min(object_cardinality);
+                }
             }
         }
         
@@ -402,9 +462,9 @@ impl VolcanoOptimizer {
 
     fn estimate_selectivity(&self, condition: &Condition) -> f64 {
         match condition.operator.as_str() {
-            "=" => 0.1,
-            "!=" => 0.9,
-            ">" | "<" | ">=" | "<=" => 0.3,
+            "=" => 0.05,  // More selective
+            "!=" => 0.95,
+            ">" | "<" | ">=" | "<=" => 0.25,
             _ => 1.0,
         }
     }
@@ -418,16 +478,22 @@ impl VolcanoOptimizer {
                 let selectivity = self.estimate_selectivity(condition);
                 ((input_cardinality as f64 * selectivity) as u64).max(1)
             }
+            PhysicalOperator::OptimizedHashJoin { left, right } => {
+                let left_cardinality = self.estimate_output_cardinality(left);
+                let right_cardinality = self.estimate_output_cardinality(right);
+                let join_selectivity = 0.05; // More realistic selectivity
+                ((left_cardinality.min(right_cardinality) as f64 * join_selectivity) as u64).max(1)
+            }
             PhysicalOperator::HashJoin { left, right } => {
                 let left_cardinality = self.estimate_output_cardinality(left);
                 let right_cardinality = self.estimate_output_cardinality(right);
-                let join_selectivity = 0.1; // More realistic join selectivity
+                let join_selectivity = 0.1;
                 ((left_cardinality.min(right_cardinality) as f64 * join_selectivity) as u64).max(1)
             }
             PhysicalOperator::NestedLoopJoin { left, right } => {
                 let left_cardinality = self.estimate_output_cardinality(left);
                 let right_cardinality = self.estimate_output_cardinality(right);
-                (left_cardinality * right_cardinality / 1000).max(1) // Assume some selectivity
+                (left_cardinality * right_cardinality / 1000).max(1)
             }
             PhysicalOperator::ParallelJoin { left, right } => {
                 let left_cardinality = self.estimate_output_cardinality(left);
@@ -441,14 +507,29 @@ impl VolcanoOptimizer {
 }
 
 impl DatabaseStats {
-    pub fn gather_stats(database: &SparqlDatabase) -> Self {
+    pub fn gather_stats_fast(database: &SparqlDatabase) -> Self {
         let total_triples = database.triples.len() as u64;
-        let mut predicate_cardinalities: HashMap<String, u64> = HashMap::new();
-        let mut subject_cardinalities: HashMap<String, u64> = HashMap::new();
-        let mut object_cardinalities: HashMap<String, u64> = HashMap::new();
+        
+        // Convert BTreeSet to Vec for sampling
+        let triples_vec: Vec<_> = database.triples.iter().collect();
+        
+        // Use sampling for large datasets instead of full scan
+        let sample_size = (total_triples as usize).min(100_000);
+        let step = if total_triples > sample_size as u64 {
+            total_triples as usize / sample_size
+        } else {
+            1
+        };
+
+        // Sample the data by stepping through the vector
+        let sampled_triples: Vec<_> = triples_vec
+            .iter()
+            .step_by(step)
+            .take(sample_size)
+            .collect();
 
         // Use parallel processing for stats gathering
-        let stats_data: Vec<_> = database.triples
+        let stats_data: Vec<_> = sampled_triples
             .par_iter()
             .map(|triple| {
                 let subject = database.dictionary.decode(triple.subject).unwrap().to_string();
@@ -458,17 +539,30 @@ impl DatabaseStats {
             })
             .collect();
 
+        // Build cardinality maps
+        let mut predicate_cardinalities: HashMap<String, u64> = HashMap::new();
+        let mut subject_cardinalities: HashMap<String, u64> = HashMap::new();
+        let mut object_cardinalities: HashMap<String, u64> = HashMap::new();
+
         for (subject, predicate, object) in stats_data {
             *predicate_cardinalities.entry(predicate).or_insert(0) += 1;
             *subject_cardinalities.entry(subject).or_insert(0) += 1;
             *object_cardinalities.entry(object).or_insert(0) += 1;
         }
 
+        // Scale up sampled statistics
+        let scale_factor = if step > 1 { step as u64 } else { 1 };
+        predicate_cardinalities.values_mut().for_each(|v| *v *= scale_factor);
+        subject_cardinalities.values_mut().for_each(|v| *v *= scale_factor);
+        object_cardinalities.values_mut().for_each(|v| *v *= scale_factor);
+
         Self {
             total_triples,
             predicate_cardinalities,
             subject_cardinalities,
             object_cardinalities,
+            join_selectivity_cache: HashMap::new(),
+            predicate_histogram: HashMap::new(),
         }
     }
 }
@@ -491,7 +585,6 @@ impl PhysicalOperator {
             .collect()
     }
 
-    // Internal execution method that works with IDs
     pub fn execute_with_ids(&self, database: &mut SparqlDatabase) -> Vec<BTreeMap<String, u32>> {
         match self {
             PhysicalOperator::TableScan { pattern } => {
@@ -520,6 +613,11 @@ impl PhysicalOperator {
                         result
                     })
                     .collect()
+            }
+            PhysicalOperator::OptimizedHashJoin { left, right } => {
+                let left_results = left.execute_with_ids(database);
+                let right_results = right.execute_with_ids(database);
+                self.execute_optimized_hash_join_with_ids(left_results, right_results)
             }
             PhysicalOperator::HashJoin { left, right } => {
                 // Implement hash join execution
@@ -596,7 +694,120 @@ impl PhysicalOperator {
             .collect()
     }
 
-    // Optimized hash join - Fixed the flatten issue
+    // New optimized hash join with proper type annotations
+    fn execute_optimized_hash_join_with_ids(
+        &self,
+        left_results: Vec<BTreeMap<String, u32>>,
+        right_results: Vec<BTreeMap<String, u32>>,
+    ) -> Vec<BTreeMap<String, u32>> {
+        if left_results.is_empty() || right_results.is_empty() {
+            return Vec::new();
+        }
+
+        // Choose smaller relation as build side
+        let (build_side, probe_side, swapped) = if left_results.len() <= right_results.len() {
+            (left_results, right_results, false)
+        } else {
+            (right_results, left_results, true)
+        };
+
+        // Determine join variables
+        let build_binding = build_side.clone();
+        let build_vars: HashSet<&String> = build_binding[0].keys().collect();
+        let binding = probe_side.clone();
+        let probe_vars: HashSet<&String> = binding[0].keys().collect();
+        let join_vars: Vec<&String> = build_vars.intersection(&probe_vars).copied().collect();
+
+        if join_vars.is_empty() {
+            // Limited cartesian product
+            let max_results = 50_000;
+            let mut results = Vec::with_capacity(max_results.min(build_side.len() * probe_side.len()));
+            
+            'outer: for build_result in &build_side {
+                for probe_result in &probe_side {
+                    if results.len() >= max_results { break 'outer; }
+                    
+                    let mut combined = if swapped {
+                        probe_result.clone()
+                    } else {
+                        build_result.clone()
+                    };
+                    
+                    if swapped {
+                        combined.extend(build_result.clone());
+                    } else {
+                        combined.extend(probe_result.clone());
+                    }
+                    results.push(combined);
+                }
+            }
+            return results;
+        }
+
+        // Build hash table in parallel with explicit type annotation
+        let hash_table: HashMap<Vec<u32>, Vec<BTreeMap<String, u32>>> = build_side
+            .into_par_iter()
+            .fold(
+                || HashMap::<Vec<u32>, Vec<BTreeMap<String, u32>>>::new(),
+                |mut acc: HashMap<Vec<u32>, Vec<BTreeMap<String, u32>>>, result| {
+                    let join_key: Vec<u32> = join_vars.iter()
+                        .filter_map(|var| result.get(*var).copied())
+                        .collect();
+                    
+                    if join_key.len() == join_vars.len() {
+                        acc.entry(join_key).or_default().push(result);
+                    }
+                    acc
+                },
+            )
+            .reduce(
+                || HashMap::<Vec<u32>, Vec<BTreeMap<String, u32>>>::new(),
+                |mut acc1, acc2| {
+                    for (key, mut values) in acc2 {
+                        acc1.entry(key).or_default().append(&mut values);
+                    }
+                    acc1
+                },
+            );
+
+        // Probe phase in parallel
+        probe_side
+            .into_par_iter()
+            .flat_map(|probe_result| {
+                let probe_key: Vec<u32> = join_vars.iter()
+                    .filter_map(|var| probe_result.get(*var).copied())
+                    .collect();
+                
+                if probe_key.len() == join_vars.len() {
+                    if let Some(matching_builds) = hash_table.get(&probe_key) {
+                        matching_builds
+                            .iter()
+                            .map(|build_result| {
+                                let mut combined = if swapped {
+                                    probe_result.clone()
+                                } else {
+                                    build_result.clone()
+                                };
+                                
+                                if swapped {
+                                    combined.extend(build_result.clone());
+                                } else {
+                                    combined.extend(probe_result.clone());
+                                }
+                                combined
+                            })
+                            .collect::<Vec<_>>()
+                    } else {
+                        Vec::new()
+                    }
+                } else {
+                    Vec::new()
+                }
+            })
+            .collect()
+    }
+
+    // Original hash join
     fn execute_hash_join_with_ids(
         &self,
         left_results: Vec<BTreeMap<String, u32>>,
@@ -648,7 +859,7 @@ impl PhysicalOperator {
             }
         }
 
-        // Probe phase with parallel processing - Fixed
+        // Probe phase with parallel processing
         let mut results = Vec::new();
 
         for right_result in &right_results {
@@ -759,7 +970,10 @@ impl PhysicalOperator {
                 })
                 .collect()
         } else {
-            self.execute_hash_join_with_ids(left.execute_with_ids(database), right.execute_with_ids(database))
+            self.execute_optimized_hash_join_with_ids(
+                left.execute_with_ids(database), 
+                right.execute_with_ids(database)
+            )
         }
     }
 
@@ -1240,18 +1454,18 @@ fn extract_pattern(op: &PhysicalOperator) -> Option<&TriplePattern> {
     }
 }
 
-pub fn build_logical_plan(
+// Enhanced logical plan builder with better join ordering
+pub fn build_logical_plan_optimized(
     variables: Vec<(&str, &str)>,
     patterns: Vec<(&str, &str, &str)>,
     filters: Vec<FilterExpression>,
     prefixes: &HashMap<String, String>,
     database: &SparqlDatabase,
 ) -> LogicalOperator {
-    // For each pattern, create a scan operator
+    // Create scan operators with immediate filter pushdown
     let mut scan_operators = Vec::new();
+    
     for (subject_var, predicate, object_var) in patterns {
-        
-        // Resolve the terms in the pattern
         let resolved_subject = database.resolve_query_term(subject_var, prefixes);
         let resolved_predicate = database.resolve_query_term(predicate, prefixes);
         let resolved_object = database.resolve_query_term(object_var, prefixes);
@@ -1261,14 +1475,64 @@ pub fn build_logical_plan(
             predicate: Some(resolved_predicate),
             object: Some(resolved_object),
         };
-        let scan_op = LogicalOperator::Scan { pattern };
+        
+        let mut scan_op = LogicalOperator::Scan { pattern: pattern.clone() };
+
+        // Push applicable filters down to this scan
+        for filter in &filters {
+            if let FilterExpression::Comparison(var, operator, value) = filter {
+                if pattern_contains_variable(&pattern, var) {
+                    let condition = Condition {
+                        variable: var.to_string(),
+                        operator: operator.to_string(),
+                        value: value.to_string(),
+                    };
+                    scan_op = LogicalOperator::Selection {
+                        predicate: Box::new(scan_op),
+                        condition,
+                    };
+                }
+            }
+        }
+        
         scan_operators.push(scan_op);
     }
 
-    // Sort scans by estimated cost for better join ordering
-    scan_operators.sort_by_key(|scan_op| {
-        if let LogicalOperator::Scan { pattern } = scan_op {
-            // Estimate selectivity for ordering
+    // Sort by estimated selectivity (most selective first)
+    scan_operators.sort_by_key(|op| estimate_operator_selectivity(op, database));
+
+    // Build optimal join tree
+    let mut current_op = scan_operators[0].clone();
+    for next_op in scan_operators.into_iter().skip(1) {
+        current_op = LogicalOperator::Join {
+            left: Box::new(current_op),
+            right: Box::new(next_op),
+        };
+    }
+
+    // Final projection
+    let selected_vars: Vec<String> = variables
+        .iter()
+        .filter(|(agg_type, _)| *agg_type == "VAR")
+        .map(|(_, var)| var.to_string())
+        .collect();
+
+    LogicalOperator::Projection {
+        predicate: Box::new(current_op),
+        variables: selected_vars,
+    }
+}
+
+// Helper functions
+fn pattern_contains_variable(pattern: &TriplePattern, var: &str) -> bool {
+    [&pattern.subject, &pattern.predicate, &pattern.object]
+        .iter()
+        .any(|field| field.as_ref().map_or(false, |v| v == var))
+}
+
+fn estimate_operator_selectivity(op: &LogicalOperator, database: &SparqlDatabase) -> u64 {
+    match op {
+        LogicalOperator::Scan { pattern } => {
             let bound_count = [&pattern.subject, &pattern.predicate, &pattern.object]
                 .iter()
                 .filter(|x| x.as_ref().map(|v| !v.starts_with('?')).unwrap_or(false))
@@ -1281,62 +1545,21 @@ pub fn build_logical_plan(
                 0 => 4,     // Lowest priority
                 _ => 5,
             }
-        } else {
-            999
         }
-    });
-
-    // Combine scans using joins in optimal order
-    let mut current_op = scan_operators[0].clone();
-    for next_op in scan_operators.into_iter().skip(1) {
-        current_op = LogicalOperator::Join {
-            left: Box::new(current_op),
-            right: Box::new(next_op),
-        };
-    }
-
-    // Apply filters
-    for filter in filters {
-        match filter {
-            FilterExpression::Comparison(var, operator, value) => {
-                let condition = Condition {
-                    variable: var.to_string(),
-                    operator: operator.to_string(),
-                    value: value.to_string(),
-                };
-                current_op = LogicalOperator::Selection {
-                    predicate: Box::new(current_op),
-                    condition,
-                };
-            },
-            FilterExpression::And(_, _) => {
-                // TODO: Handle AND logic
-            },
-            FilterExpression::Or(_, _) => {
-                // TODO: Handle OR logic
-            },
-            FilterExpression::Not(_) => {
-                // TODO: Handle NOT logic
-            }
-
-            FilterExpression::ArithmeticExpr(_) => {
-                // TODO: Handle arithmetic expressions
-            }
+        LogicalOperator::Selection { predicate, .. } => {
+            estimate_operator_selectivity(predicate, database) / 2 // Selections are more selective
         }
+        _ => 999,
     }
+}
 
-    // Extract variable names from variables
-    let selected_vars: Vec<String> = variables
-        .iter()
-        .filter(|(agg_type, _)| *agg_type == "VAR")
-        .map(|(_, var)| var.to_string())
-        .collect();
-
-    // Wrap with projection
-    current_op = LogicalOperator::Projection {
-        predicate: Box::new(current_op),
-        variables: selected_vars,
-    };
-
-    current_op
+// Keep the original build_logical_plan for compatibility
+pub fn build_logical_plan(
+    variables: Vec<(&str, &str)>,
+    patterns: Vec<(&str, &str, &str)>,
+    filters: Vec<FilterExpression>,
+    prefixes: &HashMap<String, String>,
+    database: &SparqlDatabase,
+) -> LogicalOperator {
+    build_logical_plan_optimized(variables, patterns, filters, prefixes, database)
 }

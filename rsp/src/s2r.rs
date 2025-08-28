@@ -249,6 +249,7 @@ pub struct WindowTriple{
 mod tests {
     use std::cell::RefCell;
     use std::rc::Rc;
+    use std::time::Duration;
     use super::*;
 
     #[test]
