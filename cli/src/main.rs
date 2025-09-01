@@ -17,6 +17,7 @@ use kolibrie::sparql_database::SparqlDatabase;
     name = "kolibrie-cli",
     version = "0.1.0",
     author = "Volodymyr Kadzhaia <vkadzhaia@gmail.com>",
+    author = "Pieter Bonte <pieter.bonte@kuleuven.be>",
     about = "A CLI tool for Kolibrie",
     long_about = "Kolibrie CLI - A command-line interface for loading RDF/XML files and executing SPARQL queries against them. Built with Rust using the kolibrie library for high-performance RDF processing."
 )]
