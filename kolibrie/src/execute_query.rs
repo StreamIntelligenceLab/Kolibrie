@@ -138,6 +138,7 @@ pub fn execute_query(sparql: &str, database: &mut SparqlDatabase) -> Vec<Vec<Str
             binds,
             subqueries,
             limit,
+            _,
         ),
     )) = parse_result
     {
@@ -317,6 +318,7 @@ pub fn execute_query_normal(sparql: &str, database: &mut SparqlDatabase) -> Vec<
             binds,
             subqueries,
             limit,
+            _,
         ),
     )) = parse_sparql_query(sparql)
     {
@@ -456,6 +458,7 @@ pub fn execute_query_normal_simd(sparql: &str, database: &mut SparqlDatabase) ->
             binds,
             subqueries,
             limit,
+            _,
         ),
     )) = parse_sparql_query(sparql)
     {
@@ -595,6 +598,7 @@ pub fn execute_query_rayon_simd(sparql: &str, database: &mut SparqlDatabase) -> 
             binds,
             subqueries,
             limit,
+            _,
         ),
     )) = parse_sparql_query(sparql)
     {
@@ -734,6 +738,7 @@ pub fn execute_query_rayon_parallel1(sparql: &str, database: &mut SparqlDatabase
             binds,
             subqueries,
             limit,
+            _,
         ),
     )) = parse_sparql_query(sparql)
     {
@@ -873,6 +878,7 @@ pub fn execute_query_rayon_parallel2(sparql: &str, database: &mut SparqlDatabase
             binds,
             subqueries,
             limit,
+            _,
         ),
     )) = parse_sparql_query(sparql)
     {
@@ -1010,6 +1016,7 @@ pub fn execute_query_rayon_parallel2_volcano(sparql: &str, database: &mut Sparql
             binds,
             subqueries,
             limit,
+            _,
         ),
     )) = parse_result {
         
@@ -1220,6 +1227,7 @@ pub fn execute_query_rayon_parallel2_redesign_streaming(
             binds, 
             subqueries,
             limit,
+            _,
         ),
     )) = parse_sparql_query(sparql) 
     {

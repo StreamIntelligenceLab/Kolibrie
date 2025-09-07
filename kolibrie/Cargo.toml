@@ -264,6 +264,10 @@ name = "multiple_conclusions"
 path = "examples/sparql_syntax/combination/multiple_conclusions.rs"
 
 [[example]]
+name = "retrieve_rsp"
+path = "examples/sparql_syntax/rsp_ql_syntax/retrieve.rs"
+
+[[example]]
 name = "real_scenario"
 path = "examples/real_scenario/real_scenario.rs"
 

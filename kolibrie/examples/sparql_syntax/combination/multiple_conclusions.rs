@@ -93,10 +93,12 @@ RULE :OverheatingAlert(?room, ?temp) :-
 PREFIX alert: <http://example.org/alerts#>
 SELECT ?room ?temp ?status ?timestamp ?action
 WHERE { 
-  RULE(:OverheatingAlert, ?room, ?temp) .
+  ?room ex:overheatingAlert true .
   ?room alert:status ?status .
   ?room alert:timestamp ?timestamp .
   ?room alert:requiresAction ?action .
+  ?reading ex:room ?room .
+  ?reading ex:temperature ?temp .
 }"#;
 
   // Execute the SELECT query

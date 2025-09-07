@@ -296,7 +296,7 @@ impl VolcanoOptimizer {
                 let right_card = self.estimate_output_cardinality_from_logical(right);
                 
                 // More sophisticated join cost estimation
-                let join_selectivity = self.estimate_join_selectivity(left, right);
+                let join_selectivity = self.estimate_join_selectivity();
                 left_cost + right_cost + ((left_card * right_card) as f64 * join_selectivity) as u64
             }
             LogicalOperator::Selection { predicate, condition } => {
@@ -310,7 +310,7 @@ impl VolcanoOptimizer {
         }
     }
 
-    fn estimate_join_selectivity(&self, left: &LogicalOperator, right: &LogicalOperator) -> f64 {
+    fn estimate_join_selectivity(&self) -> f64 {
         0.1
     }
 
@@ -328,7 +328,7 @@ impl VolcanoOptimizer {
             LogicalOperator::Join { left, right } => {
                 let left_card = self.estimate_output_cardinality_from_logical(left);
                 let right_card = self.estimate_output_cardinality_from_logical(right);
-                let join_selectivity = self.estimate_join_selectivity(left, right);
+                let join_selectivity = self.estimate_join_selectivity();
                 ((left_card.min(right_card) as f64 * join_selectivity) as u64).max(1)
             }
         }

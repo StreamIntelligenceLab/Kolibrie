@@ -90,6 +90,9 @@
 89. Improve volcano optimizer by using IDs instead of string
 90. Improve volcano optimizer by improving cardinality estimator and join algorithms
 91. Minor change
+92. Minor fix of queries in combination example
+93. Improve parser by adding Retrieve RSP-QL syntax and add example
+94. Minor fix of volcano optimizer
 
 0.1.0
 1. Parsing RDF/XML

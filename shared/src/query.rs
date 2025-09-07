@@ -106,6 +106,32 @@ pub enum StreamType<'a> {
     Custom(&'a str),
 }
 
+#[derive(Debug, Clone)]
+pub struct RegisterClause<'a> {
+    pub stream_type: StreamType<'a>,
+    pub output_stream_iri: &'a str,
+    pub query: RSPQLSelectQuery<'a>,
+}
+
+#[derive(Debug, Clone)]
+pub struct RSPQLSelectQuery<'a> {
+    pub variables: Vec<(&'a str, &'a str, Option<&'a str>)>,
+    pub window_clause: Option<WindowClause<'a>>,
+    pub where_clause: (
+        Vec<(&'a str, &'a str, &'a str)>,
+        Vec<FilterExpression<'a>>,
+        Option<ValuesClause<'a>>,
+        Vec<(&'a str, Vec<&'a str>, &'a str)>,
+        Vec<SubQuery<'a>>,
+    ),
+}
+
+#[derive(Debug, Clone)]
+pub struct WindowBlock<'a> {
+    pub window_name: &'a str,
+    pub patterns: Vec<(&'a str, &'a str, &'a str)>,
+}
+
 // Modified CombinedRule to include windowing
 #[derive(Clone, Debug)]
 pub struct CombinedRule<'a> {
@@ -123,9 +149,33 @@ pub struct CombinedRule<'a> {
     pub ml_predict: Option<MLPredictClause<'a>>, // new field for ML.PREDICT clause
 }
 
+// Add these new enums and structs
+#[derive(Debug, Clone, PartialEq)]
+pub enum RetrieveMode {
+    Some,
+    Every,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum StreamState {
+    Latent,
+    Active,
+}
+
+#[derive(Debug, Clone)]
+pub struct RetrieveClause<'a> {
+    pub mode: RetrieveMode,
+    pub state: StreamState,
+    pub variable: &'a str,
+    pub from_iri: &'a str,
+    pub graph_pattern: Vec<(&'a str, &'a str, &'a str)>,
+}
+
 #[derive(Debug, Clone)]
 pub struct CombinedQuery<'a> {
     pub prefixes: HashMap<String, String>,
+    pub retrieve_clause: Option<RetrieveClause<'a>>,
+    pub register_clause: Option<RegisterClause<'a>>,
     pub rule: Option<CombinedRule<'a>>,
     pub sparql: (
         Option<InsertClause<'a>>,
@@ -138,5 +188,6 @@ pub struct CombinedQuery<'a> {
         Vec<(&'a str, Vec<&'a str>, &'a str)>,
         Vec<SubQuery<'a>>,
         Option<usize>,
+        Vec<WindowBlock<'a>>
     ),
 }
