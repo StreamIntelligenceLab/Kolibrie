@@ -171,6 +171,18 @@ pub struct RetrieveClause<'a> {
     pub graph_pattern: Vec<(&'a str, &'a str, &'a str)>,
 }
 
+#[derive(Debug, Clone, PartialEq)]
+pub enum SortDirection {
+    Asc,
+    Desc,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct OrderCondition<'a> {
+    pub variable: &'a str,
+    pub direction: SortDirection,
+}
+
 #[derive(Debug, Clone)]
 pub struct CombinedQuery<'a> {
     pub prefixes: HashMap<String, String>,
@@ -188,6 +200,7 @@ pub struct CombinedQuery<'a> {
         Vec<(&'a str, Vec<&'a str>, &'a str)>,
         Vec<SubQuery<'a>>,
         Option<usize>,
-        Vec<WindowBlock<'a>>
+        Vec<WindowBlock<'a>>,
+        Vec<OrderCondition<'a>>,
     ),
 }

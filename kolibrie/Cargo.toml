@@ -120,6 +120,10 @@ name = "filter_limit"
 path = "examples/sparql_syntax/filter/filter_limit.rs"
 
 [[example]]
+name = "filter_orderby"
+path = "examples/sparql_syntax/filter/filter_with_orderby.rs"
+
+[[example]]
 name = "filter_int_arithm"
 path = "examples/sparql_syntax/filter/filter_int_arithmetic.rs"
 

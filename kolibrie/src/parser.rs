@@ -710,6 +710,112 @@ pub fn parse_group_by(input: &str) -> IResult<&str, Vec<&str>> {
     Ok((input, group_vars))
 }
 
+// Parser for sort direction (ASC/DESC)
+pub fn parse_sort_direction(input: &str) -> IResult<&str, SortDirection> {
+    let (input, _) = multispace0.parse(input)?;
+    let (input, direction) = opt(alt((
+        tag("ASC").map(|_| SortDirection::Asc),
+        tag("DESC").map(|_| SortDirection::Desc),
+    ))).parse(input)?;
+    Ok((input, direction.unwrap_or(SortDirection::Asc))) // Default to ASC if not specified
+}
+
+// Parser for a single ORDER BY condition
+pub fn parse_order_condition(input: &str) -> IResult<&str, OrderCondition> {
+    let (input, _) = multispace0.parse(input)?;
+    
+    // Try to parse direction first (optional)
+    let (input, direction) = opt(alt((
+        tag("ASC").map(|_| SortDirection::Asc),
+        tag("DESC").map(|_| SortDirection::Desc),
+    ))).parse(input)?;
+    
+    let (input, _) = multispace0.parse(input)?;
+    
+    // Parse opening parenthesis if direction was specified
+    let (input, has_parens) = if direction.is_some() {
+        let (input, _) = char('(').parse(input)?;
+        (input, true)
+    } else {
+        (input, false)
+    };
+    
+    let (input, _) = multispace0.parse(input)?;
+    
+    // Parse the variable
+    let (input, var) = variable(input)?;
+    
+    let (input, _) = multispace0.parse(input)?;
+    
+    // Parse closing parenthesis if we had opening one
+    let input = if has_parens {
+        let (input, _) = char(')').parse(input)?;
+        input
+    } else {
+        input
+    };
+    
+    // If no direction was parsed before variable, try to parse it after
+    let (input, final_direction) = if direction.is_none() {
+        let (input, post_direction) = opt(preceded(
+            multispace1,
+            alt((
+                tag("ASC").map(|_| SortDirection::Asc),
+                tag("DESC").map(|_| SortDirection::Desc),
+            ))
+        )).parse(input)?;
+        (input, post_direction.unwrap_or(SortDirection::Asc))
+    } else {
+        (input, direction.unwrap())
+    };
+    
+    Ok((input, OrderCondition {
+        variable: var,
+        direction: final_direction,
+    }))
+}
+
+// Alternative simpler parser for ORDER BY condition (variable with optional direction)
+pub fn parse_simple_order_condition(input: &str) -> IResult<&str, OrderCondition> {
+    let (input, _) = multispace0.parse(input)?;
+    
+    // Parse variable first
+    let (input, var) = variable(input)?;
+    
+    let (input, _) = multispace0.parse(input)?;
+    
+    // Parse optional direction after variable
+    let (input, direction) = opt(alt((
+        tag("ASC").map(|_| SortDirection::Asc),
+        tag("DESC").map(|_| SortDirection::Desc),
+    ))).parse(input)?;
+    
+    Ok((input, OrderCondition {
+        variable: var,
+        direction: direction.unwrap_or(SortDirection::Asc),
+    }))
+}
+
+// Main ORDER BY parser
+pub fn parse_order_by(input: &str) -> IResult<&str, Vec<OrderCondition>> {
+    let (input, _) = multispace0.parse(input)?;
+    let (input, _) = tag("ORDER").parse(input)?;
+    let (input, _) = space1.parse(input)?;
+    let (input, _) = tag("BY").parse(input)?;
+    let (input, _) = space1.parse(input)?;
+
+    // Parse one or more order conditions separated by commas
+    let (input, conditions) = separated_list1(
+        tuple((multispace0, char(','), multispace0)),
+        alt((
+            parse_order_condition,      // Try complex form first
+            parse_simple_order_condition, // Fall back to simple form
+        ))
+    ).parse(input)?;
+
+    Ok((input, conditions))
+}
+
 // Add a new parser for PREFIX declarations
 pub fn parse_prefix(input: &str) -> IResult<&str, (&str, &str)> {
     let (input, _) = multispace0.parse(input)?;
@@ -790,6 +896,7 @@ pub fn parse_sparql_query(
         Vec<SubQuery>,
         Option<usize>,                  // limit
         Vec<WindowBlock>,               // Add window blocks
+        Vec<OrderCondition>,             // ORDER BY conditions
     ),
 > {
     let mut input = input;
@@ -833,6 +940,10 @@ pub fn parse_sparql_query(
         } else {
             (input, vec![])
         };
+    
+    // Parse optional ORDER BY clause
+    let (input, order_conditions) = opt(preceded(multispace0, parse_order_by)).parse(input)?;
+    let order_conditions = order_conditions.unwrap_or_else(Vec::new);
 
     let (input, limit) = opt(preceded(multispace0, parse_limit)).parse(input)?;
 
@@ -850,6 +961,7 @@ pub fn parse_sparql_query(
             subqueries,
             limit,
             window_block,
+            order_conditions,
         ),
     ))
 }
@@ -1364,7 +1476,7 @@ pub fn parse_combined_query(input: &str) -> IResult<&str, CombinedQuery> {
     // Parse the SPARQL query part
     let (input, sparql_parse) = if input.trim().is_empty() {
         // No remaining input - create empty SPARQL parse result
-        (input, (None, vec![], vec![], vec![], vec![], HashMap::new(), None, vec![], vec![], None, vec![]))
+        (input, (None, vec![], vec![], vec![], vec![], HashMap::new(), None, vec![], vec![], None, vec![], vec![]))
     } else {
         // There's remaining input - try to parse it as SPARQL
         parse_sparql_query(input)?

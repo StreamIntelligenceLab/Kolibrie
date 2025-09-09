@@ -109,6 +109,42 @@ pub fn execute_subquery<'a>(
         .collect()
 }
 
+// Add this function to handle ORDER BY sorting
+fn apply_order_by<'a>(
+    mut results: Vec<BTreeMap<&'a str, String>>,
+    order_conditions: Vec<OrderCondition<'a>>, // Take ownership
+) -> Vec<BTreeMap<&'a str, String>> {
+    if order_conditions.is_empty() {
+        return results;
+    }
+
+    results.sort_by(|a, b| {
+        for condition in &order_conditions { // Borrow from owned vector
+            let var = condition.variable;
+            
+            let val_a = a.get(var).map(|s| s.as_str()).unwrap_or("");
+            let val_b = b.get(var).map(|s| s.as_str()).unwrap_or("");
+            
+            let comparison = match (val_a.parse::<f64>(), val_b.parse::<f64>()) {
+                (Ok(num_a), Ok(num_b)) => num_a.partial_cmp(&num_b).unwrap_or(std::cmp::Ordering::Equal),
+                _ => val_a.cmp(val_b),
+            };
+            
+            let final_comparison = match condition.direction {
+                SortDirection::Asc => comparison,
+                SortDirection::Desc => comparison.reverse(),
+            };
+            
+            if final_comparison != std::cmp::Ordering::Equal {
+                return final_comparison;
+            }
+        }
+        std::cmp::Ordering::Equal
+    });
+
+    results
+}
+
 pub fn execute_query(sparql: &str, database: &mut SparqlDatabase) -> Vec<Vec<String>> {
     // Register prefixes from the query string first
     database.register_prefixes_from_query(sparql);
@@ -139,6 +175,7 @@ pub fn execute_query(sparql: &str, database: &mut SparqlDatabase) -> Vec<Vec<Str
             subqueries,
             limit,
             _,
+            order_conditions,
         ),
     )) = parse_result
     {
@@ -274,6 +311,8 @@ pub fn execute_query(sparql: &str, database: &mut SparqlDatabase) -> Vec<Vec<Str
                 group_and_aggregate_results(final_results, &group_by_variables, &aggregation_vars);
         }
 
+        final_results = apply_order_by(final_results, order_conditions);
+
         if let Some(limit_value) = limit_clause {
             if limit_value > 0 {
                 final_results.truncate(limit_value);
@@ -319,6 +358,7 @@ pub fn execute_query_normal(sparql: &str, database: &mut SparqlDatabase) -> Vec<
             subqueries,
             limit,
             _,
+            order_conditions,
         ),
     )) = parse_sparql_query(sparql)
     {
@@ -420,6 +460,8 @@ pub fn execute_query_normal(sparql: &str, database: &mut SparqlDatabase) -> Vec<
                 group_and_aggregate_results(final_results, &group_by_variables, &aggregation_vars);
         }
 
+        final_results = apply_order_by(final_results, order_conditions);
+
         if let Some(limit_value) = limit_clause {
             if limit_value > 0 {
                 final_results.truncate(limit_value);
@@ -459,6 +501,7 @@ pub fn execute_query_normal_simd(sparql: &str, database: &mut SparqlDatabase) ->
             subqueries,
             limit,
             _,
+            order_conditions,
         ),
     )) = parse_sparql_query(sparql)
     {
@@ -560,6 +603,8 @@ pub fn execute_query_normal_simd(sparql: &str, database: &mut SparqlDatabase) ->
                 group_and_aggregate_results(final_results, &group_by_variables, &aggregation_vars);
         }
 
+        final_results = apply_order_by(final_results, order_conditions);
+
         if let Some(limit_value) = limit_clause {
             if limit_value > 0 {
                 final_results.truncate(limit_value);
@@ -599,6 +644,7 @@ pub fn execute_query_rayon_simd(sparql: &str, database: &mut SparqlDatabase) -> 
             subqueries,
             limit,
             _,
+            order_conditions,
         ),
     )) = parse_sparql_query(sparql)
     {
@@ -700,6 +746,8 @@ pub fn execute_query_rayon_simd(sparql: &str, database: &mut SparqlDatabase) -> 
                 group_and_aggregate_results(final_results, &group_by_variables, &aggregation_vars);
         }
 
+        final_results = apply_order_by(final_results, order_conditions);
+
         if let Some(limit_value) = limit_clause {
             if limit_value > 0 {
                 final_results.truncate(limit_value);
@@ -739,6 +787,7 @@ pub fn execute_query_rayon_parallel1(sparql: &str, database: &mut SparqlDatabase
             subqueries,
             limit,
             _,
+            order_conditions,
         ),
     )) = parse_sparql_query(sparql)
     {
@@ -840,6 +889,8 @@ pub fn execute_query_rayon_parallel1(sparql: &str, database: &mut SparqlDatabase
                 group_and_aggregate_results(final_results, &group_by_variables, &aggregation_vars);
         }
 
+        final_results = apply_order_by(final_results, order_conditions);
+
         if let Some(limit_value) = limit_clause {
             if limit_value > 0 {
                 final_results.truncate(limit_value);
@@ -879,6 +930,7 @@ pub fn execute_query_rayon_parallel2(sparql: &str, database: &mut SparqlDatabase
             subqueries,
             limit,
             _,
+            order_conditions,
         ),
     )) = parse_sparql_query(sparql)
     {
@@ -980,6 +1032,8 @@ pub fn execute_query_rayon_parallel2(sparql: &str, database: &mut SparqlDatabase
                 group_and_aggregate_results(final_results, &group_by_variables, &aggregation_vars);
         }
 
+        final_results = apply_order_by(final_results, order_conditions);
+
         if let Some(limit_value) = limit_clause {
             if limit_value > 0 {
                 final_results.truncate(limit_value);
@@ -1017,6 +1071,7 @@ pub fn execute_query_rayon_parallel2_volcano(sparql: &str, database: &mut Sparql
             subqueries,
             limit,
             _,
+            order_conditions,
         ),
     )) = parse_result {
         
@@ -1121,6 +1176,8 @@ pub fn execute_query_rayon_parallel2_volcano(sparql: &str, database: &mut Sparql
                     final_results = group_and_aggregate_results(final_results, &group_vars, &aggregation_vars);
                 }
 
+                final_results = apply_order_by(final_results, &order_conditions);
+
                 // Apply LIMIT clause
                 if let Some(limit_value) = limit_clause {
                     if limit_value > 0 {
@@ -1185,6 +1242,8 @@ pub fn execute_query_rayon_parallel2_volcano(sparql: &str, database: &mut Sparql
                 final_results = group_and_aggregate_results(final_results, &group_vars, &aggregation_vars);
             }
 
+            final_results = apply_order_by(final_results, order_conditions);
+
             if let Some(limit_value) = limit_clause {
                 if limit_value > 0 {
                     final_results.truncate(limit_value);
@@ -1228,6 +1287,7 @@ pub fn execute_query_rayon_parallel2_redesign_streaming(
             subqueries,
             limit,
             _,
+            order_conditions,
         ),
     )) = parse_sparql_query(sparql) 
     {
@@ -1326,6 +1386,8 @@ pub fn execute_query_rayon_parallel2_redesign_streaming(
             final_results =
                 group_and_aggregate_results(final_results, &group_by_variables, &aggregation_vars);
         }
+
+        final_results = apply_order_by(final_results, order_conditions);
 
         // Apply LIMIT clause
         if let Some(limit_value) = limit_clause {
