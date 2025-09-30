@@ -10,10 +10,12 @@
 
 use crate::volcano_optimizer::*;
 use crate::sparql_database::SparqlDatabase;
-use crate::sparql_database::compact_results;
+// use crate::sparql_database::compact_results;
 use shared::triple::Triple;
 use shared::GPU_MODE_ENABLED;
 use shared::query::*;
+use shared::join_algorithm::perform_join_par_simd_with_strict_filter_4_redesigned_streaming;
+use shared::join_algorithm::compact_results;
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use crate::parser::*;
 use crate::custom_error::format_parse_error;
@@ -1437,7 +1439,7 @@ fn process_pattern_streaming<'a>(
             .collect();
 
         // Process this chunk
-        let chunk_results = database.perform_join_par_simd_with_strict_filter_4_redesigned_streaming(
+        let chunk_results = perform_join_par_simd_with_strict_filter_4_redesigned_streaming(
             subject_var.clone(),
             predicate.clone(),
             object_var.clone(),

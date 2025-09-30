@@ -148,10 +148,62 @@ fn test2() {
     }
 }
 
+fn transitivity_benchmark() {
+    println!("facts_count,inference_time_s,inferred_facts_count");
+
+    for facts_count in 1..=50 {
+        let mut kg = KnowledgeGraph::new();
+
+        // Add 'facts_count' facts in a chain: person0 likes person1, person1 likes person2, ...
+        for i in 0..facts_count {
+            let subject = format!("person{}", i);
+            let object = format!("person{}", i + 1);
+            kg.add_abox_triple(&subject, "likes", &object);
+        }
+
+        // Only transitivity rule
+        kg.add_rule(Rule {
+            premise: vec![
+                (
+                    Term::Variable("x".to_string()),
+                    Term::Constant(kg.dictionary.clone().encode("likes")),
+                    Term::Variable("y".to_string()),
+                ),
+                (
+                    Term::Variable("y".to_string()),
+                    Term::Constant(kg.dictionary.clone().encode("likes")),
+                    Term::Variable("z".to_string()),
+                ),
+            ],
+            conclusion: vec![(
+                Term::Variable("x".to_string()),
+                Term::Constant(kg.dictionary.clone().encode("likes")),
+                Term::Variable("z".to_string()),
+            )],
+            filters: vec![],
+        });
+
+        let start = Instant::now();
+        let inferred_facts = kg.infer_new_facts_semi_naive();
+        let duration = start.elapsed();
+
+        // Print time in seconds, e.g. 0.00123
+        println!(
+            "{},{:.6},{:?}",
+            facts_count,
+            duration.as_secs_f64(),
+            inferred_facts.len()
+        );
+    }
+}
+
 fn main() {
     println!("Test scenario 1:");
     test1();
     println!("---------------------------------");
     println!("Test scenario 2:");
     test2();
+    println!("---------------------------------");
+    println!("Test benchmark:");
+    transitivity_benchmark();
 }

@@ -51,7 +51,7 @@ fn volcano_optimizer_sparql() {
     }"#;
 
     // Step 4: Parse the SPARQL query
-    if let Ok((_, (_, variables, patterns, filters, _, prefixes, _, _, _))) = parse_sparql_query(sparql_query) {
+    if let Ok((_, (_, variables, patterns, filters, _, prefixes, _, _, _, _, _, _))) = parse_sparql_query(sparql_query) {
         // Merge prefixes into the database
         database.prefixes.extend(prefixes.clone());
 

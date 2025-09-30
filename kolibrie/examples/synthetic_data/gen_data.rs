@@ -12,7 +12,7 @@
 #![allow(unused_variables)]
 use crossbeam::channel::{bounded, Sender};
 use rayon::prelude::*;
-use rand::distributions::Uniform;
+use rand::distr::Uniform;
 use rand::{Rng, SeedableRng};
 use std::fs::File;
 use std::io::{BufWriter, Write};
@@ -105,9 +105,9 @@ xmlns:ds=\"https://data.cityofchicago.org/resource/xzkq-xp2w/\">\n",
                 let current_batch_size = end_id - start_id + 1;
 
                 // Initialize a thread-local RNG
-                let mut rng = rand::rngs::StdRng::from_entropy();
-                let position_dist = Uniform::from(0..POSITIONS.len());
-                let salary_dist = Uniform::from(30_000..150_000);
+                let mut rng = rand::rngs::StdRng::from_os_rng();
+                let position_dist = Uniform::try_from(0..POSITIONS.len()).unwrap();
+                let salary_dist = Uniform::try_from(30_000..150_000).unwrap();
 
                 // Preallocate a buffer string for the batch
                 let mut buffer = String::with_capacity(current_batch_size * 512); // Approximate size

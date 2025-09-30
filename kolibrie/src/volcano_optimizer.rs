@@ -12,6 +12,7 @@ use shared::dictionary::Dictionary;
 use crate::sparql_database::SparqlDatabase;
 use shared::triple::Triple;
 use shared::query::FilterExpression;
+use shared::join_algorithm::perform_join_par_simd_with_strict_filter_4_redesigned_streaming;
 use std::collections::{BTreeMap, HashMap, HashSet};
 use rayon::prelude::*;
 
@@ -932,7 +933,7 @@ impl PhysicalOperator {
             let triples_vec: Vec<Triple> = database.triples.iter().cloned().collect();
             
             // Use efficient join
-            let results = database.perform_join_par_simd_with_strict_filter_4_redesigned_streaming(
+            let results = perform_join_par_simd_with_strict_filter_4_redesigned_streaming(
                 subject_var,
                 predicate,
                 object_var,

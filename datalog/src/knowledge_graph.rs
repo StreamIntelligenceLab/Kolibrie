@@ -10,11 +10,12 @@
 
 use shared::dictionary::Dictionary;
 use shared::triple::Triple;
-use std::collections::{BTreeSet, HashMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use shared::index_manager::*;
 use shared::rule_index::RuleIndex;
 use shared::terms::{Term, TriplePattern};
 use shared::rule::Rule;
+use shared::join_algorithm::perform_hash_join_for_rules;
 use rayon::prelude::*;
 use std::sync::Arc;
 use shared::rule::FilterCondition;
@@ -74,100 +75,200 @@ impl KnowledgeGraph {
         }
     }
 
+    /// Convert rule evaluation to use the optimized hash join
+    fn evaluate_rule_with_optimized_join(&self, rule: &Rule, all_facts: &Vec<Triple>) -> Vec<HashMap<String, u32>> {
+        if rule.premise.is_empty() {
+            return Vec::new();
+        }
+
+        let mut current_bindings = vec![BTreeMap::new()];
+        
+        // Process each premise using the optimized join
+        for premise in &rule.premise {
+            current_bindings = self.join_premise_with_hash_join(premise, all_facts, current_bindings);
+            if current_bindings.is_empty() {
+                break;
+            }
+        }
+
+        // Convert results back to HashMap<String, u32>
+        current_bindings.into_iter()
+            .map(|binding| self.convert_string_binding_to_u32(&binding))
+            .collect()
+    }
+
+    fn join_premise_with_hash_join(
+        &self,
+        premise: &TriplePattern,
+        all_facts: &Vec<Triple>,
+        current_bindings: Vec<BTreeMap<String, String>>,
+    ) -> Vec<BTreeMap<String, String>> {
+        // Extract variable names and predicate from the premise
+        let (subject_var, predicate_str, object_var) = self.extract_join_parameters(premise);
+        
+        // Use the optimized hash join
+        perform_hash_join_for_rules(
+            subject_var,
+            predicate_str,
+            object_var,
+            all_facts.clone(),
+            &self.dictionary,
+            current_bindings,
+            None,
+        )
+    }
+
+    fn extract_join_parameters(&self, premise: &TriplePattern) -> (String, String, String) {
+        let (subject_term, predicate_term, object_term) = premise;
+        
+        let subject_var = match subject_term {
+            Term::Variable(v) => v.clone(),
+            Term::Constant(c) => {
+                // For constants, create a synthetic variable name
+                format!("__const_subj_{}", c)
+            }
+        };
+        
+        let object_var = match object_term {
+            Term::Variable(v) => v.clone(),
+            Term::Constant(c) => {
+                // For constants, create a synthetic variable name  
+                format!("__const_obj_{}", c)
+            }
+        };
+        
+        let predicate_str = match predicate_term {
+            Term::Constant(c) => {
+                self.dictionary.decode(*c).unwrap_or("unknown").to_string()
+            }
+            Term::Variable(v) => {
+                format!("__var_pred_{}", v)
+            }
+        };
+        
+        (subject_var, predicate_str, object_var)
+    }
+
+    fn convert_string_binding_to_u32(&self, binding: &BTreeMap<String, String>) -> HashMap<String, u32> {
+        let mut result = HashMap::new();
+        for (var, value) in binding {
+            if let Some(&id) = self.dictionary.string_to_id.get(value) {
+                result.insert(var.clone(), id);
+            }
+        }
+        result
+    }
+    
     pub fn infer_new_facts(&mut self) -> Vec<Triple> {
         let mut inferred_facts = Vec::new();
-        
-        // Get all current facts first
-        let all_facts = self.index_manager.query(None, None, None);
+        let mut all_facts = self.index_manager.query(None, None, None);
+        let mut known_facts: HashSet<Triple> = all_facts.iter().cloned().collect();
 
-        let rules = self.rules.clone(); // Clone rules to avoid borrowing conflict
-        
-        // Process rules using the retrieved facts
-        for rule in &rules {
-            match rule.premise.len() {
-                1 => {
-                    for triple in &all_facts {
-                        let mut variable_bindings = HashMap::new();
-                        if matches_rule_pattern(&rule.premise[0], triple, &mut variable_bindings) {
-                            // Now handle multiple conclusions
-                            for conclusion in &rule.conclusion {
-                                let inferred = construct_triple(conclusion, &variable_bindings, &mut self.dictionary);
+        loop {
+            let mut new_facts_this_round = Vec::new();
+            let rules = self.rules.clone();
+
+            for rule in &rules {
+                let bindings = self.evaluate_rule_with_optimized_join(rule, &all_facts);
+                
+                for binding in bindings {
+                    if evaluate_filters(&binding, &rule.filters, &self.dictionary) {
+                        for conclusion in &rule.conclusion {
+                            let inferred = construct_triple(conclusion, &binding, &mut self.dictionary);
+                            if !known_facts.contains(&inferred) {
+                                known_facts.insert(inferred.clone());
+                                new_facts_this_round.push(inferred.clone());
                                 inferred_facts.push(inferred);
                             }
                         }
                     }
                 }
-                2 => {
-                    for triple1 in &all_facts {
-                        for triple2 in &all_facts {
-                            if triple1.object != triple2.subject {
-                                continue;
-                            }
-                            let mut variable_bindings = HashMap::new();
-                            if matches_rule_pattern(&rule.premise[0], triple1, &mut variable_bindings)
-                                && matches_rule_pattern(&rule.premise[1], triple2, &mut variable_bindings)
-                            {
-                                // Now handle multiple conclusions
-                                for conclusion in &rule.conclusion {
-                                    let inferred = construct_triple(conclusion, &variable_bindings, &mut self.dictionary);
-                                    inferred_facts.push(inferred);
-                                }
-                            }
-                        }
-                    }
-                }
-                _ => {}
             }
+
+            if new_facts_this_round.is_empty() {
+                break;
+            }
+
+            for fact in &new_facts_this_round {
+                self.index_manager.insert(fact);
+            }
+
+            all_facts.extend(new_facts_this_round);
         }
 
         inferred_facts
     }
 
     pub fn infer_new_facts_semi_naive(&mut self) -> Vec<Triple> {
-        // Start with all known facts
         let all_initial = self.index_manager.query(None, None, None);
-        let mut all_facts: HashSet<Triple> = all_initial.into_iter().collect();
-        // Delta holds the "new" facts in the last round
-        let mut delta = all_facts.clone();
+        let mut all_facts: HashSet<Triple> = all_initial.iter().cloned().collect();
+        let mut delta: Vec<Triple> = all_initial;
         let mut inferred_so_far = Vec::new();
-    
+
         loop {
             let mut new_delta = HashSet::new();
-    
-            // For each rule in the knowledge graph
-            for rule in &self.rules {
-                let bindings = join_rule(rule, &all_facts, &delta);
+
+            for rule in &self.rules.clone() {
+                let bindings = self.evaluate_rule_with_delta(&rule, &all_facts.iter().cloned().collect(), &delta);
+                
                 for binding in bindings {
-                    // Check that filters pass
                     if evaluate_filters(&binding, &rule.filters, &self.dictionary) {
-                        // Process each conclusion
                         for conclusion in &rule.conclusion {
                             let inferred = construct_triple(conclusion, &binding, &mut self.dictionary);
-                            // Insert into the index; if the fact is new, add it to new_delta
-                            if self.index_manager.insert(&inferred) && !all_facts.contains(&inferred) {
+                            if !all_facts.contains(&inferred) {
                                 new_delta.insert(inferred.clone());
+                                self.index_manager.insert(&inferred);
                             }
                         }
                     }
                 }
             }
-    
-            // Terminate when no new facts were inferred
+
             if new_delta.is_empty() {
                 break;
             }
-    
-            // Update all_facts and delta
+
             for fact in &new_delta {
                 all_facts.insert(fact.clone());
                 inferred_so_far.push(fact.clone());
             }
-            delta = new_delta;
+            
+            delta = new_delta.iter().cloned().collect();
         }
-    
+
         inferred_so_far
     }
-        
+
+    fn evaluate_rule_with_delta(&self, rule: &Rule, all_facts: &Vec<Triple>, delta_facts: &Vec<Triple>) -> Vec<HashMap<String, u32>> {
+        let n = rule.premise.len();
+        let mut results = Vec::new();
+
+        for i in 0..n {
+            let mut current_bindings = vec![BTreeMap::new()];
+            
+            current_bindings = self.join_premise_with_hash_join(&rule.premise[i], delta_facts, current_bindings);
+            
+            // Join remaining premises with all facts
+            for j in 0..n {
+                if j == i {
+                    continue;
+                }
+                current_bindings = self.join_premise_with_hash_join(&rule.premise[j], all_facts, current_bindings);
+                if current_bindings.is_empty() {
+                    break;
+                }
+            }
+            
+            // Convert and add results
+            for binding in current_bindings {
+                let u32_binding = self.convert_string_binding_to_u32(&binding);
+                results.push(u32_binding);
+            }
+        }
+
+        results
+    }
+
     pub fn infer_new_facts_semi_naive_parallel(&mut self) -> Vec<Triple> {
         // Collect all known facts
         let all_initial = self.index_manager.query(None, None, None);
