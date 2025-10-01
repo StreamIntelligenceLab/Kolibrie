@@ -68,10 +68,6 @@ name = "real_dataset"
 path = "examples/real_dataset/real_dataset.rs"
 
 [[example]]
-name = "sql_query"
-path = "examples/sql_query/sql_query.rs"
-
-[[example]]
 name = "turtle"
 path = "examples/turtle/turtle_example.rs"
 
