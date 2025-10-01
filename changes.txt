@@ -98,6 +98,7 @@
 97. Modify naive and semi-naive algorithms by using hash join algorithm
 98. Small cleaning
 99. Cargo cleaning
+100. Minor fix of predicate
 
 0.1.0
 1. Parsing RDF/XML

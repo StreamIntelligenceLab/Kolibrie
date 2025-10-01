@@ -14,7 +14,7 @@ fn main() {
     let query = r#"RETRIEVE SOME ACTIVE STREAM ?s FROM <http://my.org/catalog>
 WITH {
     ?s a :Stream .
-    ?s hasDescriptor ?descriptor .
+    ?s :hasDescriptor ?descriptor .
     ?descriptor :hasMetaData ?meta.
     ?meta :hasLocation <:somelocation>.
     ?meta :hasCoverage <:someArea>.

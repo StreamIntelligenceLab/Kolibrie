@@ -47,7 +47,6 @@ pub fn predicate(input: &str) -> IResult<&str, &str> {
     alt((
         recognize(tuple((char(':'), identifier))),
         prefixed_identifier,
-        identifier,
         tag("a"),
     )).parse(input)
 }
