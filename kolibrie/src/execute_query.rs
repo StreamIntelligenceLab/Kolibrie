@@ -1163,7 +1163,7 @@ pub fn execute_query_rayon_parallel2_volcano(sparql: &str, database: &mut Sparql
                 }
                 
                 // Apply filters
-                final_results = database.apply_filters_simd(final_results, filters.clone());
+                final_results = database.apply_filters_simd(final_results, filters);
                 
                 // Process subqueries
                 for subquery in subqueries {
@@ -1179,7 +1179,7 @@ pub fn execute_query_rayon_parallel2_volcano(sparql: &str, database: &mut Sparql
                     final_results = group_and_aggregate_results(final_results, &group_vars, &aggregation_vars);
                 }
 
-                final_results = apply_order_by(final_results, order_conditions);
+                final_results = apply_order_by(final_results, &order_conditions);
 
                 // Apply LIMIT clause
                 if let Some(limit_value) = limit_clause {
