@@ -348,14 +348,36 @@ fn eval_query_helper<'a>(
     // Apply BIND (UDF) clauses
     process_bind_clauses(&mut final_results, binds, database);
 
-    // Apply GROUP BY and aggregations
-    // TODO : unable to get this working
-    // if !group_vars.is_empty() {
-    //     final_results =
-    //         group_and_aggregate_results(final_results, &group_vars, &aggregation_vars);
-    // }
-    // TODO: unable to get this working
-    // final_results = apply_order_by(final_results, order_conditions);
+// Apply GROUP BY and aggregations
+    if !group_vars.is_empty() {
+        let static_group_vars: &'static [&'static str] = Box::leak(
+            group_vars
+                .iter()
+                .map(|&s| Box::leak(s.to_string().into_boxed_str()) as &'static str)
+                .collect::<Vec<_>>()
+                .into_boxed_slice()
+        );
+
+        let static_aggregation_vars: &'static [(&'static str, &'static str, &'static str)] = Box::leak(
+            aggregation_vars
+                .iter()
+                .map(|(a, b, c)| {
+                    (
+                        Box::leak(a.to_string().into_boxed_str()) as &'static str,
+                        Box::leak(b.to_string().into_boxed_str()) as &'static str,
+                        Box::leak(c.to_string().into_boxed_str()) as &'static str,
+                    )
+                })
+                .collect::<Vec<_>>()
+                .into_boxed_slice()
+        );
+
+        final_results = group_and_aggregate_results(
+            final_results,
+            static_group_vars,
+            static_aggregation_vars,
+        );
+    }
 
     if let Some(limit_value) = limit {
         if limit_value > 0 {

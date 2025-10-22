@@ -79,6 +79,7 @@ impl SparqlDatabase {
         self.index_manager.insert(&triple);
     }
 
+
     /// Helper function that accepts parts of a triple, constructs a Triple, and adds it.
     pub fn add_triple_parts(&mut self, subject: &str, predicate: &str, object: &str) {
         let subject_id = self.dictionary.encode(subject);
@@ -549,8 +550,17 @@ impl SparqlDatabase {
         }
     }
 
-    // New parse_ntriples function
-    pub fn parse_ntriples(&mut self, ntriples_data: &str) {
+    // parse_ntriples and add to DB function
+    pub fn parse_ntriples_and_add(&mut self, ntriples_data: &str) {
+        let partial_results = self.parse_ntriples(ntriples_data);
+
+        let encoded_triples = self.encode_triples(partial_results);
+        for encoded_triple in encoded_triples{
+            self.add_triple(encoded_triple);
+        }
+    }
+    // parses ntriples
+    pub fn parse_ntriples(&mut self, ntriples_data: &str) -> Vec<Vec<(String, String, String)>> {
         let lines: Vec<&str> = ntriples_data.lines().collect();
         let chunk_size = 1000;
         let chunks: Vec<&[&str]> = lines.chunks(chunk_size).collect();
@@ -562,42 +572,54 @@ impl SparqlDatabase {
 
                 for line in chunk.iter() {
                     let line = line.trim();
-                    
+
                     // Skip empty lines and comments
                     if line.is_empty() || line.starts_with('#') {
                         continue;
                     }
-                    
+
                     // N-Triples must end with a dot
                     if !line.ends_with('.') {
                         eprintln!("Invalid N-Triples line (missing dot): {}", line);
                         continue;
                     }
-                    
+
                     // Remove the trailing dot
                     let line_without_dot = &line[..line.len() - 1].trim();
-                    
+
                     // Parse the triple
                     if let Some((subject, predicate, object)) = self.parse_ntriples_line(line_without_dot) {
                         local_triples.push((subject, predicate, object));
                     }
                 }
-                
+
                 local_triples
             })
             .collect();
-
-        // Merge results with main dictionary
-        for triple_strings in partial_results {
+        partial_results
+    }
+    // encode triples
+    pub fn encode_triples(&mut self, non_encoded_triples: Vec<Vec<(String, String, String)>>) -> Vec<Triple>{
+    // Merge results with main dictionary
+        let mut encoded_triples = Vec::new();
+        for triple_strings in non_encoded_triples {
             for (subject, predicate, object) in triple_strings {
                 let main_triple = Triple {
                     subject: self.dictionary.encode(&subject),
                     predicate: self.dictionary.encode(&predicate),
                     object: self.dictionary.encode(&object),
                 };
-                self.triples.insert(main_triple);
+                encoded_triples.push(main_triple);
             }
         }
+        encoded_triples
+    }
+    pub fn parse_and_encode_ntriples(&mut self, ntriples_data: &str) -> Vec<Triple>{
+        println!("parsing: {}", ntriples_data);
+        let partial_results = self.parse_ntriples(ntriples_data);
+        println!("parsed: {:?}", partial_results);
+
+        self.encode_triples(partial_results)
     }
 
     // Helper method to parse a single N-Triples line

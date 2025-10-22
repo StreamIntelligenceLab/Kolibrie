@@ -85,3 +85,8 @@ python/.venv/
 
 # Some other directories
 benchmark_dataset/
+
+# IntelliJ 
+.idea/
+ out.txt
+

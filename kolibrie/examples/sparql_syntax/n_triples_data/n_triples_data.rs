@@ -24,7 +24,7 @@ fn n_triple_simple_query() {
     "#;
 
     // Use the parse_ntriples function
-    db.parse_ntriples(ntriples_data);
+    db.parse_ntriples_and_add(ntriples_data);
 
     let sparql_query = r#"
     PREFIX ex: <http://example.org/> 
