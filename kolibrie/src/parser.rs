@@ -1949,3 +1949,4 @@ fn register_rule_predicates(rule: &Rule, database: &mut SparqlDatabase) {
         }
     }
 }
+

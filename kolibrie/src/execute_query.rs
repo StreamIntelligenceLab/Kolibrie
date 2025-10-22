@@ -164,22 +164,22 @@ pub fn execute_query(sparql: &str, database: &mut SparqlDatabase) -> Vec<Vec<Str
     let parse_result = parse_sparql_query(sparql);
 
     if let Ok((
-        _,
-        (
-            insert_clause,
-            mut variables,
-            patterns,
-            filters,
-            group_vars,
-            parsed_prefixes,
-            values_clause,
-            binds,
-            subqueries,
-            limit,
-            _,
-            order_conditions,
-        ),
-    )) = parse_result
+                  _,
+                  (
+                      insert_clause,
+                      mut variables,
+                      patterns,
+                      filters,
+                      group_vars,
+                      parsed_prefixes,
+                      values_clause,
+                      binds,
+                      subqueries,
+                      limit,
+                      _,
+                      order_conditions,
+                  ),
+              )) = parse_result
     {
         prefixes = parsed_prefixes;
         limit_clause = limit;
@@ -231,7 +231,7 @@ pub fn execute_query(sparql: &str, database: &mut SparqlDatabase) -> Vec<Vec<Str
             } else {
                 predicate.to_string()
             };
-            
+
             // Check if this is a direct reference to a rule conclusion
             if rule_predicates.contains(&resolved_predicate) && object_var == "true" {
                 // Extract the rule name from the predicate
@@ -242,7 +242,7 @@ pub fn execute_query(sparql: &str, database: &mut SparqlDatabase) -> Vec<Vec<Str
                 } else {
                     &resolved_predicate
                 };
-                
+
                 // Process this as a rule call
                 let var_str = subject_var.to_string();
                 final_results = process_rule_call(rule_name, &var_str, database, &prefixes);
@@ -334,6 +334,7 @@ pub fn execute_query(sparql: &str, database: &mut SparqlDatabase) -> Vec<Vec<Str
     // Convert the final BTreeMap results into Vec<Vec<String>>
     format_results(final_results, &selected_variables)
 }
+
 
 pub fn execute_query_normal(sparql: &str, database: &mut SparqlDatabase) -> Vec<Vec<String>> {
     let sparql = normalize_query(sparql);

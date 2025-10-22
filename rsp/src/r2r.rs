@@ -14,6 +14,8 @@ pub trait R2ROperator<I,R,O>: Send{
     fn add(&mut self, data: I);
     fn remove(&mut self, data: &I);
     fn materialize(&mut self) -> Vec<I>;
-    fn execute_query(&self,query: &R) -> Vec<O>;
+    fn execute_query(&mut self,query: &str) -> Vec<O>;
+
+    fn parse_data(&mut self, data: &str) -> Vec<I>;
 }
 

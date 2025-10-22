@@ -7,3 +7,4 @@ description = "RDF Stream Processing"
 
 [dependencies]
 log = "0.4.27"
+

@@ -768,6 +768,7 @@ dependencies = [
  "gpu",
  "httparse",
  "libc",
+ "log",
  "ml",
  "nom",
  "percent-encoding",

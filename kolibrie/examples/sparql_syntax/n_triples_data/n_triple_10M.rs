@@ -56,7 +56,7 @@ fn parse_large_ntriples_file(file_path: &str) -> Result<SparqlDatabase, Box<dyn 
         if batch_lines.len() >= BATCH_SIZE {
             // Process batch immediately
             let batch_data = batch_lines.join("\n");
-            db.parse_ntriples(&batch_data);
+            db.parse_ntriples_and_add(&batch_data);
             
             // Aggressive cleanup
             batch_lines.clear();
@@ -76,7 +76,7 @@ fn parse_large_ntriples_file(file_path: &str) -> Result<SparqlDatabase, Box<dyn 
     // Process remaining batch
     if !batch_lines.is_empty() {
         let batch_data = batch_lines.join("\n");
-        db.parse_ntriples(&batch_data);
+        db.parse_ntriples_and_add(&batch_data);
     }
 
     println!("Finished parsing {} triples in {:.2} seconds", 
