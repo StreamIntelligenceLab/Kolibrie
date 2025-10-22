@@ -101,6 +101,7 @@
 100. Minor fix of predicate
 101. Add initial RSP support
 102. Modify sparqldatabase to isolate parsing, encoding and adding of ntriple data
+103. Minor fix of predicate
 
 0.1.0
 1. Parsing RDF/XML
