@@ -79,10 +79,10 @@ impl SparqlDatabase {
         self.index_manager.insert(&triple);
     }
     
-    pub fn delete_triple(&mut self, triple: Triple) -> bool {
-        let removed = self.triples.remove(&triple);
+    pub fn delete_triple(&mut self, triple: &Triple) -> bool {
+        let removed = self.triples.remove(triple);
         if removed {
-            self.index_manager.delete(&triple);
+            self.index_manager.delete(triple);
         }
         removed
     }
@@ -112,7 +112,7 @@ impl SparqlDatabase {
             predicate: predicate_id,
             object: object_id,
         };
-        self.delete_triple(triple)
+        self.delete_triple(&triple)
     }
 
     pub fn generate_rdf_xml(&mut self) -> String {

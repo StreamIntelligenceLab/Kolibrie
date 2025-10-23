@@ -89,7 +89,7 @@ mod tests {
         };
         
         // Delete the triple
-        let deleted = db.delete_triple(triple_to_delete.clone());
+        let deleted = db.delete_triple(&triple_to_delete);
         assert!(deleted, "Triple should be deleted successfully");
         
         // Verify count decreased

@@ -244,7 +244,7 @@ impl R2ROperator<Triple,Vec<String>, Vec<String>> for SimpleR2R {
     }
 
     fn remove(&mut self, data: &Triple) {
-        error!("Unsupported operation remove data");
+        self.item.delete_triple(data);
     }
 
     fn materialize(&mut self) -> Vec<Triple>{
@@ -286,14 +286,14 @@ mod tests{
         let rules = "@prefix test: <http://www.w3.org/test/>.\n{?x <http://test.be/hasVal> ?y. ?y <http://www.w3.org/1999/02/22-rdf-syntax-ns#type> <http://schema.org/Person>.}=>{?x <http://www.w3.org/1999/02/22-rdf-syntax-ns#type> test:SuperType.}";
         let result_container = Arc::new(Mutex::new(Vec::new()));
         let result_container_clone = Arc::clone(&result_container);
-
+        let window_size = 10;
         let function = Box::new(move |r| {
             println!("Bindings: {:?}",r);
             result_container_clone.lock().unwrap().push(r);
         });
         let result_consumer = ResultConsumer{function: Arc::new(function)};
         let mut r2r = Box::new(SimpleR2R {item: SparqlDatabase::new()});
-        let mut engine = RSPBuilder::new(10,2)
+        let mut engine = RSPBuilder::new(window_size,2)
             .add_tick(Tick::TimeDriven)
             .add_report_strategy(ReportStrategy::OnWindowClose)
             .add_triples(ntriples_file)
@@ -312,7 +312,8 @@ mod tests{
         }
         engine.stop();
         thread::sleep(Duration::from_secs(2));
-        assert_ne!(result_container.lock().unwrap().len(),0);
+        thread::sleep(Duration::from_secs(2));
+        assert_eq!(result_container.lock().unwrap().len(),8*window_size);
     }
 
 }
