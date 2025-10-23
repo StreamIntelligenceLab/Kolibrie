@@ -10,14 +10,14 @@
 
 use crate::terms::TriplePattern;
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct FilterCondition {
     pub variable: String,
     pub operator: String,
     pub value: String,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct Rule {
     pub premise: Vec<TriplePattern>,
     pub filters: Vec<FilterCondition>,

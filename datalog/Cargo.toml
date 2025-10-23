@@ -9,3 +9,10 @@ description = "Datalog Engine"
 nom = { workspace = true }
 shared = { path = "../shared" }
 rayon = { workspace = true }
+log = "0.4.28"
+criterion = "0.7.0"
+
+[[bench]]
+name = "reasoning_benchmark"
+path = "benches/reasoning_bench.rs"
+harness = false

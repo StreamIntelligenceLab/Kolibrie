@@ -19,6 +19,8 @@ use shared::join_algorithm::perform_hash_join_for_rules;
 use rayon::prelude::*;
 use std::sync::Arc;
 use shared::rule::FilterCondition;
+use crate::ruleindex::RuleIndexer;
+
 
 // Logic part: Knowledge Graph
 
@@ -199,6 +201,48 @@ impl KnowledgeGraph {
         inferred_facts
     }
 
+    pub fn infer_new_facts_semi_naive_with_rule_index(&mut self, rule_index: &RuleIndexer) -> Vec<Triple> {
+        let all_initial = self.index_manager.query(None, None, None);
+        let mut all_facts: HashSet<Triple> = all_initial.iter().cloned().collect();
+        let mut delta: Vec<Triple> = all_initial;
+        let mut inferred_so_far = Vec::new();
+
+        loop {
+            let mut new_delta = HashSet::new();
+
+            for triple in delta.clone() {
+                let matching_rules = rule_index.find_match(&triple);
+                for rule in matching_rules {
+                    let bindings = self.evaluate_rule_with_delta(&rule, &all_facts.iter().cloned().collect(), &delta);
+
+                    for binding in bindings {
+                        if evaluate_filters(&binding, &rule.filters, &self.dictionary) {
+                            for conclusion in &rule.conclusion {
+                                let inferred = construct_triple(conclusion, &binding, &mut self.dictionary);
+                                if !all_facts.contains(&inferred) {
+                                    new_delta.insert(inferred.clone());
+                                    self.index_manager.insert(&inferred);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            if new_delta.is_empty() {
+                break;
+            }
+
+            for fact in &new_delta {
+                all_facts.insert(fact.clone());
+                inferred_so_far.push(fact.clone());
+            }
+
+            delta = new_delta.iter().cloned().collect();
+        }
+
+        inferred_so_far
+    }
     pub fn infer_new_facts_semi_naive(&mut self) -> Vec<Triple> {
         let all_initial = self.index_manager.query(None, None, None);
         let mut all_facts: HashSet<Triple> = all_initial.iter().cloned().collect();
@@ -1048,4 +1092,58 @@ fn join_remaining(
         }
     }
     results
+}
+#[cfg(test)]
+mod tests {
+    use crate::knowledge_graph::KnowledgeGraph;
+
+    use super::*;
+
+    fn generate_hierarchy(depth: usize, reasoner: &mut KnowledgeGraph) -> Vec<Rule>{
+        let mut rules = Vec::new();
+        for i in 0..depth {
+            let rule = Rule {
+                premise: vec![
+                    (Term::Variable("X".to_string()),
+                     Term::Constant(reasoner.dictionary.encode("a")),
+                     Term::Constant(reasoner.dictionary.encode(format!("C{}", i).as_str()))
+                    )
+                ],
+                conclusion: vec![(Term::Variable("X".to_string()),
+                                  Term::Constant(reasoner.dictionary.encode("a")),
+                                  Term::Constant(reasoner.dictionary.encode(format!("C{}", i + 1).as_str())))],
+                filters: vec![],
+            };
+            rules.push(rule);
+        }
+        rules
+    }
+    #[test]
+    fn execute_semi_naive() {
+        let depth = 10;
+        let mut reasoner = KnowledgeGraph::new();
+        let rules = generate_hierarchy(depth, &mut reasoner);
+        for rule in rules{
+            reasoner.add_rule(rule);
+        }
+        //add aBox
+        reasoner.add_abox_triple("subject","a", "C0");
+        let results = reasoner.infer_new_facts_semi_naive();
+        assert_eq!(results.len(), depth);
+    }
+
+    #[test]
+    fn execute_semi_naive_with_rule_indexing() {
+        let depth = 10;
+        let mut reasoner = KnowledgeGraph::new();
+        let rules = generate_hierarchy(depth, &mut reasoner);
+        let mut rule_index = RuleIndexer::new();
+        for rule in rules{
+            rule_index.add(rule);
+        }
+        //add aBox
+        reasoner.add_abox_triple("subject","a", "C0");
+        let results = reasoner.infer_new_facts_semi_naive_with_rule_index(&mut rule_index);
+        assert_eq!(results.len(), depth);
+    }
 }
