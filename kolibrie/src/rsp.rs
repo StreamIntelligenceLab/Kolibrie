@@ -281,6 +281,7 @@ mod tests{
     use std::fs::{File, OpenOptions};
     use std::io;
     use std::io::{Write, BufRead};
+    use std::time::Instant;
 
     use std::time::Duration;
     use super::*;
@@ -312,13 +313,21 @@ mod tests{
             .add_r2r(r2r)
             .add_r2s(StreamOperator::RSTREAM)
             .build();
-        for i in 0..20 {
+
+        let start = Instant::now();
+
+
+
+
+        for i in 0..1000 {
             let data = format!("<http://test.be/subject{}> a <http://www.w3.org/test/SuperType> .", i);
             let triples = engine.parse_data(&data);
             for triple in triples{
                 engine.add(triple,i);
             }
         }
+        let duration = start.elapsed();
+        println!("Time elapsed: {:?}", duration);
         engine.stop();
         thread::sleep(Duration::from_secs(2));
         assert_ne!(result_container.lock().unwrap().len(),0);
