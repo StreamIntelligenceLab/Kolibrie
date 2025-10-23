@@ -78,9 +78,16 @@ impl SparqlDatabase {
         self.triples.insert(triple.clone());
         self.index_manager.insert(&triple);
     }
+    
+    pub fn delete_triple(&mut self, triple: Triple) -> bool {
+        let removed = self.triples.remove(&triple);
+        if removed {
+            self.index_manager.delete(&triple);
+        }
+        removed
+    }
 
-
-    /// Helper function that accepts parts of a triple, constructs a Triple, and adds it.
+    /// Helper function that accepts parts of a triple, constructs a Triple, and adds it
     pub fn add_triple_parts(&mut self, subject: &str, predicate: &str, object: &str) {
         let subject_id = self.dictionary.encode(subject);
         let predicate_id = self.dictionary.encode(predicate);
@@ -92,6 +99,20 @@ impl SparqlDatabase {
             object: object_id,
         };
         self.add_triple(triple);
+    }
+
+    /// Helper function that accepts parts of a triple, constructs a Triple, and deletes it
+    pub fn delete_triple_parts(&mut self, subject: &str, predicate: &str, object: &str) -> bool {
+        let subject_id = self.dictionary.encode(subject);
+        let predicate_id = self.dictionary.encode(predicate);
+        let object_id = self.dictionary.encode(object);
+
+        let triple = Triple {
+            subject: subject_id,
+            predicate: predicate_id,
+            object: object_id,
+        };
+        self.delete_triple(triple)
     }
 
     pub fn generate_rdf_xml(&mut self) -> String {

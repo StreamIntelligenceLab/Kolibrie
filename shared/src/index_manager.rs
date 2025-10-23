@@ -55,6 +55,29 @@ impl UnifiedIndex {
         true
     }
 
+    /// Delete a single triple from all six indexes
+    pub fn delete(&mut self, triple: &Triple) -> bool {
+        let Triple { subject: s, predicate: p, object: o } = *triple;
+        
+        let exists = self.spo
+            .get(&s)
+            .and_then(|pred_map| pred_map.get(&p))
+            .map_or(false, |objects| objects.contains(&o));
+        
+        if !exists {
+            return false; // triple doesn't exist
+        }
+
+        // Remove from all six indexes using helper function
+        remove_from_index(&mut self.spo, s, p, o);
+        remove_from_index(&mut self.pos, p, o, s);
+        remove_from_index(&mut self.osp, o, s, p);
+        remove_from_index(&mut self.pso, p, s, o);
+        remove_from_index(&mut self.ops, o, p, s);
+        remove_from_index(&mut self.sop, s, o, p);
+        true 
+    }
+
     /// Bulk-build the index from a list of triples
     pub fn build_from_triples(&mut self, triples: &[Triple]) {
         use rayon::prelude::*;
@@ -490,5 +513,28 @@ impl UnifiedIndex {
             obj_map.shrink_to_fit();
         });
         self.sop.shrink_to_fit();
+    }
+}
+
+/// Helper function to remove a triple from a nested index structure and clean up empty collections
+#[inline]
+fn remove_from_index(
+    index: &mut HashMap<u32, HashMap<u32, HashSet<u32>>>,
+    key1: u32,
+    key2: u32,
+    value: u32,
+) {
+    if let Some(inner_map) = index.get_mut(&key1) {
+        if let Some(set) = inner_map.get_mut(&key2) {
+            set.remove(&value);
+            // Clean up empty inner set
+            if set.is_empty() {
+                inner_map.remove(&key2);
+            }
+        }
+        // Clean up empty inner map
+        if inner_map.is_empty() {
+            index.remove(&key1);
+        }
     }
 }

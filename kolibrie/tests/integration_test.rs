@@ -70,6 +70,56 @@ mod tests {
     }
 
     #[test]
+    fn test_delete_triple() {
+        let mut db = setup_test_db();
+        
+        // Initial count
+        let initial_count = db.triples.len();
+        assert_eq!(initial_count, 11);
+        
+        // Create a triple to delete
+        let person1 = db.dictionary.encode("http://example.org/person1");
+        let pred_name = db.dictionary.encode("ex:name");
+        let obj_john = db.dictionary.encode("John Smith");
+        
+        let triple_to_delete = Triple {
+            subject: person1,
+            predicate: pred_name,
+            object: obj_john
+        };
+        
+        // Delete the triple
+        let deleted = db.delete_triple(triple_to_delete.clone());
+        assert!(deleted, "Triple should be deleted successfully");
+        
+        // Verify count decreased
+        assert_eq!(db.triples.len(), initial_count - 1);
+        
+        // Verify triple is gone
+        assert!(!db.triples.contains(&triple_to_delete));
+    }
+
+    #[test]
+    fn test_delete_triple_parts() {
+        let mut db = setup_test_db();
+        
+        // Initial count
+        let initial_count = db.triples.len();
+        assert_eq!(initial_count, 11);
+        
+        // Delete using string parts
+        let deleted = db.delete_triple_parts(
+            "http://example.org/person2",
+            "ex:email",
+            "jane@example.com"
+        );
+        assert!(deleted, "Triple should be deleted successfully");
+        
+        // Verify count decreased
+        assert_eq!(db.triples.len(), initial_count - 1);
+    }
+
+    #[test]
     fn test_basic_filters() {
         let db = setup_test_db();
         
