@@ -145,13 +145,14 @@ impl  <I, O> RSPEngine<I, O> where O: Clone + Hash + Eq + Send +'static, I: Eq +
         let mut engine = RSPEngine{s2r: window, r2r:  Arc::new(Mutex::new(store)), r2s_consumer: result_consumer, r2s_operator: Arc::new(Mutex::new(Relation2StreamOperator::new(r2s,0)))};
         match operation_mode {
             OperationMode::SingleThread => {
-                // let consumer_temp = engine.r2r.clone();
-                // let r2s_consumer = engine.r2s_consumer.function.clone();
-                // let mut r2s_operator = engine.r2s_operator.clone();
-                // let call_back: Box<dyn FnMut(ContentContainer<I>) -> ()> = Box::new(move |content| {
-                //     Self::evaluate_r2r_and_call_r2s(&query, consumer_temp.clone(), r2s_consumer.clone(), r2s_operator.clone(), content);
-                // });
-                // engine.s2r.register_callback(call_back);
+                let consumer_temp = engine.r2r.clone();
+                let r2s_consumer = engine.r2s_consumer.function.clone();
+                let mut r2s_operator = engine.r2s_operator.clone();
+                let query_str_cpy = query_str.clone().to_string();
+                let call_back: Box<dyn FnMut(ContentContainer<I>) -> ()> = Box::new(move |content| {
+                    Self::evaluate_r2r_and_call_r2s(query_str_cpy.as_str(), consumer_temp.clone(), r2s_consumer.clone(), r2s_operator.clone(), content);
+                });
+                engine.s2r.register_callback(call_back);
                 error!("Unsupported operation (single thread processing)!")
             },
             OperationMode::MultiThread => {
@@ -269,9 +270,6 @@ impl R2ROperator<Triple,Vec<String>, Vec<String>> for SimpleR2R {
 
 #[cfg(test)]
 mod tests{
-    use std::fs::{File, OpenOptions};
-    use std::io;
-    use std::io::{Write, BufRead};
 
     use std::time::Duration;
     use super::*;
@@ -279,11 +277,6 @@ mod tests{
     #[test]
     #[ignore]
     fn rsp_integration(){
-        let ntriples_file = "<http://example.com/foo> <http://www.w3.org/1999/02/22-rdf-syntax-ns#type> <http://schema.org/Person> .
-<http://example.com/foo> <http://schema.org/name> \"Foo\" .
-<http://example.com/bar> <http://www.w3.org/1999/02/22-rdf-syntax-ns#type> <http://schema.org/Person> .
-<http://example.com/bar> <http://schema.org/name> \"Bar\" .";
-        let rules = "@prefix test: <http://www.w3.org/test/>.\n{?x <http://test.be/hasVal> ?y. ?y <http://www.w3.org/1999/02/22-rdf-syntax-ns#type> <http://schema.org/Person>.}=>{?x <http://www.w3.org/1999/02/22-rdf-syntax-ns#type> test:SuperType.}";
         let result_container = Arc::new(Mutex::new(Vec::new()));
         let result_container_clone = Arc::clone(&result_container);
         let window_size = 10;
@@ -296,8 +289,6 @@ mod tests{
         let mut engine = RSPBuilder::new(window_size,2)
             .add_tick(Tick::TimeDriven)
             .add_report_strategy(ReportStrategy::OnWindowClose)
-            .add_triples(ntriples_file)
-            .add_rules(rules)
             .add_query("SELECT ?s WHERE{ ?s a <http://www.w3.org/test/SuperType>}")
             .add_consumer(result_consumer)
             .add_r2r(r2r)
@@ -312,7 +303,36 @@ mod tests{
         }
         engine.stop();
         thread::sleep(Duration::from_secs(2));
-        thread::sleep(Duration::from_secs(2));
+        assert_eq!(result_container.lock().unwrap().len(),8*window_size);
+    }
+    #[test]
+    fn rsp_integration_single_thread(){
+        let result_container = Arc::new(Mutex::new(Vec::new()));
+        let result_container_clone = Arc::clone(&result_container);
+        let window_size = 10;
+        let function = Box::new(move |r| {
+            println!("Bindings: {:?}",r);
+            result_container_clone.lock().unwrap().push(r);
+        });
+        let result_consumer = ResultConsumer{function: Arc::new(function)};
+        let mut r2r = Box::new(SimpleR2R {item: SparqlDatabase::new()});
+        let mut engine = RSPBuilder::new(window_size,2)
+            .add_tick(Tick::TimeDriven)
+            .add_report_strategy(ReportStrategy::OnWindowClose)
+            .add_query("SELECT ?s WHERE{ ?s a <http://www.w3.org/test/SuperType>}")
+            .add_consumer(result_consumer)
+            .add_r2r(r2r)
+            .add_r2s(StreamOperator::RSTREAM)
+            .set_operation_mode(OperationMode::SingleThread)
+            .build();
+        for i in 0..20 {
+            let data = format!("<http://test.be/subject{}> a <http://www.w3.org/test/SuperType> .", i);
+            let triples = engine.parse_data(&data);
+            for triple in triples{
+                engine.add(triple,i);
+            }
+        }
+        engine.stop();
         assert_eq!(result_container.lock().unwrap().len(),8*window_size);
     }
 
