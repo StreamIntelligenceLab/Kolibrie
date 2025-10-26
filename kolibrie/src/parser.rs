@@ -45,6 +45,7 @@ pub fn prefixed_identifier(input: &str) -> IResult<&str, &str> {
 // Parser for a predicate (either prefixed or unprefixed)
 pub fn predicate(input: &str) -> IResult<&str, &str> {
     alt((
+        parse_uri,
         recognize(tuple((char(':'), identifier))),
         prefixed_identifier,
         tag("a"),
