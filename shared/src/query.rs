@@ -116,7 +116,7 @@ pub struct RegisterClause<'a> {
 #[derive(Debug, Clone)]
 pub struct RSPQLSelectQuery<'a> {
     pub variables: Vec<(&'a str, &'a str, Option<&'a str>)>,
-    pub window_clause: Option<WindowClause<'a>>,
+    pub window_clause: Vec<WindowClause<'a>>,
     pub where_clause: (
         Vec<(&'a str, &'a str, &'a str)>,
         Vec<FilterExpression<'a>>,
@@ -137,7 +137,7 @@ pub struct WindowBlock<'a> {
 pub struct CombinedRule<'a> {
     pub head: RuleHead<'a>,
     pub stream_type: Option<StreamType<'a>>,
-    pub window_clause: Option<WindowClause<'a>>,
+    pub window_clause: Vec<WindowClause<'a>>,
     pub body: (
         Vec<(&'a str, &'a str, &'a str)>, // triple patterns from WHERE
         Vec<FilterExpression<'a>>, // filters

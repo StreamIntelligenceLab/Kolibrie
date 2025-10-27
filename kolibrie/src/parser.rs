@@ -9,14 +9,7 @@
  */
 
 use nom::{
-    branch::alt,
-    bytes::complete::{tag, take_while1, take_until},
-    character::complete::{char, multispace0, multispace1, space0, space1},
-    combinator::{opt, recognize},
-    multi::{many0, separated_list1},
-    sequence::{delimited, preceded, tuple, terminated},
-    IResult, Parser,
-    error::ParseError,
+    branch::alt, bytes::complete::{tag, take_until, take_while1}, character::complete::{char, multispace0, multispace1, space0, space1}, combinator::{opt, recognize}, error::ParseError, multi::{many0, many1, separated_list1}, sequence::{delimited, preceded, terminated, tuple}, IResult, Parser
 };
 use rayon::str;
 use crate::sparql_database::SparqlDatabase;
@@ -684,7 +677,7 @@ pub fn parse_register_clause(input: &str) -> IResult<&str, RegisterClause> {
     let (input, _) = multispace0.parse(input)?;
     
     // Parse optional FROM NAMED WINDOW clause (this comes BEFORE WHERE in your example)
-    let (input, window_clause) = opt(parse_from_named_window).parse(input)?;
+    let (input, window_clause) = many1(preceded(multispace0, parse_from_named_window)).parse(input)?;
     let (input, _) = multispace0.parse(input)?;
     
     // Parse WHERE clause with window support
@@ -1325,12 +1318,12 @@ pub fn parse_rule(input: &str) -> IResult<&str, CombinedRule> {
         // RSP parsing path
         let (input, stream_type) = opt(parse_stream_type).parse(input)?;
         let (input, _) = multispace0.parse(input)?;
-        let (input, window_clause) = opt(parse_from_named_window).parse(input)?;
+        let (input, window_clause) = many0(preceded(multispace0, parse_from_named_window)).parse(input)?;
         let (input, _) = multispace0.parse(input)?;
         (input, stream_type, window_clause)
     } else {
         // Basic parsing path - no RSP elements
-        (input, None, None)
+        (input, None, vec![])
     };
     
     // Parse CONSTRUCT clause
@@ -1630,20 +1623,22 @@ pub fn convert_combined_rule<'a>(
         .collect();
 
     // Handle windowing information if present
-    if let Some(window_clause) = &cr.window_clause {
-        println!("Processing rule with windowing:");
-        println!("  Window IRI: {}", window_clause.window_iri);
-        println!("  Stream IRI: {}", window_clause.stream_iri);
-        println!("  Window Type: {:?}", window_clause.window_spec.window_type);
-        println!("  Width: {}", window_clause.window_spec.width);
-        if let Some(slide) = window_clause.window_spec.slide {
-            println!("  Slide: {}", slide);
-        }
-        if let Some(report) = window_clause.window_spec.report_strategy {
-            println!("  Report Strategy: {}", report);
-        }
-        if let Some(tick) = window_clause.window_spec.tick {
-            println!("  Tick: {}", tick);
+    if !cr.window_clause.is_empty() {
+        println!("Processing rule with {} windows:", cr.window_clause.len());
+        for (idx, window_clause) in cr.window_clause.iter().enumerate() {
+            println!("  Window {}: IRI: {}", idx + 1, window_clause.window_iri);
+            println!("    Stream IRI: {}", window_clause.stream_iri);
+            println!("    Window Type: {:?}", window_clause.window_spec.window_type);
+            println!("    Width: {}", window_clause.window_spec.width);
+            if let Some(slide) = window_clause.window_spec.slide {
+                println!("    Slide: {}", slide);
+            }
+            if let Some(report) = window_clause.window_spec.report_strategy {
+                println!("    Report Strategy: {}", report);
+            }
+            if let Some(tick) = window_clause.window_spec.tick {
+                println!("    Tick: {}", tick);
+            }
         }
     }
 
@@ -1735,12 +1730,12 @@ pub fn process_rule_definition(
         let dynamic_rule = convert_combined_rule(rule.clone(), &mut database.dictionary, &rule_prefixes);
 
         // Check if this rule has windowing - if so, set up RSP processing
-        if let Some(window_clause) = &rule.window_clause {
-            println!("Setting up RSP window processing for rule");
-            
-            // Create RSP window based on parsed specifications
-            let mut rsp_window = create_rsp_window(&window_clause.window_spec)?;
-            
+        if !rule.window_clause.is_empty() {
+            println!("Setting up RSP window processing for rule with {} windows", rule.window_clause.len());
+
+            let mut all_stream_results: Vec<Triple> = Vec::new();
+            let mut rsp_windows: Vec<CSPARQLWindow<WindowTriple>> = Vec::new();
+
             // Set up stream operator based on parsed stream type
             let stream_operator = match &rule.stream_type {
                 Some(StreamType::RStream) => StreamOperator::RSTREAM,
@@ -1748,68 +1743,80 @@ pub fn process_rule_definition(
                 Some(StreamType::DStream) => StreamOperator::DSTREAM,
                 _ => StreamOperator::RSTREAM, // Default
             };
-            
-            let mut r2s_operator = Relation2StreamOperator::new(stream_operator.clone(), 0);
-            
-            // Process existing triples through the window
-            let mut current_time = 1;
-            for triple in database.triples.iter() {
-                let window_triple = WindowTriple {
-                    s: database.dictionary.decode(triple.subject).unwrap_or("").to_string(),
-                    p: database.dictionary.decode(triple.predicate).unwrap_or("").to_string(),
-                    o: database.dictionary.decode(triple.object).unwrap_or("").to_string(),
-                };
-                
-                // Add to window
-                rsp_window.add_to_window(window_triple, current_time);
-                current_time += 1;
-            }
-            
-            // Register a callback to process windowed results
-            let kg_clone = kg.clone();
-            let rule_clone = dynamic_rule.clone();
-            
-            rsp_window.register_callback(Box::new(move |content: ContentContainer<WindowTriple>| {
-                println!("Processing window content with {} triples", content.len());
-                
-                // Convert window content back to Knowledge Graph format
-                let mut window_kg = kg_clone.clone();
-                for window_triple in content.iter() {
-                    window_kg.add_abox_triple(&window_triple.s, &window_triple.p, &window_triple.o);
+
+            // Create a window for each window clause
+            for window_clause in &rule.window_clause {
+                let mut rsp_window = create_rsp_window(&window_clause.window_spec)?;
+
+                // Process existing triples through the window
+                let mut current_time = 1;
+                for triple in database.triples.iter() {
+                    let window_triple = WindowTriple {
+                        s: database.dictionary.decode(triple.subject).unwrap_or("").to_string(),
+                        p: database.dictionary.decode(triple.predicate).unwrap_or("").to_string(),
+                        o: database.dictionary.decode(triple.object).unwrap_or("").to_string(),
+                    };
+
+                    // Add to window
+                    rsp_window.add_to_window(window_triple, current_time);
+                    current_time += 1;
                 }
-                
-                // Apply the rule to windowed data
-                window_kg.add_rule(rule_clone.clone());
-                let window_inferred = window_kg.infer_new_facts_semi_naive();
-                
-                println!("Window processing inferred {} facts", window_inferred.len());
-            }));
-            
+
+                // Register a callback to process windowed results
+                let kg_clone = kg.clone();
+                let rule_clone = dynamic_rule.clone();
+                let stream_op_clone = stream_operator.clone();
+
+                rsp_window.register_callback(Box::new(move |content: ContentContainer<WindowTriple>| {
+                    println!("Processing window content with {} triples", content.len());
+
+                    // Convert window content back to Knowledge Graph format
+                    let mut window_kg = kg_clone.clone();
+                    for window_triple in content.iter() {
+                        window_kg.add_abox_triple(&window_triple.s, &window_triple.p, &window_triple.o);
+                    }
+
+                    // Apply the rule to windowed data
+                    window_kg.add_rule(rule_clone.clone());
+                    let window_inferred = window_kg.infer_new_facts_semi_naive();
+
+                    println!("Window processing inferred {} facts", window_inferred.len());
+                }));
+
+                rsp_windows.push(rsp_window);
+            }
+
             // Add the rule to the main knowledge graph
             kg.add_rule(dynamic_rule.clone());
-            
+
             // For immediate processing, also infer from current data
             let inferred_facts = kg.infer_new_facts_semi_naive();
-            
+
             // Apply stream operator to results
-            let stream_results = r2s_operator.eval(inferred_facts.clone(), current_time);
-            
-            println!("Stream operator ({:?}) produced {} results", stream_operator.clone(), stream_results.len());
-            
-            // Add inferred facts to the database
-            for triple in stream_results.iter() {
-                database.triples.insert(triple.clone());
+            let eval_time = database.triples.len().saturating_add(1);
+
+            for _window_clause in &rsp_windows {
+                let mut r2s_operator = Relation2StreamOperator::new(stream_operator.clone(), 0);
+                let stream_results = r2s_operator.eval(inferred_facts.clone(), eval_time);
+
+                println!("Stream operator ({:?}) produced {} results", stream_operator.clone(), stream_results.len());
+
+                // Add inferred facts to the database
+                for triple in stream_results.iter() {
+                    database.triples.insert(triple.clone());
+                    all_stream_results.push(triple.clone());
+                }
             }
-            
+
             // Register rule predicates
             register_rule_predicates(&dynamic_rule, database);
-            
-            return Ok((dynamic_rule, stream_results));
+
+            return Ok((dynamic_rule, all_stream_results));
         }
 
         // Non-windowed rule processing (existing logic)
         kg.add_rule(dynamic_rule.clone());
-        
+
         // Register rule predicates
         register_rule_predicates(&dynamic_rule, database);
 

@@ -265,6 +265,10 @@ name = "retrieve_rsp"
 path = "examples/sparql_syntax/rsp_ql_syntax/retrieve.rs"
 
 [[example]]
+name = "retrieve_rsp_multiple_window"
+path = "examples/sparql_syntax/rsp_ql_syntax/retrieve_multiple_window.rs"
+
+[[example]]
 name = "real_scenario"
 path = "examples/real_scenario/real_scenario.rs"
 
