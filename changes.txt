@@ -103,6 +103,7 @@
 102. Modify sparqldatabase to isolate parsing, encoding and adding of ntriple data
 103. Minor fix of predicate
 104. Modify SpaqlDatabase and UnifiedIndex by adding deletion for triples, added to unit test
+105. Multiple window support for RSP-QL syntax
 
 0.1.0
 1. Parsing RDF/XML
