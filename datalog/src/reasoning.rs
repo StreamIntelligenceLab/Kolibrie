@@ -14,6 +14,7 @@ use crate::knowledge_graph::KnowledgeGraph;
 use std::collections::{BTreeMap, HashMap, HashSet};
 use shared::terms::Term;
 
+#[deprecated]
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum ReasoningLevel {
     Base = 0,

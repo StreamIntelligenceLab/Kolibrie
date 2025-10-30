@@ -276,7 +276,7 @@ mod tests {
         let mut report = Report::new();
         report.add(ReportStrategy::OnWindowClose);
         let mut window = CSPARQLWindow { width: 10, slide: 2, app_time: 0, t_0: 0, active_windows: HashMap::new(), report, tick: Tick::TimeDriven, consumer: None, call_back: None };
-        let mut recieved_data = Rc::new(RefCell::new(Vec::new()));
+        let recieved_data = Rc::new(RefCell::new(Vec::new()));
         let data_clone = recieved_data.clone();
         let call_back  = move| content|{println!("Content: {:?}",content); recieved_data.borrow_mut().push(content);};
         window.register_callback(Box::new(call_back));

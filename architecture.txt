@@ -1,0 +1,55 @@
+- Datasource (can be both Static and Dynamic DataSources)
+    -> insert
+    -> delete
+    -> query(s,p,o)
+    -> clear
+    -> scans
+
+- Stream<T> (for dataflow between components)
+    -subscribe (consumer)
+    -publish (data: T)
+
+- Dictionary -> should live the whole life of the project (what do we do when we get an overflow?)
+
+- Parser -> should we split it up?
+
+- Query (currently just a tuple)
+
+- Logical Plan
+    -> Join
+    -> Projection
+    -> Union
+    -> Filter
+    ...
+
+- Physical Plan
+    -> NestedLoopJoin (have a trait for joins)
+    -> HashJoin
+    -> ...
+
+- Optimizer
+    -> find_best_plan(LogicalPlan)
+
+- Reasoner
+    -> materialize (forward chaining)
+    -> query (backward chaining)
+
+- Maintenance Program (uses reasoner)
+    -> add
+    -> delete
+
+
+- Sources (e.g. Kafka, Websocket, File, ...)
+
+- Sinks
+
+- Window
+
+- Registery (with all registered streams/datasource etc)
+
+- ML(should also be part of the operators)
+    -> ModelOperator (predict something)
+    -> FeatureExtractingOperator/TransformationOperator (transform Triples/Graphs into features/tensors)
+    -> TrainingOperator (we need a way to train the model)
+
+- Program (contains the whole DataFlow Graph)

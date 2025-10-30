@@ -74,24 +74,24 @@ fn execute_semi_naive_rule_index(depth: usize, abox_size:usize) {
 }
 
 fn my_benchmark2(c: &mut Criterion) {
-
-    c.bench_function("Semi naive 10", |b| {
-        b.iter(|| execute_semi_naive(10,10))
-    });
-    c.bench_function("Semi naive 100", |b| {
-        b.iter(|| execute_semi_naive(100,10))
-    });
-    c.bench_function("Semi naive parallel 10", |b| {
-        b.iter(|| execute_semi_naive_parallel(10,10))
-    });
-    c.bench_function("Semi naive parallel 100", |b| {
-        b.iter(|| execute_semi_naive_parallel(100,10))
-    });
+    let abox_size = 100;
+    // c.bench_function("Semi naive 10", |b| {
+    //     b.iter(|| execute_semi_naive(10,abox_size))
+    // });
+    // c.bench_function("Semi naive 100", |b| {
+    //     b.iter(|| execute_semi_naive(100,abox_size))
+    // });
+    // c.bench_function("Semi naive parallel 10", |b| {
+    //     b.iter(|| execute_semi_naive_parallel(10,abox_size))
+    // });
+    // c.bench_function("Semi naive parallel 100", |b| {
+    //     b.iter(|| execute_semi_naive_parallel(100,abox_size))
+    // });
     c.bench_function("Semi naive ruleindex 10", |b| {
-        b.iter(|| execute_semi_naive_rule_index(10,10))
+        b.iter(|| execute_semi_naive_rule_index(10,abox_size))
     });
     c.bench_function("Semi naive ruleindex 100", |b| {
-        b.iter(|| execute_semi_naive_rule_index(100,10))
+        b.iter(|| execute_semi_naive_rule_index(100,abox_size))
     });
 }
 criterion_group!(benches,  my_benchmark2);

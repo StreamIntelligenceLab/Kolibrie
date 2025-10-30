@@ -60,6 +60,11 @@ name = "my_benchmark"
 path = "benches/my_benchmark.rs"
 harness = false
 
+[[bench]]
+name = "rsp_benchmark"
+path = "benches/rsp_bench.rs"
+harness = false
+
 [[example]]
 name = "automate_policy"
 path = "examples/policy/automate_policy.rs"

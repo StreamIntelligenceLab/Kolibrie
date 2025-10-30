@@ -636,10 +636,7 @@ impl SparqlDatabase {
         encoded_triples
     }
     pub fn parse_and_encode_ntriples(&mut self, ntriples_data: &str) -> Vec<Triple>{
-        println!("parsing: {}", ntriples_data);
         let partial_results = self.parse_ntriples(ntriples_data);
-        println!("parsed: {:?}", partial_results);
-
         self.encode_triples(partial_results)
     }
 

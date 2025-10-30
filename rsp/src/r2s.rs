@@ -67,7 +67,6 @@ impl <O> Relation2StreamOperator <O> where O: Clone + Hash + Eq {
 }
 #[cfg(test)]
 mod tests{
-    use std::collections::HashMap;
     use crate::r2s::Relation2StreamOperator;
     use crate::r2s::StreamOperator::{DSTREAM, ISTREAM, RSTREAM};
     #[derive(Debug, Eq, PartialEq, Hash, Clone)]

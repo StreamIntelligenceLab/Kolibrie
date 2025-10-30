@@ -812,7 +812,7 @@ fn rename_rule_variables(rule: &Rule, counter: &mut usize) -> Rule {
         filters: rule.filters.clone(),
     }
 }
-
+#[deprecated]
 #[derive(Debug)]
 pub struct DatalogEngine {
     pub facts: UnifiedIndex,
