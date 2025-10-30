@@ -80,6 +80,17 @@ WHERE {
                     }
                 }
                 println!();
+
+                // Print window-specific queries
+                println!("  Window Queries ({} blocks):", register.query.window_blocks.len());
+                for (i, window_block) in register.query.window_blocks.iter().enumerate() {
+                    println!("    Window Block {} ({}): {} triples", 
+                        i + 1, window_block.window_name, window_block.patterns.len());
+                    for (j, (s, p, o)) in window_block.patterns.iter().enumerate() {
+                        println!("      {}: {} {} {}", j + 1, s, p, o);
+                    }
+                    println!();
+                }
             }
             
             println!("All components parsed successfully!");

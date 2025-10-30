@@ -9,7 +9,15 @@
  */
 
 use nom::{
-    branch::alt, bytes::complete::{tag, take_until, take_while1}, character::complete::{char, multispace0, multispace1, space0, space1}, combinator::{opt, recognize}, error::ParseError, multi::{many0, many1, separated_list1}, sequence::{delimited, preceded, terminated, tuple}, IResult, Parser
+    branch::alt,
+    bytes::complete::{tag, take_until, take_while1},
+    character::complete::{char, multispace0, multispace1, space0, space1},
+    combinator::{opt, recognize},
+    error::ParseError,
+    multi::{many0, many1, separated_list1},
+    sequence::{delimited, preceded, terminated, tuple},
+    IResult,
+    Parser
 };
 use rayon::str;
 use crate::sparql_database::SparqlDatabase;
@@ -681,7 +689,7 @@ pub fn parse_register_clause(input: &str) -> IResult<&str, RegisterClause> {
     let (input, _) = multispace0.parse(input)?;
     
     // Parse WHERE clause with window support
-    let (input, (patterns, filters, values_clause, binds, subqueries, _window_blocks)) = parse_where(input)?;
+    let (input, (patterns, filters, values_clause, binds, subqueries, window_blocks)) = parse_where(input)?;
     
     Ok((input, RegisterClause {
         stream_type,
@@ -690,6 +698,7 @@ pub fn parse_register_clause(input: &str) -> IResult<&str, RegisterClause> {
             variables,
             window_clause,
             where_clause: (patterns, filters, values_clause, binds, subqueries),
+            window_blocks,
         },
     }))
 }

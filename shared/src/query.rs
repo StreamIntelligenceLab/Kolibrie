@@ -124,6 +124,7 @@ pub struct RSPQLSelectQuery<'a> {
         Vec<(&'a str, Vec<&'a str>, &'a str)>,
         Vec<SubQuery<'a>>,
     ),
+    pub window_blocks: Vec<WindowBlock<'a>>,
 }
 
 #[derive(Debug, Clone)]
