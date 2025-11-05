@@ -5,36 +5,41 @@ use std::fmt::Write;
 #[cfg(test)]
 use std::{println as info, println as warn, println as trace, println as debug};
 use std::cell::RefCell;
+use std::collections::BTreeMap;
 use std::rc::Rc;
+use shared::index_manager::UnifiedIndex;
+use shared::rule::Rule;
+use shared::terms::TriplePattern;
+use crate::ruleindex::RuleIndexer;
+use shared::triple::Triple;
 
 
 pub struct Reasoner;
-//
-// impl Reasoner{
-//     pub fn materialize(&mut self, triple_index: &mut TripleIndex, rules_index: &RuleIndex) -> Vec<Triple>{
-//         let mut inferred = Vec::new();
-//         let mut counter = 0;
-//         while counter < triple_index.triples.len() {
-//             let process_quad = triple_index.get(counter).unwrap();
-//             debug!("Processing Triple: {:?}",TripleStore::decode_triple(process_quad));
-//             //let matching_rules = self.find_matching_rules(process_quad);
-//             let matching_rules = rules_index.find_match(process_quad);
-//             let matching_rules : Vec<Rule> = matching_rules.clone().into_iter().flat_map(|r|Self::substitute_rule(process_quad,r)).collect();
-//             debug!("Matching Rules: {:?}",TripleStore::decode_rules(matching_rules.as_slice()));
-//
-//             let new_triples = Self::infer_rule_heads(triple_index, Some(counter+1), matching_rules);
-//             for triple in new_triples{
-//                 if !triple_index.contains(&triple) {
-//                     debug!("Inferred: {:?}",TripleStore::decode_triple(&triple));
-//                     inferred.push(triple.clone());
-//                     triple_index.add(triple);
-//                 }
-//             }
-//             counter+=1;
-//         }
-//
-//         inferred
-//     }
+
+impl Reasoner{
+    pub fn materialize(&mut self, triple_index: &mut UnifiedIndex, rules_index: &RuleIndexer) -> Vec<Triple>{
+        let mut inferred = Vec::new();
+        let mut counter = 0;
+        while counter < triple_index.len() {
+            let process_quad = triple_index.get(counter).unwrap();
+            //let matching_rules = self.find_matching_rules(process_quad);
+            let matching_rules = rules_index.find_match(process_quad);
+            let matching_rules : Vec<Rule> = matching_rules.clone().into_iter().flat_map(|r|Self::substitute_rule(process_quad,r)).collect();
+            debug!("Matching Rules: {:?}",TripleStore::decode_rules(matching_rules.as_slice()));
+
+            let new_triples = Self::infer_rule_heads(triple_index, Some(counter+1), matching_rules);
+            for triple in new_triples{
+                if !triple_index.contains(&triple) {
+                    debug!("Inferred: {:?}",TripleStore::decode_triple(&triple));
+                    inferred.push(triple.clone());
+                    triple_index.add(triple);
+                }
+            }
+            counter+=1;
+        }
+
+        inferred
+    }
 //
 //     pub fn infer_rule_heads(triple_index: &TripleIndex, counter: Option<usize>, matching_rules: Vec<Rule>) -> Vec<Triple> {
 //         let mut new_triples = Vec::new();
@@ -108,22 +113,80 @@ pub struct Reasoner;
 //
 //         new_heads
 //     }
-//     pub fn substitute_rule(matching_triple: &Triple, matching_rule: &Rule) -> Vec<Rule> {
-//         let mut results = Vec::new();
-//         for body_triple in matching_rule.body.iter() {
-//             if let Some(bindings) = query(body_triple, matching_triple) {
-//                 if bindings.len() > 1 {
-//                     panic!("Multiple bindings found!");
-//                 }else if bindings.len() == 0{
-//                     return vec![matching_rule.clone()];
-//                 }
-//                 let new_body = Self::substitute_rule_body_with_binding(matching_rule, &bindings);
-//                 let new_head = Reasoner::substitute_triple_with_bindings(&matching_rule.head, &bindings).get(0).unwrap().clone();
-//                 results.push(Rule { body: new_body, head: new_head });
-//             }
-//         }
-//         results
-//     }
+
+pub fn query(query_triple:&TriplePattern, match_triple:&Triple) -> Option<Binding>{
+    let mut bindings = Binding::new();
+    let Triple{subject,predicate,object} = match_triple;
+    match &query_triple.s{
+        VarOrTerm::Var(s_var)=> bindings.add(&s_var.name,s.as_term().iri),
+        VarOrTerm::Term(s_term)=>if let (TermImpl{iri}, TermImpl{iri:iri2})= (s_term,s.as_term()) {
+            if !iri.eq(iri2){return None;}
+        }
+    }
+    match &query_triple.p{
+        VarOrTerm::Var(p_var)=> bindings.add(&p_var.name,p.as_term().iri),
+        VarOrTerm::Term(p_term)=>if let (TermImpl{iri}, TermImpl{iri:iri2})= (p_term,p.as_term()) {
+            if !iri.eq(iri2){return None;}
+        }
+    }
+    match &query_triple.o{
+        VarOrTerm::Var(o_var)=> bindings.add(&o_var.name,o.as_term().iri),
+        VarOrTerm::Term(o_term)=>if let (TermImpl{iri}, TermImpl{iri:iri2})= (o_term,o.as_term()) {
+            if !iri.eq(iri2){return None;}
+        }
+    }
+
+    Some(bindings)
+}
+    fn evaluate_triple_pattern_on_single_triple(pattern: &TriplePattern, subject_id: Option<u32>, predicate_id: Option<u32>, object_id: Option<u32>, triple: &Triple) -> Result<Option<BTreeMap<String, u32>>, Option<BTreeMap<String, u32>>> {
+        // Fast ID-based filtering
+        if let Some(s_id) = subject_id {
+            if triple.subject != s_id { return Err(None); }
+        }
+        if let Some(p_id) = predicate_id {
+            if triple.predicate != p_id { return Err(None); }
+        }
+        if let Some(o_id) = object_id {
+            if triple.object != o_id { return Err(None); }
+        }
+
+        // Build result only if match
+        let mut result = BTreeMap::new();
+
+        if let Some(var) = &pattern.subject {
+            if var.starts_with('?') {
+                result.insert(var.clone(), triple.subject);
+            }
+        }
+        if let Some(var) = &pattern.predicate {
+            if var.starts_with('?') {
+                result.insert(var.clone(), triple.predicate);
+            }
+        }
+        if let Some(var) = &pattern.object {
+            if var.starts_with('?') {
+                result.insert(var.clone(), triple.object);
+            }
+        }
+
+        Ok(Some(result))
+    }
+    pub fn substitute_rule(matching_triple: &Triple, matching_rule: &Rule) -> Vec<Rule> {
+        let mut results = Vec::new();
+        for body_triple in matching_rule.premise.iter() {
+            if let Some(bindings) = query(body_triple, matching_triple) {
+                if bindings.len() > 1 {
+                    panic!("Multiple bindings found!");
+                }else if bindings.len() == 0{
+                    return vec![matching_rule.clone()];
+                }
+                let new_body = Self::substitute_rule_body_with_binding(matching_rule, &bindings);
+                let new_head = Reasoner::substitute_triple_with_bindings(&matching_rule.head, &bindings).get(0).unwrap().clone();
+                results.push(Rule { body: new_body, head: new_head });
+            }
+        }
+        results
+    }
 //
 //     pub fn substitute_rule_body_with_binding(matching_rule: &Rule, bindings: &Binding) -> Vec<Triple> {
 //         let mut new_body = Vec::new();
@@ -133,7 +196,7 @@ pub struct Reasoner;
 //         }
 //         new_body
 //     }
-// }
+}
 // pub struct CSpriteReasoner;
 //
 // impl CSpriteReasoner{

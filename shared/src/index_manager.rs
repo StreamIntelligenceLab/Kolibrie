@@ -22,6 +22,7 @@ pub struct UnifiedIndex {
     pub pso: HashMap<u32, HashMap<u32, HashSet<u32>>>,
     pub ops: HashMap<u32, HashMap<u32, HashSet<u32>>>,
     pub sop: HashMap<u32, HashMap<u32, HashSet<u32>>>,
+    pub triples: Vec<Triple>
 }
 
 impl UnifiedIndex {
@@ -33,7 +34,15 @@ impl UnifiedIndex {
             pso: HashMap::new(),
             ops: HashMap::new(),
             sop: HashMap::new(),
+            triples: Vec::new()
         }
+    }
+    pub fn len(&self) -> usize{
+        self.triples.len()
+    }
+
+    pub fn get(&self, index: usize) ->Option<&Triple>{
+        self.triples.get(index)
     }
 
     /// Insert a single triple into all six indexes
@@ -52,6 +61,8 @@ impl UnifiedIndex {
         self.pso.entry(p).or_default().entry(s).or_default().insert(o);
         self.ops.entry(o).or_default().entry(p).or_default().insert(s);
         self.sop.entry(s).or_default().entry(o).or_default().insert(p);
+
+        self.triples.push(triple.clone());
         true
     }
 
@@ -75,6 +86,8 @@ impl UnifiedIndex {
         remove_from_index(&mut self.pso, p, s, o);
         remove_from_index(&mut self.ops, o, p, s);
         remove_from_index(&mut self.sop, s, o, p);
+
+        self.triples.retain(|t| *t != *triple);
         true 
     }
 

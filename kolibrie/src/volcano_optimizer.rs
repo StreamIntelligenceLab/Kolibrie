@@ -568,6 +568,10 @@ impl DatabaseStats {
     }
 }
 
+pub fn evaluate_single_triple_pattern(pattern: &TriplePattern, triple: &Triple, dictionary: &Dictionary) -> Result<Option<BTreeMap<String, u32>>, Option<BTreeMap<String, u32>>> {
+    let (subject_id, predicate_id, object_id) = PhysicalOperator::encode_triple_pattern(pattern, dictionary);
+    PhysicalOperator::evaluate_triple_pattern_on_single_triple(&pattern, subject_id, predicate_id, object_id, triple)
+}
 impl PhysicalOperator {
     pub fn execute(&self, database: &mut SparqlDatabase) -> Vec<BTreeMap<String, String>> {
         let id_results = self.execute_with_ids(database);
@@ -639,6 +643,7 @@ impl PhysicalOperator {
         }
     }
 
+
     // Optimized table scan with reduced string operations
     fn execute_table_scan_with_ids(
         &self,
@@ -646,53 +651,67 @@ impl PhysicalOperator {
         pattern: &TriplePattern,
     ) -> Vec<BTreeMap<String, u32>> {
         // Pre-compute bound IDs for faster matching
-        let subject_id = pattern.subject.as_ref()
-            .filter(|s| !s.starts_with('?'))
-            .map(|s| database.dictionary.encode(s));
-        let predicate_id = pattern.predicate.as_ref()
-            .filter(|p| !p.starts_with('?'))
-            .map(|p| database.dictionary.encode(p));
-        let object_id = pattern.object.as_ref()
-            .filter(|o| !o.starts_with('?'))
-            .map(|o| database.dictionary.encode(o));
+        let dictionary = &database.dictionary;
+        let (subject_id, predicate_id, object_id) = Self::encode_triple_pattern(pattern, dictionary);
 
         // Parallel processing with reduced allocations
         database.triples
             .par_iter()
             .filter_map(|triple| {
-                // Fast ID-based filtering
-                if let Some(s_id) = subject_id {
-                    if triple.subject != s_id { return None; }
-                }
-                if let Some(p_id) = predicate_id {
-                    if triple.predicate != p_id { return None; }
-                }
-                if let Some(o_id) = object_id {
-                    if triple.object != o_id { return None; }
-                }
 
-                // Build result only if match
-                let mut result = BTreeMap::new();
-                
-                if let Some(var) = &pattern.subject {
-                    if var.starts_with('?') {
-                        result.insert(var.clone(), triple.subject);
-                    }
+                match Self::evaluate_triple_pattern_on_single_triple(&pattern, subject_id, predicate_id, object_id, triple) {
+                    Ok(value) => value,
+                    Err(value) => return value,
                 }
-                if let Some(var) = &pattern.predicate {
-                    if var.starts_with('?') {
-                        result.insert(var.clone(), triple.predicate);
-                    }
-                }
-                if let Some(var) = &pattern.object {
-                    if var.starts_with('?') {
-                        result.insert(var.clone(), triple.object);
-                    }
-                }
-                
-                Some(result)
             })
             .collect()
+    }
+
+    fn evaluate_triple_pattern_on_single_triple(pattern: &TriplePattern, subject_id: Option<u32>, predicate_id: Option<u32>, object_id: Option<u32>, triple: &Triple) -> Result<Option<BTreeMap<String, u32>>, Option<BTreeMap<String, u32>>> {
+        // Fast ID-based filtering
+        if let Some(s_id) = subject_id {
+            if triple.subject != s_id { return Err(None); }
+        }
+        if let Some(p_id) = predicate_id {
+            if triple.predicate != p_id { return Err(None); }
+        }
+        if let Some(o_id) = object_id {
+            if triple.object != o_id { return Err(None); }
+        }
+
+        // Build result only if match
+        let mut result = BTreeMap::new();
+
+        if let Some(var) = &pattern.subject {
+            if var.starts_with('?') {
+                result.insert(var.clone(), triple.subject);
+            }
+        }
+        if let Some(var) = &pattern.predicate {
+            if var.starts_with('?') {
+                result.insert(var.clone(), triple.predicate);
+            }
+        }
+        if let Some(var) = &pattern.object {
+            if var.starts_with('?') {
+                result.insert(var.clone(), triple.object);
+            }
+        }
+
+        Ok(Some(result))
+    }
+
+    fn encode_triple_pattern(pattern: &TriplePattern, mut dictionary: &Dictionary) -> (Option<u32>, Option<u32>, Option<u32>) {
+        let subject_id = pattern.subject.as_ref()
+            .filter(|s| !s.starts_with('?'))
+            .map(|s| dictionary.encode(s));
+        let predicate_id = pattern.predicate.as_ref()
+            .filter(|p| !p.starts_with('?'))
+            .map(|p| dictionary.encode(p));
+        let object_id = pattern.object.as_ref()
+            .filter(|o| !o.starts_with('?'))
+            .map(|o| dictionary.encode(o));
+        (subject_id, predicate_id, object_id)
     }
 
     // New optimized hash join with proper type annotations

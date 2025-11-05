@@ -19,3 +19,4 @@ pub mod rule_index;
 pub mod rule;
 pub mod query;
 pub mod join_algorithm;
+mod triple_tools;
