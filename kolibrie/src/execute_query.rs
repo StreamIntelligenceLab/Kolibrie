@@ -8,17 +8,17 @@
  * you can obtain one at https://mozilla.org/MPL/2.0/.
  */
 
-use crate::volcano_optimizer::*;
 use crate::sparql_database::SparqlDatabase;
+use crate::volcano_optimizer::*;
 // use crate::sparql_database::compact_results;
+use crate::custom_error::format_parse_error;
+use crate::parser::*;
+use shared::join_algorithm::compact_results;
+use shared::join_algorithm::perform_join_par_simd_with_strict_filter_4_redesigned_streaming;
+use shared::query::*;
 use shared::triple::Triple;
 use shared::GPU_MODE_ENABLED;
-use shared::query::*;
-use shared::join_algorithm::perform_join_par_simd_with_strict_filter_4_redesigned_streaming;
-use shared::join_algorithm::compact_results;
 use std::collections::{BTreeMap, BTreeSet, HashMap};
-use crate::parser::*;
-use crate::custom_error::format_parse_error;
 pub fn execute_subquery<'a>(
     subquery: &SubQuery<'a>,
     database: &SparqlDatabase,
@@ -121,22 +121,25 @@ fn apply_order_by<'a>(
     }
 
     results.sort_by(|a, b| {
-        for condition in &order_conditions { // Borrow from owned vector
+        for condition in &order_conditions {
+            // Borrow from owned vector
             let var = condition.variable;
-            
+
             let val_a = a.get(var).map(|s| s.as_str()).unwrap_or("");
             let val_b = b.get(var).map(|s| s.as_str()).unwrap_or("");
-            
+
             let comparison = match (val_a.parse::<f64>(), val_b.parse::<f64>()) {
-                (Ok(num_a), Ok(num_b)) => num_a.partial_cmp(&num_b).unwrap_or(std::cmp::Ordering::Equal),
+                (Ok(num_a), Ok(num_b)) => num_a
+                    .partial_cmp(&num_b)
+                    .unwrap_or(std::cmp::Ordering::Equal),
                 _ => val_a.cmp(val_b),
             };
-            
+
             let final_comparison = match condition.direction {
                 SortDirection::Asc => comparison,
                 SortDirection::Desc => comparison.reverse(),
             };
-            
+
             if final_comparison != std::cmp::Ordering::Equal {
                 return final_comparison;
             }
@@ -164,22 +167,22 @@ pub fn execute_query(sparql: &str, database: &mut SparqlDatabase) -> Vec<Vec<Str
     let parse_result = parse_sparql_query(sparql);
 
     if let Ok((
-                  _,
-                  (
-                      insert_clause,
-                      mut variables,
-                      patterns,
-                      filters,
-                      group_vars,
-                      parsed_prefixes,
-                      values_clause,
-                      binds,
-                      subqueries,
-                      limit,
-                      _,
-                      order_conditions,
-                  ),
-              )) = parse_result
+        _,
+        (
+            insert_clause,
+            mut variables,
+            patterns,
+            filters,
+            group_vars,
+            parsed_prefixes,
+            values_clause,
+            binds,
+            subqueries,
+            limit,
+            _,
+            order_conditions,
+        ),
+    )) = parse_result
     {
         prefixes = parsed_prefixes;
         limit_clause = limit;
@@ -211,7 +214,11 @@ pub fn execute_query(sparql: &str, database: &mut SparqlDatabase) -> Vec<Vec<Str
         // Initialize final_results based on the VALUES clause
         final_results = initialize_results(&values_clause);
 
-        let rule_predicates = database.rule_map.values().cloned().collect::<std::collections::HashSet<String>>();
+        let rule_predicates = database
+            .rule_map
+            .values()
+            .cloned()
+            .collect::<std::collections::HashSet<String>>();
 
         // Process each pattern in the WHERE clause
         for (subject_var, predicate, object_var) in patterns {
@@ -250,9 +257,8 @@ pub fn execute_query(sparql: &str, database: &mut SparqlDatabase) -> Vec<Vec<Str
             }
 
             // Handle non-RULECALL patterns
-            let (join_subject, join_predicate, join_object) = resolve_triple_pattern(
-                subject_var, predicate, object_var, database, &prefixes
-            );
+            let (join_subject, join_predicate, join_object) =
+                resolve_triple_pattern(subject_var, predicate, object_var, database, &prefixes);
 
             // To satisfy lifetime requirements, leak the computed join_subject and join_object
             let join_subject_static: &'static str = Box::leak(join_subject.into_boxed_str());
@@ -335,7 +341,6 @@ pub fn execute_query(sparql: &str, database: &mut SparqlDatabase) -> Vec<Vec<Str
     format_results(final_results, &selected_variables)
 }
 
-
 pub fn execute_query_normal(sparql: &str, database: &mut SparqlDatabase) -> Vec<Vec<String>> {
     let sparql = normalize_query(sparql);
 
@@ -400,9 +405,8 @@ pub fn execute_query_normal(sparql: &str, database: &mut SparqlDatabase) -> Vec<
             }
 
             // Handle non-RULECALL patterns
-            let (join_subject, join_predicate, join_object) = resolve_triple_pattern(
-                subject_var, predicate, object_var, database, &prefixes
-            );
+            let (join_subject, join_predicate, join_object) =
+                resolve_triple_pattern(subject_var, predicate, object_var, database, &prefixes);
 
             // To satisfy lifetime requirements, leak the computed join_subject and join_object
             let join_subject_static: &'static str = Box::leak(join_subject.into_boxed_str());
@@ -543,9 +547,8 @@ pub fn execute_query_normal_simd(sparql: &str, database: &mut SparqlDatabase) ->
             }
 
             // Handle non-RULECALL patterns
-            let (join_subject, join_predicate, join_object) = resolve_triple_pattern(
-                subject_var, predicate, object_var, database, &prefixes
-            );
+            let (join_subject, join_predicate, join_object) =
+                resolve_triple_pattern(subject_var, predicate, object_var, database, &prefixes);
 
             // To satisfy lifetime requirements, leak the computed join_subject and join_object
             let join_subject_static: &'static str = Box::leak(join_subject.into_boxed_str());
@@ -686,9 +689,8 @@ pub fn execute_query_rayon_simd(sparql: &str, database: &mut SparqlDatabase) -> 
             }
 
             // Handle non-RULECALL patterns
-            let (join_subject, join_predicate, join_object) = resolve_triple_pattern(
-                subject_var, predicate, object_var, database, &prefixes
-            );
+            let (join_subject, join_predicate, join_object) =
+                resolve_triple_pattern(subject_var, predicate, object_var, database, &prefixes);
 
             // To satisfy lifetime requirements, leak the computed join_subject and join_object
             let join_subject_static: &'static str = Box::leak(join_subject.into_boxed_str());
@@ -765,7 +767,10 @@ pub fn execute_query_rayon_simd(sparql: &str, database: &mut SparqlDatabase) -> 
     format_results(final_results, &selected_variables)
 }
 
-pub fn execute_query_rayon_parallel1(sparql: &str, database: &mut SparqlDatabase) -> Vec<Vec<String>> {
+pub fn execute_query_rayon_parallel1(
+    sparql: &str,
+    database: &mut SparqlDatabase,
+) -> Vec<Vec<String>> {
     let sparql = normalize_query(sparql);
 
     // Prepare variables to hold the query processing state.
@@ -829,9 +834,8 @@ pub fn execute_query_rayon_parallel1(sparql: &str, database: &mut SparqlDatabase
             }
 
             // Handle non-RULECALL patterns
-            let (join_subject, join_predicate, join_object) = resolve_triple_pattern(
-                subject_var, predicate, object_var, database, &prefixes
-            );
+            let (join_subject, join_predicate, join_object) =
+                resolve_triple_pattern(subject_var, predicate, object_var, database, &prefixes);
 
             // To satisfy lifetime requirements, leak the computed join_subject and join_object
             let join_subject_static: &'static str = Box::leak(join_subject.into_boxed_str());
@@ -908,7 +912,10 @@ pub fn execute_query_rayon_parallel1(sparql: &str, database: &mut SparqlDatabase
     format_results(final_results, &selected_variables)
 }
 
-pub fn execute_query_rayon_parallel2(sparql: &str, database: &mut SparqlDatabase) -> Vec<Vec<String>> {
+pub fn execute_query_rayon_parallel2(
+    sparql: &str,
+    database: &mut SparqlDatabase,
+) -> Vec<Vec<String>> {
     let sparql = normalize_query(sparql);
 
     // Prepare variables to hold the query processing state.
@@ -972,9 +979,8 @@ pub fn execute_query_rayon_parallel2(sparql: &str, database: &mut SparqlDatabase
             }
 
             // Handle non-RULECALL patterns
-            let (join_subject, join_predicate, join_object) = resolve_triple_pattern(
-                subject_var, predicate, object_var, database, &prefixes
-            );
+            let (join_subject, join_predicate, join_object) =
+                resolve_triple_pattern(subject_var, predicate, object_var, database, &prefixes);
 
             // To satisfy lifetime requirements, leak the computed join_subject and join_object
             let join_subject_static: &'static str = Box::leak(join_subject.into_boxed_str());
@@ -1051,24 +1057,27 @@ pub fn execute_query_rayon_parallel2(sparql: &str, database: &mut SparqlDatabase
     format_results(final_results, &selected_variables)
 }
 
-pub fn execute_query_rayon_parallel2_volcano(sparql: &str, database: &mut SparqlDatabase) -> Vec<Vec<String>> {
+pub fn execute_query_rayon_parallel2_volcano(
+    sparql: &str,
+    database: &mut SparqlDatabase,
+) -> Vec<Vec<String>> {
     let sparql = normalize_query(sparql);
 
     let limit_clause: Option<usize>;
     // Register prefixes from the query string first
     database.register_prefixes_from_query(&sparql);
-    
+
     let parse_result = parse_sparql_query(sparql);
-    
+
     if let Ok((
-        _, 
+        _,
         (
-            insert_clause, 
-            mut variables, 
-            patterns, 
-            filters, 
+            insert_clause,
+            mut variables,
+            patterns,
+            filters,
             group_vars,
-            parsed_prefixes, 
+            parsed_prefixes,
             values_clause,
             binds,
             subqueries,
@@ -1076,16 +1085,16 @@ pub fn execute_query_rayon_parallel2_volcano(sparql: &str, database: &mut Sparql
             _,
             order_conditions,
         ),
-    )) = parse_result {
-        
+    )) = parse_result
+    {
         let mut prefixes = parsed_prefixes;
         database.share_prefixes_with(&mut prefixes);
-        
+
         limit_clause = limit;
 
         // Process the INSERT clause if present using the existing helper function
         process_insert_clause(insert_clause, database);
-        
+
         // If SELECT * is used, gather all variables from patterns
         if variables == vec![("*", "*", None)] {
             let mut all_vars = BTreeSet::new();
@@ -1095,58 +1104,67 @@ pub fn execute_query_rayon_parallel2_volcano(sparql: &str, database: &mut Sparql
             }
             variables = all_vars.into_iter().map(|var| ("VAR", var, None)).collect();
         }
-        
+
         // Process variables for aggregation using the existing helper function
         let mut selected_variables: Vec<(String, String)> = Vec::new();
         let mut aggregation_vars: Vec<(&str, &str, &str)> = Vec::new();
         process_variables(&mut selected_variables, &mut aggregation_vars, variables);
-        
+
         // Build indexes before optimization - this is crucial for performance
         // database.build_all_indexes();
-        
+
         // Check if we should use GPU mode for execution
         if GPU_MODE_ENABLED.load(std::sync::atomic::Ordering::SeqCst) {
             println!("CUDA with Volcano Optimizer");
-            
+
             // Use Volcano optimizer for plan generation
             let logical_plan = build_logical_plan(
-                selected_variables.iter().map(|(t, v)| (t.as_str(), v.as_str())).collect(),
+                selected_variables
+                    .iter()
+                    .map(|(t, v)| (t.as_str(), v.as_str()))
+                    .collect(),
                 patterns,
                 filters,
                 &prefixes,
                 database,
             );
-            
+
             let mut optimizer = VolcanoOptimizer::new(database);
             let _optimized_plan = optimizer.find_best_plan(&logical_plan);
-            
+
             #[cfg(feature = "cuda")]
             {
                 // For now, fall back to the original GPU implementation
                 // until execute_gpu is properly implemented for the optimized plan
-                
+
                 // Initialize final_results based on the VALUES clause
                 let mut final_results = initialize_results(&values_clause);
-                
+
                 // Convert BTreeSet to a vector of Triple
                 let triples_vec: Vec<Triple> = database.triples.iter().cloned().collect();
-                
+
                 // Process each pattern in the WHERE clause
                 for (subject_var, predicate, object_var) in patterns {
                     if predicate == "RULECALL" {
-                        final_results = process_rule_call(subject_var, object_var, database, &prefixes);
+                        final_results =
+                            process_rule_call(subject_var, object_var, database, &prefixes);
                         continue;
                     }
-                    
+
                     // Handle non-RULECALL patterns
                     let (join_subject, join_predicate, join_object) = resolve_triple_pattern(
-                        subject_var, predicate, object_var, database, &prefixes
+                        subject_var,
+                        predicate,
+                        object_var,
+                        database,
+                        &prefixes,
                     );
-                    
+
                     // To satisfy lifetime requirements, leak the computed join_subject and join_object
-                    let join_subject_static: &'static str = Box::leak(join_subject.into_boxed_str());
+                    let join_subject_static: &'static str =
+                        Box::leak(join_subject.into_boxed_str());
                     let join_object_static: &'static str = Box::leak(join_object.into_boxed_str());
-                    
+
                     final_results = database.perform_hash_join_cuda_wrapper(
                         join_subject_static,
                         join_predicate,
@@ -1161,22 +1179,24 @@ pub fn execute_query_rayon_parallel2_volcano(sparql: &str, database: &mut Sparql
                         },
                     );
                 }
-                
+
                 // Apply filters
                 final_results = database.apply_filters_simd(final_results, filters);
-                
+
                 // Process subqueries
                 for subquery in subqueries {
-                    let subquery_results = execute_subquery(&subquery, database, &prefixes, final_results.clone());
+                    let subquery_results =
+                        execute_subquery(&subquery, database, &prefixes, final_results.clone());
                     final_results = merge_results(final_results, subquery_results);
                 }
-                
+
                 // Apply BIND (UDF) clauses
                 process_bind_clauses(&mut final_results, binds, database);
-                
+
                 // Apply GROUP BY and aggregations
                 if !group_vars.is_empty() {
-                    final_results = group_and_aggregate_results(final_results, &group_vars, &aggregation_vars);
+                    final_results =
+                        group_and_aggregate_results(final_results, &group_vars, &aggregation_vars);
                 }
 
                 final_results = apply_order_by(final_results, &order_conditions);
@@ -1190,7 +1210,7 @@ pub fn execute_query_rayon_parallel2_volcano(sparql: &str, database: &mut Sparql
 
                 return format_results(final_results, &selected_variables);
             }
-            
+
             #[cfg(not(feature = "cuda"))]
             {
                 eprintln!("CUDA feature not enabled");
@@ -1199,50 +1219,56 @@ pub fn execute_query_rayon_parallel2_volcano(sparql: &str, database: &mut Sparql
         } else {
             // Use Volcano optimizer for CPU execution
             let logical_plan = build_logical_plan(
-                selected_variables.iter().map(|(t, v)| (t.as_str(), v.as_str())).collect(),
+                selected_variables
+                    .iter()
+                    .map(|(t, v)| (t.as_str(), v.as_str()))
+                    .collect(),
                 patterns,
                 filters,
                 &prefixes,
                 database,
             );
-            
+
             let mut optimizer = VolcanoOptimizer::new(database);
             let optimized_plan = optimizer.find_best_plan(&logical_plan);
             let results = optimized_plan.execute(database);
-            
+
             // Convert results to owned strings first to avoid lifetime issues
-            let results_owned: Vec<BTreeMap<String, String>> = results
-                .into_iter()
-                .collect();
-            
+            let results_owned: Vec<BTreeMap<String, String>> = results.into_iter().collect();
+
             // Initialize with VALUES clause for consistency with GPU path
             let mut final_results = initialize_results(&values_clause);
-            
+
             // Merge optimizer results with VALUES clause results
             let optimizer_results: Vec<BTreeMap<&str, String>> = results_owned
                 .iter()
                 .map(|result| {
-                    result.iter().map(|(k, v)| (k.as_str(), v.clone())).collect()
+                    result
+                        .iter()
+                        .map(|(k, v)| (k.as_str(), v.clone()))
+                        .collect()
                 })
                 .collect();
-            
+
             // If we have optimizer results, use them; otherwise keep VALUES results
             if !optimizer_results.is_empty() {
                 final_results = optimizer_results;
             }
-            
+
             // Process subqueries if any
             for subquery in subqueries {
-                let subquery_results = execute_subquery(&subquery, database, &prefixes, final_results.clone());
+                let subquery_results =
+                    execute_subquery(&subquery, database, &prefixes, final_results.clone());
                 final_results = merge_results(final_results, subquery_results);
             }
-            
+
             // Apply BIND (UDF) clauses
             process_bind_clauses(&mut final_results, binds, database);
-            
+
             // Apply GROUP BY and aggregations
             if !group_vars.is_empty() {
-                final_results = group_and_aggregate_results(final_results, &group_vars, &aggregation_vars);
+                final_results =
+                    group_and_aggregate_results(final_results, &group_vars, &aggregation_vars);
             }
 
             final_results = apply_order_by(final_results, order_conditions);
@@ -1255,7 +1281,6 @@ pub fn execute_query_rayon_parallel2_volcano(sparql: &str, database: &mut Sparql
 
             return format_results(final_results, &selected_variables);
         }
-        
     } else {
         eprintln!("Failed to parse the query.");
         return Vec::new();
@@ -1263,11 +1288,11 @@ pub fn execute_query_rayon_parallel2_volcano(sparql: &str, database: &mut Sparql
 }
 
 pub fn execute_query_rayon_parallel2_redesign_streaming(
-    sparql: &str, 
-    database: &mut SparqlDatabase
+    sparql: &str,
+    database: &mut SparqlDatabase,
 ) -> Vec<Vec<String>> {
     let sparql = normalize_query(sparql);
-    
+
     // Prepare variables to hold the query processing state
     let mut final_results: Vec<BTreeMap<&str, String>>;
     let mut selected_variables: Vec<(String, String)> = Vec::new();
@@ -1277,24 +1302,23 @@ pub fn execute_query_rayon_parallel2_redesign_streaming(
     let prefixes;
 
     if let Ok((
-        _, 
+        _,
         (
-            insert_clause, 
-            mut variables, 
-            patterns, 
-            filters, 
-            group_vars, 
-            parsed_prefixes, 
-            values_clause, 
-            binds, 
+            insert_clause,
+            mut variables,
+            patterns,
+            filters,
+            group_vars,
+            parsed_prefixes,
+            values_clause,
+            binds,
             subqueries,
             limit,
             _,
             order_conditions,
         ),
-    )) = parse_sparql_query(sparql) 
+    )) = parse_sparql_query(sparql)
     {
-        
         prefixes = parsed_prefixes;
 
         // Initialize the limit clause
@@ -1302,7 +1326,7 @@ pub fn execute_query_rayon_parallel2_redesign_streaming(
 
         // Process the INSERT clause if present
         process_insert_clause(insert_clause, database);
-        
+
         // If SELECT * is used, gather all variables from patterns
         if variables == vec![("*", "*", None)] {
             let mut all_vars = BTreeSet::new();
@@ -1317,10 +1341,10 @@ pub fn execute_query_rayon_parallel2_redesign_streaming(
         process_variables(&mut selected_variables, &mut aggregation_vars, variables);
 
         group_by_variables = group_vars;
-        
+
         // Initialize final_results based on the VALUES clause
         final_results = initialize_results(&values_clause);
-        
+
         // Process each pattern in the WHERE clause
         for (subject_var, predicate, object_var) in patterns {
             if predicate == "RULECALL" {
@@ -1329,22 +1353,22 @@ pub fn execute_query_rayon_parallel2_redesign_streaming(
             }
 
             // Handle non-RULECALL patterns
-            let (join_subject, join_predicate, join_object) = resolve_triple_pattern(
-                subject_var, predicate, object_var, database, &prefixes
-            );
+            let (join_subject, join_predicate, join_object) =
+                resolve_triple_pattern(subject_var, predicate, object_var, database, &prefixes);
 
             if GPU_MODE_ENABLED.load(std::sync::atomic::Ordering::SeqCst) {
                 println!("CUDA streaming mode enabled");
-                
+
                 #[cfg(feature = "cuda")]
                 {
                     // To satisfy lifetime requirements, leak the computed join_subject and join_object
-                    let join_subject_static: &'static str = Box::leak(join_subject.into_boxed_str());
+                    let join_subject_static: &'static str =
+                        Box::leak(join_subject.into_boxed_str());
                     let join_object_static: &'static str = Box::leak(join_object.into_boxed_str());
-                    
+
                     // Convert BTreeSet to a vector of Triple
                     let triples_vec: Vec<Triple> = database.triples.iter().cloned().collect();
-                    
+
                     final_results = database.perform_hash_join_cuda_wrapper(
                         join_subject_static,
                         join_predicate,
@@ -1416,19 +1440,18 @@ fn process_pattern_streaming<'a>(
     final_results: Vec<BTreeMap<&'a str, String>>,
 ) -> Vec<BTreeMap<&'a str, String>> {
     // Memory-controlled constants
-    const CHUNK_SIZE: usize = 10_000;           // Process 10K triples at a time
-    const MAX_MEMORY_RESULTS: usize = 100_000;   // Keep max 100K results in memory
-    const SPILL_THRESHOLD: usize = 80_000;       // Spill to disk when we hit 80K
-    
+    const CHUNK_SIZE: usize = 10_000; // Process 10K triples at a time
+    const MAX_MEMORY_RESULTS: usize = 100_000; // Keep max 100K results in memory
+    const SPILL_THRESHOLD: usize = 80_000; // Spill to disk when we hit 80K
+
     // Convert to streaming-friendly format
     let triples_vec: Vec<Triple> = database.triples.iter().cloned().collect();
-    
+
     // Use temporary file for result spilling
     let mut temp_results: Vec<BTreeMap<String, String>> = Vec::new();
-    
+
     // Process ALL triples in manageable chunks
     for triple_chunk in triples_vec.chunks(CHUNK_SIZE) {
-        
         // Convert current results to String format for processing
         let string_results: Vec<BTreeMap<String, String>> = final_results
             .iter()
@@ -1453,20 +1476,20 @@ fn process_pattern_streaming<'a>(
                 None
             },
         );
-        
+
         // Add results with memory management
         temp_results.extend(chunk_results);
-        
+
         // Memory pressure management
         if temp_results.len() > SPILL_THRESHOLD {
             temp_results = compact_results(temp_results);
-            
+
             if temp_results.len() > MAX_MEMORY_RESULTS {
                 temp_results.truncate(MAX_MEMORY_RESULTS);
             }
         }
     }
-    
+
     // Convert back to &str format
     temp_results
         .into_iter()
@@ -1484,7 +1507,7 @@ fn process_pattern_streaming<'a>(
 // Convert the final BTreeMap results into Vec<Vec<String>>
 fn format_results(
     final_results: Vec<BTreeMap<&str, String>>,
-    selected_variables: &[(String, String)]
+    selected_variables: &[(String, String)],
 ) -> Vec<Vec<String>> {
     final_results
         .into_iter()
@@ -1586,7 +1609,8 @@ fn process_rule_call<'a>(
     object_var: &'a str,
     database: &'a SparqlDatabase,
     prefixes: &'a HashMap<String, String>,
-) -> Vec<BTreeMap<&'static str, String>> {  // Changed return type to use 'static
+) -> Vec<BTreeMap<&'static str, String>> {
+    // Changed return type to use 'static
     let rule_name = if subject_var.starts_with(':') {
         &subject_var[1..]
     } else {
@@ -1676,7 +1700,8 @@ fn process_rule_subject(
                 // Find sensors that relate to our room
                 if rel_pred.ends_with("room") && rel_obj == subject {
                     let sensor_id = rel_subj;
-                    highest_value = find_highest_sensor_value(sensor_id, vars[1], database, highest_value);
+                    highest_value =
+                        find_highest_sensor_value(sensor_id, vars[1], database, highest_value);
                 }
             }
         }
@@ -1736,7 +1761,7 @@ fn find_highest_sensor_value(
 // Helper function to resolve triple pattern terms
 fn resolve_triple_pattern(
     subject_var: &str,
-    predicate: &str, 
+    predicate: &str,
     object_var: &str,
     database: &SparqlDatabase,
     prefixes: &HashMap<String, String>,
@@ -1748,7 +1773,7 @@ fn resolve_triple_pattern(
             subject_var
         };
         let rule_key = rule_name.to_lowercase();
-        
+
         // Look up the expanded predicate in the rule_map
         let expanded_rule_predicate = if let Some(expanded) = database.rule_map.get(&rule_key) {
             expanded.clone()
@@ -1760,8 +1785,12 @@ fn resolve_triple_pattern(
                 rule_name.to_string()
             }
         };
-        
-        (object_var.to_string(), expanded_rule_predicate, "true".to_string())
+
+        (
+            object_var.to_string(),
+            expanded_rule_predicate,
+            "true".to_string(),
+        )
     } else {
         // Resolve subject if it's not a variable
         let resolved_subject = if subject_var.starts_with('?') {
@@ -1769,17 +1798,17 @@ fn resolve_triple_pattern(
         } else {
             database.resolve_query_term(subject_var, prefixes)
         };
-        
+
         // For a normal triple pattern, resolve predicate and object
         let resolved_predicate = database.resolve_query_term(predicate, prefixes);
-        
+
         // Resolve object if it's not a variable
         let resolved_object = if object_var.starts_with('?') {
             object_var.to_string()
         } else {
             database.resolve_query_term(object_var, prefixes)
         };
-        
+
         (resolved_subject, resolved_predicate, resolved_object)
     }
 }

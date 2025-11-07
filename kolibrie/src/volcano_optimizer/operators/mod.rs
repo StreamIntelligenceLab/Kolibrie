@@ -8,15 +8,8 @@
  * you can obtain one at https://mozilla.org/MPL/2.0/.
  */
 
-pub mod cuda;
-pub mod custom_error;
-pub mod execute_ml;
-pub mod execute_query;
-pub mod lsm_tree;
-pub mod parser;
-pub mod query_builder;
-mod rsp;
-pub mod sliding_window;
-pub mod sparql_database;
-pub mod utils;
-pub mod volcano_optimizer;
+pub mod logical;
+pub mod physical;
+
+pub use logical::LogicalOperator;
+pub use physical::PhysicalOperator;
