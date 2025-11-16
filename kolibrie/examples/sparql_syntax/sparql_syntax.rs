@@ -10,8 +10,9 @@
 
 use kolibrie::parser::*;
 use kolibrie::sparql_database::*;
-use kolibrie::volcano_optimizer::*;
 use std::time::Instant;
+use kolibrie::volcano_optimizer::*;
+
 
 fn volcano_optimizer_sparql() {
     // Step 1: Initialize the database
@@ -43,7 +44,7 @@ fn volcano_optimizer_sparql() {
 
     // Step 3: Define the SPARQL query
     let sparql_query = r#"
-    PREFIX ex: <http://example.org/> 
+    PREFIX ex: <http://example.org/>
     SELECT ?loved_person
     WHERE {
         <http://example.org/person5> ex:loves ?loved_person .
@@ -51,7 +52,9 @@ fn volcano_optimizer_sparql() {
     }"#;
 
     // Step 4: Parse the SPARQL query
-    if let Ok((_, (_, variables, patterns, filters, _, prefixes, _, _, _, _, _, _))) = parse_sparql_query(sparql_query) {
+    if let Ok((_, (_, variables, patterns, filters, _, prefixes, _, _, _, _, _, _))) =
+        parse_sparql_query(sparql_query)
+    {
         // Merge prefixes into the database
         database.prefixes.extend(prefixes.clone());
 

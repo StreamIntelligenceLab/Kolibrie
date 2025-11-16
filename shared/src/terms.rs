@@ -23,3 +23,11 @@ pub enum UnresolvedTerm {
 }
 
 pub type UnresolvedTriple = (UnresolvedTerm, UnresolvedTerm, UnresolvedTerm);
+
+impl Term{
+    pub fn is_var(&self) -> bool{
+        matches!(self, Term::Variable(_))
+    }
+
+
+}

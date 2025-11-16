@@ -284,3 +284,35 @@ path = "examples/real_scenario/mqtt_example.rs"
 [[example]]
 name = "mqtt_real_scenario"
 path = "examples/real_scenario/mqtt_real_scenario.rs"
+
+[[example]]
+name = "basic_rsp_ql_example"
+path = "examples/rsp_ql_engine/basic_rsp_ql_example.rs"
+
+[[example]]
+name = "multi_window_example"
+path = "examples/rsp_ql_engine/multi_window_example.rs"
+
+[[example]]
+name = "volcano_comparison_example"
+path = "examples/rsp_ql_engine/volcano_comparison_example.rs"
+
+[[example]]
+name = "cross_window_join_example"
+path = "examples/rsp_ql_engine/cross_window_join_example.rs"
+
+[[example]]
+name = "volcano_query_planner_example"
+path = "examples/rsp_ql_engine/volcano_query_planner_example.rs"
+
+[[example]]
+name = "static_window_join_example"
+path = "examples/rsp_ql_engine/static_window_join_example.rs"
+
+[[example]]
+name = "volcano_integration_test"
+path = "examples/rsp_ql_engine/volcano_integration_test.rs"
+
+[[example]]
+name = "static_multi_window_join_example"
+path = "examples/rsp_ql_engine/static_multi_window_join_example.rs"

@@ -8,14 +8,18 @@
  * you can obtain one at https://mozilla.org/MPL/2.0/.
  */
 
-pub trait R2ROperator<I,R,O>: Send{
-    fn load_triples(&mut self, data: &str, syntax: String) -> Result<(),String>;
-    fn load_rules(&mut self, data: &str) -> Result<(),&'static str>;
+// Trait to allow downcasting for Volcano execution
+pub trait AsAnyMut {
+    fn as_any_mut(&mut self) -> &mut dyn std::any::Any;
+}
+
+pub trait R2ROperator<I, R, O>: Send + AsAnyMut {
+    fn load_triples(&mut self, data: &str, syntax: String) -> Result<(), String>;
+    fn load_rules(&mut self, data: &str) -> Result<(), &'static str>;
     fn add(&mut self, data: I);
     fn remove(&mut self, data: &I);
     fn materialize(&mut self) -> Vec<I>;
-    fn execute_query(&mut self,query: &str) -> Vec<O>;
+    fn execute_query(&mut self, query: &str) -> Vec<O>;
 
     fn parse_data(&mut self, data: &str) -> Vec<I>;
 }
-
