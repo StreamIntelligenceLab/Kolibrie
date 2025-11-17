@@ -70,7 +70,7 @@ fn volcano_optimizer_sparql() {
             patterns.clone(),
             filters.clone(),
             &prefixes.clone(),
-            &database,
+            &mut database,
         );
 
         // Step 5: Initialize the optimizer and find the best physical plan

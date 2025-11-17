@@ -219,7 +219,7 @@ fn volcano_optimizer_rdf() {
     let mut prefixes = std::collections::HashMap::new();
     prefixes.insert("ex".to_string(), "http://example.org/".to_string());
 
-    let logical_plan = build_logical_plan(variables, patterns, filters, &prefixes, &database);
+    let logical_plan = build_logical_plan(variables, patterns, filters, &prefixes, &mut database);
 
     // Step 4: Initialize the optimizer and optimize
     let mut optimizer = VolcanoOptimizer::new(&database);
