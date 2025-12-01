@@ -15,19 +15,28 @@ use super::stats::DatabaseStats;
 
 use crate::sparql_database::SparqlDatabase;
 use shared::terms::{Term, TriplePattern};
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, HashMap, HashSet};
+use std::sync::Arc;
 
 /// Volcano-style query optimizer with cost-based optimization
 pub struct VolcanoOptimizer {
     pub memo: HashMap<String, PhysicalOperator>,
     pub selected_variables: Vec<String>,
-    pub stats: DatabaseStats,
+    pub stats: Arc<DatabaseStats>,
 }
 
 impl VolcanoOptimizer {
     /// Creates a new volcano optimizer
     pub fn new(database: &SparqlDatabase) -> Self {
-        let stats = DatabaseStats::gather_stats_fast(database);
+        let stats = Arc::new(DatabaseStats::gather_stats_fast(database));
+        Self {
+            memo: HashMap::new(),
+            selected_variables: Vec::new(),
+            stats,
+        }
+    }
+
+    pub fn with_cached_stats(stats: Arc<DatabaseStats>) -> Self {
         Self {
             memo: HashMap::new(),
             selected_variables: Vec::new(),
@@ -45,7 +54,7 @@ impl VolcanoOptimizer {
         &self,
         plan: &PhysicalOperator,
         database: &mut SparqlDatabase,
-    ) -> Vec<BTreeMap<String, String>> {
+    ) -> Vec<HashMap<String, String>> {
         ExecutionEngine::execute(plan, database)
     }
 
@@ -54,9 +63,98 @@ impl VolcanoOptimizer {
         &mut self,
         logical_plan: &LogicalOperator,
         database: &mut SparqlDatabase,
-    ) -> Vec<BTreeMap<String, String>> {
+    ) -> Vec<HashMap<String, String>> {
         let physical_plan = self.find_best_plan(logical_plan);
         self.execute_plan(&physical_plan, database)
+    }
+
+    /// Detects if a join tree is a star query pattern
+    fn is_star_query(&self, plan: &LogicalOperator) -> Option<Vec<(String, Vec<TriplePattern>)>> {
+        let mut patterns = Vec::new();
+        self.collect_patterns(plan, &mut patterns);
+
+        if patterns.len() < 3 {
+            return None;
+        }
+
+        // Count how many patterns each variable appears
+        let mut var_counts: std::collections::BTreeMap<String, Vec<usize>> = BTreeMap::new();
+
+        for (idx, pattern) in patterns.iter(). enumerate() {
+            if let Term::Variable(var) = &pattern.0 {
+                var_counts.entry(var.clone()).or_default().push(idx);
+            }
+            if let Term::Variable(var) = &pattern.1 {
+                var_counts.entry(var. clone()).or_default().push(idx);
+            }
+            if let Term::Variable(var) = &pattern.2 {
+                var_counts. entry(var.clone()).or_default().push(idx);
+            }
+        }
+
+        // Find all variables that appear in 2+ patterns
+        let mut star_vars: Vec<(&String, &Vec<usize>)> = var_counts
+            .iter()
+            .filter(|(_, indices)| indices.len() >= 2)  // <- Lowered from 3 to 2
+            .collect();
+
+        // Sort by number of occurrences (most frequent first)
+        star_vars.sort_by_key(|(_, indices)| std::cmp::Reverse(indices.len()));
+
+        if star_vars.is_empty() {
+            return None;
+        }
+
+        // Greedily assign patterns to stars
+        let mut used_patterns: HashSet<usize> = HashSet::new();
+        let mut stars: Vec<(String, Vec<TriplePattern>)> = Vec::new();
+
+        for (var, pattern_indices) in star_vars {
+            // Get patterns for this variable that haven't been used yet
+            let available: Vec<usize> = pattern_indices
+                .iter()
+                .filter(|&&idx| !used_patterns.contains(&idx))
+                .copied()
+                .collect();
+
+            if available.len() >= 2 {  // Need at least 2 patterns for a star
+                let star_patterns: Vec<TriplePattern> = available
+                    .iter()
+                    .map(|&idx| patterns[idx].clone())
+                    . collect();
+
+                // Mark these patterns as used
+                for &idx in &available {
+                    used_patterns.insert(idx);
+                }
+
+                stars. push((var.clone(), star_patterns));
+            }
+        }
+
+        if stars.is_empty() {
+            None
+        } else {
+            Some(stars)
+        }
+    }
+
+    fn collect_patterns(&self, plan: &LogicalOperator, patterns: &mut Vec<TriplePattern>) {
+        match plan {
+            LogicalOperator::Scan { pattern } => {
+                patterns.push(pattern.clone());
+            }
+            LogicalOperator::Join { left, right } => {
+                self.collect_patterns(left, patterns);
+                self.collect_patterns(right, patterns);
+            }
+            LogicalOperator::Selection { predicate, ..  } => {
+                self.collect_patterns(predicate, patterns);
+            }
+            LogicalOperator::Projection { predicate, .. } => {
+                self.collect_patterns(predicate, patterns);
+            }
+        }
     }
 
     /// Recursively finds the best plan using dynamic programming with memoization
@@ -65,6 +163,91 @@ impl VolcanoOptimizer {
 
         if let Some(plan) = self.memo.get(&key) {
             return plan.clone();
+        }
+
+        // Check for star query pattern
+        if let Some(stars) = self.is_star_query(logical_plan) {
+            // Get al patterns to check if any are unused
+            let mut all_patterns = Vec::new();
+            self.collect_patterns(logical_plan, &mut all_patterns);
+
+            // Track which pattern indices are used in stars
+            let mut used_pattern_indices: HashSet<usize> = HashSet::new();
+            for (_, star_patterns) in &stars {
+                for star_pattern in star_patterns {
+                    // Find index of this pattern in all_patterns
+                    if let Some(idx) = all_patterns.iter(). position(|p| p == star_pattern) {
+                        used_pattern_indices.insert(idx);
+                    }
+                }
+            }
+
+            if stars.len() > 1 {
+                let mut star_operators: Vec<(String, Vec<TriplePattern>)> = stars;
+
+                // Start with the star that has the most bound patterns (most selective)
+                star_operators.sort_by_key(|(_, patterns)| {
+                    let bound_count = patterns.iter().filter(|p| {
+                        matches!(p.0, Term::Constant(_)) ||
+                        matches!(p.1, Term::Constant(_)) ||
+                        matches!(p.2, Term::Constant(_))
+                    }).count();
+                    std::cmp::Reverse(bound_count)
+                });
+
+                // Execute first star
+                let (first_var, first_patterns) = star_operators. remove(0);
+                let mut result = PhysicalOperator::StarJoin {
+                    join_var: first_var. clone(),
+                    patterns: first_patterns,
+                };
+
+                // For each remaining star, create a multi-way join that can use bind logic
+                for (_, patterns) in star_operators {
+                    let star_scans: Vec<PhysicalOperator> = patterns
+                    .into_iter()
+                    .map(|pattern| PhysicalOperator::index_scan(pattern))
+                    .collect();
+
+                    for scan in star_scans {
+                        result = PhysicalOperator::parallel_join(result, scan);
+                    }
+                }
+
+                // Join unused patterns
+                for (idx, pattern) in all_patterns.iter().enumerate() {
+                    if !used_pattern_indices.contains(&idx) {
+                        let scan = PhysicalOperator::index_scan(pattern. clone());
+                        result = PhysicalOperator::parallel_join(result, scan);
+                    }
+                }
+
+                self.memo. insert(key, result.clone());
+                return result;
+            } else if stars.len() == 1 {
+                // Single star
+                let (join_var, patterns) = stars.into_iter().next().unwrap();
+
+                // Check for unused patterns
+                if used_pattern_indices.len() < all_patterns.len() {
+                    // Some patterns not in the star - build star + join remaining
+                    let mut result = PhysicalOperator::StarJoin { join_var, patterns };
+
+                    for (idx, pattern) in all_patterns.iter().enumerate() {
+                        if !used_pattern_indices.contains(&idx) {
+                            let scan = PhysicalOperator::index_scan(pattern. clone());
+                            result = PhysicalOperator::parallel_join(result, scan);
+                        }
+                    }
+
+                    self.memo.insert(key, result.clone());
+                    return result;
+                }
+
+                let star_join = PhysicalOperator::StarJoin { join_var, patterns };
+                self.memo.insert(key, star_join. clone());
+                return star_join;
+            }
         }
 
         let mut candidates = Vec::new();
@@ -143,7 +326,10 @@ impl VolcanoOptimizer {
         let cost_estimator = CostEstimator::new(&self.stats);
         let best_plan = candidates
             .into_iter()
-            .min_by_key(|plan| cost_estimator.estimate_cost(plan))
+            .min_by_key(|plan| {
+                let cost = cost_estimator.estimate_cost(plan);
+                cost
+            })
             .unwrap();
 
         // Memoize the best plan
@@ -251,7 +437,7 @@ impl VolcanoOptimizer {
                 let right_card = self.estimate_output_cardinality_from_logical(right);
 
                 // More sophisticated join cost estimation
-                let join_selectivity = self.estimate_join_selectivity();
+                let join_selectivity = self.estimate_join_selectivity(left, right);
                 left_cost + right_cost + ((left_card * right_card) as f64 * join_selectivity) as u64
             }
             LogicalOperator::Selection {
@@ -267,8 +453,33 @@ impl VolcanoOptimizer {
     }
 
     /// Estimates join selectivity
-    fn estimate_join_selectivity(&self) -> f64 {
-        0.1
+    fn estimate_join_selectivity(&self, left: &LogicalOperator, right: &LogicalOperator) -> f64 {
+        // Extract predicates from the join patterns
+        let left_predicate = self.extract_predicate_from_plan(left);
+        let right_predicate = self.extract_predicate_from_plan(right);
+
+        // Use the actual join selectivity from database stats
+        match (left_predicate, right_predicate) {
+            (Some(pred), _) => self.stats.get_join_selectivity(pred),
+            (None, Some(pred)) => self. stats.get_join_selectivity(pred),
+            (None, None) => 0.1, // Fallback to default
+        }
+    }
+
+    /// Extracts the predicate ID from a logical plan if it's a scan
+    fn extract_predicate_from_plan(&self, plan: &LogicalOperator) -> Option<u32> {
+        match plan {
+            LogicalOperator::Scan { pattern } => {
+                if let Term::Constant(pred_id) = pattern. 1 {
+                    Some(pred_id)
+                } else {
+                    None
+                }
+            }
+            LogicalOperator::Join { left, ..  } => self.extract_predicate_from_plan(left),
+            LogicalOperator::Selection { predicate, .. } => self.extract_predicate_from_plan(predicate),
+            LogicalOperator::Projection { predicate, .. } => self.extract_predicate_from_plan(predicate),
+        }
     }
 
     /// Estimates output cardinality from a logical plan
@@ -291,7 +502,7 @@ impl VolcanoOptimizer {
             LogicalOperator::Join { left, right } => {
                 let left_card = self.estimate_output_cardinality_from_logical(left);
                 let right_card = self.estimate_output_cardinality_from_logical(right);
-                let join_selectivity = self.estimate_join_selectivity();
+                let join_selectivity = self.estimate_join_selectivity(left, right);
                 ((left_card.min(right_card) as f64 * join_selectivity) as u64).max(1)
             }
         }
@@ -299,7 +510,7 @@ impl VolcanoOptimizer {
 
     /// Updates the optimizer's statistics
     pub fn update_stats(&mut self, database: &SparqlDatabase) {
-        self.stats = DatabaseStats::gather_stats_fast(database);
+        self.stats = Arc::new(DatabaseStats::gather_stats_fast(database));
         self.memo.clear(); // Clear memo as stats have changed
     }
 

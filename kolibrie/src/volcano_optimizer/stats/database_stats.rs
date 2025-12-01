@@ -11,15 +11,16 @@
 use crate::sparql_database::SparqlDatabase;
 use rayon::prelude::*;
 use std::collections::HashMap;
+use std::sync::RwLock;
 
 /// Database statistics for cost-based optimization
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub struct DatabaseStats {
     pub total_triples: u64,
     pub predicate_cardinalities: HashMap<u32, u64>,
     pub subject_cardinalities: HashMap<u32, u64>,
     pub object_cardinalities: HashMap<u32, u64>,
-    pub join_selectivity_cache: HashMap<u32, f64>,
+    pub join_selectivity_cache: RwLock<HashMap<u32, f64>>,
     pub predicate_histogram: HashMap<u32, Vec<(u32, u64)>>, // For better selectivity estimation
 }
 
@@ -31,7 +32,7 @@ impl DatabaseStats {
             predicate_cardinalities: HashMap::new(),
             subject_cardinalities: HashMap::new(),
             object_cardinalities: HashMap::new(),
-            join_selectivity_cache: HashMap::new(),
+            join_selectivity_cache: RwLock::new(HashMap::new()),
             predicate_histogram: HashMap::new(),
         }
     }
@@ -93,7 +94,7 @@ impl DatabaseStats {
             predicate_cardinalities,
             subject_cardinalities,
             object_cardinalities,
-            join_selectivity_cache: HashMap::new(),
+            join_selectivity_cache: RwLock::new(HashMap::new()),
             predicate_histogram: HashMap::new(),
         }
     }
@@ -120,21 +121,30 @@ impl DatabaseStats {
     }
 
     /// Gets or computes join selectivity
-    pub fn get_join_selectivity(&mut self, predicate: u32) -> f64 {
-        if let Some(&selectivity) = self.join_selectivity_cache.get(&predicate) {
-            selectivity
+    pub fn get_join_selectivity(&self, predicate: u32) -> f64 {
+        // First, try to read from cache (shared read lock)
+        {
+            let cache = self.join_selectivity_cache.read(). unwrap();
+            if let Some(&selectivity) = cache.get(&predicate) {
+                return selectivity;
+            }
+        }  // Read lock released here
+        
+        // Compute selectivity
+        let cardinality = self. get_predicate_cardinality(predicate);
+        let selectivity = if self.total_triples > 0 {
+            (cardinality as f64) / (self.total_triples as f64)
         } else {
-            // Compute selectivity based on predicate cardinality
-            let cardinality = self.get_predicate_cardinality(predicate);
-            let selectivity = if self.total_triples > 0 {
-                (cardinality as f64) / (self.total_triples as f64)
-            } else {
-                0.1 // Default selectivity
-            };
+            0.1
+        };
 
-            self.join_selectivity_cache.insert(predicate, selectivity);
-            selectivity
+        // Cache the result
+        {
+            let mut cache = self.join_selectivity_cache.write().unwrap();
+            cache.insert(predicate, selectivity);
         }
+        
+        selectivity
     }
 
     /// Updates statistics with new data
@@ -145,7 +155,7 @@ impl DatabaseStats {
         *self.object_cardinalities.entry(object).or_insert(0) += 1;
 
         // Clear cache as statistics have changed
-        self.join_selectivity_cache.clear();
+        self.join_selectivity_cache.write().unwrap().clear();
     }
 
     /// Removes statistics for deleted data
@@ -173,7 +183,7 @@ impl DatabaseStats {
         }
 
         // Clear cache as statistics have changed
-        self.join_selectivity_cache.clear();
+        self.join_selectivity_cache.write().unwrap().clear();
     }
 }
 

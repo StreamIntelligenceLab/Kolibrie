@@ -40,6 +40,10 @@ pub enum PhysicalOperator {
         left: Box<PhysicalOperator>,
         right: Box<PhysicalOperator>,
     },
+    StarJoin {
+        join_var: String,
+        patterns: Vec<TriplePattern>,
+    },
     Projection {
         input: Box<PhysicalOperator>,
         variables: Vec<String>,
@@ -109,7 +113,7 @@ impl PhysicalOperator {
     pub fn execute(
         &self,
         database: &mut crate::sparql_database::SparqlDatabase,
-    ) -> Vec<std::collections::BTreeMap<String, String>> {
+    ) -> Vec<std::collections::HashMap<String, String>> {
         super::super::execution::ExecutionEngine::execute(self, database)
     }
 
@@ -117,7 +121,7 @@ impl PhysicalOperator {
     pub fn execute_with_ids(
         &self,
         database: &mut crate::sparql_database::SparqlDatabase,
-    ) -> Vec<std::collections::BTreeMap<String, u32>> {
+    ) -> Vec<std::collections::HashMap<String, u32>> {
         super::super::execution::ExecutionEngine::execute_with_ids(self, database)
     }
 }

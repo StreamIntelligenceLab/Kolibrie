@@ -36,6 +36,7 @@ use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::sync::Arc;
 use std::sync::{Mutex, RwLock};
 use url::Url;
+use crate::volcano_optimizer::DatabaseStats;
 
 const MIN_CHUNK_SIZE: usize = 1024;
 const HASHMAP_INITIAL_CAPACITY: usize = 4096;
@@ -53,6 +54,7 @@ pub struct SparqlDatabase {
     pub udfs: HashMap<String, ClonableFn>,
     pub index_manager: UnifiedIndex,
     pub rule_map: HashMap<String, String>,
+    pub cached_stats: Option<Arc<DatabaseStats>>,
 }
 
 #[allow(dead_code)]
@@ -67,7 +69,22 @@ impl SparqlDatabase {
             udfs: HashMap::new(),
             index_manager: UnifiedIndex::new(),
             rule_map: HashMap::new(),
+            cached_stats: None,
         }
+    }
+
+    pub fn get_or_build_stats(&mut self) -> Arc<DatabaseStats> {
+        if let Some(stats) = &self.cached_stats {
+            return stats.clone();  // ← Clone the Arc (cheap), not the DatabaseStats
+        }
+        
+        let stats = Arc::new(DatabaseStats::gather_stats_fast(self));
+        self.cached_stats = Some(stats.clone());
+        stats
+    }
+    
+    pub fn invalidate_stats_cache(&mut self) {
+        self.cached_stats = None;
     }
 
     pub fn query(&self) -> QueryBuilder {
@@ -1453,6 +1470,7 @@ impl SparqlDatabase {
             udfs: HashMap::new(),
             index_manager: UnifiedIndex::new(),
             rule_map: HashMap::new(),
+            cached_stats: None,
         }
     }
 
@@ -1521,6 +1539,7 @@ impl SparqlDatabase {
             udfs: HashMap::new(),
             index_manager: UnifiedIndex::new(),
             rule_map: HashMap::new(),
+            cached_stats: None,
         }
     }
 

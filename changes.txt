@@ -105,6 +105,13 @@
 104. Modify SpaqlDatabase and UnifiedIndex by adding deletion for triples, added to unit test
 105. Multiple window support for RSP-QL syntax
 106. Fix a small bug with windowing (retrieve the queries that are executed in each window)
+107. Major refactoring of Volcano Optimizer (splitting into separate files)
+108. Major update of Volcano Optimizer: correctly execute all query patterns in optimizer
+109. Store into cache database stats
+110. Properly estimate operators
+112. Repalce BTreeMap with HashMap
+113. Improve join algorithms
+114. Add ability to recognize different shapes of query such as snowflake, line, star
 
 0.1.0
 1. Parsing RDF/XML

@@ -9,7 +9,7 @@
  */
 
 use shared::dictionary::Dictionary;
-use std::collections::BTreeMap;
+use std::collections::HashMap;
 
 /// Represents a condition for filtering operations
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -22,7 +22,7 @@ pub struct Condition {
 /// ID-based result type for performance optimization
 #[derive(Debug, Clone)]
 pub struct IdResult {
-    pub bindings: BTreeMap<String, u32>, // Variable -> ID mapping
+    pub bindings: HashMap<String, u32>, // Variable -> ID mapping
 }
 
 impl Condition {
@@ -36,7 +36,7 @@ impl Condition {
     }
 
     /// Evaluates the condition against string-based results
-    pub fn evaluate(&self, result: &BTreeMap<String, String>) -> bool {
+    pub fn evaluate(&self, result: &HashMap<String, String>) -> bool {
         if let Some(value) = result.get(&self.variable) {
             match self.operator.as_str() {
                 "=" => value == &self.value,
@@ -55,7 +55,7 @@ impl Condition {
     /// Evaluates the condition against ID-based results for performance
     pub fn evaluate_with_ids(
         &self,
-        result: &BTreeMap<String, u32>,
+        result: &HashMap<String, u32>,
         dictionary: &Dictionary,
     ) -> bool {
         if let Some(&id) = result.get(&self.variable) {
@@ -92,12 +92,12 @@ impl IdResult {
     /// Creates a new empty IdResult
     pub fn new() -> Self {
         Self {
-            bindings: BTreeMap::new(),
+            bindings: HashMap::new(),
         }
     }
 
     /// Creates a new IdResult with the given bindings
-    pub fn with_bindings(bindings: BTreeMap<String, u32>) -> Self {
+    pub fn with_bindings(bindings: HashMap<String, u32>) -> Self {
         Self { bindings }
     }
 

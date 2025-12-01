@@ -1129,7 +1129,8 @@ pub fn execute_query_rayon_parallel2_volcano(
                 database,
             );
 
-            let mut optimizer = VolcanoOptimizer::new(database);
+            let stats = database.cached_stats.as_ref().expect("Error");
+            let mut optimizer = VolcanoOptimizer::with_cached_stats(stats.clone());
             let _optimized_plan = optimizer.find_best_plan(&logical_plan);
 
             #[cfg(feature = "cuda")]
@@ -1217,6 +1218,12 @@ pub fn execute_query_rayon_parallel2_volcano(
                 return Vec::new();
             }
         } else {
+            /*let guard = pprof::ProfilerGuardBuilder::default()
+                .frequency(1000)
+                .blocklist(&["libc", "libgcc", "pthread", "vdso"])
+                .build()
+                . unwrap();*/
+
             // Use Volcano optimizer for CPU execution
             let logical_plan = build_logical_plan(
                 selected_variables
@@ -1229,12 +1236,19 @@ pub fn execute_query_rayon_parallel2_volcano(
                 database,
             );
 
-            let mut optimizer = VolcanoOptimizer::new(database);
+            let stats = database.cached_stats.as_ref().expect("AAA");
+            let mut optimizer = VolcanoOptimizer::with_cached_stats(stats.clone());
+
             let optimized_plan = optimizer.find_best_plan(&logical_plan);
             let results = optimized_plan.execute(database);
+            /*if let Ok(report) = guard.report().build() {
+                let file = std::fs::File::create("volcano_optimizer_flamegraph.svg").unwrap();
+                report.flamegraph(file).unwrap();
+                println!("Volcano optimizer flamegraph saved to: volcano_optimizer_flamegraph. svg");
+            }*/
 
             // Convert results to owned strings first to avoid lifetime issues
-            let results_owned: Vec<BTreeMap<String, String>> = results.into_iter().collect();
+            let results_owned: Vec<HashMap<String, String>> = results.into_iter().collect();
 
             // Initialize with VALUES clause for consistency with GPU path
             let mut final_results = initialize_results(&values_clause);
@@ -1439,59 +1453,33 @@ fn process_pattern_streaming<'a>(
     database: &'a SparqlDatabase,
     final_results: Vec<BTreeMap<&'a str, String>>,
 ) -> Vec<BTreeMap<&'a str, String>> {
-    // Memory-controlled constants
-    const CHUNK_SIZE: usize = 10_000; // Process 10K triples at a time
-    const MAX_MEMORY_RESULTS: usize = 100_000; // Keep max 100K results in memory
-    const SPILL_THRESHOLD: usize = 80_000; // Spill to disk when we hit 80K
+    // Convert current results to String format for processing
+    let string_results: Vec<BTreeMap<String, String>> = final_results
+        .iter()
+        .map(|map| {
+            map.iter()
+                .map(|(k, v)| (k.to_string(), v.clone()))
+                . collect()
+        })
+        . collect();
 
-    // Convert to streaming-friendly format
-    let triples_vec: Vec<Triple> = database.triples.iter().cloned().collect();
-
-    // Use temporary file for result spilling
-    let mut temp_results: Vec<BTreeMap<String, String>> = Vec::new();
-
-    // Process ALL triples in manageable chunks
-    for triple_chunk in triples_vec.chunks(CHUNK_SIZE) {
-        // Convert current results to String format for processing
-        let string_results: Vec<BTreeMap<String, String>> = final_results
-            .iter()
-            .map(|map| {
-                map.iter()
-                    .map(|(k, v)| (k.to_string(), v.clone()))
-                    .collect()
-            })
-            .collect();
-
-        // Process this chunk
-        let chunk_results = perform_join_par_simd_with_strict_filter_4_redesigned_streaming(
-            subject_var.clone(),
-            predicate.clone(),
-            object_var.clone(),
-            triple_chunk.to_vec(),
-            &database.dictionary,
-            string_results,
-            if !object_var.starts_with('?') {
-                Some(object_var.clone())
-            } else {
-                None
-            },
-        );
-
-        // Add results with memory management
-        temp_results.extend(chunk_results);
-
-        // Memory pressure management
-        if temp_results.len() > SPILL_THRESHOLD {
-            temp_results = compact_results(temp_results);
-
-            if temp_results.len() > MAX_MEMORY_RESULTS {
-                temp_results.truncate(MAX_MEMORY_RESULTS);
-            }
-        }
-    }
+    // Pass BTreeSet directly - no chunking, no Vec conversion! 
+    let results = perform_join_par_simd_with_strict_filter_4_redesigned_streaming(
+        subject_var.clone(),
+        predicate.clone(),
+        object_var.clone(),
+        &database.index_manager,  // ← Pass BTreeSet reference directly! 
+        &database.dictionary,
+        string_results,
+        if !object_var.starts_with('?') {
+            Some(object_var.clone())
+        } else {
+            None
+        },
+    );
 
     // Convert back to &str format
-    temp_results
+    results
         .into_iter()
         .map(|map| {
             map.into_iter()

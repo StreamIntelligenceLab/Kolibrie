@@ -116,45 +116,71 @@ impl<'a> CostEstimator<'a> {
             PhysicalOperator::Projection { input, .. } => {
                 self.estimate_cost(input) + CostConstants::COST_PER_PROJECTION
             }
+            PhysicalOperator::StarJoin { patterns, .. } => {
+                // Cost = scan most selective + filter rest
+                let mut costs: Vec<u64> = patterns
+                    .iter()
+                    .map(|p| self.estimate_cardinality(p))
+                    . collect();
+
+                costs.sort();
+
+                // Start with smallest, then check each remaining
+                let base_cost = costs[0] * CostConstants::COST_PER_ROW_INDEX_SCAN;
+                let filter_cost = costs. iter().skip(1).sum::<u64>() * CostConstants::COST_PER_ROW_INDEX_SCAN / 10;
+
+                base_cost + filter_cost
+            }
         }
     }
 
     /// Estimates the cardinality of a triple pattern
     pub fn estimate_cardinality(&self, pattern: &TriplePattern) -> u64 {
-        let mut base_cardinality = self.stats.total_triples;
+        match pattern {
+            // Fully bound - always returns 0 or 1
+            (Term::Constant(_), Term::Constant(_), Term::Constant(_)) => 1,
 
-        // Count bound variables for better selectivity estimation
-        let bound_count = self.count_bound_variables(pattern);
+            // Two bounds - use actual index stats
+            (Term::Constant(s), Term::Constant(p), Term::Variable(_)) => {
+                // Look up actual SPO cardinality
+                self.stats.get_subject_cardinality(*s)
+                    .min(self.stats.get_predicate_cardinality(*p))
+                    .max(1)
+            }
 
-        // More aggressive selectivity based on bound variables
-        let selectivity = match bound_count {
-            0 => 1.0,     // No filtering
-            1 => 0.01,    // More selective for one bound field
-            2 => 0.0001,  // Very selective for two bound fields
-            3 => 0.00001, // Extremely selective for fully bound
-            _ => 1.0,
-        };
+            (Term::Constant(s), Term::Variable(_), Term::Constant(o)) => {
+                // S*O pattern
+                self.stats.get_subject_cardinality(*s)
+                    .min(self.stats. get_object_cardinality(*o))
+                    .max(1)
+            }
 
-        // Use predicate cardinality if available and more specific
-        if let (_, Term::Constant(predicate), _) = pattern {
-            if let Some(&predicate_cardinality) = self.stats.predicate_cardinalities.get(predicate)
-            {
-                // Use the more restrictive estimate
-                base_cardinality = base_cardinality.min(predicate_cardinality);
+            (Term::Variable(_), Term::Constant(p), Term::Constant(o)) => {
+                // *PO pattern
+                self.stats.get_predicate_cardinality(*p)
+                    .min(self. stats.get_object_cardinality(*o))
+                    .max(1)
+            }
+
+            // One bound - use predicate/subject/object cardinality directly
+            (Term::Constant(s), Term::Variable(_), Term::Variable(_)) => {
+                self. stats.get_subject_cardinality(*s). max(1)
+            }
+
+            (Term::Variable(_), Term::Constant(p), Term::Variable(_)) => {
+                // This is the KEY one - should return ACTUAL predicate cardinality!
+                self.stats.get_predicate_cardinality(*p).max(1)
+            }
+
+            (Term::Variable(_), Term::Variable(_), Term::Constant(o)) => {
+                self.stats.get_object_cardinality(*o).max(1)
+            }
+
+            // No bounds - full scan
+            (Term::Variable(_), Term::Variable(_), Term::Variable(_)) => {
+                self. stats.total_triples
             }
         }
-        if let (Term::Constant(subject), _, _) = pattern {
-            if let Some(&subject_cardinality) = self.stats.subject_cardinalities.get(subject) {
-                base_cardinality = base_cardinality.min(subject_cardinality);
-            }
-        }
-        if let (_, _, Term::Constant(object)) = pattern {
-            if let Some(&object_cardinality) = self.stats.object_cardinalities.get(object) {
-                base_cardinality = base_cardinality.min(object_cardinality);
-            }
-        }
-
-        ((base_cardinality as f64 * selectivity) as u64).max(1)
     }
 
     /// Estimates the selectivity of a condition
@@ -164,6 +190,34 @@ impl<'a> CostEstimator<'a> {
             "!=" => 0.95,
             ">" | "<" | ">=" | "<=" => 0.25,
             _ => 1.0,
+        }
+    }
+
+    /// Extracts the predicate ID from a physical operator if it's a scan
+    fn extract_predicate_from_physical(&self, plan: &PhysicalOperator) -> Option<u32> {
+        match plan {
+            PhysicalOperator::TableScan { pattern } | PhysicalOperator::IndexScan { pattern } => {
+                if let Term::Constant(pred_id) = pattern.1 {
+                    Some(pred_id)
+                } else {
+                    None
+                }
+            }
+            PhysicalOperator::Filter { input, ..  } => self.extract_predicate_from_physical(input),
+            PhysicalOperator::Projection { input, .. } => self.extract_predicate_from_physical(input),
+            _ => None,
+        }
+    }
+
+    /// Computes join selectivity based on actual statistics
+    fn compute_join_selectivity(&self, left: &PhysicalOperator, right: &PhysicalOperator) -> f64 {
+        let left_predicate = self.extract_predicate_from_physical(left);
+        let right_predicate = self.extract_predicate_from_physical(right);
+
+        match (left_predicate, right_predicate) {
+            (Some(pred), _) => self.stats.get_join_selectivity(pred),
+            (None, Some(pred)) => self. stats.get_join_selectivity(pred),
+            (None, None) => 0.1, // Fallback
         }
     }
 
@@ -180,13 +234,13 @@ impl<'a> CostEstimator<'a> {
             PhysicalOperator::OptimizedHashJoin { left, right } => {
                 let left_cardinality = self.estimate_output_cardinality(left);
                 let right_cardinality = self.estimate_output_cardinality(right);
-                let join_selectivity = 0.05; // More realistic selectivity
+                let join_selectivity = self.compute_join_selectivity(left, right);
                 ((left_cardinality.min(right_cardinality) as f64 * join_selectivity) as u64).max(1)
             }
             PhysicalOperator::HashJoin { left, right } => {
                 let left_cardinality = self.estimate_output_cardinality(left);
                 let right_cardinality = self.estimate_output_cardinality(right);
-                let join_selectivity = 0.1;
+                let join_selectivity = self.compute_join_selectivity(left, right);
                 ((left_cardinality.min(right_cardinality) as f64 * join_selectivity) as u64).max(1)
             }
             PhysicalOperator::NestedLoopJoin { left, right } => {
@@ -197,10 +251,33 @@ impl<'a> CostEstimator<'a> {
             PhysicalOperator::ParallelJoin { left, right } => {
                 let left_cardinality = self.estimate_output_cardinality(left);
                 let right_cardinality = self.estimate_output_cardinality(right);
-                let join_selectivity = 0.1;
+                let join_selectivity = self.compute_join_selectivity(left, right);
                 ((left_cardinality.min(right_cardinality) as f64 * join_selectivity) as u64).max(1)
             }
             PhysicalOperator::Projection { input, .. } => self.estimate_output_cardinality(input),
+            PhysicalOperator::StarJoin { patterns, .. } => {
+                // Estimate cardinality of star join:
+                // Start with most selective pattern, then apply filtering
+                let mut cardinalities: Vec<u64> = patterns
+                    .iter()
+                    .map(|p| self.estimate_cardinality(p))
+                    . collect();
+
+                if cardinalities.is_empty() {
+                    return 0;
+                }
+
+                cardinalities.sort();
+
+                // Base cardinality is the smallest (most selective) pattern
+                let base = cardinalities[0];
+
+                // Each additional pattern acts as a filter
+                // Conservative estimate
+                let filter_factor = 0.5_f64.powi((patterns.len() - 1) as i32);
+
+                ((base as f64 * filter_factor) as u64).max(1)
+            }
         }
     }
 
