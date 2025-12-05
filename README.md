@@ -961,7 +961,7 @@ Submitted pull request is deemed to have agreed to publish under Mozilla Public 
 
 Join our Discord community to discuss Kolibrie, ask questions, and share your experiences:
 
-[Join Kolibrie Discord](https://discord. gg/KcFXrUUyYm)
+[Join Kolibrie Discord](https://discord.gg/KcFXrUUyYm)
 
 ## License
 
