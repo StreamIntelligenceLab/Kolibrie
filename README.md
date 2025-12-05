@@ -43,11 +43,17 @@ For more information about our research and ongoing projects, please visit the [
 
 Ensure you have [Rust](https://www.rust-lang.org/tools/install) installed (version 1.60 or higher).
 
-Add **Kolibrie** to your `Cargo.toml`:
+Clone the repository:
 
-```toml
-[dependencies]
-kolibrie = "0.1.0"
+```bash
+git clone https://github.com/StreamIntelligenceLab/Kolibrie.git
+cd Kolibrie
+```
+
+Build the project:
+
+```bash
+cargo build --release
 ```
 
 Then, include it in your project:
@@ -100,12 +106,31 @@ fn main() {
 
 ### Parsing RDF Data
 
-**Kolibrie** supports parsing RDF data from files or strings in various formats.
+**Kolibrie** supports parsing RDF data from files or strings in various formats. 
 
 #### Parsing RDF/XML from a File
 
 ```rust
 db.parse_rdf_from_file("data.rdf");
+```
+
+#### Parsing RDF/XML from a String
+
+```rust
+let rdf_data = r#"
+<?xml version="1.0" encoding="UTF-8"?>
+<rdf:RDF 
+    xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#"
+    xmlns:foaf="http://xmlns.com/foaf/0. 1/">
+    
+    <rdf:Description rdf:about="http://example.org/alice">
+        <foaf:name>Alice</foaf:name>
+        <foaf:age>30</foaf:age>
+    </rdf:Description>
+</rdf:RDF>
+"#;
+
+db.parse_rdf(rdf_data);
 ```
 
 #### Parsing Turtle Data from a String
@@ -114,7 +139,7 @@ db.parse_rdf_from_file("data.rdf");
 let turtle_data = r#"
 @prefix ex: <http://example.org/> .
 
-ex:Alice ex:knows ex:Bob .
+ex:Alice ex:knows ex:Bob . 
 ex:Bob ex:knows ex:Charlie .
 "#;
 
@@ -134,13 +159,45 @@ ex:Bob ex:knows ex:Charlie .
 db.parse_n3(n3_data);
 ```
 
-### Executing SPARQL Queries
-
-Execute SPARQL queries to retrieve and manipulate data.
-
-#### Basic Query
+#### Parsing N-Triples from a String
 
 ```rust
+let ntriples_data = r#"
+<http://example.org/john> <http://example.org/hasFriend> <http://example.org/jane> . 
+<http://example.org/jane> <http://example.org/name> "Jane Doe" . 
+<http://example.org/john> <http://example.org/age> "30"^^<http://www.w3.org/2001/XMLSchema#integer> .
+"#;
+
+db.parse_ntriples_and_add(ntriples_data);
+```
+
+### Adding Triples Programmatically
+
+Add individual triples directly to the database:
+
+```rust
+db.add_triple_parts(
+    "http://example.org/alice",
+    "http://xmlns.com/foaf/0.1/name",
+    "Alice"
+);
+
+db.add_triple_parts(
+    "http://example.org/alice",
+    "http://xmlns.com/foaf/0.1/age",
+    "30"
+);
+```
+
+### Executing SPARQL Queries
+
+Execute SPARQL queries to retrieve and manipulate data. 
+
+#### Basic SELECT Query
+
+```rust
+use kolibrie::execute_query::execute_query;
+
 let sparql_query = r#"
 PREFIX ex: <http://example.org/>
 SELECT ?s ?o
@@ -156,21 +213,212 @@ for row in results {
 }
 ```
 
-#### Insert Data
+#### Query with FILTER
 
 ```rust
-let insert_query = r#"
-PREFIX ex: <http://example.org/>
-INSERT {
-    ex:Charlie ex:knows ex:David .
-}
+let sparql = r#"
+PREFIX ex: <http://example.org/vocab#>
+
+SELECT ?name ?attendees
 WHERE {
-    ex:Bob ex:knows ex:Charlie .
+    ?event ex:name ?name .
+    ?event ex:attendees ?attendees . 
+    FILTER (?attendees > 50)
 }
 "#;
 
-let results = execute_query(insert_query, &mut db);
-// Insert operations do not return results
+let results = execute_query(sparql, &mut db);
+
+for row in results {
+    println! ("Event: {}, Attendees: {}", row[0], row[1]);
+}
+```
+
+#### Query with OR Operator
+
+```rust
+let sparql = r#"
+PREFIX ex: <http://example.org/vocab#>
+
+SELECT ?name ?type ?attendees
+WHERE {
+    ?event ex:name ?name . 
+    ?event ex:type ?type .
+    ?event ex:attendees ?attendees . 
+    FILTER (?type = "Technical" || ?type = "Academic")
+}
+"#;
+
+let results = execute_query(sparql, &mut db);
+
+for row in results {
+    if let [name, type_, attendees] = &row[.. ] {
+        println!("Name: {}, Type: {}, Attendees: {}", name, type_, attendees);
+    }
+}
+```
+
+#### Query with LIMIT
+
+```rust
+let sparql = r#"
+PREFIX ex: <http://example.org/vocab#>
+
+SELECT ?name ?type
+WHERE {
+    ?event ex:name ?name .
+    ?event ex:type ?type .
+    FILTER (?type = "Technical" || ?type = "Academic")
+}
+LIMIT 2
+"#;
+
+let results = execute_query(sparql, &mut db);
+
+for row in results {
+    println!("Name: {}, Type: {}", row[0], row[1]);
+}
+```
+
+#### Query with Aggregations
+
+```rust
+let sparql = r#"
+PREFIX ds: <https://data.cityofchicago.org/resource/xzkq-xp2w/>
+
+SELECT AVG(?salary) AS ?average_salary
+WHERE {
+    ?employee ds:annual_salary ?salary
+}
+GROUPBY ?average_salary
+"#;
+
+let results = execute_query(sparql, &mut db);
+
+for row in results {
+    if let [avg_salary] = &row[.. ] {
+        println!("Average Salary: {}", avg_salary);
+    }
+}
+```
+
+**Supported Aggregations:**
+- `AVG(? var)` - Calculate average
+- `COUNT(?var)` - Count occurrences
+- `SUM(?var)` - Sum values
+- `MIN(?var)` - Find minimum
+- `MAX(? var)` - Find maximum
+
+#### Query with String Functions
+
+```rust
+let sparql = r#"
+PREFIX foaf: <http://xmlns.com/foaf/0.1/>
+
+SELECT ?name
+WHERE {
+    ?person foaf:givenName ?first .
+    ?person foaf:surname ?last
+    BIND(CONCAT(?first, " ", ?last) AS ?name)
+}
+"#;
+
+let results = execute_query(sparql, &mut db);
+
+for row in results {
+    println!("Full Name: {}", row[0]);
+}
+```
+
+#### Nested Queries
+
+```rust
+let sparql = r#"
+PREFIX ex: <http://example.org/>
+
+SELECT ?friendName
+WHERE {
+    ?person ex:name "Alice" .
+    ?person ex:knows ?friend
+    {
+        SELECT ?friend ?friendName
+        WHERE {
+            ?friend ex:name ?friendName . 
+        }
+    }
+}"#;
+
+let results = execute_query(sparql, &mut db);
+
+for row in results {
+    println!("Alice's Friend: {}", row[0]);
+}
+```
+
+### Using the Query Builder API
+
+The Query Builder provides a fluent interface for programmatic query construction. 
+
+#### Basic Query Building
+
+```rust
+// Get all objects for a specific predicate
+let results = db.query()
+    .with_predicate("http://xmlns.com/foaf/0.1/name")
+    .get_objects();
+
+for object in results {
+    println!("Name: {}", object);
+}
+```
+
+#### Query with Filtering
+
+```rust
+let results = db.query()
+    .with_predicate("http://xmlns.com/foaf/0.1/age")
+    .filter(|triple| {
+        // Custom filter logic
+        db.dictionary.decode(triple.object)
+            .and_then(|age| age.parse::<i32>().ok())
+            .map(|age| age > 25)
+            .unwrap_or(false)
+    })
+    .get_decoded_triples();
+
+for (subject, predicate, object) in results {
+    println!("{} is {} years old", subject, object);
+}
+```
+
+#### Query with Joins
+
+```rust
+let other_db = SparqlDatabase::new();
+// ...  populate other_db ...
+
+let results = db.query()
+    .join(&other_db)
+    .join_on_subject()
+    .get_triples();
+```
+
+#### Query with Sorting, Limiting, and Distinct
+
+```rust
+let results = db.query()
+    .with_predicate("http://xmlns.com/foaf/0.1/name")
+    .order_by(|triple| {
+        db.dictionary.decode(triple.object).unwrap().to_string()
+    })
+    .distinct()
+    .limit(10)
+    .offset(5)
+    .get_decoded_triples();
+
+for (subject, predicate, object) in results {
+    println!("{} - {} - {}", subject, predicate, object);
+}
 ```
 
 ### Using the Volcano Optimizer
@@ -180,28 +428,33 @@ The **Volcano Optimizer** is integrated within **Kolibrie** to optimize query ex
 #### Example: Optimized Query Execution
 
 ```rust
-use kolibrie::{SparqlDatabase, execute_query, VolcanoOptimizer};
+use kolibrie::execute_query::*;
+use kolibrie::sparql_database::*;
 
 fn main() {
     let mut db = SparqlDatabase::new();
 
-    // Parse Turtle data
-    let turtle_data = r#"
-    @prefix ex: <http://example.org/> .
-
-    ex:Alice ex:knows ex:Bob .
-    ex:Bob ex:knows ex:Charlie .
-    ex:Charlie ex:knows ex:David .
+    // Parse N-Triples data
+    let ntriples_data = r#"
+<http://example.org/john> <http://example.org/hasFriend> <http://example.org/jane> .
+<http://example.org/jane> <http://example.org/name> "Jane Doe" .
+<http://example.org/john> <http://example.org/name> "John Smith" . 
+<http://example.org/jane> <http://example.org/age> "25"^^<http://www.w3.org/2001/XMLSchema#integer> .
+<http://example.org/john> <http://example.org/age> "30"^^<http://www. w3.org/2001/XMLSchema#integer> .
     "#;
-    db.parse_turtle(turtle_data);
+
+    db.parse_ntriples_and_add(ntriples_data);
+    
+    // Build statistics for the optimizer
+    db.get_or_build_stats();
 
     // Define the SPARQL query
     let sparql_query = r#"
     PREFIX ex: <http://example.org/>
-    SELECT ?person ?location
+    SELECT ?person ?friend ?friendName
     WHERE {
-        ?person ex:knows ?org .
-        ?org ex:located ?location .
+        ?person ex:hasFriend ?friend .
+        ?friend ex:name ?friendName .
     }
     "#;
 
@@ -209,64 +462,73 @@ fn main() {
     let results = execute_query(sparql_query, &mut db);
 
     for row in results {
-        println!("Person: {}, Location: {}", row[0], row[1]);
+        println!("Person: {}, Friend: {}, Friend's Name: {}", row[0], row[1], row[2]);
     }
 }
 ```
 
 ### Working with the Knowledge Graph
 
-The **Knowledge Graph** component allows you to build and manage semantic networks with both instance-level (ABox) and schema-level (TBox) information. It supports dynamic rule-based inference and backward chaining to derive new knowledge from existing data.
+The **Knowledge Graph** component allows you to build and manage semantic networks with instance-level (ABox) information. It supports dynamic rule-based inference using forward chaining, backward chaining, and semi-naive evaluation to derive new knowledge from existing data.
 
 #### Example: Building and Querying a Knowledge Graph
 
 ```rust
-use kolibrie::{KnowledgeGraph, Triple};
+use datalog::knowledge_graph::KnowledgeGraph;
+use shared::terms::Term;
+use shared::rule::Rule;
 
 fn main() {
     let mut kg = KnowledgeGraph::new();
 
-    // Add TBox triples (schema)
-    kg.add_tbox_triple("http://example.org/Person", "http://www.w3.org/1999/02/22-rdf-syntax-ns#type", "http://www.w3.org/2000/01/rdf-schema#Class");
-    kg.add_tbox_triple("http://example.org/knows", "http://www.w3.org/1999/02/22-rdf-syntax-ns#type", "http://www.w3.org/2000/01/rdf-schema#Property");
+    // Add ABox triples (instance-level data)
+    kg.add_abox_triple("Alice", "parentOf", "Bob");
+    kg.add_abox_triple("Bob", "parentOf", "Charlie");
 
-    // Add ABox triples (instances)
-    kg.add_abox_triple("http://example.org/Alice", "http://www.w3.org/1999/02/22-rdf-syntax-ns#type", "http://example.org/Person");
-    kg.add_abox_triple("http://example.org/Alice", "http://example.org/knows", "http://example.org/Bob");
-
-    // Define and add rules
-    let rule = Rule {
+    // Define a transitivity rule for ancestorOf relationship
+    // Rule: parentOf(X, Y) ∧ parentOf(Y, Z) → ancestorOf(X, Z)
+    let ancestor_rule = Rule {
         premise: vec![
             (
-                Term::Variable("x".to_string()),
-                Term::Constant(kg.dictionary.encode("http://example.org/knows")),
-                Term::Variable("y".to_string()),
+                Term::Variable("X".to_string()),
+                Term::Constant(kg.dictionary.encode("parentOf")),
+                Term::Variable("Y".to_string()),
+            ),
+            (
+                Term::Variable("Y". to_string()),
+                Term::Constant(kg.dictionary.encode("parentOf")),
+                Term::Variable("Z".to_string()),
+            ),
+        ],
+        conclusion: vec![
+            (
+                Term::Variable("X".to_string()),
+                Term::Constant(kg.dictionary.encode("ancestorOf")),
+                Term::Variable("Z".to_string()),
             )
         ],
-        conclusion: (
-            Term::Variable("y".to_string()),
-            Term::Constant(kg.dictionary.encode("http://example.org/knownBy")),
-            Term::Variable("x".to_string()),
-        ),
+        filters: vec![],
     };
-    kg.add_rule(rule);
 
-    // Infer new facts based on rules
-    kg.infer_new_facts();
+    kg.add_rule(ancestor_rule);
 
-    // Query the Knowledge Graph
-    let inferred_facts = kg.query_abox(
-        Some("http://example.org/Bob"),
-        Some("http://example.org/knownBy"),
-        Some("http://example.org/Alice"),
+    // Infer new facts using forward chaining
+    let inferred_facts = kg.infer_new_facts();
+    
+    println!("Inferred {} new facts", inferred_facts.len());
+
+    // Query the Knowledge Graph for ancestorOf relationships
+    let results = kg.query_abox(
+        Some("Alice"),
+        Some("ancestorOf"),
+        None,
     );
 
-    for triple in inferred_facts {
+    for triple in results {
         println!(
-            "<{}> -- <{}> -- <{}> .",
+            "{} is ancestor of {}",
             kg.dictionary.decode(triple.subject).unwrap(),
-            kg.dictionary.decode(triple.predicate).unwrap(),
-            kg.dictionary.decode(triple.object).unwrap()
+            kg. dictionary.decode(triple.object). unwrap()
         );
     }
 }
@@ -274,7 +536,8 @@ fn main() {
 
 **Output:**
 ```
-<http://example.org/Bob> -- <http://example.org/knownBy> -- <http://example.org/Alice> .
+Inferred 1 new facts
+Alice is ancestor of Charlie
 ```
 
 ## API Documentation
@@ -290,63 +553,75 @@ pub struct SparqlDatabase {
     pub sliding_window: Option<SlidingWindow>,
     pub dictionary: Dictionary,
     pub prefixes: HashMap<String, String>,
+    pub udfs: HashMap<String, ClonableFn>,
+    pub index_manager: UnifiedIndex,
+    pub rule_map: HashMap<String, String>,
+    pub cached_stats: Option<Arc<DatabaseStats>>,
 }
 ```
 
 #### Fields
 
-- **triples**: Stores RDF triples in a sorted set for efficient querying.
+- **triples**: Stores RDF triples in a sorted set for efficient querying. 
 - **streams**: Holds timestamped triples for streaming and temporal queries.
 - **sliding_window**: Optional sliding window for time-based data analysis.
 - **dictionary**: Encodes and decodes RDF terms for storage efficiency.
 - **prefixes**: Manages namespace prefixes for resolving prefixed terms.
+- **udfs**: User-defined functions registry for custom operations.
+- **index_manager**: Unified indexing system for optimized query performance.
+- **rule_map**: Maps rule names to their definitions.
+- **cached_stats**: Cached database statistics for query optimization.
 
 ### `VolcanoOptimizer` Struct
 
-The `VolcanoOptimizer` implements a cost-based query optimizer based on the Volcano model. It transforms logical query plans into efficient physical plans by evaluating different physical operators and selecting the one with the lowest estimated cost.
+The `VolcanoOptimizer` implements a cost-based query optimizer based on the Volcano model.  It transforms logical query plans into efficient physical plans by evaluating different physical operators and selecting the one with the lowest estimated cost.
 
 ```rust
-pub struct VolcanoOptimizer {
-    pub memo: HashMap<String, PhysicalOperator>,
+pub struct VolcanoOptimizer<'a> {
+    pub stats: Arc<DatabaseStats>,
+    pub memo: HashMap<String, (PhysicalOperator, f64)>,
     pub selected_variables: Vec<String>,
-    pub stats: DatabaseStats,
+    database: &'a SparqlDatabase,
 }
 ```
 
 #### Fields
 
-- **memo**: Caches optimized physical operators to avoid redundant computations.
-- **selected_variables**: Keeps track of variables selected in the query.
-- **stats**: Holds statistical information about the database to aid in cost estimation.
+- **stats**: Shared statistical information about the database to aid in cost estimation.
+- **memo**: Caches optimized physical operators with their costs to avoid redundant computations.
+- **selected_variables**: Keeps track of variables selected in the query. 
+- **database**: Reference to the SPARQL database for query execution.
 
 ### `KnowledgeGraph` Struct
 
-The `KnowledgeGraph` struct manages both ABox (instance-level) and TBox (schema-level) assertions, supports dynamic rule-based inference, and provides querying capabilities with backward chaining.
+The `KnowledgeGraph` struct manages instance-level (ABox) assertions, supports dynamic rule-based inference, and provides querying capabilities with forward chaining, backward chaining, and semi-naive evaluation.
 
 ```rust
 pub struct KnowledgeGraph {
-    pub abox: BTreeSet<Triple>, // ABox: Assertions about individuals (instances)
-    pub tbox: BTreeSet<Triple>, // TBox: Concepts and relationships (schema)
     pub dictionary: Dictionary,
-    pub rules: Vec<Rule>, // List of dynamic rules
+    pub rules: Vec<Rule>,
+    pub index_manager: UnifiedIndex,
+    pub rule_index: RuleIndex,
+    pub constraints: Vec<Rule>,
 }
 ```
 
 #### Fields
 
-- **abox**: Stores instance-level RDF triples.
-- **tbox**: Stores schema-level RDF triples.
-- **dictionary**: Encodes and decodes RDF terms for storage efficiency.
+- **dictionary**: Encodes and decodes RDF terms for storage efficiency. 
 - **rules**: Contains dynamic rules for inferencing new knowledge.
+- **index_manager**: Unified indexing system for storing and querying triples.
+- **rule_index**: Specialized index for efficient rule matching.
+- **constraints**: Integrity constraints for inconsistency detection and repair.
 
 ### Core Methods
 
-#### `new() -> Self`
+#### `SparqlDatabase::new() -> Self`
 
 Creates a new, empty `SparqlDatabase`.
 
 ```rust
-let db = SparqlDatabase::new();
+let mut db = SparqlDatabase::new();
 ```
 
 #### `parse_rdf_from_file(&mut self, filename: &str)`
@@ -354,15 +629,15 @@ let db = SparqlDatabase::new();
 Parses RDF/XML data from a specified file and populates the database.
 
 ```rust
-db.parse_rdf_from_file("data.rdf");
+db.parse_rdf_from_file("data. rdf");
 ```
 
 #### `parse_rdf(&mut self, rdf_xml: &str)`
 
-Parses RDF/XML data from a string.
+Parses RDF/XML data from a string. 
 
 ```rust
-let rdf_xml = r#"<rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#">...</rdf:RDF>"#;
+let rdf_xml = r#"<rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#">... </rdf:RDF>"#;
 db.parse_rdf(rdf_xml);
 ```
 
@@ -372,7 +647,7 @@ Parses Turtle-formatted RDF data from a string.
 
 ```rust
 let turtle_data = r#"
-@prefix ex: <http://example.org/> .
+@prefix ex: <http://example.org/> . 
 
 ex:Alice ex:knows ex:Bob .
 "#;
@@ -385,45 +660,109 @@ Parses N3-formatted RDF data from a string.
 
 ```rust
 let n3_data = r#"
-@prefix ex: <http://example.org/> .
+@prefix ex: <http://example.org/> . 
 
 ex:Alice ex:knows ex:Bob .
 "#;
 db.parse_n3(n3_data);
 ```
 
-#### `execute_query(sparql: &str, database: &mut SparqlDatabase) -> Vec<Vec<String>>`
+#### `parse_ntriples_and_add(&mut self, ntriples_data: &str)`
 
-Executes a SPARQL query against the database and returns the results.
+Parses N-Triples data and adds it to the database.
 
 ```rust
-let sparql_query = "SELECT ?s WHERE { ?s ex:knows ex:Bob . }";
-let results = execute_query(sparql_query, &mut db);
+let ntriples_data = r#"
+<http://example.org/john> <http://example.org/hasFriend> <http://example.org/jane> . 
+<http://example.org/jane> <http://example.org/name> "Jane Doe" .
+"#;
+db.parse_ntriples_and_add(ntriples_data);
 ```
 
-#### `filter<F>(&self, predicate: F) -> Self`
+#### `add_triple_parts(&mut self, subject: &str, predicate: &str, object: &str)`
 
-Filters triples based on a predicate function.
+Adds a triple to the database by encoding its parts.
 
 ```rust
-let filtered_db = db.filter(|triple| triple.predicate == some_predicate_id);
+db.add_triple_parts(
+    "http://example.org/alice",
+    "http://xmlns.com/foaf/0. 1/name",
+    "Alice"
+);
 ```
 
-#### `add_stream_data(&mut self, triple: Triple, timestamp: u64)`
+#### `delete_triple_parts(&mut self, subject: &str, predicate: &str, object: &str) -> bool`
 
-Adds a timestamped triple to the streams.
+Deletes a triple from the database and returns whether it was successfully removed.
 
 ```rust
-let triple = Triple { subject: ..., predicate: ..., object: ... };
-db.add_stream_data(triple, 1625097600);
+let deleted = db.delete_triple_parts(
+    "http://example.org/alice",
+    "http://xmlns.com/foaf/0.1/age",
+    "30"
+);
 ```
 
-#### `time_based_window(&self, start: u64, end: u64) -> BTreeSet<Triple>`
+#### `build_all_indexes(&mut self)`
 
-Retrieves triples within a specified time window.
+Builds all indexes from the current triples for optimized query performance.
 
 ```rust
-let window_triples = db.time_based_window(1625097600, 1625184000);
+db.build_all_indexes();
+```
+
+#### `get_or_build_stats(&mut self) -> Arc<DatabaseStats>`
+
+Gets cached statistics or builds new statistics for query optimization.
+
+```rust
+let stats = db.get_or_build_stats();
+```
+
+#### `invalidate_stats_cache(&mut self)`
+
+Invalidates the statistics cache after data modifications.
+
+```rust
+db.invalidate_stats_cache();
+```
+
+#### `query(&self) -> QueryBuilder`
+
+Returns a QueryBuilder instance for programmatic query construction.
+
+```rust
+let results = db.query()
+    .with_predicate("http://xmlns.com/foaf/0. 1/name")
+    .get_objects();
+```
+
+#### `register_udf<F>(&mut self, name: &str, f: F)`
+
+Registers a user-defined function for use in queries. 
+
+```rust
+db.register_udf("toUpperCase", |args: Vec<&str>| {
+    args[0].to_uppercase()
+});
+```
+
+#### `generate_rdf_xml(&mut self) -> String`
+
+Generates RDF/XML representation of the database. 
+
+```rust
+let rdf_xml = db.generate_rdf_xml();
+```
+
+#### `decode_triple(&self, triple: &Triple) -> Option<(&str, &str, &str)>`
+
+Decodes a triple to its string representation.
+
+```rust
+if let Some((s, p, o)) = db. decode_triple(&triple) {
+    println!("{} - {} - {}", s, p, o);
+}
 ```
 
 ### `VolcanoOptimizer` Methods
@@ -436,6 +775,15 @@ Creates a new instance of the `VolcanoOptimizer` with statistical data gathered 
 let optimizer = VolcanoOptimizer::new(&db);
 ```
 
+#### `with_cached_stats(stats: Arc<DatabaseStats>) -> Self`
+
+Creates a new optimizer with pre-computed statistics for better performance.
+
+```rust
+let stats = db.get_or_build_stats();
+let optimizer = VolcanoOptimizer::with_cached_stats(stats);
+```
+
 #### `find_best_plan(&mut self, logical_plan: &LogicalOperator) -> PhysicalOperator`
 
 Determines the most efficient physical execution plan for a given logical query plan.
@@ -444,22 +792,22 @@ Determines the most efficient physical execution plan for a given logical query 
 let best_plan = optimizer.find_best_plan(&logical_plan);
 ```
 
+#### `execute_plan(&mut self, plan: &PhysicalOperator, database: &mut SparqlDatabase) -> Vec<BTreeMap<String, String>>`
+
+Executes an optimized physical plan and returns the query results.
+
+```rust
+let results = optimizer.execute_plan(&physical_plan, &mut db);
+```
+
 ### `KnowledgeGraph` Methods
 
 #### `new() -> Self`
 
-Creates a new, empty `KnowledgeGraph`.
+Creates a new, empty `KnowledgeGraph`. 
 
 ```rust
-let kg = KnowledgeGraph::new();
-```
-
-#### `add_tbox_triple(&mut self, subject: &str, predicate: &str, object: &str)`
-
-Adds a TBox triple (schema-level information) to the knowledge graph.
-
-```rust
-kg.add_tbox_triple("http://example.org/Person", "rdf:type", "rdfs:Class");
+let mut kg = KnowledgeGraph::new();
 ```
 
 #### `add_abox_triple(&mut self, subject: &str, predicate: &str, object: &str)`
@@ -467,24 +815,7 @@ kg.add_tbox_triple("http://example.org/Person", "rdf:type", "rdfs:Class");
 Adds an ABox triple (instance-level information) to the knowledge graph.
 
 ```rust
-kg.add_abox_triple("http://example.org/Alice", "http://example.org/knows", "http://example.org/Bob");
-```
-
-#### `add_rule(&mut self, rule: Rule)`
-
-Adds a dynamic rule to the knowledge graph for inferencing.
-
-```rust
-let rule = Rule { ... };
-kg.add_rule(rule);
-```
-
-#### `infer_new_facts(&mut self) -> Vec<Triple>`
-
-Performs rule-based inference to derive new triples and updates the ABox accordingly.
-
-```rust
-let inferred = kg.infer_new_facts();
+kg.add_abox_triple("Alice", "knows", "Bob");
 ```
 
 #### `query_abox(&mut self, subject: Option<&str>, predicate: Option<&str>, object: Option<&str>) -> Vec<Triple>`
@@ -492,206 +823,83 @@ let inferred = kg.infer_new_facts();
 Queries the ABox for instance-level assertions based on optional subject, predicate, and object filters.
 
 ```rust
-let results = kg.query_abox(Some("http://example.org/Alice"), None, None);
+let results = kg.query_abox(Some("Alice"), Some("knows"), None);
 ```
 
-#### `query_tbox(&mut self, subject: Option<&str>, predicate: Option<&str>, object: Option<&str>) -> Vec<Triple>`
+#### `add_rule(&mut self, rule: Rule)`
 
-Queries the TBox for schema-level assertions based on optional subject, predicate, and object filters.
+Adds a dynamic rule to the knowledge graph for inferencing.
 
 ```rust
-let results = kg.query_tbox(Some("http://example.org/Person"), Some("rdf:type"), Some("rdfs:Class"));
+let rule = Rule {
+    premise: vec![... ],
+    conclusion: vec![... ],
+    filters: vec![],
+};
+kg.add_rule(rule);
 ```
 
-## Examples
+#### `infer_new_facts(&mut self) -> Vec<Triple>`
 
-### Basic Query
+Performs naive forward chaining to derive new triples. 
 
 ```rust
-use kolibrie::{SparqlDatabase, execute_query};
-
-fn main() {
-    let mut db = SparqlDatabase::new();
-
-    // Parse Turtle data
-    let turtle_data = r#"
-    @prefix ex: <http://example.org/> .
-
-    ex:Alice ex:knows ex:Bob .
-    ex:Bob ex:knows ex:Charlie .
-    "#;
-    db.parse_turtle(turtle_data);
-
-    // Execute a SPARQL SELECT query
-    let sparql_query = r#"
-    PREFIX ex: <http://example.org/>
-    SELECT ?s ?o
-    WHERE {
-        ?s ex:knows ?o .
-    }
-    "#;
-
-    let results = execute_query(sparql_query, &mut db);
-
-    for row in results {
-        println!("Subject: {}, Object: {}", row[0], row[1]);
-    }
-}
+let inferred = kg.infer_new_facts();
+println!("Inferred {} new facts", inferred.len());
 ```
 
-**Output:**
-```
-Subject: http://example.org/Alice, Object: http://example.org/Bob
-Subject: http://example.org/Bob, Object: http://example.org/Charlie
-```
+#### `infer_new_facts_semi_naive(&mut self) -> Vec<Triple>`
 
-### Advanced Filtering and Aggregation
+Performs semi-naive evaluation for more efficient forward chaining.
 
 ```rust
-use kolibrie::{SparqlDatabase, execute_query};
-
-fn main() {
-    let mut db = SparqlDatabase::new();
-
-    // Parse Turtle data
-    let turtle_data = r#"
-    @prefix ex: <http://example.org/> .
-
-    ex:Alice ex:age "30" .
-    ex:Bob ex:age "25" .
-    ex:Charlie ex:age "35" .
-    "#;
-    db.parse_turtle(turtle_data);
-
-    // Execute a SPARQL SELECT query with FILTER and GROUP BY
-    let sparql_query = r#"
-    PREFIX ex: <http://example.org/>
-    SELECT AVG(?age) AS ?averageAge
-    WHERE {
-        ?s ex:age ?age .
-        FILTER (?age > "20")
-    }
-    GROUPBY ?averageAge
-    "#;
-
-    let results = execute_query(sparql_query, &mut db);
-
-    for row in results {
-        println!("Average Age: {}", row[0]);
-    }
-}
+let inferred = kg.infer_new_facts_semi_naive();
 ```
 
-**Output:**
-```
-Average Age: 30
-```
+#### `infer_new_facts_semi_naive_parallel(&mut self) -> Vec<Triple>`
 
-### Optimized Query Execution with Volcano Optimizer
+Performs parallel semi-naive evaluation for large-scale inference.
 
 ```rust
-use kolibrie::{SparqlDatabase, execute_query, VolcanoOptimizer};
-
-fn main() {
-    let mut db = SparqlDatabase::new();
-
-    // Parse Turtle data
-    let turtle_data = r#"
-    @prefix ex: <http://example.org/> .
-
-    ex:Alice ex:knows ex:Bob .
-    ex:Bob ex:knows ex:Charlie .
-    ex:Charlie ex:knows ex:David .
-    "#;
-    db.parse_turtle(turtle_data);
-
-    // Define the SPARQL query
-    let sparql_query = r#"
-    PREFIX ex: <http://example.org/>
-    SELECT ?person ?location
-    WHERE {
-        ?person ex:knows ?org .
-        ?org ex:located ?location .
-    }
-    "#;
-
-    // Execute the query with optimized plan
-    let results = execute_query(sparql_query, &mut db);
-
-    for row in results {
-        println!("Person: {}, Location: {}", row[0], row[1]);
-    }
-}
+let inferred = kg.infer_new_facts_semi_naive_parallel();
 ```
 
-**Output:**
-```
-Person: http://example.org/Alice, Location: http://example.org/Kulak
-Person: http://example.org/Bob, Location: http://example.org/Kortrijk
-Person: http://example.org/Charlie, Location: http://example.org/Ughent
-```
+#### `backward_chaining(&self, query: &TriplePattern) -> Vec<HashMap<String, Term>>`
 
-### Building and Querying a Knowledge Graph
+Performs backward chaining to answer queries by deriving solutions from rules.
 
 ```rust
-use kolibrie::{KnowledgeGraph, Rule, Term};
+let query_pattern = (
+    Term::Variable("X".to_string()),
+    Term::Constant(kg.dictionary.encode("knows")),
+    Term::Variable("Y".to_string())
+);
 
-fn main() {
-    let mut kg = KnowledgeGraph::new();
-
-    // Add TBox triples (schema)
-    kg.add_tbox_triple("http://example.org/Person", "rdf:type", "rdfs:Class");
-    kg.add_tbox_triple("http://example.org/knows", "rdf:type", "rdf:Property");
-    kg.add_tbox_triple("http://example.org/knownBy", "rdf:type", "rdf:Property");
-
-    // Add ABox triples (instances)
-    kg.add_abox_triple("http://example.org/Alice", "rdf:type", "http://example.org/Person");
-    kg.add_abox_triple("http://example.org/Alice", "http://example.org/knows", "http://example.org/Bob");
-    kg.add_abox_triple("http://example.org/Bob", "rdf:type", "http://example.org/Person");
-    kg.add_abox_triple("http://example.org/Bob", "http://example.org/knows", "http://example.org/Charlie");
-
-    // Define and add rules
-    let rule = Rule {
-        premise: vec![
-            (
-                Term::Variable("x".to_string()),
-                Term::Constant(kg.dictionary.encode("http://example.org/knows")),
-                Term::Variable("y".to_string()),
-            )
-        ],
-        conclusion: (
-            Term::Variable("y".to_string()),
-            Term::Constant(kg.dictionary.encode("http://example.org/knownBy")),
-            Term::Variable("x".to_string()),
-        ),
-    };
-    kg.add_rule(rule);
-
-    // Infer new facts based on rules
-    let inferred_facts = kg.infer_new_facts();
-
-    // Query the Knowledge Graph
-    let queried_facts = kg.query_abox(
-        Some("http://example.org/Bob"),
-        Some("http://example.org/knownBy"),
-        Some("http://example.org/Alice"),
-    );
-
-    for triple in queried_facts {
-        println!(
-            "<{}> -- <{}> -- <{}> .",
-            kg.dictionary.decode(triple.subject).unwrap(),
-            kg.dictionary.decode(triple.predicate).unwrap(),
-            kg.dictionary.decode(triple.object).unwrap()
-        );
-    }
-}
+let results = kg.backward_chaining(&query_pattern);
 ```
 
-**Output:**
+#### `add_constraint(&mut self, constraint: Rule)`
+
+Adds an integrity constraint to the knowledge graph. 
+
+```rust
+kg.add_constraint(constraint);
 ```
-Inferred new fact: Triple { subject: 2, predicate: 4, object: 1 }
-<http://example.org/Bob> -- <http://example.org/knownBy> -- <http://example.org/Alice> .
+
+#### `infer_new_facts_semi_naive_with_repairs(&mut self) -> Vec<Triple>`
+
+Performs inference while handling inconsistencies through automatic repair.
+
+```rust
+let inferred = kg.infer_new_facts_semi_naive_with_repairs();
+```
+
+#### `query_with_repairs(&self, query: &TriplePattern) -> Vec<HashMap<String, u32>>`
+
+Queries the knowledge graph using inconsistency-tolerant semantics (IAR).
+
+```rust
+let results = kg.query_with_repairs(&query_pattern);
 ```
 
 ## Performance
@@ -701,100 +909,40 @@ Inferred new fact: Triple { subject: 2, predicate: 4, object: 1 }
 - **Parallel Parsing and Processing**: Utilizes Rayon and Crossbeam for multi-threaded data parsing and query execution.
 - **SIMD Instructions**: Implements SIMD operations to accelerate filtering and aggregation tasks.
 - **Volcano Optimizer**: Employs a cost-based query optimizer to generate efficient physical execution plans, minimizing query execution time.
-- **Knowledge Graph Inference**: Leverages rule-based inference and backward chaining to derive new knowledge without significant performance overhead.
-- **Efficient Data Structures**: Employs `BTreeSet` for sorted storage and `HashMap` for prefix management, ensuring quick data retrieval and manipulation.
+- **Knowledge Graph Inference**: Leverages rule-based inference and backward chaining to derive new knowledge without significant performance overhead. 
+- **Efficient Data Structures**: Employs `BTreeSet` for sorted storage and `HashMap` for prefix management, ensuring quick data retrieval and manipulation. 
 - **Memory Optimization**: Uses dictionary encoding to minimize memory footprint by reusing repeated terms.
 
-Benchmarking indicates significant performance gains on large RDF datasets compared to traditional single-threaded SPARQL engines.
+### Benchmarking Results
 
-### Kolibrie vs. Oxigraph vs. RDFlib vs. Apache Jena (RDF/XML triples 100K)
-**Time taken to load RDF data**
-| Kolibrie  | Oxigraph | RDFlib    |Apache Jena|
-|----------|----------|-----------|-----------|
-| 759.02ms | 10.21s   | 23.41s    | 2.32s     |
-| 765.30ms | 10.32s   | 26.69s    | 2.20s     |
-| 767.80ms | 10.26s   | 28.61s    | 2.15s     |
-| 763.89ms | 10.34s   | 30.36s    | 2.11s     |
-| 757.12ms | 10.34s   | 30.39s    | 2.12s     |
-| 755.35ms | 10.26s   | 30.53s    | 2.17s     |
-| 765.97ms | 10.17s   | 30.65s    | 2.08s     |
-| 761.93ms | 10.27s   | 28.82s    | 2.10s     |
-| 771.49ms | 10.17s   | 28.55s    | 2.10s     |
-| 763.96ms | 10.32s   | 30.29s    | 2.11s     |
-| 767.13ms | 10.23s   | 30.29s    | 2.10s     |
-| 772.74ms | 10.28s   | 30.21s    | 2.07s     |
-| 759.49ms | 10.23s   | 32.39s    | 2.24s     |
-| 764.33ms | 10.37s   | 28.78s    | 2.11s     |
-| 765.96ms | 10.14s   | 28.51s    | 2.21s     |
-| 776.03ms | 10.36s   | 30.28s    | 2.16s     |
-| 773.43ms | 10.17s   | 30.63s    | 2.18s     |
-| 763.02ms | 10.17s   | 28.67s    | 2.18s     |
-| 751.50ms | 10.28s   | 30.42s    | 2.20s     |
-| 764.07ms | 10.32s   | 30.37s    | 2.16s     |
+Our benchmarks demonstrate Kolibrie's superior performance compared to other popular RDF engines.  The following tests were conducted using:
+- **Dataset**: [WatDiv](https://dsg.uwaterloo.ca/watdiv/) 10M triples benchmark
+- **Oxigraph Configuration**: RocksDB backend for optimal performance
+- **Deep Taxonomy Reasoning**: Hierarchy depth testing up to 10K levels
 
-**Time taken to execute SPARQL query**
-| Kolibrie |Kolibrie GPU| Oxigraph| RDFlib    |Apache Jena|
-|----------|-----------|----------|-----------|-----------|
-| 218.07ms | 258.00ms  | 982.44ms | 502.88 ms | 797.67ms  |
-| 215.86ms | 160.63ms  | 984.54ms | 2.21 ms   | 796.11ms  |
-| 213.93ms | 160.07ms  | 983.53ms | 2.31 ms   | 749.51ms  |
-| 218.92ms | 155.51ms  | 994.63ms | 2.28 ms   | 761.53ms  |
-| 218.17ms | 149.08ms  | 990.50ms | 1.98 ms   | 740.22ms  |
-| 213.32ms | 150.04ms  | 996.63ms | 2.38 ms   | 732.42ms  |
-| 213.98ms | 151.96ms  | 977.26ms | 2.14 ms   | 750.46ms  |
-| 214.59ms | 150.71ms  | 985.31ms | 2.30 ms   | 753.79ms  |
-| 209.54ms | 151.30ms  | 985.94ms | 1.98 ms   | 759.01ms  |
-| 216.22ms | 156.90ms  | 976.10ms | 1.97 ms   | 743.88ms  |
-| 211.11ms | 156.79ms  | 997.83ms | 1.93 ms   | 740.65ms  |
-| 217.72ms | 159.22ms  | 978.09ms | 2.28 ms   | 753.59ms  |
-| 219.35ms | 150.92ms  | 989.44ms | 1.98 ms   | 832.77ms  |
-| 211.71ms | 151.06ms  | 983.64ms | 2.27 ms   | 761.30ms  |
-| 220.93ms | 151.12ms  | 978.75ms | 1.90 ms   | 745.90ms  |
-| 219.62ms | 155.15ms  | 985.96ms | 1.89 ms   | 755.21ms  |
-| 209.10ms | 152.89ms  | 986.19ms | 2.29 ms   | 793.17ms  |
-| 215.82ms | 149.14ms  | 986.04ms | 2.62 ms   | 757.18ms  |
-| 215.88ms | 150.95ms  | 979.21ms | 1.98 ms   | 757.05ms  |
-| 212.52ms | 150.35ms  | 985.24ms | 1.90 ms   | 753.47ms  |
+#### WatDiv 10M - Query Performance Comparison (20 runs each)
 
-**Summary of Kolibrie**
+![WatDiv 10M Query Performance](docs/img/image1.png)
 
-Total Parsing Time: 15.29 seconds
+*Figure 1: Query execution times across different SPARQL engines using the WatDiv 10M dataset*
 
-Total Query Execution Time: 4.31 seconds
+**Key Findings:**
+- Kolibrie consistently outperforms competitors across all query types (L1-L5, S1-S7, F1-F3, C1-C3)
+- Average query execution time: **sub-millisecond to low millisecond range**
+- Blazegraph and QLever show competitive performance on specific query patterns
+- Oxigraph (with RocksDB) demonstrates stable performance across all queries
 
-Average Parsing Time: 0.76 seconds
+#### Deep Taxonomy - Reasoning over Hierarchy Depth
 
-Average Query Execution Time: 0.22 seconds
+![Deep Taxonomy Reasoning Performance](docs/img/image2.png)
 
-**Summary of Oxigraph**
+*Figure 2: Reasoning performance across different hierarchy depths (10, 100, 1K, 10K levels)*
 
-Total RDF Loading Time: 205.21 seconds
-
-Total Query Execution Time: 19.71 seconds
-
-Average RDF Loading Time: 10.26 seconds
-
-Average Query Execution Time: 0.99 seconds
-
-**Summary of RDFlib**
-
-Total RDF Loading Time: 588.86 seconds
-
-Total SPARQL Query Execution Time: 0.54 seconds
-
-Average RDF Loading Time: 29.44 seconds
-
-Average SPARQL Query Execution Time: 27.17 ms
-
-**Summary of Apache Jena**
-
-Total RDF Loading Time: 43.07 seconds
-
-Total SPARQL Query Execution Time: 15.23 seconds
-
-Average RDF Loading Time: 2.15 seconds
-
-Average SPARQL Query Execution Time: 761.74 ms
+**Key Findings:**
+- Kolibrie shows **logarithmic scaling** with hierarchy depth
+- At 10K hierarchy levels, Kolibrie maintains sub-second response times
+- Superior performance compared to Apache Jena and EYE reasoner
+- Efficient handling of complex taxonomic structures
 
 ## How to Contribute
 
@@ -808,6 +956,12 @@ Anyone manually testing the code and reporting bugs or suggestions for enhanceme
 Patches/fixes are accepted in form of pull requests (PRs). Make sure the issue the pull request addresses is open in the Issue Tracker.
 
 Submitted pull request is deemed to have agreed to publish under Mozilla Public License Version 2.0.
+
+## Community
+
+Join our Discord community to discuss Kolibrie, ask questions, and share your experiences:
+
+**[Join Kolibrie Discord](https://discord. gg/KcFXrUUyYm)**
 
 ## License
 
