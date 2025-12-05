@@ -116,7 +116,7 @@ fn parse_unresolved_rule(input: &str) -> IResult<&str, (Vec<UnresolvedTriple>, V
 /// Parsing into unresolved terms
 pub fn parse_n3_rule<'a>(
     input: &'a str,
-    graph: &mut KnowledgeGraph,
+    graph: &mut Reasoner,
 ) -> IResult<&'a str, (Vec<(&'a str, &'a str)>, Rule)> {
     let (input, prefixes) = separated_list1(multispace1, parse_prefix).parse(input)?;
 
@@ -157,7 +157,7 @@ pub fn parse_n3_rule<'a>(
 }
 
 /// Helper to convert UnresolvedTerm to Term
-fn to_term(ut: UnresolvedTerm, graph: &mut KnowledgeGraph) -> Term {
+fn to_term(ut: UnresolvedTerm, graph: &mut Reasoner) -> Term {
     match ut {
         UnresolvedTerm::Var(v) => Term::Variable(v),
         UnresolvedTerm::Prefixed(s) => Term::Constant(graph.dictionary.encode(&s)),

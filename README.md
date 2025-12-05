@@ -29,7 +29,7 @@ For more information about our research and ongoing projects, please visit the [
 - **SIMD Optimizations**: Implements SIMD instructions for accelerated query filtering and aggregation.
 - **Flexible Querying**: Supports complex SPARQL queries, including SELECT, INSERT, FILTER, GROUP BY, and VALUES clauses.
 - **Volcano Optimizer**: Incorporates a cost-based query optimizer based on the Volcano model to determine the most efficient execution plans.
-- **Knowledge Graph**: Provides robust support for building and querying knowledge graphs, including ABox (instance-level) and TBox (schema-level) assertions, dynamic rule-based inference, and backward chaining.
+- **Reasoner**: Provides robust support for building and querying knowledge graphs, including ABox (instance-level) and TBox (schema-level) assertions, dynamic rule-based inference, and backward chaining.
 - **Streaming and Sliding Windows**: Handles timestamped triples and sliding window operations for time-based data analysis.
 - **Extensible Dictionary Encoding**: Efficiently encodes and decodes RDF terms using a customizable dictionary.
 - **Comprehensive API**: Offers a rich set of methods for data manipulation, querying, and result processing.
@@ -467,19 +467,19 @@ fn main() {
 }
 ```
 
-### Working with the Knowledge Graph
+### Working with the Reasoner
 
-The **Knowledge Graph** component allows you to build and manage semantic networks with instance-level (ABox) information. It supports dynamic rule-based inference using forward chaining, backward chaining, and semi-naive evaluation to derive new knowledge from existing data.
+The **Reasoner** component allows you to build and manage semantic networks with instance-level (ABox) information. It supports dynamic rule-based inference using forward chaining, backward chaining, and semi-naive evaluation to derive new knowledge from existing data.
 
-#### Example: Building and Querying a Knowledge Graph
+#### Example: Building and Querying a Reasoner
 
 ```rust
-use datalog::knowledge_graph::KnowledgeGraph;
+use datalog::knowledge_graph::Reasoner;
 use shared::terms::Term;
 use shared::rule::Rule;
 
 fn main() {
-    let mut kg = KnowledgeGraph::new();
+    let mut kg = Reasoner::new();
 
     // Add ABox triples (instance-level data)
     kg.add_abox_triple("Alice", "parentOf", "Bob");
@@ -592,12 +592,12 @@ pub struct VolcanoOptimizer<'a> {
 - **selected_variables**: Keeps track of variables selected in the query. 
 - **database**: Reference to the SPARQL database for query execution.
 
-### `KnowledgeGraph` Struct
+### `Reasoner` Struct
 
-The `KnowledgeGraph` struct manages instance-level (ABox) assertions, supports dynamic rule-based inference, and provides querying capabilities with forward chaining, backward chaining, and semi-naive evaluation.
+The `Reasoner` struct manages instance-level (ABox) assertions, supports dynamic rule-based inference, and provides querying capabilities with forward chaining, backward chaining, and semi-naive evaluation.
 
 ```rust
-pub struct KnowledgeGraph {
+pub struct Reasoner {
     pub dictionary: Dictionary,
     pub rules: Vec<Rule>,
     pub index_manager: UnifiedIndex,
@@ -800,14 +800,14 @@ Executes an optimized physical plan and returns the query results.
 let results = optimizer.execute_plan(&physical_plan, &mut db);
 ```
 
-### `KnowledgeGraph` Methods
+### `Reasoner` Methods
 
 #### `new() -> Self`
 
-Creates a new, empty `KnowledgeGraph`. 
+Creates a new, empty `Reasoner`. 
 
 ```rust
-let mut kg = KnowledgeGraph::new();
+let mut kg = Reasoner::new();
 ```
 
 #### `add_abox_triple(&mut self, subject: &str, predicate: &str, object: &str)`
