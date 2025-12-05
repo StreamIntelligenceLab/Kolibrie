@@ -8,7 +8,7 @@
 ![License: MPL 2.0](https://img.shields.io/badge/License-MPL_2.0-brightgreen.svg)
 ![Rust Version](https://img.shields.io/badge/Rust-1.60+-blue.svg)
 ![Build Status](https://img.shields.io/badge/build-passing-brightgreen.svg)
-![Crates.io](https://img.shields.io/crates/v/sparql_database.svg)
+<!--![Crates.io](https://img.shields.io/crates/v/sparql_database.svg)-->
 
 [ [English](README.md) | [Nederlands](docs/README.nl.md) | [Deutsch](docs/README.de.md) | [Español](docs/README.es.md) | [Français](docs/README.fr.md) | [日本語](docs/README.ja.md) ]
 
@@ -959,9 +959,7 @@ Submitted pull request is deemed to have agreed to publish under Mozilla Public 
 
 ## Community
 
-Join our Discord community to discuss Kolibrie, ask questions, and share your experiences:
-
-[Join Kolibrie Discord](https://discord.gg/KcFXrUUyYm)
+Join our [Discord community](https://discord.gg/KcFXrUUyYm) to discuss Kolibrie, ask questions, and share your experiences.
 
 ## License
 
