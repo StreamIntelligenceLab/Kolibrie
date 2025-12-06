@@ -10,7 +10,7 @@
 
 use shared::terms::Term;
 use shared::rule::Rule;
-use datalog::knowledge_graph::Reasoner;
+use datalog::reasoning::Reasoner;
 
 fn example_with_contradictions() -> Reasoner {
     let mut kg = Reasoner::new();

@@ -21,7 +21,7 @@ use nom::{
 };
 use rayon::str;
 use crate::sparql_database::SparqlDatabase;
-use datalog::knowledge_graph::Reasoner;
+use datalog::reasoning::Reasoner;
 use shared::triple::Triple;
 use shared::dictionary::Dictionary;
 use shared::rule::FilterCondition;

@@ -8,7 +8,7 @@
  * you can obtain one at https://mozilla.org/MPL/2.0/.
  */
 
-use datalog::knowledge_graph::Reasoner;
+use datalog::reasoning::Reasoner;
 use shared::terms::Term;
 use shared::terms::TriplePattern;
 use shared::rule::Rule;

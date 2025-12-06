@@ -8,7 +8,7 @@
  * you can obtain one at https://mozilla.org/MPL/2.0/.
  */
 
-use crate::knowledge_graph::*;
+use crate::reasoning::*;
 use shared::terms::{Term, TriplePattern, UnresolvedTerm, UnresolvedTriple};
 use shared::rule::Rule;
 use nom::{

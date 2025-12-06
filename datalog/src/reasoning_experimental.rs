@@ -10,7 +10,7 @@
 
 use shared::rule::Rule;
 use shared::triple::Triple;
-use crate::knowledge_graph::Reasoner;
+use crate::reasoning::Reasoner;
 use std::collections::{BTreeMap, HashMap, HashSet};
 use shared::terms::Term;
 

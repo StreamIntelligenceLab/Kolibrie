@@ -9,7 +9,7 @@
  */
 
 use chrono::{Local, Timelike};
-use datalog::knowledge_graph::Reasoner;
+use datalog::reasoning::Reasoner;
 use kolibrie::execute_query::execute_query;
 use kolibrie::parser::*;
 use kolibrie::sparql_database::SparqlDatabase;

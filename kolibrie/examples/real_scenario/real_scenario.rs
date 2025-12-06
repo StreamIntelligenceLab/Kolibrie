@@ -11,7 +11,7 @@
 use kolibrie::execute_query::execute_query;
 use kolibrie::parser::*;
 use kolibrie::sparql_database::SparqlDatabase;
-use datalog::knowledge_graph::Reasoner;
+use datalog::reasoning::Reasoner;
 use shared::terms::Term;
 use rand::Rng;
 use chrono::Utc;

@@ -11,7 +11,7 @@
 use shared::dictionary::Dictionary;
 use shared::terms::Term;
 use shared::rule::Rule;
-use datalog::knowledge_graph::*;
+use datalog::reasoning::*;
 use datalog::parser_n3_logic::parse_n3_rule;
 
 fn knowledge_graph() {

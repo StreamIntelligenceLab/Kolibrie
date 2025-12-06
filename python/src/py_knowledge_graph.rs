@@ -9,7 +9,7 @@
  */
 
 use pyo3::prelude::*;
-use datalog::knowledge_graph::Reasoner;
+use datalog::reasoning::Reasoner;
 use std::collections::HashMap;
 
 /// Represents a condition to filter rules
