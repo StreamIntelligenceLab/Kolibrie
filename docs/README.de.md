@@ -1,7 +1,7 @@
 # Kolibrie
 
 <p align="center">
-    <img src="docs/logo/kolibrie.jfif" width="400" height="400" />
+    <img src="logo/kolibrie.jfif" width="400" height="400" />
 </p>
 
 <!-- ![GitHub Workflow Status](https://img.shields.io/github/commit-activity/t/StreamIntelligenceLab/Kolibri) -->
@@ -10,7 +10,7 @@
 ![Build Status](https://img.shields.io/badge/build-passing-brightgreen.svg)
 <!--![Crates.io](https://img.shields.io/crates/v/sparql_database.svg)-->
 
-[ [English](README.md) | [Nederlands](docs/README.nl.md) | [Deutsch](docs/README.de.md) | [Español](docs/README.es.md) | [Français](docs/README.fr.md) | [日本語](docs/README.ja.md) ]
+[ [English](../README.md) | [Nederlands](README.nl.md) | [Deutsch](README.de.md) | [Español](README.es.md) | [Français](README.fr.md) | [日本語](README.ja.md) ]
 
 **Kolibrie** ist eine leistungsstarke, nebenläufige und funktionsreiche SPARQL-Abfrage-Engine, die in Rust implementiert ist. Entwickelt für Skalierbarkeit und Effizienz nutzt sie das robuste Nebenläufigkeitsmodell von Rust sowie fortschrittliche Optimierungen, einschließlich SIMD (Single Instruction, Multiple Data) und paralleler Verarbeitung mit Rayon, um nahtlos mit groß angelegten RDF (Resource Description Framework)-Datensätzen umzugehen.
 
@@ -928,7 +928,7 @@ Unsere Benchmarks zeigen die überlegene Performance von Kolibrie im Vergleich z
 
 #### WatDiv 10M - Vergleich der Abfrage-Performance (je 20 Läufe)
 
-![WatDiv 10M Query Performance](docs/img/image1.png)
+![WatDiv 10M Query Performance](img/image1.png)
 
 *Abbildung 1: Abfrageausführungszeiten verschiedener SPARQL-Engines mit dem WatDiv 10M-Datensatz*
 
@@ -941,7 +941,7 @@ Unsere Benchmarks zeigen die überlegene Performance von Kolibrie im Vergleich z
 
 #### Deep Taxonomy - Reasoning über Hierarchie-Tiefen
 
-![Deep Taxonomy Reasoning Performance](docs/img/image2.png)
+![Deep Taxonomy Reasoning Performance](img/image2.png)
 
 *Abbildung 2: Reasoning-Performance über unterschiedliche Hierarchie-Tiefen (10, 100, 1K, 10K Ebenen)*
 
