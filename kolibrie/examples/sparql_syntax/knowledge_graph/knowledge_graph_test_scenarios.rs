@@ -8,7 +8,7 @@
  * you can obtain one at https://mozilla.org/MPL/2.0/.
  */
 
-use datalog::knowledge_graph::KnowledgeGraph;
+use datalog::reasoning::Reasoner;
 use shared::terms::Term;
 use shared::terms::TriplePattern;
 use shared::rule::Rule;
@@ -16,7 +16,7 @@ use std::time::Instant;
 
 // Test scenario 1: 100 facts, 2 rules
 fn test1() {
-    let mut kg = KnowledgeGraph::new();
+    let mut kg = Reasoner::new();
 
     // Generate 100 facts programmatically (ABox)
     for i in 0..5 {
@@ -96,7 +96,7 @@ fn test1() {
 
 // Test scenario 2: One piece of data, 100 rules
 fn test2() {
-    let mut kg = KnowledgeGraph::new();
+    let mut kg = Reasoner::new();
     kg.add_abox_triple("myInstance", "type", "Class0");
 
     for i in 0..5 {
@@ -152,7 +152,7 @@ fn transitivity_benchmark() {
     println!("facts_count,inference_time_s,inferred_facts_count");
 
     for facts_count in 1..=50 {
-        let mut kg = KnowledgeGraph::new();
+        let mut kg = Reasoner::new();
 
         // Add 'facts_count' facts in a chain: person0 likes person1, person1 likes person2, ...
         for i in 0..facts_count {

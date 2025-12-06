@@ -9,7 +9,7 @@
  */
 
 use pyo3::prelude::*;
-use datalog::knowledge_graph::KnowledgeGraph;
+use datalog::reasoning::Reasoner;
 use std::collections::HashMap;
 
 /// Represents a condition to filter rules
@@ -91,7 +91,7 @@ impl PyRule {
 
 #[pyclass]
 struct PyKnowledgeGraph {
-    inner: KnowledgeGraph,
+    inner: Reasoner,
 }
 
 #[pymethods]
@@ -99,7 +99,7 @@ impl PyKnowledgeGraph {
     #[new]
     fn new() -> Self {
         PyKnowledgeGraph {
-            inner: KnowledgeGraph::new(),
+            inner: Reasoner::new(),
         }
     }
 

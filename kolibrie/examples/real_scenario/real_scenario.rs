@@ -11,7 +11,7 @@
 use kolibrie::execute_query::execute_query;
 use kolibrie::parser::*;
 use kolibrie::sparql_database::SparqlDatabase;
-use datalog::knowledge_graph::KnowledgeGraph;
+use datalog::reasoning::Reasoner;
 use shared::terms::Term;
 use rand::Rng;
 use chrono::Utc;
@@ -283,7 +283,7 @@ fn main() {
     println!("Database RDF triples: {:#?}", database.triples);
 
     // Load data into knowledge graph
-    let mut kg = KnowledgeGraph::new();
+    let mut kg = Reasoner::new();
     for triple in database.triples.iter() {
         let subject = database.dictionary.decode(triple.subject);
         let predicate = database.dictionary.decode(triple.predicate);

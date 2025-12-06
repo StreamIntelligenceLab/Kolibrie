@@ -11,11 +11,11 @@
 use shared::dictionary::Dictionary;
 use shared::terms::Term;
 use shared::rule::Rule;
-use datalog::knowledge_graph::*;
+use datalog::reasoning::*;
 use datalog::parser_n3_logic::parse_n3_rule;
 
 fn knowledge_graph() {
-    let mut graph = KnowledgeGraph::new();
+    let mut graph = Reasoner::new();
 
     // Add ABox triples (instance-level)
     graph.add_abox_triple("Alice", "hasParent", "Bob");
@@ -67,7 +67,7 @@ fn backward_chaining() {
     let ancestor = dict.encode("ancestor");
     let charlie = dict.encode("Charlie");
 
-    let mut kg = KnowledgeGraph::new();
+    let mut kg = Reasoner::new();
 
     // ABox (facts)
     kg.add_abox_triple("Alice", "parent", "Bob");
@@ -140,7 +140,7 @@ fn test() {
 @prefix rdf: <http://www.w3.org/1999/02/22-rdf-syntax-ns#>.
 { ?s rdf:type test:SubClass. } => { ?s rdf:type test:SuperType. }";
 
-    let mut graph = KnowledgeGraph::new();
+    let mut graph = Reasoner::new();
 
     graph.add_abox_triple(
         "http://example2.com/a",
@@ -178,7 +178,7 @@ fn test() {
 }
 
 fn test2() {
-    let mut kg = KnowledgeGraph::new();
+    let mut kg = Reasoner::new();
 
     let n3_rule = r#"@prefix ex: <http://example.org/family#>.
 { ?x ex:hasParent ?y. ?y ex:hasSibling ?z. } => { ?x ex:hasUncleOrAunt ?z. }."#;
@@ -216,7 +216,7 @@ fn test2() {
 }
 
 fn inconsistency() {
-    let mut kg = KnowledgeGraph::new();
+    let mut kg = Reasoner::new();
 
     // Add some facts
     kg.add_abox_triple("john", "isA", "professor");
