@@ -12,7 +12,7 @@ use super::super::Condition;
 use shared::terms::TriplePattern;
 
 /// Logical operators represent the high-level query structure before optimization
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone)]
 pub enum LogicalOperator {
     Scan {
         pattern: TriplePattern,

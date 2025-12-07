@@ -1110,6 +1110,21 @@ pub fn execute_query_rayon_parallel2_volcano(
         let mut aggregation_vars: Vec<(&str, &str, &str)> = Vec::new();
         process_variables(&mut selected_variables, &mut aggregation_vars, variables);
 
+        let resolved_patterns: Vec<(&str, &str, &str)> = patterns
+            .iter()
+            .map(|(subject_var, predicate, object_var)| {
+                let (resolved_subject, resolved_predicate, resolved_object) =
+                    resolve_triple_pattern(subject_var, predicate, object_var, database, &prefixes);
+                
+                // Leak strings to get 'static lifetime
+                let subject_static: &'static str = Box::leak(resolved_subject.into_boxed_str());
+                let predicate_static: &'static str = Box::leak(resolved_predicate.into_boxed_str());
+                let object_static: &'static str = Box::leak(resolved_object.into_boxed_str());
+                
+                (subject_static, predicate_static, object_static)
+            })
+            .collect();
+
         // Build indexes before optimization - this is crucial for performance
         // database.build_all_indexes();
 
@@ -1123,7 +1138,7 @@ pub fn execute_query_rayon_parallel2_volcano(
                     .iter()
                     .map(|(t, v)| (t.as_str(), v.as_str()))
                     .collect(),
-                patterns,
+                resolved_patterns,
                 filters,
                 &prefixes,
                 database,
@@ -1230,11 +1245,11 @@ pub fn execute_query_rayon_parallel2_volcano(
                     .iter()
                     .map(|(t, v)| (t.as_str(), v.as_str()))
                     .collect(),
-                patterns,
-                filters,
+                resolved_patterns,
+                filters.clone(),
                 &prefixes,
                 database,
-            );
+            ); 
 
             let stats = database.cached_stats.as_ref().expect("AAA");
             let mut optimizer = VolcanoOptimizer::with_cached_stats(stats.clone());
@@ -1259,8 +1274,16 @@ pub fn execute_query_rayon_parallel2_volcano(
                 .map(|result| {
                     result
                         .iter()
-                        .map(|(k, v)| (k.as_str(), v.clone()))
-                        .collect()
+                        .map(|(k, v)| {
+                        // Add '?' prefix back for consistency with format_results
+                        let key_with_prefix = if k.starts_with('?') {
+                            k.as_str()
+                        } else {
+                            Box::leak(format!("?{}", k).into_boxed_str())
+                        };
+                        (key_with_prefix, v.clone())
+                    })
+                    .collect()
                 })
                 .collect();
 

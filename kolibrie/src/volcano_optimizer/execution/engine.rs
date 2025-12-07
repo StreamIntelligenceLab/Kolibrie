@@ -62,13 +62,21 @@ impl ExecutionEngine {
             }
             PhysicalOperator::Projection { input, variables } => {
                 let input_results = Self::execute_with_ids(input, database);
-                input_results
-                .into_par_iter()
-                .map(|mut result| {
-                    result.retain(|k, _| variables.contains(k));
-                    result
-                })
-                .collect()
+                
+                // Strip '?' prefix from projection variables for matching
+                let stripped_vars: Vec<String> = variables
+                    .iter()
+                    .map(|v| v.strip_prefix('?').unwrap_or(v).to_string())
+                    .collect();
+
+                let projected: Vec<HashMap<String, u32>> = input_results
+                    .into_par_iter()
+                    .map(|mut result| {
+                        result.retain(|k, _| stripped_vars.contains(&k.to_string()));
+                        result
+                    })
+                    .collect();
+                projected
             }
             PhysicalOperator::OptimizedHashJoin { left, right } => {
                 let left_results = Self::execute_with_ids(left, database);
@@ -167,6 +175,8 @@ impl ExecutionEngine {
         if patterns.is_empty() {
             return Vec::new();
         }
+        
+        let join_var_stripped = join_var.strip_prefix('?').unwrap_or(join_var);
 
         // Find the most selective pattern
         let mut pattern_estimates: Vec<(usize, u64)> = patterns
@@ -202,9 +212,9 @@ impl ExecutionEngine {
                 let mut new_results = Vec::new();
 
                 for binding in results. iter(). take(100_000) {  // Hard limit on input size
-                    if let Some(&join_value) = binding.get(join_var) {
+                    if let Some(&join_value) = binding.get(join_var_stripped) {
                         let mut bound_bindings = HashMap::new();
-                        bound_bindings.insert(join_var.to_string(), join_value);
+                        bound_bindings.insert(join_var_stripped.to_string(), join_value);
 
                         let bound_pattern = Self::bind_pattern(pattern, &bound_bindings);
                         let matches = Self::execute_index_scan_with_ids(database, &bound_pattern);
@@ -231,9 +241,9 @@ impl ExecutionEngine {
                 results = results
                 .into_par_iter()
                 .flat_map(|binding| {
-                    if let Some(&join_value) = binding.get(join_var) {
+                    if let Some(&join_value) = binding.get(join_var_stripped) {
                         let mut bound_bindings = HashMap::new();
-                        bound_bindings.insert(join_var.to_string(), join_value);
+                        bound_bindings.insert(join_var_stripped.to_string(), join_value);
 
                         let bound_pattern = Self::bind_pattern(pattern, &bound_bindings);
                         let matches = Self::execute_index_scan_with_ids(database, &bound_pattern);
@@ -464,7 +474,8 @@ impl ExecutionEngine {
     ) -> TriplePattern {
         let subject = match &pattern.0 {
             Term::Variable(var) => {
-                bindings.get(var)
+                let lookup_var = var.strip_prefix('?').unwrap_or(var);
+                bindings.get(lookup_var)
                 .map(|&id| Term::Constant(id))
                 .unwrap_or_else(|| pattern.0.clone())
             }
@@ -473,7 +484,8 @@ impl ExecutionEngine {
 
         let predicate = match &pattern.1 {
             Term::Variable(var) => {
-                bindings.get(var)
+                let lookup_var = var.strip_prefix('?').unwrap_or(var);
+                bindings.get(lookup_var)
                 .map(|&id| Term::Constant(id))
                 .unwrap_or_else(|| pattern.1.clone())
             }
@@ -482,7 +494,8 @@ impl ExecutionEngine {
 
         let object = match &pattern.2 {
             Term::Variable(var) => {
-                bindings. get(var)
+                let lookup_var = var.strip_prefix('?').unwrap_or(var);
+                bindings. get(lookup_var)
                 .map(|&id| Term::Constant(id))
                 .unwrap_or_else(|| pattern.2.clone())
             }
@@ -659,7 +672,7 @@ impl ExecutionEngine {
             // FULLY BOUND (3 constants) - just check if triple exists
             (Term::Constant(s), Term::Constant(p), Term::Constant(o)) => {
                 // Use SPO index to check existence
-                if let Some(pred_map) = database.index_manager.spo. get(s) {
+                if let Some(pred_map) = database.index_manager.spo.get(s) {
                     if let Some(objects) = pred_map.get(p) {
                         if objects.contains(o) {
                             // Triple exists - return empty binding (no variables to bind)
@@ -673,7 +686,7 @@ impl ExecutionEngine {
 
             // TWO BOUNDS (2 constants, 1 variable)
             (Term::Constant(s), Term::Constant(p), Term::Variable(o)) => {
-                Self::scan_sp_index_with_ids(database, *s, *p, o. clone())
+                Self::scan_sp_index_with_ids(database, *s, *p, o.clone())
             }
             (Term::Constant(s), Term::Variable(p), Term::Constant(o)) => {
                 Self::scan_so_index_with_ids(database, *s, *o, p.clone())
@@ -708,6 +721,9 @@ impl ExecutionEngine {
         predicate: u32,
         object_var: String,
     ) -> Vec<HashMap<String, u32>> {
+        // Strip '?' prefix from variable name
+        let object_var = object_var.strip_prefix('?').unwrap_or(&object_var).to_string();
+
         if let Some(pred_map) = database.index_manager.spo.get(&subject) {
             if let Some(objects) = pred_map.get(&predicate) {
                 // Use pre-compute the key
@@ -731,6 +747,9 @@ impl ExecutionEngine {
         object: u32,
         predicate_var: String,
     ) -> Vec<HashMap<String, u32>> {
+        // Strip '?' prefix from variable name
+        let predicate_var = predicate_var.strip_prefix('?').unwrap_or(&predicate_var).to_string();
+
         if let Some(obj_map) = database.index_manager.sop.get(&subject) {
             if let Some(predicates) = obj_map.get(&object) {
                 // Use iterator with pre-sized HashMap
@@ -754,6 +773,9 @@ impl ExecutionEngine {
         object: u32,
         subject_var: String,
     ) -> Vec<HashMap<String, u32>> {
+        // Strip '?' prefix from variable name
+        let subject_var = subject_var.strip_prefix('?').unwrap_or(&subject_var).to_string();
+
         if let Some(obj_map) = database.index_manager.pos.get(&predicate) {
             if let Some(subjects) = obj_map.get(&object) {
                 // Use iterator with pre-sized HashMap
@@ -777,6 +799,10 @@ impl ExecutionEngine {
         predicate_var: String,
         object_var: String,
     ) -> Vec<HashMap<String, u32>> {
+        // Strip '?' prefix from variable names
+        let predicate_var = predicate_var.strip_prefix('?').unwrap_or(&predicate_var).to_string();
+        let object_var = object_var.strip_prefix('?').unwrap_or(&object_var).to_string();
+
         if let Some(pred_map) = database.index_manager.spo. get(&subject) {
             // Clone variable names once before flat_map
             pred_map.iter().flat_map(|(&predicate, objects)| {
@@ -801,6 +827,10 @@ impl ExecutionEngine {
         subject_var: String,
         object_var: String,
     ) -> Vec<HashMap<String, u32>> {
+        // Strip '?' prefix from variable names
+        let subject_var = subject_var.strip_prefix('?').unwrap_or(&subject_var).to_string();
+        let object_var = object_var.strip_prefix('?').unwrap_or(&object_var).to_string();
+
         if let Some(obj_map) = database.index_manager.pos.get(&predicate) {
             // Clone variable names once before flat_map
             obj_map.iter().flat_map(|(&object, subjects)| {
@@ -825,6 +855,10 @@ impl ExecutionEngine {
         subject_var: String,
         predicate_var: String,
     ) -> Vec<HashMap<String, u32>> {
+        // Strip '?' prefix from variable names
+        let subject_var = subject_var.strip_prefix('?').unwrap_or(&subject_var).to_string();
+        let predicate_var = predicate_var.strip_prefix('?').unwrap_or(&predicate_var).to_string();
+
         if let Some(subj_map) = database.index_manager.osp.get(&object) {
             // Clone variable names once before flat_map
             subj_map.iter(). flat_map(|(&subject, predicates)| {

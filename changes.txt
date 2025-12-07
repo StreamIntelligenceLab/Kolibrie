@@ -112,6 +112,8 @@
 112. Repalce BTreeMap with HashMap
 113. Improve join algorithms
 114. Add ability to recognize different shapes of query such as snowflake, line, star
+115. Rename knowledge_graph.rs to reasoning.rs and rename class KnowledgeGraph to Reasoner & remove unused class
+116. Improve Volcano Optimizer by including filtering
 
 0.1.0
 1. Parsing RDF/XML

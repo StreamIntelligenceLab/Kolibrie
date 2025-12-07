@@ -15,6 +15,7 @@ use super::stats::DatabaseStats;
 
 use crate::sparql_database::SparqlDatabase;
 use shared::terms::{Term, TriplePattern};
+use shared::query::FilterExpression;
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::sync::Arc;
 
@@ -165,88 +166,35 @@ impl VolcanoOptimizer {
             return plan.clone();
         }
 
-        // Check for star query pattern
-        if let Some(stars) = self.is_star_query(logical_plan) {
-            // Get al patterns to check if any are unused
-            let mut all_patterns = Vec::new();
-            self.collect_patterns(logical_plan, &mut all_patterns);
-
-            // Track which pattern indices are used in stars
-            let mut used_pattern_indices: HashSet<usize> = HashSet::new();
-            for (_, star_patterns) in &stars {
-                for star_pattern in star_patterns {
-                    // Find index of this pattern in all_patterns
-                    if let Some(idx) = all_patterns.iter(). position(|p| p == star_pattern) {
-                        used_pattern_indices.insert(idx);
-                    }
+        if let LogicalOperator::Projection { predicate: proj_pred, variables } = logical_plan {
+            if let LogicalOperator::Selection { predicate: sel_pred, condition } = proj_pred. as_ref() {
+                if let Some(stars) = self.is_star_query(sel_pred) {
+                    // Build: Projection(Filter(StarJoin))
+                    let star_plan = self.build_star_join_from_patterns(stars, sel_pred);
+                    let filtered_plan = PhysicalOperator::filter(star_plan, condition. clone());
+                    let projected_plan = PhysicalOperator::projection(filtered_plan, variables.clone());
+                    self.memo.insert(key, projected_plan.clone());
+                    return projected_plan;
                 }
             }
+        }
 
-            if stars.len() > 1 {
-                let mut star_operators: Vec<(String, Vec<TriplePattern>)> = stars;
+        // Handle Selection wrapping star query (no projection)
+        if let LogicalOperator::Selection { predicate, condition } = logical_plan {
+            if let Some(stars) = self.is_star_query(predicate) {
+                let star_plan = self.build_star_join_from_patterns(stars, predicate);
+                let filtered_plan = PhysicalOperator::filter(star_plan, condition.clone());
+                self.memo.insert(key, filtered_plan.clone());
+                return filtered_plan;
+            }
+        }
 
-                // Start with the star that has the most bound patterns (most selective)
-                star_operators.sort_by_key(|(_, patterns)| {
-                    let bound_count = patterns.iter().filter(|p| {
-                        matches!(p.0, Term::Constant(_)) ||
-                        matches!(p.1, Term::Constant(_)) ||
-                        matches!(p.2, Term::Constant(_))
-                    }).count();
-                    std::cmp::Reverse(bound_count)
-                });
-
-                // Execute first star
-                let (first_var, first_patterns) = star_operators. remove(0);
-                let mut result = PhysicalOperator::StarJoin {
-                    join_var: first_var. clone(),
-                    patterns: first_patterns,
-                };
-
-                // For each remaining star, create a multi-way join that can use bind logic
-                for (_, patterns) in star_operators {
-                    let star_scans: Vec<PhysicalOperator> = patterns
-                    .into_iter()
-                    .map(|pattern| PhysicalOperator::index_scan(pattern))
-                    .collect();
-
-                    for scan in star_scans {
-                        result = PhysicalOperator::parallel_join(result, scan);
-                    }
-                }
-
-                // Join unused patterns
-                for (idx, pattern) in all_patterns.iter().enumerate() {
-                    if !used_pattern_indices.contains(&idx) {
-                        let scan = PhysicalOperator::index_scan(pattern. clone());
-                        result = PhysicalOperator::parallel_join(result, scan);
-                    }
-                }
-
-                self.memo. insert(key, result.clone());
-                return result;
-            } else if stars.len() == 1 {
-                // Single star
-                let (join_var, patterns) = stars.into_iter().next().unwrap();
-
-                // Check for unused patterns
-                if used_pattern_indices.len() < all_patterns.len() {
-                    // Some patterns not in the star - build star + join remaining
-                    let mut result = PhysicalOperator::StarJoin { join_var, patterns };
-
-                    for (idx, pattern) in all_patterns.iter().enumerate() {
-                        if !used_pattern_indices.contains(&idx) {
-                            let scan = PhysicalOperator::index_scan(pattern. clone());
-                            result = PhysicalOperator::parallel_join(result, scan);
-                        }
-                    }
-
-                    self.memo.insert(key, result.clone());
-                    return result;
-                }
-
-                let star_join = PhysicalOperator::StarJoin { join_var, patterns };
-                self.memo.insert(key, star_join. clone());
-                return star_join;
+        // Handle star query without selection or projection
+        if ! matches!(logical_plan, LogicalOperator::Selection { .. } | LogicalOperator::Projection { ..  }) {
+            if let Some(stars) = self. is_star_query(logical_plan) {
+                let star_plan = self.build_star_join_from_patterns(stars, logical_plan);
+                self.memo.insert(key, star_plan.clone());
+                return star_plan;
             }
         }
 
@@ -337,6 +285,88 @@ impl VolcanoOptimizer {
         best_plan
     }
 
+    /// Helper method to build a star join physical plan from detected star patterns
+    fn build_star_join_from_patterns(
+        &mut self,
+        stars: Vec<(String, Vec<TriplePattern>)>,
+        logical_plan: &LogicalOperator,
+    ) -> PhysicalOperator {
+        let mut all_patterns = Vec::new();
+        self.collect_patterns(logical_plan, &mut all_patterns);
+
+        let mut used_pattern_indices: HashSet<usize> = HashSet::new();
+        for (_, star_patterns) in &stars {
+            for star_pattern in star_patterns {
+                if let Some(idx) = all_patterns.iter().position(|p| p == star_pattern) {
+                    used_pattern_indices.insert(idx);
+                }
+            }
+        }
+
+        if stars.len() > 1 {
+            let mut star_operators: Vec<(String, Vec<TriplePattern>)> = stars;
+
+            star_operators.sort_by_key(|(_, patterns)| {
+                let bound_count = patterns.iter().filter(|p| {
+                    matches!(p.0, Term::Constant(_)) ||
+                    matches!(p.1, Term::Constant(_)) ||
+                    matches!(p.2, Term::Constant(_))
+                }).count();
+                std::cmp::Reverse(bound_count)
+            });
+
+            let (first_var, first_patterns) = star_operators. remove(0);
+            let mut result = PhysicalOperator::StarJoin {
+                join_var: first_var.clone(),
+                patterns: first_patterns,
+            };
+
+            for (_, patterns) in star_operators {
+                let star_scans: Vec<PhysicalOperator> = patterns
+                    .into_iter()
+                    .map(|pattern| PhysicalOperator::index_scan(pattern))
+                    .collect();
+
+                for scan in star_scans {
+                    result = PhysicalOperator::parallel_join(result, scan);
+                }
+            }
+
+            for (idx, pattern) in all_patterns. iter().enumerate() {
+                if !used_pattern_indices.contains(&idx) {
+                    let scan = PhysicalOperator::index_scan(pattern. clone());
+                    result = PhysicalOperator::parallel_join(result, scan);
+                }
+            }
+
+            result
+        } else if stars.len() == 1 {
+            let (join_var, patterns) = stars. into_iter().next().unwrap();
+
+            if used_pattern_indices.len() < all_patterns.len() {
+                let mut result = PhysicalOperator::StarJoin { join_var, patterns };
+
+                for (idx, pattern) in all_patterns.iter().enumerate() {
+                    if !used_pattern_indices.contains(&idx) {
+                        let scan = PhysicalOperator::index_scan(pattern.clone());
+                        result = PhysicalOperator::parallel_join(result, scan);
+                    }
+                }
+
+                result
+            } else {
+                PhysicalOperator::StarJoin { join_var, patterns }
+            }
+        } else {
+            // Shouldn't happen, but return a dummy scan as fallback
+            PhysicalOperator::table_scan((
+                Term::Variable("?s".to_string()),
+                Term::Variable("?p".to_string()),
+                Term::Variable("?o".to_string()),
+            ))
+        }
+    }
+
     /// Chooses the best scan method based on pattern selectivity
     fn choose_best_scan(&self, pattern: &TriplePattern) -> PhysicalOperator {
         let bound_vars = self.count_bound_variables(pattern);
@@ -397,11 +427,9 @@ impl VolcanoOptimizer {
                 condition,
             } => {
                 format!(
-                    "Selection({},{},{},[{}])",
-                    condition.variable,
-                    condition.operator,
-                    condition.value,
-                    self.serialize_logical_plan(predicate)
+                    "Selection([{}], {})",
+                    self.serialize_logical_plan(predicate),
+                    self.serialize_filter_expression(&condition.expression)
                 )
             }
             LogicalOperator::Projection {
@@ -420,6 +448,35 @@ impl VolcanoOptimizer {
                     self.serialize_logical_plan(left),
                     self.serialize_logical_plan(right)
                 )
+            }
+        }
+    }
+
+    /// Serializes a filter expression to a string
+    fn serialize_filter_expression(&self, expr: &FilterExpression) -> String {
+        match expr {
+            FilterExpression::Comparison(var, op, value) => {
+                format!("{}{}'{}'", var, op, value)
+            }
+            FilterExpression::And(left, right) => {
+                format!(
+                    "({} AND {})",
+                    self. serialize_filter_expression(left),
+                    self.serialize_filter_expression(right)
+                )
+            }
+            FilterExpression::Or(left, right) => {
+                format!(
+                    "({} OR {})",
+                    self. serialize_filter_expression(left),
+                    self.serialize_filter_expression(right)
+                )
+            }
+            FilterExpression::Not(inner) => {
+                format!("NOT({})", self.serialize_filter_expression(inner))
+            }
+            FilterExpression::ArithmeticExpr(expr) => {
+                format!("ARITH({})", expr)
             }
         }
     }

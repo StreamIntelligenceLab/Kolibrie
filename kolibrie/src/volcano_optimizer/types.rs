@@ -8,15 +8,13 @@
  * you can obtain one at https://mozilla.org/MPL/2.0/.
  */
 
-use shared::dictionary::Dictionary;
+use shared::{dictionary::Dictionary, query::FilterExpression};
 use std::collections::HashMap;
 
 /// Represents a condition for filtering operations
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone)]
 pub struct Condition {
-    pub variable: String,
-    pub operator: String,
-    pub value: String,
+    pub expression: FilterExpression<'static>,
 }
 
 /// ID-based result type for performance optimization
@@ -28,27 +26,63 @@ pub struct IdResult {
 impl Condition {
     /// Creates a new condition
     pub fn new(variable: String, operator: String, value: String) -> Self {
+        // Leak strings to get 'static lifetime
+        let var_static: &'static str = Box::leak(variable.into_boxed_str());
+        let op_static: &'static str = Box::leak(operator.into_boxed_str());
+        let val_static: &'static str = Box::leak(value.into_boxed_str());
+
         Self {
-            variable,
-            operator,
-            value,
+            expression: FilterExpression::Comparison(var_static, op_static, val_static),
         }
+    }
+
+    /// Creates a new condition from a filter expression
+    pub fn from_filter(filter: FilterExpression<'static>) -> Self {
+        Self { expression: filter }
     }
 
     /// Evaluates the condition against string-based results
     pub fn evaluate(&self, result: &HashMap<String, String>) -> bool {
-        if let Some(value) = result.get(&self.variable) {
-            match self.operator.as_str() {
-                "=" => value == &self.value,
-                "!=" => value != &self.value,
-                ">" => value.parse::<i32>().unwrap_or(0) > self.value.parse::<i32>().unwrap_or(0),
-                ">=" => value.parse::<i32>().unwrap_or(0) >= self.value.parse::<i32>().unwrap_or(0),
-                "<" => value.parse::<i32>().unwrap_or(0) < self.value.parse::<i32>().unwrap_or(0),
-                "<=" => value.parse::<i32>().unwrap_or(0) <= self.value.parse::<i32>().unwrap_or(0),
-                _ => false,
+        self.evaluate_filter(&self.expression, result)
+    }
+
+    /// Evaluates a filter expression recursively
+    fn evaluate_filter(&self, expr: &FilterExpression, result: &HashMap<String, String>) -> bool {
+        match expr {
+            FilterExpression::Comparison(var, op, value) => {
+                let var_name = var.strip_prefix('?').unwrap_or(var);
+                if let Some(result_value) = result.get(var_name) {
+                    match *op {
+                        "=" => result_value == value,
+                        "!=" => result_value != value,
+                        ">" => result_value. parse::<f64>().unwrap_or(0.0) 
+                            > value.parse::<f64>().unwrap_or(0.0),
+                        ">=" => result_value.parse::<f64>().unwrap_or(0.0) 
+                            >= value.parse::<f64>().unwrap_or(0.0),
+                        "<" => result_value. parse::<f64>().unwrap_or(0.0) 
+                            < value.parse::<f64>().unwrap_or(0.0),
+                        "<=" => result_value.parse::<f64>(). unwrap_or(0.0) 
+                            <= value. parse::<f64>().unwrap_or(0.0),
+                        _ => false,
+                    }
+                } else {
+                    false
+                }
             }
-        } else {
-            false
+            FilterExpression::And(left, right) => {
+                self.evaluate_filter(left, result) && self.evaluate_filter(right, result)
+            }
+            FilterExpression::Or(left, right) => {
+                self.evaluate_filter(left, result) || self.evaluate_filter(right, result)
+            }
+            FilterExpression::Not(inner) => {
+                !self.evaluate_filter(inner, result)
+            }
+            FilterExpression::ArithmeticExpr(_expr) => {
+                // For now, arithmetic expressions in filters return false
+                // TODO: Implement full arithmetic expression evaluation
+                false
+            }
         }
     }
 
@@ -58,32 +92,53 @@ impl Condition {
         result: &HashMap<String, u32>,
         dictionary: &Dictionary,
     ) -> bool {
-        if let Some(&id) = result.get(&self.variable) {
-            // Only decode when necessary for comparison
-            let decoded_value = dictionary.decode(id).unwrap();
-            match self.operator.as_str() {
-                "=" => decoded_value == self.value,
-                "!=" => decoded_value != self.value,
-                ">" => {
-                    decoded_value.parse::<i32>().unwrap_or(0)
-                        > self.value.parse::<i32>().unwrap_or(0)
+        self.evaluate_filter_with_ids(&self.expression, result, dictionary)
+    }
+
+    /// Evaluates a filter expression with IDs recursively
+    fn evaluate_filter_with_ids(
+        &self,
+        expr: &FilterExpression,
+        result: &HashMap<String, u32>,
+        dictionary: &Dictionary,
+    ) -> bool {
+        match expr {
+            FilterExpression::Comparison(var, op, value) => {
+                let var_name = var.strip_prefix('?').unwrap_or(var);
+                if let Some(&id) = result.get(var_name) {
+                    let decoded_value = dictionary.decode(id). unwrap();
+                    match *op {
+                        "=" => decoded_value == *value,
+                        "!=" => decoded_value != *value,
+                        ">" => decoded_value.parse::<f64>().unwrap_or(0.0) 
+                            > value.parse::<f64>(). unwrap_or(0.0),
+                        ">=" => decoded_value.parse::<f64>().unwrap_or(0.0) 
+                            >= value.parse::<f64>().unwrap_or(0.0),
+                        "<" => decoded_value.parse::<f64>().unwrap_or(0.0) 
+                            < value.parse::<f64>().unwrap_or(0.0),
+                        "<=" => decoded_value.parse::<f64>().unwrap_or(0.0) 
+                            <= value.parse::<f64>().unwrap_or(0.0),
+                        _ => false,
+                    }
+                } else {
+                    false
                 }
-                ">=" => {
-                    decoded_value.parse::<i32>().unwrap_or(0)
-                        >= self.value.parse::<i32>().unwrap_or(0)
-                }
-                "<" => {
-                    decoded_value.parse::<i32>().unwrap_or(0)
-                        < self.value.parse::<i32>().unwrap_or(0)
-                }
-                "<=" => {
-                    decoded_value.parse::<i32>().unwrap_or(0)
-                        <= self.value.parse::<i32>().unwrap_or(0)
-                }
-                _ => false,
             }
-        } else {
-            false
+            FilterExpression::And(left, right) => {
+                self.evaluate_filter_with_ids(left, result, dictionary) 
+                    && self.evaluate_filter_with_ids(right, result, dictionary)
+            }
+            FilterExpression::Or(left, right) => {
+                self.evaluate_filter_with_ids(left, result, dictionary) 
+                    || self.evaluate_filter_with_ids(right, result, dictionary)
+            }
+            FilterExpression::Not(inner) => {
+                !self. evaluate_filter_with_ids(inner, result, dictionary)
+            }
+            FilterExpression::ArithmeticExpr(_expr) => {
+                // TODO: Implement arithmetic expression evaluation
+                false
+            }
         }
     }
 }

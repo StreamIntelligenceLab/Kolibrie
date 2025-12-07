@@ -12,6 +12,7 @@ use super::super::operators::PhysicalOperator;
 use super::super::stats::DatabaseStats;
 use super::super::types::Condition;
 use shared::terms::{Term, TriplePattern};
+use shared::query::FilterExpression;
 
 /// Cost estimation constants for different operators
 pub struct CostConstants;
@@ -185,11 +186,42 @@ impl<'a> CostEstimator<'a> {
 
     /// Estimates the selectivity of a condition
     pub fn estimate_selectivity(&self, condition: &Condition) -> f64 {
-        match condition.operator.as_str() {
-            "=" => 0.05, // More selective
-            "!=" => 0.95,
-            ">" | "<" | ">=" | "<=" => 0.25,
-            _ => 1.0,
+        self.estimate_filter_selectivity(&condition.expression)
+    }
+
+    /// Recursively estimates the selectivity of a filter expression
+    fn estimate_filter_selectivity(&self, expr: &FilterExpression) -> f64 {
+        match expr {
+            FilterExpression::Comparison(_, op, _) => {
+                match *op {
+                    "=" => 0.05,  // Equality is very selective
+                    "!=" => 0.95, // Not equal is not very selective
+                    ">" | "<" => 0.25,  // Range queries
+                    ">=" | "<=" => 0.30,
+                    _ => 0.5,  // Unknown operators
+                }
+            }
+            FilterExpression::And(left, right) => {
+                // AND is more selective - multiply selectivities
+                let left_sel = self.estimate_filter_selectivity(left);
+                let right_sel = self.estimate_filter_selectivity(right);
+                left_sel * right_sel
+            }
+            FilterExpression::Or(left, right) => {
+                // OR is less selective - use formula: sel(A OR B) = sel(A) + sel(B) - sel(A)*sel(B)
+                let left_sel = self.estimate_filter_selectivity(left);
+                let right_sel = self.estimate_filter_selectivity(right);
+                left_sel + right_sel - (left_sel * right_sel)
+            }
+            FilterExpression::Not(inner) => {
+                // NOT inverts selectivity
+                let inner_sel = self.estimate_filter_selectivity(inner);
+                1.0 - inner_sel
+            }
+            FilterExpression::ArithmeticExpr(_) => {
+                // Conservative estimate for arithmetic expressions
+                0.5
+            }
         }
     }
 

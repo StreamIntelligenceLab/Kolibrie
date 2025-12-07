@@ -12,7 +12,7 @@ use super::super::Condition;
 use shared::terms::TriplePattern;
 
 /// Physical operators represent the actual execution plan after optimization
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone)]
 pub enum PhysicalOperator {
     TableScan {
         pattern: TriplePattern,
