@@ -5,9 +5,11 @@
 </p>
 
 <!-- ![Estado del Flujo de Trabajo de GitHub](https://img.shields.io/github/commit-activity/t/StreamIntelligenceLab/Kolibri) -->
+[![Status](https://img.shields.io/badge/status-stable-blue.svg)](https://github.com/StreamIntelligenceLab/Kolibrie/tree/main)
 ![License: MPL 2.0](https://img.shields.io/badge/License-MPL_2.0-brightgreen.svg)
-![Versión de Rust](https://img.shields.io/badge/Rust-1.60+-blue.svg)
-![Estado de Compilación](https://img.shields.io/badge/build-passing-brightgreen.svg)
+![Rust Version](https://img.shields.io/badge/Rust-1.60+-blue.svg)
+![Build Status](https://img.shields.io/badge/build-passing-brightgreen.svg)
+[![Chat Server](https://img.shields.io/badge/chat-discord-7289da.svg)](https://discord.gg/KcFXrUUyYm)
 <!--![Crates.io](https://img.shields.io/crates/v/sparql_database.svg)-->
 
 [ [English](../README.md) | [Nederlands](README.nl.md) | [Deutsch](README.de.md) | [Español](README.es.md) | [Français](README.fr.md) | [日本語](README.ja.md) ]
