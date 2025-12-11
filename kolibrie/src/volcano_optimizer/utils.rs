@@ -11,7 +11,7 @@
 use super::operators::{LogicalOperator, PhysicalOperator};
 use super::types::Condition;
 use crate::sparql_database::SparqlDatabase;
-use shared::query::FilterExpression;
+use shared::query::{FilterExpression, SubQuery};
 use shared::terms::{Term, TriplePattern};
 use std::collections::{HashMap, HashSet};
 
@@ -61,6 +61,9 @@ pub fn estimate_operator_selectivity(op: &LogicalOperator, _database: &SparqlDat
         LogicalOperator::Projection { predicate, .. } => {
             // Projection doesn't change selectivity much
             estimate_operator_selectivity(predicate, _database) + 1
+        }
+        LogicalOperator::Subquery { inner, .. } => {
+            estimate_operator_selectivity(inner, _database) + 15
         }
     }
 }
@@ -184,6 +187,37 @@ pub fn build_logical_plan(
     database: &mut SparqlDatabase,
 ) -> LogicalOperator {
     build_logical_plan_optimized(variables, patterns, filters, prefixes, database)
+}
+
+/// Builds a logical operator from a SubQuery structure
+pub fn build_logical_plan_from_subquery(
+    subquery: &SubQuery,
+    prefixes: &HashMap<String, String>,
+    database: &mut SparqlDatabase,
+) -> LogicalOperator {
+    // Build the inner logical plan from the subquery patterns
+    let variables:  Vec<(&str, &str)> = subquery
+        .variables
+        .iter()
+        .map(|(var_type, var_name, _aggregation)| (*var_type, *var_name))
+        .collect();
+    
+    let inner_plan = build_logical_plan_optimized(
+        variables. clone(),
+        subquery.patterns.clone(),
+        subquery.filters.clone(),
+        prefixes,
+        database,
+    );
+    
+    // Extract variable names for projection
+    let projected_vars: Vec<String> = variables
+        .iter()
+        .map(|(_, var_name)| var_name.to_string())
+        .collect();
+    
+    // Wrap in a subquery operator
+    LogicalOperator::subquery(inner_plan, projected_vars)
 }
 
 /// Resolves a URI with prefixes

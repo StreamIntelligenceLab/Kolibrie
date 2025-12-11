@@ -1240,7 +1240,7 @@ pub fn execute_query_rayon_parallel2_volcano(
                 . unwrap();*/
 
             // Use Volcano optimizer for CPU execution
-            let logical_plan = build_logical_plan(
+            let mut logical_plan = build_logical_plan(
                 selected_variables
                     .iter()
                     .map(|(t, v)| (t.as_str(), v.as_str()))
@@ -1250,6 +1250,18 @@ pub fn execute_query_rayon_parallel2_volcano(
                 &prefixes,
                 database,
             ); 
+
+            // Integrate subqueries into the logical plan
+            for subquery in &subqueries {
+                let subquery_plan = build_logical_plan_from_subquery(
+                    subquery,
+                    &prefixes,
+                    database,
+                );
+            
+                // Join the subquery with the main query
+                logical_plan = LogicalOperator::join(logical_plan, subquery_plan);
+            }
 
             let stats = database.cached_stats.as_ref().expect("AAA");
             let mut optimizer = VolcanoOptimizer::with_cached_stats(stats.clone());

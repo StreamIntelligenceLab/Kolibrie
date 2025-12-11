@@ -157,6 +157,10 @@ name = "contradictions"
 path = "examples/sparql_syntax/knowledge_graph/contradictions.rs"
 
 [[example]]
+name = "deep_taxonomy"
+path = "examples/sparql_syntax/knowledge_graph/deep_taxonomy.rs"
+
+[[example]]
 name = "n_triples_data"
 path = "examples/sparql_syntax/n_triples_data/n_triples_data.rs"
 

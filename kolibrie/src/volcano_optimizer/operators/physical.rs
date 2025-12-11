@@ -48,6 +48,10 @@ pub enum PhysicalOperator {
         input: Box<PhysicalOperator>,
         variables: Vec<String>,
     },
+    Subquery {
+        inner: Box<PhysicalOperator>,
+        projected_vars:  Vec<String>,
+    },
 }
 
 impl PhysicalOperator {
@@ -106,6 +110,14 @@ impl PhysicalOperator {
         Self::Projection {
             input: Box::new(input),
             variables,
+        }
+    }
+
+    /// Creates a new subquery physical operator
+    pub fn subquery(inner: PhysicalOperator, projected_vars: Vec<String>) -> Self {
+        Self::Subquery {
+            inner: Box::new(inner),
+            projected_vars,
         }
     }
 

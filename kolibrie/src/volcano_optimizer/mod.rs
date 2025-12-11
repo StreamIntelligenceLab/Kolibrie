@@ -59,5 +59,5 @@ pub use stats::DatabaseStats;
 pub use types::{Condition, IdResult};
 pub use utils::{
     build_logical_plan, build_logical_plan_optimized, estimate_operator_selectivity,
-    extract_pattern, pattern_contains_variable,
+    extract_pattern, pattern_contains_variable, build_logical_plan_from_subquery,
 };

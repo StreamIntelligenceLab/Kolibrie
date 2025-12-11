@@ -99,6 +99,19 @@ impl ExecutionEngine {
             PhysicalOperator::StarJoin { join_var, patterns } => {
                 Self::execute_star_join_with_ids(database, join_var, patterns)
             }
+            PhysicalOperator:: Subquery { inner, projected_vars } => {
+                // Execute the inner query with IDs
+                let inner_results = Self::execute_with_ids(inner, database);
+                
+                // Project only the requested variables
+                inner_results
+                    .into_iter()
+                    .map(|mut row| {
+                        row.retain(|k, _| projected_vars.contains(&k. to_string()));
+                        row
+                    })
+                    . collect()
+            }
         }
     }
 

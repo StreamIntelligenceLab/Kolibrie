@@ -29,6 +29,10 @@ pub enum LogicalOperator {
         left: Box<LogicalOperator>,
         right: Box<LogicalOperator>,
     },
+    Subquery {
+        inner: Box<LogicalOperator>,
+        projected_vars: Vec<String>,
+    },
 }
 
 impl LogicalOperator {
@@ -58,6 +62,14 @@ impl LogicalOperator {
         Self::Join {
             left: Box::new(left),
             right: Box::new(right),
+        }
+    }
+
+    /// Creates a new subquery logical operator
+    pub fn subquery(inner: LogicalOperator, projected_vars: Vec<String>) -> Self {
+        Self::Subquery {
+            inner: Box:: new(inner),
+            projected_vars,
         }
     }
 }

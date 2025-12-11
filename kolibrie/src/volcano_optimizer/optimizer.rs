@@ -155,6 +155,11 @@ impl VolcanoOptimizer {
             LogicalOperator::Projection { predicate, .. } => {
                 self.collect_patterns(predicate, patterns);
             }
+            LogicalOperator::Subquery { inner, .. } => {
+                // Subqueries are treated as separate scopes, so we don't collect their patterns
+                // for star query detection in the outer query
+                self.collect_patterns(inner, patterns);
+            }
         }
     }
 
@@ -267,6 +272,18 @@ impl VolcanoOptimizer {
                     best_left_plan,
                     best_right_plan,
                 ));
+            }
+            LogicalOperator::Subquery { inner, projected_vars } => {
+                // Recursively optimize the inner query
+                let optimized_inner = self.find_best_plan_recursive(inner);
+                
+                // Wrap it in a subquery operator with projection
+                let subquery_plan = PhysicalOperator::subquery(
+                    optimized_inner,
+                    projected_vars.clone()
+                );
+                
+                candidates.push(subquery_plan);
             }
         }
 
@@ -449,6 +466,13 @@ impl VolcanoOptimizer {
                     self.serialize_logical_plan(right)
                 )
             }
+            LogicalOperator::Subquery { inner, projected_vars } => {
+                format!(
+                    "Subquery({:?},[{}])",
+                    projected_vars,
+                    self. serialize_logical_plan(inner)
+                )
+            }
         }
     }
 
@@ -506,6 +530,13 @@ impl VolcanoOptimizer {
                 (base_cost as f64 * selectivity) as u64
             }
             LogicalOperator::Projection { predicate, .. } => self.estimate_logical_cost(predicate),
+            LogicalOperator::Subquery { inner, .. } => {
+                // Subqueries have materialization cost
+                let inner_cost = self.estimate_logical_cost(inner);
+                let inner_card = self.estimate_output_cardinality_from_logical(inner);
+                // Add materialization overhead (storing results)
+                inner_cost + inner_card
+            }
         }
     }
 
@@ -536,6 +567,7 @@ impl VolcanoOptimizer {
             LogicalOperator::Join { left, ..  } => self.extract_predicate_from_plan(left),
             LogicalOperator::Selection { predicate, .. } => self.extract_predicate_from_plan(predicate),
             LogicalOperator::Projection { predicate, .. } => self.extract_predicate_from_plan(predicate),
+            LogicalOperator::Subquery { inner, .. } => self.extract_predicate_from_plan(inner),
         }
     }
 
@@ -561,6 +593,9 @@ impl VolcanoOptimizer {
                 let right_card = self.estimate_output_cardinality_from_logical(right);
                 let join_selectivity = self.estimate_join_selectivity(left, right);
                 ((left_card.min(right_card) as f64 * join_selectivity) as u64).max(1)
+            }
+            LogicalOperator::Subquery { inner, .. } => {
+                self.estimate_output_cardinality_from_logical(inner)
             }
         }
     }
