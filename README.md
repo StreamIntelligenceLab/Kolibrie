@@ -33,8 +33,10 @@ For more information about our research and ongoing projects, please visit the [
 - **Volcano Optimizer**: Incorporates a cost-based query optimizer based on the Volcano model to determine the most efficient execution plans.
 - **Reasoner**: Provides robust support for building and querying knowledge graphs, including ABox (instance-level) and TBox (schema-level) assertions, dynamic rule-based inference, and backward chaining.
 - **Streaming and Sliding Windows**: Handles timestamped triples and sliding window operations for time-based data analysis.
+- **Machine Learning Integration**: Seamlessly integrates with Python ML frameworks through PyO3 bindings.
 - **Extensible Dictionary Encoding**: Efficiently encodes and decodes RDF terms using a customizable dictionary.
 - **Comprehensive API**: Offers a rich set of methods for data manipulation, querying, and result processing.
+- **Support Python**
 
 > [!WARNING]
 > utilizing CUDA is experimental and under the development
@@ -541,6 +543,10 @@ fn main() {
 Inferred 1 new facts
 Alice is ancestor of Charlie
 ```
+
+### Machine Learning Integration
+
+**All machine learning examples can be found [here](https://github.com/StreamIntelligenceLab/Kolibrie/tree/main/kolibrie/examples/sparql_syntax/combination)**.
 
 ## API Documentation
 
