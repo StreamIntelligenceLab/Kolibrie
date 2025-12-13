@@ -124,14 +124,14 @@ impl DatabaseStats {
     pub fn get_join_selectivity(&self, predicate: u32) -> f64 {
         // First, try to read from cache (shared read lock)
         {
-            let cache = self.join_selectivity_cache.read(). unwrap();
+            let cache = self.join_selectivity_cache.read().unwrap();
             if let Some(&selectivity) = cache.get(&predicate) {
                 return selectivity;
             }
         }  // Read lock released here
         
         // Compute selectivity
-        let cardinality = self. get_predicate_cardinality(predicate);
+        let cardinality = self.get_predicate_cardinality(predicate);
         let selectivity = if self.total_triples > 0 {
             (cardinality as f64) / (self.total_triples as f64)
         } else {

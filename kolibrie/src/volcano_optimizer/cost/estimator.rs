@@ -123,13 +123,13 @@ impl<'a> CostEstimator<'a> {
                 let mut costs: Vec<u64> = patterns
                     .iter()
                     .map(|p| self.estimate_cardinality(p))
-                    . collect();
+                    .collect();
 
                 costs.sort();
 
                 // Start with smallest, then check each remaining
                 let base_cost = costs[0] * CostConstants::COST_PER_ROW_INDEX_SCAN;
-                let filter_cost = costs. iter().skip(1).sum::<u64>() * CostConstants::COST_PER_ROW_INDEX_SCAN / 10;
+                let filter_cost = costs.iter().skip(1).sum::<u64>() * CostConstants::COST_PER_ROW_INDEX_SCAN / 10;
 
                 base_cost + filter_cost
             }
@@ -166,20 +166,20 @@ impl<'a> CostEstimator<'a> {
             (Term::Constant(s), Term::Variable(_), Term::Constant(o)) => {
                 // S*O pattern
                 self.stats.get_subject_cardinality(*s)
-                    .min(self.stats. get_object_cardinality(*o))
+                    .min(self.stats.get_object_cardinality(*o))
                     .max(1)
             }
 
             (Term::Variable(_), Term::Constant(p), Term::Constant(o)) => {
                 // *PO pattern
                 self.stats.get_predicate_cardinality(*p)
-                    .min(self. stats.get_object_cardinality(*o))
+                    .min(self.stats.get_object_cardinality(*o))
                     .max(1)
             }
 
             // One bound - use predicate/subject/object cardinality directly
             (Term::Constant(s), Term::Variable(_), Term::Variable(_)) => {
-                self. stats.get_subject_cardinality(*s). max(1)
+                self. stats.get_subject_cardinality(*s).max(1)
             }
 
             (Term::Variable(_), Term::Constant(p), Term::Variable(_)) => {
@@ -193,7 +193,7 @@ impl<'a> CostEstimator<'a> {
 
             // No bounds - full scan
             (Term::Variable(_), Term::Variable(_), Term::Variable(_)) => {
-                self. stats.total_triples
+                self.stats.total_triples
             }
         }
     }
@@ -307,7 +307,7 @@ impl<'a> CostEstimator<'a> {
                 let mut cardinalities: Vec<u64> = patterns
                     .iter()
                     .map(|p| self.estimate_cardinality(p))
-                    . collect();
+                    .collect();
 
                 if cardinalities.is_empty() {
                     return 0;

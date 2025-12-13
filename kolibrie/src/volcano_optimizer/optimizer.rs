@@ -81,15 +81,15 @@ impl VolcanoOptimizer {
         // Count how many patterns each variable appears
         let mut var_counts: std::collections::BTreeMap<String, Vec<usize>> = BTreeMap::new();
 
-        for (idx, pattern) in patterns.iter(). enumerate() {
+        for (idx, pattern) in patterns.iter().enumerate() {
             if let Term::Variable(var) = &pattern.0 {
                 var_counts.entry(var.clone()).or_default().push(idx);
             }
             if let Term::Variable(var) = &pattern.1 {
-                var_counts.entry(var. clone()).or_default().push(idx);
+                var_counts.entry(var.clone()).or_default().push(idx);
             }
             if let Term::Variable(var) = &pattern.2 {
-                var_counts. entry(var.clone()).or_default().push(idx);
+                var_counts.entry(var.clone()).or_default().push(idx);
             }
         }
 
@@ -122,14 +122,14 @@ impl VolcanoOptimizer {
                 let star_patterns: Vec<TriplePattern> = available
                     .iter()
                     .map(|&idx| patterns[idx].clone())
-                    . collect();
+                    .collect();
 
                 // Mark these patterns as used
                 for &idx in &available {
                     used_patterns.insert(idx);
                 }
 
-                stars. push((var.clone(), star_patterns));
+                stars.push((var.clone(), star_patterns));
             }
         }
 
@@ -172,11 +172,11 @@ impl VolcanoOptimizer {
         }
 
         if let LogicalOperator::Projection { predicate: proj_pred, variables } = logical_plan {
-            if let LogicalOperator::Selection { predicate: sel_pred, condition } = proj_pred. as_ref() {
+            if let LogicalOperator::Selection { predicate: sel_pred, condition } = proj_pred.as_ref() {
                 if let Some(stars) = self.is_star_query(sel_pred) {
                     // Build: Projection(Filter(StarJoin))
                     let star_plan = self.build_star_join_from_patterns(stars, sel_pred);
-                    let filtered_plan = PhysicalOperator::filter(star_plan, condition. clone());
+                    let filtered_plan = PhysicalOperator::filter(star_plan, condition.clone());
                     let projected_plan = PhysicalOperator::projection(filtered_plan, variables.clone());
                     self.memo.insert(key, projected_plan.clone());
                     return projected_plan;
@@ -196,7 +196,7 @@ impl VolcanoOptimizer {
 
         // Handle star query without selection or projection
         if ! matches!(logical_plan, LogicalOperator::Selection { .. } | LogicalOperator::Projection { ..  }) {
-            if let Some(stars) = self. is_star_query(logical_plan) {
+            if let Some(stars) = self.is_star_query(logical_plan) {
                 let star_plan = self.build_star_join_from_patterns(stars, logical_plan);
                 self.memo.insert(key, star_plan.clone());
                 return star_plan;
@@ -332,7 +332,7 @@ impl VolcanoOptimizer {
                 std::cmp::Reverse(bound_count)
             });
 
-            let (first_var, first_patterns) = star_operators. remove(0);
+            let (first_var, first_patterns) = star_operators.remove(0);
             let mut result = PhysicalOperator::StarJoin {
                 join_var: first_var.clone(),
                 patterns: first_patterns,
@@ -349,16 +349,16 @@ impl VolcanoOptimizer {
                 }
             }
 
-            for (idx, pattern) in all_patterns. iter().enumerate() {
+            for (idx, pattern) in all_patterns.iter().enumerate() {
                 if !used_pattern_indices.contains(&idx) {
-                    let scan = PhysicalOperator::index_scan(pattern. clone());
+                    let scan = PhysicalOperator::index_scan(pattern.clone());
                     result = PhysicalOperator::parallel_join(result, scan);
                 }
             }
 
             result
         } else if stars.len() == 1 {
-            let (join_var, patterns) = stars. into_iter().next().unwrap();
+            let (join_var, patterns) = stars.into_iter().next().unwrap();
 
             if used_pattern_indices.len() < all_patterns.len() {
                 let mut result = PhysicalOperator::StarJoin { join_var, patterns };
@@ -470,7 +470,7 @@ impl VolcanoOptimizer {
                 format!(
                     "Subquery({:?},[{}])",
                     projected_vars,
-                    self. serialize_logical_plan(inner)
+                    self.serialize_logical_plan(inner)
                 )
             }
         }
@@ -485,14 +485,14 @@ impl VolcanoOptimizer {
             FilterExpression::And(left, right) => {
                 format!(
                     "({} AND {})",
-                    self. serialize_filter_expression(left),
+                    self.serialize_filter_expression(left),
                     self.serialize_filter_expression(right)
                 )
             }
             FilterExpression::Or(left, right) => {
                 format!(
                     "({} OR {})",
-                    self. serialize_filter_expression(left),
+                    self.serialize_filter_expression(left),
                     self.serialize_filter_expression(right)
                 )
             }
@@ -549,7 +549,7 @@ impl VolcanoOptimizer {
         // Use the actual join selectivity from database stats
         match (left_predicate, right_predicate) {
             (Some(pred), _) => self.stats.get_join_selectivity(pred),
-            (None, Some(pred)) => self. stats.get_join_selectivity(pred),
+            (None, Some(pred)) => self.stats.get_join_selectivity(pred),
             (None, None) => 0.1, // Fallback to default
         }
     }
@@ -558,7 +558,7 @@ impl VolcanoOptimizer {
     fn extract_predicate_from_plan(&self, plan: &LogicalOperator) -> Option<u32> {
         match plan {
             LogicalOperator::Scan { pattern } => {
-                if let Term::Constant(pred_id) = pattern. 1 {
+                if let Term::Constant(pred_id) = pattern.1 {
                     Some(pred_id)
                 } else {
                     None

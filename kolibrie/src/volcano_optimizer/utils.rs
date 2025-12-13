@@ -203,7 +203,7 @@ pub fn build_logical_plan_from_subquery(
         .collect();
     
     let inner_plan = build_logical_plan_optimized(
-        variables. clone(),
+        variables.clone(),
         subquery.patterns.clone(),
         subquery.filters.clone(),
         prefixes,
@@ -293,7 +293,7 @@ fn extract_filter_variables(filter: &FilterExpression) -> HashSet<String> {
     match filter {
         FilterExpression::Comparison(var, _, _) => {
             let var_name = var.strip_prefix('?').unwrap_or(var).to_string();
-            vars. insert(var_name);
+            vars.insert(var_name);
         }
         FilterExpression::And(left, right) | FilterExpression::Or(left, right) => {
             vars.extend(extract_filter_variables(left));

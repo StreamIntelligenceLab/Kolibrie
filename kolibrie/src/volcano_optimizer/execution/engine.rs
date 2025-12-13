@@ -107,10 +107,10 @@ impl ExecutionEngine {
                 inner_results
                     .into_iter()
                     .map(|mut row| {
-                        row.retain(|k, _| projected_vars.contains(&k. to_string()));
+                        row.retain(|k, _| projected_vars.contains(&k.to_string()));
                         row
                     })
-                    . collect()
+                    .collect()
             }
         }
     }
@@ -224,7 +224,7 @@ impl ExecutionEngine {
                 // Process one-by-one with strict memory control
                 let mut new_results = Vec::new();
 
-                for binding in results. iter(). take(100_000) {  // Hard limit on input size
+                for binding in results.iter().take(100_000) {  // Hard limit on input size
                     if let Some(&join_value) = binding.get(join_var_stripped) {
                         let mut bound_bindings = HashMap::new();
                         bound_bindings.insert(join_var_stripped.to_string(), join_value);
@@ -237,7 +237,7 @@ impl ExecutionEngine {
                             for (var, val) in match_binding {
                                 merged.entry(var).or_insert(val);
                             }
-                            new_results. push(merged);
+                            new_results.push(merged);
 
                             // Hard stop if we exceed 500K results
                             if new_results.len() >= 500_000 {
@@ -266,7 +266,7 @@ impl ExecutionEngine {
                         .map(|match_binding| {
                             let mut merged = binding.clone();
                             for (var, val) in match_binding {
-                                merged. entry(var).or_insert(val);
+                                merged.entry(var).or_insert(val);
                             }
                             merged
                         })
@@ -442,12 +442,12 @@ impl ExecutionEngine {
         let total_results = std::sync::atomic::AtomicUsize::new(0);
         let max_total = 1_000_000;
 
-        let chunk_size = (left_results.len() / rayon::current_num_threads()).max(1). max(100);
+        let chunk_size = (left_results.len() / rayon::current_num_threads()).max(1).max(100);
 
         left_results
         .par_chunks(chunk_size)
         .flat_map(|chunk| {
-            chunk.iter(). flat_map(|left_tuple| {
+            chunk.iter().flat_map(|left_tuple| {
                 // Check global limit
                 if total_results.load(std::sync::atomic::Ordering::Relaxed) >= max_total {
                     return Vec::new();
@@ -457,12 +457,12 @@ impl ExecutionEngine {
                 let matches = Self::execute_index_scan_with_ids(database, &bound_pattern);
 
                 // Limit matches per binding
-                let match_limit = matches.len(). min(10_000);
+                let match_limit = matches.len().min(10_000);
 
                 matches.into_iter()
                 .take(match_limit)  // Apply limit
                 .map(|right_tuple| {
-                    let mut result = left_tuple. clone();
+                    let mut result = left_tuple.clone();
                     for (k, v) in right_tuple {
                         result.entry(k).or_insert(v);
                     }
@@ -472,7 +472,7 @@ impl ExecutionEngine {
                 })
                 .take_while(|_| {
                     // Stop if limit reached
-                    total_results. load(std::sync::atomic::Ordering::Relaxed) < max_total
+                    total_results.load(std::sync::atomic::Ordering::Relaxed) < max_total
                 })
                 .collect::<Vec<_>>()
             }).collect::<Vec<_>>()
@@ -508,7 +508,7 @@ impl ExecutionEngine {
         let object = match &pattern.2 {
             Term::Variable(var) => {
                 let lookup_var = var.strip_prefix('?').unwrap_or(var);
-                bindings. get(lookup_var)
+                bindings.get(lookup_var)
                 .map(|&id| Term::Constant(id))
                 .unwrap_or_else(|| pattern.2.clone())
             }
@@ -549,14 +549,14 @@ impl ExecutionEngine {
         left_results: &[HashMap<String, u32>],
         right_results: &[HashMap<String, u32>],
     ) -> bool {
-        if left_results.is_empty() || right_results. is_empty() {
+        if left_results.is_empty() || right_results.is_empty() {
             return false;
         }
 
         // Find common variables
         let left_vars: HashSet<String> = left_results[0].keys().cloned().collect();
         let right_vars: HashSet<String> = right_results[0].keys().cloned().collect();
-        let common_vars: Vec<String> = left_vars. intersection(&right_vars).cloned().collect();
+        let common_vars: Vec<String> = left_vars.intersection(&right_vars).cloned().collect();
 
         // Merge join works well when we have 1-2 common variables
         ! common_vars.is_empty() && common_vars.len() <= 2
@@ -574,7 +574,7 @@ impl ExecutionEngine {
         // Find common variables for join
         let left_vars: HashSet<String> = left_results[0].keys().cloned().collect();
         let right_vars: HashSet<String> = right_results[0].keys().cloned().collect();
-        let common_vars: Vec<String> = left_vars. intersection(&right_vars).cloned().collect();
+        let common_vars: Vec<String> = left_vars.intersection(&right_vars).cloned().collect();
 
         if common_vars.is_empty() {
             return Self::cartesian_product_join(left_results, right_results);
@@ -583,7 +583,7 @@ impl ExecutionEngine {
         // Sort both sides by join key
         left_results.par_sort_unstable_by(|a, b| {
             for var in &common_vars {
-                match a.get(var). cmp(&b.get(var)) {
+                match a.get(var).cmp(&b.get(var)) {
                     std::cmp::Ordering::Equal => continue,
                     other => return other,
                 }
@@ -603,7 +603,7 @@ impl ExecutionEngine {
 
         // Build index of right side by join key for parallel lookup
         let mut right_index: HashMap<Vec<u32>, Vec<usize>> = HashMap::new();
-        for (idx, tuple) in right_results.iter(). enumerate() {
+        for (idx, tuple) in right_results.iter().enumerate() {
             let key: Vec<u32> = common_vars.iter().filter_map(|v| tuple.get(v).copied()).collect();
             right_index.entry(key).or_default().push(idx);
         }
@@ -612,7 +612,7 @@ impl ExecutionEngine {
         left_results
         .par_iter()
         .flat_map(|left_tuple| {
-            let key: Vec<u32> = common_vars.iter().filter_map(|v| left_tuple. get(v).copied()).collect();
+            let key: Vec<u32> = common_vars.iter().filter_map(|v| left_tuple.get(v).copied()).collect();
 
             if let Some(right_indices) = right_index.get(&key) {
                 right_indices
@@ -768,7 +768,7 @@ impl ExecutionEngine {
                 // Use iterator with pre-sized HashMap
                 predicates.iter().map(|&predicate| {
                     let mut result = HashMap::with_capacity(1);
-                    result.insert(predicate_var. clone(), predicate);
+                    result.insert(predicate_var.clone(), predicate);
                     result
                 }).collect()
             } else {
@@ -792,7 +792,7 @@ impl ExecutionEngine {
         if let Some(obj_map) = database.index_manager.pos.get(&predicate) {
             if let Some(subjects) = obj_map.get(&object) {
                 // Use iterator with pre-sized HashMap
-                subjects.iter(). map(|&subject| {
+                subjects.iter().map(|&subject| {
                     let mut result = HashMap::with_capacity(1);
                     result.insert(subject_var.clone(), subject);
                     result
@@ -816,11 +816,11 @@ impl ExecutionEngine {
         let predicate_var = predicate_var.strip_prefix('?').unwrap_or(&predicate_var).to_string();
         let object_var = object_var.strip_prefix('?').unwrap_or(&object_var).to_string();
 
-        if let Some(pred_map) = database.index_manager.spo. get(&subject) {
+        if let Some(pred_map) = database.index_manager.spo.get(&subject) {
             // Clone variable names once before flat_map
             pred_map.iter().flat_map(|(&predicate, objects)| {
                 let predicate_var = predicate_var.clone();
-                let object_var = object_var. clone();
+                let object_var = object_var.clone();
                 objects.iter().map(move |&object| {
                     let mut result = HashMap::with_capacity(2);
                     result.insert(predicate_var.clone(), predicate);
@@ -849,10 +849,10 @@ impl ExecutionEngine {
             obj_map.iter().flat_map(|(&object, subjects)| {
                 let subject_var = subject_var.clone();
                 let object_var = object_var.clone();
-                subjects.iter(). map(move |&subject| {
+                subjects.iter().map(move |&subject| {
                     let mut result = HashMap::with_capacity(2);
-                    result.insert(subject_var. clone(), subject);
-                    result. insert(object_var.clone(), object);
+                    result.insert(subject_var.clone(), subject);
+                    result.insert(object_var.clone(), object);
                     result
                 })
             }).collect()
@@ -874,8 +874,8 @@ impl ExecutionEngine {
 
         if let Some(subj_map) = database.index_manager.osp.get(&object) {
             // Clone variable names once before flat_map
-            subj_map.iter(). flat_map(|(&subject, predicates)| {
-                let subject_var = subject_var. clone();
+            subj_map.iter().flat_map(|(&subject, predicates)| {
+                let subject_var = subject_var.clone();
                 let predicate_var = predicate_var.clone();
                 predicates.iter().map(move |&predicate| {
                     let mut result = HashMap::with_capacity(2);

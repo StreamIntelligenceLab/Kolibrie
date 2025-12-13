@@ -55,14 +55,14 @@ impl Condition {
                     match *op {
                         "=" => result_value == value,
                         "!=" => result_value != value,
-                        ">" => result_value. parse::<f64>().unwrap_or(0.0) 
+                        ">" => result_value.parse::<f64>().unwrap_or(0.0) 
                             > value.parse::<f64>().unwrap_or(0.0),
                         ">=" => result_value.parse::<f64>().unwrap_or(0.0) 
                             >= value.parse::<f64>().unwrap_or(0.0),
-                        "<" => result_value. parse::<f64>().unwrap_or(0.0) 
+                        "<" => result_value.parse::<f64>().unwrap_or(0.0) 
                             < value.parse::<f64>().unwrap_or(0.0),
-                        "<=" => result_value.parse::<f64>(). unwrap_or(0.0) 
-                            <= value. parse::<f64>().unwrap_or(0.0),
+                        "<=" => result_value.parse::<f64>().unwrap_or(0.0) 
+                            <= value.parse::<f64>().unwrap_or(0.0),
                         _ => false,
                     }
                 } else {
@@ -106,12 +106,12 @@ impl Condition {
             FilterExpression::Comparison(var, op, value) => {
                 let var_name = var.strip_prefix('?').unwrap_or(var);
                 if let Some(&id) = result.get(var_name) {
-                    let decoded_value = dictionary.decode(id). unwrap();
+                    let decoded_value = dictionary.decode(id).unwrap();
                     match *op {
                         "=" => decoded_value == *value,
                         "!=" => decoded_value != *value,
                         ">" => decoded_value.parse::<f64>().unwrap_or(0.0) 
-                            > value.parse::<f64>(). unwrap_or(0.0),
+                            > value.parse::<f64>().unwrap_or(0.0),
                         ">=" => decoded_value.parse::<f64>().unwrap_or(0.0) 
                             >= value.parse::<f64>().unwrap_or(0.0),
                         "<" => decoded_value.parse::<f64>().unwrap_or(0.0) 
@@ -133,7 +133,7 @@ impl Condition {
                     || self.evaluate_filter_with_ids(right, result, dictionary)
             }
             FilterExpression::Not(inner) => {
-                !self. evaluate_filter_with_ids(inner, result, dictionary)
+                !self.evaluate_filter_with_ids(inner, result, dictionary)
             }
             FilterExpression::ArithmeticExpr(_expr) => {
                 // TODO: Implement arithmetic expression evaluation
