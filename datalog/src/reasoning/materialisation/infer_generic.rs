@@ -6,13 +6,21 @@ use crate::reasoning::materialisation::replace_variables_with_bound_values;
 use crate::reasoning::Reasoner;
 use crate::reasoning::rules::evaluate_filters;
 
+pub type SolutionMapping = HashMap<String, u32>;
+
 pub trait InferenceStrategy {
 
-    ///
-    fn evaluate_rule(&mut self, dict: &Dictionary, rule: &Rule, all_facts: &Vec<Triple>) -> Vec<HashMap<String, u32>>;
+    /// For a given rule, finds all possible solution mappings that solve the premise of a rule.
+    /// For each such solution mapping, a corresponding conclusion can be derived with this rule
+    fn find_premise_solutions(&mut self, dict: &Dictionary, rule: &Rule, all_facts: &Vec<Triple>) -> Vec<SolutionMapping>;
 }
 
 impl Reasoner {
+
+    /// Applies a single round of inference within the materialisation algorithm.
+    /// `param` all_facts: all facts currently in the knowledge base (base facts + those derived in previous rounds)
+    /// `known_facts`: same facts but in HashSet for quick membership checks
+    /// `returns`: facts that were inferred in this round
     fn infer_round<S: InferenceStrategy>(
         &mut self,
         strat: &mut S,
@@ -24,16 +32,16 @@ impl Reasoner {
 
         for rule in &self.rules {
             // These are all bindings such that the premise is satisfied for the given rule
-            let bindings = strat.evaluate_rule(&mut self.dictionary, rule, all_facts);
+            let binding_sets = strat.find_premise_solutions(&mut self.dictionary, rule, all_facts);
 
             // For each binding that satisfies the premises of the rule, get to the conclusion and apply bindings
-            for binding in &bindings {
-                if evaluate_filters(&binding, &rule.filters, &self.dictionary) {
+            for binding_set in &binding_sets {
+                if evaluate_filters(&binding_set, &rule.filters, &self.dictionary) {
                     // Loop over each conclusion of the rule, since for the current binding,
                     // the conclusions of the rule can be inferred (because premises are met)
                     for conclusion in &rule.conclusion {
                         let inferred_fact =
-                            replace_variables_with_bound_values(conclusion, binding, &mut self.dictionary);
+                            replace_variables_with_bound_values(conclusion, binding_set, &mut self.dictionary);
 
                         if (!known_facts.contains(&inferred_fact)) {
                             inferred_facts_this_round.insert(inferred_fact);
@@ -46,6 +54,7 @@ impl Reasoner {
         inferred_facts_this_round
     }
 
+    /// Generic function that infers all derivable facts using a given strategy, e.g. SemiNaive, or Naive
     pub fn infer_with_strategy<S: InferenceStrategy>(&mut self, mut strat: S) -> Vec<Triple> {
         // In each iteration, facts are added to this list. Use vector to preserve index for initial facts
         let mut all_facts: Vec<Triple> = self.index_manager.query(None, None, None);

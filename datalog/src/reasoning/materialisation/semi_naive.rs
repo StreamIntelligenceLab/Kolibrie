@@ -3,7 +3,7 @@ use shared::rule::Rule;
 use shared::triple::Triple;
 use std::collections::{BTreeMap, HashMap};
 use crate::reasoning::{convert_string_binding_to_u32, Reasoner};
-use crate::reasoning::materialisation::infer_generic::InferenceStrategy;
+use crate::reasoning::materialisation::infer_generic::{SolutionMapping, InferenceStrategy};
 use crate::reasoning::rules::join_premise_with_hash_join;
 
 struct SemiNaiveStrategy {
@@ -11,8 +11,9 @@ struct SemiNaiveStrategy {
 }
 
 impl InferenceStrategy for SemiNaiveStrategy {
-    /// Evaluates rule by making use of delta
-    fn evaluate_rule(&mut self, dict: &Dictionary, rule: &Rule, all_facts: &Vec<Triple>) -> Vec<HashMap<String, u32>> {
+
+    /// Makes use of facts inferred from last round (delta) for better efficiency
+    fn find_premise_solutions(&mut self, dict: &Dictionary, rule: &Rule, all_facts: &Vec<Triple>) -> Vec<SolutionMapping> {
         let end_idx_for_delta = all_facts.len();
         let delta_facts = &all_facts[self.start_idx_for_delta..end_idx_for_delta]; // Take derived facts from last round and use as delta
         self.start_idx_for_delta = end_idx_for_delta; // Update the pointer for the next round

@@ -4,6 +4,8 @@ use shared::triple::Triple;
 use std::collections::HashSet;
 use crate::reasoning::Reasoner;
 
+/// Contains a method to convert a specific data structure into a representation in the DOT language
+/// For better visualisation
 pub trait ToDot {
     fn to_dot(&self) -> String;
 }
@@ -78,6 +80,7 @@ fn create_edges(kg: &Reasoner, out: &mut String) {
     }
 }
 
+/// Outputs a graph for the reasoner, making it easy to see what it consists of.
 impl ToDot for Reasoner {
     fn to_dot(&self) -> String {
         let mut out = String::new();
