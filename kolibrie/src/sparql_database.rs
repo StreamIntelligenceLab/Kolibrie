@@ -69,7 +69,9 @@ impl SparqlDatabase {
             rule_map: HashMap::new(),
         }
     }
-
+    pub fn set_prefixes(&mut self, prefixes: HashMap<String, String>){
+        self.prefixes=prefixes;
+    }
     pub fn query(&self) -> QueryBuilder {
         QueryBuilder::new(self)
     }

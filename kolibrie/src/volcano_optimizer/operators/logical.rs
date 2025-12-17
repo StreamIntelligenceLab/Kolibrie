@@ -9,7 +9,7 @@
  */
 
 use super::super::Condition;
-use shared::terms::TriplePattern;
+use shared::terms::{Bindings, TriplePattern};
 
 /// Logical operators represent the high-level query structure before optimization
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -29,6 +29,10 @@ pub enum LogicalOperator {
         left: Box<LogicalOperator>,
         right: Box<LogicalOperator>,
     },
+    Buffer {
+        content: Bindings,
+        origin: String
+    }
 }
 
 impl LogicalOperator {
@@ -59,5 +63,9 @@ impl LogicalOperator {
             left: Box::new(left),
             right: Box::new(right),
         }
+    }
+
+    pub fn buffer(content: Bindings, origin: String) -> Self{
+        Self::Buffer {content, origin}
     }
 }

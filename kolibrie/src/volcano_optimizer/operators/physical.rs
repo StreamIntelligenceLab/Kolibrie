@@ -9,7 +9,7 @@
  */
 
 use super::super::Condition;
-use shared::terms::TriplePattern;
+use shared::terms::{Bindings, TriplePattern};
 
 /// Physical operators represent the actual execution plan after optimization
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -44,6 +44,10 @@ pub enum PhysicalOperator {
         input: Box<PhysicalOperator>,
         variables: Vec<String>,
     },
+    InMemoryBuffer{
+        content: Bindings,
+        origin: String
+    }
 }
 
 impl PhysicalOperator {
@@ -103,6 +107,10 @@ impl PhysicalOperator {
             input: Box::new(input),
             variables,
         }
+    }
+
+    pub fn buffer(content: Bindings, origin: String)-> Self {
+        Self::InMemoryBuffer {content, origin}
     }
 
     /// Executes the physical operator and returns string-based results

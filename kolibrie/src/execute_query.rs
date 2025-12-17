@@ -1125,7 +1125,6 @@ pub fn execute_query_rayon_parallel2_volcano(
                     .collect(),
                 patterns,
                 filters,
-                &prefixes,
                 database,
             );
 
@@ -1225,7 +1224,6 @@ pub fn execute_query_rayon_parallel2_volcano(
                     .collect(),
                 patterns,
                 filters,
-                &prefixes,
                 database,
             );
 

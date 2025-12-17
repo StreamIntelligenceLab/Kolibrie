@@ -7,7 +7,6 @@ members = [
   "datalog",
   "python",
   "ml",
-  "rsp",
   "cli",
 ]
 

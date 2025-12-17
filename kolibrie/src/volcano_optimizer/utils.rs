@@ -62,6 +62,7 @@ pub fn estimate_operator_selectivity(op: &LogicalOperator, _database: &SparqlDat
             // Projection doesn't change selectivity much
             estimate_operator_selectivity(predicate, _database) + 1
         }
+        LogicalOperator::Buffer { .. } => {0}
     }
 }
 
@@ -87,8 +88,7 @@ pub fn build_logical_plan_optimized(
     variables: Vec<(&str, &str)>,
     patterns: Vec<(&str, &str, &str)>,
     filters: Vec<FilterExpression>,
-    prefixes: &HashMap<String, String>,
-    database: &SparqlDatabase,
+    database: &mut SparqlDatabase,
 ) -> LogicalOperator {
     // Create scan operators with immediate filter pushdown
     let mut scan_operators = Vec::new();
@@ -99,24 +99,24 @@ pub fn build_logical_plan_optimized(
             Term::Variable(subject_str.to_string())
         } else {
             // Try to resolve with prefixes but use lookup instead of encode for read-only access
-            let _resolved = resolve_with_prefixes(subject_str, prefixes);
+            let _resolved = resolve_with_prefixes(subject_str, &database.prefixes);
             // For optimization purposes, we'll use a placeholder ID for now
             // In a real implementation, this would need to be handled differently
-            Term::Constant(0) // Placeholder - actual encoding would need mutable access
+            Term::Constant(database.dictionary.encode(&_resolved)) // Placeholder - actual encoding would need mutable access
         };
 
         let predicate = if predicate_str.starts_with('?') {
             Term::Variable(predicate_str.to_string())
         } else {
-            let _resolved = resolve_with_prefixes(predicate_str, prefixes);
-            Term::Constant(0) // Placeholder - actual encoding would need mutable access
+            let _resolved = resolve_with_prefixes(predicate_str, &database.prefixes);
+            Term::Constant(database.dictionary.encode(predicate_str)) // Placeholder - actual encoding would need mutable access
         };
 
         let object = if object_str.starts_with('?') {
             Term::Variable(object_str.to_string())
         } else {
-            let _resolved = resolve_with_prefixes(object_str, prefixes);
-            Term::Constant(0) // Placeholder - actual encoding would need mutable access
+            let _resolved = resolve_with_prefixes(object_str, &database.prefixes);
+            Term::Constant(database.dictionary.encode(object_str)) // Placeholder - actual encoding would need mutable access
         };
 
         let pattern = (subject, predicate, object);
@@ -136,6 +136,7 @@ pub fn build_logical_plan_optimized(
 
     // Sort operators by selectivity (most selective first)
     scan_operators.sort_by_key(|op| estimate_operator_selectivity(op, database));
+
 
     // Build join tree (left-deep for now, could be optimized further)
     let mut scan_operators_iter = scan_operators.into_iter();
@@ -158,10 +159,9 @@ pub fn build_logical_plan(
     variables: Vec<(&str, &str)>,
     patterns: Vec<(&str, &str, &str)>,
     filters: Vec<FilterExpression>,
-    prefixes: &HashMap<String, String>,
-    database: &SparqlDatabase,
+    database: &mut SparqlDatabase,
 ) -> LogicalOperator {
-    build_logical_plan_optimized(variables, patterns, filters, prefixes, database)
+    build_logical_plan_optimized(variables, patterns, filters, database)
 }
 
 /// Resolves a URI with prefixes

@@ -8,6 +8,8 @@
  * you can obtain one at https://mozilla.org/MPL/2.0/.
  */
 
+use std::collections::BTreeMap;
+
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Term {
     Variable(String),
@@ -15,6 +17,8 @@ pub enum Term {
 }
 
 pub type TriplePattern = (Term, Term, Term);
+
+pub type Bindings = Vec<BTreeMap<String, u32>>;
 
 #[derive(Debug)]
 pub enum UnresolvedTerm {

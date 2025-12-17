@@ -29,8 +29,8 @@ use shared::rule::Rule;
 use shared::terms::*;
 use shared::query::*;
 // Add RSP imports
-use rsp::s2r::{CSPARQLWindow, Report, ReportStrategy, Tick, WindowTriple, ContentContainer};
-use rsp::r2s::{Relation2StreamOperator, StreamOperator};
+use crate::rsp::s2r::{CSPARQLWindow, Report, ReportStrategy, Tick, WindowTriple, ContentContainer};
+use crate::rsp::r2s::{Relation2StreamOperator, StreamOperator};
 use std::collections::HashMap;
 
 // Helper function to recognize identifiers
@@ -1936,15 +1936,15 @@ fn create_rsp_window(window_spec: &WindowSpec) -> Result<CSPARQLWindow<WindowTri
     match window_spec.window_type {
         WindowType::Sliding => {
             let slide = window_spec.slide.unwrap_or(1);
-            Ok(CSPARQLWindow::new(window_spec.width, slide, report, tick))
+            Ok(CSPARQLWindow::new(window_spec.width, slide, report, tick,String::default()))
         },
         WindowType::Tumbling => {
             // Tumbling window: slide = width
-            Ok(CSPARQLWindow::new(window_spec.width, window_spec.width, report, tick))
+            Ok(CSPARQLWindow::new(window_spec.width, window_spec.width, report, tick,String::default()))
         },
         WindowType::Range => {
             // Range window: slide = 1 (continuous)
-            Ok(CSPARQLWindow::new(window_spec.width, 1, report, tick))
+            Ok(CSPARQLWindow::new(window_spec.width, 1, report, tick,String::default()))
         }
     }
 }

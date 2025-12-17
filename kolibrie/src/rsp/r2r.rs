@@ -7,10 +7,14 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this file,
  * you can obtain one at https://mozilla.org/MPL/2.0/.
  */
+use crate::volcano_optimizer::PhysicalOperator;
 
-// Trait to allow downcasting for Volcano execution
+use std::any::Any;
+
+/// Helper trait to allow downcasting mutable trait objects to their concrete types.
+/// Implementations should return a mutable Any reference to enable `downcast_mut`.
 pub trait AsAnyMut {
-    fn as_any_mut(&mut self) -> &mut dyn std::any::Any;
+    fn as_any_mut(&mut self) -> &mut dyn Any;
 }
 
 pub trait R2ROperator<I, R, O>: Send + AsAnyMut {
@@ -19,7 +23,7 @@ pub trait R2ROperator<I, R, O>: Send + AsAnyMut {
     fn add(&mut self, data: I);
     fn remove(&mut self, data: &I);
     fn materialize(&mut self) -> Vec<I>;
-    fn execute_query(&mut self, query: &str) -> Vec<O>;
+    fn execute_query(&mut self, op: &PhysicalOperator) -> Vec<O>;
 
     fn parse_data(&mut self, data: &str) -> Vec<I>;
 }

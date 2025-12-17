@@ -14,7 +14,7 @@ use crate::sparql_database::SparqlDatabase;
 use rayon::prelude::*;
 
 use shared::join_algorithm::perform_join_par_simd_with_strict_filter_4_redesigned_streaming;
-use shared::terms::{Term, TriplePattern};
+use shared::terms::{Term, TriplePattern, Bindings};
 
 use std::collections::{BTreeMap, HashMap, HashSet};
 
@@ -88,6 +88,9 @@ impl ExecutionEngine {
             }
             PhysicalOperator::ParallelJoin { left, right } => {
                 Self::execute_parallel_join_with_ids(left, right, database)
+            }
+            PhysicalOperator::InMemoryBuffer { content, origin } => {
+                content.clone() // TODO: make sure we dont have to clone here
             }
         }
     }

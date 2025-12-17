@@ -13,4 +13,3 @@ pyo3 = { workspace = true }
 datalog = { path = "../datalog" }
 shared = { path = "../shared" }
 kolibrie = { path = "../kolibrie" }
-rsp = { path = "../rsp" }

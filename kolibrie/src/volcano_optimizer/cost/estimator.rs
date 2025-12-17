@@ -116,6 +116,7 @@ impl<'a> CostEstimator<'a> {
             PhysicalOperator::Projection { input, .. } => {
                 self.estimate_cost(input) + CostConstants::COST_PER_PROJECTION
             }
+            PhysicalOperator::InMemoryBuffer { .. } => {0}
         }
     }
 
@@ -201,6 +202,7 @@ impl<'a> CostEstimator<'a> {
                 ((left_cardinality.min(right_cardinality) as f64 * join_selectivity) as u64).max(1)
             }
             PhysicalOperator::Projection { input, .. } => self.estimate_output_cardinality(input),
+            PhysicalOperator::InMemoryBuffer { .. } => {0}
         }
     }
 

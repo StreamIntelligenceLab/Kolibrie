@@ -137,6 +137,10 @@ impl VolcanoOptimizer {
                     best_right_plan,
                 ));
             }
+            LogicalOperator::Buffer { content, origin} => {
+                let best_buffer = PhysicalOperator::InMemoryBuffer {content: content.clone(), origin: origin.clone()};
+                candidates.push(best_buffer);
+            }
         }
 
         // Cost-based optimization: Choose the best candidate
@@ -235,6 +239,12 @@ impl VolcanoOptimizer {
                     self.serialize_logical_plan(right)
                 )
             }
+            LogicalOperator::Buffer { content, origin } => {
+                format!(
+                    "Buffer(origin: {:?})",
+                    origin
+                )
+            }
         }
     }
 
@@ -263,6 +273,7 @@ impl VolcanoOptimizer {
                 (base_cost as f64 * selectivity) as u64
             }
             LogicalOperator::Projection { predicate, .. } => self.estimate_logical_cost(predicate),
+            LogicalOperator::Buffer { .. } => 0
         }
     }
 
@@ -294,6 +305,7 @@ impl VolcanoOptimizer {
                 let join_selectivity = self.estimate_join_selectivity();
                 ((left_card.min(right_card) as f64 * join_selectivity) as u64).max(1)
             }
+            LogicalOperator::Buffer { .. } => 0
         }
     }
 
