@@ -14,6 +14,7 @@ use crate::index_manager::UnifiedIndex;
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::sync::Arc;
 use rayon::prelude::*;
+use crate::terms::TriplePatternStrings;
 
 pub fn perform_join_par_simd_with_strict_filter_4_redesigned_streaming(
     subject_var: String,
@@ -464,34 +465,36 @@ pub fn compact_results(results: Vec<BTreeMap<String, String>>) -> Vec<BTreeMap<S
 
 /// Ultra-fast hash join optimized for performance
 pub fn perform_hash_join_for_rules(
-    subject_var: String,
-    predicate: String,
-    object_var: String,
-    triples: Vec<Triple>,
+    tp_as_strings: TriplePatternStrings,
+    triples: &[Triple],
     dictionary: &Dictionary,
     final_results: Vec<BTreeMap<String, String>>,
     literal_filter: Option<String>,
 ) -> Vec<BTreeMap<String, String>> {
-    
+
     if final_results.is_empty() {
         return Vec::new();
     }
 
     // Fast predicate filtering
-    let predicate_id = match dictionary.string_to_id.get(&predicate) {
+    let predicate_id = match dictionary
+        .string_to_id
+        .get(&tp_as_strings.predicate)
+    {
         Some(&id) => id,
         None => return Vec::new(),
     };
 
-    let literal_filter_id = literal_filter.as_ref()
+    let literal_filter_id = literal_filter
+        .as_ref()
         .and_then(|s| dictionary.string_to_id.get(s).copied());
 
     // Pre-filter triples (this is very fast)
-    let filtered_triples: Vec<Triple> = triples
-        .into_iter()
+    let filtered_triples: Vec<&Triple> = triples
+        .iter()
         .filter(|triple| {
-            triple.predicate == predicate_id && 
-            literal_filter_id.map_or(true, |filter_id| triple.object == filter_id)
+            triple.predicate == predicate_id
+                && literal_filter_id.map_or(true, |filter_id| triple.object == filter_id)
         })
         .collect();
 
@@ -500,27 +503,32 @@ pub fn perform_hash_join_for_rules(
     }
 
     // Build simple hash table - this is the key optimization
-    let hash_table = build_simple_hash_table(&final_results, &subject_var, &object_var, dictionary);
+    let hash_table = build_simple_hash_table(
+        &final_results,
+        &tp_as_strings.subject,
+        &tp_as_strings.object,
+        dictionary,
+    );
 
     // Parallel processing with minimal overhead
     let chunk_size = (filtered_triples.len() / rayon::current_num_threads().max(1)).max(1000);
-    
+
     filtered_triples
         .par_chunks(chunk_size)
         .flat_map(|chunk| {
             let mut local_results = Vec::with_capacity(chunk.len());
-            
+
             for triple in chunk {
                 process_triple_fast(
                     triple,
-                    &subject_var,
-                    &object_var,
+                    &tp_as_strings.subject,
+                    &tp_as_strings.object,
                     &hash_table,
                     dictionary,
                     &mut local_results,
                 );
             }
-            
+
             local_results
         })
         .collect()
