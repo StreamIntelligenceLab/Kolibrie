@@ -341,722 +341,6 @@ pub fn execute_query(sparql: &str, database: &mut SparqlDatabase) -> Vec<Vec<Str
     format_results(final_results, &selected_variables)
 }
 
-pub fn execute_query_normal(sparql: &str, database: &mut SparqlDatabase) -> Vec<Vec<String>> {
-    let sparql = normalize_query(sparql);
-
-    // Prepare variables to hold the query processing state.
-    let mut final_results: Vec<BTreeMap<&str, String>>;
-    let mut selected_variables: Vec<(String, String)> = Vec::new();
-    let mut aggregation_vars: Vec<(&str, &str, &str)> = Vec::new();
-    let group_by_variables: Vec<&str>;
-    let limit_clause: Option<usize>;
-    let prefixes;
-
-    if let Ok((
-        _,
-        (
-            insert_clause,
-            mut variables,
-            patterns,
-            filters,
-            group_vars,
-            parsed_prefixes,
-            values_clause,
-            binds,
-            subqueries,
-            limit,
-            _,
-            order_conditions,
-        ),
-    )) = parse_sparql_query(sparql)
-    {
-        prefixes = parsed_prefixes;
-        limit_clause = limit;
-
-        // Process the INSERT clause if present
-        process_insert_clause(insert_clause, database);
-
-        // If SELECT * is used, gather all variables from patterns
-        if variables == vec![("*", "*", None)] {
-            let mut all_vars = BTreeSet::new();
-            for (subject_var, _, object_var) in &patterns {
-                all_vars.insert(*subject_var);
-                all_vars.insert(*object_var);
-            }
-            variables = all_vars.into_iter().map(|var| ("VAR", var, None)).collect();
-        }
-
-        // Process variables for aggregation
-        process_variables(&mut selected_variables, &mut aggregation_vars, variables);
-
-        group_by_variables = group_vars;
-
-        // Convert BTreeSet to a vector of Triple
-        let triples_vec: Vec<Triple> = database.triples.iter().cloned().collect();
-
-        // Initialize final_results based on the VALUES clause
-        final_results = initialize_results(&values_clause);
-
-        // Process each pattern in the WHERE clause
-        for (subject_var, predicate, object_var) in patterns {
-            if predicate == "RULECALL" {
-                final_results = process_rule_call(subject_var, object_var, database, &prefixes);
-                continue;
-            }
-
-            // Handle non-RULECALL patterns
-            let (join_subject, join_predicate, join_object) =
-                resolve_triple_pattern(subject_var, predicate, object_var, database, &prefixes);
-
-            // To satisfy lifetime requirements, leak the computed join_subject and join_object
-            let join_subject_static: &'static str = Box::leak(join_subject.into_boxed_str());
-            let join_object_static: &'static str = Box::leak(join_object.into_boxed_str());
-
-            if GPU_MODE_ENABLED.load(std::sync::atomic::Ordering::SeqCst) {
-                println!("CUDA");
-                #[cfg(feature = "cuda")]
-                {
-                    final_results = database.perform_hash_join_cuda_wrapper(
-                        join_subject_static,
-                        join_predicate,
-                        join_object_static,
-                        triples_vec.clone(),
-                        &database.dictionary,
-                        final_results,
-                        if !join_object_static.starts_with('?') {
-                            Some(join_object_static.to_string())
-                        } else {
-                            None
-                        },
-                    );
-                }
-            } else {
-                // println!("NORM");
-                final_results = database.perform_join_sequential(
-                    join_subject_static,
-                    join_predicate,
-                    join_object_static,
-                    triples_vec.clone(),
-                    &database.dictionary,
-                    final_results,
-                    if !join_object_static.starts_with('?') {
-                        Some(join_object_static.to_string())
-                    } else {
-                        None
-                    },
-                );
-            }
-        }
-
-        // Apply filters
-        final_results = database.apply_filters_simd(final_results, filters);
-
-        // Process subqueries first
-        for subquery in subqueries {
-            let subquery_results =
-                execute_subquery(&subquery, database, &prefixes, final_results.clone());
-            final_results = merge_results(final_results, subquery_results);
-        }
-
-        // Apply BIND (UDF) clauses
-        process_bind_clauses(&mut final_results, binds, database);
-
-        // Apply GROUP BY and aggregations
-        if !group_by_variables.is_empty() {
-            final_results =
-                group_and_aggregate_results(final_results, &group_by_variables, &aggregation_vars);
-        }
-
-        final_results = apply_order_by(final_results, order_conditions);
-
-        if let Some(limit_value) = limit_clause {
-            if limit_value > 0 {
-                final_results.truncate(limit_value);
-            }
-        }
-    } else {
-        eprintln!("Failed to parse the query.");
-        return Vec::new();
-    }
-
-    // Convert the final BTreeMap results into Vec<Vec<String>>
-    format_results(final_results, &selected_variables)
-}
-
-pub fn execute_query_normal_simd(sparql: &str, database: &mut SparqlDatabase) -> Vec<Vec<String>> {
-    let sparql = normalize_query(sparql);
-
-    // Prepare variables to hold the query processing state.
-    let mut final_results: Vec<BTreeMap<&str, String>>;
-    let mut selected_variables: Vec<(String, String)> = Vec::new();
-    let mut aggregation_vars: Vec<(&str, &str, &str)> = Vec::new();
-    let group_by_variables: Vec<&str>;
-    let limit_clause: Option<usize>;
-    let prefixes;
-
-    if let Ok((
-        _,
-        (
-            insert_clause,
-            mut variables,
-            patterns,
-            filters,
-            group_vars,
-            parsed_prefixes,
-            values_clause,
-            binds,
-            subqueries,
-            limit,
-            _,
-            order_conditions,
-        ),
-    )) = parse_sparql_query(sparql)
-    {
-        prefixes = parsed_prefixes;
-        limit_clause = limit;
-
-        // Process the INSERT clause if present
-        process_insert_clause(insert_clause, database);
-
-        // If SELECT * is used, gather all variables from patterns
-        if variables == vec![("*", "*", None)] {
-            let mut all_vars = BTreeSet::new();
-            for (subject_var, _, object_var) in &patterns {
-                all_vars.insert(*subject_var);
-                all_vars.insert(*object_var);
-            }
-            variables = all_vars.into_iter().map(|var| ("VAR", var, None)).collect();
-        }
-
-        // Process variables for aggregation
-        process_variables(&mut selected_variables, &mut aggregation_vars, variables);
-
-        group_by_variables = group_vars;
-
-        // Convert BTreeSet to a vector of Triple
-        let triples_vec: Vec<Triple> = database.triples.iter().cloned().collect();
-
-        // Initialize final_results based on the VALUES clause
-        final_results = initialize_results(&values_clause);
-
-        // Process each pattern in the WHERE clause
-        for (subject_var, predicate, object_var) in patterns {
-            if predicate == "RULECALL" {
-                final_results = process_rule_call(subject_var, object_var, database, &prefixes);
-                continue;
-            }
-
-            // Handle non-RULECALL patterns
-            let (join_subject, join_predicate, join_object) =
-                resolve_triple_pattern(subject_var, predicate, object_var, database, &prefixes);
-
-            // To satisfy lifetime requirements, leak the computed join_subject and join_object
-            let join_subject_static: &'static str = Box::leak(join_subject.into_boxed_str());
-            let join_object_static: &'static str = Box::leak(join_object.into_boxed_str());
-
-            if GPU_MODE_ENABLED.load(std::sync::atomic::Ordering::SeqCst) {
-                println!("CUDA");
-                #[cfg(feature = "cuda")]
-                {
-                    final_results = database.perform_hash_join_cuda_wrapper(
-                        join_subject_static,
-                        join_predicate,
-                        join_object_static,
-                        triples_vec.clone(),
-                        &database.dictionary,
-                        final_results,
-                        if !join_object_static.starts_with('?') {
-                            Some(join_object_static.to_string())
-                        } else {
-                            None
-                        },
-                    );
-                }
-            } else {
-                // println!("NORM");
-                final_results = database.perform_join_sequential_simd(
-                    join_subject_static,
-                    join_predicate,
-                    join_object_static,
-                    triples_vec.clone(),
-                    &database.dictionary,
-                    final_results,
-                    if !join_object_static.starts_with('?') {
-                        Some(join_object_static.to_string())
-                    } else {
-                        None
-                    },
-                );
-            }
-        }
-
-        // Apply filters
-        final_results = database.apply_filters_simd(final_results, filters);
-
-        // Process subqueries first
-        for subquery in subqueries {
-            let subquery_results =
-                execute_subquery(&subquery, database, &prefixes, final_results.clone());
-            final_results = merge_results(final_results, subquery_results);
-        }
-
-        // Apply BIND (UDF) clauses
-        process_bind_clauses(&mut final_results, binds, database);
-
-        // Apply GROUP BY and aggregations
-        if !group_by_variables.is_empty() {
-            final_results =
-                group_and_aggregate_results(final_results, &group_by_variables, &aggregation_vars);
-        }
-
-        final_results = apply_order_by(final_results, order_conditions);
-
-        if let Some(limit_value) = limit_clause {
-            if limit_value > 0 {
-                final_results.truncate(limit_value);
-            }
-        }
-    } else {
-        eprintln!("Failed to parse the query.");
-        return Vec::new();
-    }
-
-    // Convert the final BTreeMap results into Vec<Vec<String>>
-    format_results(final_results, &selected_variables)
-}
-
-pub fn execute_query_rayon_simd(sparql: &str, database: &mut SparqlDatabase) -> Vec<Vec<String>> {
-    let sparql = normalize_query(sparql);
-
-    // Prepare variables to hold the query processing state.
-    let mut final_results: Vec<BTreeMap<&str, String>>;
-    let mut selected_variables: Vec<(String, String)> = Vec::new();
-    let mut aggregation_vars: Vec<(&str, &str, &str)> = Vec::new();
-    let group_by_variables: Vec<&str>;
-    let limit_clause: Option<usize>;
-    let prefixes;
-
-    if let Ok((
-        _,
-        (
-            insert_clause,
-            mut variables,
-            patterns,
-            filters,
-            group_vars,
-            parsed_prefixes,
-            values_clause,
-            binds,
-            subqueries,
-            limit,
-            _,
-            order_conditions,
-        ),
-    )) = parse_sparql_query(sparql)
-    {
-        prefixes = parsed_prefixes;
-        limit_clause = limit;
-
-        // Process the INSERT clause if present
-        process_insert_clause(insert_clause, database);
-
-        // If SELECT * is used, gather all variables from patterns
-        if variables == vec![("*", "*", None)] {
-            let mut all_vars = BTreeSet::new();
-            for (subject_var, _, object_var) in &patterns {
-                all_vars.insert(*subject_var);
-                all_vars.insert(*object_var);
-            }
-            variables = all_vars.into_iter().map(|var| ("VAR", var, None)).collect();
-        }
-
-        // Process variables for aggregation
-        process_variables(&mut selected_variables, &mut aggregation_vars, variables);
-
-        group_by_variables = group_vars;
-
-        // Convert BTreeSet to a vector of Triple
-        let triples_vec: Vec<Triple> = database.triples.iter().cloned().collect();
-
-        // Initialize final_results based on the VALUES clause
-        final_results = initialize_results(&values_clause);
-
-        // Process each pattern in the WHERE clause
-        for (subject_var, predicate, object_var) in patterns {
-            if predicate == "RULECALL" {
-                final_results = process_rule_call(subject_var, object_var, database, &prefixes);
-                continue;
-            }
-
-            // Handle non-RULECALL patterns
-            let (join_subject, join_predicate, join_object) =
-                resolve_triple_pattern(subject_var, predicate, object_var, database, &prefixes);
-
-            // To satisfy lifetime requirements, leak the computed join_subject and join_object
-            let join_subject_static: &'static str = Box::leak(join_subject.into_boxed_str());
-            let join_object_static: &'static str = Box::leak(join_object.into_boxed_str());
-
-            if GPU_MODE_ENABLED.load(std::sync::atomic::Ordering::SeqCst) {
-                println!("CUDA");
-                #[cfg(feature = "cuda")]
-                {
-                    final_results = database.perform_hash_join_cuda_wrapper(
-                        join_subject_static,
-                        join_predicate,
-                        join_object_static,
-                        triples_vec.clone(),
-                        &database.dictionary,
-                        final_results,
-                        if !join_object_static.starts_with('?') {
-                            Some(join_object_static.to_string())
-                        } else {
-                            None
-                        },
-                    );
-                }
-            } else {
-                // println!("NORM");
-                final_results = database.perform_join_par_simd_with_strict_filter_2(
-                    join_subject_static,
-                    join_predicate,
-                    join_object_static,
-                    triples_vec.clone(),
-                    &database.dictionary,
-                    final_results,
-                    if !join_object_static.starts_with('?') {
-                        Some(join_object_static.to_string())
-                    } else {
-                        None
-                    },
-                );
-            }
-        }
-
-        // Apply filters
-        final_results = database.apply_filters_simd(final_results, filters);
-
-        // Process subqueries first
-        for subquery in subqueries {
-            let subquery_results =
-                execute_subquery(&subquery, database, &prefixes, final_results.clone());
-            final_results = merge_results(final_results, subquery_results);
-        }
-
-        // Apply BIND (UDF) clauses
-        process_bind_clauses(&mut final_results, binds, database);
-
-        // Apply GROUP BY and aggregations
-        if !group_by_variables.is_empty() {
-            final_results =
-                group_and_aggregate_results(final_results, &group_by_variables, &aggregation_vars);
-        }
-
-        final_results = apply_order_by(final_results, order_conditions);
-
-        if let Some(limit_value) = limit_clause {
-            if limit_value > 0 {
-                final_results.truncate(limit_value);
-            }
-        }
-    } else {
-        eprintln!("Failed to parse the query.");
-        return Vec::new();
-    }
-
-    // Convert the final BTreeMap results into Vec<Vec<String>>
-    format_results(final_results, &selected_variables)
-}
-
-pub fn execute_query_rayon_parallel1(
-    sparql: &str,
-    database: &mut SparqlDatabase,
-) -> Vec<Vec<String>> {
-    let sparql = normalize_query(sparql);
-
-    // Prepare variables to hold the query processing state.
-    let mut final_results: Vec<BTreeMap<&str, String>>;
-    let mut selected_variables: Vec<(String, String)> = Vec::new();
-    let mut aggregation_vars: Vec<(&str, &str, &str)> = Vec::new();
-    let group_by_variables: Vec<&str>;
-    let limit_clause: Option<usize>;
-    let prefixes;
-
-    if let Ok((
-        _,
-        (
-            insert_clause,
-            mut variables,
-            patterns,
-            filters,
-            group_vars,
-            parsed_prefixes,
-            values_clause,
-            binds,
-            subqueries,
-            limit,
-            _,
-            order_conditions,
-        ),
-    )) = parse_sparql_query(sparql)
-    {
-        prefixes = parsed_prefixes;
-        limit_clause = limit;
-
-        // Process the INSERT clause if present
-        process_insert_clause(insert_clause, database);
-
-        // If SELECT * is used, gather all variables from patterns
-        if variables == vec![("*", "*", None)] {
-            let mut all_vars = BTreeSet::new();
-            for (subject_var, _, object_var) in &patterns {
-                all_vars.insert(*subject_var);
-                all_vars.insert(*object_var);
-            }
-            variables = all_vars.into_iter().map(|var| ("VAR", var, None)).collect();
-        }
-
-        // Process variables for aggregation
-        process_variables(&mut selected_variables, &mut aggregation_vars, variables);
-
-        group_by_variables = group_vars;
-
-        // Convert BTreeSet to a vector of Triple
-        let triples_vec: Vec<Triple> = database.triples.iter().cloned().collect();
-
-        // Initialize final_results based on the VALUES clause
-        final_results = initialize_results(&values_clause);
-
-        // Process each pattern in the WHERE clause
-        for (subject_var, predicate, object_var) in patterns {
-            if predicate == "RULECALL" {
-                final_results = process_rule_call(subject_var, object_var, database, &prefixes);
-                continue;
-            }
-
-            // Handle non-RULECALL patterns
-            let (join_subject, join_predicate, join_object) =
-                resolve_triple_pattern(subject_var, predicate, object_var, database, &prefixes);
-
-            // To satisfy lifetime requirements, leak the computed join_subject and join_object
-            let join_subject_static: &'static str = Box::leak(join_subject.into_boxed_str());
-            let join_object_static: &'static str = Box::leak(join_object.into_boxed_str());
-
-            if GPU_MODE_ENABLED.load(std::sync::atomic::Ordering::SeqCst) {
-                println!("CUDA");
-                #[cfg(feature = "cuda")]
-                {
-                    final_results = database.perform_hash_join_cuda_wrapper(
-                        join_subject_static,
-                        join_predicate,
-                        join_object_static,
-                        triples_vec.clone(),
-                        &database.dictionary,
-                        final_results,
-                        if !join_object_static.starts_with('?') {
-                            Some(join_object_static.to_string())
-                        } else {
-                            None
-                        },
-                    );
-                }
-            } else {
-                // println!("NORM");
-                final_results = database.perform_join_par_simd_with_strict_filter_3(
-                    join_subject_static,
-                    join_predicate,
-                    join_object_static,
-                    triples_vec.clone(),
-                    &database.dictionary,
-                    final_results,
-                    if !join_object_static.starts_with('?') {
-                        Some(join_object_static.to_string())
-                    } else {
-                        None
-                    },
-                );
-            }
-        }
-
-        // Apply filters
-        final_results = database.apply_filters_simd(final_results, filters);
-
-        // Process subqueries first
-        for subquery in subqueries {
-            let subquery_results =
-                execute_subquery(&subquery, database, &prefixes, final_results.clone());
-            final_results = merge_results(final_results, subquery_results);
-        }
-
-        // Apply BIND (UDF) clauses
-        process_bind_clauses(&mut final_results, binds, database);
-
-        // Apply GROUP BY and aggregations
-        if !group_by_variables.is_empty() {
-            final_results =
-                group_and_aggregate_results(final_results, &group_by_variables, &aggregation_vars);
-        }
-
-        final_results = apply_order_by(final_results, order_conditions);
-
-        if let Some(limit_value) = limit_clause {
-            if limit_value > 0 {
-                final_results.truncate(limit_value);
-            }
-        }
-    } else {
-        eprintln!("Failed to parse the query.");
-        return Vec::new();
-    }
-
-    // Convert the final BTreeMap results into Vec<Vec<String>>
-    format_results(final_results, &selected_variables)
-}
-
-pub fn execute_query_rayon_parallel2(
-    sparql: &str,
-    database: &mut SparqlDatabase,
-) -> Vec<Vec<String>> {
-    let sparql = normalize_query(sparql);
-
-    // Prepare variables to hold the query processing state.
-    let mut final_results: Vec<BTreeMap<&str, String>>;
-    let mut selected_variables: Vec<(String, String)> = Vec::new();
-    let mut aggregation_vars: Vec<(&str, &str, &str)> = Vec::new();
-    let group_by_variables: Vec<&str>;
-    let limit_clause: Option<usize>;
-    let prefixes;
-
-    if let Ok((
-        _,
-        (
-            insert_clause,
-            mut variables,
-            patterns,
-            filters,
-            group_vars,
-            parsed_prefixes,
-            values_clause,
-            binds,
-            subqueries,
-            limit,
-            _,
-            order_conditions,
-        ),
-    )) = parse_sparql_query(sparql)
-    {
-        prefixes = parsed_prefixes;
-        limit_clause = limit;
-
-        // Process the INSERT clause if present
-        process_insert_clause(insert_clause, database);
-
-        // If SELECT * is used, gather all variables from patterns
-        if variables == vec![("*", "*", None)] {
-            let mut all_vars = BTreeSet::new();
-            for (subject_var, _, object_var) in &patterns {
-                all_vars.insert(*subject_var);
-                all_vars.insert(*object_var);
-            }
-            variables = all_vars.into_iter().map(|var| ("VAR", var, None)).collect();
-        }
-
-        // Process variables for aggregation
-        process_variables(&mut selected_variables, &mut aggregation_vars, variables);
-
-        group_by_variables = group_vars;
-
-        // Convert BTreeSet to a vector of Triple
-        let triples_vec: Vec<Triple> = database.triples.iter().cloned().collect();
-
-        // Initialize final_results based on the VALUES clause
-        final_results = initialize_results(&values_clause);
-
-        // Process each pattern in the WHERE clause
-        for (subject_var, predicate, object_var) in patterns {
-            if predicate == "RULECALL" {
-                final_results = process_rule_call(subject_var, object_var, database, &prefixes);
-                continue;
-            }
-
-            // Handle non-RULECALL patterns
-            let (join_subject, join_predicate, join_object) =
-                resolve_triple_pattern(subject_var, predicate, object_var, database, &prefixes);
-
-            // To satisfy lifetime requirements, leak the computed join_subject and join_object
-            let join_subject_static: &'static str = Box::leak(join_subject.into_boxed_str());
-            let join_object_static: &'static str = Box::leak(join_object.into_boxed_str());
-
-            if GPU_MODE_ENABLED.load(std::sync::atomic::Ordering::SeqCst) {
-                println!("CUDA");
-                #[cfg(feature = "cuda")]
-                {
-                    final_results = database.perform_hash_join_cuda_wrapper(
-                        join_subject_static,
-                        join_predicate,
-                        join_object_static,
-                        triples_vec.clone(),
-                        &database.dictionary,
-                        final_results,
-                        if !join_object_static.starts_with('?') {
-                            Some(join_object_static.to_string())
-                        } else {
-                            None
-                        },
-                    );
-                }
-            } else {
-                // println!("NORM");
-                final_results = database.perform_join_par_simd_with_strict_filter_4(
-                    join_subject_static,
-                    join_predicate,
-                    join_object_static,
-                    triples_vec.clone(),
-                    &database.dictionary,
-                    final_results,
-                    if !join_object_static.starts_with('?') {
-                        Some(join_object_static.to_string())
-                    } else {
-                        None
-                    },
-                );
-            }
-        }
-
-        // Apply filters
-        final_results = database.apply_filters_simd(final_results, filters);
-
-        // Process subqueries first
-        for subquery in subqueries {
-            let subquery_results =
-                execute_subquery(&subquery, database, &prefixes, final_results.clone());
-            final_results = merge_results(final_results, subquery_results);
-        }
-
-        // Apply BIND (UDF) clauses
-        process_bind_clauses(&mut final_results, binds, database);
-
-        // Apply GROUP BY and aggregations
-        if !group_by_variables.is_empty() {
-            final_results =
-                group_and_aggregate_results(final_results, &group_by_variables, &aggregation_vars);
-        }
-
-        final_results = apply_order_by(final_results, order_conditions);
-
-        if let Some(limit_value) = limit_clause {
-            if limit_value > 0 {
-                final_results.truncate(limit_value);
-            }
-        }
-    } else {
-        eprintln!("Failed to parse the query.");
-        return Vec::new();
-    }
-
-    // Convert the final BTreeMap results into Vec<Vec<String>>
-    format_results(final_results, &selected_variables)
-}
-
 pub fn execute_query_rayon_parallel2_volcano(
     sparql: &str,
     database: &mut SparqlDatabase,
@@ -1110,6 +394,21 @@ pub fn execute_query_rayon_parallel2_volcano(
         let mut aggregation_vars: Vec<(&str, &str, &str)> = Vec::new();
         process_variables(&mut selected_variables, &mut aggregation_vars, variables);
 
+        let resolved_patterns: Vec<(&str, &str, &str)> = patterns
+            .iter()
+            .map(|(subject_var, predicate, object_var)| {
+                let (resolved_subject, resolved_predicate, resolved_object) =
+                    resolve_triple_pattern(subject_var, predicate, object_var, database, &prefixes);
+                
+                // Leak strings to get 'static lifetime
+                let subject_static: &'static str = Box::leak(resolved_subject.into_boxed_str());
+                let predicate_static: &'static str = Box::leak(resolved_predicate.into_boxed_str());
+                let object_static: &'static str = Box::leak(resolved_object.into_boxed_str());
+                
+                (subject_static, predicate_static, object_static)
+            })
+            .collect();
+
         // Build indexes before optimization - this is crucial for performance
         // database.build_all_indexes();
 
@@ -1123,12 +422,14 @@ pub fn execute_query_rayon_parallel2_volcano(
                     .iter()
                     .map(|(t, v)| (t.as_str(), v.as_str()))
                     .collect(),
-                patterns,
+                resolved_patterns,
                 filters,
+                &prefixes,
                 database,
             );
 
-            let mut optimizer = VolcanoOptimizer::new(database);
+            let stats = database.cached_stats.as_ref().expect("Error");
+            let mut optimizer = VolcanoOptimizer::with_cached_stats(stats.clone());
             let _optimized_plan = optimizer.find_best_plan(&logical_plan);
 
             #[cfg(feature = "cuda")]
@@ -1216,23 +517,49 @@ pub fn execute_query_rayon_parallel2_volcano(
                 return Vec::new();
             }
         } else {
+            /*let guard = pprof::ProfilerGuardBuilder::default()
+                .frequency(1000)
+                .blocklist(&["libc", "libgcc", "pthread", "vdso"])
+                .build()
+                . unwrap();*/
+
             // Use Volcano optimizer for CPU execution
-            let logical_plan = build_logical_plan(
+            let mut logical_plan = build_logical_plan(
                 selected_variables
                     .iter()
                     .map(|(t, v)| (t.as_str(), v.as_str()))
                     .collect(),
-                patterns,
-                filters,
+                resolved_patterns,
+                filters.clone(),
+                &prefixes,
                 database,
-            );
+            ); 
 
-            let mut optimizer = VolcanoOptimizer::new(database);
+            // Integrate subqueries into the logical plan
+            for subquery in &subqueries {
+                let subquery_plan = build_logical_plan_from_subquery(
+                    subquery,
+                    &prefixes,
+                    database,
+                );
+            
+                // Join the subquery with the main query
+                logical_plan = LogicalOperator::join(logical_plan, subquery_plan);
+            }
+
+            let stats = database.cached_stats.as_ref().expect("AAA");
+            let mut optimizer = VolcanoOptimizer::with_cached_stats(stats.clone());
+
             let optimized_plan = optimizer.find_best_plan(&logical_plan);
             let results = optimized_plan.execute(database);
+            /*if let Ok(report) = guard.report().build() {
+                let file = std::fs::File::create("volcano_optimizer_flamegraph.svg").unwrap();
+                report.flamegraph(file).unwrap();
+                println!("Volcano optimizer flamegraph saved to: volcano_optimizer_flamegraph. svg");
+            }*/
 
             // Convert results to owned strings first to avoid lifetime issues
-            let results_owned: Vec<BTreeMap<String, String>> = results.into_iter().collect();
+            let results_owned: Vec<HashMap<String, String>> = results.into_iter().collect();
 
             // Initialize with VALUES clause for consistency with GPU path
             let mut final_results = initialize_results(&values_clause);
@@ -1243,8 +570,16 @@ pub fn execute_query_rayon_parallel2_volcano(
                 .map(|result| {
                     result
                         .iter()
-                        .map(|(k, v)| (k.as_str(), v.clone()))
-                        .collect()
+                        .map(|(k, v)| {
+                        // Add '?' prefix back for consistency with format_results
+                        let key_with_prefix = if k.starts_with('?') {
+                            k.as_str()
+                        } else {
+                            Box::leak(format!("?{}", k).into_boxed_str())
+                        };
+                        (key_with_prefix, v.clone())
+                    })
+                    .collect()
                 })
                 .collect();
 
@@ -1283,223 +618,6 @@ pub fn execute_query_rayon_parallel2_volcano(
         eprintln!("Failed to parse the query.");
         return Vec::new();
     }
-}
-
-pub fn execute_query_rayon_parallel2_redesign_streaming(
-    sparql: &str,
-    database: &mut SparqlDatabase,
-) -> Vec<Vec<String>> {
-    let sparql = normalize_query(sparql);
-
-    // Prepare variables to hold the query processing state
-    let mut final_results: Vec<BTreeMap<&str, String>>;
-    let mut selected_variables: Vec<(String, String)> = Vec::new();
-    let mut aggregation_vars: Vec<(&str, &str, &str)> = Vec::new();
-    let group_by_variables: Vec<&str>;
-    let limit_clause: Option<usize>;
-    let prefixes;
-
-    if let Ok((
-        _,
-        (
-            insert_clause,
-            mut variables,
-            patterns,
-            filters,
-            group_vars,
-            parsed_prefixes,
-            values_clause,
-            binds,
-            subqueries,
-            limit,
-            _,
-            order_conditions,
-        ),
-    )) = parse_sparql_query(sparql)
-    {
-        prefixes = parsed_prefixes;
-
-        // Initialize the limit clause
-        limit_clause = limit;
-
-        // Process the INSERT clause if present
-        process_insert_clause(insert_clause, database);
-
-        // If SELECT * is used, gather all variables from patterns
-        if variables == vec![("*", "*", None)] {
-            let mut all_vars = BTreeSet::new();
-            for (subject_var, _, object_var) in &patterns {
-                all_vars.insert(*subject_var);
-                all_vars.insert(*object_var);
-            }
-            variables = all_vars.into_iter().map(|var| ("VAR", var, None)).collect();
-        }
-
-        // Process variables for aggregation
-        process_variables(&mut selected_variables, &mut aggregation_vars, variables);
-
-        group_by_variables = group_vars;
-
-        // Initialize final_results based on the VALUES clause
-        final_results = initialize_results(&values_clause);
-
-        // Process each pattern in the WHERE clause
-        for (subject_var, predicate, object_var) in patterns {
-            if predicate == "RULECALL" {
-                final_results = process_rule_call(subject_var, object_var, database, &prefixes);
-                continue;
-            }
-
-            // Handle non-RULECALL patterns
-            let (join_subject, join_predicate, join_object) =
-                resolve_triple_pattern(subject_var, predicate, object_var, database, &prefixes);
-
-            if GPU_MODE_ENABLED.load(std::sync::atomic::Ordering::SeqCst) {
-                println!("CUDA streaming mode enabled");
-
-                #[cfg(feature = "cuda")]
-                {
-                    // To satisfy lifetime requirements, leak the computed join_subject and join_object
-                    let join_subject_static: &'static str =
-                        Box::leak(join_subject.into_boxed_str());
-                    let join_object_static: &'static str = Box::leak(join_object.into_boxed_str());
-
-                    // Convert BTreeSet to a vector of Triple
-                    let triples_vec: Vec<Triple> = database.triples.iter().cloned().collect();
-
-                    final_results = database.perform_hash_join_cuda_wrapper(
-                        join_subject_static,
-                        join_predicate,
-                        join_object_static,
-                        triples_vec,
-                        &database.dictionary,
-                        final_results,
-                        if !join_object_static.starts_with('?') {
-                            Some(join_object_static.to_string())
-                        } else {
-                            None
-                        },
-                    );
-                }
-            } else {
-                // CPU streaming processing with controlled memory usage
-                final_results = process_pattern_streaming(
-                    join_subject,
-                    join_predicate,
-                    join_object,
-                    database,
-                    final_results,
-                );
-            }
-        }
-
-        // Apply filters
-        final_results = database.apply_filters_simd(final_results, filters);
-
-        // Process subqueries first
-        for subquery in subqueries {
-            let subquery_results =
-                execute_subquery(&subquery, database, &prefixes, final_results.clone());
-            final_results = merge_results(final_results, subquery_results);
-        }
-
-        // Apply BIND (UDF) clauses
-        process_bind_clauses(&mut final_results, binds, database);
-
-        // Apply GROUP BY and aggregations
-        if !group_by_variables.is_empty() {
-            final_results =
-                group_and_aggregate_results(final_results, &group_by_variables, &aggregation_vars);
-        }
-
-        final_results = apply_order_by(final_results, order_conditions);
-
-        // Apply LIMIT clause
-        if let Some(limit_value) = limit_clause {
-            if limit_value > 0 {
-                final_results.truncate(limit_value);
-            }
-        }
-    } else {
-        eprintln!("Failed to parse the query.");
-        return Vec::new();
-    }
-
-    // Convert the final BTreeMap results into Vec<Vec<String>>
-    format_results(final_results, &selected_variables)
-}
-
-// Streaming pattern processor that handles all data with controlled memory
-fn process_pattern_streaming<'a>(
-    subject_var: String,
-    predicate: String,
-    object_var: String,
-    database: &'a SparqlDatabase,
-    final_results: Vec<BTreeMap<&'a str, String>>,
-) -> Vec<BTreeMap<&'a str, String>> {
-    // Memory-controlled constants
-    const CHUNK_SIZE: usize = 10_000; // Process 10K triples at a time
-    const MAX_MEMORY_RESULTS: usize = 100_000; // Keep max 100K results in memory
-    const SPILL_THRESHOLD: usize = 80_000; // Spill to disk when we hit 80K
-
-    // Convert to streaming-friendly format
-    let triples_vec: Vec<Triple> = database.triples.iter().cloned().collect();
-
-    // Use temporary file for result spilling
-    let mut temp_results: Vec<BTreeMap<String, String>> = Vec::new();
-
-    // Process ALL triples in manageable chunks
-    for triple_chunk in triples_vec.chunks(CHUNK_SIZE) {
-        // Convert current results to String format for processing
-        let string_results: Vec<BTreeMap<String, String>> = final_results
-            .iter()
-            .map(|map| {
-                map.iter()
-                    .map(|(k, v)| (k.to_string(), v.clone()))
-                    .collect()
-            })
-            .collect();
-
-        // Process this chunk
-        let chunk_results = perform_join_par_simd_with_strict_filter_4_redesigned_streaming(
-            subject_var.clone(),
-            predicate.clone(),
-            object_var.clone(),
-            triple_chunk.to_vec(),
-            &database.dictionary,
-            string_results,
-            if !object_var.starts_with('?') {
-                Some(object_var.clone())
-            } else {
-                None
-            },
-        );
-
-        // Add results with memory management
-        temp_results.extend(chunk_results);
-
-        // Memory pressure management
-        if temp_results.len() > SPILL_THRESHOLD {
-            temp_results = compact_results(temp_results);
-
-            if temp_results.len() > MAX_MEMORY_RESULTS {
-                temp_results.truncate(MAX_MEMORY_RESULTS);
-            }
-        }
-    }
-
-    // Convert back to &str format
-    temp_results
-        .into_iter()
-        .map(|map| {
-            map.into_iter()
-                .map(|(k, v)| {
-                    let static_k: &'static str = Box::leak(k.into_boxed_str());
-                    (static_k, v)
-                })
-                .collect()
-        })
-        .collect()
 }
 
 // Convert the final BTreeMap results into Vec<Vec<String>>

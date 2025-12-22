@@ -8,9 +8,6 @@
  * you can obtain one at https://mozilla.org/MPL/2.0/.
  */
 
-pub mod knowledge_graph;
-pub mod parser_n3_logic;
 pub mod reasoning;
-pub mod ruleindex;
-pub mod volcano_query;
-pub mod volcano_reasoner;
+pub mod parser_n3_logic;
+pub mod reasoning_experimental;

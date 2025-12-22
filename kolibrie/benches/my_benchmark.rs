@@ -38,7 +38,7 @@ fn execute_sample_query(database: &mut SparqlDatabase) {
     execute_query(sparql, database);
 }
 
-fn execute_sample_query_normal(database: &mut SparqlDatabase) {
+fn execute_sample_query_volcano(database: &mut SparqlDatabase) {
     let sparql = r#"
     PREFIX ds: <https://data.cityofchicago.org/resource/xzkq-xp2w/>
     PREFIX foaf: <http://xmlns.com/foaf/0.1/>
@@ -47,55 +47,7 @@ fn execute_sample_query_normal(database: &mut SparqlDatabase) {
         ?employee foaf:workplaceHomepage ?workplaceHomepage .
         ?employee ds:annual_salary ?salary
     }"#;
-    execute_query_normal(sparql, database);
-}
-
-fn execute_sample_query_normal_simd(database: &mut SparqlDatabase) {
-    let sparql = r#"
-    PREFIX ds: <https://data.cityofchicago.org/resource/xzkq-xp2w/>
-    PREFIX foaf: <http://xmlns.com/foaf/0.1/>
-    SELECT ?employee ?workplaceHomepage ?salary
-    WHERE {
-        ?employee foaf:workplaceHomepage ?workplaceHomepage .
-        ?employee ds:annual_salary ?salary
-    }"#;
-    execute_query_normal_simd(sparql, database);
-}
-
-fn execute_sample_query_rayon_simd(database: &mut SparqlDatabase) {
-    let sparql = r#"
-    PREFIX ds: <https://data.cityofchicago.org/resource/xzkq-xp2w/>
-    PREFIX foaf: <http://xmlns.com/foaf/0.1/>
-    SELECT ?employee ?workplaceHomepage ?salary
-    WHERE {
-        ?employee foaf:workplaceHomepage ?workplaceHomepage .
-        ?employee ds:annual_salary ?salary
-    }"#;
-    execute_query_rayon_simd(sparql, database);
-}
-
-fn execute_sample_query_rayon_parallel1(database: &mut SparqlDatabase) {
-    let sparql = r#"
-    PREFIX ds: <https://data.cityofchicago.org/resource/xzkq-xp2w/>
-    PREFIX foaf: <http://xmlns.com/foaf/0.1/>
-    SELECT ?employee ?workplaceHomepage ?salary
-    WHERE {
-        ?employee foaf:workplaceHomepage ?workplaceHomepage .
-        ?employee ds:annual_salary ?salary
-    }"#;
-    execute_query_rayon_parallel1(sparql, database);
-}
-
-fn execute_sample_query_rayon_parallel2(database: &mut SparqlDatabase) {
-    let sparql = r#"
-    PREFIX ds: <https://data.cityofchicago.org/resource/xzkq-xp2w/>
-    PREFIX foaf: <http://xmlns.com/foaf/0.1/>
-    SELECT ?employee ?workplaceHomepage ?salary
-    WHERE {
-        ?employee foaf:workplaceHomepage ?workplaceHomepage .
-        ?employee ds:annual_salary ?salary
-    }"#;
-    execute_query_rayon_parallel2(sparql, database);
+    execute_query_rayon_parallel2_volcano(sparql, database);
 }
 
 /////////////////////////////////////////////////////////////////////////
@@ -117,7 +69,7 @@ fn execute_sample_query_complex(database: &mut SparqlDatabase) {
     execute_query(sparql, database);
 }
 
-fn execute_sample_query_normal_complex(database: &mut SparqlDatabase) {
+fn execute_sample_query_volcano_complex(database: &mut SparqlDatabase) {
     let sparql = r#"
     PREFIX foaf: <http://xmlns.com/foaf/0.1/>
     PREFIX ds: <https://data.cityofchicago.org/resource/xzkq-xp2w/>
@@ -131,75 +83,7 @@ fn execute_sample_query_normal_complex(database: &mut SparqlDatabase) {
             }
         }
     }"#;
-    execute_query_normal(sparql, database);
-}
-
-fn execute_sample_query_normal_simd_complex(database: &mut SparqlDatabase) {
-    let sparql = r#"
-    PREFIX foaf: <http://xmlns.com/foaf/0.1/>
-    PREFIX ds: <https://data.cityofchicago.org/resource/xzkq-xp2w/>
-    SELECT ?title
-    WHERE {
-        {
-            SELECT ?title
-            WHERE {
-                ?employee foaf:title ?title .
-                ?employee foaf:title "Developer" .
-            }
-        }
-    }"#;
-    execute_query_normal_simd(sparql, database);
-}
-
-fn execute_sample_query_rayon_simd_complex(database: &mut SparqlDatabase) {
-    let sparql = r#"
-    PREFIX foaf: <http://xmlns.com/foaf/0.1/>
-    PREFIX ds: <https://data.cityofchicago.org/resource/xzkq-xp2w/>
-    SELECT ?title
-    WHERE {
-        {
-            SELECT ?title
-            WHERE {
-                ?employee foaf:title ?title .
-                ?employee foaf:title "Developer" .
-            }
-        }
-    }"#;
-    execute_query_rayon_simd(sparql, database);
-}
-
-fn execute_sample_query_rayon_parallel1_complex(database: &mut SparqlDatabase) {
-    let sparql = r#"
-    PREFIX foaf: <http://xmlns.com/foaf/0.1/>
-    PREFIX ds: <https://data.cityofchicago.org/resource/xzkq-xp2w/>
-    SELECT ?title
-    WHERE {
-        {
-            SELECT ?title
-            WHERE {
-                ?employee foaf:title ?title .
-                ?employee foaf:title "Developer" .
-            }
-        }
-    }"#;
-    execute_query_rayon_parallel1(sparql, database);
-}
-
-fn execute_sample_query_rayon_parallel2_complex(database: &mut SparqlDatabase) {
-    let sparql = r#"
-    PREFIX foaf: <http://xmlns.com/foaf/0.1/>
-    PREFIX ds: <https://data.cityofchicago.org/resource/xzkq-xp2w/>
-    SELECT ?title
-    WHERE {
-        {
-            SELECT ?title
-            WHERE {
-                ?employee foaf:title ?title .
-                ?employee foaf:title "Developer" .
-            }
-        }
-    }"#;
-    execute_query_rayon_parallel2(sparql, database);
+    execute_query_rayon_parallel2_volcano(sparql, database);
 }
 
 fn my_benchmark(c: &mut Criterion) {
@@ -210,24 +94,8 @@ fn my_benchmark(c: &mut Criterion) {
         b.iter(|| execute_sample_query(&mut db))
     });
 
-    c.bench_function("execute_query_normal", |b| {
-        b.iter(|| execute_sample_query_normal(&mut db))
-    });
-
-    c.bench_function("execute_query_normal_simd", |b| {
-        b.iter(|| execute_sample_query_normal_simd(&mut db))
-    });
-
-    c.bench_function("execute_query_rayon_simd", |b| {
-        b.iter(|| execute_sample_query_rayon_simd(&mut db))
-    });
-
-    c.bench_function("execute_query_rayon_parallel 1", |b| {
-        b.iter(|| execute_sample_query_rayon_parallel1(&mut db))
-    });
-
-    c.bench_function("execute_query_rayon_parallel 2", |b| {
-        b.iter(|| execute_sample_query_rayon_parallel2(&mut db))
+    c.bench_function("execute_query_volcano", |b| {
+        b.iter(|| execute_sample_query_volcano(&mut db))
     });
 }
 
@@ -239,28 +107,8 @@ fn my_benchmark2(c: &mut Criterion) {
         b.iter(|| execute_sample_query_complex(&mut db))
     });
 
-    c.bench_function("COMPLEX QUERY: execute_query_normal", |b| {
-        b.iter(|| execute_sample_query_normal_complex(&mut db))
-    });
-
-    c.bench_function("COMPLEX QUERY: execute_query_normal_simd", |b| {
-        b.iter(|| execute_sample_query_normal_simd_complex(&mut db))
-    });
-
-    c.bench_function("COMPLEX QUERY: execute_query_rayon_simd", |b| {
-        b.iter(|| execute_sample_query_rayon_simd_complex(&mut db))
-    });
-
-    c.bench_function("COMPLEX QUERY: execute_query_rayon_parallel 1", |b| {
-        b.iter(|| execute_sample_query_rayon_parallel1_complex(&mut db))
-    });
-
-    c.bench_function("COMPLEX QUERY: execute_query_rayon_parallel 2", |b| {
-        b.iter(|| execute_sample_query_rayon_parallel2_complex(&mut db))
-    });
-
-    c.bench_function("COMPLEX QUERY: execute_query_rayon_parallel 2", |b| {
-        b.iter(|| execute_sample_query_rayon_parallel2_complex(&mut db))
+    c.bench_function("COMPLEX QUERY: execute_query_volcano", |b| {
+        b.iter(|| execute_sample_query_volcano_complex(&mut db))
     });
 }
 

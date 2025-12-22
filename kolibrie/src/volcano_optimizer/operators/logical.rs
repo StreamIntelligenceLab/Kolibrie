@@ -12,7 +12,7 @@ use super::super::Condition;
 use shared::terms::{Bindings, TriplePattern};
 
 /// Logical operators represent the high-level query structure before optimization
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone)]
 pub enum LogicalOperator {
     Scan {
         pattern: TriplePattern,
@@ -32,7 +32,11 @@ pub enum LogicalOperator {
     Buffer {
         content: Bindings,
         origin: String
-    }
+    },
+    Subquery {
+        inner: Box<LogicalOperator>,
+        projected_vars: Vec<String>,
+    },
 }
 
 impl LogicalOperator {
@@ -67,5 +71,13 @@ impl LogicalOperator {
 
     pub fn buffer(content: Bindings, origin: String) -> Self{
         Self::Buffer {content, origin}
+    }
+
+    /// Creates a new subquery logical operator
+    pub fn subquery(inner: LogicalOperator, projected_vars: Vec<String>) -> Self {
+        Self::Subquery {
+            inner: Box:: new(inner),
+            projected_vars,
+        }
     }
 }

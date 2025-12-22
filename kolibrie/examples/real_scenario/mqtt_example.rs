@@ -11,7 +11,7 @@
 use kolibrie::execute_query::execute_query;
 use kolibrie::parser::*;
 use kolibrie::sparql_database::SparqlDatabase;
-use datalog::knowledge_graph::KnowledgeGraph;
+use datalog::reasoning::Reasoner;
 use shared::terms::Term;
 use chrono::Utc;
 use std::time::{Duration, SystemTime};
@@ -429,7 +429,7 @@ fn main() {
                 
                 // Create fresh database and knowledge graph for this update
                 database = SparqlDatabase::new();
-                kg = KnowledgeGraph::new();
+                kg = Reasoner::new();
                 
                 // Parse the RDF data into the database
                 database.parse_rdf(&rdf_xml_data);

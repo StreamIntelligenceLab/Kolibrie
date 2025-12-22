@@ -12,7 +12,7 @@ use super::super::Condition;
 use shared::terms::{Bindings, TriplePattern};
 
 /// Physical operators represent the actual execution plan after optimization
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone)]
 pub enum PhysicalOperator {
     TableScan {
         pattern: TriplePattern,
@@ -40,6 +40,10 @@ pub enum PhysicalOperator {
         left: Box<PhysicalOperator>,
         right: Box<PhysicalOperator>,
     },
+    StarJoin {
+        join_var: String,
+        patterns: Vec<TriplePattern>,
+    },
     Projection {
         input: Box<PhysicalOperator>,
         variables: Vec<String>,
@@ -47,7 +51,11 @@ pub enum PhysicalOperator {
     InMemoryBuffer{
         content: Bindings,
         origin: String
-    }
+    },
+    Subquery {
+        inner: Box<PhysicalOperator>,
+        projected_vars:  Vec<String>,
+    },
 }
 
 impl PhysicalOperator {
@@ -113,11 +121,19 @@ impl PhysicalOperator {
         Self::InMemoryBuffer {content, origin}
     }
 
+    /// Creates a new subquery physical operator
+    pub fn subquery(inner: PhysicalOperator, projected_vars: Vec<String>) -> Self {
+        Self::Subquery {
+            inner: Box::new(inner),
+            projected_vars,
+        }
+    }
+
     /// Executes the physical operator and returns string-based results
     pub fn execute(
         &self,
         database: &mut crate::sparql_database::SparqlDatabase,
-    ) -> Vec<std::collections::BTreeMap<String, String>> {
+    ) -> Vec<std::collections::HashMap<String, String>> {
         super::super::execution::ExecutionEngine::execute(self, database)
     }
 
@@ -125,7 +141,7 @@ impl PhysicalOperator {
     pub fn execute_with_ids(
         &self,
         database: &mut crate::sparql_database::SparqlDatabase,
-    ) -> Vec<std::collections::BTreeMap<String, u32>> {
+    ) -> Vec<std::collections::HashMap<String, u32>> {
         super::super::execution::ExecutionEngine::execute_with_ids(self, database)
     }
 }

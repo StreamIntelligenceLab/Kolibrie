@@ -20,7 +20,7 @@ use log::{debug, error}; // Use log crate when building application
 use shared::query::{StreamType, WindowBlock, WindowClause};
 use shared::terms::Term;
 use shared::triple::Triple;
-use std::collections::{BTreeMap, HashMap};
+use std::collections::HashMap;
 use std::fmt::Debug;
 use std::hash::Hash;
 use std::sync::mpsc::{self, Receiver, Sender};
@@ -86,7 +86,7 @@ pub struct RSPQueryConfig<'a> {
     pub shared_variables: Vec<String>, // Variables that appear across multiple windows
     pub static_patterns: Vec<(&'a str, &'a str, &'a str)>, // Static graph patterns outside windows
     pub static_window_shared_vars: Vec<String>, // Variables shared between static patterns and windows
-    pub database: SparqlDatabase,      // usesd prefixes
+    pub database: SparqlDatabase,               // usesd prefixes
 }
 
 /// RSP-QL Query Plan using Volcano optimizer
@@ -105,7 +105,7 @@ pub struct RSPQueryPlan {
 #[derive(Debug, Clone)]
 pub struct WindowResult {
     pub window_iri: String,
-    pub results: Vec<BTreeMap<String, String>>, // Variable bindings
+    pub results: Vec<HashMap<String, String>>, // Variable bindings
     pub timestamp: usize,
 }
 
@@ -122,7 +122,7 @@ pub struct RSPBuilder<'a, I, O> {
 
 impl<'a, I, O> RSPBuilder<'a, I, O>
 where
-    O: Clone + Hash + Eq + Send + Debug + 'static,
+    O: Clone + Eq + Send + Debug + Hash + 'static,
     I: Eq + PartialEq + Clone + Debug + Hash + Send + 'static,
 {
     pub fn new() -> RSPBuilder<'a, I, O> {
@@ -228,7 +228,7 @@ where
         &self,
         window_clause: &WindowClause,
         window_blocks: &[WindowBlock],
-        database: &mut SparqlDatabase
+        database: &mut SparqlDatabase,
     ) -> Result<RSPWindow, String> {
         // Find the corresponding window block for this window
         let spo_query = LogicalOperator::scan((
@@ -248,6 +248,7 @@ where
                     Vec::new(),
                     block.patterns.clone(),
                     Vec::new(),
+                    &database.prefixes.clone(),
                     database,
                 );
                 println!("\tResults in {:?}", op);
@@ -302,6 +303,7 @@ where
                 Vec::new(),
                 query_config.static_patterns.clone(),
                 Vec::new(),
+                &database.prefixes.clone(),
                 &mut database,
             );
             Some(logical_plan)
@@ -433,6 +435,7 @@ where
 pub struct RSPEngine<I, O>
 where
     I: Eq + PartialEq + Clone + Debug + Hash + Send,
+    O: Hash,
 {
     windows: Vec<CSPARQLWindow<I>>,
     r2r: Arc<Mutex<Box<dyn R2ROperator<I, Vec<PhysicalOperator>, O>>>>,
@@ -649,8 +652,8 @@ impl AsAnyMut for SimpleR2R {
 
 /// Implement the R2R operator trait for SimpleR2R. Note: the `R` generic parameter
 /// is `Vec<PhysicalOperator>` (a list of physical plans). The output `O` is
-/// a binding map `BTreeMap<String, String>` per row.
-impl R2ROperator<Triple, Vec<PhysicalOperator>, BTreeMap<String, String>> for SimpleR2R {
+/// a binding map `HashMap<String, String>` per row.
+impl R2ROperator<Triple, Vec<PhysicalOperator>, Vec<(String, String)>> for SimpleR2R {
     fn load_triples(&mut self, _data: &str, _syntax: String) -> Result<(), String> {
         error!("Unsupported operation");
         Err("something went wrong".to_string())
@@ -674,12 +677,15 @@ impl R2ROperator<Triple, Vec<PhysicalOperator>, BTreeMap<String, String>> for Si
         Vec::new()
     }
 
-    fn execute_query(&mut self, op: &PhysicalOperator) -> Vec<BTreeMap<String, String>> {
+    fn execute_query(&mut self, op: &PhysicalOperator) -> Vec<Vec<(String, String)>> {
         debug!("SimpleR2R executing query with PhysicalOperator");
 
         // Execute the physical operator using the Volcano execution engine.
-        // The engine returns Vec<BTreeMap<String,String>> (bindings per row).
+        // The engine returns Vec<HashMap<String,String>> (bindings per row).
         ExecutionEngine::execute(op, &mut self.item)
+            .into_iter()
+            .map(|hashmap| hashmap.into_iter().collect())
+            .collect()
     }
 
     fn parse_data(&mut self, data: &str) -> Vec<Triple> {
@@ -697,7 +703,7 @@ mod tests {
     fn rsp_ql_integration() {
         let result_container = Arc::new(Mutex::new(Vec::new()));
         let result_container_clone = Arc::clone(&result_container);
-        let function = Box::new(move |r: BTreeMap<String, String>| {
+        let function = Box::new(move |r: Vec<(String, String)>| {
             println!("Bindings: {:?}", r);
             result_container_clone.lock().unwrap().push(r);
         });
@@ -718,12 +724,14 @@ mod tests {
             }
         "#;
 
-        let mut engine: RSPEngine<Triple, BTreeMap<String, String>> = RSPBuilder::new()
+        let mut engine: RSPEngine<Triple, Vec<(String, String)>> = RSPBuilder::new()
             .add_rsp_ql_query(rsp_ql_query)
             .add_consumer(result_consumer)
             .add_r2r(r2r)
             .build()
             .expect("Failed to build RSP engine");
+        //small hack to make sure the encoder is aligned between parsing and query injection
+        engine.parse_data("a a <http://www.w3.org/test/SuperType> .");
 
         // Add data to the stream
         for i in 0..20 {
@@ -747,7 +755,7 @@ mod tests {
     fn rsp_ql_integration_with_join() {
         let result_container = Arc::new(Mutex::new(Vec::new()));
         let result_container_clone = Arc::clone(&result_container);
-        let function = Box::new(move |r: BTreeMap<String, String>| {
+        let function = Box::new(move |r: Vec<(String, String)>| {
             println!("Bindings: {:?}", r);
             result_container_clone.lock().unwrap().push(r);
         });
@@ -769,7 +777,7 @@ mod tests {
             }
         "#;
 
-        let mut engine: RSPEngine<Triple, BTreeMap<String, String>> = RSPBuilder::new()
+        let mut engine: RSPEngine<Triple, Vec<(String, String)>> = RSPBuilder::new()
             .add_rsp_ql_query(rsp_ql_query)
             .add_consumer(result_consumer)
             .add_r2r(r2r)
@@ -800,7 +808,7 @@ mod tests {
     fn rsp_ql_multi_window_integration() {
         let result_container = Arc::new(Mutex::new(Vec::new()));
         let result_container_clone = Arc::clone(&result_container);
-        let function = Box::new(move |r: BTreeMap<String, String>| {
+        let function = Box::new(move |r: Vec<(String, String)>| {
             println!("Multi-window Bindings: {:?}", r);
             result_container_clone.lock().unwrap().push(r);
         });
@@ -825,7 +833,7 @@ mod tests {
             }
         "#;
 
-        let mut engine: RSPEngine<Triple, BTreeMap<String, String>> = RSPBuilder::new()
+        let mut engine: RSPEngine<Triple, Vec<(String, String)>> = RSPBuilder::new()
             .add_rsp_ql_query(rsp_ql_query)
             .add_consumer(result_consumer)
             .add_r2r(r2r)

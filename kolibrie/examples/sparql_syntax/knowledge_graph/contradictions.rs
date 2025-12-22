@@ -10,10 +10,10 @@
 
 use shared::terms::Term;
 use shared::rule::Rule;
-use datalog::knowledge_graph::KnowledgeGraph;
+use datalog::reasoning::Reasoner;
 
-fn example_with_contradictions() -> KnowledgeGraph {
-    let mut kg = KnowledgeGraph::new();
+fn example_with_contradictions() -> Reasoner {
+    let mut kg = Reasoner::new();
 
     // Add some basic facts that will create a contradiction
     kg.add_abox_triple("john", "isA", "professor");
@@ -125,7 +125,7 @@ fn main() {
     }
 }
 
-fn print_all_facts(kg: &KnowledgeGraph) {
+fn print_all_facts(kg: &Reasoner) {
     let facts = kg.index_manager.query(None, None, None);
     for fact in facts {
         println!("{} {} {}", 

@@ -8,9 +8,9 @@
  * you can obtain one at https://mozilla.org/MPL/2.0/.
  */
 
-use datalog::reasoning::ReasoningLevel;
-use datalog::reasoning::HierarchicalRule;
-use datalog::reasoning::ReasoningHierarchy;
+use datalog::reasoning_experimental::ReasoningLevel;
+use datalog::reasoning_experimental::HierarchicalRule;
+use datalog::reasoning_experimental::ReasoningHierarchy;
 use shared::terms::Term;
 use shared::rule::Rule;
 

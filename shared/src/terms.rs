@@ -8,7 +8,7 @@
  * you can obtain one at https://mozilla.org/MPL/2.0/.
  */
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Term {
@@ -18,7 +18,7 @@ pub enum Term {
 
 pub type TriplePattern = (Term, Term, Term);
 
-pub type Bindings = Vec<BTreeMap<String, u32>>;
+pub type Bindings = Vec<HashMap<String, u32>>;
 
 #[derive(Debug)]
 pub enum UnresolvedTerm {
@@ -32,6 +32,4 @@ impl Term{
     pub fn is_var(&self) -> bool{
         matches!(self, Term::Variable(_))
     }
-
-
 }

@@ -21,7 +21,7 @@ use nom::{
 };
 use rayon::str;
 use crate::sparql_database::SparqlDatabase;
-use datalog::knowledge_graph::KnowledgeGraph;
+use datalog::reasoning::Reasoner;
 use shared::triple::Triple;
 use shared::dictionary::Dictionary;
 use shared::rule::FilterCondition;
@@ -1713,7 +1713,7 @@ pub fn process_rule_definition(
     // First, register any prefixes from the rule with the database
     database.register_prefixes_from_query(rule_input);
 
-    let mut kg = KnowledgeGraph::new();
+    let mut kg = Reasoner::new();
     for triple in database.triples.iter() {
         let subject = database.dictionary.decode(triple.subject);
         let predicate = database.dictionary.decode(triple.predicate);
@@ -1862,7 +1862,7 @@ pub fn process_retrieve_clause(
         println!("  Pattern: {} {} {}", pattern.0, pattern.1, pattern.2);
         
         // Create a temporary knowledge graph to match patterns
-        let mut kg = KnowledgeGraph::new();
+        let mut kg = Reasoner::new();
         for triple in database.triples.iter() {
             let subject = database.dictionary.decode(triple.subject);
             let predicate = database.dictionary.decode(triple.predicate);
