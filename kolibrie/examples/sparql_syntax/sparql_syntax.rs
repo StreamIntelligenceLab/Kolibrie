@@ -71,6 +71,8 @@ fn volcano_optimizer_sparql() {
             filters.clone(),
             &prefixes.clone(),
             &mut database,
+            Vec::new(),
+            None,
         );
 
         // Step 5: Initialize the optimizer and find the best physical plan
@@ -108,6 +110,5 @@ fn volcano_optimizer_sparql() {
 }
 
 fn main() {
-    std::env::set_var("RUST_BACKTRACE", "1");
     volcano_optimizer_sparql();
 }

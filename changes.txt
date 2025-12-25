@@ -115,6 +115,7 @@
 115. Rename knowledge_graph.rs to reasoning.rs and rename class KnowledgeGraph to Reasoner & remove unused class
 116. Improve Volcano Optimizer by including filtering
 117. Improve Volcano Optimizer by adding nested query support
+118. Improve Volcano Optimizer by adding BIND, UDF, INSERT, VALUES support
 
 0.1.0
 1. Parsing RDF/XML

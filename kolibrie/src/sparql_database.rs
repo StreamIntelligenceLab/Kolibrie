@@ -2928,9 +2928,6 @@ impl SparqlDatabase {
         let num_threads = rayon::current_num_threads();
         let chunk_size = (triples.len() / num_threads).max(1000);
         
-        println!("Processing {} triples with {} threads, chunk size: {}", 
-                 triples.len(), num_threads, chunk_size);
-        
         // Build indexes in parallel chunks
         let partial_indexes: Vec<_> = triples
             .par_chunks(chunk_size)

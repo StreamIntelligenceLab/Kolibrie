@@ -52,6 +52,16 @@ pub enum PhysicalOperator {
         inner: Box<PhysicalOperator>,
         projected_vars:  Vec<String>,
     },
+    Bind {
+        input: Box<PhysicalOperator>,
+        function_name: String,
+        arguments: Vec<String>,
+        output_variable: String,
+    },
+    Values {
+        variables: Vec<String>,
+        values: Vec<Vec<Option<String>>>,
+    },
 }
 
 impl PhysicalOperator {
@@ -119,6 +129,26 @@ impl PhysicalOperator {
             inner: Box::new(inner),
             projected_vars,
         }
+    }
+
+    /// Creates a new bind physical operator
+    pub fn bind(
+        input: PhysicalOperator,
+        function_name: String,
+        arguments: Vec<String>,
+        output_variable: String,
+    ) -> Self {
+        Self::Bind {
+            input: Box::new(input),
+            function_name,
+            arguments,
+            output_variable,
+        }
+    }
+
+    /// Creates a new values physical operator
+    pub fn values(variables: Vec<String>, values: Vec<Vec<Option<String>>>) -> Self {
+        Self::Values { variables, values }
     }
 
     /// Executes the physical operator and returns string-based results

@@ -10,7 +10,7 @@
 
 use kolibrie::sparql_database::SparqlDatabase;
 use kolibrie::volcano_optimizer::*;
-use shared::terms::{Term, TriplePattern};
+use shared::terms::Term;
 use shared::triple::Triple;
 use std::time::Instant;
 

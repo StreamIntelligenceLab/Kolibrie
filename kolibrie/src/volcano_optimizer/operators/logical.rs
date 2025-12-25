@@ -33,6 +33,16 @@ pub enum LogicalOperator {
         inner: Box<LogicalOperator>,
         projected_vars: Vec<String>,
     },
+    Bind {
+        input: Box<LogicalOperator>,
+        function_name: String,
+        arguments: Vec<String>,
+        output_variable: String,
+    },
+    Values {
+        variables: Vec<String>,
+        values: Vec<Vec<Option<String>>>, // Each row can have Some(value) or None (UNDEF)
+    },
 }
 
 impl LogicalOperator {
@@ -71,5 +81,23 @@ impl LogicalOperator {
             inner: Box:: new(inner),
             projected_vars,
         }
+    }
+
+    /// Creates a new bind logical operator
+    pub fn bind(
+        input: LogicalOperator,
+        function_name: String,
+        arguments: Vec<String>,
+        output_variable: String,
+    ) -> Self {
+        Self::Bind {
+            input: Box::new(input),
+            function_name,
+            arguments,
+            output_variable,
+        }
+    }
+    pub fn values(variables: Vec<String>, values: Vec<Vec<Option<String>>>) -> Self {
+        Self::Values { variables, values }
     }
 }

@@ -160,6 +160,10 @@ impl VolcanoOptimizer {
                 // for star query detection in the outer query
                 self.collect_patterns(inner, patterns);
             }
+            LogicalOperator::Bind { input, .. } => {
+                self.collect_patterns(input, patterns);
+            }
+            LogicalOperator::Values { .. } => { }
         }
     }
 
@@ -284,6 +288,27 @@ impl VolcanoOptimizer {
                 );
                 
                 candidates.push(subquery_plan);
+            }
+            LogicalOperator::Bind { input, function_name, arguments, output_variable } => {
+                // Recursively optimize the input
+                let best_input_plan = self.find_best_plan_recursive(input);
+    
+                // Create the physical BIND operator
+                let bind_plan = PhysicalOperator::bind(
+                    best_input_plan,
+                    function_name.clone(),
+                    arguments.clone(),
+                    output_variable.clone(),
+                );
+    
+                candidates.push(bind_plan);
+            }
+            LogicalOperator::Values { variables, values } => {
+                // VALUES is a leaf operator
+                candidates.push(PhysicalOperator::values(
+                    variables.clone(),
+                    values.clone(),
+                ));
             }
         }
 
@@ -473,6 +498,22 @@ impl VolcanoOptimizer {
                     self.serialize_logical_plan(inner)
                 )
             }
+            LogicalOperator::Bind { input, function_name, arguments, output_variable } => {
+                format!(
+                    "Bind({}, {}({:?}), {})",
+                    self.serialize_logical_plan(input),
+                    function_name,
+                    arguments,
+                    output_variable
+                )
+            }
+            LogicalOperator::Values { variables, values } => {
+                format!(
+                    "Values({:?}, {} rows)",
+                    variables,
+                    values.len()
+                )
+            }
         }
     }
 
@@ -537,6 +578,16 @@ impl VolcanoOptimizer {
                 // Add materialization overhead (storing results)
                 inner_cost + inner_card
             }
+            LogicalOperator::Bind { input, arguments, .. } => {
+                let base_cost = self.estimate_logical_cost(input);
+                let cardinality = self.estimate_output_cardinality_from_logical(input);
+                // Add cost proportional to number of arguments and cardinality
+                base_cost + (cardinality * arguments.len() as u64)
+            }
+            LogicalOperator::Values { values, .. } => {
+                // VALUES has very low cost
+                values.len() as u64
+            }
         }
     }
 
@@ -568,6 +619,8 @@ impl VolcanoOptimizer {
             LogicalOperator::Selection { predicate, .. } => self.extract_predicate_from_plan(predicate),
             LogicalOperator::Projection { predicate, .. } => self.extract_predicate_from_plan(predicate),
             LogicalOperator::Subquery { inner, .. } => self.extract_predicate_from_plan(inner),
+            LogicalOperator::Bind { input, .. } => self.extract_predicate_from_plan(input),
+            LogicalOperator::Values { .. } => None,
         }
     }
 
@@ -597,6 +650,12 @@ impl VolcanoOptimizer {
             LogicalOperator::Subquery { inner, .. } => {
                 self.estimate_output_cardinality_from_logical(inner)
             }
+            LogicalOperator::Bind { input, .. } => {
+                self.estimate_output_cardinality_from_logical(input)
+            }
+            LogicalOperator::Values { values, .. } => {
+                values.len() as u64
+            }
         }
     }
 
@@ -620,7 +679,7 @@ impl VolcanoOptimizer {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use shared::terms::{Term, TriplePattern};
+    use shared::terms::Term;
 
     fn create_test_optimizer() -> VolcanoOptimizer {
         // Create a mock database for testing

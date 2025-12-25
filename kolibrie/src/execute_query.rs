@@ -10,15 +10,13 @@
 
 use crate::sparql_database::SparqlDatabase;
 use crate::volcano_optimizer::*;
-// use crate::sparql_database::compact_results;
 use crate::custom_error::format_parse_error;
 use crate::parser::*;
-use shared::join_algorithm::compact_results;
-use shared::join_algorithm::perform_join_par_simd_with_strict_filter_4_redesigned_streaming;
 use shared::query::*;
 use shared::triple::Triple;
 use shared::GPU_MODE_ENABLED;
 use std::collections::{BTreeMap, BTreeSet, HashMap};
+
 pub fn execute_subquery<'a>(
     subquery: &SubQuery<'a>,
     database: &SparqlDatabase,
@@ -377,7 +375,11 @@ pub fn execute_query_rayon_parallel2_volcano(
         limit_clause = limit;
 
         // Process the INSERT clause if present using the existing helper function
-        process_insert_clause(insert_clause, database);
+        if let Some(insert_clause) = insert_clause {
+            process_insert_clause(Some(insert_clause), database);
+            database.get_or_build_stats();
+            return Vec::new();
+        }
 
         // If SELECT * is used, gather all variables from patterns
         if variables == vec![("*", "*", None)] {
@@ -426,6 +428,8 @@ pub fn execute_query_rayon_parallel2_volcano(
                 filters,
                 &prefixes,
                 database,
+                binds.clone(),
+                values_clause.as_ref(),
             );
 
             let stats = database.cached_stats.as_ref().expect("Error");
@@ -533,6 +537,8 @@ pub fn execute_query_rayon_parallel2_volcano(
                 filters.clone(),
                 &prefixes,
                 database,
+                binds.clone(),
+                values_clause.as_ref(),
             ); 
 
             // Integrate subqueries into the logical plan
@@ -596,7 +602,7 @@ pub fn execute_query_rayon_parallel2_volcano(
             }
 
             // Apply BIND (UDF) clauses
-            process_bind_clauses(&mut final_results, binds, database);
+            // process_bind_clauses(&mut final_results, binds, database);
 
             // Apply GROUP BY and aggregations
             if !group_vars.is_empty() {

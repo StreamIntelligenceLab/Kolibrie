@@ -146,6 +146,30 @@ impl<'a> CostEstimator<'a> {
                 
                 inner_cost + materialization_cost + projection_cost
             }
+            PhysicalOperator::Bind { input, function_name, arguments, .. } => {
+                let input_cost = self.estimate_cost(input);
+                let input_cardinality = self.estimate_output_cardinality(input);
+    
+                // Cost depends on function complexity
+                let function_cost = match function_name.as_str() {
+                    "CONCAT" => {
+                        // CONCAT cost is proportional to number of arguments
+                        arguments.len() as u64 * CostConstants::COST_PER_PROJECTION
+                    }
+                    _ => {
+                        // Generic UDF - assume moderate cost
+                        CostConstants::COST_PER_PROJECTION * 2
+                    }
+                };
+    
+                // Total cost = input cost + (cardinality * function cost per row)
+                input_cost + (input_cardinality * function_cost)
+            }
+            PhysicalOperator::Values { values, .. } => {
+                // VALUES has minimal cost - just the number of rows
+                // No I/O or computation, just materializing the constant values
+                (values.len() as u64) * CostConstants::TUPLE_COST
+            }
         }
     }
 
@@ -328,6 +352,14 @@ impl<'a> CostEstimator<'a> {
                 // Subquery cardinality is the same as inner query
                 self.estimate_output_cardinality(inner)
             }
+            PhysicalOperator::Bind { input, .. } => {
+                // BIND doesn't change cardinality, just adds a column
+                self.estimate_output_cardinality(input)
+            }
+            PhysicalOperator::Values { values, .. } => {
+                // Cardinality is simply the number of value rows
+                values.len() as u64
+            }
         }
     }
 
@@ -365,7 +397,7 @@ impl<'a> CostEstimator<'a> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use shared::terms::{Term, TriplePattern};
+    use shared::terms::Term;
 
     fn create_test_stats() -> DatabaseStats {
         let mut stats = DatabaseStats::new();

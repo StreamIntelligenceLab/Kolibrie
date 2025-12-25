@@ -112,6 +112,97 @@ impl ExecutionEngine {
                     })
                     .collect()
             }
+            PhysicalOperator::Bind { input, function_name, arguments, output_variable } => {
+                // Execute the input operator first
+                let mut input_results = Self::execute_with_ids(input, database);
+                let output_var = output_variable.strip_prefix('?').unwrap_or(output_variable);
+    
+                // Process BIND clause
+                if function_name == "CONCAT" {
+                    // Handle CONCAT function
+                    for row in &mut input_results {
+                        let concatenated = arguments
+                            .iter()
+                            .map(|arg| {
+                            let arg_stripped = arg.strip_prefix('?').unwrap_or(arg);
+                            if arg.starts_with('?') { 
+                                if let Some(&id) = row.get(arg_stripped) {
+                                    database.dictionary.decode(id).unwrap_or("").to_string()
+                                } else {
+                                    String::new()
+                                }
+                            } else {
+                                arg.trim_matches('"').to_string()
+                            }
+                        })
+                        .collect::<Vec<String>>()
+                        .join("");
+            
+                        // Encode the concatenated result and store it
+                        let result_id = database.dictionary.encode(&concatenated);
+                        row.insert(output_var.to_string(), result_id);
+                    }
+                    input_results
+                } else if let Some(func) = database.udfs.get(function_name.as_str()) {
+                    // Handle user-defined functions
+                    for row in &mut input_results {
+                        let resolved_args: Vec<&str> = arguments
+                            .iter()
+                            .map(|arg| {
+                                let arg_stripped = arg.strip_prefix('?').unwrap_or(arg);
+                                if arg.starts_with('?') {
+                                    if let Some(&id) = row.get(arg_stripped) {
+                                        // Need to leak this to get 'static lifetime for UDF call
+                                        Box::leak(
+                                            database.dictionary.decode(id).unwrap_or("").to_string().into_boxed_str()
+                                        )
+                                    } else {
+                                        ""
+                                    }
+                                } else {
+                                    Box::leak(arg.trim_matches('"').to_string().into_boxed_str())
+                                }
+                            })
+                            .collect();
+            
+                        let result = func.call(resolved_args);
+                        let result_id = database.dictionary.encode(&result);
+                        row.insert(output_var.to_string(), result_id);
+                    }
+                    input_results
+                } else {
+                    eprintln!("Function {} not found", function_name);
+                    input_results
+                }
+            }
+            PhysicalOperator::Values { variables, values } => {
+                let stripped_vars: Vec<String> = variables
+                    .iter()
+                    .map(|v| v.strip_prefix('?').unwrap_or(v).to_string())
+                    .collect();
+
+                // Convert VALUES data to result rows
+                let mut results = Vec::new();
+    
+                for value_row in values {
+                    let mut row = HashMap::new();
+        
+                    for (i, var) in stripped_vars.iter().enumerate() {
+                        if let Some(Some(value)) = value_row.get(i) {
+                            // Encode the value in the dictionary
+                            let value_id = database.dictionary.encode(value);
+                            row.insert(var.clone(), value_id);
+                        }
+                    }
+        
+                    // Only add non-empty rows
+                    if !row.is_empty() {
+                        results.push(row);
+                    }
+                }
+    
+                results
+            }
         }
     }
 
