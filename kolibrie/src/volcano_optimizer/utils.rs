@@ -99,7 +99,7 @@ pub fn build_logical_plan(
     filters: Vec<FilterExpression>,
     prefixes: &HashMap<String, String>,
     database: &mut SparqlDatabase,
-    binds: Vec<(&str, Vec<&str>, &str)>,
+    binds: &[(&str, Vec<&str>, &str)],
     values_clause: Option<&ValuesClause>,
 ) -> LogicalOperator {
     // Create base operator from VALUES if present, otherwise empty join base
@@ -240,7 +240,7 @@ pub fn build_logical_plan_from_subquery(
         subquery.filters.clone(),
         prefixes,
         database,
-        subquery.binds.clone(),
+        &subquery.binds,
         None,
     );
     

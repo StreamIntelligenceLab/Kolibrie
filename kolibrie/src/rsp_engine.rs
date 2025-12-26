@@ -251,7 +251,7 @@ where
                     Vec::new(),
                     &database.prefixes.clone(),
                     database,
-                    Vec::new(),
+                    &[],
                     None,
                 );
                 println!("\tResults in {:?}", op);
@@ -308,7 +308,7 @@ where
                 Vec::new(),
                 &database.prefixes.clone(),
                 &mut database,
-                Vec::new(),
+                &[],
                 None,
             );
             Some(logical_plan)

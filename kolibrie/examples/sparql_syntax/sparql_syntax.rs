@@ -71,7 +71,7 @@ fn volcano_optimizer_sparql() {
             filters.clone(),
             &prefixes.clone(),
             &mut database,
-            Vec::new(),
+            &[],
             None,
         );
 

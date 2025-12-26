@@ -116,6 +116,9 @@
 116. Improve Volcano Optimizer by including filtering
 117. Improve Volcano Optimizer by adding nested query support
 118. Improve Volcano Optimizer by adding BIND, UDF, INSERT, VALUES support
+119. Modified RSP engine
+120. Improve windowing of RSP engine
+121. Add slicing for BIND instead of Vec
 
 0.1.0
 1. Parsing RDF/XML

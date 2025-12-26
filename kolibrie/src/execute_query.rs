@@ -428,7 +428,7 @@ pub fn execute_query_rayon_parallel2_volcano(
                 filters,
                 &prefixes,
                 database,
-                binds.clone(),
+                &binds,
                 values_clause.as_ref(),
             );
 
@@ -537,7 +537,7 @@ pub fn execute_query_rayon_parallel2_volcano(
                 filters.clone(),
                 &prefixes,
                 database,
-                binds.clone(),
+                &binds,
                 values_clause.as_ref(),
             ); 
 
