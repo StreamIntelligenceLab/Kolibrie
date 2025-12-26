@@ -99,6 +99,9 @@ impl ExecutionEngine {
             PhysicalOperator::StarJoin { join_var, patterns } => {
                 Self::execute_star_join_with_ids(database, join_var, patterns)
             }
+            PhysicalOperator::InMemoryBuffer { content, origin: _ } => {
+                content.clone() // TODO: make sure we dont have to clone here
+            }
             PhysicalOperator:: Subquery { inner, projected_vars } => {
                 // Execute the inner query with IDs
                 let inner_results = Self::execute_with_ids(inner, database);
@@ -378,7 +381,7 @@ impl ExecutionEngine {
     }
 
     // Helper function to estimate pattern cardinality
-    fn estimate_pattern_cardinality(database: &SparqlDatabase, pattern: &TriplePattern) -> u64 {
+    fn estimate_pattern_cardinality(_database: &SparqlDatabase, pattern: &TriplePattern) -> u64 {
         let bound_count = [&pattern.0, &pattern.1, &pattern.2]
             .iter()
             .filter(|term| matches!(term, Term::Constant(_)))

@@ -13,7 +13,7 @@ use super::types::Condition;
 use crate::sparql_database::SparqlDatabase;
 use shared::query::{FilterExpression, SubQuery, ValuesClause};
 use shared::terms::{Term, TriplePattern};
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 
 /// Extracts a triple pattern from a physical operator if it's a scan operation
 pub fn extract_pattern(op: &PhysicalOperator) -> Option<&TriplePattern> {
@@ -62,6 +62,7 @@ pub fn estimate_operator_selectivity(op: &LogicalOperator, _database: &SparqlDat
             // Projection doesn't change selectivity much
             estimate_operator_selectivity(predicate, _database) + 1
         }
+        LogicalOperator::Buffer { .. } => {10000}
         LogicalOperator::Subquery { inner, .. } => {
             estimate_operator_selectivity(inner, _database) + 15
         }
@@ -296,68 +297,6 @@ fn make_filter_static(filter: &FilterExpression) -> FilterExpression<'static> {
             FilterExpression::ArithmeticExpr(expr_static)
         }
     }
-}
-
-/// Checks if a filter can be pushed down to a specific pattern
-fn can_push_filter_to_pattern(op: &LogicalOperator, filter: &FilterExpression) -> bool {
-    // Don't push down complex filters (AND/OR/NOT) - apply them after joins
-    if matches!(filter, FilterExpression::And(_,_) | FilterExpression::Or(_,_) | FilterExpression::Not(_)) {
-        return false;
-    }
-
-    if let LogicalOperator::Scan { pattern } = op {
-        // Extract variables from the filter
-        let filter_vars = extract_filter_variables(filter);
-        
-        // Extract variables from the pattern
-        let pattern_vars = extract_pattern_variables(pattern);
-        
-        // Filter can be pushed down if all its variables are in the pattern
-        filter_vars.iter().all(|fv| pattern_vars.contains(fv))
-    } else {
-        false
-    }
-}
-
-/// Extracts all variables from a filter expression
-fn extract_filter_variables(filter: &FilterExpression) -> HashSet<String> {
-    let mut vars = HashSet::new();
-    
-    match filter {
-        FilterExpression::Comparison(var, _, _) => {
-            let var_name = var.strip_prefix('?').unwrap_or(var).to_string();
-            vars.insert(var_name);
-        }
-        FilterExpression::And(left, right) | FilterExpression::Or(left, right) => {
-            vars.extend(extract_filter_variables(left));
-            vars.extend(extract_filter_variables(right));
-        }
-        FilterExpression::Not(inner) => {
-            vars.extend(extract_filter_variables(inner));
-        }
-        FilterExpression::ArithmeticExpr(_) => {
-            // TODO: Parse arithmetic expressions to extract variables
-        }
-    }
-    
-    vars
-}
-
-/// Extracts all variables from a triple pattern
-fn extract_pattern_variables(pattern: &TriplePattern) -> HashSet<String> {
-    let mut vars = HashSet::new();
-    
-    if let Term::Variable(v) = &pattern.0 {
-        vars.insert(v.strip_prefix('?').unwrap_or(v).to_string());
-    }
-    if let Term::Variable(v) = &pattern.1 {
-        vars.insert(v.strip_prefix('?').unwrap_or(v).to_string());
-    }
-    if let Term::Variable(v) = &pattern.2 {
-        vars.insert(v.strip_prefix('?').unwrap_or(v).to_string());
-    }
-    
-    vars
 }
 
 /// Converts a FilterExpression to a Condition

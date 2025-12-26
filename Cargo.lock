@@ -777,7 +777,6 @@ dependencies = [
  "rand",
  "rayon",
  "regex",
- "rsp",
  "rumqttc",
  "rustc-hash",
  "serde",
@@ -1099,7 +1098,6 @@ dependencies = [
  "datalog",
  "kolibrie",
  "pyo3",
- "rsp",
  "shared",
 ]
 
@@ -1232,13 +1230,6 @@ dependencies = [
  "libc",
  "untrusted 0.9.0",
  "windows-sys 0.52.0",
-]
-
-[[package]]
-name = "rsp"
-version = "0.1.0"
-dependencies = [
- "log",
 ]
 
 [[package]]

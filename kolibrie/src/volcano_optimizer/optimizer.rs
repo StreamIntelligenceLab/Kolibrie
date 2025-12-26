@@ -155,6 +155,7 @@ impl VolcanoOptimizer {
             LogicalOperator::Projection { predicate, .. } => {
                 self.collect_patterns(predicate, patterns);
             }
+            LogicalOperator::Buffer { content: _, origin: _ } => { }
             LogicalOperator::Subquery { inner, .. } => {
                 // Subqueries are treated as separate scopes, so we don't collect their patterns
                 // for star query detection in the outer query
@@ -276,6 +277,10 @@ impl VolcanoOptimizer {
                     best_left_plan,
                     best_right_plan,
                 ));
+            }
+            LogicalOperator::Buffer { content, origin} => {
+                let best_buffer = PhysicalOperator::InMemoryBuffer {content: content.clone(), origin: origin.clone()};
+                candidates.push(best_buffer);
             }
             LogicalOperator::Subquery { inner, projected_vars } => {
                 // Recursively optimize the inner query
@@ -491,6 +496,13 @@ impl VolcanoOptimizer {
                     self.serialize_logical_plan(right)
                 )
             }
+            LogicalOperator::Buffer { content, origin } => {
+                format!(
+                    "Buffer({:?},{:?})",
+                    origin,
+                    content
+                )
+            }
             LogicalOperator::Subquery { inner, projected_vars } => {
                 format!(
                     "Subquery({:?},[{}])",
@@ -571,6 +583,7 @@ impl VolcanoOptimizer {
                 (base_cost as f64 * selectivity) as u64
             }
             LogicalOperator::Projection { predicate, .. } => self.estimate_logical_cost(predicate),
+            LogicalOperator::Buffer { .. } => 0,
             LogicalOperator::Subquery { inner, .. } => {
                 // Subqueries have materialization cost
                 let inner_cost = self.estimate_logical_cost(inner);
@@ -618,6 +631,7 @@ impl VolcanoOptimizer {
             LogicalOperator::Join { left, ..  } => self.extract_predicate_from_plan(left),
             LogicalOperator::Selection { predicate, .. } => self.extract_predicate_from_plan(predicate),
             LogicalOperator::Projection { predicate, .. } => self.extract_predicate_from_plan(predicate),
+            LogicalOperator::Buffer {.. } => None,
             LogicalOperator::Subquery { inner, .. } => self.extract_predicate_from_plan(inner),
             LogicalOperator::Bind { input, .. } => self.extract_predicate_from_plan(input),
             LogicalOperator::Values { .. } => None,
@@ -647,6 +661,7 @@ impl VolcanoOptimizer {
                 let join_selectivity = self.estimate_join_selectivity(left, right);
                 ((left_card.min(right_card) as f64 * join_selectivity) as u64).max(1)
             }
+            LogicalOperator::Buffer { .. } => 0,
             LogicalOperator::Subquery { inner, .. } => {
                 self.estimate_output_cardinality_from_logical(inner)
             }
