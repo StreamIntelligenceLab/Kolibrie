@@ -579,12 +579,12 @@ pub struct SparqlDatabase {
 * **rule_map**: Mapea nombres de reglas a sus definiciones.
 * **cached_stats**: Estadísticas cacheadas de la base de datos para optimización de consultas.
 
-### Estructura `VolcanoOptimizer`
+### Estructura `Streamertail`
 
-El `VolcanoOptimizer` implementa un optimizador de consultas basado en costos según el modelo Volcano. Transforma planes lógicos en planes físicos eficientes evaluando diferentes operadores físicos y seleccionando el de menor costo estimado.
+El `Streamertail` implementa un optimizador de consultas basado en costos según el modelo Volcano. Transforma planes lógicos en planes físicos eficientes evaluando diferentes operadores físicos y seleccionando el de menor costo estimado.
 
 ```rust
-pub struct VolcanoOptimizer<'a> {
+pub struct Streamertail<'a> {
     pub stats: Arc<DatabaseStats>,
     pub memo: HashMap<String, (PhysicalOperator, f64)>,
     pub selected_variables: Vec<String>,
@@ -772,14 +772,14 @@ if let Some((s, p, o)) = db. decode_triple(&triple) {
 }
 ```
 
-### Métodos de `VolcanoOptimizer`
+### Métodos de `Streamertail`
 
 #### `new(database: &SparqlDatabase) -> Self`
 
-Crea una nueva instancia del `VolcanoOptimizer` con estadísticas de la base de datos.
+Crea una nueva instancia del `Streamertail` con estadísticas de la base de datos.
 
 ```rust
-let optimizer = VolcanoOptimizer::new(&db);
+let optimizer = Streamertail::new(&db);
 ```
 
 #### `with_cached_stats(stats: Arc<DatabaseStats>) -> Self`
@@ -788,7 +788,7 @@ Crea un optimizador con estadísticas precomputadas.
 
 ```rust
 let stats = db.get_or_build_stats();
-let optimizer = VolcanoOptimizer::with_cached_stats(stats);
+let optimizer = Streamertail::with_cached_stats(stats);
 ```
 
 #### `find_best_plan(&mut self, logical_plan: &LogicalOperator) -> PhysicalOperator`

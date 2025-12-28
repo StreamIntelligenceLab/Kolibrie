@@ -433,7 +433,7 @@ pub fn execute_query_rayon_parallel2_volcano(
             );
 
             let stats = database.cached_stats.as_ref().expect("Error");
-            let mut optimizer = VolcanoOptimizer::with_cached_stats(stats.clone());
+            let mut optimizer = Streamertail::with_cached_stats(stats.clone());
             let _optimized_plan = optimizer.find_best_plan(&logical_plan);
 
             #[cfg(feature = "cuda")]
@@ -554,7 +554,7 @@ pub fn execute_query_rayon_parallel2_volcano(
             }
 
             let stats = database.cached_stats.as_ref().expect("AAA");
-            let mut optimizer = VolcanoOptimizer::with_cached_stats(stats.clone());
+            let mut optimizer = Streamertail::with_cached_stats(stats.clone());
 
             let optimized_plan = optimizer.find_best_plan(&logical_plan);
             let results = optimized_plan.execute(database);

@@ -20,13 +20,13 @@ use std::collections::{BTreeMap, HashMap, HashSet};
 use std::sync::Arc;
 
 /// Volcano-style query optimizer with cost-based optimization
-pub struct VolcanoOptimizer {
+pub struct Streamertail {
     pub memo: HashMap<String, PhysicalOperator>,
     pub selected_variables: Vec<String>,
     pub stats: Arc<DatabaseStats>,
 }
 
-impl VolcanoOptimizer {
+impl Streamertail {
     /// Creates a new volcano optimizer
     pub fn new(database: &SparqlDatabase) -> Self {
         let stats = Arc::new(DatabaseStats::gather_stats_fast(database));
@@ -696,10 +696,10 @@ mod tests {
     use super::*;
     use shared::terms::Term;
 
-    fn create_test_optimizer() -> VolcanoOptimizer {
+    fn create_test_optimizer() -> Streamertail {
         // Create a mock database for testing
         let database = SparqlDatabase::new();
-        VolcanoOptimizer::new(&database)
+        Streamertail::new(&database)
     }
 
     #[test]

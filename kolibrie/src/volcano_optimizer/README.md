@@ -23,7 +23,7 @@ volcano_optimizer/
 │   ├── mod.rs               // Statistics module index
 │   └── database_stats.rs    // DatabaseStats gathering and management
 ├── types.rs                 // Common types (Condition, IdResult)
-├── optimizer.rs             // Main VolcanoOptimizer implementation
+├── optimizer.rs             // Main Streamertail implementation
 └── utils.rs                 // Utility functions for plan building
 ```
 
@@ -73,7 +73,7 @@ use shared::terms::{Term, TriplePattern};
 
 // Create database and optimizer
 let mut database = SparqlDatabase::new();
-let mut optimizer = VolcanoOptimizer::new(&database);
+let mut optimizer = Streamertail::new(&database);
 
 // Create logical plan
 let logical_plan = LogicalOperator::scan((

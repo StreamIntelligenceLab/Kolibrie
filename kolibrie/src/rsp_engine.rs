@@ -34,7 +34,7 @@ use std::{println as debug, println as error};
 use crate::parser::parse_combined_query;
 use crate::sparql_database::SparqlDatabase;
 use crate::volcano_optimizer::{
-    build_logical_plan, ExecutionEngine, LogicalOperator, PhysicalOperator, VolcanoOptimizer,
+    build_logical_plan, ExecutionEngine, LogicalOperator, PhysicalOperator, Streamertail,
 };
 /*
 Update:
@@ -333,7 +333,7 @@ where
         output_variables.extend(query_config.static_window_shared_vars.clone());
 
         //create physical plans from the logical ones
-        let mut optimizer = VolcanoOptimizer::new(&database);
+        let mut optimizer = Streamertail::new(&database);
 
         let static_data_plan = match static_data_plan {
             Some(v) => Some(optimizer.find_best_plan(&v)),
