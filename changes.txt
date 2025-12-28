@@ -119,6 +119,7 @@
 119. Modified RSP engine
 120. Improve windowing of RSP engine
 121. Add slicing for BIND instead of Vec
+122. Adding support multi-window for SingleThread
 
 0.1.0
 1. Parsing RDF/XML

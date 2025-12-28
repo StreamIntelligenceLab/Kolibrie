@@ -15,6 +15,8 @@ use crate::rsp::r2r::{AsAnyMut, R2ROperator};
 // This avoids unsafe trait-object vtable casts.
 use crate::rsp::r2s::{Relation2StreamOperator, StreamOperator};
 use crate::rsp::s2r::{CSPARQLWindow, Report, ReportStrategy, Tick};
+use crate::rsp::s2r::ContentContainer;
+
 #[cfg(not(test))]
 use log::{debug, error}; // Use log crate when building application
 use shared::query::{StreamType, WindowBlock, WindowClause};
@@ -460,6 +462,83 @@ pub struct ResultConsumer<I> {
     pub function: Arc<dyn Fn(I) -> () + Send + Sync>,
 }
 
+/// Macro to generate the window processing logic
+macro_rules! create_window_processor {
+    ($window_iri:expr, $query:expr, $query_execution_mode:expr, 
+     $r2r_store:expr, $has_joins:expr, $window_result_sender:expr, $r2s_consumer_func:expr) => {
+        move |content: ContentContainer<I>| {
+            debug!(
+                "Processing window {} with query: {:?} using {:?} execution, on {:?}",
+                $window_iri, $query, $query_execution_mode, content
+            );
+
+            let ts = content.get_last_timestamp_changed();
+            let mut store = $r2r_store.lock().unwrap();
+            
+            content.clone().into_iter().for_each(|t| {
+                store.add(t);
+            });
+
+            let results = store.execute_query(&$query);
+            debug!("Got # results {} for window {}", results.len(), $window_iri);
+
+            if $has_joins {
+                let mut mapped_results: Vec<HashMap<String, String>> = Vec::new();
+
+                for res in &results {
+                    if let Some(bindings) = (res as &dyn std::any::Any)
+                        .downcast_ref::<Vec<(String, String)>>()
+                    {
+                        let map: HashMap<String, String> =
+                            bindings.iter().cloned().collect();
+                        mapped_results.push(map);
+                    }
+                }
+
+                let window_res = WindowResult {
+                    window_iri: $window_iri.clone(),
+                    results: mapped_results,
+                    timestamp: ts,
+                };
+
+                if let Ok(sender) = $window_result_sender.lock() {
+                    if let Err(e) = sender.send(window_res) {
+                        error!("Failed to send window result to buffer: {:?}", e);
+                    }
+                }
+            } else {
+                for res in results {
+                    ($r2s_consumer_func)(res);
+                }
+            }
+        }
+    };
+}
+
+/// Macro to register windows based on operation mode
+macro_rules! register_window {
+    (SingleThread, $window:expr, $processor:expr) => {
+        $window.register_callback(Box::new($processor));
+    };
+    (MultiThread, $window:expr, $processor:expr, $window_iri:expr) => {{
+        let receiver = $window.register();
+        thread::spawn(move || {
+            loop {
+                match receiver.recv() {
+                    Ok(content) => {
+                        $processor(content);
+                    }
+                    Err(_) => {
+                        debug!("Shutting down window {}!", $window_iri);
+                        break;
+                    }
+                }
+            }
+            debug!("Shutdown complete for window {}!", $window_iri);
+        });
+    }};
+}
+
 impl<I, O> RSPEngine<I, O>
 where
     O: Clone + Hash + Eq + Send + 'static + From<Vec<(String, String)>>,
@@ -533,19 +612,60 @@ where
         };
 
         match operation_mode {
-            OperationMode::SingleThread => {
-                error!("Single thread mode not yet implemented for multi-window RSP-QL");
-            }
-            OperationMode::MultiThread => {
-                engine.register_multi_window_r2r();
-                engine.start_cross_window_coordinator();
+            mode @ (OperationMode::SingleThread | OperationMode::MultiThread) => {
+                engine.register_windows(mode);
+                if matches!(mode, OperationMode::MultiThread) {
+                    engine.start_cross_window_coordinator();
+                }
             }
         }
 
         engine
     }
 
+    /// Register windows using macros to eliminate code duplication
+    fn register_windows(&mut self, operation_mode: OperationMode) {
+        let has_joins = self.windows.len() > 1 || !self.shared_variables.is_empty();
+
+        for (window_idx, window) in self.windows.iter_mut().enumerate() {
+            let query = self.rsp_query_plan.window_plans[window_idx].clone();
+            let window_iri = self.window_configs[window_idx].window_iri.clone();
+            let window_iri_for_thread = window_iri.clone(); // Clone for MultiThread usage
+            let query_execution_mode = self.query_execution_mode;
+            let window_result_sender = self.window_result_sender.clone();
+            let r2r_store = self.r2r.clone();
+            
+            let r2s_consumer_func = if has_joins {
+                Arc::new(|_| {}) as Arc<dyn Fn(O) + Send + Sync>
+            } else {
+                self.r2s_consumer.function.clone()
+            };
+
+            // Create processor using macro
+            let processor = create_window_processor!(
+                window_iri,
+                query,
+                query_execution_mode,
+                r2r_store,
+                has_joins,
+                window_result_sender,
+                r2s_consumer_func
+            );
+
+            // Register based on mode
+            match operation_mode {
+                OperationMode::SingleThread => {
+                    register_window!(SingleThread, window, processor);
+                }
+                OperationMode::MultiThread => {
+                    register_window!(MultiThread, window, processor, window_iri_for_thread);
+                }
+            }
+        }
+    }
+
     /// Register R2R processing for multiple windows
+    /* 
     fn register_multi_window_r2r(&mut self) {
         // Check if this specific window has shared variables with other windows
         // or if there are multiple windows (which means we need buffering)
@@ -638,6 +758,7 @@ where
             });
         }
     }
+    */
 
     /// Start a coordinator thread that collects and joins results from multiple windows
     fn start_cross_window_coordinator(&self)
