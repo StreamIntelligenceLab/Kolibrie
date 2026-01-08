@@ -10,7 +10,7 @@
 
 use crate::sparql_database::SparqlDatabase;
 use crate::volcano_optimizer::*;
-use crate::custom_error::format_parse_error;
+use crate::error_handler::format_parse_error;
 use crate::parser::*;
 use shared::query::*;
 use shared::triple::Triple;
@@ -621,7 +621,12 @@ pub fn execute_query_rayon_parallel2_volcano(
             return format_results(final_results, &selected_variables);
         }
     } else {
-        eprintln!("Failed to parse the query.");
+        if let Err(err) = parse_result {
+            let error_message = format_parse_error(sparql, err);
+            eprintln!("{}", error_message);
+        } else {
+            eprintln! ("Failed to parse the query with an unknown error.");
+        }
         return Vec::new();
     }
 }

@@ -121,6 +121,7 @@
 121. Add slicing for BIND instead of Vec
 122. Adding support multi-window for SingleThread
 123. Rename Volcano Optimizer to Streamertail
+124. Improve error handler
 
 0.1.0
 1. Parsing RDF/XML
