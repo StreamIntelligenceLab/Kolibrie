@@ -1257,7 +1257,7 @@ mod tests {
         // Should have results from both windows
         assert!(!result_container.lock().unwrap().is_empty());
     }
-    #[test]
+    
     #[test]
     fn rsp_ql_joining_multi_window_integration() {
         let result_container = Arc::new(Mutex::new(Vec::new()));
@@ -1324,11 +1324,11 @@ mod tests {
 
     #[test]
     fn rsp_ql_single_thread_multi_window_integration() {
-        let result_container = Arc::new(Mutex:: new(Vec::new()));
+        let result_container = Arc::new(Mutex::new(Vec::new()));
         let result_container_clone = Arc::clone(&result_container);
 
-        let function = Box::new(move |r:  Vec<(String, String)>| {
-            println!("SingleThread Multi-Window Bindings:  {:?}", r);
+        let function = Box::new(move |r: Vec<(String, String)>| {
+            println!("SingleThread Multi-Window Bindings: {:?}", r);
             result_container_clone.lock().unwrap().push(r);
         });
 
@@ -1345,8 +1345,8 @@ mod tests {
             FROM NAMED WINDOW :wind1 ON :stream1 [RANGE 10 STEP 2]
             FROM NAMED WINDOW :wind2 ON :stream2 [RANGE 5 STEP 1]
             WHERE {
-                WINDOW : wind1 {
-                    ? s1 a <http://www.w3.org/test/TypeOne> .
+                WINDOW :wind1 {
+                    ?s1 a <http://www.w3.org/test/TypeOne> .
                 }
                 WINDOW :wind2 {
                     ?s2 a <http://www.w3.org/test/TypeTwo> . 
@@ -1371,7 +1371,7 @@ mod tests {
             );
             let triples1 = engine.parse_data(&data1);
             for triple in triples1 {
-                engine.add_to_stream("stream1", triple, i * 10);
+                engine.add_to_stream("stream1", triple, i);
             }
             
             // Add to stream2
@@ -1379,9 +1379,9 @@ mod tests {
                 "<http://test.be/two_{}> a <http://www.w3.org/test/TypeTwo> .",
                 i
             );
-            let triples2 = engine. parse_data(&data2);
+            let triples2 = engine.parse_data(&data2);
             for triple in triples2 {
-                engine.add_to_stream("stream2", triple, i * 10);
+                engine.add_to_stream("stream2", triple, i + 10);
             }
         }
 
