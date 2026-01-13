@@ -456,6 +456,7 @@ where
     window_result_receiver: Arc<Mutex<Receiver<WindowResult>>>,
     // RSP-QL Query Plan using Volcano optimizer
     rsp_query_plan: RSPQueryPlan,
+    single_thread_buffer: Arc<Mutex<HashMap<String, Vec<HashMap<String, String>>>>>,
 }
 
 pub struct ResultConsumer<I> {
@@ -609,6 +610,7 @@ where
             window_result_sender: Arc::new(Mutex::new(result_sender)),
             window_result_receiver: Arc::new(Mutex::new(result_receiver)),
             rsp_query_plan,
+            single_thread_buffer: Arc::new(Mutex::new(HashMap::new())),
         };
 
         match operation_mode {
@@ -763,7 +765,7 @@ where
     /// Start a coordinator thread that collects and joins results from multiple windows
     fn start_cross_window_coordinator(&self)
     where
-    O: From<Vec<(String, String)>>,
+        O: From<Vec<(String, String)>>,
     {
         if self.windows.len() <= 1 {
             return; // No need for coordinator with single window
@@ -774,56 +776,76 @@ where
         let num_windows = self.windows.len();
         
         thread::spawn(move || {
-            let mut window_buffers: HashMap<String, Vec<WindowResult>> = HashMap::new();
+            use std::time::Duration;
+            
+            // Keep the most recent results from each window
+            let mut latest_window_results: HashMap<String, Vec<HashMap<String, String>>> = HashMap::new();
+            let mut windows_that_produced_results: std::collections::HashSet<String> = std::collections::HashSet::new();
             
             loop {
-                match receiver.lock().unwrap().recv() {
+                match receiver.lock().unwrap().recv_timeout(Duration::from_millis(100)) {
                     Ok(window_result) => {
-                        debug!("Coordinator received results from window: {}", window_result.window_iri);
+                        debug!("Coordinator received {} results from window: {}", 
+                            window_result.results.len(), window_result.window_iri);
                         
-                        // Buffer results by window
-                        window_buffers
-                            .entry(window_result.window_iri.clone())
-                            .or_insert_with(Vec::new)
-                            .push(window_result);
+                        windows_that_produced_results.insert(window_result.window_iri.clone());
                         
-                        // Check if we have results from all windows at this timestamp
-                        if window_buffers.len() == num_windows {
-                            // Perform cross-window join
-                            debug!("Performing cross-window join across {} windows", num_windows);
+                        // Update the latest results for this window (replace old results)
+                        latest_window_results.insert(
+                            window_result.window_iri.clone(),
+                            window_result.results.clone()
+                        );
+                        
+                        // If we have results from ALL windows, perform join
+                        if latest_window_results.len() == num_windows {
+                            debug!("Coordinator: All {} windows have results, performing join", num_windows);
                             
-                            // For now, just output all results from all windows
-                            // TODO: Implement actual join logic based on shared variables
-                            for (_window_iri, results) in window_buffers.iter() {
-                                for window_res in results {
-                                    for binding in &window_res.results {
-                                        // Convert HashMap<String, String> to expected output format
-                                        let output: Vec<(String, String)> = binding.iter()
-                                            .map(|(k, v)| (k.clone(), v.clone()))
-                                            .collect();
-                                        
-                                        // This assumes O = Vec<(String, String)>
-                                        // Adjust based on your actual type
-                                        (consumer)(output.into());
-                                    }
+                            // Check that all windows have non-empty results
+                            let all_have_results = latest_window_results.values().all(|v| !v.is_empty());
+                            
+                            if all_have_results {
+                                let joined = join_window_results(&latest_window_results);
+                                
+                                debug!("Coordinator: Joined {} results", joined.len());
+                                
+                                // Output joined results
+                                for binding in joined {
+                                    let output: Vec<(String, String)> = binding.into_iter().collect();
+                                    (consumer)(output.into());
                                 }
+                                
+                                // Keep the results for next join (sliding window semantics)
+                                // Don't clear - we want to join new results with existing ones
+                                debug!("Coordinator: Join complete, keeping window states");
                             }
-                            
-                            // Clear buffers after processing
-                            window_buffers.clear();
+                        } else {
+                            debug!("Coordinator: Waiting for more windows ({}/{}) - have results from: {:?}", 
+                                latest_window_results.len(), 
+                                num_windows,
+                                latest_window_results.keys().collect::<Vec<_>>());
                         }
                     }
-                    Err(_) => {
-                        debug!("Coordinator shutting down");
+                    Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
+                        // Timeout, continue waiting
+                        continue;
+                    }
+                    Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
+                        debug!("Coordinator: Channel disconnected, shutting down");
                         break;
                     }
                 }
             }
+            
+            debug!("Coordinator: Shutdown complete");
         });
     }
 
     /// Add data to appropriate window based on stream IRI
     pub fn add_to_stream(&mut self, stream_iri: &str, event_item: I, ts: usize) {
+        if self.windows.len() > 1 {
+            self.process_single_thread_window_results();
+        }
+
         fn normalize_stream_iri(s: &str) -> String {
             let s = s.trim();
             // Some callers might pass a full IRI in `<...>` form.
@@ -854,6 +876,58 @@ where
         }
     }
 
+    fn process_single_thread_window_results(&mut self)
+    where
+        O: From<Vec<(String, String)>>,
+    {
+        let receiver = self.window_result_receiver.clone();
+        let consumer = self.r2s_consumer.function.clone();
+        let num_windows = self.windows.len();
+        let buffer = self.single_thread_buffer.clone();
+        
+        // Collect all available results from the channel
+        let mut new_results = Vec::new();
+        while let Ok(window_result) = receiver.lock().unwrap().try_recv() {
+            new_results.push(window_result);
+        }
+        
+        // If no new results, nothing to do
+        if new_results.is_empty() {
+            return;
+        }
+        
+        // Accumulate into persistent buffer
+        let mut window_buffers = buffer.lock().unwrap();
+        for window_result in new_results {
+            window_buffers
+                .entry(window_result. window_iri.clone())
+                .or_insert_with(Vec::new)
+                .extend(window_result.results);
+        }
+        
+        // Check if we have results from ALL windows
+        if window_buffers.len() == num_windows {
+            debug!("SingleThread: All windows have results, performing join");
+            
+            // Perform join across all windows
+            let joined_results = join_window_results(&window_buffers);
+            
+            debug!("SingleThread: Joined {} results", joined_results.len());
+            
+            // Output joined results
+            for binding in joined_results {
+                let output:  Vec<(String, String)> = binding.into_iter().collect();
+                (consumer)(output.into());
+            }
+            
+            // Clear buffer after outputting
+            window_buffers.clear();
+        } else {
+            debug!("SingleThread: Waiting for more windows ({}/{})", 
+                window_buffers.len(), num_windows);
+        }
+    }
+
     /// Legacy method for backward compatibility
     pub fn add(&mut self, event_item: I, ts: usize) {
         // Add to all windows (for backward compatibility)
@@ -881,6 +955,59 @@ where
     pub fn get_query_plan(&self) -> &RSPQueryPlan {
         &self.rsp_query_plan
     }
+}
+
+/// Join results from multiple windows based on shared variables
+fn join_window_results(window_buffers: &HashMap<String, Vec<HashMap<String, String>>>) -> Vec<HashMap<String, String>> {
+    if window_buffers.is_empty() {
+        return Vec::new();
+    }
+    
+    // Get all window results as a vector
+    let mut all_windows: Vec<Vec<HashMap<String, String>>> = window_buffers.values().cloned().collect();
+    
+    if all_windows.len() == 1 {
+        return all_windows.into_iter().next().unwrap();
+    }
+    
+    // Start with first window results
+    let mut joined = all_windows.remove(0);
+    
+    // Join with each remaining window
+    for window_results in all_windows {
+        let mut new_joined = Vec::new();
+        
+        for left_binding in &joined {
+            for right_binding in &window_results {
+                // Check if bindings are compatible (shared variables have same values)
+                let mut compatible = true;
+                
+                // Check shared variables
+                for (var, val) in left_binding {
+                    if let Some(right_val) = right_binding.get(var) {
+                        // Same variable exists in both - must have same value
+                        if val != right_val {
+                            compatible = false;
+                            break;
+                        }
+                    }
+                }
+                
+                if compatible {
+                    // Merge bindings (Cartesian product if no shared vars, natural join if shared)
+                    let mut merged = left_binding.clone();
+                    for (k, v) in right_binding {
+                        merged.insert(k.clone(), v.clone());
+                    }
+                    new_joined.push(merged);
+                }
+            }
+        }
+        
+        joined = new_joined;
+    }
+    
+    joined
 }
 
 pub struct SimpleR2R {
@@ -1013,6 +1140,7 @@ mod tests {
         // Should have results from window processing
         assert!(!result_container.lock().unwrap().is_empty());
     }
+
     #[test]
     fn rsp_ql_integration_with_join() {
         let result_container = Arc::new(Mutex::new(Vec::new()));
@@ -1130,6 +1258,7 @@ mod tests {
         assert!(!result_container.lock().unwrap().is_empty());
     }
     #[test]
+    #[test]
     fn rsp_ql_joining_multi_window_integration() {
         let result_container = Arc::new(Mutex::new(Vec::new()));
         let result_container_clone = Arc::clone(&result_container);
@@ -1191,5 +1320,98 @@ mod tests {
 
         // Should have no results if windows are correctly joined together
         assert!(result_container.lock().unwrap().is_empty());
+    }
+
+    #[test]
+    fn rsp_ql_single_thread_multi_window_integration() {
+        let result_container = Arc::new(Mutex:: new(Vec::new()));
+        let result_container_clone = Arc::clone(&result_container);
+
+        let function = Box::new(move |r:  Vec<(String, String)>| {
+            println!("SingleThread Multi-Window Bindings:  {:?}", r);
+            result_container_clone.lock().unwrap().push(r);
+        });
+
+        let result_consumer = ResultConsumer {
+            function: Arc::new(function),
+        };
+        
+        let r2r = Box::new(SimpleR2R::with_execution_mode(QueryExecutionMode::Volcano));
+
+        // FIXED:  Consistent spacing and proper SPARQL variable syntax
+        let rsp_ql_query = r#"
+            REGISTER RSTREAM <http://out/stream> AS
+            SELECT *
+            FROM NAMED WINDOW :wind1 ON :stream1 [RANGE 10 STEP 2]
+            FROM NAMED WINDOW :wind2 ON :stream2 [RANGE 5 STEP 1]
+            WHERE {
+                WINDOW : wind1 {
+                    ? s1 a <http://www.w3.org/test/TypeOne> .
+                }
+                WINDOW :wind2 {
+                    ?s2 a <http://www.w3.org/test/TypeTwo> . 
+                }
+            }
+        "#;
+
+        let mut engine: RSPEngine<Triple, Vec<(String, String)>> = RSPBuilder::new()
+            .add_rsp_ql_query(rsp_ql_query)
+            .add_consumer(result_consumer)
+            .add_r2r(r2r)
+            .set_operation_mode(OperationMode::SingleThread)
+            .build()
+            .expect("Failed to build RSP engine");
+
+        // Feed data to both streams
+        for i in 0..5 {
+            // Add to stream1
+            let data1 = format!(
+                "<http://test.be/one_{}> a <http://www.w3.org/test/TypeOne> .",
+                i
+            );
+            let triples1 = engine.parse_data(&data1);
+            for triple in triples1 {
+                engine.add_to_stream("stream1", triple, i * 10);
+            }
+            
+            // Add to stream2
+            let data2 = format!(
+                "<http://test.be/two_{}> a <http://www.w3.org/test/TypeTwo> .",
+                i
+            );
+            let triples2 = engine. parse_data(&data2);
+            for triple in triples2 {
+                engine.add_to_stream("stream2", triple, i * 10);
+            }
+        }
+
+        engine.stop();
+
+        // Verify we got results
+        let results = result_container.lock().unwrap();
+        println!("Total results captured:  {}", results.len());
+        
+        for (i, result) in results.iter().take(3).enumerate() {
+            println!("Result {}: {:?}", i, result);
+        }
+
+        // Check if there are results with BOTH s1 AND s2 in the same binding
+        let has_joined_results = results.iter().any(|binding| {
+            let has_s1 = binding. iter().any(|(k, _)| k == "s1");
+            let has_s2 = binding.iter().any(|(k, _)| k == "s2");
+            has_s1 && has_s2
+        });
+
+        assert!(has_joined_results, "Should have joined results with both s1 and s2 in the same binding");
+        assert! (!results.is_empty(), "Should have at least some results");
+        
+        let joined_count = results.iter().filter(|binding| {
+            let has_s1 = binding.iter().any(|(k, _)| k == "s1");
+            let has_s2 = binding.iter().any(|(k, _)| k == "s2");
+            has_s1 && has_s2
+        }).count();
+        
+        println!("Number of properly joined results: {}", joined_count);
+        assert!(joined_count > 0, "Should have at least one properly joined result");
     }
 }

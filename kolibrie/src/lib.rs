@@ -8,6 +8,8 @@
  * you can obtain one at https://mozilla.org/MPL/2.0/.
  */
 
+mod storage_trait;
+mod storage_manager;
 pub mod cuda;
 pub mod error_handler;
 pub mod execute_ml;
@@ -21,3 +23,4 @@ pub mod sparql_database;
 pub mod utils;
 pub mod volcano_optimizer;
 pub mod rsp;
+pub mod query_engine;

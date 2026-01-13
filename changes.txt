@@ -122,6 +122,8 @@
 122. Adding support multi-window for SingleThread
 123. Rename Volcano Optimizer to Streamertail
 124. Improve error handler
+125. Add StorageManager and trait for coordinating between static and streaming data
+126. Add join operation for RSP engine
 
 0.1.0
 1. Parsing RDF/XML

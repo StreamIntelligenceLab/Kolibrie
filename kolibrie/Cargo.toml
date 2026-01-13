@@ -35,7 +35,6 @@ datalog =  { path = "../datalog" }
 ml = { path = "../ml" }
 chrono = "0.4.40"
 rumqttc = "0.21.0"
-rustc-hash = "2.1.1"
 log = "0.4.27"
 annotate-snippets = "0.12.10"
 
