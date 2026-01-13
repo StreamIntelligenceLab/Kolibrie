@@ -1129,4 +1129,67 @@ mod tests {
         // Should have results from both windows
         assert!(!result_container.lock().unwrap().is_empty());
     }
+    #[test]
+    fn rsp_ql_joining_multi_window_integration() {
+        let result_container = Arc::new(Mutex::new(Vec::new()));
+        let result_container_clone = Arc::clone(&result_container);
+        let function = Box::new(move |r: Vec<(String, String)>| {
+            println!("Multi-window Bindings: {:?}", r);
+            result_container_clone.lock().unwrap().push(r);
+        });
+        let result_consumer = ResultConsumer {
+            function: Arc::new(function),
+        };
+        let r2r = Box::new(SimpleR2R::with_execution_mode(QueryExecutionMode::Volcano));
+
+        // RSP-QL query with multiple windows (similar to the example)
+        let rsp_ql_query = r#"
+            REGISTER RSTREAM <http://out/stream> AS
+            SELECT *
+            FROM NAMED WINDOW :wind ON :stream1 [RANGE 10 STEP 2]
+            FROM NAMED WINDOW :wind2 ON :stream2 [RANGE 5 STEP 1]
+            WHERE {
+                WINDOW :wind {
+                    ?s a <http://www.w3.org/test/Temperature> .
+                }
+                WINDOW :wind2 {
+                    ?s a <http://www.w3.org/test/CO2> .
+                }
+            }
+        "#;
+
+        let mut engine: RSPEngine<Triple, Vec<(String, String)>> = RSPBuilder::new()
+            .add_rsp_ql_query(rsp_ql_query)
+            .add_consumer(result_consumer)
+            .add_r2r(r2r)
+            .build()
+            .expect("Failed to build RSP engine");
+
+        // Add temperature data
+        for i in 0..10 {
+            let data = format!(
+                "<http://test.be/temp{}> a <http://www.w3.org/test/Temperature> .",
+                i
+            );
+            let triples = engine.parse_data(&data);
+            for triple in triples {
+                engine.add_to_stream("stream1", triple, i);
+            }
+        }
+
+        // Add CO2 data
+        for i in 0..10 {
+            let data = format!("<http://test.be/co2{}> a <http://www.w3.org/test/CO2> .", i);
+            let triples = engine.parse_data(&data);
+            for triple in triples {
+                engine.add_to_stream("stream2", triple, i + 10);
+            }
+        }
+
+        engine.stop();
+        thread::sleep(Duration::from_secs(2));
+
+        // Should have no results if windows are correctly joined together
+        assert!(result_container.lock().unwrap().is_empty());
+    }
 }
