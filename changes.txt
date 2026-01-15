@@ -124,6 +124,7 @@
 124. Improve error handler
 125. Add StorageManager and trait for coordinating between static and streaming data
 126. Add join operation for RSP engine
+127. Modify RSP engine by using crossbeam instead of mpsc
 
 0.1.0
 1. Parsing RDF/XML

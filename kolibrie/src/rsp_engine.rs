@@ -25,7 +25,7 @@ use shared::triple::Triple;
 use std::collections::HashMap;
 use std::fmt::Debug;
 use std::hash::Hash;
-use std::sync::mpsc::{self, Receiver, Sender};
+use crossbeam::channel::{unbounded, Receiver, Sender};
 use std::sync::{Arc, Mutex};
 use std::thread;
 #[cfg(test)]
@@ -452,8 +452,8 @@ where
     query_execution_mode: QueryExecutionMode,
     shared_variables: Vec<String>,
     // Channel for collecting window results for cross-window joins
-    window_result_sender: Arc<Mutex<Sender<WindowResult>>>,
-    window_result_receiver: Arc<Mutex<Receiver<WindowResult>>>,
+    window_result_sender: Sender<WindowResult>,
+    window_result_receiver: Receiver<WindowResult>,
     // RSP-QL Query Plan using Volcano optimizer
     rsp_query_plan: RSPQueryPlan,
     single_thread_buffer: Arc<Mutex<HashMap<String, Vec<HashMap<String, String>>>>>,
@@ -469,29 +469,32 @@ macro_rules! create_window_processor {
      $r2r_store:expr, $has_joins:expr, $window_result_sender:expr, $r2s_consumer_func:expr) => {
         move |content: ContentContainer<I>| {
             debug!(
-                "Processing window {} with query: {:?} using {:?} execution, on {:?}",
-                $window_iri, $query, $query_execution_mode, content
+                "Processing window {} with query: {:?} using {:?} execution",
+                $window_iri, $query, $query_execution_mode
             );
 
             let ts = content.get_last_timestamp_changed();
             let mut store = $r2r_store.lock().unwrap();
             
-            content.clone().into_iter().for_each(|t| {
+            for t in content.into_iter() {
                 store.add(t);
-            });
+            }
 
             let results = store.execute_query(&$query);
             debug!("Got # results {} for window {}", results.len(), $window_iri);
+            
+            // Release lock early to reduce contention
+            drop(store);
 
             if $has_joins {
                 let mut mapped_results: Vec<HashMap<String, String>> = Vec::new();
+                mapped_results.reserve(results.len());
 
                 for res in &results {
                     if let Some(bindings) = (res as &dyn std::any::Any)
                         .downcast_ref::<Vec<(String, String)>>()
                     {
-                        let map: HashMap<String, String> =
-                            bindings.iter().cloned().collect();
+                        let map: HashMap<String, String> = bindings.iter().cloned().collect();
                         mapped_results.push(map);
                     }
                 }
@@ -502,10 +505,8 @@ macro_rules! create_window_processor {
                     timestamp: ts,
                 };
 
-                if let Ok(sender) = $window_result_sender.lock() {
-                    if let Err(e) = sender.send(window_res) {
-                        error!("Failed to send window result to buffer: {:?}", e);
-                    }
+                if let Err(e) = $window_result_sender.send(window_res) {
+                    error!("Failed to send window result to buffer: {:?}", e);
                 }
             } else {
                 for res in results {
@@ -594,7 +595,7 @@ where
         }
 
         // Create channel for cross-window result coordination
-        let (result_sender, result_receiver) = mpsc::channel::<WindowResult>();
+        let (result_sender, result_receiver) = unbounded::<WindowResult>();
 
         let mut engine = RSPEngine {
             windows,
@@ -607,8 +608,8 @@ where
             window_configs: query_config.windows.clone(),
             query_execution_mode,
             shared_variables: query_config.shared_variables.clone(),
-            window_result_sender: Arc::new(Mutex::new(result_sender)),
-            window_result_receiver: Arc::new(Mutex::new(result_receiver)),
+            window_result_sender: result_sender,
+            window_result_receiver: result_receiver,
             rsp_query_plan,
             single_thread_buffer: Arc::new(Mutex::new(HashMap::new())),
         };
@@ -666,102 +667,6 @@ where
         }
     }
 
-    /// Register R2R processing for multiple windows
-    /* 
-    fn register_multi_window_r2r(&mut self) {
-        // Check if this specific window has shared variables with other windows
-        // or if there are multiple windows (which means we need buffering)
-        let has_cross_window_join = self.windows.len() > 1;
-        let has_shared_variables = !self.shared_variables.is_empty();
-
-        for (window_idx, window) in self.windows.iter_mut().enumerate() {
-            let receiver = window.register();
-            let _consumer_temp = self.r2r.clone();
-            let query = self.rsp_query_plan.window_plans[window_idx].clone();
-            let window_iri = self.window_configs[window_idx].window_iri.clone();
-            let query_execution_mode = self.query_execution_mode;
-            
-            let window_result_sender = self.window_result_sender.clone();
-            
-            let r2s_consumer_func = if has_shared_variables || has_cross_window_join {
-                // Use dummy consumer - results go to buffer for joining
-                let dummy_consumer: Arc<dyn Fn(O) + Send + Sync> = Arc::new(|_| {});
-                dummy_consumer
-            } else {
-                // Send results directly to consumer
-                self.r2s_consumer.function.clone()
-            };
-
-            let _r2s_operator = self.r2s_operator.clone();
-            let _rsp_query_plan = self.rsp_query_plan.clone();
-            let r2r_store = self.r2r.clone();
-
-            thread::spawn(move || {
-                loop {
-                    match receiver.recv() {
-                        Ok(content) => {
-                            debug!(
-                                "Processing window {} with query: {:?} using {:?} execution, on {:?}",
-                                window_iri, query, query_execution_mode, content
-                            );
-
-                            let ts = content.get_last_timestamp_changed();
-                            let mut store = r2r_store.lock().unwrap();
-                            
-                            // Add all content from this window to the store
-                            content.clone().into_iter().for_each(|t| {
-                                store.add(t);
-                            });
-
-                            let results = store.execute_query(&query);
-                            debug!("Got # results {} for window {}", results.len(), window_iri);
-
-                            if has_shared_variables || has_cross_window_join {
-                                // Convert generic O results to HashMap for WindowResult
-                                let mut mapped_results: Vec<HashMap<String, String>> = Vec::new();
-
-                                for res in &results {
-                                    // Downcast check to ensure O matches the expected binding format
-                                    if let Some(bindings) = (res as &dyn std::any::Any)
-                                        .downcast_ref::<Vec<(String, String)>>()
-                                    {
-                                        let map: HashMap<String, String> =
-                                            bindings.iter().cloned().collect();
-                                        mapped_results.push(map);
-                                    }
-                                }
-
-                                let window_res = WindowResult {
-                                    window_iri: window_iri.clone(),
-                                    results: mapped_results,
-                                    timestamp: ts,
-                                };
-
-                                // Send to the cross-window join coordinator
-                                if let Ok(sender) = window_result_sender.lock() {
-                                    if let Err(e) = sender.send(window_res) {
-                                        error!("Failed to send window result to buffer: {:?}", e);
-                                    }
-                                }
-                            } else {
-                                // Direct output if no joins are required
-                                for res in results {
-                                    (r2s_consumer_func)(res);
-                                }
-                            }
-                        }
-                        Err(_) => {
-                            debug!("Shutting down window {}!", window_iri);
-                            break;
-                        }
-                    }
-                }
-                debug!("Shutdown complete for window {}!", window_iri);
-            });
-        }
-    }
-    */
-
     /// Start a coordinator thread that collects and joins results from multiple windows
     fn start_cross_window_coordinator(&self)
     where
@@ -776,19 +681,14 @@ where
         let num_windows = self.windows.len();
         
         thread::spawn(move || {
-            use std::time::Duration;
-            
             // Keep the most recent results from each window
             let mut latest_window_results: HashMap<String, Vec<HashMap<String, String>>> = HashMap::new();
-            let mut windows_that_produced_results: std::collections::HashSet<String> = std::collections::HashSet::new();
             
             loop {
-                match receiver.lock().unwrap().recv_timeout(Duration::from_millis(100)) {
+                match receiver.recv() {
                     Ok(window_result) => {
                         debug!("Coordinator received {} results from window: {}", 
                             window_result.results.len(), window_result.window_iri);
-                        
-                        windows_that_produced_results.insert(window_result.window_iri.clone());
                         
                         // Update the latest results for this window (replace old results)
                         latest_window_results.insert(
@@ -814,8 +714,6 @@ where
                                     (consumer)(output.into());
                                 }
                                 
-                                // Keep the results for next join (sliding window semantics)
-                                // Don't clear - we want to join new results with existing ones
                                 debug!("Coordinator: Join complete, keeping window states");
                             }
                         } else {
@@ -825,11 +723,7 @@ where
                                 latest_window_results.keys().collect::<Vec<_>>());
                         }
                     }
-                    Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
-                        // Timeout, continue waiting
-                        continue;
-                    }
-                    Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
+                    Err(_) => {
                         debug!("Coordinator: Channel disconnected, shutting down");
                         break;
                     }
@@ -880,14 +774,13 @@ where
     where
         O: From<Vec<(String, String)>>,
     {
-        let receiver = self.window_result_receiver.clone();
         let consumer = self.r2s_consumer.function.clone();
         let num_windows = self.windows.len();
         let buffer = self.single_thread_buffer.clone();
         
         // Collect all available results from the channel
         let mut new_results = Vec::new();
-        while let Ok(window_result) = receiver.lock().unwrap().try_recv() {
+        while let Ok(window_result) = self.window_result_receiver.try_recv() {
             new_results.push(window_result);
         }
         
@@ -900,7 +793,7 @@ where
         let mut window_buffers = buffer.lock().unwrap();
         for window_result in new_results {
             window_buffers
-                .entry(window_result. window_iri.clone())
+                .entry(window_result.window_iri.clone())
                 .or_insert_with(Vec::new)
                 .extend(window_result.results);
         }
@@ -916,7 +809,7 @@ where
             
             // Output joined results
             for binding in joined_results {
-                let output:  Vec<(String, String)> = binding.into_iter().collect();
+                let output: Vec<(String, String)> = binding.into_iter().collect();
                 (consumer)(output.into());
             }
             
