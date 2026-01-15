@@ -9,7 +9,7 @@
  */
 
 use kolibrie::sparql_database::SparqlDatabase;
-use kolibrie::volcano_optimizer::*;
+use kolibrie::streamertail_optimizer::*;
 use shared::terms::Term;
 use shared::triple::Triple;
 use std::time::Instant;

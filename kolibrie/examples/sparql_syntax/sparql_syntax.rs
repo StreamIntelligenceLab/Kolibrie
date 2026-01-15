@@ -11,10 +11,10 @@
 use kolibrie::parser::*;
 use kolibrie::sparql_database::*;
 use std::time::Instant;
-use kolibrie::volcano_optimizer::*;
+use kolibrie::streamertail_optimizer::*;
 
 
-fn volcano_optimizer_sparql() {
+fn streamertail_optimizer_sparql() {
     // Step 1: Initialize the database
     let mut database = SparqlDatabase::new();
 
@@ -110,5 +110,5 @@ fn volcano_optimizer_sparql() {
 }
 
 fn main() {
-    volcano_optimizer_sparql();
+    streamertail_optimizer_sparql();
 }

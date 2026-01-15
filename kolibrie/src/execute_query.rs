@@ -9,7 +9,7 @@
  */
 
 use crate::sparql_database::SparqlDatabase;
-use crate::volcano_optimizer::*;
+use crate::streamertail_optimizer::*;
 use crate::error_handler::format_parse_error;
 use crate::parser::*;
 use shared::query::*;
@@ -559,9 +559,9 @@ pub fn execute_query_rayon_parallel2_volcano(
             let optimized_plan = optimizer.find_best_plan(&logical_plan);
             let results = optimized_plan.execute(database);
             /*if let Ok(report) = guard.report().build() {
-                let file = std::fs::File::create("volcano_optimizer_flamegraph.svg").unwrap();
+                let file = std::fs::File::create("streamertail_optimizer_flamegraph.svg").unwrap();
                 report.flamegraph(file).unwrap();
-                println!("Volcano optimizer flamegraph saved to: volcano_optimizer_flamegraph. svg");
+                println!("Volcano optimizer flamegraph saved to: streamertail_optimizer_flamegraph. svg");
             }*/
 
             // Convert results to owned strings first to avoid lifetime issues

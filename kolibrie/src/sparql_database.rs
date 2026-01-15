@@ -36,7 +36,7 @@ use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::sync::Arc;
 use std::sync::{Mutex, RwLock};
 use url::Url;
-use crate::volcano_optimizer::DatabaseStats;
+use crate::streamertail_optimizer::DatabaseStats;
 
 const MIN_CHUNK_SIZE: usize = 1024;
 const HASHMAP_INITIAL_CAPACITY: usize = 4096;

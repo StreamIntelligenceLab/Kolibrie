@@ -33,8 +33,8 @@
 //! ## Usage
 //!
 //! ```rust
-//! use volcano_optimizer::Streamertail;
-//! use volcano_optimizer::operators::LogicalOperator;
+//! use streamertail_optimizer::Streamertail;
+//! use streamertail_optimizer::operators::LogicalOperator;
 //!
 //! let mut optimizer = Streamertail::new(&database);
 //! let logical_plan = LogicalOperator::scan(pattern);

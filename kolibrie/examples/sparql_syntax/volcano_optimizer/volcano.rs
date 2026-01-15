@@ -9,12 +9,12 @@
  */
 
 use kolibrie::sparql_database::*;
-use kolibrie::volcano_optimizer::*;
+use kolibrie::streamertail_optimizer::*;
 use shared::terms::Term;
 use shared::triple::*;
 use std::time::Instant;
 
-fn simple_volcano_optimizer() {
+fn simple_streamertail_optimizer() {
     println!("=== Simple Volcano Optimizer Example ===");
 
     // Step 1: Execute the physical plan on a sample database
@@ -89,7 +89,7 @@ fn simple_volcano_optimizer() {
     println!();
 }
 
-fn volcano_optimizer_multiple_triples() {
+fn streamertail_optimizer_multiple_triples() {
     println!("=== Multiple Triples Example ===");
 
     // Step 1: Execute the physical plan on a sample database
@@ -175,7 +175,7 @@ fn volcano_optimizer_multiple_triples() {
     println!();
 }
 
-fn volcano_optimizer_rdf() {
+fn streamertail_optimizer_rdf() {
     println!("=== RDF Example with SPARQL Parsing ===");
 
     // Step 1: Execute the physical plan on a sample database
@@ -241,7 +241,7 @@ fn volcano_optimizer_rdf() {
     println!();
 }
 
-fn volcano_optimizer_index_patterns() {
+fn streamertail_optimizer_index_patterns() {
     println!("=== Index Pattern Examples ===");
 
     // Step 1: Initialize the database
@@ -359,7 +359,7 @@ fn volcano_optimizer_index_patterns() {
     }
 }
 
-fn volcano_optimizer_performance_test() {
+fn streamertail_optimizer_performance_test() {
     println!("=== Performance Test ===");
 
     // Step 1: Initialize the database with larger dataset
@@ -506,19 +506,19 @@ fn volcano_optimizer_performance_test() {
 }
 
 fn main() {
-    simple_volcano_optimizer();
+    simple_streamertail_optimizer();
     println!("============================================");
 
-    volcano_optimizer_multiple_triples();
+    streamertail_optimizer_multiple_triples();
     println!("============================================");
 
-    volcano_optimizer_rdf();
+    streamertail_optimizer_rdf();
     println!("============================================");
 
-    volcano_optimizer_index_patterns();
+    streamertail_optimizer_index_patterns();
     println!("============================================");
 
-    volcano_optimizer_performance_test();
+    streamertail_optimizer_performance_test();
     println!("============================================");
 
     println!("All examples completed successfully!");

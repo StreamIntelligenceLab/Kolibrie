@@ -33,7 +33,7 @@ use std::{println as debug, println as error};
 
 use crate::parser::parse_combined_query;
 use crate::sparql_database::SparqlDatabase;
-use crate::volcano_optimizer::{
+use crate::streamertail_optimizer::{
     build_logical_plan, ExecutionEngine, LogicalOperator, PhysicalOperator, Streamertail,
 };
 /*

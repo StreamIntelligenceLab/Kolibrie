@@ -21,6 +21,6 @@ pub mod rsp_engine;
 pub mod sliding_window;
 pub mod sparql_database;
 pub mod utils;
-pub mod volcano_optimizer;
+pub mod streamertail_optimizer;
 pub mod rsp;
 pub mod query_engine;

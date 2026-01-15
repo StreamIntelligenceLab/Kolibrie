@@ -8,7 +8,7 @@
  * you can obtain one at https://mozilla.org/MPL/2.0/.
  */
 
-use crate::volcano_optimizer::PhysicalOperator;
+use crate::streamertail_optimizer::PhysicalOperator;
 
 use std::any::Any;
 
