@@ -9,12 +9,12 @@
  */
 
 use kolibrie::sparql_database::*;
-use kolibrie::volcano_optimizer::*;
+use kolibrie::streamertail_optimizer::*;
 use shared::terms::Term;
 use shared::triple::*;
 use std::time::Instant;
 
-fn simple_volcano_optimizer() {
+fn simple_streamertail_optimizer() {
     println!("=== Simple Volcano Optimizer Example ===");
 
     // Step 1: Execute the physical plan on a sample database
@@ -70,7 +70,7 @@ fn simple_volcano_optimizer() {
     let logical_plan = LogicalOperator::join(name_scan, age_scan);
 
     // Step 3: Initialize the optimizer and optimize
-    let mut optimizer = VolcanoOptimizer::new(&database);
+    let mut optimizer = Streamertail::new(&database);
     let best_plan = optimizer.find_best_plan(&logical_plan);
 
     println!("Logical Plan: {:?}", logical_plan);
@@ -89,7 +89,7 @@ fn simple_volcano_optimizer() {
     println!();
 }
 
-fn volcano_optimizer_multiple_triples() {
+fn streamertail_optimizer_multiple_triples() {
     println!("=== Multiple Triples Example ===");
 
     // Step 1: Execute the physical plan on a sample database
@@ -156,7 +156,7 @@ fn volcano_optimizer_multiple_triples() {
     let logical_plan = LogicalOperator::join(type_scan, filtered_age);
 
     // Step 4: Initialize the optimizer and optimize
-    let mut optimizer = VolcanoOptimizer::new(&database);
+    let mut optimizer = Streamertail::new(&database);
     let best_plan = optimizer.find_best_plan(&logical_plan);
 
     println!("Logical Plan: {:?}", logical_plan);
@@ -175,7 +175,7 @@ fn volcano_optimizer_multiple_triples() {
     println!();
 }
 
-fn volcano_optimizer_rdf() {
+fn streamertail_optimizer_rdf() {
     println!("=== RDF Example with SPARQL Parsing ===");
 
     // Step 1: Execute the physical plan on a sample database
@@ -219,10 +219,10 @@ fn volcano_optimizer_rdf() {
     let mut prefixes = std::collections::HashMap::new();
     prefixes.insert("ex".to_string(), "http://example.org/".to_string());
 
-    let logical_plan = build_logical_plan(variables, patterns, filters, &prefixes, &mut database, Vec::new(), None);
+    let logical_plan = build_logical_plan(variables, patterns, filters, &prefixes, &mut database, &[], None);
 
     // Step 4: Initialize the optimizer and optimize
-    let mut optimizer = VolcanoOptimizer::new(&database);
+    let mut optimizer = Streamertail::new(&database);
     let best_plan = optimizer.find_best_plan(&logical_plan);
 
     println!("Logical Plan: {:?}", logical_plan);
@@ -241,7 +241,7 @@ fn volcano_optimizer_rdf() {
     println!();
 }
 
-fn volcano_optimizer_index_patterns() {
+fn streamertail_optimizer_index_patterns() {
     println!("=== Index Pattern Examples ===");
 
     // Step 1: Initialize the database
@@ -339,7 +339,7 @@ fn volcano_optimizer_index_patterns() {
     // For each pattern, build + optimize + execute
     for (i, (description, pattern)) in patterns.iter().enumerate() {
         let logical_plan = LogicalOperator::scan(pattern.clone());
-        let mut optimizer = VolcanoOptimizer::new(&database);
+        let mut optimizer = Streamertail::new(&database);
         let best_plan = optimizer.find_best_plan(&logical_plan);
 
         println!("\n=== QUERY {} - {} ===", i + 1, description);
@@ -359,7 +359,7 @@ fn volcano_optimizer_index_patterns() {
     }
 }
 
-fn volcano_optimizer_performance_test() {
+fn streamertail_optimizer_performance_test() {
     println!("=== Performance Test ===");
 
     // Step 1: Initialize the database with larger dataset
@@ -418,7 +418,7 @@ fn volcano_optimizer_performance_test() {
     ));
 
     let start = Instant::now();
-    let mut optimizer1 = VolcanoOptimizer::new(&database);
+    let mut optimizer1 = Streamertail::new(&database);
     let physical_plan1 = optimizer1.find_best_plan(&logical_plan1);
     let optimization_time1 = start.elapsed();
 
@@ -447,7 +447,7 @@ fn volcano_optimizer_performance_test() {
     let logical_plan2 = LogicalOperator::join(name_scan, age_scan);
 
     let start = Instant::now();
-    let mut optimizer2 = VolcanoOptimizer::new(&database);
+    let mut optimizer2 = Streamertail::new(&database);
     let physical_plan2 = optimizer2.find_best_plan(&logical_plan2);
     let optimization_time2 = start.elapsed();
 
@@ -477,7 +477,7 @@ fn volcano_optimizer_performance_test() {
     let logical_plan3 = LogicalOperator::selection(joined, condition);
 
     let start = Instant::now();
-    let mut optimizer3 = VolcanoOptimizer::new(&database);
+    let mut optimizer3 = Streamertail::new(&database);
     let physical_plan3 = optimizer3.find_best_plan(&logical_plan3);
     let optimization_time3 = start.elapsed();
 
@@ -506,19 +506,19 @@ fn volcano_optimizer_performance_test() {
 }
 
 fn main() {
-    simple_volcano_optimizer();
+    simple_streamertail_optimizer();
     println!("============================================");
 
-    volcano_optimizer_multiple_triples();
+    streamertail_optimizer_multiple_triples();
     println!("============================================");
 
-    volcano_optimizer_rdf();
+    streamertail_optimizer_rdf();
     println!("============================================");
 
-    volcano_optimizer_index_patterns();
+    streamertail_optimizer_index_patterns();
     println!("============================================");
 
-    volcano_optimizer_performance_test();
+    streamertail_optimizer_performance_test();
     println!("============================================");
 
     println!("All examples completed successfully!");

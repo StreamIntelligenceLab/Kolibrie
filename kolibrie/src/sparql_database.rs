@@ -36,7 +36,7 @@ use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::sync::Arc;
 use std::sync::{Mutex, RwLock};
 use url::Url;
-use crate::volcano_optimizer::DatabaseStats;
+use crate::streamertail_optimizer::DatabaseStats;
 
 const MIN_CHUNK_SIZE: usize = 1024;
 const HASHMAP_INITIAL_CAPACITY: usize = 4096;
@@ -73,6 +73,10 @@ impl SparqlDatabase {
         }
     }
 
+    pub fn set_prefixes(&mut self, prefixes: HashMap<String, String>){
+        self.prefixes=prefixes;
+    }
+
     pub fn get_or_build_stats(&mut self) -> Arc<DatabaseStats> {
         if let Some(stats) = &self.cached_stats {
             return stats.clone();  // ← Clone the Arc (cheap), not the DatabaseStats
@@ -87,7 +91,7 @@ impl SparqlDatabase {
         self.cached_stats = None;
     }
 
-    pub fn query(&self) -> QueryBuilder {
+    pub fn query(&self) -> QueryBuilder<'_> {
         QueryBuilder::new(self)
     }
 

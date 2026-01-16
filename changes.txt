@@ -116,6 +116,16 @@
 116. Improve Volcano Optimizer by including filtering
 117. Improve Volcano Optimizer by adding nested query support
 118. Improve Volcano Optimizer by adding BIND, UDF, INSERT, VALUES support
+119. Modified RSP engine
+120. Improve windowing of RSP engine
+121. Add slicing for BIND instead of Vec
+122. Adding support multi-window for SingleThread
+123. Rename Volcano Optimizer to Streamertail
+124. Improve error handler
+125. Add StorageManager and trait for coordinating between static and streaming data
+126. Add join operation for RSP engine
+127. Modify RSP engine by using crossbeam instead of mpsc
+128. Full rename of volcano optimizer into streamertail optimizer
 
 0.1.0
 1. Parsing RDF/XML

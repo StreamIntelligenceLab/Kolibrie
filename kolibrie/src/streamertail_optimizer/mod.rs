@@ -33,10 +33,10 @@
 //! ## Usage
 //!
 //! ```rust
-//! use volcano_optimizer::VolcanoOptimizer;
-//! use volcano_optimizer::operators::LogicalOperator;
+//! use streamertail_optimizer::Streamertail;
+//! use streamertail_optimizer::operators::LogicalOperator;
 //!
-//! let mut optimizer = VolcanoOptimizer::new(&database);
+//! let mut optimizer = Streamertail::new(&database);
 //! let logical_plan = LogicalOperator::scan(pattern);
 //! let physical_plan = optimizer.find_best_plan(&logical_plan);
 //! let results = optimizer.execute_plan(&physical_plan, &mut database);
@@ -54,7 +54,7 @@ pub mod utils;
 pub use cost::{CostConstants, CostEstimator};
 pub use execution::ExecutionEngine;
 pub use operators::{LogicalOperator, PhysicalOperator};
-pub use optimizer::VolcanoOptimizer;
+pub use optimizer::Streamertail;
 pub use stats::DatabaseStats;
 pub use types::{Condition, IdResult};
 pub use utils::{

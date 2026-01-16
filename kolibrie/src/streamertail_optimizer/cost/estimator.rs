@@ -133,6 +133,7 @@ impl<'a> CostEstimator<'a> {
 
                 base_cost + filter_cost
             }
+            PhysicalOperator::InMemoryBuffer { .. } => {0}
             PhysicalOperator::Subquery { inner, projected_vars } => {
                 let inner_cost = self.estimate_cost(inner);
                 let inner_card = self.estimate_output_cardinality(inner);
@@ -348,6 +349,7 @@ impl<'a> CostEstimator<'a> {
 
                 ((base as f64 * filter_factor) as u64).max(1)
             }
+            PhysicalOperator::InMemoryBuffer { .. } => {0}
             PhysicalOperator::Subquery { inner, .. } => {
                 // Subquery cardinality is the same as inner query
                 self.estimate_output_cardinality(inner)

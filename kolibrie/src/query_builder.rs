@@ -9,8 +9,8 @@
  */
 
 use crate::sparql_database::SparqlDatabase;
-use rsp::r2s::{Relation2StreamOperator, StreamOperator};
-use rsp::s2r::{CSPARQLWindow, ContentContainer, Report, ReportStrategy, Tick, WindowTriple};
+use crate::rsp::r2s::{Relation2StreamOperator, StreamOperator};
+use crate::rsp::s2r::{CSPARQLWindow, ContentContainer, Report, ReportStrategy, Tick, WindowTriple};
 use shared::triple::Triple;
 use std::collections::{BTreeMap, BTreeSet, HashSet};
 use std::fmt;
@@ -682,6 +682,7 @@ impl<'a> QueryBuilder<'a> {
                 config.slide,
                 report,
                 config.tick_strategy.clone(),
+                String::default(),
             );
             let receiver = window.register();
             self.window_receiver = Some(receiver);

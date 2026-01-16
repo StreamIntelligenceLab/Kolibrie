@@ -10,3 +10,4 @@
 pub mod r2r;
 pub mod s2r;
 pub mod r2s;
+pub mod stream;

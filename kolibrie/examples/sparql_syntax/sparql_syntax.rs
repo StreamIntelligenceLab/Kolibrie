@@ -11,10 +11,10 @@
 use kolibrie::parser::*;
 use kolibrie::sparql_database::*;
 use std::time::Instant;
-use kolibrie::volcano_optimizer::*;
+use kolibrie::streamertail_optimizer::*;
 
 
-fn volcano_optimizer_sparql() {
+fn streamertail_optimizer_sparql() {
     // Step 1: Initialize the database
     let mut database = SparqlDatabase::new();
 
@@ -71,12 +71,12 @@ fn volcano_optimizer_sparql() {
             filters.clone(),
             &prefixes.clone(),
             &mut database,
-            Vec::new(),
+            &[],
             None,
         );
 
         // Step 5: Initialize the optimizer and find the best physical plan
-        let mut optimizer = VolcanoOptimizer::new(&database);
+        let mut optimizer = Streamertail::new(&database);
         let physical_plan = optimizer.find_best_plan(&logical_plan);
 
         println!("Logical Plan: {:?}", logical_plan);
@@ -110,5 +110,5 @@ fn volcano_optimizer_sparql() {
 }
 
 fn main() {
-    volcano_optimizer_sparql();
+    streamertail_optimizer_sparql();
 }

@@ -9,7 +9,7 @@
  */
 
 use kolibrie::sparql_database::SparqlDatabase;
-use kolibrie::volcano_optimizer::*;
+use kolibrie::streamertail_optimizer::*;
 use shared::terms::Term;
 use shared::triple::Triple;
 use std::time::Instant;
@@ -124,7 +124,7 @@ fn simple_scan_example(database: &mut SparqlDatabase) {
 
     // Create optimizer and find best plan
     let start = Instant::now();
-    let mut optimizer = VolcanoOptimizer::new(database);
+    let mut optimizer = Streamertail::new(database);
     let physical_plan = optimizer.find_best_plan(&logical_plan);
     let optimization_time = start.elapsed();
 
@@ -167,7 +167,7 @@ fn join_example(database: &mut SparqlDatabase) {
 
     // Create optimizer and find best plan
     let start = Instant::now();
-    let mut optimizer = VolcanoOptimizer::new(database);
+    let mut optimizer = Streamertail::new(database);
     let physical_plan = optimizer.find_best_plan(&logical_plan);
     let optimization_time = start.elapsed();
 
@@ -204,7 +204,7 @@ fn filter_example(database: &mut SparqlDatabase) {
 
     // Create optimizer and find best plan
     let start = Instant::now();
-    let mut optimizer = VolcanoOptimizer::new(database);
+    let mut optimizer = Streamertail::new(database);
     let physical_plan = optimizer.find_best_plan(&logical_plan);
     let optimization_time = start.elapsed();
 

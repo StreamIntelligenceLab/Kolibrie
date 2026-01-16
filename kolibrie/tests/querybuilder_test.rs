@@ -11,7 +11,7 @@
 extern crate kolibrie;
 use kolibrie::sparql_database::SparqlDatabase;
 use kolibrie::query_builder::QueryBuilder;
-use rsp::r2s::StreamOperator;
+use kolibrie::rsp::r2s::StreamOperator;
 
 #[cfg(test)]
 mod tests {

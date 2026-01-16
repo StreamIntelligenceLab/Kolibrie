@@ -11,7 +11,7 @@
 use crate::dictionary::Dictionary;
 use crate::triple::Triple;
 use crate::index_manager::UnifiedIndex;
-use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::collections::{BTreeMap, HashMap};
 use std::sync::Arc;
 use rayon::prelude::*;
 
