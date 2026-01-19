@@ -71,7 +71,7 @@ impl QueryAnalyzer {
     /// Detect if query is a combined RSP-QL query
     pub fn is_rspql_query(query: &str) -> bool {
         let query_upper = query.to_uppercase();
-        query_upper. contains("REGISTER") 
+        query_upper.contains("REGISTER") 
             && (query_upper.contains("RSTREAM") 
                 || query_upper.contains("ISTREAM") 
                 || query_upper.contains("DSTREAM"))

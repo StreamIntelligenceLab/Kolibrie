@@ -126,6 +126,7 @@
 126. Add join operation for RSP engine
 127. Modify RSP engine by using crossbeam instead of mpsc
 128. Full rename of volcano optimizer into streamertail optimizer
+129. Modify LSM-Tree by supporting disk storage layer
 
 0.1.0
 1. Parsing RDF/XML
