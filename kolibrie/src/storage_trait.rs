@@ -27,11 +27,13 @@ pub struct QueryAnalysis {
     pub mode: StorageMode,
     pub has_window_operations: bool,
     pub window_clauses: Vec<String>,
+    #[allow(dead_code)]
     pub static_patterns: Vec<(String, String, String)>,
     pub requires_volcano_optimization: bool,
 }
 
 /// Storage Trait - coordinates between static and streaming storage layers
+#[allow(dead_code)]
 pub trait StorageTrait {
     /// Analyze query to determine storage mode
     fn analyze_query(&self, query: &str) -> QueryAnalysis;

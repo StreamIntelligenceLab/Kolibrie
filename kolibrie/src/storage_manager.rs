@@ -39,6 +39,7 @@ pub struct StorageManager {
     current_backend: StorageBackend,
 }
 
+#[allow(dead_code)]
 impl StorageManager {
     /// Create a new StorageManager with in-memory storage only
     pub fn new() -> Self {

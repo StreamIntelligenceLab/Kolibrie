@@ -447,6 +447,7 @@ where
     windows: Vec<CSPARQLWindow<I>>,
     r2r: Arc<Mutex<Box<dyn R2ROperator<I, Vec<PhysicalOperator>, O>>>>,
     r2s_consumer: ResultConsumer<O>,
+    #[allow(dead_code)]
     r2s_operator: Arc<Mutex<Relation2StreamOperator<O>>>,
     window_configs: Vec<RSPWindow>,
     query_execution_mode: QueryExecutionMode,
@@ -577,7 +578,11 @@ where
             Err(parsing_error) => error!("Unable to load ABox: {:?}", parsing_error.to_string()),
             _ => (),
         }
-        store.load_rules(rules);
+
+        match store.load_rules(rules) {
+            Ok(_) => debug!("Rules loaded successfully"),
+            Err(e) => error!("Failed to load rules: {:?}", e),
+        }
 
         // Create windows based on parsed configuration
         let mut windows = Vec::new();
@@ -978,7 +983,6 @@ impl R2ROperator<Triple, Vec<PhysicalOperator>, Vec<(String, String)>> for Simpl
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::rsp::s2r::{ReportStrategy, Tick};
     use std::time::Duration;
 
     #[test]
