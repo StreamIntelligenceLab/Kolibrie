@@ -127,7 +127,7 @@ fn predict_temperatures(
     best_model: &str,
     room_data: &[RoomData],
     feature_names: &[String],
-) -> Result<Vec<Prediction>, Box<dyn Error>> {
+) -> Result<(Vec<Prediction>, kolibrie::execute_ml::MLPredictTiming), Box<dyn Error>> {
     // Dynamically build feature vectors based on selected variables
     let features: Vec<Vec<f64>> = room_data
         .iter()
@@ -158,6 +158,16 @@ fn predict_temperatures(
     
     // Use the selected model
     let prediction_results = ml_handler.predict(best_model, features)?;
+
+    // Create timing structure
+    let timing = kolibrie::execute_ml::MLPredictTiming {
+        total_time: 0.0, // Will be updated by execute_ml_prediction_from_clause
+        rust_to_python_time: 0.0, // Will be updated by execute_ml_prediction_from_clause
+        python_preprocessing_time: prediction_results.timing.preprocessing_time,
+        actual_prediction_time: prediction_results.timing.actual_prediction_time,
+        python_postprocessing_time: prediction_results.timing.postprocessing_time,
+        python_to_rust_time: 0.0, // Will be updated by execute_ml_prediction_from_clause
+    };
     
     // Print performance of the selected model during this prediction
     println!("\nPerformance during prediction:");
@@ -178,7 +188,7 @@ fn predict_temperatures(
         })
         .collect();
 
-    Ok(predictions)
+    Ok((predictions, timing))
 }
 
 fn main() -> Result<(), Box<dyn Error>> {
@@ -262,7 +272,8 @@ RULE :TemperatureAlert(?room) :-
                         extract_room_data_from_database,
                         predict_temperatures
                     ) {
-                        Ok(predictions) => {
+                        Ok((predictions, timing)) => {
+                            timing.print_breakdown();
                             println!("\nML Predictions:");
                             for prediction in predictions {
                                 println!(
