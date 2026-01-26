@@ -3,7 +3,9 @@ use kolibrie::sparql_database::SparqlDatabase;
 use kolibrie::rsp_engine::{RSPBuilder, SimpleR2R, ResultConsumer, QueryExecutionMode};
 use ml::MLHandler;
 use ml::generate_ml_models;
+use datalog::reasoning::Reasoner;
 use shared::triple::Triple;
+use shared::rule::Rule;
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use std::thread;
@@ -18,7 +20,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     
     // Define and load reasoning rule
     let rule_query = define_comfort_rule();
-    let (_rule, _inferred) = process_rule_definition(&rule_query, &mut database)?;
+    let (rule, _inferred) = process_rule_definition(&rule_query, &mut database)?;
     
     // Setup RSP Engine with reasoning
     let result_container = Arc::new(Mutex::new(Vec::new()));
@@ -64,7 +66,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("Time | Room    | Temp  | Humidity | Occupancy | ML Predicted | Comfort Level | Action");
     println!("-----|---------|-------|----------|-----------|--------------|---------------|-------");
     
-    run_combined_workflow(&mut engine, &mut ml_handler, &mut database)?;
+    run_combined_workflow(&mut engine, &mut ml_handler, &mut database, &rule)?;
     
     // Stop the engine
     engine.stop();
@@ -131,7 +133,7 @@ PREFIX rdf: <http://www.w3.org/1999/02/22-rdf-syntax-ns#>
 
 RULE :ComfortLevelRule :- 
 CONSTRUCT {
-    ?sensor ex:comfortLevel ?level .
+    ?sensor ex:comfortLevel "uncomfortable" .
 }
 WHERE {
     ?sensor ex:temperature ?temp .
@@ -144,28 +146,33 @@ fn run_combined_workflow(
     engine: &mut kolibrie::rsp_engine::RSPEngine<Triple, Vec<(String, String)>>,
     ml_handler: &mut MLHandler,
     database: &mut SparqlDatabase,
+    comfort_rule: &Rule,
 ) -> Result<(), Box<dyn std::error::Error>> {
     
     let rooms = vec!["Office1", "Office2"];
     let best_model = ml_handler.best_model.as_ref().unwrap().clone();
     
-    // Simulate 8 time steps
     for time in 0..8 {
         for (room_idx, room) in rooms.iter().enumerate() {
-            // Generate sensor data
             let base_temp = 20.0 + (time as f64 * 1.5) + (room_idx as f64 * 2.0);
             let temp = base_temp + (time as f64 * 0.5);
             let humidity = 50.0 + (time as f64 * 2.0);
             let occupancy = 5 + time + room_idx;
             
-            // PART A: ML Prediction
+            // ML Prediction
             let input_data = vec![vec![temp, humidity, occupancy as f64]];
             let ml_result = ml_handler.predict(&best_model, input_data)?;
             let predicted_temp = ml_result.predictions[0];
             
-            // PART B: Create streaming triples
+            // Create sensor and room URIs
             let sensor_uri = format!("http://example.org/Sensor_{}", room);
             let room_uri = format!("http://example.org/{}", room);
+            
+            // Add triples
+            database.add_triple_parts(&sensor_uri, "http://example.org/hasRoom", &room_uri);
+            database.add_triple_parts(&sensor_uri, "http://example.org/temperature", &temp.to_string());
+            database.add_triple_parts(&sensor_uri, "http://example.org/humidity", &humidity.to_string());
+            database.add_triple_parts(&sensor_uri, "http://example.org/occupancy", &occupancy.to_string());
             
             let triples_data = format!(
                 "<{}> <http://example.org/hasRoom> <{}> .
@@ -179,45 +186,44 @@ fn run_combined_workflow(
             );
             
             let triples = engine.parse_data(&triples_data);
-            
-            // PART C: Add to stream (RSP processing)
             for triple in triples {
                 engine.add_to_stream("sensorStream", triple.clone(), time);
-                
-                // Also add to database for reasoning
-                database.add_triple(triple);
             }
             
-            // PART D: Apply reasoning
-            let mut reasoning_db = database.clone();
-            let comfort_level = if temp > 25.0 {
-                // Add inferred comfort level
-                reasoning_db.add_triple_parts(
-                    &sensor_uri,
-                    "http://example.org/comfortLevel",
-                    "uncomfortable"
-                );
-                "uncomfortable"
-            } else if temp > 22.0 {
-                reasoning_db.add_triple_parts(
-                    &sensor_uri,
-                    "http://example.org/comfortLevel",
-                    "slightly_warm"
-                );
-                "slightly_warm"
-            } else {
-                reasoning_db.add_triple_parts(
-                    &sensor_uri,
-                    "http://example.org/comfortLevel",
-                    "comfortable"
-                );
-                "comfortable"
-            };
+            let mut reasoner = Reasoner::new();
             
-            // Update main database
-            *database = reasoning_db;
+            // Share the same dictionary to maintain ID consistency
+            reasoner.dictionary = database.dictionary.clone();
             
-            // PART E: Determine action
+            // Copy all triples from database to reasoner
+            for triple in database.triples.iter() {
+                if let (Some(s), Some(p), Some(o)) = (
+                    database.dictionary.decode(triple.subject),
+                    database.dictionary.decode(triple.predicate),
+                    database.dictionary.decode(triple.object)
+                ) {
+                    reasoner.add_abox_triple(s, p, o);
+                }
+            }
+            
+            // Add the rule
+            reasoner.add_rule(comfort_rule.clone());
+            
+            // Perform inference
+            let inferred_facts = reasoner.infer_new_facts_semi_naive();
+            
+            // Add inferred facts back to database
+            for fact in &inferred_facts {
+                database.add_triple(fact.clone());
+            }
+            
+            // Sync dictionaries back
+            database.dictionary = reasoner.dictionary.clone();
+            
+            // Query for the inferred comfort level
+            let comfort_level = query_comfort_level(database, &sensor_uri);
+            
+            // Determine action
             let action = if temp > 25.0 || predicted_temp > 26.0 {
                 "ACTIVATE COOLING"
             } else if predicted_temp > 24.0 {
@@ -226,23 +232,33 @@ fn run_combined_workflow(
                 "NORMAL"
             };
             
-            // Print results
             println!(
                 "{:4} | {:7} | {:5.1} | {:8.1} | {:9} | {:12.1} | {:13} | {}",
-                time,
-                room,
-                temp,
-                humidity,
-                occupancy,
-                predicted_temp,
-                comfort_level,
-                action
+                time, room, temp, humidity, occupancy,
+                predicted_temp, comfort_level, action
             );
         }
         
-        // Small delay to simulate real-time
         thread::sleep(Duration::from_millis(100));
     }
     
     Ok(())
+}
+
+// Helper function to query the inferred comfort level
+fn query_comfort_level(database: &SparqlDatabase, sensor_uri: &str) -> String {
+    if let (Some(&comfort_pred_id), Some(&sensor_id)) = (
+        database.dictionary.string_to_id.get("http://example.org/comfortLevel"),
+        database.dictionary.string_to_id.get(sensor_uri)
+    ) {
+        if let Some(triple) = database.triples.iter()
+            .find(|t| t.subject == sensor_id && t.predicate == comfort_pred_id)
+        {
+            if let Some(value) = database.dictionary.decode(triple.object) {
+                return value.to_string();
+            }
+        }
+    }
+    
+    "comfortable".to_string()
 }
