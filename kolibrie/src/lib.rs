@@ -14,7 +14,7 @@ pub mod cuda;
 pub mod error_handler;
 pub mod execute_ml;
 pub mod execute_query;
-pub mod lsm_tree;
+pub mod disk_storage;
 pub mod parser;
 pub mod query_builder;
 pub mod rsp_engine;

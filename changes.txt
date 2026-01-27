@@ -129,6 +129,7 @@
 128. Modify LSM-Tree by supporting disk storage layer
 129. Fix problem with ML execution
 130. Add full combination example (RSP + Reasoning + ML)
+131. Split LSM-Tree
 
 0.1.0
 1. Parsing RDF/XML

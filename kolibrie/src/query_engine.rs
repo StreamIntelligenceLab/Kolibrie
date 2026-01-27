@@ -10,7 +10,7 @@
 
 use crate::storage_manager::{StorageManager, StorageBackend, StorageStats};
 use crate::storage_trait::{StorageTrait, StorageMode, QueryAnalyzer};
-use crate::lsm_tree::LSMConfig;
+use crate::disk_storage::lsm_tree::LSMConfig;
 use std::path::PathBuf;
 
 /// Configuration for QueryEngine

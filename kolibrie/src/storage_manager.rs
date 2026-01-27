@@ -9,7 +9,7 @@
  */
 
 use crate::sparql_database::SparqlDatabase;
-use crate::lsm_tree::{LSMTree, LSMConfig};
+use crate::disk_storage::lsm_tree::{LSMTree, LSMConfig};
 use crate::storage_trait::{StorageTrait, QueryAnalysis, QueryAnalyzer, StorageMode};
 use crate::execute_query::{execute_query, execute_query_rayon_parallel2_volcano};
 use shared::triple::Triple;
@@ -327,7 +327,7 @@ pub struct StorageStats {
     pub mode: StorageMode,
     pub memory_triple_count: usize,
     pub disk_triple_count: usize,
-    pub lsm_stats: Option<crate::lsm_tree::LSMStats>,
+    pub lsm_stats: Option<crate::disk_storage::lsm_tree::LSMStats>,
 }
 
 impl std::fmt::Display for StorageStats {
