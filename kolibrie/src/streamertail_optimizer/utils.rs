@@ -72,6 +72,11 @@ pub fn estimate_operator_selectivity(op: &LogicalOperator, _database: &SparqlDat
         LogicalOperator::Values { values, .. } => {
             values.len() as u64
         }
+        LogicalOperator::MLPredict { input, input_variables, .. } => {
+            let base_selectivity = estimate_operator_selectivity(input, _database);
+            let ml_overhead = 50 + (input_variables.len() as u64 * 10);
+            base_selectivity + ml_overhead
+        }
     }
 }
 

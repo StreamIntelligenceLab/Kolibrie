@@ -642,12 +642,19 @@ fn format_results(
             selected_variables
                 .iter()
                 .map(|(_, var)| {
-                    let var_name = if var.starts_with('?') {
-                        var
-                    } else {
-                        &format!("?{}", var)
-                    };
-                    result.get(var_name.as_str()).cloned().unwrap_or_default()
+                    // Strip '?' prefix from the variable we're looking for
+                    let var_stripped = var.strip_prefix('?').unwrap_or(var);
+                    
+                    // Try multiple lookup strategies
+                    result.get(var_stripped)           // without prefix
+                        .or_else(|| result.get(var.as_str()))  // with prefix
+                        .or_else(|| {
+                            // Try with ? added if not present
+                            let with_prefix = format!("?{}", var_stripped);
+                            result.get(with_prefix.as_str())
+                        })
+                        .cloned()
+                        .unwrap_or_default()
                 })
                 .collect()
         })

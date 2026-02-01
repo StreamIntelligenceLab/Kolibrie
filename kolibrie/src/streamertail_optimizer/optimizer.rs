@@ -165,6 +165,9 @@ impl Streamertail {
                 self.collect_patterns(input, patterns);
             }
             LogicalOperator::Values { .. } => { }
+            LogicalOperator::MLPredict { input, .. } => {
+                self.collect_patterns(input, patterns);
+            }
         }
     }
 
@@ -315,6 +318,29 @@ impl Streamertail {
                     values.clone(),
                 ));
             }
+            LogicalOperator::MLPredict {
+                input,
+                model_name,
+                input_variables,
+                output_variable,
+            } => {
+                // Recursively optimize the input
+                let best_input_plan = self.find_best_plan_recursive(input);
+
+                // Discover model path
+                let model_path = self.discover_model_path();
+
+                // Create the physical ML.PREDICT operator
+                let ml_predict_plan = PhysicalOperator::ml_predict(
+                    best_input_plan,
+                    model_name.clone(),
+                    model_path,
+                    input_variables.clone(),
+                    output_variable.clone(),
+                );
+
+                candidates.push(ml_predict_plan);
+            }
         }
 
         // Cost-based optimization: Choose the best candidate
@@ -330,6 +356,33 @@ impl Streamertail {
         // Memoize the best plan
         self.memo.insert(key, best_plan.clone());
         best_plan
+    }
+
+    /// Discovers the model path from the model name
+    fn discover_model_path(&self) -> String {
+        let mut path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+        
+        loop {
+            let ml_dir = path.join("ml");
+            if ml_dir.exists() && ml_dir.is_dir() {
+                let model_dir = ml_dir.join("examples").join("models");
+                
+                // Return just the model directory - the ML handler will discover models
+                if model_dir.exists() {
+                    return model_dir.to_string_lossy().to_string();
+                }
+                
+                break;
+            }
+            
+            if !path.pop() {
+                eprintln!("Warning: Could not locate 'ml' directory!");
+                break;
+            }
+        }
+        
+        // Fallback to relative path
+        format!("ml/examples/models")
     }
 
     /// Helper method to build a star join physical plan from detected star patterns
@@ -526,6 +579,20 @@ impl Streamertail {
                     values.len()
                 )
             }
+            LogicalOperator::MLPredict {
+                input,
+                model_name,
+                input_variables,
+                output_variable,
+            } => {
+                format!(
+                    "MLPredict({}, model={}, inputs={:?}, output={})",
+                    self.serialize_logical_plan(input),
+                    model_name,
+                    input_variables,
+                    output_variable
+                )
+            }
         }
     }
 
@@ -601,6 +668,15 @@ impl Streamertail {
                 // VALUES has very low cost
                 values.len() as u64
             }
+            LogicalOperator::MLPredict { input, input_variables, .. } => {
+                let base_cost = self.estimate_logical_cost(input);
+                let cardinality = self.estimate_output_cardinality_from_logical(input);
+                
+                // ML operations are expensive, so we add significant overhead
+                let ml_overhead = 100; // Cost per prediction
+                // ML prediction cost: base cost + (cardinality * input_features * ML_overhead)
+                base_cost + (cardinality * input_variables.len() as u64 * ml_overhead)
+            }
         }
     }
 
@@ -635,6 +711,7 @@ impl Streamertail {
             LogicalOperator::Subquery { inner, .. } => self.extract_predicate_from_plan(inner),
             LogicalOperator::Bind { input, .. } => self.extract_predicate_from_plan(input),
             LogicalOperator::Values { .. } => None,
+            LogicalOperator::MLPredict { input, .. } => self.extract_predicate_from_plan(input),
         }
     }
 
@@ -670,6 +747,10 @@ impl Streamertail {
             }
             LogicalOperator::Values { values, .. } => {
                 values.len() as u64
+            }
+            LogicalOperator::MLPredict { input, .. } => {
+                // ML.PREDICT doesn't change cardinality, just adds a column
+                self.estimate_output_cardinality_from_logical(input)
             }
         }
     }

@@ -171,6 +171,22 @@ impl<'a> CostEstimator<'a> {
                 // No I/O or computation, just materializing the constant values
                 (values.len() as u64) * CostConstants::TUPLE_COST
             }
+            PhysicalOperator::MLPredict {
+                input,
+                input_variables,
+                ..
+            } => {
+                let input_cost = self.estimate_cost(input);
+                let cardinality = self.estimate_output_cardinality(input);
+                
+                // ML prediction is expensive:
+                // - Python interop overhead: 1000 per call
+                // - Per-row prediction cost: 100 * number of features
+                let python_overhead = 1000;
+                let per_row_cost = 100 * input_variables.len() as u64;
+                
+                input_cost + python_overhead + (cardinality * per_row_cost)
+            }
         }
     }
 
@@ -361,6 +377,10 @@ impl<'a> CostEstimator<'a> {
             PhysicalOperator::Values { values, .. } => {
                 // Cardinality is simply the number of value rows
                 values.len() as u64
+            }
+            PhysicalOperator::MLPredict { input, .. } => {
+                // ML.PREDICT doesn't change cardinality, just adds a column
+                self.estimate_output_cardinality(input)
             }
         }
     }

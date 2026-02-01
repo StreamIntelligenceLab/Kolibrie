@@ -47,6 +47,12 @@ pub enum LogicalOperator {
         variables: Vec<String>,
         values: Vec<Vec<Option<String>>>, // Each row can have Some(value) or None (UNDEF)
     },
+    MLPredict {
+        input: Box<LogicalOperator>,
+        model_name: String,
+        input_variables: Vec<String>,
+        output_variable: String,
+    },
 }
 
 impl LogicalOperator {
@@ -105,7 +111,24 @@ impl LogicalOperator {
             output_variable,
         }
     }
+
+    /// Creates a new values logical operator
     pub fn values(variables: Vec<String>, values: Vec<Vec<Option<String>>>) -> Self {
         Self::Values { variables, values }
+    }
+
+    /// Creates a new ML.PREDICT logical operator
+    pub fn ml_predict(
+        input: LogicalOperator,
+        model_name: String,
+        input_variables: Vec<String>,
+        output_variable: String,
+    ) -> Self {
+        Self::MLPredict {
+            input: Box::new(input),
+            model_name,
+            input_variables,
+            output_variable,
+        }
     }
 }
