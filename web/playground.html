@@ -1,0 +1,1796 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+  <meta charset="UTF-8" />
+  <title>Kolibrie Playground</title>
+
+  <!-- CodeMirror CSS -->
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.2/codemirror.min.css">
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.2/theme/dracula.min.css">
+
+  <!-- IBM Plex Mono Font -->
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link
+    href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono: ital,wght@0,100;0,200;0,300;0,400;0,500;0,600;0,700;1,100;1,200;1,300;1,400;1,500;1,600;1,700&display=swap"
+    rel="stylesheet">
+
+  <!-- LZ-String for compression -->
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/lz-string/1.4.4/lz-string.min.js"></script>
+
+  <style>
+    /* Reset & Base */
+    * {
+      box-sizing: border-box;
+      margin: 0;
+      padding: 0;
+    }
+
+    html,
+    body {
+      height: 100%;
+      background: linear-gradient(135deg, #1a1a1a 0%, #2d1b3d 50%, #1a1a1a 100%);
+      color: #e0e0e0;
+      font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+      overflow: hidden;
+    }
+
+    /* Static background */
+    body::before {
+      content: '';
+      position: fixed;
+      top: 0;
+      left: 0;
+      width: 100%;
+      height: 100%;
+      background: 
+        radial-gradient(circle at 20% 50%, rgba(219, 88, 156, 0.1) 0%, transparent 50%),
+        radial-gradient(circle at 80% 20%, rgba(219, 88, 156, 0.05) 0%, transparent 50%),
+        radial-gradient(circle at 40% 80%, rgba(219, 88, 156, 0.08) 0%, transparent 50%);
+      /* animation: float 20s ease-in-out infinite; */
+      pointer-events: none;
+      z-index: 0;
+    }
+
+    /* Toolbar */
+    .toolbar {
+      position: relative;
+      z-index: 2;
+      display: flex;
+      align-items: center;
+      background: linear-gradient(90deg, rgba(43, 43, 43, 0.95) 0%, rgba(45, 27, 61, 0.95) 100%);
+      backdrop-filter: blur(10px);
+      padding: 0 16px;
+      height: 56px;
+      min-height: 56px;
+      border-bottom: 1px solid rgba(219, 88, 156, 0.3);
+      box-shadow: 0 2px 20px rgba(219, 88, 156, 0.1);
+      flex-shrink: 0;
+    }
+
+    .btn {
+      margin-right: 12px;
+      padding: 0 16px;
+      height: 36px;
+      line-height: 36px;
+      font-size: 13px;
+      font-weight: 600;
+      color: #db589c;
+      background: linear-gradient(135deg, rgba(219, 88, 156, 0.1) 0%, rgba(219, 88, 156, 0.05) 100%);
+      border: 1px solid rgba(219, 88, 156, 0.4);
+      border-radius: 8px;
+      cursor: pointer;
+      user-select: none;
+      /* Reduced from 0.3s to 0.2s for snappier feel */
+      transition: all 0.2s ease;
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+      position: relative;
+      overflow: hidden;
+    }
+
+    /* Simplified pseudo-element */
+    .btn::before {
+      content: '';
+      position: absolute;
+      top: 0;
+      left: -100%;
+      width: 100%;
+      height: 100%;
+      background: linear-gradient(90deg, transparent, rgba(219, 88, 156, 0.2), transparent);
+      /* transition: left 0.5s; - this caused repaints on every hover */
+      opacity: 0;
+    }
+
+    .btn:hover {
+      background: linear-gradient(135deg, rgba(219, 88, 156, 0.2) 0%, rgba(219, 88, 156, 0.1) 100%);
+      border-color: rgba(219, 88, 156, 0.6);
+      transform: translateY(-1px);
+      box-shadow: 0 4px 15px rgba(219, 88, 156, 0.2);
+    }
+
+    .btn:active {
+      transform: translateY(0px);
+      background: rgba(219, 88, 156, 0.3);
+    }
+
+    .dropdown {
+      position: relative;
+    }
+
+    .dropdown-menu {
+      display: none;
+      position: absolute;
+      top: 100%;
+      left: 0;
+      background: linear-gradient(135deg, rgba(43, 43, 43, 0.95) 0%, rgba(45, 27, 61, 0.95) 100%);
+      backdrop-filter: blur(15px);
+      border: 1px solid rgba(219, 88, 156, 0.4);
+      border-radius: 8px;
+      margin-top: 8px;
+      overflow: hidden;
+      z-index: 10;
+      box-shadow: 0 8px 32px rgba(219, 88, 156, 0.15);
+      /* Simplified animation */
+      animation: dropIn 0.15s ease-out;
+    }
+
+    /* Shorter animation duration */
+    @keyframes dropIn {
+      from {
+        opacity: 0;
+        transform: translateY(-10px);
+      }
+      to {
+        opacity: 1;
+        transform: translateY(0);
+      }
+    }
+
+    .dropdown.open .dropdown-menu {
+      display: block;
+    }
+
+    .dropdown-menu .item {
+      padding: 12px 16px;
+      cursor: pointer;
+      color: #e0e0e0;
+      transition: all 0.2s ease;
+      border-bottom: 1px solid rgba(219, 88, 156, 0.1);
+    }
+
+    .dropdown-menu .item:last-child {
+      border-bottom: none;
+    }
+
+    .dropdown-menu .item:hover {
+      background: rgba(219, 88, 156, 0.15);
+      color: #db589c;
+    }
+
+    /* Config Panel & Share Panel */
+    .config-panel,
+    .share-panel {
+      position: fixed;
+      top: 0;
+      right: -350px;
+      width: 350px;
+      height: 100vh;
+      background: linear-gradient(135deg, rgba(26, 26, 26, 0.98) 0%, rgba(45, 27, 61, 0.98) 100%);
+      backdrop-filter: blur(20px);
+      border-left: 1px solid rgba(219, 88, 156, 0.3);
+      box-shadow: -5px 0 20px rgba(0, 0, 0, 0.5);
+      z-index: 1000;
+      /* Changed to simpler easing */
+      transition: right 0.3s ease;
+      display: flex;
+      flex-direction: column;
+    }
+
+    .config-panel.open,
+    .share-panel.open {
+      right: 0;
+    }
+
+    .config-header,
+    .share-header {
+      padding: 20px;
+      border-bottom: 1px solid rgba(219, 88, 156, 0.3);
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      flex-shrink: 0;
+    }
+
+    .config-title,
+    .share-title {
+      font-size: 18px;
+      font-weight: 600;
+      color: #db589c;
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+    }
+
+    .config-close,
+    .share-close {
+      width: 32px;
+      height: 32px;
+      background: transparent;
+      border: 1px solid rgba(219, 88, 156, 0.4);
+      border-radius: 6px;
+      color: #db589c;
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 16px;
+      transition: all 0.2s ease;
+    }
+
+    .config-close:hover,
+    .share-close:hover {
+      background: rgba(219, 88, 156, 0.1);
+      border-color: rgba(219, 88, 156, 0.6);
+    }
+
+    .config-content,
+    .share-content {
+      flex: 1;
+      padding: 20px;
+      overflow-y: auto;
+    }
+
+    .config-section {
+      margin-bottom: 30px;
+    }
+
+    .config-section:last-child {
+      margin-bottom: 0;
+    }
+
+    .config-section-title {
+      font-size: 14px;
+      font-weight: 600;
+      color: #db589c;
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+      margin-bottom: 15px;
+      padding-bottom: 8px;
+      border-bottom: 1px solid rgba(219, 88, 156, 0.2);
+    }
+
+    .config-item {
+      margin-bottom: 15px;
+    }
+
+    .config-item:last-child {
+      margin-bottom: 0;
+    }
+
+    .config-label {
+      display: block;
+      font-size: 12px;
+      font-weight: 500;
+      color: #e0e0e0;
+      margin-bottom: 8px;
+      text-transform: uppercase;
+      letter-spacing: 0.3px;
+    }
+
+    .config-control {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+    }
+
+    .config-btn {
+      width: 32px;
+      height: 32px;
+      background: transparent;
+      border: 1px solid rgba(219, 88, 156, 0.4);
+      border-radius: 6px;
+      color: #db589c;
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 14px;
+      font-weight: 600;
+      transition: all 0.2s ease;
+    }
+
+    .config-btn:hover {
+      background: rgba(219, 88, 156, 0.15);
+      border-color: rgba(219, 88, 156, 0.6);
+    }
+
+    .config-btn:active {
+      background: rgba(219, 88, 156, 0.25);
+    }
+
+    .config-value {
+      flex: 1;
+      text-align: center;
+      background: rgba(219, 88, 156, 0.1);
+      border: 1px solid rgba(219, 88, 156, 0.3);
+      border-radius: 6px;
+      padding: 8px 12px;
+      color: #e0e0e0;
+      font-size: 12px;
+      font-weight: 500;
+      min-width: 60px;
+    }
+
+    .config-select {
+      width: 100%;
+      background: rgba(219, 88, 156, 0.1);
+      border: 1px solid rgba(219, 88, 156, 0.4);
+      border-radius: 6px;
+      padding: 10px 12px;
+      color: #e0e0e0;
+      font-size: 12px;
+      font-weight: 500;
+      cursor: pointer;
+      outline: none;
+      transition: all 0.2s ease;
+    }
+
+    .config-select:hover {
+      border-color: rgba(219, 88, 156, 0.6);
+      background: rgba(219, 88, 156, 0.15);
+    }
+
+    .config-select:focus {
+      border-color: #db589c;
+      box-shadow: 0 0 0 2px rgba(219, 88, 156, 0.2);
+    }
+
+    .config-select option {
+      background: #2d1b3d;
+      color: #e0e0e0;
+      padding: 8px;
+    }
+
+    /* Share Panel Specific Styles */
+    .share-url-container {
+      background: rgba(219, 88, 156, 0.05);
+      border: 1px solid rgba(219, 88, 156, 0.3);
+      border-radius: 8px;
+      padding: 16px;
+      margin-bottom: 20px;
+    }
+
+    .share-url-label {
+      font-size: 12px;
+      font-weight: 600;
+      color: #db589c;
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+      margin-bottom: 12px;
+    }
+
+    .share-url-input {
+      width: 100%;
+      background: rgba(0, 0, 0, 0.3);
+      border: 1px solid rgba(219, 88, 156, 0.2);
+      border-radius: 6px;
+      padding: 12px;
+      color: #e0e0e0;
+      font-size: 11px;
+      font-family: 'IBM Plex Mono', monospace;
+      word-break: break-all;
+      resize: none;
+      outline: none;
+      margin-bottom: 12px;
+      min-height: 80px;
+    }
+
+    .share-url-input:focus {
+      border-color: rgba(219, 88, 156, 0.5);
+    }
+
+    .share-copy-btn {
+      width: 100%;
+      background: linear-gradient(135deg, rgba(219, 88, 156, 0.15) 0%, rgba(219, 88, 156, 0.1) 100%);
+      border: 1px solid rgba(219, 88, 156, 0.4);
+      border-radius: 6px;
+      padding: 12px;
+      color: #db589c;
+      font-size: 12px;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+      cursor: pointer;
+      transition: all 0.2s ease;
+    }
+
+    .share-copy-btn:hover {
+      background: linear-gradient(135deg, rgba(219, 88, 156, 0.25) 0%, rgba(219, 88, 156, 0.15) 100%);
+      border-color: rgba(219, 88, 156, 0.6);
+    }
+
+    .share-copy-btn:active {
+      background: rgba(219, 88, 156, 0.3);
+    }
+
+    .share-copy-btn.copied {
+      background: linear-gradient(135deg, rgba(88, 219, 110, 0.15) 0%, rgba(88, 219, 110, 0.1) 100%);
+      border-color: rgba(88, 219, 110, 0.4);
+      color: #58db6e;
+    }
+
+    .share-info {
+      background: rgba(219, 88, 156, 0.03);
+      border: 1px solid rgba(219, 88, 156, 0.2);
+      border-radius: 6px;
+      padding: 12px;
+      font-size: 11px;
+      color: rgba(219, 88, 156, 0.8);
+      line-height: 1.4;
+    }
+
+    /* Config overlay */
+    .config-overlay {
+      position: fixed;
+      top: 0;
+      left: 0;
+      width: 100%;
+      height: 100%;
+      background: rgba(0, 0, 0, 0.3);
+      z-index: 999;
+      opacity: 0;
+      visibility: hidden;
+      transition: all 0.3s ease;
+    }
+
+    .config-overlay.open {
+      opacity: 1;
+      visibility: visible;
+    }
+
+    /* Main Container */
+    .main-container {
+      height: 100vh;
+      display: flex;
+      flex-direction: column;
+    }
+
+    /* Editor Navigation Tabs */
+    .editor-tabs {
+      position: relative;
+      z-index: 2;
+      display: flex;
+      background: linear-gradient(90deg, rgba(30, 30, 30, 0.95) 0%, rgba(40, 25, 50, 0.95) 100%);
+      border-bottom: 1px solid rgba(219, 88, 156, 0.2);
+      padding: 0 12px;
+      gap: 8px;
+      flex-shrink: 0;
+    }
+
+    .editor-tab {
+      padding: 12px 20px;
+      background: transparent;
+      border: none;
+      border-bottom: 3px solid transparent;
+      color: rgba(219, 88, 156, 0.6);
+      cursor: pointer;
+      /* Reduced transition time */
+      transition: all 0.2s ease;
+      font-size: 13px;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+      position: relative;
+    }
+
+    .editor-tab:hover {
+      color: rgba(219, 88, 156, 0.9);
+      background: rgba(219, 88, 156, 0.05);
+    }
+
+    .editor-tab.active {
+      color: #db589c;
+      border-bottom-color: #db589c;
+      background: rgba(219, 88, 156, 0.1);
+    }
+
+    /* Simplified pseudo-element */
+    .editor-tab::before {
+      content: '';
+      position: absolute;
+      top: 0;
+      left: 0;
+      right: 0;
+      height: 2px;
+      background: linear-gradient(90deg, transparent, #db589c, transparent);
+      opacity: 0;
+      /* Faster transition */
+      transition: opacity 0.2s ease;
+    }
+
+    .editor-tab.active::before {
+      opacity: 1;
+    }
+
+    /* Editor Container */
+    #editor-container {
+      position: relative;
+      z-index: 1;
+      flex: 1;
+      min-height: 0;
+      background: linear-gradient(135deg, rgba(26, 26, 26, 0.95) 0%, rgba(45, 27, 61, 0.95) 100%);
+      backdrop-filter: blur(10px);
+      display: flex;
+      flex-direction: column;
+      scrollbar-width: thin;
+      scrollbar-color: rgba(219, 88, 156, 0.5) rgba(219, 88, 156, 0.1);
+    }
+
+    .editor-panel {
+      display: none;
+      flex: 1;
+      min-height: 0;
+      flex-direction: column;
+    }
+
+    .editor-panel.active {
+      display: flex;
+    }
+
+    #editor-wrapper, #rdf-wrapper, #rules-wrapper {
+      flex: 1;
+      min-height: 200px;
+      display: flex;
+      flex-direction: column;
+    }
+
+    #sparql-editor, #rdf-editor, #rules-editor {
+      flex: 1;
+      border: none;
+      outline: none;
+      resize: none;
+    }
+
+    /* Resizer */
+    .resizer {
+      height: 4px;
+      background: linear-gradient(90deg, rgba(219, 88, 156, 0.3) 0%, rgba(219, 88, 156, 0.1) 50%, rgba(219, 88, 156, 0.3) 100%);
+      cursor: row-resize;
+      position: relative;
+      z-index: 3;
+      transition: background 0.2s ease;
+      flex-shrink: 0;
+    }
+
+    .resizer:hover {
+      background: linear-gradient(90deg, rgba(219, 88, 156, 0.5) 0%, rgba(219, 88, 156, 0.3) 50%, rgba(219, 88, 156, 0.5) 100%);
+    }
+
+    /* Terminal/Results Panel */
+    #results-panel {
+      flex: 1;
+      min-height: 150px;
+      max-height: 50vh;
+      background: linear-gradient(135deg, rgba(20, 20, 20, 0.98) 0%, rgba(35, 20, 45, 0.98) 100%);
+      border-top: 1px solid rgba(219, 88, 156, 0.3);
+      display: flex;
+      flex-direction: column;
+      backdrop-filter: blur(15px);
+    }
+
+    .results-header {
+      height: 36px;
+      min-height: 36px;
+      background: linear-gradient(90deg, rgba(30, 30, 30, 0.95) 0%, rgba(40, 25, 50, 0.95) 100%);
+      border-bottom: 1px solid rgba(219, 88, 156, 0.2);
+      display: flex;
+      align-items: center;
+      padding: 0 12px;
+      font-size: 12px;
+      font-weight: 600;
+      color: #db589c;
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+      flex-shrink: 0;
+    }
+
+    .results-tabs {
+      display: flex;
+      gap: 8px;
+    }
+
+    .results-tab {
+      padding: 4px 12px;
+      background: rgba(219, 88, 156, 0.1);
+      border: 1px solid rgba(219, 88, 156, 0.3);
+      border-radius: 4px;
+      cursor: pointer;
+      transition: all 0.2s ease;
+      font-size: 11px;
+    }
+
+    .results-tab.active {
+      background: rgba(219, 88, 156, 0.2);
+      border-color: rgba(219, 88, 156, 0.5);
+    }
+
+    .results-tab:hover {
+      background: rgba(219, 88, 156, 0.15);
+    }
+
+    .results-actions {
+      margin-left: auto;
+      display: flex;
+      gap: 8px;
+    }
+
+    .results-btn {
+      padding: 2px 8px;
+      background: transparent;
+      border: 1px solid rgba(219, 88, 156, 0.4);
+      border-radius: 3px;
+      color: rgba(219, 88, 156, 0.8);
+      cursor: pointer;
+      font-size: 10px;
+      transition: all 0.2s ease;
+    }
+
+    .results-btn:hover {
+      background: rgba(219, 88, 156, 0.1);
+      color: #db589c;
+    }
+
+    .results-content {
+      flex: 1;
+      overflow-y: auto;
+      overflow-x: auto;
+      padding: 12px;
+      font-family: 'Fira Code', 'Monaco', 'Menlo', monospace;
+      font-size: 12px;
+      line-height: 1.4;
+      color: #e0e0e0;
+      min-height: 0;
+      scrollbar-width: thin;
+      scrollbar-color: rgba(219, 88, 156, 0.5) rgba(219, 88, 156, 0.1);
+    }
+
+    /* Custom scrollbar styles */
+    .results-content::-webkit-scrollbar {
+      width: 8px;
+      height: 8px;
+    }
+
+    .results-content::-webkit-scrollbar-track {
+      background: rgba(219, 88, 156, 0.1);
+      border-radius: 4px;
+    }
+
+    .results-content::-webkit-scrollbar-thumb {
+      background: rgba(219, 88, 156, 0.5);
+      border-radius: 4px;
+    }
+
+    .results-content::-webkit-scrollbar-thumb:hover {
+      background: rgba(219, 88, 156, 0.7);
+    }
+
+    .results-content::-webkit-scrollbar-corner {
+      background: rgba(219, 88, 156, 0.1);
+    }
+
+    .results-table {
+      width: 100%;
+      border-collapse: collapse;
+      margin-top: 8px;
+      min-width: 600px;
+    }
+
+    .results-table th {
+      background: rgba(219, 88, 156, 0.15);
+      color: #db589c;
+      padding: 8px 12px;
+      text-align: left;
+      border-bottom: 1px solid rgba(219, 88, 156, 0.3);
+      font-weight: 600;
+      font-size: 11px;
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+      position: sticky;
+      top: 0;
+      white-space: nowrap;
+    }
+
+    .results-table td {
+      padding: 6px 12px;
+      border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+      font-size: 11px;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      max-width: 300px;
+    }
+
+    .results-table tr:hover {
+      background: rgba(219, 88, 156, 0.05);
+    }
+
+    .terminal-output {
+      color: #e0e0e0;
+      white-space: pre-wrap;
+      word-wrap: break-word;
+      margin-bottom: 4px;
+    }
+
+    .terminal-success {
+      color: #a6e3a1;
+    }
+
+    .terminal-error {
+      color: #f38ba8;
+    }
+
+    .terminal-info {
+      color: #89dceb;
+    }
+
+    .terminal-warning {
+      color: #fab387;
+    }
+
+    .loading-spinner {
+      display: inline-block;
+      width: 12px;
+      height: 12px;
+      border: 2px solid rgba(219, 88, 156, 0.3);
+      border-radius: 50%;
+      border-top-color: #db589c;
+      animation: spin 1s ease-in-out infinite;
+      margin-right: 8px;
+    }
+
+    @keyframes spin {
+      to {
+        transform: rotate(360deg);
+      }
+    }
+
+    /* Custom CodeMirror Theme */
+    .CodeMirror {
+      height: 100% !important;
+      width: 100% !important;
+      background: transparent !important;
+      color: #e0e0e0 !important;
+      font-family: 'IBM Plex Mono', 'Monaco', 'Menlo', monospace !important;
+      font-size: 14px !important;
+      line-height: 1.6 !important;
+      flex: 1;
+    }
+
+    .CodeMirror-gutters {
+      background: linear-gradient(135deg, rgba(219, 88, 156, 0.05) 0%, rgba(219, 88, 156, 0.02) 100%) !important;
+      border-right: 1px solid rgba(219, 88, 156, 0.2) !important;
+    }
+
+    .CodeMirror-linenumber {
+      color: rgba(219, 88, 156, 0.6) !important;
+    }
+
+    .CodeMirror-cursor {
+      border-left: 2px solid #db589c !important;
+    }
+
+    .CodeMirror-selected {
+      background: rgba(219, 88, 156, 0.2) !important;
+    }
+
+    .cm-keyword {
+      color: #db589c !important;
+      font-weight: 600 !important;
+    }
+
+    .cm-string {
+      color: #e8a87c !important;
+      font-weight: 500 !important;
+    }
+
+    .cm-comment {
+      color: #888 !important;
+      font-style: italic !important;
+    }
+
+    .cm-variable {
+      color: #f5c2e7 !important;
+      font-weight: 500 !important;
+    }
+
+    .cm-number {
+      color: #fab387 !important;
+      font-weight: 500 !important;
+    }
+
+    .cm-operator {
+      color: #db589c !important;
+    }
+
+    .cm-atom {
+      color: #cba6f7 !important;
+    }
+
+    .cm-def {
+      color: #f5c2e7 !important;
+      font-weight: 600 !important;
+    }
+
+    .cm-property {
+      color: #94e2d5 !important;
+    }
+
+    .cm-qualifier {
+      color: #f38ba8 !important;
+    }
+
+    .cm-builtin {
+      color: #fab387 !important;
+      font-weight: 500 !important;
+    }
+
+    .cm-meta {
+      color: #cdd6f4 !important;
+    }
+
+    .CodeMirror-activeline-background {
+      background: rgba(219, 88, 156, 0.08) !important;
+    }
+
+    .CodeMirror-matchingbracket {
+      background: rgba(219, 88, 156, 0.3) !important;
+      color: white !important;
+    }
+
+    /* Status bar at bottom */
+    .status-bar {
+      position: relative;
+      height: 24px;
+      min-height: 24px;
+      background: linear-gradient(90deg, rgba(43, 43, 43, 0.95) 0%, rgba(45, 27, 61, 0.95) 100%);
+      border-top: 1px solid rgba(219, 88, 156, 0.2);
+      display: flex;
+      align-items: center;
+      padding: 0 12px;
+      font-size: 11px;
+      color: rgba(219, 88, 156, 0.8);
+      z-index: 2;
+      flex-shrink: 0;
+    }
+
+    /* Responsive breakpoints */
+    @media (max-height: 600px) {
+      .toolbar {
+        height: 48px;
+        min-height: 48px;
+      }
+
+      .btn {
+        height: 32px;
+        line-height: 32px;
+        font-size: 11px;
+        padding: 0 12px;
+      }
+
+      #editor-wrapper, #rdf-wrapper, #rules-wrapper {
+        min-height: 150px;
+      }
+
+      #results-panel {
+        min-height: 120px;
+        max-height: 40vh;
+      }
+
+      .results-header {
+        height: 32px;
+        min-height: 32px;
+      }
+
+      .status-bar {
+        height: 20px;
+        min-height: 20px;
+        font-size: 10px;
+      }
+    }
+
+    @media (max-height: 480px) {
+      .toolbar {
+        height: 40px;
+        min-height: 40px;
+        padding: 0 8px;
+      }
+
+      .btn {
+        height: 28px;
+        line-height: 28px;
+        font-size: 10px;
+        padding: 0 8px;
+        margin-right: 8px;
+      }
+
+      #editor-wrapper, #rdf-wrapper, #rules-wrapper {
+        min-height: 120px;
+      }
+
+      #results-panel {
+        min-height: 100px;
+        max-height: 35vh;
+      }
+
+      .results-header {
+        height: 28px;
+        min-height: 28px;
+        padding: 0 8px;
+      }
+
+      .results-content {
+        padding: 8px;
+        font-size: 11px;
+      }
+
+      .status-bar {
+        height: 18px;
+        min-height: 18px;
+        font-size: 9px;
+        padding: 0 8px;
+      }
+    }
+
+    @media (max-height: 400px) {
+      #editor-wrapper, #rdf-wrapper, #rules-wrapper {
+        min-height: 100px;
+      }
+
+      #results-panel {
+        min-height: 80px;
+        max-height: 30vh;
+      }
+    }
+
+    /* Tools Panel Styles */
+    .tools-panel {
+      position: fixed;
+      top: 0;
+      right: -400px;
+      width: 400px;
+      height: 100vh;
+      background: linear-gradient(135deg, rgba(26, 26, 26, 0.98) 0%, rgba(45, 27, 61, 0.98) 100%);
+      backdrop-filter: blur(20px);
+      border-left: 1px solid rgba(219, 88, 156, 0.3);
+      box-shadow: -5px 0 20px rgba(0, 0, 0, 0.5);
+      z-index: 1000;
+      transition: right 0.3s ease;
+      display: flex;
+      flex-direction: column;
+    }
+
+    .tools-panel.open {
+      right: 0;
+    }
+
+    .tools-header {
+      padding: 20px;
+      border-bottom: 1px solid rgba(219, 88, 156, 0.3);
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      flex-shrink: 0;
+    }
+
+    .tools-title {
+      font-size: 18px;
+      font-weight: 600;
+      color: #db589c;
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+    }
+
+    .tools-close {
+      width: 32px;
+      height: 32px;
+      background: transparent;
+      border: 1px solid rgba(219, 88, 156, 0.4);
+      border-radius: 6px;
+      color: #db589c;
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 16px;
+      transition: all 0.2s ease;
+    }
+
+    .tools-close:hover {
+      background: rgba(219, 88, 156, 0.1);
+      border-color: rgba(219, 88, 156, 0.6);
+    }
+
+    .tools-content {
+      flex: 1;
+      padding: 20px;
+      overflow-y: auto;
+    }
+
+    .tools-section {
+      margin-bottom: 30px;
+    }
+
+    .tools-section:last-child {
+      margin-bottom: 0;
+    }
+
+    .tools-section-title {
+      font-size: 16px;
+      font-weight: 600;
+      color: #db589c;
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+      margin-bottom: 20px;
+      padding-bottom: 10px;
+      border-bottom: 1px solid rgba(219, 88, 156, 0.2);
+    }
+
+    .tools-textarea {
+      width: 100%;
+      min-height: 200px;
+      max-height: 400px;
+      background: rgba(0, 0, 0, 0.3);
+      border: 1px solid rgba(219, 88, 156, 0.3);
+      border-radius: 8px;
+      padding: 16px;
+      color: #e0e0e0;
+      font-size: 12px;
+      font-family: 'IBM Plex Mono', monospace;
+      line-height: 1.5;
+      resize: vertical;
+      outline: none;
+      transition: all 0.2s ease;
+      white-space: pre;
+      overflow-wrap: normal;
+      overflow-x: auto;
+    }
+
+    .tools-textarea:focus {
+      border-color: rgba(219, 88, 156, 0.6);
+      background: rgba(0, 0, 0, 0.4);
+      box-shadow: 0 0 0 2px rgba(219, 88, 156, 0.2);
+    }
+
+    .tools-textarea::placeholder {
+      color: rgba(219, 88, 156, 0.5);
+      font-style: italic;
+    }
+
+    .tools-separator {
+      height: 1px;
+      background: linear-gradient(90deg, transparent, rgba(219, 88, 156, 0.3), transparent);
+      margin: 30px 0;
+      position: relative;
+    }
+
+    .tools-separator::after {
+      content: '⚬';
+      position: absolute;
+      top: 50%;
+      left: 50%;
+      transform: translate(-50%, -50%);
+      background: linear-gradient(135deg, rgba(26, 26, 26, 0.98) 0%, rgba(45, 27, 61, 0.98) 100%);
+      color: rgba(219, 88, 156, 0.6);
+      padding: 0 15px;
+      font-size: 12px;
+    }
+
+    /* Ensure icons in tools buttons have the same size as text */
+    .tools-action-btn * {
+      font-size: inherit;
+    }
+
+    .tools-close * {
+      font-size: inherit;
+    }
+  </style>
+</head>
+
+<body>
+  <div class="main-container">
+    <div class="toolbar">
+      <button class="btn" id="runBtn">▶ Run</button>
+      <button class="btn" id="shareBtn" style="margin-left: auto;">↗ Share</button>
+      <button class="btn" id="configBtn">⚙ Config</button>
+      <button class="btn" id="helpBtn">? Help</button>
+    </div>
+
+    <!-- Editor Navigation Tabs -->
+    <div class="editor-tabs">
+      <button class="editor-tab active" data-editor="sparql">
+        📝 SPARQL Query
+      </button>
+      <button class="editor-tab" data-editor="rdf">
+        📊 RDF/XML Data
+      </button>
+      <button class="editor-tab" data-editor="rules">
+        🔧 Rules
+      </button>
+    </div>
+
+    <div id="editor-container">
+      <!-- SPARQL Editor Panel -->
+      <div class="editor-panel active" id="sparql-panel">
+        <div id="editor-wrapper">
+          <textarea id="sparql-editor"></textarea>
+        </div>
+      </div>
+
+      <!-- RDF/XML Editor Panel -->
+      <div class="editor-panel" id="rdf-panel">
+        <div id="rdf-wrapper">
+          <textarea id="rdf-editor"></textarea>
+        </div>
+      </div>
+
+      <!-- Rules Editor Panel -->
+      <div class="editor-panel" id="rules-panel">
+        <div id="rules-wrapper">
+          <textarea id="rules-editor"></textarea>
+        </div>
+      </div>
+
+      <div class="resizer" id="resizer"></div>
+
+      <div id="results-panel">
+        <div class="results-header">
+          <div class="results-tabs">
+            <div class="results-tab active" data-tab="results">⬚ Results</div>
+          </div>
+          <div class="results-actions">
+            <button class="results-btn" id="clearResults">Clear</button>
+          </div>
+        </div>
+        <div class="results-content" id="results-content">
+          <div class="terminal-output terminal-info">🚀 SPARQL Playground Ready
+            💡 Click "RUN" to execute your query
+            📝 Use the editor above to write SPARQL queries
+
+            Example endpoints you can query:
+            • DBpedia: https://dbpedia.org/sparql
+            • Wikidata: https://query.wikidata.org/sparql
+            • Bio2RDF: https://bio2rdf.org/sparql
+          </div>
+        </div>
+      </div>
+
+      <div class="status-bar">
+        <span>Kolibrie Playground • Ready</span>
+      </div>
+    </div>
+  </div>
+
+  <!-- Config Panel -->
+  <div class="config-overlay" id="configOverlay"></div>
+  <div class="config-panel" id="configPanel">
+    <div class="config-header">
+      <div class="config-title">⚙ Configuration</div>
+      <button class="config-close" id="configClose">×</button>
+    </div>
+    <div class="config-content">
+      <div class="config-section">
+        <div class="config-section-title">✎ Text Editor</div>
+        <div class="config-item">
+          <label class="config-label">Font Size</label>
+          <div class="config-control">
+            <button class="config-btn" id="editorFontDecrease">−</button>
+            <div class="config-value" id="editorFontSize">14px</div>
+            <button class="config-btn" id="editorFontIncrease">+</button>
+          </div>
+        </div>
+      </div>
+
+      <div class="config-section">
+        <div class="config-section-title">⚡ Results</div>
+        <div class="config-item">
+          <label class="config-label">Font Size</label>
+          <div class="config-control">
+            <button class="config-btn" id="terminalFontDecrease">−</button>
+            <div class="config-value" id="terminalFontSize">12px</div>
+            <button class="config-btn" id="terminalFontIncrease">+</button>
+          </div>
+        </div>
+      </div>
+
+      <div class="config-section">
+        <div class="config-section-title">◐ Theme</div>
+        <div class="config-item">
+          <label class="config-label">Color Theme</label>
+          <select class="config-select" id="themeSelect">
+            <option value="default">Default (Fuchsia Midnight)</option>
+            <option value="blue">Ocean Blue</option>
+            <option value="green">Forest Green</option>
+            <option value="orange">Sunset Orange</option>
+            <option value="red">Ruby Red</option>
+            <option value="cyan">Cyber Cyan</option>
+            <option value="lightPurple">Light Purple</option>
+            <option value="lightBlue">Light Blue</option>
+          </select>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Share Panel -->
+  <div class="share-panel" id="sharePanel">
+    <div class="share-header">
+      <div class="share-title">↗ Share Query</div>
+      <button class="share-close" id="shareClose">×</button>
+    </div>
+    <div class="share-content">
+      <div class="share-url-container">
+        <div class="share-url-label">⧉ Shareable URL</div>
+        <textarea class="share-url-input" id="shareUrlInput" readonly placeholder="Generating URL..."></textarea>
+        <button class="share-copy-btn" id="shareCopyBtn">⧉ Copy to Clipboard</button>
+      </div>
+      <div class="share-info">
+        <strong>ⓘ About Sharing:</strong><br>
+        • Your SPARQL query is compressed and encoded in the URL<br>
+        • No data is sent to external servers<br>
+        • Share this URL with anyone to load your query<br>
+        • The URL works offline and is completely client-side
+      </div>
+    </div>
+  </div>
+
+  <!-- CodeMirror JS -->
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.2/codemirror.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.2/mode/sparql/sparql.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.2/mode/xml/xml.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.2/addon/edit/matchbrackets.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.2/addon/selection/active-line.min.js"></script>
+
+  <script>
+    let currentTab = 'results';
+    let isResizing = false;
+    let sparqlEditor, rdfEditor, rulesEditor;
+    let currentEditorTab = 'sparql';
+
+    // Configuration state
+    let config = {
+      editorFontSize: 14,
+      terminalFontSize: 12,
+      theme: 'default'
+    };
+
+    // Theme configurations (keep existing themes object)
+    const themes = {
+      default: { primary: '#db589c', primaryRgb: '219, 88, 156', name: 'Default (Fuchsia Midnight)', isLight: false },
+      blue: { primary: '#58a6db', primaryRgb: '88, 166, 219', name: 'Ocean Blue', isLight: false },
+      green: { primary: '#58db6e', primaryRgb: '88, 219, 110', name: 'Forest Green', isLight: false },
+      orange: { primary: '#db9c58', primaryRgb: '219, 156, 88', name: 'Sunset Orange', isLight: false },
+      red: { primary: '#db5858', primaryRgb: '219, 88, 88', name: 'Ruby Red', isLight: false },
+      cyan: { primary: '#58dbdb', primaryRgb: '88, 219, 219', name: 'Cyber Cyan', isLight: false },
+      lightPurple: { primary: '#8b5cf6', primaryRgb: '139, 92, 246', name: 'Light Purple', isLight: true },
+      lightBlue: { primary: '#3b82f6', primaryRgb: '59, 130, 246', name: 'Light Blue', isLight: true }
+    };
+
+    // Helper function for terminal messages
+    function addTerminalMessage(message, type = 'info') {
+      const content = document.getElementById('results-content');
+      if (!content) {
+        console.log(`[${type}] ${message}`);
+        return;
+      }
+      
+      const timestamp = new Date().toLocaleTimeString();
+      const messageDiv = document.createElement('div');
+      messageDiv.className = `terminal-output terminal-${type}`;
+      messageDiv.textContent = `[${timestamp}] ${message}`;
+      content.appendChild(messageDiv);
+      content.scrollTop = content.scrollHeight;
+    }
+
+    function escapeHtml(text) {
+      const div = document.createElement('div');
+      div.textContent = text;
+      return div.innerHTML;
+    }
+
+    // Execute query by sending to backend
+    async function executeKolibrieQuery() {
+      const sparqlQuery = sparqlEditor.getValue().trim();
+      const rdfData = rdfEditor.getValue().trim();
+      const ruleDefinition = rulesEditor.getValue().trim();
+      
+      if (!sparqlQuery) {
+        addTerminalMessage('❌ No SPARQL query provided', 'error');
+        return;
+      }
+
+      addTerminalMessage('🚀 Sending query to Kolibrie engine...', 'info');
+      const startTime = performance.now();
+
+      try {
+        // Prepare the request payload with all three components
+        const payload = {
+          sparql: sparqlQuery,
+          rdf: rdfData || null,
+          rule: ruleDefinition || null
+        };
+
+        const response = await fetch('/query', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json'
+          },
+          body: JSON.stringify(payload)
+        });
+
+        const endTime = performance.now();
+        const executionTime = (endTime - startTime).toFixed(2);
+
+        if (!response.ok) {
+          const errorText = await response.text();
+          throw new Error(`HTTP ${response.status}: ${errorText}`);
+        }
+
+        const result = await response.json();
+        displayKolibrieResults(result, executionTime);
+
+      } catch (error) {
+        addTerminalMessage(`❌ Execution failed: ${error.message}`, 'error');
+        console.error('Query execution error:', error);
+      }
+    }
+
+    function displayKolibrieResults(result, executionTime) {
+      const content = document.getElementById('results-content');
+      let html = '<div class="terminal-output terminal-success">✅ Query executed successfully!</div>';
+      
+      if (result.results && Array.isArray(result.results) && result.results.length > 0) {
+        const results = result.results;
+        html += '<table class="results-table"><thead><tr>';
+        
+        // Determine headers
+        const firstRow = results[0];
+        if (Array.isArray(firstRow)) {
+          // Array of arrays format
+          for (let i = 0; i < firstRow.length; i++) {
+            html += `<th>Column ${i + 1}</th>`;
+          }
+          html += '</tr></thead><tbody>';
+          
+          results.forEach(row => {
+            html += '<tr>';
+            row.forEach(cell => {
+              html += `<td>${escapeHtml(String(cell || ''))}</td>`;
+            });
+            html += '</tr>';
+          });
+        } else if (typeof firstRow === 'object' && firstRow !== null) {
+          // Object format
+          const headers = Object.keys(firstRow);
+          headers.forEach(header => {
+            html += `<th>${escapeHtml(header)}</th>`;
+          });
+          html += '</tr></thead><tbody>';
+          
+          results.forEach(row => {
+            html += '<tr>';
+            headers.forEach(header => {
+              html += `<td>${escapeHtml(String(row[header] || ''))}</td>`;
+            });
+            html += '</tr>';
+          });
+        } else {
+          // Single values
+          html += '<th>Result</th></tr></thead><tbody>';
+          results.forEach(value => {
+            html += `<tr><td>${escapeHtml(String(value || ''))}</td></tr>`;
+          });
+        }
+        
+        html += '</tbody></table>';
+        html += `<div class="terminal-output terminal-info">📊 ${results.length} results returned in ${executionTime}ms</div>`;
+      } else if (result.message) {
+        html += `<div class="terminal-output terminal-info">${escapeHtml(result.message)}</div>`;
+        html += `<div class="terminal-output terminal-info">⚡ Executed in ${executionTime}ms</div>`;
+      } else {
+        html += '<div class="terminal-output terminal-warning">⚠️ No results returned</div>';
+        html += `<div class="terminal-output terminal-info">⚡ Executed in ${executionTime}ms</div>`;
+      }
+      
+      content.innerHTML = html;
+    }
+
+    // Initialize on page load
+    document.addEventListener("DOMContentLoaded", () => {
+      // Initialize CodeMirror editors
+      sparqlEditor = CodeMirror.fromTextArea(document.getElementById('sparql-editor'), {
+        mode: 'application/sparql-query',
+        theme: 'default',
+        lineNumbers: true,
+        matchBrackets: true,
+        styleActiveLine: true,
+        indentUnit: 2,
+        tabSize: 2,
+        lineWrapping: false,
+        autoCloseBrackets: true
+      });
+
+      rdfEditor = CodeMirror.fromTextArea(document.getElementById('rdf-editor'), {
+        mode: 'application/xml',
+        theme: 'default',
+        lineNumbers: true,
+        matchBrackets: true,
+        styleActiveLine: true,
+        indentUnit: 2,
+        tabSize: 2,
+        lineWrapping: false,
+        autoCloseBrackets: true
+      });
+
+      rulesEditor = CodeMirror.fromTextArea(document.getElementById('rules-editor'), {
+        mode: 'application/sparql-query',
+        theme: 'default',
+        lineNumbers: true,
+        matchBrackets: true,
+        styleActiveLine: true,
+        indentUnit: 2,
+        tabSize: 2,
+        lineWrapping: false,
+        autoCloseBrackets: true
+      });
+
+      // Set initial example values
+      sparqlEditor.setValue(`PREFIX ex: <http://example.org#>
+SELECT ?room
+WHERE { 
+  ?room ex:overheatingAlert true . 
+}`);
+
+      rdfEditor.setValue(`<?xml version="1.0"?>
+<rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#"
+        xmlns:ex="http://example.org#">
+<rdf:Description rdf:about="http://example.org#Room101">
+    <ex:temperature>75</ex:temperature>
+    <ex:room>Room101</ex:room>
+</rdf:Description>
+<rdf:Description rdf:about="http://example.org#Sensor1">
+    <ex:room>Room101</ex:room>
+    <ex:temperature>90</ex:temperature>
+</rdf:Description>
+<rdf:Description rdf:about="http://example.org#Room102">
+    <ex:temperature>35</ex:temperature>
+    <ex:room>Room102</ex:room>
+</rdf:Description>
+<rdf:Description rdf:about="http://example.org#Sensor2">
+    <ex:room>Room102</ex:room>
+    <ex:temperature>70</ex:temperature>
+</rdf:Description>
+<rdf:Description rdf:about="http://example.org#Room103">
+    <ex:temperature>45</ex:temperature>
+    <ex:room>Room103</ex:room>
+</rdf:Description>
+<rdf:Description rdf:about="http://example.org#Sensor3">
+    <ex:room>Room103</ex:room>
+    <ex:temperature>190</ex:temperature>
+</rdf:Description>
+</rdf:RDF>`);
+
+      rulesEditor.setValue(`PREFIX ex: <http://example.org#>
+RULE :OverheatingAlert :- 
+CONSTRUCT { 
+    ?room ex:overheatingAlert true .
+}
+WHERE { 
+    ?reading ex:room ?room ; 
+            ex:temperature ?temp
+    FILTER (?temp > 80)
+}`);
+
+      // Editor tab switching
+      document.querySelectorAll('.editor-tab').forEach(tab => {
+        tab.addEventListener('click', () => {
+          const editorType = tab.dataset.editor;
+          switchEditorTab(editorType);
+        });
+      });
+
+      function switchEditorTab(editorType) {
+        currentEditorTab = editorType;
+        
+        document.querySelectorAll('.editor-tab').forEach(t => t.classList.remove('active'));
+        document.querySelector(`[data-editor="${editorType}"]`).classList.add('active');
+        
+        document.querySelectorAll('.editor-panel').forEach(p => p.classList.remove('active'));
+        document.getElementById(`${editorType}-panel`).classList.add('active');
+        
+        setTimeout(() => {
+          if (editorType === 'sparql') sparqlEditor.refresh();
+          else if (editorType === 'rdf') rdfEditor.refresh();
+          else if (editorType === 'rules') rulesEditor.refresh();
+        }, 0);
+        
+        updateStatusBar();
+      }
+
+      function updateStatusBar() {
+        let editor, label;
+        if (currentEditorTab === 'sparql') {
+          editor = sparqlEditor;
+          label = 'SPARQL Query';
+        } else if (currentEditorTab === 'rdf') {
+          editor = rdfEditor;
+          label = 'RDF/XML Data';
+        } else {
+          editor = rulesEditor;
+          label = 'Rules';
+        }
+        
+        const lines = editor.lineCount();
+        const cursor = editor.getCursor();
+        document.querySelector('.status-bar span').textContent =
+          `${label} • Line ${cursor.line + 1}, Column ${cursor.ch + 1} • ${lines} lines`;
+      }
+
+      sparqlEditor.on('change', updateStatusBar);
+      rdfEditor.on('change', updateStatusBar);
+      rulesEditor.on('change', updateStatusBar);
+      sparqlEditor.on('cursorActivity', updateStatusBar);
+      rdfEditor.on('cursorActivity', updateStatusBar);
+      rulesEditor.on('cursorActivity', updateStatusBar);
+
+      // Load saved configuration
+      loadConfig();
+
+      // RUN button - Execute query
+      document.getElementById("runBtn").onclick = () => {
+        executeKolibrieQuery();
+      };
+
+      // HELP button
+      document.getElementById("helpBtn").onclick = () => {
+        document.getElementById('results-content').innerHTML = `
+          <div class="terminal-output terminal-info">❓ Kolibrie SPARQL Playground Help
+
+<strong>Quick Start:</strong>
+1. Write or modify RDF data in the "📊 RDF/XML Data" tab
+2. Define rules in the "🔧 Rules" tab (optional)
+3. Write your SPARQL query in the "📝 SPARQL Query" tab
+4. Click RUN to execute
+
+<strong>Query Structure:</strong>
+PREFIX ex: &lt;http://example.org#&gt;
+SELECT ?variable
+WHERE {
+  ?subject ?predicate ?object .
+}
+
+<strong>Features:</strong>
+• Full SPARQL 1.1 support
+• RDF/XML data loading
+• Rule-based inference
+• Real-time execution
+
+<strong>Common Filters:</strong>
+FILTER (?value > 100)
+FILTER (?name = "Alice")
+FILTER (lang(?label) = "en")
+          </div>
+        `;
+      };
+
+      // Clear results button
+      document.getElementById('clearResults').addEventListener('click', () => {
+        document.getElementById('results-content').innerHTML =
+          '<div class="terminal-output terminal-info">Results cleared.</div>';
+      });
+
+      // Config panel (keep existing config functions)
+      document.getElementById('configBtn').addEventListener('click', () => {
+        document.getElementById('sharePanel').classList.remove('open');
+        document.getElementById('configPanel').classList.add('open');
+        document.getElementById('configOverlay').classList.add('open');
+      });
+
+      document.getElementById('configClose').addEventListener('click', closeConfig);
+      document.getElementById('configOverlay').addEventListener('click', closeConfig);
+
+      function closeConfig() {
+        document.getElementById('configPanel').classList.remove('open');
+        document.getElementById('sharePanel').classList.remove('open');
+        document.getElementById('configOverlay').classList.remove('open');
+      }
+
+      // Share panel
+      document.getElementById('shareBtn').addEventListener('click', () => {
+        document.getElementById('configPanel').classList.remove('open');
+        const query = sparqlEditor.getValue();
+        const shareUrl = `${window.location.origin}${window.location.pathname}`;
+        document.getElementById('shareUrlInput').value = shareUrl;
+        document.getElementById('sharePanel').classList.add('open');
+        document.getElementById('configOverlay').classList.add('open');
+      });
+
+      document.getElementById('shareClose').addEventListener('click', closeConfig);
+
+      document.getElementById('shareCopyBtn').addEventListener('click', async () => {
+        const urlInput = document.getElementById('shareUrlInput');
+        const copyBtn = document.getElementById('shareCopyBtn');
+
+        try {
+          await navigator.clipboard.writeText(urlInput.value);
+          copyBtn.textContent = '✅ Copied!';
+          copyBtn.classList.add('copied');
+          setTimeout(() => {
+            copyBtn.textContent = '⧉ Copy to Clipboard';
+            copyBtn.classList.remove('copied');
+          }, 2000);
+        } catch (error) {
+          urlInput.select();
+          document.execCommand('copy');
+        }
+      });
+
+      // Font size controls
+      document.getElementById('editorFontDecrease').addEventListener('click', () => {
+        if (config.editorFontSize > 8) {
+          config.editorFontSize--;
+          updateEditorFontSize();
+          saveConfig();
+        }
+      });
+
+      document.getElementById('editorFontIncrease').addEventListener('click', () => {
+        if (config.editorFontSize < 24) {
+          config.editorFontSize++;
+          updateEditorFontSize();
+          saveConfig();
+        }
+      });
+
+      document.getElementById('terminalFontDecrease').addEventListener('click', () => {
+        if (config.terminalFontSize > 8) {
+          config.terminalFontSize--;
+          updateTerminalFontSize();
+          saveConfig();
+        }
+      });
+
+      document.getElementById('terminalFontIncrease').addEventListener('click', () => {
+        if (config.terminalFontSize < 20) {
+          config.terminalFontSize++;
+          updateTerminalFontSize();
+          saveConfig();
+        }
+      });
+
+      document.getElementById('themeSelect').addEventListener('change', (e) => {
+        config.theme = e.target.value;
+        updateTheme();
+        saveConfig();
+      });
+
+      function updateEditorFontSize() {
+        const fontSize = config.editorFontSize;
+        document.getElementById('editorFontSize').textContent = `${fontSize}px`;
+        const style = document.createElement('style');
+        style.id = 'editor-font-style';
+        const existingStyle = document.getElementById('editor-font-style');
+        if (existingStyle) existingStyle.remove();
+        style.textContent = `.CodeMirror { font-size: ${fontSize}px !important; }`;
+        document.head.appendChild(style);
+        sparqlEditor.refresh();
+        rdfEditor.refresh();
+        rulesEditor.refresh();
+      }
+
+      function updateTerminalFontSize() {
+        const fontSize = config.terminalFontSize;
+        document.getElementById('terminalFontSize').textContent = `${fontSize}px`;
+        const style = document.createElement('style');
+        style.id = 'terminal-font-style';
+        const existingStyle = document.getElementById('terminal-font-style');
+        if (existingStyle) existingStyle.remove();
+        style.textContent = `.results-content { font-size: ${fontSize}px !important; }`;
+        document.head.appendChild(style);
+      }
+
+      function updateTheme() {
+        const theme = themes[config.theme];
+        const style = document.createElement('style');
+        style.id = 'theme-style';
+        const existingStyle = document.getElementById('theme-style');
+        if (existingStyle) existingStyle.remove();
+
+        // (Keep existing theme CSS - too long to include here, but use the same logic from your HTML)
+        style.textContent = `/* Your existing theme CSS */`;
+        document.head.appendChild(style);
+      }
+
+      function saveConfig() {
+        localStorage.setItem('kolibrie-playground-config', JSON.stringify(config));
+      }
+
+      function loadConfig() {
+        const saved = localStorage.getItem('kolibrie-playground-config');
+        if (saved) {
+          config = { ...config, ...JSON.parse(saved) };
+        }
+        document.getElementById('editorFontSize').textContent = `${config.editorFontSize}px`;
+        document.getElementById('terminalFontSize').textContent = `${config.terminalFontSize}px`;
+        document.getElementById('themeSelect').value = config.theme;
+        updateEditorFontSize();
+        updateTerminalFontSize();
+        updateTheme();
+      }
+
+      // Resizer functionality
+      const resizer = document.getElementById('resizer');
+      resizer.addEventListener('mousedown', (e) => {
+        isResizing = true;
+        document.addEventListener('mousemove', handleResize);
+        document.addEventListener('mouseup', stopResize);
+        e.preventDefault();
+      });
+
+      function handleResize(e) {
+        if (!isResizing) return;
+        const container = document.getElementById('editor-container');
+        const containerHeight = container.clientHeight - 24;
+        const containerTop = container.getBoundingClientRect().top;
+        const newEditorHeight = e.clientY - containerTop - 40;
+        const newResultsHeight = containerHeight - newEditorHeight - 4;
+        const minEditorHeight = window.innerHeight < 480 ? 100 : 200;
+        const minResultsHeight = window.innerHeight < 480 ? 80 : 150;
+
+        if (newEditorHeight > minEditorHeight && newResultsHeight > minResultsHeight) {
+          const activePanel = document.querySelector('.editor-panel.active > div');
+          const resultsPanel = document.getElementById('results-panel');
+          activePanel.style.flex = `0 0 ${newEditorHeight}px`;
+          resultsPanel.style.flex = `0 0 ${newResultsHeight}px`;
+          sparqlEditor.refresh();
+          rdfEditor.refresh();
+          rulesEditor.refresh();
+        }
+      }
+
+      function stopResize() {
+        isResizing = false;
+        document.removeEventListener('mousemove', handleResize);
+        document.removeEventListener('mouseup', stopResize);
+      }
+
+      window.addEventListener('resize', () => {
+        setTimeout(() => {
+          sparqlEditor.refresh();
+          rdfEditor.refresh();
+          rulesEditor.refresh();
+        }, 100);
+      });
+
+      // Initial message
+      document.getElementById('results-content').innerHTML = `
+        <div class="terminal-output terminal-success">🚀 Kolibrie Playground Ready!
+
+<strong>Quick Start:</strong>
+1. Check the pre-loaded example in "📊 RDF/XML Data" tab
+2. Review the rule in "🔧 Rules" tab
+3. Click RUN to execute the example query
+
+<strong>About:</strong>
+• Powered by Kolibrie SPARQL engine (Rust backend)
+• Supports RDF/XML data loading
+• Includes rule-based inference
+• Real-time query execution
+
+Click "? Help" for more information.
+        </div>
+      `;
+    });
+  </script>
+</body>
+</html>

@@ -1,7 +1,28 @@
 version: '3.8'
 
 services:
-  # GPU-enabled service (requires NVIDIA Docker runtime)
+  # Playground service with web UI
+  kolibrie-playground:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        GPU_VENDOR: ${GPU_VENDOR:-none}
+        BASE_TAG: "22.04"
+    image: kolibrie:playground
+    ports:
+      - "8080:8080"
+    volumes:
+      - ./data:/app/data
+      - ./web:/app/web
+    environment:
+      - RUST_LOG=info
+    command: /app/target/release/kolibrie-http-server
+    profiles:
+      - playground
+      - default
+
+  # GPU-enabled service
   stream-reasoning-gpu:
     build:
       context: .
@@ -43,25 +64,3 @@ services:
       - ./models:/app/ml/examples/models
     profiles:
       - cpu
-      - default
-
-  # Development service (auto-detects based on available GPU)
-  stream-reasoning-dev:
-    build:
-      context: .
-      dockerfile: Dockerfile
-      args:
-        GPU_VENDOR: ${GPU_VENDOR:-none}
-        CUDA_VERSION: ${CUDA_VERSION:-11.8}
-        BASE_TAG: ${BASE_TAG:-22.04}
-        BASE_IMAGE: ${BASE_IMAGE:-ubuntu:22.04}
-    image: stream-reasoning:dev
-    volumes:
-      - .:/app
-      - ./data:/app/data
-      - ./models:/app/ml/examples/models
-      - ./scripts:/app/scripts  # Mount scripts directory
-    working_dir: /app
-    command: bash
-    profiles:
-      - dev
