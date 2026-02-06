@@ -1,29 +1,32 @@
 version: '3.8'
 
 services:
-  # Playground service with web UI
-  kolibrie-playground:
+  # CPU-only service
+  kolibrie-cpu:
     build:
       context: .
       dockerfile: Dockerfile
       args:
-        GPU_VENDOR: ${GPU_VENDOR:-none}
+        GPU_VENDOR: none
         BASE_TAG: "22.04"
-    image: kolibrie:playground
+        ENABLE_WEB_UI: "true"
+    image: kolibrie:cpu
     ports:
       - "8080:8080"
     volumes:
       - ./data:/app/data
+      - ./models:/app/ml/examples/models
       - ./web:/app/web
     environment:
       - RUST_LOG=info
+      - PYTHONPATH=/app/ml/src:/app/python/target/release
     command: /app/target/release/kolibrie-http-server
     profiles:
-      - playground
+      - cpu
       - default
 
   # GPU-enabled service
-  stream-reasoning-gpu:
+  kolibrie-gpu:
     build:
       context: .
       dockerfile: Dockerfile
@@ -32,7 +35,10 @@ services:
         CUDA_VERSION: "11.8"
         BASE_TAG: "22.04"
         BASE_IMAGE: nvidia/cuda:11.8-devel-ubuntu22.04
-    image: stream-reasoning:gpu
+        ENABLE_WEB_UI: "true"
+    image: kolibrie:gpu
+    ports:
+      - "8080:8080"
     deploy:
       resources:
         reservations:
@@ -43,24 +49,39 @@ services:
     volumes:
       - ./data:/app/data
       - ./models:/app/ml/examples/models
+      - ./web:/app/web
     environment:
       - CUDA_VISIBLE_DEVICES=all
+      - RUST_LOG=info
+      - PYTHONPATH=/app/ml/src:/app/python/target/release
+    command: /app/target/release/kolibrie-http-server
     profiles:
       - gpu
       - nvidia
 
-  # CPU-only service
-  stream-reasoning-cpu:
+  # Development service
+  kolibrie-dev:
     build:
       context: .
       dockerfile: Dockerfile
       args:
-        GPU_VENDOR: none
-        BASE_TAG: "22.04"
-        BASE_IMAGE: ubuntu:22.04
-    image: stream-reasoning:cpu
+        GPU_VENDOR: ${GPU_VENDOR:-none}
+        CUDA_VERSION: ${CUDA_VERSION:-11.8}
+        BASE_TAG: ${BASE_TAG:-22.04}
+        BASE_IMAGE: ${BASE_IMAGE:-ubuntu:22.04}
+        ENABLE_WEB_UI: "false"
+    image: kolibrie:dev
+    ports:
+      - "8080:8080"
     volumes:
+      - .:/app
       - ./data:/app/data
       - ./models:/app/ml/examples/models
+      - ./web:/app/web
+    working_dir: /app
+    environment:
+      - RUST_LOG=debug
+      - PYTHONPATH=/app/ml/src:/app/python/target/release
+    command: bash
     profiles:
-      - cpu
+      - dev

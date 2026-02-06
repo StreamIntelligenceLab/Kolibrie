@@ -131,6 +131,7 @@
 130. Add full combination example (RSP + Reasoning + ML)
 131. Split LSM-Tree
 132. MLPredict operator for Streamertail optimizer
+133. Improve docker, webui and add support of n-triples
 
 0.1.0
 1. Parsing RDF/XML

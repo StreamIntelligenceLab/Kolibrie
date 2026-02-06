@@ -250,7 +250,6 @@ impl ExecutionEngine {
         input_variables: &[String],
         database: &SparqlDatabase,
     ) -> Vec<Vec<f64>> {
-        // DEBUG: Print what we're working with
         if let Some(first_row) = input_results.first() {
             println!("[ML.PREDICT DEBUG] First row keys: {:?}", first_row.keys().collect::<Vec<_>>());
             println!("[ML.PREDICT DEBUG] Input variables to check: {:?}", input_variables);
@@ -264,7 +263,7 @@ impl ExecutionEngine {
             }
         }
         
-        // First, identify which variables are actually numeric by checking the first row
+        // Identify which variables are actually numeric by checking the first row
         let numeric_vars: Vec<String> = if let Some(first_row) = input_results.first() {
             input_variables
                 .iter()

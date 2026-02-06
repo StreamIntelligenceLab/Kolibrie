@@ -839,6 +839,42 @@
       color: #cdd6f4 !important;
     }
 
+    .format-selector select:hover {
+      border-color: rgba(219, 88, 156, 0.8);
+      background: rgba(43, 43, 43, 1);
+    }
+
+    .format-selector select:focus {
+      outline: none;
+      border-color: #db589c;
+      box-shadow: 0 0 0 2px rgba(219, 88, 156, 0.2);
+    }
+
+    .terminal-output {
+      padding: 12px;
+      margin: 8px 0;
+      border-radius: 4px;
+      font-family: 'IBM Plex Mono', monospace;
+    }
+
+    .terminal-success {
+      background: rgba(76, 175, 80, 0.1);
+      border-left: 3px solid #4caf50;
+      color: #81c784;
+    }
+
+    .terminal-error {
+      background: rgba(244, 67, 54, 0.1);
+      border-left: 3px solid #f44336;
+      color: #e57373;
+    }
+
+    .terminal-info {
+      background: rgba(219, 88, 156, 0.1);
+      border-left: 3px solid #db589c;
+      color: #db589c;
+    }
+
     .CodeMirror-activeline-background {
       background: rgba(219, 88, 156, 0.08) !important;
     }
@@ -1104,18 +1140,27 @@
       <button class="btn" id="shareBtn" style="margin-left: auto;">↗ Share</button>
       <button class="btn" id="configBtn">⚙ Config</button>
       <button class="btn" id="helpBtn">? Help</button>
+      
+      <!-- Add format selector in the toolbar, after the editor tabs -->
+      <div class="format-selector" style="margin-left: auto; display: flex; align-items: center; gap: 10px;">
+        <label for="rdfFormat" style="color: #db589c; font-weight: 500;">RDF Format:</label>
+        <select id="rdfFormat" class="format-dropdown" style="background: rgba(43, 43, 43, 0.9); color: #e0e0e0; border: 1px solid rgba(219, 88, 156, 0.5); padding: 6px 12px; border-radius: 4px; cursor: pointer;">
+          <option value="rdfxml">RDF/XML</option>
+          <option value="ntriples">N-Triples</option>
+        </select>
+      </div>
     </div>
 
     <!-- Editor Navigation Tabs -->
     <div class="editor-tabs">
       <button class="editor-tab active" data-editor="sparql">
-        📝 SPARQL Query
+         SPARQL Query
       </button>
       <button class="editor-tab" data-editor="rdf">
-        📊 RDF/XML Data
+         RDF/XML Data
       </button>
       <button class="editor-tab" data-editor="rules">
-        🔧 Rules
+         Rules
       </button>
     </div>
 
@@ -1153,9 +1198,9 @@
           </div>
         </div>
         <div class="results-content" id="results-content">
-          <div class="terminal-output terminal-info">🚀 SPARQL Playground Ready
-            💡 Click "RUN" to execute your query
-            📝 Use the editor above to write SPARQL queries
+          <div class="terminal-output terminal-info"> SPARQL Playground Ready
+             Click "RUN" to execute your query
+             Use the editor above to write SPARQL queries
 
             Example endpoints you can query:
             • DBpedia: https://dbpedia.org/sparql
@@ -1192,7 +1237,7 @@
       </div>
 
       <div class="config-section">
-        <div class="config-section-title">⚡ Results</div>
+        <div class="config-section-title"> Results</div>
         <div class="config-item">
           <label class="config-label">Font Size</label>
           <div class="config-control">
@@ -1303,21 +1348,23 @@
       const sparqlQuery = sparqlEditor.getValue().trim();
       const rdfData = rdfEditor.getValue().trim();
       const ruleDefinition = rulesEditor.getValue().trim();
+      const format = document.getElementById('rdfFormat').value;
       
       if (!sparqlQuery) {
-        addTerminalMessage('❌ No SPARQL query provided', 'error');
+        addTerminalMessage(' No SPARQL query provided', 'error');
         return;
       }
 
-      addTerminalMessage('🚀 Sending query to Kolibrie engine...', 'info');
+      addTerminalMessage(' Sending query to Kolibrie engine...', 'info');
       const startTime = performance.now();
 
       try {
-        // Prepare the request payload with all three components
+        // Prepare the request payload with all three components and format
         const payload = {
           sparql: sparqlQuery,
           rdf: rdfData || null,
-          rule: ruleDefinition || null
+          rule: ruleDefinition || null,
+          format: format  // Add format to payload
         };
 
         const response = await fetch('/query', {
@@ -1337,17 +1384,20 @@
         }
 
         const result = await response.json();
-        displayKolibrieResults(result, executionTime);
+        displayKolibrieResults(result, executionTime, format);
 
       } catch (error) {
-        addTerminalMessage(`❌ Execution failed: ${error.message}`, 'error');
+        addTerminalMessage(` Execution failed: ${error.message}`, 'error');
         console.error('Query execution error:', error);
       }
     }
 
-    function displayKolibrieResults(result, executionTime) {
+    function displayKolibrieResults(result, executionTime, format) {
       const content = document.getElementById('results-content');
-      let html = '<div class="terminal-output terminal-success">✅ Query executed successfully!</div>';
+      const optimizerNote = format === 'ntriples' ? 
+        '<div class="terminal-output terminal-info"> Query executed with Streamertail optimizer</div>' : '';
+      
+      let html = optimizerNote + '<div class="terminal-output terminal-success"> Query executed successfully!</div>';
       
       if (result.results && Array.isArray(result.results) && result.results.length > 0) {
         const results = result.results;
@@ -1393,13 +1443,13 @@
         }
         
         html += '</tbody></table>';
-        html += `<div class="terminal-output terminal-info">📊 ${results.length} results returned in ${executionTime}ms</div>`;
+        html += `<div class="terminal-output terminal-info"> ${results.length} results returned in ${executionTime}ms</div>`;
       } else if (result.message) {
         html += `<div class="terminal-output terminal-info">${escapeHtml(result.message)}</div>`;
-        html += `<div class="terminal-output terminal-info">⚡ Executed in ${executionTime}ms</div>`;
+        html += `<div class="terminal-output terminal-info"> Executed in ${executionTime}ms</div>`;
       } else {
-        html += '<div class="terminal-output terminal-warning">⚠️ No results returned</div>';
-        html += `<div class="terminal-output terminal-info">⚡ Executed in ${executionTime}ms</div>`;
+        html += '<div class="terminal-output terminal-warning"> No results returned</div>';
+        html += `<div class="terminal-output terminal-info"> Executed in ${executionTime}ms</div>`;
       }
       
       content.innerHTML = html;
@@ -1546,6 +1596,53 @@ WHERE {
       // Load saved configuration
       loadConfig();
 
+      // Add format change handler
+      document.getElementById('rdfFormat').addEventListener('change', function(e) {
+        const format = e.target.value;
+        updateEditorForFormat(format);
+        updateStatusBar();
+      });
+
+      function updateEditorForFormat(format) {
+        const rdfTab = document.querySelector('[data-editor="rdf"]');
+        
+        if (format === 'ntriples') {
+          rdfTab.textContent = ' N-Triples Data';
+          
+          // Update placeholder with N-Triples example if editor is empty or has default
+          if (rdfEditor.getValue().includes('<?xml') || rdfEditor.getValue().trim() === '') {
+            rdfEditor.setValue(`<http://example.org/Room101> <http://example.org#temperature> "75" .
+<http://example.org/Room101> <http://example.org#room> "Room101" .
+<http://example.org/Sensor1> <http://example.org#room> "Room101" .
+<http://example.org/Sensor1> <http://example.org#temperature> "90" .
+<http://example.org/Room102> <http://example.org#temperature> "35" .
+<http://example.org/Room102> <http://example.org#room> "Room102" .`);
+          }
+        } else {
+          rdfTab.textContent = ' RDF/XML Data';
+          
+          // Restore RDF/XML example if needed
+          if (!rdfEditor.getValue().includes('<?xml') || rdfEditor.getValue().trim() === '') {
+            rdfEditor.setValue(`<?xml version="1.0"?>
+<rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#"
+        xmlns:ex="http://example.org#">
+<rdf:Description rdf:about="http://example.org#Room101">
+    <ex:temperature>75</ex:temperature>
+    <ex:room>Room101</ex:room>
+</rdf:Description>
+<rdf:Description rdf:about="http://example.org#Sensor1">
+    <ex:room>Room101</ex:room>
+    <ex:temperature>90</ex:temperature>
+</rdf:Description>
+<rdf:Description rdf:about="http://example.org#Room102">
+    <ex:temperature>35</ex:temperature>
+    <ex:room>Room102</ex:room>
+</rdf:Description>
+</rdf:RDF>`);
+          }
+        }
+      }
+
       // RUN button - Execute query
       document.getElementById("runBtn").onclick = () => {
         executeKolibrieQuery();
@@ -1554,13 +1651,22 @@ WHERE {
       // HELP button
       document.getElementById("helpBtn").onclick = () => {
         document.getElementById('results-content').innerHTML = `
-          <div class="terminal-output terminal-info">❓ Kolibrie SPARQL Playground Help
+          <div class="terminal-output terminal-info"> Kolibrie SPARQL Playground Help
 
 <strong>Quick Start:</strong>
-1. Write or modify RDF data in the "📊 RDF/XML Data" tab
-2. Define rules in the "🔧 Rules" tab (optional)
-3. Write your SPARQL query in the "📝 SPARQL Query" tab
-4. Click RUN to execute
+1. Select your RDF format (RDF/XML or N-Triples) from the dropdown
+2. Write or modify RDF data in the " RDF Data" tab
+3. Define rules in the " Rules" tab (optional)
+4. Write your SPARQL query in the " SPARQL Query" tab
+5. Click RUN to execute
+
+<strong>Supported Formats:</strong>
+• RDF/XML - Traditional XML-based RDF format
+• N-Triples - Line-based RDF format (uses Streamertail optimizer)
+
+<strong>N-Triples Format Example:</strong>
+&lt;http://example.org/alice&gt; &lt;http://xmlns.com/foaf/0.1/name&gt; "Alice" .
+&lt;http://example.org/alice&gt; &lt;http://xmlns.com/foaf/0.1/age&gt; "30" .
 
 <strong>Query Structure:</strong>
 PREFIX ex: &lt;http://example.org#&gt;
@@ -1571,7 +1677,8 @@ WHERE {
 
 <strong>Features:</strong>
 • Full SPARQL 1.1 support
-• RDF/XML data loading
+• RDF/XML and N-Triples data loading
+• Streamertail optimizer for N-Triples (high performance)
 • Rule-based inference
 • Real-time execution
 
@@ -1623,7 +1730,7 @@ FILTER (lang(?label) = "en")
 
         try {
           await navigator.clipboard.writeText(urlInput.value);
-          copyBtn.textContent = '✅ Copied!';
+          copyBtn.textContent = ' Copied!';
           copyBtn.classList.add('copied');
           setTimeout(() => {
             copyBtn.textContent = '⧉ Copy to Clipboard';
@@ -1774,16 +1881,18 @@ FILTER (lang(?label) = "en")
 
       // Initial message
       document.getElementById('results-content').innerHTML = `
-        <div class="terminal-output terminal-success">🚀 Kolibrie Playground Ready!
+        <div class="terminal-output terminal-success"> Kolibrie Playground Ready!
 
 <strong>Quick Start:</strong>
-1. Check the pre-loaded example in "📊 RDF/XML Data" tab
-2. Review the rule in "🔧 Rules" tab
-3. Click RUN to execute the example query
+1. Select your RDF format (RDF/XML or N-Triples) from the dropdown
+2. Check the pre-loaded example in " RDF Data" tab
+3. Review the rule in " Rules" tab (optional)
+4. Click RUN to execute the example query
 
 <strong>About:</strong>
 • Powered by Kolibrie SPARQL engine (Rust backend)
-• Supports RDF/XML data loading
+• Supports RDF/XML and N-Triples data loading
+• N-Triples uses Streamertail optimizer for high performance
 • Includes rule-based inference
 • Real-time query execution
 
