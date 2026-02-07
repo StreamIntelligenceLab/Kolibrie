@@ -114,15 +114,18 @@ This drops you into a bash shell with full access to Kolibrie tools.
 If you prefer using Docker directly:
 
 **CPU Build with Web UI:**
+
+Build:
 ```bash
-# Build
 docker build \
   --build-arg GPU_VENDOR=none \
   --build-arg ENABLE_WEB_UI=true \
   -t kolibrie:cpu \
   .
+```
 
-# Run
+Run:
+```bash
 docker run -d \
   --name kolibrie \
   -p 8080:8080 \
@@ -132,8 +135,9 @@ docker run -d \
 ```
 
 **GPU Build with Web UI:**
+
+Build:
 ```bash
-# Build
 docker build \
   --build-arg GPU_VENDOR=nvidia \
   --build-arg CUDA_VERSION=11.8 \
@@ -141,8 +145,10 @@ docker build \
   --build-arg ENABLE_WEB_UI=true \
   -t kolibrie:gpu \
   .
+```
 
-# Run
+Run:
+```bash
 docker run -d \
   --name kolibrie-gpu \
   --gpus all \
@@ -153,15 +159,18 @@ docker run -d \
 ```
 
 **Development Build (Shell Access):**
+
+Build:
 ```bash
-# Build
 docker build \
   --build-arg GPU_VENDOR=none \
   --build-arg ENABLE_WEB_UI=false \
   -t kolibrie:dev \
   .
+```
 
-# Run
+Run:
+```bash
 docker run -it \
   --name kolibrie-dev \
   -v $(pwd):/app \

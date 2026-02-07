@@ -159,6 +159,15 @@ fn execute_sparql_with_context(body: &str) -> String {
                     database.build_all_indexes();
                     
                     println!("✓ N-Triples data loaded with optimizer, triple count: {}", database.triples.len());
+                    
+                    // DEBUG: Print all triples
+                    println!("DEBUG: Database triples:");
+                    for (i, triple) in database.triples.iter().enumerate() {
+                        let s = database.dictionary.decode(triple.subject).unwrap_or("UNKNOWN");
+                        let p = database.dictionary.decode(triple.predicate).unwrap_or("UNKNOWN");
+                        let o = database.dictionary.decode(triple.object).unwrap_or("UNKNOWN");
+                        println!("  Triple {}: {} | {} | {}", i, s, p, o);
+                    }
                 }
                 "rdfxml" | _ => {
                     println!("Parsing RDF/XML data...");
@@ -171,6 +180,15 @@ fn execute_sparql_with_context(body: &str) -> String {
                     database.build_all_indexes();
                     
                     println!("✓ RDF/XML data loaded, triple count: {}", database.triples.len());
+                    
+                    // DEBUG: Print all triples
+                    println!("DEBUG: Database triples:");
+                    for (i, triple) in database.triples.iter().enumerate() {
+                        let s = database.dictionary.decode(triple.subject).unwrap_or("UNKNOWN");
+                        let p = database.dictionary.decode(triple.predicate).unwrap_or("UNKNOWN");
+                        let o = database.dictionary.decode(triple.object).unwrap_or("UNKNOWN");
+                        println!("  Triple {}: {} | {} | {}", i, s, p, o);
+                    }
                 }
             }
         }
@@ -204,31 +222,19 @@ fn execute_sparql_with_context(body: &str) -> String {
     println!("Query: {}", request.sparql);
     
     // N-Triples MUST use volcano optimizer, RDF/XML tries it with fallback
-    let results = if use_optimizer {
-        // N-Triples: MUST use optimizer, no fallback
-        println!("Using Streamertail optimizer (required for N-Triples)");
-        match execute_query_rayon_parallel2_volcano(&request.sparql, &mut database) {
-            res => {
-                println!("Streamertail optimizer executed successfully, {} results", res.len());
-                res
-            }
+    let results = match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        execute_query_rayon_parallel2_volcano(&request.sparql, &mut database)
+    })) {
+        Ok(res) => {
+            println!("Streamertail optimizer executed successfully, {} results", res.len());
+            res
         }
-    } else {
-        // RDF/XML: Try optimizer first, fallback to regular if it fails
-        match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            execute_query_rayon_parallel2_volcano(&request.sparql, &mut database)
-        })) {
-            Ok(res) => {
-                println!("Streamertail optimizer executed successfully, {} results", res.len());
-                res
-            }
-            Err(e) => {
-                eprintln!("Streamertail optimizer failed: {:?}, falling back to regular executor", e);
-                println!("Executing with regular query executor...");
-                let res = execute_query(&request.sparql, &mut database);
-                println!("Regular executor completed, {} results", res.len());
-                res
-            }
+        Err(e) => {
+            eprintln!("Streamertail optimizer failed: {:?}, falling back to regular executor", e);
+            println!("Executing with regular query executor...");
+            let res = execute_query(&request.sparql, &mut database);
+            println!("Regular executor completed, {} results", res.len());
+            res
         }
     };
     

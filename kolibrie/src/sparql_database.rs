@@ -788,7 +788,18 @@ impl SparqlDatabase {
         
         // Handle literals (keep quotes and datatype/language info)
         if term.starts_with('"') {
-            return term.to_string();
+            if let Some(close_quote_pos) = term[1..].find('"') {
+                let close_quote_pos = close_quote_pos + 1;
+                let literal_value = &term[1..close_quote_pos];
+                let rest = &term[close_quote_pos + 1..];
+                if rest.is_empty() {
+                    return literal_value.to_string();
+                } else if rest.starts_with("^^") {
+                    return literal_value.to_string();
+                } else if rest.starts_with("@") {
+                    return format!("{}{}", literal_value, rest);
+                }
+            }
         }
         
         // Return as-is for other cases

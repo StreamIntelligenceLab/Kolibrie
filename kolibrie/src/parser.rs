@@ -1713,13 +1713,10 @@ pub fn process_rule_definition(
     database.register_prefixes_from_query(rule_input);
 
     let mut kg = Reasoner::new();
+    kg.dictionary = database.dictionary.clone();
+    
     for triple in database.triples.iter() {
-        let subject = database.dictionary.decode(triple.subject);
-        let predicate = database.dictionary.decode(triple.predicate);
-        let object = database.dictionary.decode(triple.object);
-        if let (Some(s), Some(p), Some(o)) = (subject, predicate, object) {
-            kg.add_abox_triple(&s, &p, &o);
-        }
+        kg.index_manager.insert(triple);
     }
 
     // Parse the standalone rule
@@ -1735,7 +1732,8 @@ pub fn process_rule_definition(
         let mut rule_prefixes = prefixes.clone();
         database.share_prefixes_with(&mut rule_prefixes);
 
-        let dynamic_rule = convert_combined_rule(rule.clone(), &mut database.dictionary, &rule_prefixes);
+        let dynamic_rule = convert_combined_rule(rule.clone(), &mut kg.dictionary, &rule_prefixes);
+        database.dictionary = kg.dictionary.clone();
 
         // Check if this rule has windowing - if so, set up RSP processing
         if !rule.window_clause.is_empty() {
