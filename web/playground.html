@@ -9,6 +9,9 @@
   <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.2/codemirror.min.css">
   <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.2/theme/dracula.min.css">
 
+  <!-- Font Awesome Icons -->
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+
   <!-- IBM Plex Mono Font -->
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -1130,16 +1133,204 @@
     .tools-close * {
       font-size: inherit;
     }
+
+    /* Left Sidebar Styles */
+    .left-sidebar {
+      position: fixed;
+      left: 0;
+      top: 0;
+      width: 240px;
+      height: 100vh;
+      background: linear-gradient(135deg, rgba(26, 26, 26, 0.98) 0%, rgba(45, 27, 61, 0.98) 100%);
+      backdrop-filter: blur(20px);
+      border-right: 1px solid rgba(219, 88, 156, 0.3);
+      box-shadow: 2px 0 20px rgba(0, 0, 0, 0.5);
+      z-index: 100;
+      display: flex;
+      flex-direction: column;
+      padding: 20px 0;
+      transition: width 0.3s ease;
+    }
+
+    .left-sidebar.collapsed {
+      width: 60px;
+    }
+
+    .sidebar-header {
+      padding: 0 20px 20px 20px;
+      border-bottom: 1px solid rgba(219, 88, 156, 0.3);
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+    }
+
+    .sidebar-title {
+      font-size: 18px;
+      font-weight: 600;
+      color: #db589c;
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+      white-space: nowrap;
+      overflow: hidden;
+      transition: opacity 0.3s ease;
+    }
+
+    .left-sidebar.collapsed .sidebar-title {
+      opacity: 0;
+      width: 0;
+    }
+
+    .sidebar-toggle {
+      background: transparent;
+      border: 1px solid rgba(219, 88, 156, 0.4);
+      border-radius: 6px;
+      color: #db589c;
+      cursor: pointer;
+      width: 28px;
+      height: 28px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      transition: all 0.2s ease;
+      flex-shrink: 0;
+    }
+
+    .sidebar-toggle:hover {
+      background: rgba(219, 88, 156, 0.1);
+      border-color: rgba(219, 88, 156, 0.6);
+    }
+
+    .sidebar-nav {
+      flex: 1;
+      padding: 20px 0;
+      overflow-y: auto;
+    }
+
+    .nav-item {
+      padding: 16px 20px;
+      cursor: pointer;
+      color: #e0e0e0;
+      transition: all 0.2s ease;
+      border-left: 3px solid transparent;
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      font-size: 14px;
+      font-weight: 500;
+      user-select: none;
+      white-space: nowrap;
+    }
+
+    .left-sidebar.collapsed .nav-item {
+      padding: 16px;
+      justify-content: center;
+    }
+
+    .nav-item:hover {
+      background: rgba(219, 88, 156, 0.1);
+      border-left-color: rgba(219, 88, 156, 0.5);
+    }
+
+    .nav-item.active {
+      background: rgba(219, 88, 156, 0.15);
+      border-left-color: #db589c;
+      color: #db589c;
+    }
+
+    .nav-item-icon {
+      font-size: 18px;
+      width: 18px;
+      text-align: center;
+      flex-shrink: 0;
+    }
+
+    .nav-item-label {
+      transition: opacity 0.3s ease;
+    }
+
+    .left-sidebar.collapsed .nav-item-label {
+      opacity: 0;
+      width: 0;
+      overflow: hidden;
+    }
+
+    /* Adjust main container for sidebar */
+    .main-container {
+      margin-left: 240px;
+      height: 100vh;
+      display: flex;
+      flex-direction: column;
+      position: relative;
+      z-index: 1;
+      transition: margin-left 0.3s ease;
+    }
+
+    .left-sidebar.collapsed ~ .main-container {
+      margin-left: 60px;
+    }
+
+    /* Mode Content Containers */
+    .mode-content {
+      display: none;
+    }
+
+    .mode-content.active {
+      display: flex;
+      flex-direction: column;
+      flex: 1;
+    }
+
+    @media (max-width: 768px) {
+      .left-sidebar {
+        width: 60px;
+      }
+
+      .sidebar-title,
+      .nav-item-label {
+        display: none;
+      }
+
+      .nav-item {
+        justify-content: center;
+        padding: 16px;
+      }
+
+      .main-container {
+        margin-left: 60px;
+      }
+    }
   </style>
 </head>
 
 <body>
+  <!-- Left Sidebar -->
+  <div class="left-sidebar" id="leftSidebar">
+    <div class="sidebar-header">
+      <div class="sidebar-title">Kolibrie</div>
+      <button class="sidebar-toggle" id="sidebarToggle">
+        <i class="fas fa-chevron-left"></i>
+      </button>
+    </div>
+    <nav class="sidebar-nav">
+      <div class="nav-item active" data-mode="static">
+        <i class="nav-item-icon fas fa-database"></i>
+        <span class="nav-item-label">Static Data</span>
+      </div>
+      <div class="nav-item" data-mode="rsp">
+        <i class="nav-item-icon fas fa-stream"></i>
+        <span class="nav-item-label">RSP</span>
+      </div>
+    </nav>
+  </div>
+
   <div class="main-container">
+    <!-- Static Data Mode -->
+    <div class="mode-content active" id="static-mode">
     <div class="toolbar">
-      <button class="btn" id="runBtn">▶ Run</button>
-      <button class="btn" id="shareBtn" style="margin-left: auto;">↗ Share</button>
-      <button class="btn" id="configBtn">⚙ Config</button>
-      <button class="btn" id="helpBtn">? Help</button>
+      <button class="btn" id="runBtn"><i class="fas fa-play"></i> Run</button>
+      <button class="btn" id="shareBtn" style="margin-left: auto;"><i class="fas fa-share"></i> Share</button>
+      <button class="btn" id="configBtn"><i class="fas fa-cog"></i> Config</button>
+      <button class="btn" id="helpBtn"><i class="fas fa-question-circle"></i> Help</button>
       
       <!-- Add format selector in the toolbar, after the editor tabs -->
       <div class="format-selector" style="margin-left: auto; display: flex; align-items: center; gap: 10px;">
@@ -1154,13 +1345,13 @@
     <!-- Editor Navigation Tabs -->
     <div class="editor-tabs">
       <button class="editor-tab active" data-editor="sparql">
-         SPARQL Query
+        <i class="fas fa-code"></i> SPARQL Query
       </button>
       <button class="editor-tab" data-editor="rdf">
-         RDF/XML Data
+        <i class="fas fa-file-code"></i> RDF/XML Data
       </button>
       <button class="editor-tab" data-editor="rules">
-         Rules
+        <i class="fas fa-sitemap"></i> Rules
       </button>
     </div>
 
@@ -1191,7 +1382,7 @@
       <div id="results-panel">
         <div class="results-header">
           <div class="results-tabs">
-            <div class="results-tab active" data-tab="results">⬚ Results</div>
+            <div class="results-tab active" data-tab="results"><i class="fas fa-chart-bar"></i> Results</div>
           </div>
           <div class="results-actions">
             <button class="results-btn" id="clearResults">Clear</button>
@@ -1214,6 +1405,53 @@
         <span>Kolibrie Playground • Ready</span>
       </div>
     </div>
+    </div>
+    <!-- End Static Data Mode -->
+
+    <!-- RSP Mode -->
+    <div class="mode-content" id="rsp-mode">
+      <div class="toolbar">
+        <button class="btn" id="runBtnRsp"><i class="fas fa-play"></i> Run</button>
+        <button class="btn" id="shareBtnRsp" style="margin-left: auto;"><i class="fas fa-share"></i> Share</button>
+        <button class="btn" id="configBtnRsp"><i class="fas fa-cog"></i> Config</button>
+        <button class="btn" id="helpBtnRsp"><i class="fas fa-question-circle"></i> Help</button>
+      </div>
+
+      <!-- RSP Editor Navigation Tabs -->
+      <div class="editor-tabs">
+        <button class="editor-tab active" data-editor="rsp-sparql">
+          <i class="fas fa-code"></i> RSP-QL Query
+        </button>
+      </div>
+
+      <div id="editor-container">
+        <!-- RSP SPARQL Editor Panel -->
+        <div class="editor-panel active" id="rsp-sparql-panel">
+          <div id="rsp-editor-wrapper">
+            <textarea id="rsp-sparql-editor"></textarea>
+          </div>
+        </div>
+
+        <div class="resizer" id="resizer-rsp"></div>
+
+        <div id="results-panel-rsp">
+          <div class="results-header">
+            <div class="results-tabs">
+              <div class="results-tab active" data-tab="results"><i class="fas fa-chart-bar"></i> Results</div>
+            </div>
+            <div class="results-actions">
+              <button class="results-btn" id="clearResultsRsp">Clear</button>
+            </div>
+          </div>
+          <div class="results-content" id="results-content-rsp"></div>
+        </div>
+      </div>
+
+      <div class="status-bar">
+        <span>Kolibrie RSP • Ready</span>
+      </div>
+    </div>
+    <!-- End RSP Mode -->
   </div>
 
   <!-- Config Panel -->
@@ -1299,8 +1537,9 @@
   <script>
     let currentTab = 'results';
     let isResizing = false;
-    let sparqlEditor, rdfEditor, rulesEditor;
+    let sparqlEditor, rdfEditor, rulesEditor, rspSparqlEditor;
     let currentEditorTab = 'sparql';
+    let currentMode = 'static'; // Track current mode
 
     // Configuration state
     let config = {
@@ -1308,6 +1547,68 @@
       terminalFontSize: 12,
       theme: 'default'
     };
+
+    // Sidebar navigation
+    function switchMode(mode) {
+      // Remove active class from all nav items
+      document.querySelectorAll('.nav-item').forEach(item => {
+        item.classList.remove('active');
+      });
+      
+      // Add active class to selected nav item
+      document.querySelector(`[data-mode="${mode}"]`).classList.add('active');
+      
+      // Hide all mode contents
+      document.querySelectorAll('.mode-content').forEach(content => {
+        content.classList.remove('active');
+      });
+      
+      // Show selected mode content
+      document.getElementById(`${mode}-mode`).classList.add('active');
+      
+      currentMode = mode;
+      
+      // Refresh editors after switching
+      setTimeout(() => {
+        if (mode === 'static') {
+          sparqlEditor.refresh();
+          rdfEditor.refresh();
+          rulesEditor.refresh();
+        } else if (mode === 'rsp') {
+          if (rspSparqlEditor) {
+            rspSparqlEditor.refresh();
+          }
+        }
+      }, 100);
+    }
+
+    // Toggle sidebar collapse/expand
+    function toggleSidebar() {
+      const sidebar = document.getElementById('leftSidebar');
+      const toggleBtn = document.getElementById('sidebarToggle');
+      const icon = toggleBtn.querySelector('i');
+      
+      sidebar.classList.toggle('collapsed');
+      
+      if (sidebar.classList.contains('collapsed')) {
+        icon.className = 'fas fa-chevron-right';
+      } else {
+        icon.className = 'fas fa-chevron-left';
+      }
+      
+      // Refresh editors after toggle
+      setTimeout(() => {
+        if (currentMode === 'static') {
+          sparqlEditor.refresh();
+          rdfEditor.refresh();
+          rulesEditor.refresh();
+        } else if (currentMode === 'rsp') {
+          if (rspSparqlEditor) {
+            rspSparqlEditor.refresh();
+          }
+        }
+      }, 300);
+    }
 
     // Theme configurations (keep existing themes object)
     const themes = {
@@ -1455,6 +1756,108 @@
       content.innerHTML = html;
     }
 
+    // Execute RSP query
+    async function executeRspQuery() {
+      const rspQuery = rspSparqlEditor.getValue().trim();
+      
+      if (!rspQuery) {
+        addTerminalMessageRsp('❌ No RSP-QL query provided', 'error');
+        return;
+      }
+
+      addTerminalMessageRsp('🚀 Sending RSP query to Kolibrie engine...', 'info');
+      const startTime = performance.now();
+
+      try {
+        // Prepare the request payload for RSP
+        const payload = {
+          rspql: rspQuery
+        };
+
+        const response = await fetch('/rsp-query', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json'
+          },
+          body: JSON.stringify(payload)
+        });
+
+        const endTime = performance.now();
+        const executionTime = (endTime - startTime).toFixed(2);
+
+        if (!response.ok) {
+          const errorText = await response.text();
+          throw new Error(`HTTP ${response.status}: ${errorText}`);
+        }
+
+        const result = await response.json();
+        displayRspResults(result, executionTime);
+
+      } catch (error) {
+        addTerminalMessageRsp(`❌ Execution failed: ${error.message}`, 'error');
+        console.error('RSP query execution error:', error);
+      }
+    }
+
+    function addTerminalMessageRsp(message, type = 'info') {
+      const content = document.getElementById('results-content-rsp');
+      if (!content) {
+        console.log(`[${type}] ${message}`);
+        return;
+      }
+      
+      const timestamp = new Date().toLocaleTimeString();
+      const messageDiv = document.createElement('div');
+      messageDiv.className = `terminal-output terminal-${type}`;
+      messageDiv.textContent = `[${timestamp}] ${message}`;
+      content.appendChild(messageDiv);
+      content.scrollTop = content.scrollHeight;
+    }
+
+    function displayRspResults(result, executionTime) {
+      const content = document.getElementById('results-content-rsp');
+      let html = '<div class="terminal-output terminal-success">✅ RSP Query executed successfully!</div>';
+      
+      if (result.results && Array.isArray(result.results) && result.results.length > 0) {
+        const results = result.results;
+        html += '<table class="results-table"><thead><tr>';
+        
+        // Determine headers
+        const firstRow = results[0];
+        if (typeof firstRow === 'object' && firstRow !== null) {
+          const headers = Object.keys(firstRow);
+          headers.forEach(header => {
+            html += `<th>${escapeHtml(header)}</th>`;
+          });
+          html += '</tr></thead><tbody>';
+          
+          results.forEach(row => {
+            html += '<tr>';
+            headers.forEach(header => {
+              html += `<td>${escapeHtml(String(row[header] || ''))}</td>`;
+            });
+            html += '</tr>';
+          });
+        } else {
+          html += '<th>Result</th></tr></thead><tbody>';
+          results.forEach(value => {
+            html += `<tr><td>${escapeHtml(String(value || ''))}</td></tr>`;
+          });
+        }
+        
+        html += '</tbody></table>';
+        html += `<div class="terminal-output terminal-info">📊 ${results.length} results returned in ${executionTime}ms</div>`;
+      } else if (result.message) {
+        html += `<div class="terminal-output terminal-info">${escapeHtml(result.message)}</div>`;
+        html += `<div class="terminal-output terminal-info">⚡ Executed in ${executionTime}ms</div>`;
+      } else {
+        html += '<div class="terminal-output terminal-warning">⚠️ No results returned</div>';
+        html += `<div class="terminal-output terminal-info">⚡ Executed in ${executionTime}ms</div>`;
+      }
+      
+      content.innerHTML = html;
+    }
+
     // Initialize on page load
     document.addEventListener("DOMContentLoaded", () => {
       // Initialize CodeMirror editors
@@ -1483,6 +1886,19 @@
       });
 
       rulesEditor = CodeMirror.fromTextArea(document.getElementById('rules-editor'), {
+        mode: 'application/sparql-query',
+        theme: 'default',
+        lineNumbers: true,
+        matchBrackets: true,
+        styleActiveLine: true,
+        indentUnit: 2,
+        tabSize: 2,
+        lineWrapping: false,
+        autoCloseBrackets: true
+      });
+
+      // Initialize RSP SPARQL Editor
+      rspSparqlEditor = CodeMirror.fromTextArea(document.getElementById('rsp-sparql-editor'), {
         mode: 'application/sparql-query',
         theme: 'default',
         lineNumbers: true,
@@ -1540,6 +1956,31 @@ WHERE {
             ex:temperature ?temp
     FILTER (?temp > 80)
 }`);
+
+      // Set RSP SPARQL Editor initial value
+      rspSparqlEditor.setValue(`PREFIX ex: <http://example.org#>
+REGISTER STREAM <http://example.org/stream> AS
+SELECT ?reading ?temp
+FROM NAMED WINDOW :window ON <http://example.org/stream> [RANGE PT10S STEP PT5S]
+WHERE {
+  WINDOW :window {
+    ?reading ex:temperature ?temp .
+    FILTER (?temp > 80)
+  }
+}`);
+
+      // Sidebar navigation event listeners
+      document.querySelectorAll('.nav-item').forEach(item => {
+        item.addEventListener('click', () => {
+          const mode = item.dataset.mode;
+          switchMode(mode);
+        });
+      });
+
+      // Sidebar toggle button
+      document.getElementById('sidebarToggle').addEventListener('click', () => {
+        toggleSidebar();
+      });
 
       // Editor tab switching
       document.querySelectorAll('.editor-tab').forEach(tab => {
@@ -1607,7 +2048,7 @@ WHERE {
         const rdfTab = document.querySelector('[data-editor="rdf"]');
         
         if (format === 'ntriples') {
-          rdfTab.textContent = ' N-Triples Data';
+          rdfTab.innerHTML = '<i class="fas fa-file-code"></i> N-Triples Data';
           
           // Update placeholder with N-Triples example if editor is empty or has default
           if (rdfEditor.getValue().includes('<?xml') || rdfEditor.getValue().trim() === '') {
@@ -1616,10 +2057,16 @@ WHERE {
 <http://example.org/Sensor1> <http://example.org#room> "Room101" .
 <http://example.org/Sensor1> <http://example.org#temperature> "90" .
 <http://example.org/Room102> <http://example.org#temperature> "35" .
-<http://example.org/Room102> <http://example.org#room> "Room102" .`);
+<http://example.org/Room102> <http://example.org#room> "Room102" .
+<http://example.org/Sensor2> <http://example.org#room> "Room102" .
+<http://example.org/Sensor2> <http://example.org#temperature> "70" .
+<http://example.org/Room103> <http://example.org#temperature> "45" .
+<http://example.org/Room103> <http://example.org#room> "Room103" .
+<http://example.org/Sensor3> <http://example.org#room> "Room103" .
+<http://example.org/Sensor3> <http://example.org#temperature> "95" .`);
           }
         } else {
-          rdfTab.textContent = ' RDF/XML Data';
+          rdfTab.innerHTML = '<i class="fas fa-file-code"></i> RDF/XML Data';
           
           // Restore RDF/XML example if needed
           if (!rdfEditor.getValue().includes('<?xml') || rdfEditor.getValue().trim() === '') {
@@ -1638,6 +2085,18 @@ WHERE {
     <ex:temperature>35</ex:temperature>
     <ex:room>Room102</ex:room>
 </rdf:Description>
+<rdf:Description rdf:about="http://example.org#Sensor2">
+    <ex:room>Room102</ex:room>
+    <ex:temperature>70</ex:temperature>
+</rdf:Description>
+<rdf:Description rdf:about="http://example.org#Room103">
+    <ex:temperature>45</ex:temperature>
+    <ex:room>Room103</ex:room>
+</rdf:Description>
+<rdf:Description rdf:about="http://example.org#Sensor3">
+    <ex:room>Room103</ex:room>
+    <ex:temperature>190</ex:temperature>
+</rdf:Description>
 </rdf:RDF>`);
           }
         }
@@ -1651,13 +2110,13 @@ WHERE {
       // HELP button
       document.getElementById("helpBtn").onclick = () => {
         document.getElementById('results-content').innerHTML = `
-          <div class="terminal-output terminal-info"> Kolibrie SPARQL Playground Help
+          <div class="terminal-output terminal-info"><i class="fas fa-question-circle"></i> Kolibrie SPARQL Playground Help
 
 <strong>Quick Start:</strong>
 1. Select your RDF format (RDF/XML or N-Triples) from the dropdown
-2. Write or modify RDF data in the " RDF Data" tab
-3. Define rules in the " Rules" tab (optional)
-4. Write your SPARQL query in the " SPARQL Query" tab
+2. Write or modify RDF data in the "RDF Data" tab
+3. Define rules in the "Rules" tab (optional)
+4. Write your SPARQL query in the "SPARQL Query" tab
 5. Click RUN to execute
 
 <strong>Supported Formats:</strong>
@@ -1694,6 +2153,64 @@ FILTER (lang(?label) = "en")
       document.getElementById('clearResults').addEventListener('click', () => {
         document.getElementById('results-content').innerHTML =
           '<div class="terminal-output terminal-info">Results cleared.</div>';
+      });
+
+      // RSP Mode Buttons
+      document.getElementById("runBtnRsp").onclick = () => {
+        executeRspQuery();
+      };
+
+      document.getElementById("helpBtnRsp").onclick = () => {
+        document.getElementById('results-content-rsp').innerHTML = `
+          <div class="terminal-output terminal-info"><i class="fas fa-question-circle"></i> Kolibrie RSP Help
+
+<strong>Quick Start:</strong>
+1. Write your RSP-QL query in the "RSP-QL Query" tab
+2. Click RUN to execute the stream query
+
+<strong>RSP-QL Features:</strong>
+• RDF Stream Processing
+• Window-based queries
+• Temporal reasoning
+• Real-time stream analysis
+
+<strong>Example Query Structure:</strong>
+REGISTER STREAM &lt;http://example.org/stream&gt; AS
+SELECT ?reading ?temp
+FROM NAMED WINDOW :window ON &lt;http://example.org/stream&gt; [RANGE PT10S STEP PT5S]
+WHERE {
+  WINDOW :window {
+    ?reading ex:temperature ?temp .
+    FILTER (?temp &gt; 80)
+  }
+}
+
+<strong>Window Types:</strong>
+• RANGE - Time-based sliding window
+• TUMBLING - Non-overlapping time windows
+• STEP - Window advancement interval
+          </div>
+        `;
+      };
+
+      document.getElementById('clearResultsRsp').addEventListener('click', () => {
+        document.getElementById('results-content-rsp').innerHTML =
+          '<div class="terminal-output terminal-info">Results cleared.</div>';
+      });
+
+      document.getElementById('configBtnRsp').addEventListener('click', () => {
+        document.getElementById('sharePanel').classList.remove('open');
+        document.getElementById('configPanel').classList.add('open');
+        document.getElementById('configOverlay').classList.add('open');
+      });
+
+      document.getElementById('shareBtnRsp').addEventListener('click', () => {
+        document.getElementById('configPanel').classList.remove('open');
+        const query = rspSparqlEditor.getValue();
+        const shareUrl = `${window.location.origin}${window.location.pathname}`;
+        document.getElementById('shareUrlInput').value = shareUrl;
+        document.getElementById('sharePanel').classList.add('open');
+        document.getElementById('configOverlay').classList.add('open');
       });
 
       // Config panel (keep existing config functions)
@@ -1793,6 +2310,7 @@ FILTER (lang(?label) = "en")
         sparqlEditor.refresh();
         rdfEditor.refresh();
         rulesEditor.refresh();
+        if (rspSparqlEditor) rspSparqlEditor.refresh();
       }
 
       function updateTerminalFontSize() {
@@ -1876,17 +2394,56 @@ FILTER (lang(?label) = "en")
           sparqlEditor.refresh();
           rdfEditor.refresh();
           rulesEditor.refresh();
+          if (rspSparqlEditor) rspSparqlEditor.refresh();
         }, 100);
       });
 
+      // RSP Resizer functionality
+      const resizerRsp = document.getElementById('resizer-rsp');
+      if (resizerRsp) {
+        resizerRsp.addEventListener('mousedown', (e) => {
+          isResizing = true;
+          document.addEventListener('mousemove', handleResizeRsp);
+          document.addEventListener('mouseup', stopResizeRsp);
+          e.preventDefault();
+        });
+      }
+
+      function handleResizeRsp(e) {
+        if (!isResizing) return;
+        const container = document.querySelector('#rsp-mode #editor-container');
+        if (!container) return;
+        
+        const containerHeight = container.clientHeight - 24;
+        const containerTop = container.getBoundingClientRect().top;
+        const newEditorHeight = e.clientY - containerTop - 40;
+        const newResultsHeight = containerHeight - newEditorHeight - 4;
+        const minEditorHeight = window.innerHeight < 480 ? 100 : 200;
+        const minResultsHeight = window.innerHeight < 480 ? 80 : 150;
+
+        if (newEditorHeight > minEditorHeight && newResultsHeight > minResultsHeight) {
+          const activePanel = document.querySelector('#rsp-mode .editor-panel.active > div');
+          const resultsPanel = document.getElementById('results-panel-rsp');
+          if (activePanel) activePanel.style.flex = `0 0 ${newEditorHeight}px`;
+          if (resultsPanel) resultsPanel.style.flex = `0 0 ${newResultsHeight}px`;
+          if (rspSparqlEditor) rspSparqlEditor.refresh();
+        }
+      }
+
+      function stopResizeRsp() {
+        isResizing = false;
+        document.removeEventListener('mousemove', handleResizeRsp);
+        document.removeEventListener('mouseup', stopResizeRsp);
+      }
+
       // Initial message
       document.getElementById('results-content').innerHTML = `
-        <div class="terminal-output terminal-success"> Kolibrie Playground Ready!
+        <div class="terminal-output terminal-success"><i class="fas fa-rocket"></i> Kolibrie Playground Ready!
 
 <strong>Quick Start:</strong>
 1. Select your RDF format (RDF/XML or N-Triples) from the dropdown
-2. Check the pre-loaded example in " RDF Data" tab
-3. Review the rule in " Rules" tab (optional)
+2. Check the pre-loaded example in "RDF Data" tab
+3. Review the rule in "Rules" tab (optional)
 4. Click RUN to execute the example query
 
 <strong>About:</strong>
@@ -1896,7 +2453,26 @@ FILTER (lang(?label) = "en")
 • Includes rule-based inference
 • Real-time query execution
 
-Click "? Help" for more information.
+Click "Help" for more information.
+        </div>
+      `;
+
+      // RSP mode initial message
+      document.getElementById('results-content-rsp').innerHTML = `
+        <div class="terminal-output terminal-success"><i class="fas fa-stream"></i> Kolibrie RSP Mode Ready!
+
+<strong>Quick Start:</strong>
+1. Check the pre-loaded RSP-QL query example
+2. Click RUN to execute the stream query
+3. View real-time stream processing results
+
+<strong>About RSP:</strong>
+• RDF Stream Processing engine
+• Window-based temporal queries
+• Real-time data analysis
+• Supports RSP-QL syntax
+
+Click "Help" for more information.
         </div>
       `;
     });
