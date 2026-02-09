@@ -145,13 +145,13 @@ fn detect_specific_sparql_error(input: &str, offset: usize, _error_line: &str) -
     }
 
     // Check for missing closing brace
-    let open_braces = input[..offset].matches('{').count();
-    let close_braces = input[..offset].matches('}').count();
-    if open_braces > close_braces {
+    let open_braces = input.matches('{').count();
+    let close_braces = input.matches('}').count();
+    if open_braces != close_braces {
         return Some((
             "Unclosed brace in SPARQL query".to_string(),
             "missing closing '}'".to_string(),
-            format!("Found {} opening '{{' but only {} closing '}}' before this point", open_braces, close_braces)
+            format!("Found {} opening '{{' but {} closing '}}' in the query", open_braces, close_braces)
         ));
     }
 

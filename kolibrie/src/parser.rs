@@ -46,6 +46,7 @@ pub fn prefixed_identifier(input: &str) -> IResult<&str, &str> {
 pub fn predicate(input: &str) -> IResult<&str, &str> {
     alt((
         parse_uri,
+        variable,
         recognize((char(':'), identifier)),
         prefixed_identifier,
         tag("a"),

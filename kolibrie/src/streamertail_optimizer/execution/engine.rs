@@ -63,7 +63,7 @@ impl ExecutionEngine {
             }
             PhysicalOperator::Projection { input, variables } => {
                 let input_results = Self::execute_with_ids(input, database);
-                
+
                 // Strip '?' prefix from projection variables for matching
                 let stripped_vars: Vec<String> = variables
                     .iter()
@@ -73,7 +73,10 @@ impl ExecutionEngine {
                 let projected: Vec<HashMap<String, u32>> = input_results
                     .into_par_iter()
                     .map(|mut result| {
-                        result.retain(|k, _| stripped_vars.contains(&k.to_string()));
+                        result.retain(|k, _| {
+                            let k_stripped = k.strip_prefix('?').unwrap_or(k);
+                            stripped_vars.contains(&k_stripped.to_string())
+                        });
                         result
                     })
                     .collect();
@@ -410,7 +413,8 @@ impl ExecutionEngine {
             // Check subject
             match &pattern.0 {
                 Term::Variable(var) => {
-                    bindings.insert(var.clone(), triple.subject);
+                    let var_stripped = var.strip_prefix('?').unwrap_or(var);
+                    bindings.insert(var_stripped.to_string(), triple.subject);
                 }
                 Term::Constant(constant) => {
                     if triple.subject != *constant {
@@ -426,7 +430,8 @@ impl ExecutionEngine {
             // Check predicate
             match &pattern.1 {
                 Term::Variable(var) => {
-                    bindings.insert(var.clone(), triple.predicate);
+                    let var_stripped = var.strip_prefix('?').unwrap_or(var);
+                    bindings.insert(var_stripped.to_string(), triple.predicate);
                 }
                 Term::Constant(constant) => {
                     if triple.predicate != *constant {
@@ -442,7 +447,8 @@ impl ExecutionEngine {
             // Check object
             match &pattern.2 {
                 Term::Variable(var) => {
-                    bindings.insert(var.clone(), triple.object);
+                    let var_stripped = var.strip_prefix('?').unwrap_or(var);
+                    bindings.insert(var_stripped.to_string(), triple.object);
                 }
                 Term::Constant(constant) => {
                     if triple.object != *constant {

@@ -194,8 +194,9 @@ pub fn execute_query(sparql: &str, database: &mut SparqlDatabase) -> Vec<Vec<Str
         // If SELECT * is used, gather all variables from patterns
         if variables == vec![("*", "*", None)] {
             let mut all_vars = BTreeSet::new();
-            for (subject_var, _, object_var) in &patterns {
+            for (subject_var, predicate_var, object_var) in &patterns {
                 all_vars.insert(*subject_var);
+                all_vars.insert(*predicate_var);
                 all_vars.insert(*object_var);
             }
             variables = all_vars.into_iter().map(|var| ("VAR", var, None)).collect();
@@ -384,8 +385,9 @@ pub fn execute_query_rayon_parallel2_volcano(
         // If SELECT * is used, gather all variables from patterns
         if variables == vec![("*", "*", None)] {
             let mut all_vars = BTreeSet::new();
-            for (subject_var, _, object_var) in &patterns {
+            for (subject_var, predicate_var, object_var) in &patterns {
                 all_vars.insert(*subject_var);
+                all_vars.insert(*predicate_var);
                 all_vars.insert(*object_var);
             }
             variables = all_vars.into_iter().map(|var| ("VAR", var, None)).collect();
