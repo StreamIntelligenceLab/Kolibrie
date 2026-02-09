@@ -936,7 +936,11 @@ fn resolve_triple_pattern(
         };
 
         // For a normal triple pattern, resolve predicate and object
-        let resolved_predicate = database.resolve_query_term(predicate, prefixes);
+        let resolved_predicate = if predicate == "a" {
+            "http://www.w3.org/1999/02/22-rdf-syntax-ns#type".to_string()
+        } else {
+            database.resolve_query_term(predicate, prefixes)
+        };
 
         // Resolve object if it's not a variable
         let resolved_object = if object_var.starts_with('?') {
