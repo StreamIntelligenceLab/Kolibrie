@@ -134,6 +134,7 @@
 133. Improve docker, webui and add support of n-triples
 134. Fix a bug with reasoning n-triples
 135. Fix a bug with a select all query
+136. Add syntatix sugar 'a' for rdf:type
 
 0.1.0
 1. Parsing RDF/XML
