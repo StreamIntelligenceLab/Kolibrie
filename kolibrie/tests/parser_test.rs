@@ -292,4 +292,33 @@ WHERE {
         assert!(triples[1].1.contains("name"));
         assert_eq!(triples[1].2, "John");
     }
+
+    #[test]
+    fn test_select_all_with_prefix() {
+        let input = r#"PREFIX ex: <http://example.org#>
+SELECT *
+WHERE { 
+  ?s ?p ?o.
+}"#;
+        
+        let result = parse_sparql_query(input);
+        
+        assert!(result.is_ok());
+        
+        let (_, (_, variables, patterns, _, _, prefixes, _, _, _, _, _, _)) = result.unwrap();
+        
+        // Check that SELECT * is parsed correctly
+        assert_eq!(variables.len(), 1);
+        assert_eq!(variables[0], ("*", "*", None));
+        
+        // Check that the prefix is registered
+        assert!(prefixes.contains_key("ex"));
+        assert_eq!(prefixes.get("ex").unwrap(), "http://example.org#");
+        
+        // Check that the triple pattern is parsed correctly
+        assert_eq!(patterns.len(), 1);
+        assert_eq!(patterns[0].0, "?s");
+        assert_eq!(patterns[0].1, "?p");
+        assert_eq!(patterns[0].2, "?o");
+    }
 }
