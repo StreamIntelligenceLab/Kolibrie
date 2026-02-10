@@ -107,7 +107,14 @@ pub fn parse_triple_block(input: &str) -> IResult<&str, Vec<(&str, &str, &str)>>
     pairs.extend(rest_po);
 
     // Convert each pair into a triple by reusing the same subject
-    let triples = pairs.into_iter().map(|(p, o)| (subject, p, o)).collect();
+    let triples = pairs.into_iter().map(|(p, o)| {
+        let resolved_p = if p == "a" {
+            "http://www.w3.org/1999/02/22-rdf-syntax-ns#type"
+        } else {
+            p
+        };
+        (subject, resolved_p, o)
+    }).collect();
 
     Ok((input, triples))
 }
