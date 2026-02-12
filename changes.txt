@@ -136,6 +136,7 @@
 135. Fix a bug with a select all query
 136. Add syntatix sugar 'a' for rdf:type
 137. Modify test for parser
+138. Modify webui and support of rule chains
 
 0.1.0
 1. Parsing RDF/XML
