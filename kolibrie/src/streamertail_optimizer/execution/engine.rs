@@ -11,6 +11,7 @@
 use super::super::operators::PhysicalOperator;
 
 use crate::sparql_database::SparqlDatabase;
+use ml::MLPredictionResult;
 use rayon::prelude::*;
 
 use shared::terms::{Term, TriplePattern};
@@ -62,7 +63,7 @@ impl ExecutionEngine {
             }
             PhysicalOperator::Projection { input, variables } => {
                 let input_results = Self::execute_with_ids(input, database);
-                
+
                 // Strip '?' prefix from projection variables for matching
                 let stripped_vars: Vec<String> = variables
                     .iter()
@@ -72,7 +73,10 @@ impl ExecutionEngine {
                 let projected: Vec<HashMap<String, u32>> = input_results
                     .into_par_iter()
                     .map(|mut result| {
-                        result.retain(|k, _| stripped_vars.contains(&k.to_string()));
+                        result.retain(|k, _| {
+                            let k_stripped = k.strip_prefix('?').unwrap_or(k);
+                            stripped_vars.contains(&k_stripped.to_string())
+                        });
                         result
                     })
                     .collect();
@@ -99,6 +103,9 @@ impl ExecutionEngine {
             PhysicalOperator::StarJoin { join_var, patterns } => {
                 Self::execute_star_join_with_ids(database, join_var, patterns)
             }
+            PhysicalOperator::InMemoryBuffer { content, origin: _ } => {
+                content.clone() // TODO: make sure we dont have to clone here
+            }
             PhysicalOperator:: Subquery { inner, projected_vars } => {
                 // Execute the inner query with IDs
                 let inner_results = Self::execute_with_ids(inner, database);
@@ -112,7 +119,283 @@ impl ExecutionEngine {
                     })
                     .collect()
             }
+            PhysicalOperator::Bind { input, function_name, arguments, output_variable } => {
+                // Execute the input operator first
+                let mut input_results = Self::execute_with_ids(input, database);
+                let output_var = output_variable.strip_prefix('?').unwrap_or(output_variable);
+    
+                // Process BIND clause
+                if function_name == "CONCAT" {
+                    // Handle CONCAT function
+                    for row in &mut input_results {
+                        let concatenated = arguments
+                            .iter()
+                            .map(|arg| {
+                            let arg_stripped = arg.strip_prefix('?').unwrap_or(arg);
+                            if arg.starts_with('?') { 
+                                if let Some(&id) = row.get(arg_stripped) {
+                                    database.dictionary.decode(id).unwrap_or("").to_string()
+                                } else {
+                                    String::new()
+                                }
+                            } else {
+                                arg.trim_matches('"').to_string()
+                            }
+                        })
+                        .collect::<Vec<String>>()
+                        .join("");
+            
+                        // Encode the concatenated result and store it
+                        let result_id = database.dictionary.encode(&concatenated);
+                        row.insert(output_var.to_string(), result_id);
+                    }
+                    input_results
+                } else if let Some(func) = database.udfs.get(function_name.as_str()) {
+                    // Handle user-defined functions
+                    for row in &mut input_results {
+                        let resolved_args: Vec<&str> = arguments
+                            .iter()
+                            .map(|arg| {
+                                let arg_stripped = arg.strip_prefix('?').unwrap_or(arg);
+                                if arg.starts_with('?') {
+                                    if let Some(&id) = row.get(arg_stripped) {
+                                        // Need to leak this to get 'static lifetime for UDF call
+                                        Box::leak(
+                                            database.dictionary.decode(id).unwrap_or("").to_string().into_boxed_str()
+                                        )
+                                    } else {
+                                        ""
+                                    }
+                                } else {
+                                    Box::leak(arg.trim_matches('"').to_string().into_boxed_str())
+                                }
+                            })
+                            .collect();
+            
+                        let result = func.call(resolved_args);
+                        let result_id = database.dictionary.encode(&result);
+                        row.insert(output_var.to_string(), result_id);
+                    }
+                    input_results
+                } else {
+                    eprintln!("Function {} not found", function_name);
+                    input_results
+                }
+            }
+            PhysicalOperator::Values { variables, values } => {
+                let stripped_vars: Vec<String> = variables
+                    .iter()
+                    .map(|v| v.strip_prefix('?').unwrap_or(v).to_string())
+                    .collect();
+
+                // Convert VALUES data to result rows
+                let mut results = Vec::new();
+    
+                for value_row in values {
+                    let mut row = HashMap::new();
+        
+                    for (i, var) in stripped_vars.iter().enumerate() {
+                        if let Some(Some(value)) = value_row.get(i) {
+                            // Encode the value in the dictionary
+                            let value_id = database.dictionary.encode(value);
+                            row.insert(var.clone(), value_id);
+                        }
+                    }
+        
+                    // Only add non-empty rows
+                    if !row.is_empty() {
+                        results.push(row);
+                    }
+                }
+    
+                results
+            }
+            PhysicalOperator::MLPredict {
+                input,
+                model_name,
+                model_path,
+                input_variables,
+                output_variable,
+            } => {
+                // Execute the input operator first
+                let input_results = Self::execute_with_ids(input, database);
+                
+                if input_results.is_empty() {
+                    return input_results;
+                }
+
+                println!("[ML.PREDICT] Executing prediction with model: {}", model_name);
+                println!("[ML.PREDICT] Model path: {}", model_path);
+                println!("[ML.PREDICT] Input variables: {:?}", input_variables);
+                println!("[ML.PREDICT] Output variable: {}", output_variable);
+                println!("[ML.PREDICT] Input rows: {}", input_results.len());
+
+                // Extract input data for ML prediction
+                let input_data = Self::extract_ml_input_data(&input_results, input_variables, database);
+
+                // Call the existing ML handler infrastructure
+                match Self::invoke_ml_handler( model_path, input_data) {
+                    Ok(predictions) => {
+                        Self::merge_ml_predictions(input_results, predictions, output_variable, database)
+                    }
+                    Err(e) => {
+                        eprintln!("[ML.PREDICT] Error executing ML model: {}", e);
+                        input_results
+                    }
+                }
+            }
         }
+    }
+
+    /// Extracts input data for ML prediction from query results
+    fn extract_ml_input_data(
+        input_results: &[HashMap<String, u32>],
+        input_variables: &[String],
+        database: &SparqlDatabase,
+    ) -> Vec<Vec<f64>> {
+        if let Some(first_row) = input_results.first() {
+            println!("[ML.PREDICT DEBUG] First row keys: {:?}", first_row.keys().collect::<Vec<_>>());
+            println!("[ML.PREDICT DEBUG] Input variables to check: {:?}", input_variables);
+            
+            // Show what values decode to
+            for (key, &id) in first_row {
+                if let Some(value) = database.dictionary.decode(id) {
+                    println!("[ML.PREDICT DEBUG]   {} -> {} (parses as f64: {})", 
+                        key, value, value.parse::<f64>().is_ok());
+                }
+            }
+        }
+        
+        // Identify which variables are actually numeric by checking the first row
+        let numeric_vars: Vec<String> = if let Some(first_row) = input_results.first() {
+            input_variables
+                .iter()
+                .filter(|var| {
+                    let var_stripped = var.strip_prefix('?').unwrap_or(var);
+                    if let Some(&id) = first_row.get(var_stripped) {
+                        if let Some(value_str) = database.dictionary.decode(id) {
+                            value_str.parse::<f64>().is_ok()
+                        } else {
+                            false
+                        }
+                    } else {
+                        false
+                    }
+                })
+                .cloned()
+                .collect()
+        } else {
+            return Vec::new();
+        };
+        
+        println!("[ML.PREDICT] Numeric feature variables: {:?}", numeric_vars);
+        
+        // Now extract only numeric features
+        input_results
+            .iter()
+            .map(|row| {
+                numeric_vars
+                    .iter()
+                    .filter_map(|var| {
+                        let var_stripped = var.strip_prefix('?').unwrap_or(var);
+                        
+                        if let Some(&id) = row.get(var_stripped) {
+                            if let Some(value_str) = database.dictionary.decode(id) {
+                                value_str.parse::<f64>().ok()
+                            } else {
+                                None
+                            }
+                        } else {
+                            None
+                        }
+                    })
+                    .collect()
+            })
+            .collect()
+    }
+
+    /// Invokes the ML handler to make predictions
+    fn invoke_ml_handler(
+        model_dir: &str,
+        input_data: Vec<Vec<f64>>,
+    ) -> Result<MLPredictionResult, Box<dyn std::error::Error>> {
+        use ml::MLHandler;
+        use ml::generate_ml_models;
+        
+        println!("[ML.PREDICT] Initializing ML handler...");
+        let mut ml_handler = MLHandler::new()?;
+        
+        println!("[ML.PREDICT] Looking for models in: {}", model_dir);
+        
+        let model_dir_path = std::path::PathBuf::from(model_dir);
+        std::fs::create_dir_all(&model_dir_path)?;
+        
+        // Check if models need to be generated
+        let models_exist = std::fs::read_dir(&model_dir_path)?
+            .filter_map(Result::ok)
+            .filter(|entry| {
+                let path = entry.path();
+                path.is_file() && path.extension().map_or(false, |ext| ext == "pkl") &&
+                path.file_stem().and_then(|s| s.to_str()).map_or(false, |stem| stem.ends_with("_predictor"))
+            })
+            .count() >= 3;
+        
+        if !models_exist {
+            println!("[ML.PREDICT] Models not found. Generating models...");
+            // Use predictor.py as the generator script
+            let predictor_script = model_dir_path
+                .parent()
+                .and_then(|p| p.parent())
+                .map(|p| p.join("predictor.py"))
+                .unwrap_or_else(|| std::path::PathBuf::from("predictor.py"));
+            
+            if let Some(script_path) = predictor_script.to_str() {
+                generate_ml_models(&model_dir_path, script_path)?;
+            }
+        }
+        
+        println!("[ML.PREDICT] Discovering models and analyzing schemas...");
+        let model_ids = ml_handler.discover_and_load_models(&model_dir_path, "predictor.py")?;
+        
+        if model_ids.is_empty() {
+            return Err("No valid models found with TTL schemas".into());
+        }
+        
+        let best_model_name = ml_handler.best_model.as_deref().unwrap_or(&model_ids[0]);
+        println!("[ML.PREDICT] Using best model: {}", best_model_name);
+        
+        println!("[ML.PREDICT] Running predictions on {} samples...", input_data.len());
+        let start = std::time::Instant::now();
+        
+        let result = ml_handler.predict(best_model_name, input_data)?;
+        
+        let elapsed = start.elapsed();
+        println!("[ML.PREDICT] Prediction completed in {:.3}s", elapsed.as_secs_f64());
+        println!("[ML.PREDICT] Throughput: {:.1} predictions/sec", 
+            result.predictions.len() as f64 / elapsed.as_secs_f64());
+        
+        Ok(result)
+    }
+
+    /// Merges ML predictions back into query results
+    fn merge_ml_predictions(
+        mut input_results: Vec<HashMap<String, u32>>,
+        predictions: MLPredictionResult,
+        output_variable: &str,
+        database: &mut SparqlDatabase,
+    ) -> Vec<HashMap<String, u32>> {
+        let output_var = output_variable.strip_prefix('?').unwrap_or(output_variable);
+        
+        for (i, prediction) in predictions.predictions.iter().enumerate() {
+            if i < input_results.len() {
+                let prediction_str = prediction.to_string();
+                let prediction_id = database.dictionary.encode(&prediction_str);
+                input_results[i].insert(output_var.to_string(), prediction_id);
+            }
+        }
+        
+        println!("[ML.PREDICT] Successfully added {} predictions", predictions.predictions.len());
+        input_results
     }
 
     /// Executes a table scan with ID-based results
@@ -130,7 +413,8 @@ impl ExecutionEngine {
             // Check subject
             match &pattern.0 {
                 Term::Variable(var) => {
-                    bindings.insert(var.clone(), triple.subject);
+                    let var_stripped = var.strip_prefix('?').unwrap_or(var);
+                    bindings.insert(var_stripped.to_string(), triple.subject);
                 }
                 Term::Constant(constant) => {
                     if triple.subject != *constant {
@@ -146,7 +430,8 @@ impl ExecutionEngine {
             // Check predicate
             match &pattern.1 {
                 Term::Variable(var) => {
-                    bindings.insert(var.clone(), triple.predicate);
+                    let var_stripped = var.strip_prefix('?').unwrap_or(var);
+                    bindings.insert(var_stripped.to_string(), triple.predicate);
                 }
                 Term::Constant(constant) => {
                     if triple.predicate != *constant {
@@ -162,7 +447,8 @@ impl ExecutionEngine {
             // Check object
             match &pattern.2 {
                 Term::Variable(var) => {
-                    bindings.insert(var.clone(), triple.object);
+                    let var_stripped = var.strip_prefix('?').unwrap_or(var);
+                    bindings.insert(var_stripped.to_string(), triple.object);
                 }
                 Term::Constant(constant) => {
                     if triple.object != *constant {
@@ -287,7 +573,7 @@ impl ExecutionEngine {
     }
 
     // Helper function to estimate pattern cardinality
-    fn estimate_pattern_cardinality(database: &SparqlDatabase, pattern: &TriplePattern) -> u64 {
+    fn estimate_pattern_cardinality(_database: &SparqlDatabase, pattern: &TriplePattern) -> u64 {
         let bound_count = [&pattern.0, &pattern.1, &pattern.2]
             .iter()
             .filter(|term| matches!(term, Term::Constant(_)))

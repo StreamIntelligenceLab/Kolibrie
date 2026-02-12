@@ -32,12 +32,12 @@ pyo3 = { workspace = true }
 gpu = { path = "../gpu" }
 shared = { path = "../shared" }
 datalog =  { path = "../datalog" }
-rsp = { path = "../rsp" }
 ml = { path = "../ml" }
 chrono = "0.4.40"
 rumqttc = "0.21.0"
-rustc-hash = "2.1.1"
 log = "0.4.27"
+annotate-snippets = "0.12.10"
+bincode = "1.3"
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2.161"
@@ -222,7 +222,7 @@ path = "examples/sparql_syntax/concat/concat.rs"
 
 [[example]]
 name = "volcano"
-path = "examples/sparql_syntax/volcano_optimizer/volcano.rs"
+path = "examples/sparql_syntax/streamertail_optimizer/volcano.rs"
 
 [[example]]
 name = "select_semicolon"
@@ -263,6 +263,10 @@ path = "examples/sparql_syntax/combination/combination_ml_change_conclusion.rs"
 [[example]]
 name = "multiple_conclusions"
 path = "examples/sparql_syntax/combination/multiple_conclusions.rs"
+
+[[example]]
+name = "full_combination"
+path = "examples/sparql_syntax/combination/full_combination.rs"
 
 [[example]]
 name = "retrieve_rsp"

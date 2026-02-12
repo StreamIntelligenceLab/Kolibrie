@@ -6,3 +6,5 @@ description = "Shared utilities and global state for the workspace"
 
 [dependencies]
 rayon = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }

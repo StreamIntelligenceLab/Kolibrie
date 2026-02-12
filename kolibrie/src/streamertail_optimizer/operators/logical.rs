@@ -9,7 +9,7 @@
  */
 
 use super::super::Condition;
-use shared::terms::TriplePattern;
+use shared::terms::{TriplePattern, Bindings};
 
 /// Logical operators represent the high-level query structure before optimization
 #[derive(Debug, Clone)]
@@ -29,9 +29,29 @@ pub enum LogicalOperator {
         left: Box<LogicalOperator>,
         right: Box<LogicalOperator>,
     },
+    Buffer {
+        content: Bindings,
+        origin: String
+    },
     Subquery {
         inner: Box<LogicalOperator>,
         projected_vars: Vec<String>,
+    },
+    Bind {
+        input: Box<LogicalOperator>,
+        function_name: String,
+        arguments: Vec<String>,
+        output_variable: String,
+    },
+    Values {
+        variables: Vec<String>,
+        values: Vec<Vec<Option<String>>>, // Each row can have Some(value) or None (UNDEF)
+    },
+    MLPredict {
+        input: Box<LogicalOperator>,
+        model_name: String,
+        input_variables: Vec<String>,
+        output_variable: String,
     },
 }
 
@@ -65,11 +85,50 @@ impl LogicalOperator {
         }
     }
 
+    pub fn buffer(content: Bindings, origin: String) -> Self{
+        Self::Buffer {content, origin}
+    }
+
     /// Creates a new subquery logical operator
     pub fn subquery(inner: LogicalOperator, projected_vars: Vec<String>) -> Self {
         Self::Subquery {
             inner: Box:: new(inner),
             projected_vars,
+        }
+    }
+
+    /// Creates a new bind logical operator
+    pub fn bind(
+        input: LogicalOperator,
+        function_name: String,
+        arguments: Vec<String>,
+        output_variable: String,
+    ) -> Self {
+        Self::Bind {
+            input: Box::new(input),
+            function_name,
+            arguments,
+            output_variable,
+        }
+    }
+
+    /// Creates a new values logical operator
+    pub fn values(variables: Vec<String>, values: Vec<Vec<Option<String>>>) -> Self {
+        Self::Values { variables, values }
+    }
+
+    /// Creates a new ML.PREDICT logical operator
+    pub fn ml_predict(
+        input: LogicalOperator,
+        model_name: String,
+        input_variables: Vec<String>,
+        output_variable: String,
+    ) -> Self {
+        Self::MLPredict {
+            input: Box::new(input),
+            model_name,
+            input_variables,
+            output_variable,
         }
     }
 }

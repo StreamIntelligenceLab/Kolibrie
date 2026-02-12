@@ -21,6 +21,14 @@ pub struct MLPredictionResult {
     pub probabilities: Option<Vec<f64>>,
     pub feature_importance: Option<Vec<f64>>,
     pub performance_metrics: ModelPerformanceMetrics,
+    pub timing: PredictionTiming,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone, Default)]
+pub struct PredictionTiming {
+    pub preprocessing_time: f64,
+    pub actual_prediction_time: f64,
+    pub postprocessing_time: f64,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone, Default)]
@@ -40,7 +48,6 @@ pub struct MLHandler {
     pub best_model: Option<String>,
 }
 
-#[allow(dead_code)]
 impl MLHandler {
     pub fn new() -> PyResult<Self> {
         Ok(MLHandler {
@@ -149,35 +156,47 @@ impl MLHandler {
 
     pub fn load_model(&mut self, model_name: &str, model_path: &str, module_name: Option<&str>) -> PyResult<()> {
         Python::with_gil(|py| {
-            // Add the Python path
             let sys = py.import("sys")?;
             let paths = sys.getattr("path")?;
-            
-            // Get the absolute path to the model file and src directory
             let model_path = Path::new(model_path);
             let src_dir = model_path.parent().unwrap().parent().unwrap();
-            
             let current_path: Vec<String> = paths.extract()?;
-            
-            // Add src directory to Python path at the beginning if not already there
             let src_dir_str = src_dir.to_str().unwrap();
+            
             if !current_path.contains(&src_dir_str.to_string()) {
                 paths.call_method1("insert", (0, src_dir_str))?;
             }
 
-            // Import required modules
             let builtins = py.import("builtins")?;
             let pickle = py.import("pickle")?;
             let importlib = py.import("importlib")?;
-            
-            // Create globals dictionary and populate it
             let globals = PyDict::new(py);
+            
             globals.set_item("__builtins__", builtins.clone())?;
             globals.set_item("pickle", pickle)?;
             globals.set_item("importlib", importlib)?;
             globals.set_item("__name__", "__main__")?;
             
-            // First load the model to inspect its class
+            let actual_module_name = module_name.unwrap_or("predictor").trim_end_matches(".py");
+            let import_code = format!(
+                r#"
+try:
+    imported_module = importlib.import_module('{}')
+    for attr_name in dir(imported_module):
+        attr = getattr(imported_module, attr_name)
+        if not attr_name.startswith('_'):
+            globals()[attr_name] = attr
+    print("Successfully imported module: {{'{}'}}")
+except ImportError as e:
+    print(f"Error importing module {{'{}'}}")
+    raise
+                "#,
+                actual_module_name, actual_module_name, actual_module_name
+            );
+            
+            let import_cstring = CString::new(import_code).expect("Failed to convert import code to CString");
+            py.run(import_cstring.as_c_str(), Some(&globals), None)?;
+            
             let model_path_str = model_path.to_str().unwrap().replace('\\', "/");
             let code = format!(
                 r#"
@@ -188,87 +207,17 @@ with open(r'{}', 'rb') as f:
                 model_path_str
             );
             
-            // Execute the code to load the model
             let code_cstring = CString::new(code).expect("Failed to convert code to CString");
             py.run(code_cstring.as_c_str(), Some(&globals), None)?;
-            
-            // Get the model from globals
             let model_option = globals.get_item("model")?;
             let model = model_option.ok_or_else(|| {
                 PyErr::new::<pyo3::exceptions::PyRuntimeError, _>("Failed to load model")
             })?;
             
-            // Determine module name based on provided value, model class name, or model attributes
-            let actual_module_name = match module_name {
-                // Use explicitly provided module name if available
-                Some(name) => name.to_string(),
-                None => {
-                    // Try to determine module from model class
-                    let get_module_code = r#"
-module_name = getattr(model, '__module__', '').split('.')[0]
-if not module_name or module_name == '__main__' or module_name == 'builtins':
-    # Try to get algorithm type from model attributes
-    if hasattr(model, 'algorithm_type'):
-        module_name = model.algorithm_type
-    # Look for common model attributes that might indicate the type
-    elif hasattr(model, 'feature_importances_'):
-        module_name = 'predictor'  # Tree-based models
-    elif hasattr(model, 'coef_'):
-        module_name = 'linear_models'  # Linear models
-    else:
-        # Inspect the class name for clues
-        class_name = model.__class__.__name__.lower()
-        if 'forest' in class_name or 'tree' in class_name or 'boost' in class_name:
-            module_name = 'predictor'
-        elif 'linear' in class_name or 'regress' in class_name:
-            module_name = 'linear_models'
-        else:
-            module_name = 'predictor'  # Default
-                    "#;
-                    
-                    let code_cstring = CString::new(get_module_code).expect("Failed to convert module detection code to CString");
-                    py.run(code_cstring.as_c_str(), Some(&globals), None)?;
-                    
-                    let module_name = globals.get_item("module_name")?;
-                    let module_name_obj = module_name.ok_or_else(|| {
-                        PyErr::new::<pyo3::exceptions::PyRuntimeError, _>("Failed to determine module name")
-                    })?;
-                    
-                    module_name_obj.extract::<String>()?
-                }
-            };
-            
-            // Dynamically import the determined module
-            let import_code = format!(
-                r#"
-try:
-    # Try to use importlib for a cleaner import
-    imported_module = importlib.import_module('{}')
-    # Get all the classes from the module
-    for attr_name in dir(imported_module):
-        if not attr_name.startswith('_') and attr_name[0].isupper():
-            # Add class attributes to globals
-            globals()[attr_name] = getattr(imported_module, attr_name)
-except ImportError:
-    print(f"Warning: Could not import module {{'{}'}}. Using model as is.")
-                "#,
-                actual_module_name, actual_module_name
-            );
-            
-            // Execute the import code
-            let import_cstring = CString::new(import_code).expect("Failed to convert import code to CString");
-            let _ = py.run(import_cstring.as_c_str(), Some(&globals), None);
-            
-            // Store the model in cache
             self.model_cache.insert(model_name.to_string(), model.into());
-            
-            println!("Loaded model '{}' from module '{}'", model_name, actual_module_name);
+            println!("Successfully loaded model '{}' from module '{}'", model_name, actual_module_name);
             Ok(())
         })
-    }
-
-    pub fn get_model_performance(&self, model_name: &str) -> Option<ModelPerformanceMetrics> {
-        self.schema_cache.get(model_name).cloned()
     }
 
     // Modified to prioritize lowest resource usage
@@ -315,23 +264,24 @@ except ImportError:
     }
 
     pub fn predict(&self, model_name: &str, input_data: Vec<Vec<f64>>) -> PyResult<MLPredictionResult> {
-        // If best_model is set, use that instead of the provided model_name
         let actual_model_name = if let Some(ref best_model) = self.best_model {
             best_model
         } else {
             model_name
         };
         
-        // Check if the model is loaded, if not, return an error
         if !self.model_cache.contains_key(actual_model_name) {
             return Err(PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(
                 format!("Model {} not found in cache. Call load_model first.", actual_model_name)
             ));
         }
         
-        let start = Instant::now();
+        println!("\n[PYTHON TIMING] Starting prediction with model '{}'", actual_model_name);
+        let python_start = Instant::now();
         
-        let mut result = Python::with_gil(|py| {
+        let result = Python::with_gil(|py| {
+            let preprocessing_start = Instant::now();
+            
             let model = self.model_cache.get(actual_model_name).unwrap();
 
             // Convert input data to Python list
@@ -344,43 +294,54 @@ except ImportError:
                 .collect();
             let rows = rows?;
             let py_input = PyList::new(py, rows)?;
+            
+            let preprocessing_time = preprocessing_start.elapsed().as_secs_f64();
+            println!("[PYTHON TIMING] Preprocessing completed: {:.6} seconds", preprocessing_time);
 
-            // Make prediction
+            // Actual ML prediction
+            let prediction_start = Instant::now();
             let predictions = model.call_method1(py, "predict", (py_input.clone(),))?;
             let predictions: Vec<f64> = predictions.extract(py)?;
+            let prediction_time = prediction_start.elapsed().as_secs_f64();
+            println!("[PYTHON TIMING] Actual prediction completed: {:.6} seconds", prediction_time);
 
-            // Try to get probabilities if available
+            // Postprocessing
+            let postprocessing_start = Instant::now();
+            
             let probabilities = model
                 .call_method1(py, "predict_proba", (py_input,))
                 .and_then(|probs| probs.extract::<Vec<f64>>(py))
                 .ok();
 
-            // Try to get feature importance if available
             let feature_importance = PyResult::Ok(())
                 .and_then(|_| model.getattr(py, "model"))
                 .and_then(|model_obj| model_obj.getattr(py, "feature_importances_"))
                 .and_then(|fi| fi.extract::<Vec<f64>>(py))
                 .ok();
 
-            // Use performance metrics from TTL instead of measuring them at runtime
             let performance_metrics = match self.schema_cache.get(actual_model_name) {
                 Some(metrics) => metrics.clone(),
                 None => ModelPerformanceMetrics::default(),
             };
+            
+            let postprocessing_time = postprocessing_start.elapsed().as_secs_f64();
+            println!("[PYTHON TIMING] Postprocessing completed: {:.6} seconds", postprocessing_time);
+            
+            let total_python_time = python_start.elapsed().as_secs_f64();
+            println!("[PYTHON TIMING] Total Python execution: {:.6} seconds\n", total_python_time);
 
             Ok(MLPredictionResult {
                 predictions,
                 probabilities,
                 feature_importance,
                 performance_metrics,
+                timing: PredictionTiming {
+                    preprocessing_time,
+                    actual_prediction_time: prediction_time,
+                    postprocessing_time,
+                },
             })
         });
-        
-        // Only track prediction time for logging, but don't use it for model selection
-        let elapsed = start.elapsed();
-        if let Ok(ref mut _res) = result {
-            println!("Actual prediction time: {:.4} seconds", elapsed.as_secs_f64());
-        }
         
         result
     }

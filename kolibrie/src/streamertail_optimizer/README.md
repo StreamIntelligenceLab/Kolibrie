@@ -7,7 +7,7 @@ This module implements a Volcano-style query optimizer with cost-based optimizat
 The volcano optimizer is structured into several focused modules:
 
 ```
-volcano_optimizer/
+streamertail_optimizer/
 ├── mod.rs                    // Main module file with public API
 ├── operators/
 │   ├── mod.rs               // Operator module index
@@ -23,7 +23,7 @@ volcano_optimizer/
 │   ├── mod.rs               // Statistics module index
 │   └── database_stats.rs    // DatabaseStats gathering and management
 ├── types.rs                 // Common types (Condition, IdResult)
-├── optimizer.rs             // Main VolcanoOptimizer implementation
+├── optimizer.rs             // Main Streamertail implementation
 └── utils.rs                 // Utility functions for plan building
 ```
 
@@ -68,12 +68,12 @@ Gathers and maintains database statistics for cost estimation:
 ### Basic Usage
 
 ```rust
-use kolibrie::volcano_optimizer::*;
+use kolibrie::streamertail_optimizer::*;
 use shared::terms::{Term, TriplePattern};
 
 // Create database and optimizer
 let mut database = SparqlDatabase::new();
-let mut optimizer = VolcanoOptimizer::new(&database);
+let mut optimizer = Streamertail::new(&database);
 
 // Create logical plan
 let logical_plan = LogicalOperator::scan((
@@ -193,7 +193,7 @@ The module includes comprehensive tests for:
 
 Run tests with:
 ```bash
-cargo test volcano_optimizer
+cargo test streamertail_optimizer
 ```
 
 ## Examples

@@ -36,7 +36,7 @@ use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::sync::Arc;
 use std::sync::{Mutex, RwLock};
 use url::Url;
-use crate::volcano_optimizer::DatabaseStats;
+use crate::streamertail_optimizer::DatabaseStats;
 
 const MIN_CHUNK_SIZE: usize = 1024;
 const HASHMAP_INITIAL_CAPACITY: usize = 4096;
@@ -73,6 +73,10 @@ impl SparqlDatabase {
         }
     }
 
+    pub fn set_prefixes(&mut self, prefixes: HashMap<String, String>){
+        self.prefixes=prefixes;
+    }
+
     pub fn get_or_build_stats(&mut self) -> Arc<DatabaseStats> {
         if let Some(stats) = &self.cached_stats {
             return stats.clone();  // ← Clone the Arc (cheap), not the DatabaseStats
@@ -87,7 +91,7 @@ impl SparqlDatabase {
         self.cached_stats = None;
     }
 
-    pub fn query(&self) -> QueryBuilder {
+    pub fn query(&self) -> QueryBuilder<'_> {
         QueryBuilder::new(self)
     }
 
@@ -588,7 +592,7 @@ impl SparqlDatabase {
         }
     }
 
-    // parse_ntriples and add to DB function
+    // Parse_ntriples and add to DB function
     pub fn parse_ntriples_and_add(&mut self, ntriples_data: &str) {
         let partial_results = self.parse_ntriples(ntriples_data);
 
@@ -597,7 +601,8 @@ impl SparqlDatabase {
             self.add_triple(encoded_triple);
         }
     }
-    // parses ntriples
+
+    // Parses ntriples
     pub fn parse_ntriples(&mut self, ntriples_data: &str) -> Vec<Vec<(String, String, String)>> {
         let lines: Vec<&str> = ntriples_data.lines().collect();
         let chunk_size = 1000;
@@ -636,9 +641,10 @@ impl SparqlDatabase {
             .collect();
         partial_results
     }
-    // encode triples
+
+    // Encode triples
     pub fn encode_triples(&mut self, non_encoded_triples: Vec<Vec<(String, String, String)>>) -> Vec<Triple>{
-    // Merge results with main dictionary
+        // Merge results with main dictionary
         let mut encoded_triples = Vec::new();
         for triple_strings in non_encoded_triples {
             for (subject, predicate, object) in triple_strings {
@@ -652,10 +658,9 @@ impl SparqlDatabase {
         }
         encoded_triples
     }
+
     pub fn parse_and_encode_ntriples(&mut self, ntriples_data: &str) -> Vec<Triple>{
-        println!("parsing: {}", ntriples_data);
         let partial_results = self.parse_ntriples(ntriples_data);
-        println!("parsed: {:?}", partial_results);
 
         self.encode_triples(partial_results)
     }
@@ -783,7 +788,18 @@ impl SparqlDatabase {
         
         // Handle literals (keep quotes and datatype/language info)
         if term.starts_with('"') {
-            return term.to_string();
+            if let Some(close_quote_pos) = term[1..].find('"') {
+                let close_quote_pos = close_quote_pos + 1;
+                let literal_value = &term[1..close_quote_pos];
+                let rest = &term[close_quote_pos + 1..];
+                if rest.is_empty() {
+                    return literal_value.to_string();
+                } else if rest.starts_with("^^") {
+                    return literal_value.to_string();
+                } else if rest.starts_with("@") {
+                    return format!("{}{}", literal_value, rest);
+                }
+            }
         }
         
         // Return as-is for other cases
@@ -2927,9 +2943,6 @@ impl SparqlDatabase {
         // Calculate optimal chunk size based on available cores and data size
         let num_threads = rayon::current_num_threads();
         let chunk_size = (triples.len() / num_threads).max(1000);
-        
-        println!("Processing {} triples with {} threads, chunk size: {}", 
-                 triples.len(), num_threads, chunk_size);
         
         // Build indexes in parallel chunks
         let partial_indexes: Vec<_> = triples

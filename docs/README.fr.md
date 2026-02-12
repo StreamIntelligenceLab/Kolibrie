@@ -551,10 +551,10 @@ pub struct SparqlDatabase {
 * **rule_map** : mappage des noms de règles vers leurs définitions.
 * **cached_stats** : statistiques mises en cache pour l’optimisation.
 
-### Structure `VolcanoOptimizer`
+### Structure `Streamertail`
 
 ```rust
-pub struct VolcanoOptimizer<'a> {
+pub struct Streamertail<'a> {
     pub stats: Arc<DatabaseStats>,
     pub memo: HashMap<String, (PhysicalOperator, f64)>,
     pub selected_variables: Vec<String>,

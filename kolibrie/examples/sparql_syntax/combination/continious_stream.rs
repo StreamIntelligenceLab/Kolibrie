@@ -85,15 +85,15 @@ fn main() {
 }
 
 fn generate_dynamic_sensor_batch(batch_num: u32, base_timestamp: u64) -> Vec<(String, i32, u64)> {
-    let mut rng = rand::thread_rng();
+    let mut rng = rand::rng();
     let rooms = vec!["Room101", "Room102", "Room103", "Room104", "Room105"];
     let mut batch_data = Vec::new();
     
     // Each batch contains 2-3 sensor readings to simulate realistic data flow
-    let reading_count = rng.gen_range(2..=3);
+    let reading_count = rng.random_range(2..=3);
     
     for i in 0..reading_count {
-        let room = rooms[rng.gen_range(0..rooms.len())].to_string();
+        let room = rooms[rng.random_range(0..rooms.len())].to_string();
         
         // Generate realistic temperature variations based on room characteristics
         // Each room has different baseline temperatures to simulate real environments
@@ -108,8 +108,8 @@ fn generate_dynamic_sensor_batch(batch_num: u32, base_timestamp: u64) -> Vec<(St
         
         // Add random variation to simulate real sensor fluctuations
         // Later batches get additional heat boost to simulate system stress
-        let variation = rng.gen_range(-10..=25);
-        let heat_boost = if batch_num > 5 { rng.gen_range(0..=15) } else { 0 };
+        let variation = rng.random_range(-10..=25);
+        let heat_boost = if batch_num > 5 { rng.random_range(0..=15) } else { 0 };
         let temperature = (base_temp + variation + heat_boost).max(10).min(140);
         
         // Stagger timestamps within the batch to simulate readings at different times
@@ -145,7 +145,7 @@ fn create_sensor_rdf_batch(sensor_data: Vec<(String, i32, u64)>, batch_num: u32)
     rdf
 }
 
-fn apply_simplified_windowing_rules(database: &mut SparqlDatabase, batch_num: u32) -> u32 {
+fn apply_simplified_windowing_rules(database: &mut SparqlDatabase, _batch_num: u32) -> u32 {
     let mut alert_count = 0;
     
     // Apply different windowing rules to detect various types of anomalies

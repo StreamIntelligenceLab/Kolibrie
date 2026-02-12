@@ -8,12 +8,13 @@
  * you can obtain one at https://mozilla.org/MPL/2.0/.
  */
 
+use serde::{Serialize, Deserialize};
 use std::collections::{HashMap, HashSet};
 use crate::terms::*;
 use crate::terms::Term::*;
 use crate::triple::Triple;
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct UnifiedIndex {
     // The six permutations, using HashMap of HashMap of HashSet.
     pub spo: HashMap<u32, HashMap<u32, HashSet<u32>>>,

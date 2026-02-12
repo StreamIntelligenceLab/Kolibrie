@@ -133,6 +133,7 @@ impl<'a> CostEstimator<'a> {
 
                 base_cost + filter_cost
             }
+            PhysicalOperator::InMemoryBuffer { .. } => {0}
             PhysicalOperator::Subquery { inner, projected_vars } => {
                 let inner_cost = self.estimate_cost(inner);
                 let inner_card = self.estimate_output_cardinality(inner);
@@ -145,6 +146,46 @@ impl<'a> CostEstimator<'a> {
                 let projection_cost = inner_card * projected_vars.len() as u64;
                 
                 inner_cost + materialization_cost + projection_cost
+            }
+            PhysicalOperator::Bind { input, function_name, arguments, .. } => {
+                let input_cost = self.estimate_cost(input);
+                let input_cardinality = self.estimate_output_cardinality(input);
+    
+                // Cost depends on function complexity
+                let function_cost = match function_name.as_str() {
+                    "CONCAT" => {
+                        // CONCAT cost is proportional to number of arguments
+                        arguments.len() as u64 * CostConstants::COST_PER_PROJECTION
+                    }
+                    _ => {
+                        // Generic UDF - assume moderate cost
+                        CostConstants::COST_PER_PROJECTION * 2
+                    }
+                };
+    
+                // Total cost = input cost + (cardinality * function cost per row)
+                input_cost + (input_cardinality * function_cost)
+            }
+            PhysicalOperator::Values { values, .. } => {
+                // VALUES has minimal cost - just the number of rows
+                // No I/O or computation, just materializing the constant values
+                (values.len() as u64) * CostConstants::TUPLE_COST
+            }
+            PhysicalOperator::MLPredict {
+                input,
+                input_variables,
+                ..
+            } => {
+                let input_cost = self.estimate_cost(input);
+                let cardinality = self.estimate_output_cardinality(input);
+                
+                // ML prediction is expensive:
+                // - Python interop overhead: 1000 per call
+                // - Per-row prediction cost: 100 * number of features
+                let python_overhead = 1000;
+                let per_row_cost = 100 * input_variables.len() as u64;
+                
+                input_cost + python_overhead + (cardinality * per_row_cost)
             }
         }
     }
@@ -324,9 +365,22 @@ impl<'a> CostEstimator<'a> {
 
                 ((base as f64 * filter_factor) as u64).max(1)
             }
+            PhysicalOperator::InMemoryBuffer { .. } => {0}
             PhysicalOperator::Subquery { inner, .. } => {
                 // Subquery cardinality is the same as inner query
                 self.estimate_output_cardinality(inner)
+            }
+            PhysicalOperator::Bind { input, .. } => {
+                // BIND doesn't change cardinality, just adds a column
+                self.estimate_output_cardinality(input)
+            }
+            PhysicalOperator::Values { values, .. } => {
+                // Cardinality is simply the number of value rows
+                values.len() as u64
+            }
+            PhysicalOperator::MLPredict { input, .. } => {
+                // ML.PREDICT doesn't change cardinality, just adds a column
+                self.estimate_output_cardinality(input)
             }
         }
     }
@@ -365,7 +419,7 @@ impl<'a> CostEstimator<'a> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use shared::terms::{Term, TriplePattern};
+    use shared::terms::Term;
 
     fn create_test_stats() -> DatabaseStats {
         let mut stats = DatabaseStats::new();

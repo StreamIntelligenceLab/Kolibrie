@@ -9,16 +9,14 @@
  */
 
 use crate::sparql_database::SparqlDatabase;
-use crate::volcano_optimizer::*;
-// use crate::sparql_database::compact_results;
-use crate::custom_error::format_parse_error;
+use crate::streamertail_optimizer::*;
+use crate::error_handler::format_parse_error;
 use crate::parser::*;
-use shared::join_algorithm::compact_results;
-use shared::join_algorithm::perform_join_par_simd_with_strict_filter_4_redesigned_streaming;
 use shared::query::*;
 use shared::triple::Triple;
 use shared::GPU_MODE_ENABLED;
 use std::collections::{BTreeMap, BTreeSet, HashMap};
+
 pub fn execute_subquery<'a>(
     subquery: &SubQuery<'a>,
     database: &SparqlDatabase,
@@ -196,8 +194,9 @@ pub fn execute_query(sparql: &str, database: &mut SparqlDatabase) -> Vec<Vec<Str
         // If SELECT * is used, gather all variables from patterns
         if variables == vec![("*", "*", None)] {
             let mut all_vars = BTreeSet::new();
-            for (subject_var, _, object_var) in &patterns {
+            for (subject_var, predicate_var, object_var) in &patterns {
                 all_vars.insert(*subject_var);
+                all_vars.insert(*predicate_var);
                 all_vars.insert(*object_var);
             }
             variables = all_vars.into_iter().map(|var| ("VAR", var, None)).collect();
@@ -377,13 +376,18 @@ pub fn execute_query_rayon_parallel2_volcano(
         limit_clause = limit;
 
         // Process the INSERT clause if present using the existing helper function
-        process_insert_clause(insert_clause, database);
+        if let Some(insert_clause) = insert_clause {
+            process_insert_clause(Some(insert_clause), database);
+            database.get_or_build_stats();
+            return Vec::new();
+        }
 
         // If SELECT * is used, gather all variables from patterns
         if variables == vec![("*", "*", None)] {
             let mut all_vars = BTreeSet::new();
-            for (subject_var, _, object_var) in &patterns {
+            for (subject_var, predicate_var, object_var) in &patterns {
                 all_vars.insert(*subject_var);
+                all_vars.insert(*predicate_var);
                 all_vars.insert(*object_var);
             }
             variables = all_vars.into_iter().map(|var| ("VAR", var, None)).collect();
@@ -426,10 +430,12 @@ pub fn execute_query_rayon_parallel2_volcano(
                 filters,
                 &prefixes,
                 database,
+                &binds,
+                values_clause.as_ref(),
             );
 
             let stats = database.cached_stats.as_ref().expect("Error");
-            let mut optimizer = VolcanoOptimizer::with_cached_stats(stats.clone());
+            let mut optimizer = Streamertail::with_cached_stats(stats.clone());
             let _optimized_plan = optimizer.find_best_plan(&logical_plan);
 
             #[cfg(feature = "cuda")]
@@ -533,6 +539,8 @@ pub fn execute_query_rayon_parallel2_volcano(
                 filters.clone(),
                 &prefixes,
                 database,
+                &binds,
+                values_clause.as_ref(),
             ); 
 
             // Integrate subqueries into the logical plan
@@ -548,14 +556,14 @@ pub fn execute_query_rayon_parallel2_volcano(
             }
 
             let stats = database.cached_stats.as_ref().expect("AAA");
-            let mut optimizer = VolcanoOptimizer::with_cached_stats(stats.clone());
+            let mut optimizer = Streamertail::with_cached_stats(stats.clone());
 
             let optimized_plan = optimizer.find_best_plan(&logical_plan);
             let results = optimized_plan.execute(database);
             /*if let Ok(report) = guard.report().build() {
-                let file = std::fs::File::create("volcano_optimizer_flamegraph.svg").unwrap();
+                let file = std::fs::File::create("streamertail_optimizer_flamegraph.svg").unwrap();
                 report.flamegraph(file).unwrap();
-                println!("Volcano optimizer flamegraph saved to: volcano_optimizer_flamegraph. svg");
+                println!("Volcano optimizer flamegraph saved to: streamertail_optimizer_flamegraph. svg");
             }*/
 
             // Convert results to owned strings first to avoid lifetime issues
@@ -596,7 +604,7 @@ pub fn execute_query_rayon_parallel2_volcano(
             }
 
             // Apply BIND (UDF) clauses
-            process_bind_clauses(&mut final_results, binds, database);
+            // process_bind_clauses(&mut final_results, binds, database);
 
             // Apply GROUP BY and aggregations
             if !group_vars.is_empty() {
@@ -615,7 +623,12 @@ pub fn execute_query_rayon_parallel2_volcano(
             return format_results(final_results, &selected_variables);
         }
     } else {
-        eprintln!("Failed to parse the query.");
+        if let Err(err) = parse_result {
+            let error_message = format_parse_error(sparql, err);
+            eprintln!("{}", error_message);
+        } else {
+            eprintln! ("Failed to parse the query with an unknown error.");
+        }
         return Vec::new();
     }
 }
@@ -631,12 +644,19 @@ fn format_results(
             selected_variables
                 .iter()
                 .map(|(_, var)| {
-                    let var_name = if var.starts_with('?') {
-                        var
-                    } else {
-                        &format!("?{}", var)
-                    };
-                    result.get(var_name.as_str()).cloned().unwrap_or_default()
+                    // Strip '?' prefix from the variable we're looking for
+                    let var_stripped = var.strip_prefix('?').unwrap_or(var);
+                    
+                    // Try multiple lookup strategies
+                    result.get(var_stripped)           // without prefix
+                        .or_else(|| result.get(var.as_str()))  // with prefix
+                        .or_else(|| {
+                            // Try with ? added if not present
+                            let with_prefix = format!("?{}", var_stripped);
+                            result.get(with_prefix.as_str())
+                        })
+                        .cloned()
+                        .unwrap_or_default()
                 })
                 .collect()
         })
@@ -916,7 +936,11 @@ fn resolve_triple_pattern(
         };
 
         // For a normal triple pattern, resolve predicate and object
-        let resolved_predicate = database.resolve_query_term(predicate, prefixes);
+        let resolved_predicate = if predicate == "a" {
+            "http://www.w3.org/1999/02/22-rdf-syntax-ns#type".to_string()
+        } else {
+            database.resolve_query_term(predicate, prefixes)
+        };
 
         // Resolve object if it's not a variable
         let resolved_object = if object_var.starts_with('?') {

@@ -11,9 +11,9 @@
 use super::operators::{LogicalOperator, PhysicalOperator};
 use super::types::Condition;
 use crate::sparql_database::SparqlDatabase;
-use shared::query::{FilterExpression, SubQuery};
+use shared::query::{FilterExpression, SubQuery, ValuesClause};
 use shared::terms::{Term, TriplePattern};
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 
 /// Extracts a triple pattern from a physical operator if it's a scan operation
 pub fn extract_pattern(op: &PhysicalOperator) -> Option<&TriplePattern> {
@@ -62,8 +62,20 @@ pub fn estimate_operator_selectivity(op: &LogicalOperator, _database: &SparqlDat
             // Projection doesn't change selectivity much
             estimate_operator_selectivity(predicate, _database) + 1
         }
+        LogicalOperator::Buffer { .. } => {10000}
         LogicalOperator::Subquery { inner, .. } => {
             estimate_operator_selectivity(inner, _database) + 15
+        }
+        LogicalOperator::Bind { input, .. } => {
+            estimate_operator_selectivity(input, _database) + 2
+        }
+        LogicalOperator::Values { values, .. } => {
+            values.len() as u64
+        }
+        LogicalOperator::MLPredict { input, input_variables, .. } => {
+            let base_selectivity = estimate_operator_selectivity(input, _database);
+            let ml_overhead = 50 + (input_variables.len() as u64 * 10);
+            base_selectivity + ml_overhead
         }
     }
 }
@@ -86,107 +98,132 @@ fn count_bound_terms(pattern: &TriplePattern) -> usize {
 }
 
 /// Builds an optimized logical plan from query components
-pub fn build_logical_plan_optimized(
-    variables: Vec<(&str, &str)>,
-    patterns: Vec<(&str, &str, &str)>,
-    filters: Vec<FilterExpression>,
-    prefixes: &HashMap<String, String>,
-    database: &mut SparqlDatabase,
-) -> LogicalOperator {
-    // Create scan operators with immediate filter pushdown
-    let mut scan_operators = Vec::new();
-    let mut unpushed_filters = Vec::new();
-
-    for (subject_str, predicate_str, object_str) in patterns {
-        // Convert string patterns to TriplePattern
-        let subject = if subject_str.starts_with('?') {
-            Term::Variable(subject_str.to_string())
-        } else {
-            // Try to resolve with prefixes but use lookup instead of encode for read-only access
-            let resolved = resolve_with_prefixes(subject_str, prefixes);
-            // For optimization purposes, we'll use a placeholder ID for now
-            // In a real implementation, this would need to be handled differently
-            Term::Constant(database.dictionary.encode(&resolved)) // Placeholder - actual encoding would need mutable access
-        };
-
-        let predicate = if predicate_str.starts_with('?') {
-            Term::Variable(predicate_str.to_string())
-        } else {
-            let resolved = resolve_with_prefixes(predicate_str, prefixes);
-            Term::Constant(database.dictionary.encode(&resolved)) // Placeholder - actual encoding would need mutable access
-        };
-
-        let object = if object_str.starts_with('?') {
-            Term::Variable(object_str.to_string())
-        } else {
-            let resolved = resolve_with_prefixes(object_str, prefixes);
-            Term::Constant(database.dictionary.encode(&resolved)) // Placeholder - actual encoding would need mutable access
-        };
-
-        let pattern = (subject, predicate, object);
-        let scan_op = LogicalOperator::scan(pattern);
-
-        // Apply any filters that can be pushed down to this scan
-        let mut filtered_op = scan_op;
-        let mut pushed = false;
-
-        for filter in &filters {
-            // Only push down simple comparison filters
-            if matches!(filter, FilterExpression::Comparison(_, _, _)) 
-                && can_push_filter_to_pattern(&filtered_op, filter) 
-            {
-                let condition = convert_filter_to_condition(filter);
-                filtered_op = LogicalOperator::selection(filtered_op, condition);
-                pushed = true;
-            }
-        }
-
-        scan_operators.push(filtered_op);
-    }
-
-    // Collect filters that weren't pushed down (complex filters)
-    for filter in &filters {
-        if !matches!(filter, FilterExpression::Comparison(_, _, _)) {
-            unpushed_filters.push(filter.clone());
-        } else {
-        }
-    }
-
-    // Sort operators by selectivity (most selective first)
-    scan_operators.sort_by_key(|op| estimate_operator_selectivity(op, database));
-
-    // Build join tree (left-deep for now, could be optimized further)
-    let mut scan_operators_iter = scan_operators.into_iter();
-    let mut result = scan_operators_iter.next().unwrap();
-    for op in scan_operators_iter {
-        result = LogicalOperator::join(result, op);
-    }
-
-    // Apply filters that couldn't be pushed down (OR, AND, NOT)
-    for filter in unpushed_filters {
-        let condition = convert_filter_to_condition(&filter);
-        result = LogicalOperator::selection(result, condition);
-    }
-
-    // Apply projection if specific variables were requested
-    if !variables.is_empty() {
-        let var_names: Vec<String> = variables.into_iter().map(|(_, v)| v.to_string()).collect();
-        // let var_names: Vec<String> = variables.into_iter().map(|(v, _)| v.to_string()).collect();
-        result = LogicalOperator::projection(result, var_names);
-    }
-
-    result
-}
-
-/// Builds a logical plan (wrapper for optimized version)
 pub fn build_logical_plan(
     variables: Vec<(&str, &str)>,
     patterns: Vec<(&str, &str, &str)>,
     filters: Vec<FilterExpression>,
     prefixes: &HashMap<String, String>,
     database: &mut SparqlDatabase,
+    binds: &[(&str, Vec<&str>, &str)],
+    values_clause: Option<&ValuesClause>,
 ) -> LogicalOperator {
-    build_logical_plan_optimized(variables, patterns, filters, prefixes, database)
+    // Create base operator from VALUES if present, otherwise empty join base
+    let mut result = if let Some(values_clause) = values_clause {
+        // Convert ValuesClause to LogicalOperator::Values
+        let variables: Vec<String> = values_clause
+            .variables
+            .iter()
+            .map(|v| v.to_string())
+            .collect();
+
+        let values: Vec<Vec<Option<String>>> = values_clause
+            .values
+            .iter()
+            .map(|row| {
+                row.iter()
+                .map(|value| match value {
+                    shared::query::Value::Term(term) => Some(term.clone()),
+                    shared::query::Value::Undef => None,
+                })
+                .collect()
+            })
+            .collect();
+
+        LogicalOperator::values(variables, values)
+    } else {
+        // Start with first pattern as before
+        let first_pattern = if patterns.is_empty() {
+            // Empty query - return a minimal scan
+            let pattern = (
+                Term::Variable("?s".to_string()),
+                Term::Variable("?p".to_string()),
+                Term::Variable("?o".to_string()),
+            );
+            LogicalOperator::scan(pattern)
+        } else {
+            let (subject_str, predicate_str, object_str) = patterns[0];
+            let pattern = convert_pattern_to_triple(
+                subject_str,
+                predicate_str,
+                object_str,
+                prefixes,
+                database
+            );
+            LogicalOperator::scan(pattern)
+        };
+        first_pattern
+    };
+
+    // If we have VALUES, join it with all patterns
+    // Otherwise, join patterns together as before
+    let start_idx = if values_clause.is_some() { 0 } else { 1 };
+
+    for (subject_str, predicate_str, object_str) in patterns.iter().skip(start_idx) {
+        let pattern = convert_pattern_to_triple(
+            subject_str,
+            predicate_str,
+            object_str,
+            prefixes,
+            database,
+        );
+        let scan_op = LogicalOperator::scan(pattern);
+        result = LogicalOperator::join(result, scan_op);
+    }
+
+    // Apply filters that couldn't be pushed down
+    for filter in filters {
+        let condition = convert_filter_to_condition(&filter);
+        result = LogicalOperator::selection(result, condition);
+    }
+
+    // Apply BIND clauses
+    for (func_name, args, output_var) in binds {
+        let function_name = func_name.to_string();
+        let arguments: Vec<String> = args.iter().map(|s| s.to_string()).collect();
+        let output_variable = output_var.to_string();
+
+        result = LogicalOperator::bind(result, function_name, arguments, output_variable);
+    }
+
+    // Apply projection if specific variables were requested
+    if !variables.is_empty() {
+        let var_names: Vec<String> = variables.into_iter().map(|(_, v)| v.to_string()).collect();
+        result = LogicalOperator::projection(result, var_names);
+    }
+
+    result
+}
+
+// Helper function to convert pattern strings to TriplePattern
+fn convert_pattern_to_triple(
+    subject_str: &str,
+    predicate_str: &str,
+    object_str: &str,
+    prefixes: &HashMap<String, String>,
+    database: &mut SparqlDatabase,
+) -> TriplePattern {
+    let subject = if subject_str.starts_with('?') {
+        Term::Variable(subject_str.to_string())
+    } else {
+        let resolved = resolve_with_prefixes(subject_str, prefixes);
+        Term::Constant(database.dictionary.encode(&resolved))
+    };
+
+    let predicate = if predicate_str.starts_with('?') {
+        Term::Variable(predicate_str.to_string())
+    } else {
+        let resolved = resolve_with_prefixes(predicate_str, prefixes);
+        Term::Constant(database.dictionary.encode(&resolved))
+    };
+
+    let object = if object_str.starts_with('?') {
+        Term::Variable(object_str.to_string())
+    } else {
+        let resolved = resolve_with_prefixes(object_str, prefixes);
+        Term::Constant(database.dictionary.encode(&resolved))
+    };
+
+    (subject, predicate, object)
 }
 
 /// Builds a logical operator from a SubQuery structure
@@ -202,12 +239,14 @@ pub fn build_logical_plan_from_subquery(
         .map(|(var_type, var_name, _aggregation)| (*var_type, *var_name))
         .collect();
     
-    let inner_plan = build_logical_plan_optimized(
+    let inner_plan = build_logical_plan(
         variables.clone(),
         subquery.patterns.clone(),
         subquery.filters.clone(),
         prefixes,
         database,
+        &subquery.binds,
+        None,
     );
     
     // Extract variable names for projection
@@ -263,68 +302,6 @@ fn make_filter_static(filter: &FilterExpression) -> FilterExpression<'static> {
             FilterExpression::ArithmeticExpr(expr_static)
         }
     }
-}
-
-/// Checks if a filter can be pushed down to a specific pattern
-fn can_push_filter_to_pattern(op: &LogicalOperator, filter: &FilterExpression) -> bool {
-    // Don't push down complex filters (AND/OR/NOT) - apply them after joins
-    if matches!(filter, FilterExpression::And(_,_) | FilterExpression::Or(_,_) | FilterExpression::Not(_)) {
-        return false;
-    }
-
-    if let LogicalOperator::Scan { pattern } = op {
-        // Extract variables from the filter
-        let filter_vars = extract_filter_variables(filter);
-        
-        // Extract variables from the pattern
-        let pattern_vars = extract_pattern_variables(pattern);
-        
-        // Filter can be pushed down if all its variables are in the pattern
-        filter_vars.iter().all(|fv| pattern_vars.contains(fv))
-    } else {
-        false
-    }
-}
-
-/// Extracts all variables from a filter expression
-fn extract_filter_variables(filter: &FilterExpression) -> HashSet<String> {
-    let mut vars = HashSet::new();
-    
-    match filter {
-        FilterExpression::Comparison(var, _, _) => {
-            let var_name = var.strip_prefix('?').unwrap_or(var).to_string();
-            vars.insert(var_name);
-        }
-        FilterExpression::And(left, right) | FilterExpression::Or(left, right) => {
-            vars.extend(extract_filter_variables(left));
-            vars.extend(extract_filter_variables(right));
-        }
-        FilterExpression::Not(inner) => {
-            vars.extend(extract_filter_variables(inner));
-        }
-        FilterExpression::ArithmeticExpr(_) => {
-            // TODO: Parse arithmetic expressions to extract variables
-        }
-    }
-    
-    vars
-}
-
-/// Extracts all variables from a triple pattern
-fn extract_pattern_variables(pattern: &TriplePattern) -> HashSet<String> {
-    let mut vars = HashSet::new();
-    
-    if let Term::Variable(v) = &pattern.0 {
-        vars.insert(v.strip_prefix('?').unwrap_or(v).to_string());
-    }
-    if let Term::Variable(v) = &pattern.1 {
-        vars.insert(v.strip_prefix('?').unwrap_or(v).to_string());
-    }
-    if let Term::Variable(v) = &pattern.2 {
-        vars.insert(v.strip_prefix('?').unwrap_or(v).to_string());
-    }
-    
-    vars
 }
 
 /// Converts a FilterExpression to a Condition

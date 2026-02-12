@@ -13,9 +13,8 @@ use nom::{
     bytes::complete::{tag, take_until, take_while1},
     character::complete::{char, multispace0, multispace1, space0, space1},
     combinator::{opt, recognize},
-    error::ParseError,
     multi::{many0, many1, separated_list1},
-    sequence::{delimited, preceded, terminated, tuple},
+    sequence::{delimited, preceded, terminated},
     IResult,
     Parser
 };
@@ -29,8 +28,8 @@ use shared::rule::Rule;
 use shared::terms::*;
 use shared::query::*;
 // Add RSP imports
-use rsp::s2r::{CSPARQLWindow, Report, ReportStrategy, Tick, WindowTriple, ContentContainer};
-use rsp::r2s::{Relation2StreamOperator, StreamOperator};
+use crate::rsp::s2r::{CSPARQLWindow, Report, ReportStrategy, Tick, WindowTriple, ContentContainer};
+use crate::rsp::r2s::{Relation2StreamOperator, StreamOperator};
 use std::collections::HashMap;
 
 // Helper function to recognize identifiers
@@ -40,14 +39,15 @@ pub fn identifier(input: &str) -> IResult<&str, &str> {
 
 // Parser for a prefixed identifier like ex:worksAt
 pub fn prefixed_identifier(input: &str) -> IResult<&str, &str> {
-    recognize(tuple((identifier, char(':'), identifier))).parse(input)
+    recognize((identifier, char(':'), identifier)).parse(input)
 }
 
 // Parser for a predicate (either prefixed or unprefixed)
 pub fn predicate(input: &str) -> IResult<&str, &str> {
     alt((
         parse_uri,
-        recognize(tuple((char(':'), identifier))),
+        variable,
+        recognize((char(':'), identifier)),
         prefixed_identifier,
         tag("a"),
     )).parse(input)
@@ -55,7 +55,7 @@ pub fn predicate(input: &str) -> IResult<&str, &str> {
 
 // Parser for variables (e.g., ?person)
 pub fn variable(input: &str) -> IResult<&str, &str> {
-    recognize(tuple((char('?'), identifier))).parse(input)
+    recognize((char('?'), identifier)).parse(input)
 }
 
 // Parser for a literal value within double quotes
@@ -76,7 +76,7 @@ pub fn parse_predicate_object(input: &str) -> IResult<&str, (&str, &str)> {
         parse_uri,                    // <http://...>
         variable,                     // ?variable
         parse_literal,                // "literal"
-        recognize(tuple((char(':'), identifier))), // :localname (like :Stream)
+        recognize((char(':'), identifier)), // :localname (like :Stream)
         prefixed_identifier,          // prefix:localname
         identifier,                   // simple identifier
     )).parse(input)?;
@@ -87,7 +87,7 @@ pub fn parse_triple_block(input: &str) -> IResult<&str, Vec<(&str, &str, &str)>>
     let (input, subject) = alt((
         parse_uri,                    // <http://...>
         variable,                     // ?variable
-        recognize(tuple((char(':'), identifier))), // :localname
+        recognize((char(':'), identifier)), // :localname
         prefixed_identifier,          // prefix:localname
         identifier,                   // simple identifier
     )).parse(input)?;
@@ -98,7 +98,7 @@ pub fn parse_triple_block(input: &str) -> IResult<&str, Vec<(&str, &str, &str)>>
 
     // Zero or more additional predicate-object pairs separated by semicolon
     let (input, rest_po) = many0(preceded(
-        tuple((multispace0, char(';'), multispace0)),
+        (multispace0, char(';'), multispace0),
         parse_predicate_object,
     )).parse(input)?;
 
@@ -107,7 +107,14 @@ pub fn parse_triple_block(input: &str) -> IResult<&str, Vec<(&str, &str, &str)>>
     pairs.extend(rest_po);
 
     // Convert each pair into a triple by reusing the same subject
-    let triples = pairs.into_iter().map(|(p, o)| (subject, p, o)).collect();
+    let triples = pairs.into_iter().map(|(p, o)| {
+        let resolved_p = if p == "a" {
+            "http://www.w3.org/1999/02/22-rdf-syntax-ns#type"
+        } else {
+            p
+        };
+        (subject, resolved_p, o)
+    }).collect();
 
     Ok((input, triples))
 }
@@ -129,7 +136,7 @@ pub fn parse_value_term(input: &str) -> IResult<&str, Value> {
 }
 
 // Parser for the VALUES clause
-pub fn parse_values(input: &str) -> IResult<&str, ValuesClause> {
+pub fn parse_values(input: &str) -> IResult<&str, ValuesClause<'_>> {
     let (input, _) = tag("VALUES").parse(input)?;
     let (input, _) = space1.parse(input)?;
 
@@ -207,7 +214,7 @@ pub fn parse_select(input: &str) -> IResult<&str, Vec<(&str, &str, Option<&str>)
 }
 
 // Parse a basic arithmetic operand (variable, literal, or number)
-fn parse_operand(input: &str) -> IResult<&str, ArithmeticExpression> {
+fn parse_operand(input: &str) -> IResult<&str, ArithmeticExpression<'_>> {
     let (input, _) = multispace0.parse(input)?;
     
     let (input, operand) = alt((
@@ -222,7 +229,7 @@ fn parse_operand(input: &str) -> IResult<&str, ArithmeticExpression> {
 }
 
 // Parse a parenthesized arithmetic expression
-fn parse_arith_parenthesized(input: &str) -> IResult<&str, ArithmeticExpression> {
+fn parse_arith_parenthesized(input: &str) -> IResult<&str, ArithmeticExpression<'_>> {
     let (input, _) = multispace0.parse(input)?;
     let (input, _) = char('(').parse(input)?;
     let (input, expr) = parse_arithmetic_expression(input)?;
@@ -234,7 +241,7 @@ fn parse_arith_parenthesized(input: &str) -> IResult<&str, ArithmeticExpression>
 }
 
 // Parse a basic arithmetic term (operand or parenthesized expression)
-fn parse_arith_term(input: &str) -> IResult<&str, ArithmeticExpression> {
+fn parse_arith_term(input: &str) -> IResult<&str, ArithmeticExpression<'_>> {
     alt((
         parse_operand,
         parse_arith_parenthesized,
@@ -242,7 +249,7 @@ fn parse_arith_term(input: &str) -> IResult<&str, ArithmeticExpression> {
 }
 
 // Parse multiplication and division
-fn parse_arith_factor(input: &str) -> IResult<&str, ArithmeticExpression> {
+fn parse_arith_factor(input: &str) -> IResult<&str, ArithmeticExpression<'_>> {
     let (mut input, mut left) = parse_arith_term(input)?;
     
     // Process all multiplication and division operations in sequence
@@ -276,7 +283,7 @@ fn parse_arith_factor(input: &str) -> IResult<&str, ArithmeticExpression> {
 }
 
 // Parse addition and subtraction
-pub fn parse_arithmetic_expression(input: &str) -> IResult<&str, ArithmeticExpression> {
+pub fn parse_arithmetic_expression(input: &str) -> IResult<&str, ArithmeticExpression<'_>> {
     let (mut input, mut left) = parse_arith_factor(input)?;
     
     // Process all addition and subtraction operations in sequence
@@ -309,13 +316,13 @@ pub fn parse_arithmetic_expression(input: &str) -> IResult<&str, ArithmeticExpre
     Ok((input, left))
 }
 
-fn parse_arithmetic_comparison(input: &str) -> IResult<&str, FilterExpression> {
+fn parse_arithmetic_comparison(input: &str) -> IResult<&str, FilterExpression<'_>> {
     let (input, _) = multispace0.parse(input)?;
 
     // Parse left side expression
     let (input, left_str) = alt((
         // Recognize an arithmetic expression (variable followed by operators)
-        recognize(tuple((
+        recognize((
             alt((
                 variable,                  // Variable name
                 parse_literal,             // String literal
@@ -323,7 +330,7 @@ fn parse_arithmetic_comparison(input: &str) -> IResult<&str, FilterExpression> {
             )),
             multispace0,
             alt((char('+'), char('-'), char('*'), char('/'))), // Operator
-        ))),
+        )),
         // variable/literal/number
         variable,
         parse_literal,
@@ -359,7 +366,7 @@ fn parse_arithmetic_comparison(input: &str) -> IResult<&str, FilterExpression> {
         parse_literal,
         take_while1(|c: char| c.is_digit(10) || c == '.'),
         // arithmetic expression
-        recognize(tuple((
+        recognize((
             alt((
                 variable,
                 parse_literal,
@@ -367,7 +374,7 @@ fn parse_arithmetic_comparison(input: &str) -> IResult<&str, FilterExpression> {
             )),
             multispace0,
             alt((char('+'), char('-'), char('*'), char('/'))),
-        ))),
+        )),
     )).parse(input)?;
 
     let (input, _) = multispace0.parse(input)?;
@@ -382,7 +389,7 @@ fn parse_arithmetic_comparison(input: &str) -> IResult<&str, FilterExpression> {
 }
 
 // Parse a single comparison expression like ?var > 10
-pub fn parse_comparison(input: &str) -> IResult<&str, FilterExpression> {
+pub fn parse_comparison(input: &str) -> IResult<&str, FilterExpression<'_>> {
     let (input, _) = multispace0.parse(input)?;
 
     // Parse variable or literal on left side
@@ -419,7 +426,7 @@ pub fn parse_comparison(input: &str) -> IResult<&str, FilterExpression> {
 }
 
 // Parse an expression in parentheses
-fn parse_parenthesized(input: &str) -> IResult<&str, FilterExpression> {
+fn parse_parenthesized(input: &str) -> IResult<&str, FilterExpression<'_>> {
     let (input, _) = multispace0.parse(input)?;
     let (input, _) = char('(').parse(input)?;
     let (input, expr) = parse_filter_expression(input)?;
@@ -431,7 +438,7 @@ fn parse_parenthesized(input: &str) -> IResult<&str, FilterExpression> {
 }
 
 // Parse a negation (NOT)
-fn parse_not(input: &str) -> IResult<&str, FilterExpression> {
+fn parse_not(input: &str) -> IResult<&str, FilterExpression<'_>> {
     let (input, _) = multispace0.parse(input)?;
     let (input, _) = char('!').parse(input)?;
     let (input, _) = multispace0.parse(input)?;
@@ -441,7 +448,7 @@ fn parse_not(input: &str) -> IResult<&str, FilterExpression> {
 }
 
 // Parse a basic term (comparison, parenthesized expression, or negation)
-fn parse_term(input: &str) -> IResult<&str, FilterExpression> {
+fn parse_term(input: &str) -> IResult<&str, FilterExpression<'_>> {
     alt((
         parse_comparison,
         parse_arithmetic_comparison,
@@ -451,7 +458,7 @@ fn parse_term(input: &str) -> IResult<&str, FilterExpression> {
 }
 
 // Parse AND expressions
-fn parse_and(input: &str) -> IResult<&str, FilterExpression> {
+fn parse_and(input: &str) -> IResult<&str, FilterExpression<'_>> {
     let (input, left) = parse_term(input)?;
     let (input, _) = multispace0.parse(input)?;
     
@@ -465,7 +472,7 @@ fn parse_and(input: &str) -> IResult<&str, FilterExpression> {
 }
 
 // Parse OR expressions
-fn parse_or(input: &str) -> IResult<&str, FilterExpression> {
+fn parse_or(input: &str) -> IResult<&str, FilterExpression<'_>> {
     let (input, left) = parse_and(input)?;
     let (input, _) = multispace0.parse(input)?;
     
@@ -479,12 +486,12 @@ fn parse_or(input: &str) -> IResult<&str, FilterExpression> {
 }
 
 // Main entry point for parsing filter expressions
-fn parse_filter_expression(input: &str) -> IResult<&str, FilterExpression> {
+fn parse_filter_expression(input: &str) -> IResult<&str, FilterExpression<'_>> {
     parse_or(input)
 }
 
 // Parse a complete FILTER clause
-pub fn parse_filter(input: &str) -> IResult<&str, FilterExpression> {
+pub fn parse_filter(input: &str) -> IResult<&str, FilterExpression<'_>> {
     let (input, _) = tag("FILTER").parse(input)?;
     let (input, _) = multispace0.parse(input)?;
     let (input, _) = char('(').parse(input)?;
@@ -504,7 +511,7 @@ pub fn parse_bind(input: &str) -> IResult<&str, (&str, Vec<&str>, &str)> {
 
     // Allow multiple arguments for CONCAT
     let (input, args) = separated_list1(
-        tuple((multispace0, char(','), multispace0)),
+        (multispace0, char(','), multispace0),
         alt((variable, parse_literal)),
     ).parse(input)?;
 
@@ -548,14 +555,14 @@ pub fn parse_subquery<'a>(input: &'a str) -> IResult<&'a str, SubQuery<'a>> {
 }
 
 // Parser for WINDOW block inside WHERE clause
-pub fn parse_window_block(input: &str) -> IResult<&str, WindowBlock> {
+pub fn parse_window_block(input: &str) -> IResult<&str, WindowBlock<'_>> {
     let (input, _) = multispace0.parse(input)?;
     let (input, _) = tag("WINDOW").parse(input)?;
     let (input, _) = multispace1.parse(input)?;
     
     // Parse window name (like :wind)
     let (input, window_name) = alt((
-        recognize(tuple((char(':'), identifier))),
+        recognize((char(':'), identifier)),
         identifier,
     )).parse(input)?;
     
@@ -566,7 +573,7 @@ pub fn parse_window_block(input: &str) -> IResult<&str, WindowBlock> {
     // Parse triple patterns inside the window block
     let (input, pattern_blocks) = many0(terminated(
         parse_triple_block,
-        tuple((multispace0, opt(char('.')), multispace0))
+        (multispace0, opt(char('.')), multispace0)
     )).parse(input)?;
     
     let (input, _) = multispace0.parse(input)?;
@@ -587,11 +594,11 @@ pub fn parse_where(
     &str,
     (
         Vec<(&str, &str, &str)>,
-        Vec<FilterExpression>,
-        Option<ValuesClause>,
+        Vec<FilterExpression<'_>>,
+        Option<ValuesClause<'_>>,
         Vec<(&str, Vec<&str>, &str)>,
-        Vec<SubQuery>,
-        Vec<WindowBlock>,
+        Vec<SubQuery<'_>>,
+        Vec<WindowBlock<'_>>,
     ),
 > {
     let (input, _) = multispace0.parse(input)?;
@@ -646,11 +653,11 @@ pub fn parse_where(
         };
 
         // Consume any trailing dot
-        if let Ok((new_input, _)) = tuple((
+        if let Ok((new_input, _)) = (
             space0::<_, nom::error::Error<&str>>,
             char::<_, nom::error::Error<&str>>('.'),
             space0::<_, nom::error::Error<&str>>,
-        )).parse(current_input)
+        ).parse(current_input)
         {
             current_input = new_input;
         }
@@ -663,7 +670,7 @@ pub fn parse_where(
 }
 
 // Parser for REGISTER clause
-pub fn parse_register_clause(input: &str) -> IResult<&str, RegisterClause> {
+pub fn parse_register_clause(input: &str) -> IResult<&str, RegisterClause<'_>> {
     let (input, _) = multispace0.parse(input)?;
     let (input, _) = tag("REGISTER").parse(input)?;
     let (input, _) = multispace1.parse(input)?;
@@ -723,7 +730,7 @@ pub fn parse_sort_direction(input: &str) -> IResult<&str, SortDirection> {
 }
 
 // Parser for a single ORDER BY condition
-pub fn parse_order_condition(input: &str) -> IResult<&str, OrderCondition> {
+pub fn parse_order_condition(input: &str) -> IResult<&str, OrderCondition<'_>> {
     let (input, _) = multispace0.parse(input)?;
     
     // Try to parse direction first (optional)
@@ -778,7 +785,7 @@ pub fn parse_order_condition(input: &str) -> IResult<&str, OrderCondition> {
 }
 
 // Alternative simpler parser for ORDER BY condition (variable with optional direction)
-pub fn parse_simple_order_condition(input: &str) -> IResult<&str, OrderCondition> {
+pub fn parse_simple_order_condition(input: &str) -> IResult<&str, OrderCondition<'_>> {
     let (input, _) = multispace0.parse(input)?;
     
     // Parse variable first
@@ -799,7 +806,7 @@ pub fn parse_simple_order_condition(input: &str) -> IResult<&str, OrderCondition
 }
 
 // Main ORDER BY parser
-pub fn parse_order_by(input: &str) -> IResult<&str, Vec<OrderCondition>> {
+pub fn parse_order_by(input: &str) -> IResult<&str, Vec<OrderCondition<'_>>> {
     let (input, _) = multispace0.parse(input)?;
     let (input, _) = tag("ORDER").parse(input)?;
     let (input, _) = space1.parse(input)?;
@@ -808,7 +815,7 @@ pub fn parse_order_by(input: &str) -> IResult<&str, Vec<OrderCondition>> {
 
     // Parse one or more order conditions separated by commas
     let (input, conditions) = separated_list1(
-        tuple((multispace0, char(','), multispace0)),
+        (multispace0, char(','), multispace0),
         alt((
             parse_order_condition,      // Try complex form first
             parse_simple_order_condition, // Fall back to simple form
@@ -832,7 +839,7 @@ pub fn parse_prefix(input: &str) -> IResult<&str, (&str, &str)> {
 }
 
 // Modified parse_insert to handle literals and debug output
-pub fn parse_insert(input: &str) -> IResult<&str, InsertClause> {
+pub fn parse_insert(input: &str) -> IResult<&str, InsertClause<'_>> {
     let (input, _) = tag("INSERT").parse(input)?;
     let (input, _) = multispace0.parse(input)?;
     let (input, _) = char('{').parse(input)?;
@@ -841,7 +848,7 @@ pub fn parse_insert(input: &str) -> IResult<&str, InsertClause> {
     // Parse one or more triple blocks separated by dots.
     // Each triple block can contain multiple predicate-object pairs separated by semicolons.
     let (input, triple_blocks) =
-        separated_list1(tuple((space0, char('.'), space0)), parse_triple_block).parse(input)?;
+        separated_list1((space0, char('.'), space0), parse_triple_block).parse(input)?;
 
     let (input, _) = multispace0.parse(input)?;
     let (input, _) = char('}').parse(input)?;
@@ -862,7 +869,7 @@ pub fn parse_construct_clause(input: &str) -> IResult<&str, Vec<(&str, &str, &st
         char('{'),
         preceded(
             multispace0,
-            terminated(parse_triple_block, opt(tuple((multispace0, char('.'))))),
+            terminated(parse_triple_block, opt((multispace0, char('.')))),
         ),
         preceded(multispace0, char('}')),
     ).parse(input)?;
@@ -887,18 +894,18 @@ pub fn parse_sparql_query(
 ) -> IResult<
     &str,
     (
-        Option<InsertClause>,
+        Option<InsertClause<'_>>,
         Vec<(&str, &str, Option<&str>)>, // variables
         Vec<(&str, &str, &str)>,         // patterns
-        Vec<FilterExpression>,         // filters
+        Vec<FilterExpression<'_>>,         // filters
         Vec<&str>,                       // group_vars
         HashMap<String, String>,         // prefixes
-        Option<ValuesClause>,
+        Option<ValuesClause<'_>>,
         Vec<(&str, Vec<&str>, &str)>, // BIND clauses
-        Vec<SubQuery>,
+        Vec<SubQuery<'_>>,
         Option<usize>,                  // limit
-        Vec<WindowBlock>,               // Add window blocks
-        Vec<OrderCondition>,             // ORDER BY conditions
+        Vec<WindowBlock<'_>>,               // Add window blocks
+        Vec<OrderCondition<'_>>,             // ORDER BY conditions
     ),
 > {
     let mut input = input;
@@ -996,7 +1003,7 @@ pub fn parse_standalone_rule<'a>(
     Ok((input, (rule, prefixes)))
 }
 
-pub fn parse_rule_call(input: &str) -> IResult<&str, RuleHead> {
+pub fn parse_rule_call(input: &str) -> IResult<&str, RuleHead<'_>> {
     let (input, _) = multispace0.parse(input)?;
     
     // Parse the academic syntax: RULE(:Predicate, ?var1, ?var2, ...)
@@ -1005,13 +1012,13 @@ pub fn parse_rule_call(input: &str) -> IResult<&str, RuleHead> {
     let (input, pred) = predicate(input)?;
     
     // Parse the first variable
-    let (input, _) = tuple((multispace0, char(','), multispace0)).parse(input)?;
+    let (input, _) = (multispace0, char(','), multispace0).parse(input)?;
     let (input, first_var) = variable(input)?;
     
     // Parse additional variables if they exist
     let (input, additional_vars) = many0(
         preceded(
-            tuple((multispace0, char(','), multispace0)),
+            (multispace0, char(','), multispace0),
             variable
         )
     ).parse(input)?;
@@ -1031,11 +1038,11 @@ pub fn parse_rule_call(input: &str) -> IResult<&str, RuleHead> {
     ))
 }
 
-pub fn parse_rule_head(input: &str) -> IResult<&str, RuleHead> {
+pub fn parse_rule_head(input: &str) -> IResult<&str, RuleHead<'_>> {
     let (input, pred) = predicate(input)?;
     let (input, args) = opt(delimited(
         char('('),
-        separated_list1(tuple((multispace0, char(','), multispace0)), variable),
+        separated_list1((multispace0, char(','), multispace0), variable),
         char(')'),
     )).parse(input)?;
     let arguments = args.unwrap_or_else(|| vec![]);
@@ -1069,7 +1076,7 @@ fn parse_balanced(input: &str) -> IResult<&str, &str> {
     )))
 }
 
-pub fn parse_ml_predict(input: &str) -> IResult<&str, MLPredictClause> {
+pub fn parse_ml_predict(input: &str) -> IResult<&str, MLPredictClause<'_>> {
     let (input, _) = multispace0.parse(input)?;
     let (input, _) = tag("ML.PREDICT").parse(input)?;
     let (input, _) = multispace0.parse(input)?;
@@ -1141,7 +1148,7 @@ pub fn parse_ml_predict(input: &str) -> IResult<&str, MLPredictClause> {
 }
 
 // Parser for stream type
-pub fn parse_stream_type(input: &str) -> IResult<&str, StreamType> {
+pub fn parse_stream_type(input: &str) -> IResult<&str, StreamType<'_>> {
     let (input, _) = multispace0.parse(input)?;
     let (input, stream_type) = alt((
         tag("RSTREAM").map(|_| StreamType::RStream),
@@ -1153,7 +1160,7 @@ pub fn parse_stream_type(input: &str) -> IResult<&str, StreamType> {
 }
 
 // Parser for window specification
-pub fn parse_window_spec(input: &str) -> IResult<&str, WindowSpec> {
+pub fn parse_window_spec(input: &str) -> IResult<&str, WindowSpec<'_>> {
     let (input, _) = multispace0.parse(input)?;
     let (input, _) = char('[').parse(input)?;
     let (input, _) = multispace0.parse(input)?;
@@ -1170,11 +1177,11 @@ pub fn parse_window_spec(input: &str) -> IResult<&str, WindowSpec> {
     // Parse duration (like PT10M) or numeric value
     let (input, width_str) = alt((
         // ISO 8601 duration format (PT10M, PT5S, etc.)
-        recognize(tuple((
+        recognize((
             tag("PT"),
             take_while1(|c: char| c.is_digit(10)),
             alt((char('S'), char('M'), char('H')))
-        ))),
+        )),
         // Simple numeric value
         take_while1(|c: char| c.is_digit(10))
     )).parse(input)?;
@@ -1184,14 +1191,14 @@ pub fn parse_window_spec(input: &str) -> IResult<&str, WindowSpec> {
     
     // Optional STEP parameter for sliding windows
     let (input, slide) = opt(preceded(
-        tuple((multispace1, tag("STEP"), multispace1)),
+        (multispace1, tag("STEP"), multispace1),
         alt((
             // ISO 8601 duration format
-            recognize(tuple((
+            recognize((
                 tag("PT"),
                 take_while1(|c: char| c.is_digit(10)),
                 alt((char('S'), char('M'), char('H')))
-            ))),
+            )),
             // Simple numeric value
             take_while1(|c: char| c.is_digit(10))
         ))
@@ -1201,7 +1208,7 @@ pub fn parse_window_spec(input: &str) -> IResult<&str, WindowSpec> {
     
     // Optional report strategy
     let (input, report_strategy) = opt(preceded(
-        tuple((multispace1, tag("REPORT"), multispace1)),
+        (multispace1, tag("REPORT"), multispace1),
         alt((
             tag("ON_WINDOW_CLOSE"),
             tag("ON_CONTENT_CHANGE"),
@@ -1212,7 +1219,7 @@ pub fn parse_window_spec(input: &str) -> IResult<&str, WindowSpec> {
     
     // Optional tick strategy
     let (input, tick) = opt(preceded(
-        tuple((multispace1, tag("TICK"), multispace1)),
+        (multispace1, tag("TICK"), multispace1),
         alt((
             tag("TIME_DRIVEN"),
             tag("TUPLE_DRIVEN"),
@@ -1256,7 +1263,7 @@ fn parse_duration_to_seconds(duration: &str) -> usize {
 }
 
 // Parser for FROM NAMED WINDOW clause
-pub fn parse_from_named_window(input: &str) -> IResult<&str, WindowClause> {
+pub fn parse_from_named_window(input: &str) -> IResult<&str, WindowClause<'_>> {
     let (input, _) = multispace0.parse(input)?;
     let (input, _) = tag("FROM").parse(input)?;
     let (input, _) = multispace1.parse(input)?;
@@ -1268,7 +1275,7 @@ pub fn parse_from_named_window(input: &str) -> IResult<&str, WindowClause> {
     // Parse window identifier (can be :wind, <uri>, or variable)
     let (input, window_iri) = alt((
         delimited(char('<'), take_while1(|c| c != '>'), char('>')), // <uri>
-        recognize(tuple((char(':'), identifier))),                   // :wind
+        recognize((char(':'), identifier)),                   // :wind
         variable,                                                    // ?var
         identifier,                                                  // simple name
     )).parse(input)?;
@@ -1281,7 +1288,7 @@ pub fn parse_from_named_window(input: &str) -> IResult<&str, WindowClause> {
     let (input, stream_iri) = alt((
         delimited(char('<'), take_while1(|c| c != '>'), char('>')), // <uri>
         variable,                                                    // ?s
-        recognize(tuple((char(':'), identifier))),                   // :stream
+        recognize((char(':'), identifier)),                   // :stream
         identifier,                                                  // simple name
     )).parse(input)?;
     
@@ -1299,7 +1306,7 @@ pub fn parse_from_named_window(input: &str) -> IResult<&str, WindowClause> {
 
 /// Parse a complete rule:
 ///   RULE :OverheatingAlert(?room) :- WHERE { ... } => { ... } .
-pub fn parse_rule(input: &str) -> IResult<&str, CombinedRule> {
+pub fn parse_rule(input: &str) -> IResult<&str, CombinedRule<'_>> {
     let (input, _) = tag("RULE").parse(input)?;
     let (input, _) = space1.parse(input)?;
     let (input, head) = parse_rule_head(input)?;
@@ -1385,7 +1392,7 @@ pub fn parse_stream_state(input: &str) -> IResult<&str, StreamState> {
 }
 
 // Parser for the complete RETRIEVE clause
-pub fn parse_retrieve_clause(input: &str) -> IResult<&str, RetrieveClause> {
+pub fn parse_retrieve_clause(input: &str) -> IResult<&str, RetrieveClause<'_>> {
     let (input, _) = multispace0.parse(input)?;
     let (input, _) = tag("RETRIEVE").parse(input)?;
     let (input, _) = multispace1.parse(input)?;
@@ -1425,7 +1432,7 @@ pub fn parse_retrieve_clause(input: &str) -> IResult<&str, RetrieveClause> {
     // Parse graph patterns (can be multiple triple blocks)
     let (input, pattern_blocks) = many0(terminated(
         parse_triple_block,
-        tuple((multispace0, opt(char('.')), multispace0))
+        (multispace0, opt(char('.')), multispace0)
     )).parse(input)?;
     
     let (input, _) = multispace0.parse(input)?;
@@ -1444,7 +1451,7 @@ pub fn parse_retrieve_clause(input: &str) -> IResult<&str, RetrieveClause> {
 }
 
 /// The combined query parser parses SPARQL + LP
-pub fn parse_combined_query(input: &str) -> IResult<&str, CombinedQuery> {
+pub fn parse_combined_query(input: &str) -> IResult<&str, CombinedQuery<'_>> {
     let (input, prefix_list) = many0(|i| {
         let (i, _) = multispace0.parse(i)?;
         let (i, _) = tag("PREFIX").parse(i)?;
@@ -1714,13 +1721,10 @@ pub fn process_rule_definition(
     database.register_prefixes_from_query(rule_input);
 
     let mut kg = Reasoner::new();
+    kg.dictionary = database.dictionary.clone();
+    
     for triple in database.triples.iter() {
-        let subject = database.dictionary.decode(triple.subject);
-        let predicate = database.dictionary.decode(triple.predicate);
-        let object = database.dictionary.decode(triple.object);
-        if let (Some(s), Some(p), Some(o)) = (subject, predicate, object) {
-            kg.add_abox_triple(&s, &p, &o);
-        }
+        kg.index_manager.insert(triple);
     }
 
     // Parse the standalone rule
@@ -1736,7 +1740,8 @@ pub fn process_rule_definition(
         let mut rule_prefixes = prefixes.clone();
         database.share_prefixes_with(&mut rule_prefixes);
 
-        let dynamic_rule = convert_combined_rule(rule.clone(), &mut database.dictionary, &rule_prefixes);
+        let dynamic_rule = convert_combined_rule(rule.clone(), &mut kg.dictionary, &rule_prefixes);
+        database.dictionary = kg.dictionary.clone();
 
         // Check if this rule has windowing - if so, set up RSP processing
         if !rule.window_clause.is_empty() {
@@ -1774,7 +1779,7 @@ pub fn process_rule_definition(
                 // Register a callback to process windowed results
                 let kg_clone = kg.clone();
                 let rule_clone = dynamic_rule.clone();
-                let stream_op_clone = stream_operator.clone();
+                let _stream_op_clone = stream_operator.clone();
 
                 rsp_window.register_callback(Box::new(move |content: ContentContainer<WindowTriple>| {
                     println!("Processing window content with {} triples", content.len());
@@ -1936,15 +1941,15 @@ fn create_rsp_window(window_spec: &WindowSpec) -> Result<CSPARQLWindow<WindowTri
     match window_spec.window_type {
         WindowType::Sliding => {
             let slide = window_spec.slide.unwrap_or(1);
-            Ok(CSPARQLWindow::new(window_spec.width, slide, report, tick))
+            Ok(CSPARQLWindow::new(window_spec.width, slide, report, tick, String::default()))
         },
         WindowType::Tumbling => {
             // Tumbling window: slide = width
-            Ok(CSPARQLWindow::new(window_spec.width, window_spec.width, report, tick))
+            Ok(CSPARQLWindow::new(window_spec.width, window_spec.width, report, tick, String::default()))
         },
         WindowType::Range => {
             // Range window: slide = 1 (continuous)
-            Ok(CSPARQLWindow::new(window_spec.width, 1, report, tick))
+            Ok(CSPARQLWindow::new(window_spec.width, 1, report, tick, String::default()))
         }
     }
 }

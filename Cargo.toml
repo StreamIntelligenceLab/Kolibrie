@@ -7,8 +7,8 @@ members = [
   "datalog",
   "python",
   "ml",
-  "rsp",
   "cli",
+  "kolibrie-http-server",
 ]
 
 exclude = [

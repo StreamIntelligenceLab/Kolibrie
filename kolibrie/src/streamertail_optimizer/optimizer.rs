@@ -20,13 +20,13 @@ use std::collections::{BTreeMap, HashMap, HashSet};
 use std::sync::Arc;
 
 /// Volcano-style query optimizer with cost-based optimization
-pub struct VolcanoOptimizer {
+pub struct Streamertail {
     pub memo: HashMap<String, PhysicalOperator>,
     pub selected_variables: Vec<String>,
     pub stats: Arc<DatabaseStats>,
 }
 
-impl VolcanoOptimizer {
+impl Streamertail {
     /// Creates a new volcano optimizer
     pub fn new(database: &SparqlDatabase) -> Self {
         let stats = Arc::new(DatabaseStats::gather_stats_fast(database));
@@ -155,10 +155,18 @@ impl VolcanoOptimizer {
             LogicalOperator::Projection { predicate, .. } => {
                 self.collect_patterns(predicate, patterns);
             }
+            LogicalOperator::Buffer { content: _, origin: _ } => { }
             LogicalOperator::Subquery { inner, .. } => {
                 // Subqueries are treated as separate scopes, so we don't collect their patterns
                 // for star query detection in the outer query
                 self.collect_patterns(inner, patterns);
+            }
+            LogicalOperator::Bind { input, .. } => {
+                self.collect_patterns(input, patterns);
+            }
+            LogicalOperator::Values { .. } => { }
+            LogicalOperator::MLPredict { input, .. } => {
+                self.collect_patterns(input, patterns);
             }
         }
     }
@@ -273,6 +281,10 @@ impl VolcanoOptimizer {
                     best_right_plan,
                 ));
             }
+            LogicalOperator::Buffer { content, origin} => {
+                let best_buffer = PhysicalOperator::InMemoryBuffer {content: content.clone(), origin: origin.clone()};
+                candidates.push(best_buffer);
+            }
             LogicalOperator::Subquery { inner, projected_vars } => {
                 // Recursively optimize the inner query
                 let optimized_inner = self.find_best_plan_recursive(inner);
@@ -284,6 +296,50 @@ impl VolcanoOptimizer {
                 );
                 
                 candidates.push(subquery_plan);
+            }
+            LogicalOperator::Bind { input, function_name, arguments, output_variable } => {
+                // Recursively optimize the input
+                let best_input_plan = self.find_best_plan_recursive(input);
+    
+                // Create the physical BIND operator
+                let bind_plan = PhysicalOperator::bind(
+                    best_input_plan,
+                    function_name.clone(),
+                    arguments.clone(),
+                    output_variable.clone(),
+                );
+    
+                candidates.push(bind_plan);
+            }
+            LogicalOperator::Values { variables, values } => {
+                // VALUES is a leaf operator
+                candidates.push(PhysicalOperator::values(
+                    variables.clone(),
+                    values.clone(),
+                ));
+            }
+            LogicalOperator::MLPredict {
+                input,
+                model_name,
+                input_variables,
+                output_variable,
+            } => {
+                // Recursively optimize the input
+                let best_input_plan = self.find_best_plan_recursive(input);
+
+                // Discover model path
+                let model_path = self.discover_model_path();
+
+                // Create the physical ML.PREDICT operator
+                let ml_predict_plan = PhysicalOperator::ml_predict(
+                    best_input_plan,
+                    model_name.clone(),
+                    model_path,
+                    input_variables.clone(),
+                    output_variable.clone(),
+                );
+
+                candidates.push(ml_predict_plan);
             }
         }
 
@@ -300,6 +356,33 @@ impl VolcanoOptimizer {
         // Memoize the best plan
         self.memo.insert(key, best_plan.clone());
         best_plan
+    }
+
+    /// Discovers the model path from the model name
+    fn discover_model_path(&self) -> String {
+        let mut path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+        
+        loop {
+            let ml_dir = path.join("ml");
+            if ml_dir.exists() && ml_dir.is_dir() {
+                let model_dir = ml_dir.join("examples").join("models");
+                
+                // Return just the model directory - the ML handler will discover models
+                if model_dir.exists() {
+                    return model_dir.to_string_lossy().to_string();
+                }
+                
+                break;
+            }
+            
+            if !path.pop() {
+                eprintln!("Warning: Could not locate 'ml' directory!");
+                break;
+            }
+        }
+        
+        // Fallback to relative path
+        format!("ml/examples/models")
     }
 
     /// Helper method to build a star join physical plan from detected star patterns
@@ -466,11 +549,48 @@ impl VolcanoOptimizer {
                     self.serialize_logical_plan(right)
                 )
             }
+            LogicalOperator::Buffer { content, origin } => {
+                format!(
+                    "Buffer({:?},{:?})",
+                    origin,
+                    content
+                )
+            }
             LogicalOperator::Subquery { inner, projected_vars } => {
                 format!(
                     "Subquery({:?},[{}])",
                     projected_vars,
                     self.serialize_logical_plan(inner)
+                )
+            }
+            LogicalOperator::Bind { input, function_name, arguments, output_variable } => {
+                format!(
+                    "Bind({}, {}({:?}), {})",
+                    self.serialize_logical_plan(input),
+                    function_name,
+                    arguments,
+                    output_variable
+                )
+            }
+            LogicalOperator::Values { variables, values } => {
+                format!(
+                    "Values({:?}, {} rows)",
+                    variables,
+                    values.len()
+                )
+            }
+            LogicalOperator::MLPredict {
+                input,
+                model_name,
+                input_variables,
+                output_variable,
+            } => {
+                format!(
+                    "MLPredict({}, model={}, inputs={:?}, output={})",
+                    self.serialize_logical_plan(input),
+                    model_name,
+                    input_variables,
+                    output_variable
                 )
             }
         }
@@ -530,12 +650,32 @@ impl VolcanoOptimizer {
                 (base_cost as f64 * selectivity) as u64
             }
             LogicalOperator::Projection { predicate, .. } => self.estimate_logical_cost(predicate),
+            LogicalOperator::Buffer { .. } => 0,
             LogicalOperator::Subquery { inner, .. } => {
                 // Subqueries have materialization cost
                 let inner_cost = self.estimate_logical_cost(inner);
                 let inner_card = self.estimate_output_cardinality_from_logical(inner);
                 // Add materialization overhead (storing results)
                 inner_cost + inner_card
+            }
+            LogicalOperator::Bind { input, arguments, .. } => {
+                let base_cost = self.estimate_logical_cost(input);
+                let cardinality = self.estimate_output_cardinality_from_logical(input);
+                // Add cost proportional to number of arguments and cardinality
+                base_cost + (cardinality * arguments.len() as u64)
+            }
+            LogicalOperator::Values { values, .. } => {
+                // VALUES has very low cost
+                values.len() as u64
+            }
+            LogicalOperator::MLPredict { input, input_variables, .. } => {
+                let base_cost = self.estimate_logical_cost(input);
+                let cardinality = self.estimate_output_cardinality_from_logical(input);
+                
+                // ML operations are expensive, so we add significant overhead
+                let ml_overhead = 100; // Cost per prediction
+                // ML prediction cost: base cost + (cardinality * input_features * ML_overhead)
+                base_cost + (cardinality * input_variables.len() as u64 * ml_overhead)
             }
         }
     }
@@ -567,7 +707,11 @@ impl VolcanoOptimizer {
             LogicalOperator::Join { left, ..  } => self.extract_predicate_from_plan(left),
             LogicalOperator::Selection { predicate, .. } => self.extract_predicate_from_plan(predicate),
             LogicalOperator::Projection { predicate, .. } => self.extract_predicate_from_plan(predicate),
+            LogicalOperator::Buffer {.. } => None,
             LogicalOperator::Subquery { inner, .. } => self.extract_predicate_from_plan(inner),
+            LogicalOperator::Bind { input, .. } => self.extract_predicate_from_plan(input),
+            LogicalOperator::Values { .. } => None,
+            LogicalOperator::MLPredict { input, .. } => self.extract_predicate_from_plan(input),
         }
     }
 
@@ -594,8 +738,19 @@ impl VolcanoOptimizer {
                 let join_selectivity = self.estimate_join_selectivity(left, right);
                 ((left_card.min(right_card) as f64 * join_selectivity) as u64).max(1)
             }
+            LogicalOperator::Buffer { .. } => 0,
             LogicalOperator::Subquery { inner, .. } => {
                 self.estimate_output_cardinality_from_logical(inner)
+            }
+            LogicalOperator::Bind { input, .. } => {
+                self.estimate_output_cardinality_from_logical(input)
+            }
+            LogicalOperator::Values { values, .. } => {
+                values.len() as u64
+            }
+            LogicalOperator::MLPredict { input, .. } => {
+                // ML.PREDICT doesn't change cardinality, just adds a column
+                self.estimate_output_cardinality_from_logical(input)
             }
         }
     }
@@ -620,12 +775,12 @@ impl VolcanoOptimizer {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use shared::terms::{Term, TriplePattern};
+    use shared::terms::Term;
 
-    fn create_test_optimizer() -> VolcanoOptimizer {
+    fn create_test_optimizer() -> Streamertail {
         // Create a mock database for testing
         let database = SparqlDatabase::new();
-        VolcanoOptimizer::new(&database)
+        Streamertail::new(&database)
     }
 
     #[test]

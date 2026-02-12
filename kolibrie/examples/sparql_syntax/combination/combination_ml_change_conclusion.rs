@@ -104,13 +104,15 @@ fn predict_congestion(
     best_model: &str,
     traffic_data: &[TrafficData],
     feature_names: &[String],
-) -> Result<Vec<CongestionPrediction>, Box<dyn Error>> {
+) -> Result<(Vec<CongestionPrediction>, kolibrie::execute_ml::MLPredictTiming), Box<dyn Error>> {
+    println!("\n[Rust] Building feature vectors...");
+    let feature_build_start = std::time::Instant::now();
+    
     // Build feature vectors based on selected variables
     let features: Vec<Vec<f64>> = traffic_data
         .iter()
         .map(|data| {
             let mut feature_vector = Vec::new();
-
             for feature_name in feature_names {
                 match feature_name.as_str() {
                     "avgSpeed" => feature_vector.push(data.avg_speed),
@@ -118,7 +120,6 @@ fn predict_congestion(
                     _ => {}
                 }
             }
-
             feature_vector
         })
         .collect();
@@ -127,23 +128,30 @@ fn predict_congestion(
         return Err("No valid features found for prediction".into());
     }
 
+    let feature_build_time = feature_build_start.elapsed().as_secs_f64();
+    println!("[Rust] Feature vector building: {:.6} seconds", feature_build_time);
     println!("Using features for congestion prediction: {:?}", features);
 
+    // Call ML prediction (this now includes detailed timing)
     let prediction_results = ml_handler.predict(best_model, features)?;
 
+    // Extract timing information from the ML prediction result
+    let timing = kolibrie::execute_ml::MLPredictTiming {
+        total_time: 0.0, // Will be updated by execute_ml_prediction_from_clause
+        rust_to_python_time: 0.0, // Will be updated by execute_ml_prediction_from_clause
+        python_preprocessing_time: prediction_results.timing.preprocessing_time,
+        actual_prediction_time: prediction_results.timing.actual_prediction_time,
+        python_postprocessing_time: prediction_results.timing.postprocessing_time,
+        python_to_rust_time: 0.0, // Will be updated by execute_ml_prediction_from_clause
+    };
+
     println!("\nML Model Performance:");
-    println!(
-        "  Prediction Time: {:.4} seconds",
-        prediction_results.performance_metrics.prediction_time
-    );
-    println!(
-        "  Memory Usage: {:.2} MB",
-        prediction_results.performance_metrics.memory_usage_mb
-    );
-    println!(
-        "  CPU Usage: {:.2}%",
-        prediction_results.performance_metrics.cpu_usage_percent
-    );
+    println!("  Prediction Time: {:.4} seconds", 
+        prediction_results.performance_metrics.prediction_time);
+    println!("  Memory Usage: {:.2} MB", 
+        prediction_results.performance_metrics.memory_usage_mb);
+    println!("  CPU Usage: {:.2}%", 
+        prediction_results.performance_metrics.cpu_usage_percent);
 
     // Create congestion predictions with severity levels
     let predictions: Vec<CongestionPrediction> = traffic_data
@@ -175,7 +183,7 @@ fn predict_congestion(
         })
         .collect();
 
-    Ok(predictions)
+    Ok((predictions, timing))
 }
 
 // Struct to manage dynamic rule configurations
@@ -206,15 +214,12 @@ impl DynamicRuleManager {
         println!("\nUpdating rule: {}", rule_name);
         println!("Rule definition:\n{}", rule_definition);
 
-        // Store the rule
         self.current_rules
             .insert(rule_name.to_string(), rule_definition.to_string());
 
-        // Check if this is an ML rule
         let is_ml_rule = rule_definition.contains("ML.PREDICT");
 
         if is_ml_rule {
-            // Handle ML rules differently - don't use the standard rule processing
             if let Ok((_rest, (parsed_rule, _))) = parse_standalone_rule(rule_definition) {
                 println!("Processing ML rule...");
 
@@ -226,7 +231,8 @@ impl DynamicRuleManager {
                         extract_traffic_data_from_database,
                         predict_congestion,
                     ) {
-                        Ok(predictions) => {
+                        Ok((predictions, timing)) => {
+                            timing.print_breakdown();
                             println!("ML Predictions completed:");
                             let mut ml_facts = Vec::new();
 
@@ -239,10 +245,7 @@ impl DynamicRuleManager {
                                     prediction.confidence
                                 );
 
-                                // Add predictions to database
                                 self.add_prediction_to_database(&prediction);
-
-                                // Create proper ML-enhanced triples
                                 self.create_ml_enhanced_triples(
                                     &mut ml_facts,
                                     &prediction,
@@ -264,7 +267,7 @@ impl DynamicRuleManager {
                 }
             }
         } else {
-            // Handle non-ML rules with standard processing
+            // Non-ML rule processing remains unchanged
             match process_rule_definition(rule_definition, &mut self.database) {
                 Ok((rule, inferred_facts)) => {
                     println!("Rule '{}' processed successfully.", rule_name);
@@ -282,7 +285,6 @@ impl DynamicRuleManager {
 
                     if inferred_facts.is_empty() {
                         println!("     NO FACTS INFERRED - Applying manual workaround...");
-
                         match rule_name {
                             "emergency_priority" => {
                                 self.manually_apply_emergency_priority_rule();

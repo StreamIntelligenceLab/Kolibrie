@@ -8,15 +8,19 @@
  * you can obtain one at https://mozilla.org/MPL/2.0/.
  */
 
+mod storage_trait;
+mod storage_manager;
 pub mod cuda;
-pub mod custom_error;
+pub mod error_handler;
 pub mod execute_ml;
 pub mod execute_query;
-pub mod lsm_tree;
+pub mod disk_storage;
 pub mod parser;
 pub mod query_builder;
-mod rsp;
+pub mod rsp_engine;
 pub mod sliding_window;
 pub mod sparql_database;
 pub mod utils;
-pub mod volcano_optimizer;
+pub mod streamertail_optimizer;
+pub mod rsp;
+pub mod query_engine;

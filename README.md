@@ -68,7 +68,7 @@ use kolibrie::SparqlDatabase;
 
 ### Docker Installation
 
-**Kolibrie** provides Docker support with multiple configurations for different use cases. The Docker setup automatically handles all dependencies including Rust, CUDA (for GPU builds), and Python ML frameworks.
+**Kolibrie** provides Docker support with multiple configurations optimized for different use cases. The Docker setup automatically handles all dependencies including Rust, CUDA (for GPU builds), and Python ML frameworks which are fully integrated into Kolibrie.
 
 #### Prerequisites
 
@@ -76,21 +76,116 @@ use kolibrie::SparqlDatabase;
 - [Docker Compose](https://docs.docker.com/compose/install/) installed
 - For GPU support: [NVIDIA Docker runtime](https://github.com/NVIDIA/nvidia-docker) installed
 
-#### Quick Start
+#### Quick Start with Docker Compose
 
-1. **CPU-only build** (recommended for most users):
+Kolibrie offers three deployment profiles:
+
+**1. CPU Build (Default - Recommended for Most Users)**
+
+Runs with web UI on port 8080:
 ```bash
+docker compose up --build
+# or explicitly:
 docker compose --profile cpu up --build
 ```
 
-2. **GPU-enabled build** (requires NVIDIA GPU and nvidia-docker):
+Access the web UI at `http://localhost:8080`
+
+**2. GPU Build (Requires NVIDIA GPU)**
+
+GPU-accelerated build with CUDA support:
 ```bash
 docker compose --profile gpu up --build
 ```
 
-3. **Development build** (auto-detects GPU availability):
+Access the web UI at `http://localhost:8080`
+
+**3. Development Build**
+
+Interactive shell for development (auto-detects GPU):
 ```bash
 docker compose --profile dev up --build
+```
+
+This drops you into a bash shell with full access to Kolibrie tools.
+
+#### Running Without Docker Compose
+
+If you prefer using Docker directly:
+
+**CPU Build with Web UI:**
+
+Build:
+```bash
+docker build \
+  --build-arg GPU_VENDOR=none \
+  --build-arg ENABLE_WEB_UI=true \
+  -t kolibrie:cpu \
+  .
+```
+
+Run:
+```bash
+docker run -d \
+  --name kolibrie \
+  -p 8080:8080 \
+  -v $(pwd)/data:/app/data \
+  -v $(pwd)/models:/app/ml/examples/models \
+  kolibrie:cpu
+```
+
+**GPU Build with Web UI:**
+
+Build:
+```bash
+docker build \
+  --build-arg GPU_VENDOR=nvidia \
+  --build-arg CUDA_VERSION=11.8 \
+  --build-arg BASE_IMAGE=nvidia/cuda:11.8-devel-ubuntu22.04 \
+  --build-arg ENABLE_WEB_UI=true \
+  -t kolibrie:gpu \
+  .
+```
+
+Run:
+```bash
+docker run -d \
+  --name kolibrie-gpu \
+  --gpus all \
+  -p 8080:8080 \
+  -v $(pwd)/data:/app/data \
+  -v $(pwd)/models:/app/ml/examples/models \
+  kolibrie:gpu
+```
+
+**Development Build (Shell Access):**
+
+Build:
+```bash
+docker build \
+  --build-arg GPU_VENDOR=none \
+  --build-arg ENABLE_WEB_UI=false \
+  -t kolibrie:dev \
+  .
+```
+
+Run:
+```bash
+docker run -it \
+  --name kolibrie-dev \
+  -v $(pwd):/app \
+  kolibrie:dev \
+  bash
+```
+
+For GPU-enabled development shell:
+```bash
+docker run -it \
+  --name kolibrie-gpu-dev \
+  --gpus all \
+  -v $(pwd):/app \
+  kolibrie:gpu \
+  bash
 ```
 
 ## Usage
@@ -580,12 +675,12 @@ pub struct SparqlDatabase {
 - **rule_map**: Maps rule names to their definitions.
 - **cached_stats**: Cached database statistics for query optimization.
 
-### `VolcanoOptimizer` Struct
+### `Streamertail` Struct
 
-The `VolcanoOptimizer` implements a cost-based query optimizer based on the Volcano model.  It transforms logical query plans into efficient physical plans by evaluating different physical operators and selecting the one with the lowest estimated cost.
+The `Streamertail` implements a cost-based query optimizer based on the Volcano model.  It transforms logical query plans into efficient physical plans by evaluating different physical operators and selecting the one with the lowest estimated cost.
 
 ```rust
-pub struct VolcanoOptimizer<'a> {
+pub struct Streamertail<'a> {
     pub stats: Arc<DatabaseStats>,
     pub memo: HashMap<String, (PhysicalOperator, f64)>,
     pub selected_variables: Vec<String>,
@@ -773,14 +868,14 @@ if let Some((s, p, o)) = db. decode_triple(&triple) {
 }
 ```
 
-### `VolcanoOptimizer` Methods
+### `Streamertail` Methods
 
 #### `new(database: &SparqlDatabase) -> Self`
 
-Creates a new instance of the `VolcanoOptimizer` with statistical data gathered from the provided database.
+Creates a new instance of the `Streamertail` with statistical data gathered from the provided database.
 
 ```rust
-let optimizer = VolcanoOptimizer::new(&db);
+let optimizer = Streamertail::new(&db);
 ```
 
 #### `with_cached_stats(stats: Arc<DatabaseStats>) -> Self`
@@ -789,7 +884,7 @@ Creates a new optimizer with pre-computed statistics for better performance.
 
 ```rust
 let stats = db.get_or_build_stats();
-let optimizer = VolcanoOptimizer::with_cached_stats(stats);
+let optimizer = Streamertail::with_cached_stats(stats);
 ```
 
 #### `find_best_plan(&mut self, logical_plan: &LogicalOperator) -> PhysicalOperator`

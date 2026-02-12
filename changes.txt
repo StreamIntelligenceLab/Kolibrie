@@ -109,12 +109,33 @@
 108. Major update of Volcano Optimizer: correctly execute all query patterns in optimizer
 109. Store into cache database stats
 110. Properly estimate operators
-112. Repalce BTreeMap with HashMap
-113. Improve join algorithms
-114. Add ability to recognize different shapes of query such as snowflake, line, star
-115. Rename knowledge_graph.rs to reasoning.rs and rename class KnowledgeGraph to Reasoner & remove unused class
-116. Improve Volcano Optimizer by including filtering
-117. Improve Volcano Optimizer by adding nested query support
+111. Repalce BTreeMap with HashMap
+112. Improve join algorithms
+113. Add ability to recognize different shapes of query such as snowflake, line, star
+114. Rename knowledge_graph.rs to reasoning.rs and rename class KnowledgeGraph to Reasoner & remove unused class
+115. Improve Volcano Optimizer by including filtering
+116. Improve Volcano Optimizer by adding nested query support
+117. Improve Volcano Optimizer by adding BIND, UDF, INSERT, VALUES support
+118. Modified RSP engine
+119. Improve windowing of RSP engine
+120. Add slicing for BIND instead of Vec
+121. Adding support multi-window for SingleThread
+122. Rename Volcano Optimizer to Streamertail
+123. Improve error handler
+124. Add StorageManager and trait for coordinating between static and streaming data
+125. Add join operation for RSP engine
+126. Modify RSP engine by using crossbeam instead of mpsc
+127. Full rename of volcano optimizer into streamertail optimizer
+128. Modify LSM-Tree by supporting disk storage layer
+129. Fix problem with ML execution
+130. Add full combination example (RSP + Reasoning + ML)
+131. Split LSM-Tree
+132. MLPredict operator for Streamertail optimizer
+133. Improve docker, webui and add support of n-triples
+134. Fix a bug with reasoning n-triples
+135. Fix a bug with a select all query
+136. Add syntatix sugar 'a' for rdf:type
+137. Modify test for parser
 
 0.1.0
 1. Parsing RDF/XML

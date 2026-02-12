@@ -9,23 +9,15 @@
 
 use kolibrie::parser::*;
 use kolibrie::sparql_database::SparqlDatabase;
-use kolibrie::execute_ml::execute_ml_prediction_from_clause;
-use kolibrie::execute_query::execute_query;
-use ml::MLHandler;
+use kolibrie::execute_query::execute_query_rayon_parallel2_volcano;
+use kolibrie::streamertail_optimizer::operators::LogicalOperator;
+use kolibrie::streamertail_optimizer::optimizer::Streamertail;
 use pyo3::prepare_freethreaded_python;
 use serde::{Deserialize, Serialize};
 use shared::triple::Triple;
 use std::error::Error;
 use std::time::SystemTime;
-
-#[derive(Debug, Serialize, Deserialize, Clone)]
-struct RoomData {
-    room_id: String,
-    temperature: f64,
-    humidity: f64,
-    occupancy: i32,
-    timestamp: SystemTime,
-}
+use std::collections::HashMap;
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 struct Prediction {
@@ -35,180 +27,43 @@ struct Prediction {
     timestamp: SystemTime,
 }
 
-// Function to extract room data from the database
-fn extract_room_data_from_database(
-    database: &SparqlDatabase,
-) -> Result<Vec<RoomData>, Box<dyn Error>> {
-    // Extract data from database
-    let room_data: Vec<RoomData> = database
-        .triples
-        .iter()
-        .filter(|triple| {
-            database
-                .dictionary
-                .decode(triple.predicate)
-                .map_or(false, |pred| pred.ends_with("temperature"))
-        })
-        .map(|triple| {
-            let room_id = database
-                .dictionary
-                .decode(triple.subject)
-                .unwrap_or_default()
-                .split('#')
-                .last()
-                .unwrap_or_default()
-                .to_string();
-
-            let temperature = database
-                .dictionary
-                .decode(triple.object)
-                .unwrap_or_default()
-                .parse()
-                .unwrap_or(0.0);
-
-            // Find humidity and occupancy
-            let humidity = database
-                .triples
-                .iter()
-                .find(|t| {
-                    t.subject == triple.subject
-                        && database
-                            .dictionary
-                            .decode(t.predicate)
-                            .map_or(false, |p| p.ends_with("humidity"))
-                })
-                .and_then(|t| database.dictionary.decode(t.object))
-                .and_then(|v| v.parse().ok())
-                .unwrap_or(0.0);
-
-            let occupancy = database
-                .triples
-                .iter()
-                .find(|t| {
-                    t.subject == triple.subject
-                        && database
-                            .dictionary
-                            .decode(t.predicate)
-                            .map_or(false, |p| p.ends_with("occupancy"))
-                })
-                .and_then(|t| database.dictionary.decode(t.object))
-                .and_then(|v| v.parse().ok())
-                .unwrap_or(0);
-
-            RoomData {
-                room_id,
-                temperature,
-                humidity,
-                occupancy,
-                timestamp: SystemTime::now(),
-            }
-        })
-        .collect();
-
-    println!("Found {} room data entries", room_data.len());
-    for room in &room_data {
-        println!(
-            "Room: {}, Temp: {}, Humidity: {}, Occupancy: {}",
-            room.room_id, room.temperature, room.humidity, room.occupancy
-        );
-    }
-    
-    // Ensure we have data before proceeding
-    if room_data.is_empty() {
-        return Err("No input data found for ML prediction".into());
-    }
-    
-    Ok(room_data)
-}
-
-// Function that handles temperature prediction logic
-fn predict_temperatures(
-    ml_handler: &MLHandler,
-    best_model: &str,
-    room_data: &[RoomData],
-    feature_names: &[String],
-) -> Result<Vec<Prediction>, Box<dyn Error>> {
-    // Dynamically build feature vectors based on selected variables
-    let features: Vec<Vec<f64>> = room_data
-        .iter()
-        .map(|data| {
-            let mut feature_vector = Vec::new();
-            
-            // Only include features that were specified in the SELECT clause
-            for feature_name in feature_names {
-                match feature_name.as_str() {
-                    "temp" => feature_vector.push(data.temperature),
-                    "humidity" => feature_vector.push(data.humidity),
-                    "occupancy" => feature_vector.push(data.occupancy as f64),
-                    // Add other features as needed
-                    _ => {} // Skip unknown features
-                }
-            }
-            
-            feature_vector
-        })
-        .collect();
-    
-    // Only proceed if we have features to process
-    if features.is_empty() || features[0].is_empty() {
-        return Err("No valid features found for prediction based on SELECT variables".into());
-    }
-    
-    println!("Using features for prediction: {:?}", features);
-    
-    // Use the selected model
-    let prediction_results = ml_handler.predict(best_model, features)?;
-    
-    // Print performance of the selected model during this prediction
-    println!("\nPerformance during prediction:");
-    println!("  Prediction Time: {:.4} seconds", prediction_results.performance_metrics.prediction_time);
-    println!("  Memory Usage: {:.2} MB", prediction_results.performance_metrics.memory_usage_mb);
-    println!("  CPU Usage: {:.2}%", prediction_results.performance_metrics.cpu_usage_percent);
-    
-    // Create prediction objects
-    let predictions: Vec<Prediction> = room_data
-        .iter()
-        .zip(prediction_results.predictions.iter())
-        .zip(prediction_results.probabilities.unwrap_or_default().iter().chain(std::iter::repeat(&0.95)))
-        .map(|((data, &pred), &conf)| Prediction {
-            room_id: data.room_id.clone(),
-            predicted_temperature: pred,
-            confidence: conf,
-            timestamp: SystemTime::now(),
-        })
-        .collect();
-
-    Ok(predictions)
-}
-
 fn main() -> Result<(), Box<dyn Error>> {
     prepare_freethreaded_python();
 
-    let rdf_xml_data = r#"
-        <?xml version="1.0"?>
-        <rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#"
-                 xmlns:ex="http://example.org#"
-                 xmlns:sensor="http://example.org/sensor#">
-          <rdf:Description rdf:about="http://example.org#Room101">
-            <sensor:temperature>22.5</sensor:temperature>
-            <sensor:humidity>45.0</sensor:humidity>
-            <sensor:occupancy>5</sensor:occupancy>
-          </rdf:Description>
-          <rdf:Description rdf:about="http://example.org#Room102">
-            <sensor:temperature>23.8</sensor:temperature>
-            <sensor:humidity>52.0</sensor:humidity>
-            <sensor:occupancy>8</sensor:occupancy>
-          </rdf:Description>
-          <rdf:Description rdf:about="http://example.org#Room103">
-            <sensor:temperature>27.2</sensor:temperature>
-            <sensor:humidity>48.0</sensor:humidity>
-            <sensor:occupancy>3</sensor:occupancy>
-          </rdf:Description>
-        </rdf:RDF>
+    let rdf_xml_data = r#"<?xml version="1.0" encoding="UTF-8"?>
+<rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#"
+         xmlns:ex="http://example.org#"
+         xmlns:sensor="http://example.org/sensor#">
+
+    <!-- Room 101 -->
+    <rdf:Description rdf:about="http://example.org#room101">
+        <rdf:type rdf:resource="http://example.org#Room"/>
+        <sensor:temperature>22.5</sensor:temperature>
+        <sensor:humidity>45.0</sensor:humidity>
+        <sensor:occupancy>5</sensor:occupancy>
+    </rdf:Description>
+
+    <!-- Room 102 -->
+    <rdf:Description rdf:about="http://example.org#room102">
+        <rdf:type rdf:resource="http://example.org#Room"/>
+        <sensor:temperature>23.8</sensor:temperature>
+        <sensor:humidity>52.0</sensor:humidity>
+        <sensor:occupancy>8</sensor:occupancy>
+    </rdf:Description>
+
+    <!-- Room 103 -->
+    <rdf:Description rdf:about="http://example.org#room103">
+        <rdf:type rdf:resource="http://example.org#Room"/>
+        <sensor:temperature>27.2</sensor:temperature>
+        <sensor:humidity>48.0</sensor:humidity>
+        <sensor:occupancy>3</sensor:occupancy>
+    </rdf:Description>
+</rdf:RDF>
     "#;
 
     let mut database = SparqlDatabase::new();
     database.parse_rdf(rdf_xml_data);
+    database.get_or_build_stats();
     println!("Database RDF triples loaded.");
 
     // Define the rule separately with CONSTRUCT and WHERE clauses
@@ -254,93 +109,35 @@ RULE :TemperatureAlert(?room) :-
             // Parse the rule to get ML.PREDICT clause
             if let Ok((_rest, (parsed_rule, _))) = parse_standalone_rule(rule_definition) {
                 if let Some(ml_predict) = &parsed_rule.ml_predict {
-                    println!("Using enhanced ML.PREDICT execution with model comparison...");
-                    match execute_ml_prediction_from_clause(
-                        ml_predict, 
-                        &database, 
-                        "predictor.py", 
-                        extract_room_data_from_database,
-                        predict_temperatures
-                    ) {
-                        Ok(predictions) => {
-                            println!("\nML Predictions:");
-                            for prediction in predictions {
-                                println!(
-                                    "Room: {}, Predicted Temperature: {:.1}°C, Confidence: {:.2}",
-                                    prediction.room_id, prediction.predicted_temperature, prediction.confidence
-                                );
+                    println!("Using optimizer-based ML.PREDICT execution...");
+                    
+                    // Build logical plan for ML.PREDICT
+                    let logical_plan = build_ml_predict_logical_plan(ml_predict, &mut database)?;
+                    
+                    // Create optimizer and optimize the plan
+                    let mut optimizer = Streamertail::new(&database);
+                    let physical_plan = optimizer.find_best_plan(&logical_plan);
+                    
+                    println!("Physical plan optimized.");
+                    
+                    // Execute the physical plan through the optimizer
+                    let ml_results = optimizer.execute_plan(&physical_plan, &mut database);
+                    
+                    // Process results and create predictions
+                    let predictions = process_ml_results(ml_results);
+                    
+                    println!("\nML Predictions:");
+                    for prediction in &predictions {
+                        println!(
+                            "Room: {}, Predicted Temperature: {:.1}°C, Confidence: {:.2}",
+                            prediction.room_id, prediction.predicted_temperature, prediction.confidence
+                        );
 
-                                // Add predictions to database
-                                let subject = format!("http://example.org#{}", prediction.room_id);
-                                let predicate = "http://example.org/sensor#predictedTemperature";
-                                let subject_id = database.dictionary.encode(&subject);
-                                let predicate_id = database.dictionary.encode(predicate);
-                                let object_id = database
-                                    .dictionary
-                                    .encode(&prediction.predicted_temperature.to_string());
-                                database.triples.insert(Triple {
-                                    subject: subject_id,
-                                    predicate: predicate_id,
-                                    object: object_id,
-                                });
-                                
-                                // Also add confidence score to the database
-                                let confidence_predicate = "http://example.org/sensor#predictionConfidence";
-                                let confidence_predicate_id = database.dictionary.encode(confidence_predicate);
-                                let confidence_object_id = database
-                                    .dictionary
-                                    .encode(&prediction.confidence.to_string());
-                                database.triples.insert(Triple {
-                                    subject: subject_id,
-                                    predicate: confidence_predicate_id,
-                                    object: confidence_object_id,
-                                });
-                                
-                                // Add timestamp to the database
-                                let timestamp_predicate = "http://example.org/sensor#predictionTimestamp";
-                                let timestamp_str = format!("{}", 
-                                    chrono::DateTime::<chrono::Utc>::from(prediction.timestamp)
-                                        .format("%Y-%m-%d %H:%M:%S"));
-                                let timestamp_predicate_id = database.dictionary.encode(timestamp_predicate);
-                                let timestamp_object_id = database
-                                    .dictionary
-                                    .encode(&timestamp_str);
-                                database.triples.insert(Triple {
-                                    subject: subject_id,
-                                    predicate: timestamp_predicate_id,
-                                    object: timestamp_object_id,
-                                });
-                            }
-                            
-                            // Add execution metadata with current timestamp
-                            let metadata_subject = "http://example.org#predictionExecution";
-                            let timestamp_predicate = "http://example.org/metadata#executionTime";
-                            let timestamp_value = "2025-05-30 14:58:22"; // Current UTC time
-                            
-                            let metadata_subject_id = database.dictionary.encode(metadata_subject);
-                            let timestamp_predicate_id = database.dictionary.encode(timestamp_predicate);
-                            let timestamp_value_id = database.dictionary.encode(timestamp_value);
-                            
-                            database.triples.insert(Triple {
-                                subject: metadata_subject_id,
-                                predicate: timestamp_predicate_id,
-                                object: timestamp_value_id,
-                            });
-                            
-                            // Add user login metadata
-                            let user_predicate = "http://example.org/metadata#executedBy";
-                            let user_value = "ladroid";
-                            
-                            let user_predicate_id = database.dictionary.encode(user_predicate);
-                            let user_value_id = database.dictionary.encode(user_value);
-                            
-                            database.triples.insert(Triple {
-                                subject: metadata_subject_id,
-                                predicate: user_predicate_id,
-                                object: user_value_id,
-                            });
-                        }
-                        Err(e) => eprintln!("Error making ML predictions with dynamic execution: {}", e),
+                        // Add predictions to database
+                        add_prediction_to_database(&prediction, &mut database);
+
+                        database.build_all_indexes();
+                        database.get_or_build_stats();
                     }
                 }
             }
@@ -361,7 +158,7 @@ WHERE {
 }"#;
 
     // Execute a query to get results
-    let query_results = execute_query(select_query, &mut database);
+    let query_results = execute_query_rayon_parallel2_volcano(select_query, &mut database);
     println!("Final query results (rooms with temperature alerts): {:?}", query_results);
     
     // Execute a query to show predictions for comparison
@@ -372,7 +169,7 @@ WHERE {
           sensor:predictionConfidence ?confidence
 }"#;
     
-    let predictions_results = execute_query(predictions_query, &mut database);
+    let predictions_results = execute_query_rayon_parallel2_volcano(predictions_query, &mut database);
     println!("ML Predictions in database: {:?}", predictions_results);
     
     // Execute a query to show all room data for comparison
@@ -384,8 +181,153 @@ WHERE {
           sensor:occupancy ?occupancy
 }"#;
     
-    let all_rooms_results = execute_query(all_rooms_query, &mut database);
+    let all_rooms_results = execute_query_rayon_parallel2_volcano(all_rooms_query, &mut database);
     println!("All room data: {:?}", all_rooms_results);
 
     Ok(())
+}
+
+/// Builds a logical plan for ML.PREDICT from the ML.PREDICT clause
+fn build_ml_predict_logical_plan(
+    ml_predict: &shared::query::MLPredictClause,
+    database: &mut SparqlDatabase,
+) -> Result<LogicalOperator, Box<dyn Error>> {
+    // Extract data directly from the database (similar to the working code)
+    let room_data = extract_data_for_ml(database)?;
+    
+    // Filter to get only NUMERIC features
+    let input_variables: Vec<String> = ml_predict.input_select
+        .iter()
+        .filter(|(var, _, _)| {
+            let stripped = var.strip_prefix('?').unwrap_or(var);
+            stripped != "room" && stripped != "road" && stripped != "id" && stripped != "entity"
+        })
+        .map(|(var, _, _)| var.to_string())
+        .collect();
+    
+    // Create a buffer with the data
+    let buffer_plan = LogicalOperator::buffer(room_data, "ML_INPUT".to_string());
+    
+    // Wrap in ML.PREDICT
+    Ok(LogicalOperator::ml_predict(
+        buffer_plan,
+        ml_predict.model.to_string(),
+        input_variables,
+        ml_predict.output.to_string(),
+    ))
+}
+
+/// Extract room data directly from database for ML prediction
+fn extract_data_for_ml(database: &mut SparqlDatabase) -> Result<Vec<HashMap<String, u32>>, Box<dyn Error>> {
+    let mut results = Vec::new();
+    
+    // Find all subjects that have temperature, humidity, and occupancy
+    let temp_pred = database.dictionary.encode("http://example.org/sensor#temperature");
+    let humidity_pred = database.dictionary.encode("http://example.org/sensor#humidity");
+    let occupancy_pred = database.dictionary.encode("http://example.org/sensor#occupancy");
+    
+    // Get all unique subjects that have temperature
+    let subjects: std::collections::HashSet<u32> = database.triples
+        .iter()
+        .filter(|t| t.predicate == temp_pred)
+        .map(|t| t.subject)
+        .collect();
+    
+    for &subject in &subjects {
+        let mut row = HashMap::new();
+        row.insert("room".to_string(), subject);
+        
+        // Get temperature
+        if let Some(triple) = database.triples.iter().find(|t| t.subject == subject && t.predicate == temp_pred) {
+            row.insert("temp".to_string(), triple.object);
+        }
+        
+        // Get humidity
+        if let Some(triple) = database.triples.iter().find(|t| t.subject == subject && t.predicate == humidity_pred) {
+            row.insert("humidity".to_string(), triple.object);
+        }
+        
+        // Get occupancy
+        if let Some(triple) = database.triples.iter().find(|t| t.subject == subject && t.predicate == occupancy_pred) {
+            row.insert("occupancy".to_string(), triple.object);
+        }
+        
+        if row.len() == 4 { // Has all required fields
+            results.push(row);
+        }
+    }
+    
+    Ok(results)
+}
+
+/// Process ML results and create predictions
+fn process_ml_results(ml_results: Vec<HashMap<String, String>>) -> Vec<Prediction> {
+    ml_results
+        .iter()
+        .map(|row| {
+            // Extract room ID from the result
+            let room_id = row.get("room")
+                .and_then(|s| s.split('#').last())
+                .unwrap_or("unknown")
+                .to_string();
+            
+            // Extract predicted temperature (the ML.PREDICT output variable)
+            let predicted_temperature = row.get("predicted_temp")
+                .and_then(|s| s.parse::<f64>().ok())
+                .unwrap_or(0.0);
+            
+            // Default confidence - in a real implementation, this would come from the model
+            let confidence = 0.95;
+            
+            Prediction {
+                room_id,
+                predicted_temperature,
+                confidence,
+                timestamp: SystemTime::now(),
+            }
+        })
+        .collect()
+}
+
+/// Add a prediction to the database
+fn add_prediction_to_database(prediction: &Prediction, database: &mut SparqlDatabase) {
+    let subject = format!("http://example.org#{}", prediction.room_id);
+    let predicate = "http://example.org/sensor#predictedTemperature";
+    let subject_id = database.dictionary.encode(&subject);
+    let predicate_id = database.dictionary.encode(predicate);
+    let object_id = database
+        .dictionary
+        .encode(&prediction.predicted_temperature.to_string());
+    database.triples.insert(Triple {
+        subject: subject_id,
+        predicate: predicate_id,
+        object: object_id,
+    });
+    
+    // Also add confidence score to the database
+    let confidence_predicate = "http://example.org/sensor#predictionConfidence";
+    let confidence_predicate_id = database.dictionary.encode(confidence_predicate);
+    let confidence_object_id = database
+        .dictionary
+        .encode(&prediction.confidence.to_string());
+    database.triples.insert(Triple {
+        subject: subject_id,
+        predicate: confidence_predicate_id,
+        object: confidence_object_id,
+    });
+    
+    // Add timestamp to the database
+    let timestamp_predicate = "http://example.org/sensor#predictionTimestamp";
+    let timestamp_str = format!("{}", 
+        chrono::DateTime::<chrono::Utc>::from(prediction.timestamp)
+            .format("%Y-%m-%d %H:%M:%S"));
+    let timestamp_predicate_id = database.dictionary.encode(timestamp_predicate);
+    let timestamp_object_id = database
+        .dictionary
+        .encode(&timestamp_str);
+    database.triples.insert(Triple {
+        subject: subject_id,
+        predicate: timestamp_predicate_id,
+        object: timestamp_object_id,
+    });
 }

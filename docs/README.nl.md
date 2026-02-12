@@ -570,10 +570,10 @@ pub struct SparqlDatabase {
 * **rule_map**: Mapping van regelnamen naar definities.
 * **cached_stats**: Gecachte database-statistieken voor kostenraming.
 
-### `VolcanoOptimizer` Struct
+### `Streamertail` Struct
 
 ```rust
-pub struct VolcanoOptimizer<'a> {
+pub struct Streamertail<'a> {
     pub stats: Arc<DatabaseStats>,
     pub memo: HashMap<String, (PhysicalOperator, f64)>,
     pub selected_variables: Vec<String>,
@@ -704,19 +704,19 @@ if let Some((s, p, o)) = db.decode_triple(&triple) {
 }
 ```
 
-### `VolcanoOptimizer` Methoden
+### `Streamertail` Methoden
 
 #### `new(database: &SparqlDatabase) -> Self`
 
 ```rust
-let optimizer = VolcanoOptimizer::new(&db);
+let optimizer = Streamertail::new(&db);
 ```
 
 #### `with_cached_stats(stats: Arc<DatabaseStats>) -> Self`
 
 ```rust
 let stats = db.get_or_build_stats();
-let optimizer = VolcanoOptimizer::with_cached_stats(stats);
+let optimizer = Streamertail::with_cached_stats(stats);
 ```
 
 #### `find_best_plan(&mut self, logical_plan: &LogicalOperator) -> PhysicalOperator`
