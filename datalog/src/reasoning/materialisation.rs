@@ -26,7 +26,6 @@ fn get_id_from_term(term: &Term, vars: &HashMap<String, u32>) -> u32 {
 }
 
 /// Construct a new Triple from a conclusion pattern and bound variables
-// TODO do not take dicitionary as mutability for clearer separation of concerns
 pub fn replace_variables_with_bound_values(
     conclusion: &TriplePattern,
     vars: &HashMap<String, u32>,
@@ -42,7 +41,7 @@ pub fn replace_variables_with_bound_values(
             if let Some(&bound_value) = vars.get(v) {
                 bound_value
             } else {
-                // TODO do not take dicitionary as mutability for clearer separation of concerns
+                
                 // If not bound, create a new placeholder in the dictionary
                 dict.encode(&format!("ml_output_placeholder_{}", v))
             }
