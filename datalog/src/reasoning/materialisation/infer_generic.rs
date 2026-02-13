@@ -78,13 +78,6 @@ impl Reasoner {
             }
         }
 
-        let idx_after_inference = all_facts.len();
-
-        let inferred_facts: Vec<Triple> = all_facts[idx_before_inference..idx_after_inference]
-            .iter()
-            .cloned()
-            .collect();
-
-        inferred_facts
+        all_facts.split_off(idx_before_inference)
     }
 }
