@@ -17,7 +17,6 @@ pub struct Triple {
     pub object: u32,
 }
 
-#[derive(PartialEq, Debug, Clone, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 impl Triple {
 
     /// Converts a triple (subject, predicate, object) (all u32 values) into a TriplePattern
