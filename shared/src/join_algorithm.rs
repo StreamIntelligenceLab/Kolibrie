@@ -9,12 +9,12 @@
  */
 
 use crate::dictionary::Dictionary;
-use crate::triple::Triple;
 use crate::index_manager::UnifiedIndex;
+use crate::terms::{Term, TriplePattern};
+use crate::triple::Triple;
+use rayon::prelude::*;
 use std::collections::{BTreeMap, HashMap};
 use std::sync::Arc;
-use rayon::prelude::*;
-use crate::terms::{Term, TriplePattern, TriplePatternStrings};
 
 pub fn perform_join_par_simd_with_strict_filter_4_redesigned_streaming(
     subject_var: String,

@@ -19,12 +19,6 @@ pub enum Term {
 pub type TriplePattern = (Term, Term, Term);
 pub type Bindings = Vec<HashMap<String, u32>>;
 
-pub struct TriplePatternStrings {
-    pub subject: String,
-    pub predicate: String,
-    pub object: String,
-}
-
 #[derive(Debug)]
 pub enum UnresolvedTerm {
     Var(String),
