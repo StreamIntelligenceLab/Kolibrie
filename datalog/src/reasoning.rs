@@ -12,7 +12,6 @@ pub mod to_dot;
 pub mod backward_chaining;
 pub mod rules;
 pub mod repairs;
-pub mod datalog_engine;
 pub mod helpers;
 
 use shared::dictionary::Dictionary;

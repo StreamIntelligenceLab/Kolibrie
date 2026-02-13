@@ -14,7 +14,7 @@ use crate::index_manager::UnifiedIndex;
 use std::collections::{BTreeMap, HashMap};
 use std::sync::Arc;
 use rayon::prelude::*;
-use crate::terms::TriplePatternStrings;
+use crate::terms::{Term, TriplePattern, TriplePatternStrings};
 
 pub fn perform_join_par_simd_with_strict_filter_4_redesigned_streaming(
     subject_var: String,
@@ -463,23 +463,55 @@ pub fn compact_results(results: Vec<BTreeMap<String, String>>) -> Vec<BTreeMap<S
     compacted
 }
 
+fn extract_join_parameters(premise: &TriplePattern, dict: &Dictionary) -> (String, String, String) {
+    let (subject_term, predicate_term, object_term) = premise;
+
+    let subject_var = match subject_term {
+        Term::Variable(v) => v.clone(),
+        Term::Constant(c) => {
+            // For constants, create a synthetic variable name
+            format!("__const_subj_{}", c)
+        }
+    };
+
+    let object_var = match object_term {
+        Term::Variable(v) => v.clone(),
+        Term::Constant(c) => {
+            // For constants, create a synthetic variable name
+            format!("__const_obj_{}", c)
+        }
+    };
+
+    let predicate_str = match predicate_term {
+        Term::Constant(c) => dict.decode(*c).unwrap_or("unknown").to_string(),
+        Term::Variable(v) => {
+            format!("__var_pred_{}", v)
+        }
+    };
+
+    (subject_var, predicate_str, object_var)
+}
+
 /// Ultra-fast hash join optimized for performance
 pub fn perform_hash_join_for_rules(
-    tp_as_strings: TriplePatternStrings,
+    premise: &TriplePattern,
     triples: &[Triple],
-    dictionary: &Dictionary,
+    dict: &Dictionary,
     final_results: Vec<BTreeMap<String, String>>,
     literal_filter: Option<String>,
 ) -> Vec<BTreeMap<String, String>> {
+
+    // Extract variable names and predicate from the premise
+    let (subject, predicate, object) = extract_join_parameters(premise, dict);
 
     if final_results.is_empty() {
         return Vec::new();
     }
 
     // Fast predicate filtering
-    let predicate_id = match dictionary
+    let predicate_id = match dict
         .string_to_id
-        .get(&tp_as_strings.predicate)
+        .get(&predicate)
     {
         Some(&id) => id,
         None => return Vec::new(),
@@ -487,7 +519,7 @@ pub fn perform_hash_join_for_rules(
 
     let literal_filter_id = literal_filter
         .as_ref()
-        .and_then(|s| dictionary.string_to_id.get(s).copied());
+        .and_then(|s| dict.string_to_id.get(s).copied());
 
     // Pre-filter triples (this is very fast)
     let filtered_triples: Vec<&Triple> = triples
@@ -505,9 +537,9 @@ pub fn perform_hash_join_for_rules(
     // Build simple hash table - this is the key optimization
     let hash_table = build_simple_hash_table(
         &final_results,
-        &tp_as_strings.subject,
-        &tp_as_strings.object,
-        dictionary,
+        &subject,
+        &object,
+        dict,
     );
 
     // Parallel processing with minimal overhead
@@ -521,10 +553,10 @@ pub fn perform_hash_join_for_rules(
             for triple in chunk {
                 process_triple_fast(
                     triple,
-                    &tp_as_strings.subject,
-                    &tp_as_strings.object,
+                    &subject,
+                    &object,
                     &hash_table,
-                    dictionary,
+                    dict,
                     &mut local_results,
                 );
             }

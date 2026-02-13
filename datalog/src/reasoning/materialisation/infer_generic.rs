@@ -43,7 +43,7 @@ impl Reasoner {
                         let inferred_fact =
                             replace_variables_with_bound_values(conclusion, binding_set, &mut self.dictionary);
 
-                        if (!known_facts.contains(&inferred_fact)) {
+                        if !known_facts.contains(&inferred_fact) {
                             inferred_facts_this_round.insert(inferred_fact);
                         }
                     }
@@ -64,13 +64,13 @@ impl Reasoner {
         loop {
             let mut inferred_facts_this_round = self.infer_round(&mut strat, &all_facts, &known_facts);
 
-            if (inferred_facts_this_round.is_empty()) {
+            if inferred_facts_this_round.is_empty() {
                 break;
             }
 
             for fact in inferred_facts_this_round.drain() {
                 // Insert into known_facts first; if it was not present, also store it.
-                if (!known_facts.contains(&fact)) {
+                if !known_facts.contains(&fact) {
                     known_facts.insert(fact.clone()); // Necessary clone apparently
                     self.index_manager.insert(&fact);
                     all_facts.push(fact);
@@ -84,8 +84,6 @@ impl Reasoner {
             .iter()
             .cloned()
             .collect();
-
-        println!("nr inferred facts: {}", inferred_facts.len());
 
         inferred_facts
     }

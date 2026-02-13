@@ -9,8 +9,10 @@ pub mod my_naive;
 pub mod semi_naive_parallel;
 pub mod semi_naive_with_repairs;
 
+///
 fn get_id_from_term(term: &Term, vars: &HashMap<String, u32>) -> u32 {
     match term {
+        // If term is a variable, then get the value bound to the variable
         Term::Variable(v) => vars.get(v).copied().unwrap_or_else(|| {
             eprintln!(
                 "Warning: Variable '{}' not found in bindings. Available variables: {:?}",

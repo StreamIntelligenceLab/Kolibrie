@@ -1,10 +1,10 @@
+use crate::reasoning::Reasoner;
 use shared::dictionary::Dictionary;
 use shared::join_algorithm::perform_hash_join_for_rules;
 use shared::rule::{FilterCondition, Rule};
-use shared::terms::{Term, TriplePattern, TriplePatternStrings};
+use shared::terms::{Term, TriplePattern};
 use shared::triple::Triple;
 use std::collections::{BTreeMap, HashMap, HashSet};
-use crate::reasoning::Reasoner;
 
 pub fn matches_rule_pattern(
     pattern: &TriplePattern,
@@ -160,48 +160,13 @@ pub fn join_premise_with_hash_join(
     current_bindings: Vec<BTreeMap<String, String>>,
     dict: &Dictionary
 ) -> Vec<BTreeMap<String, String>> {
-    // Extract variable names and predicate from the premise
-    let join_params = extract_join_parameters(premise, dict);
     perform_hash_join_for_rules(
-        join_params,
+        premise,
         all_facts,
         &dict,
         current_bindings,
         None,
     )
-}
-
-fn extract_join_parameters(premise: &TriplePattern, dict: &Dictionary) -> TriplePatternStrings {
-    let (subject_term, predicate_term, object_term) = premise;
-
-    let subject_var = match subject_term {
-        Term::Variable(v) => v.clone(),
-        Term::Constant(c) => {
-            // For constants, create a synthetic variable name
-            format!("__const_subj_{}", c)
-        }
-    };
-
-    let object_var = match object_term {
-        Term::Variable(v) => v.clone(),
-        Term::Constant(c) => {
-            // For constants, create a synthetic variable name
-            format!("__const_obj_{}", c)
-        }
-    };
-
-    let predicate_str = match predicate_term {
-        Term::Constant(c) => dict.decode(*c).unwrap_or("unknown").to_string(),
-        Term::Variable(v) => {
-            format!("__var_pred_{}", v)
-        }
-    };
-
-    TriplePatternStrings {
-        subject: subject_var,
-        predicate: predicate_str,
-        object: object_var,
-    }
 }
 
 impl Reasoner {
