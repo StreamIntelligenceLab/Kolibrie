@@ -103,6 +103,16 @@ impl Reasoner {
         all_facts: &Vec<Triple>,
         current_bindings: Vec<BTreeMap<String, String>>,
     ) -> Vec<BTreeMap<String, String>> {
+        // Check if predicate is a variable
+        if let Term::Variable(pred_var) = &premise.1 {
+            return self.join_with_predicate_variable(
+                premise,
+                all_facts,
+                current_bindings,
+                pred_var,
+            );
+        }
+        
         // Extract variable names and predicate from the premise
         let (subject_var, predicate_str, object_var) = self.extract_join_parameters(premise);
         
@@ -116,6 +126,143 @@ impl Reasoner {
             current_bindings,
             None,
         )
+    }
+
+    // Handle joins where predicate is a variable
+    fn join_with_predicate_variable(
+        &self,
+        premise: &TriplePattern,
+        all_facts: &Vec<Triple>,
+        current_bindings: Vec<BTreeMap<String, String>>,
+        pred_var: &str,
+    ) -> Vec<BTreeMap<String, String>> {
+        let mut results = Vec::new();
+        
+        let (subject_term, _, object_term) = premise;
+        
+        // For each binding
+        for binding in current_bindings {
+            // Check if predicate variable is already bound
+            if let Some(pred_value) = binding.get(pred_var) {
+                // Predicate is bound
+                let pred_id = self.dictionary.string_to_id.get(pred_value).copied();
+                
+                if let Some(pred_id) = pred_id {
+                    // Find matching triples
+                    for triple in all_facts {
+                        if triple.predicate == pred_id {
+                            // Match subject and object
+                            let mut new_binding = binding.clone();
+                            let mut matches = true;
+                            
+                            // Match subject
+                            match subject_term {
+                                Term::Variable(var) => {
+                                    let subj_str = self.dictionary.decode(triple.subject).unwrap().to_string();
+                                    if let Some(existing) = new_binding.get(var) {
+                                        if existing != &subj_str {
+                                            matches = false;
+                                        }
+                                    } else {
+                                        new_binding.insert(var.clone(), subj_str);
+                                    }
+                                }
+                                Term::Constant(c) => {
+                                    if triple.subject != *c {
+                                        matches = false;
+                                    }
+                                }
+                            }
+                            
+                            if !matches {
+                                continue;
+                            }
+                            
+                            // Match object
+                            match object_term {
+                                Term::Variable(var) => {
+                                    let obj_str = self.dictionary.decode(triple.object).unwrap().to_string();
+                                    if let Some(existing) = new_binding.get(var) {
+                                        if existing != &obj_str {
+                                            matches = false;
+                                        }
+                                    } else {
+                                        new_binding.insert(var.clone(), obj_str);
+                                    }
+                                }
+                                Term::Constant(c) => {
+                                    if triple.object != *c {
+                                        matches = false;
+                                    }
+                                }
+                            }
+                            
+                            if matches {
+                                results.push(new_binding);
+                            }
+                        }
+                    }
+                }
+            } else {
+                // Match all triples and bind predicate
+                for triple in all_facts {
+                    let mut new_binding = binding.clone();
+                    let mut matches = true;
+                    
+                    // Bind predicate
+                    let pred_str = self.dictionary.decode(triple.predicate).unwrap().to_string();
+                    new_binding.insert(pred_var.to_string(), pred_str);
+                    
+                    // Match subject
+                    match subject_term {
+                        Term::Variable(var) => {
+                            let subj_str = self.dictionary.decode(triple.subject).unwrap().to_string();
+                            if let Some(existing) = new_binding.get(var) {
+                                if existing != &subj_str {
+                                    matches = false;
+                                }
+                            } else {
+                                new_binding.insert(var.clone(), subj_str);
+                            }
+                        }
+                        Term::Constant(c) => {
+                            if triple.subject != *c {
+                                matches = false;
+                            }
+                        }
+                    }
+                    
+                    if !matches {
+                        continue;
+                    }
+                    
+                    // Match object
+                    match object_term {
+                        Term::Variable(var) => {
+                            let obj_str = self.dictionary.decode(triple.object).unwrap().to_string();
+                            if let Some(existing) = new_binding.get(var) {
+                                if existing != &obj_str {
+                                    matches = false;
+                                }
+                            } else {
+                                new_binding.insert(var.clone(), obj_str);
+                            }
+                        }
+                        Term::Constant(c) => {
+                            if triple.object != *c {
+                                matches = false;
+                            }
+                        }
+                    }
+                    
+                    if matches {
+                        results.push(new_binding);
+                    }
+                }
+            }
+        }
+        
+        results
     }
 
     fn extract_join_parameters(&self, premise: &TriplePattern) -> (String, String, String) {
