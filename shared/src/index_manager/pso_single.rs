@@ -11,6 +11,10 @@ pub struct PSOSingleIndex {
 }
 
 impl TripleIndex for PSOSingleIndex {
+    fn clone_empty(&self) -> Box<dyn TripleIndex> {
+        Box::new(PSOSingleIndex::new())
+    }
+
     fn clone_box(&self) -> Box<dyn TripleIndex> {
         Box::new(self.clone())
     }

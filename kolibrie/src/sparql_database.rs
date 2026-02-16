@@ -1489,7 +1489,7 @@ impl SparqlDatabase {
             dictionary: merged_dictionary,
             prefixes: self.prefixes.clone(),
             udfs: HashMap::new(),
-            index_manager: Box::new(HexastoreIndex::new()),
+            index_manager: self.index_manager.clone_empty(),
             rule_map: HashMap::new(),
             cached_stats: None,
         }
@@ -1558,7 +1558,7 @@ impl SparqlDatabase {
             dictionary: self.dictionary.clone(),
             prefixes: self.prefixes.clone(),
             udfs: HashMap::new(),
-            index_manager: Box::new(HexastoreIndex::new()),
+            index_manager: self.index_manager.clone_empty(),
             rule_map: HashMap::new(),
             cached_stats: None,
         }
@@ -2945,26 +2945,8 @@ impl SparqlDatabase {
         // Get all triples as a vector for parallel processing
         let triples: Vec<Triple> = self.triples.iter().cloned().collect();
         
-        // Calculate optimal chunk size based on available cores and data size
-        let num_threads = rayon::current_num_threads();
-        let chunk_size = (triples.len() / num_threads).max(1000);
-        
-        // Build indexes in parallel chunks
-        let partial_indexes: Vec<_> = triples
-            .par_chunks(chunk_size)
-            .map(|chunk| {
-                let mut local_index = shared::index_manager::HexastoreIndex::new();
-                for triple in chunk {
-                    local_index.insert(triple);
-                }
-                local_index
-            })
-            .collect();
-        
-        // Merge all partial indexes
-        for partial_index in partial_indexes {
-            self.index_manager.merge_from(partial_index);
-        }
+        self.index_manager.clear();
+        self.index_manager.build_from_triples(&triples);
         
         // Optimize the final merged index
         self.index_manager.optimize();

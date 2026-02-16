@@ -34,6 +34,7 @@ pub trait TripleIndex: Send + Sync + std::fmt::Debug {
     fn insert(&mut self, triple: &Triple) -> bool;
     fn delete(&mut self, triple: &Triple) -> bool;
     fn clear(&mut self);
+    fn clone_empty(&self) -> Box<dyn TripleIndex>;
 
     // ── Pattern query ──
     /// Returns all triples matching the (s?, p?, o?) pattern.

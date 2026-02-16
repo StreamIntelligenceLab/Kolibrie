@@ -16,6 +16,10 @@ pub struct HexastoreIndex {
 }
 
 impl TripleIndex for HexastoreIndex {
+    fn clone_empty(&self) -> Box<dyn TripleIndex> {
+        Box::new(HexastoreIndex::new())
+    }
+
     fn clone_box(&self) -> Box<dyn TripleIndex> {
         Box::new(self.clone())
     }
