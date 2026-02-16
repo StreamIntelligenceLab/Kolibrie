@@ -27,7 +27,7 @@ pub struct Reasoner {
     pub dictionary: Dictionary,
     pub rules: Vec<Rule>, // List of dynamic rules
 
-    pub index_manager: UnifiedIndex,
+    pub index_manager: Box<HexastoreIndex>,
     pub rule_index: RuleIndex,
     pub constraints: Vec<Rule>,
 }
@@ -37,7 +37,7 @@ impl Reasoner {
         Self {
             dictionary: Dictionary::new(),
             rules: Vec::new(),
-            index_manager: UnifiedIndex::new(),
+            index_manager: Box::new(HexastoreIndex::new()),
             rule_index: RuleIndex::new(),
             constraints: Vec::new(),
         }
@@ -669,7 +669,7 @@ impl Reasoner {
             let repairs = self.compute_repairs(&all_facts);
             if let Some(best_repair) = repairs.into_iter().max_by_key(|r| r.len()) {
                 // Clear index manager and reinsert repaired facts
-                self.index_manager = UnifiedIndex::new();
+                self.index_manager.clear();
                 for fact in &best_repair {
                     self.index_manager.insert(fact);
                 }

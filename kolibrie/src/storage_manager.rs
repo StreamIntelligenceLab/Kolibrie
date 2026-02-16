@@ -13,6 +13,7 @@ use crate::disk_storage::lsm_tree::{LSMTree, LSMConfig};
 use crate::storage_trait::{StorageTrait, QueryAnalysis, QueryAnalyzer, StorageMode};
 use crate::execute_query::{execute_query, execute_query_rayon_parallel2_volcano};
 use shared::triple::Triple;
+use shared::index_manager::TripleIndex;
 
 /// Storage backend type - determines where data is physically stored
 #[derive(Debug, Clone, PartialEq, Eq)]

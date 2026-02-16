@@ -8,6 +8,7 @@
  * you can obtain one at https://mozilla.org/MPL/2.0/.
  */
 
+use shared::index_manager::TripleIndex;
 use crate::storage_manager::{StorageManager, StorageBackend, StorageStats};
 use crate::storage_trait::{StorageTrait, StorageMode, QueryAnalyzer};
 use crate::disk_storage::lsm_tree::LSMConfig;
@@ -121,7 +122,7 @@ impl QueryEngine {
                 // Clear memory database
                 self.storage_manager.get_memory_database_mut().triples.clear();
                 self.storage_manager.get_memory_database_mut().index_manager = 
-                    shared::index_manager::UnifiedIndex::new();
+                    Box::new(shared::index_manager::HexastoreIndex::new());
                 
                 // Build statistics
                 self.storage_manager.get_memory_database_mut().get_or_build_stats();

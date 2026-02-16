@@ -9,7 +9,7 @@
  */
 
 use shared::triple::Triple;
-use shared::index_manager::UnifiedIndex;
+use shared::index_manager::*;
 use std::path::{Path, PathBuf};
 use std::fs::File;
 use serde::{Serialize, Deserialize};
@@ -23,7 +23,7 @@ pub struct SSTable {
     /// Level in LSM tree (0, 1, 2, ...)
     pub level: usize,
     /// UnifiedIndex containing all 6 permutations
-    pub index: UnifiedIndex,
+    pub index: HexastoreIndex,
     /// Min and max keys for range queries (optimization)
     pub min_key: Triple,
     pub max_key: Triple,
@@ -43,7 +43,7 @@ impl SSTable {
         memtable: &MemTable,
         data_dir: &Path,
     ) -> Result<Self, String> {
-        let mut index = UnifiedIndex::new();
+        let mut index = HexastoreIndex::new();
         let mut triples: Vec<Triple> = Vec::new();
 
         // Only include non-deleted triples
@@ -90,7 +90,7 @@ impl SSTable {
         sstables: Vec<&SSTable>,
         data_dir: &Path,
     ) -> Result<Self, String> {
-        let mut merged_index = UnifiedIndex::new();
+        let mut merged_index = HexastoreIndex::new();
         
         // Merge all indexes
         for sstable in &sstables {

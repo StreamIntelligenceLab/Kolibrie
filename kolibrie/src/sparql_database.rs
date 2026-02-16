@@ -19,7 +19,7 @@ use crate::utils::current_timestamp;
 use crate::utils::ClonableFn;
 #[cfg(feature = "cuda")]
 use crate::cuda::cuda_join::*;
-use shared::index_manager::UnifiedIndex;
+use shared::index_manager::*;
 use crate::query_builder::QueryBuilder;
 use crossbeam::channel::unbounded;
 use crossbeam::scope;
@@ -52,7 +52,7 @@ pub struct SparqlDatabase {
     pub dictionary: Dictionary,
     pub prefixes: HashMap<String, String>,
     pub udfs: HashMap<String, ClonableFn>,
-    pub index_manager: UnifiedIndex,
+    pub index_manager: Box<HexastoreIndex>,
     pub rule_map: HashMap<String, String>,
     pub cached_stats: Option<Arc<DatabaseStats>>,
 }
@@ -67,7 +67,7 @@ impl SparqlDatabase {
             dictionary: Dictionary::new(),
             prefixes: HashMap::new(),
             udfs: HashMap::new(),
-            index_manager: UnifiedIndex::new(),
+            index_manager: Box::new(HexastoreIndex::new()),
             rule_map: HashMap::new(),
             cached_stats: None,
         }
@@ -1484,7 +1484,7 @@ impl SparqlDatabase {
             dictionary: merged_dictionary,
             prefixes: self.prefixes.clone(),
             udfs: HashMap::new(),
-            index_manager: UnifiedIndex::new(),
+            index_manager: Box::new(HexastoreIndex::new()),
             rule_map: HashMap::new(),
             cached_stats: None,
         }
@@ -1553,7 +1553,7 @@ impl SparqlDatabase {
             dictionary: self.dictionary.clone(),
             prefixes: self.prefixes.clone(),
             udfs: HashMap::new(),
-            index_manager: UnifiedIndex::new(),
+            index_manager: Box::new(HexastoreIndex::new()),
             rule_map: HashMap::new(),
             cached_stats: None,
         }
@@ -2948,7 +2948,7 @@ impl SparqlDatabase {
         let partial_indexes: Vec<_> = triples
             .par_chunks(chunk_size)
             .map(|chunk| {
-                let mut local_index = shared::index_manager::UnifiedIndex::new();
+                let mut local_index = shared::index_manager::HexastoreIndex::new();
                 for triple in chunk {
                     local_index.insert(triple);
                 }
