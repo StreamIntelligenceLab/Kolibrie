@@ -970,17 +970,11 @@ impl ExecutionEngine {
         match pattern {
             // FULLY BOUND (3 constants) - just check if triple exists
             (Term::Constant(s), Term::Constant(p), Term::Constant(o)) => {
-                // Use SPO index to check existence
-                if let Some(pred_map) = database.index_manager.spo.get(s) {
-                    if let Some(objects) = pred_map.get(p) {
-                        if objects.contains(o) {
-                            // Triple exists - return empty binding (no variables to bind)
-                            return vec![HashMap::new()];
-                        }
-                    }
+                if !database.index_manager.query(Some(*s), Some(*p), Some(*o)).is_empty() {
+                    return vec![HashMap::new()];
+                } else {
+                    return Vec::new();
                 }
-                // Triple doesn't exist
-                Vec::new()
             }
 
             // TWO BOUNDS (2 constants, 1 variable)
@@ -1020,22 +1014,25 @@ impl ExecutionEngine {
         predicate: u32,
         object_var: String,
     ) -> Vec<HashMap<String, u32>> {
-        // Strip '?' prefix from variable name
         let object_var = object_var.strip_prefix('?').unwrap_or(&object_var).to_string();
 
-        if let Some(pred_map) = database.index_manager.spo.get(&subject) {
-            if let Some(objects) = pred_map.get(&predicate) {
-                // Use pre-compute the key
-                objects.iter().map(|&object| {
-                    let mut result = HashMap::with_capacity(1);  // Pre-size
-                    result.insert(object_var.clone(), object);  // Still need clone in closure
-                    result
-                }).collect()
-            } else {
-                Vec::new()
-            }
+        // Try efficient two-key scan first
+        if let Some(objects) = database.index_manager.scan_sp(subject, predicate) {
+            objects.iter().map(|&object| {
+                let mut result = HashMap::with_capacity(1);
+                result.insert(object_var.clone(), object);
+                result
+            }).collect()
         } else {
-            Vec::new()
+            // Fallback: query(Some(s), Some(p), None)
+            database.index_manager.query(Some(subject), Some(predicate), None)
+                .into_iter()
+                .map(|triple| {
+                    let mut result = HashMap::with_capacity(1);
+                    result.insert(object_var.clone(), triple.object);
+                    result
+                })
+                .collect()
         }
     }
 
@@ -1046,22 +1043,24 @@ impl ExecutionEngine {
         object: u32,
         predicate_var: String,
     ) -> Vec<HashMap<String, u32>> {
-        // Strip '?' prefix from variable name
         let predicate_var = predicate_var.strip_prefix('?').unwrap_or(&predicate_var).to_string();
 
-        if let Some(obj_map) = database.index_manager.sop.get(&subject) {
-            if let Some(predicates) = obj_map.get(&object) {
-                // Use iterator with pre-sized HashMap
-                predicates.iter().map(|&predicate| {
-                    let mut result = HashMap::with_capacity(1);
-                    result.insert(predicate_var.clone(), predicate);
-                    result
-                }).collect()
-            } else {
-                Vec::new()
-            }
+        if let Some(predicates) = database.index_manager.scan_so(subject, object) {
+            predicates.iter().map(|&predicate| {
+                let mut result = HashMap::with_capacity(1);
+                result.insert(predicate_var.clone(), predicate);
+                result
+            }).collect()
         } else {
-            Vec::new()
+            // Fallback: query(Some(s), None, Some(o))
+            database.index_manager.query(Some(subject), None, Some(object))
+                .into_iter()
+                .map(|triple| {
+                    let mut result = HashMap::with_capacity(1);
+                    result.insert(predicate_var.clone(), triple.predicate);
+                    result
+                })
+                .collect()
         }
     }
 
@@ -1072,22 +1071,24 @@ impl ExecutionEngine {
         object: u32,
         subject_var: String,
     ) -> Vec<HashMap<String, u32>> {
-        // Strip '?' prefix from variable name
         let subject_var = subject_var.strip_prefix('?').unwrap_or(&subject_var).to_string();
 
-        if let Some(obj_map) = database.index_manager.pos.get(&predicate) {
-            if let Some(subjects) = obj_map.get(&object) {
-                // Use iterator with pre-sized HashMap
-                subjects.iter().map(|&subject| {
-                    let mut result = HashMap::with_capacity(1);
-                    result.insert(subject_var.clone(), subject);
-                    result
-                }).collect()
-            } else {
-                Vec::new()
-            }
+        if let Some(subjects) = database.index_manager.scan_po(predicate, object) {
+            subjects.iter().map(|&subject| {
+                let mut result = HashMap::with_capacity(1);
+                result.insert(subject_var.clone(), subject);
+                result
+            }).collect()
         } else {
-            Vec::new()
+            // Fallback: query(None, Some(p), Some(o))
+            database.index_manager.query(None, Some(predicate), Some(object))
+                .into_iter()
+                .map(|triple| {
+                    let mut result = HashMap::with_capacity(1);
+                    result.insert(subject_var.clone(), triple.subject);
+                    result
+                })
+                .collect()
         }
     }
 
@@ -1098,25 +1099,18 @@ impl ExecutionEngine {
         predicate_var: String,
         object_var: String,
     ) -> Vec<HashMap<String, u32>> {
-        // Strip '?' prefix from variable names
         let predicate_var = predicate_var.strip_prefix('?').unwrap_or(&predicate_var).to_string();
         let object_var = object_var.strip_prefix('?').unwrap_or(&object_var).to_string();
 
-        if let Some(pred_map) = database.index_manager.spo.get(&subject) {
-            // Clone variable names once before flat_map
-            pred_map.iter().flat_map(|(&predicate, objects)| {
-                let predicate_var = predicate_var.clone();
-                let object_var = object_var.clone();
-                objects.iter().map(move |&object| {
-                    let mut result = HashMap::with_capacity(2);
-                    result.insert(predicate_var.clone(), predicate);
-                    result.insert(object_var.clone(), object);
-                    result
-                })
-            }).collect()
-        } else {
-            Vec::new()
-        }
+        database.index_manager.query(Some(subject), None, None)
+            .into_iter()
+            .map(|triple| {
+                let mut result = HashMap::with_capacity(2);
+                result.insert(predicate_var.clone(), triple.predicate);
+                result.insert(object_var.clone(), triple.object);
+                result
+            })
+            .collect()
     }
 
     /// Scans P index (Predicate -> (Subject, Object))
@@ -1126,25 +1120,18 @@ impl ExecutionEngine {
         subject_var: String,
         object_var: String,
     ) -> Vec<HashMap<String, u32>> {
-        // Strip '?' prefix from variable names
         let subject_var = subject_var.strip_prefix('?').unwrap_or(&subject_var).to_string();
         let object_var = object_var.strip_prefix('?').unwrap_or(&object_var).to_string();
 
-        if let Some(obj_map) = database.index_manager.pos.get(&predicate) {
-            // Clone variable names once before flat_map
-            obj_map.iter().flat_map(|(&object, subjects)| {
-                let subject_var = subject_var.clone();
-                let object_var = object_var.clone();
-                subjects.iter().map(move |&subject| {
-                    let mut result = HashMap::with_capacity(2);
-                    result.insert(subject_var.clone(), subject);
-                    result.insert(object_var.clone(), object);
-                    result
-                })
-            }).collect()
-        } else {
-            Vec::new()
-        }
+        database.index_manager.query(None, Some(predicate), None)
+            .into_iter()
+            .map(|triple| {
+                let mut result = HashMap::with_capacity(2);
+                result.insert(subject_var.clone(), triple.subject);
+                result.insert(object_var.clone(), triple.object);
+                result
+            })
+            .collect()
     }
 
     /// Scans O index (Object -> (Subject, Predicate))
@@ -1154,24 +1141,17 @@ impl ExecutionEngine {
         subject_var: String,
         predicate_var: String,
     ) -> Vec<HashMap<String, u32>> {
-        // Strip '?' prefix from variable names
         let subject_var = subject_var.strip_prefix('?').unwrap_or(&subject_var).to_string();
         let predicate_var = predicate_var.strip_prefix('?').unwrap_or(&predicate_var).to_string();
 
-        if let Some(subj_map) = database.index_manager.osp.get(&object) {
-            // Clone variable names once before flat_map
-            subj_map.iter().flat_map(|(&subject, predicates)| {
-                let subject_var = subject_var.clone();
-                let predicate_var = predicate_var.clone();
-                predicates.iter().map(move |&predicate| {
-                    let mut result = HashMap::with_capacity(2);
-                    result.insert(subject_var.clone(), subject);
-                    result.insert(predicate_var.clone(), predicate);
-                    result
-                })
-            }).collect()
-        } else {
-            Vec::new()
-        }
+        database.index_manager.query(None, None, Some(object))
+            .into_iter()
+            .map(|triple| {
+                let mut result = HashMap::with_capacity(2);
+                result.insert(subject_var.clone(), triple.subject);
+                result.insert(predicate_var.clone(), triple.predicate);
+                result
+            })
+            .collect()
     }
 }

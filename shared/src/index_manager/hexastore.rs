@@ -16,15 +16,15 @@ pub struct HexastoreIndex {
 }
 
 impl TripleIndex for HexastoreIndex {
-    fn new() -> Self {
-        Self {
-            spo: HashMap::new(),
-            pos: HashMap::new(),
-            osp: HashMap::new(),
-            pso: HashMap::new(),
-            ops: HashMap::new(),
-            sop: HashMap::new(),
-        }
+    fn clone_box(&self) -> Box<dyn TripleIndex> {
+        Box::new(self.clone())
+    }
+    
+    fn triple_count(&self) -> usize {
+        // Efficient: count directly from SPO index
+        self.spo.values()
+            .map(|pred_map| pred_map.values().map(|objs| objs.len()).sum::<usize>())
+            .sum()
     }
 
     fn supported_access_patterns(&self) -> AccessPatternSupport {
@@ -357,6 +357,17 @@ impl TripleIndex for HexastoreIndex {
 }
 
 impl HexastoreIndex {
+    pub fn new() -> Self {
+        Self {
+            spo: HashMap::new(),
+            pos: HashMap::new(),
+            osp: HashMap::new(),
+            pso: HashMap::new(),
+            ops: HashMap::new(),
+            sop: HashMap::new(),
+        }
+    }
+
     /// Efficiently merge another index into this one using parallel processing where possible
     pub fn merge_from(&mut self, other: HexastoreIndex) {
         // Merge SPO index

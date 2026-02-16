@@ -19,7 +19,7 @@ use crate::utils::current_timestamp;
 use crate::utils::ClonableFn;
 #[cfg(feature = "cuda")]
 use crate::cuda::cuda_join::*;
-use shared::index_manager::*;
+use shared::index_manager::TripleIndex;
 use crate::query_builder::QueryBuilder;
 use crossbeam::channel::unbounded;
 use crossbeam::scope;
@@ -52,7 +52,7 @@ pub struct SparqlDatabase {
     pub dictionary: Dictionary,
     pub prefixes: HashMap<String, String>,
     pub udfs: HashMap<String, ClonableFn>,
-    pub index_manager: Box<HexastoreIndex>,
+    pub index_manager: Box<dyn TripleIndex>,
     pub rule_map: HashMap<String, String>,
     pub cached_stats: Option<Arc<DatabaseStats>>,
 }
@@ -60,6 +60,11 @@ pub struct SparqlDatabase {
 #[allow(dead_code)]
 impl SparqlDatabase {
     pub fn new() -> Self {
+        Self::with_index(Box::new(shared::index_manager::HexastoreIndex::new()))
+    }
+
+    /// Creates a new database with a user-chosen indexing strategy.
+    pub fn with_index(index: Box<dyn TripleIndex>) -> Self {
         Self {
             triples: BTreeSet::new(),
             streams: Vec::new(),
@@ -67,7 +72,7 @@ impl SparqlDatabase {
             dictionary: Dictionary::new(),
             prefixes: HashMap::new(),
             udfs: HashMap::new(),
-            index_manager: Box::new(HexastoreIndex::new()),
+            index_manager: index,
             rule_map: HashMap::new(),
             cached_stats: None,
         }

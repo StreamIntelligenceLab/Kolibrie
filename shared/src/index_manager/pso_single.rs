@@ -11,11 +11,15 @@ pub struct PSOSingleIndex {
 }
 
 impl TripleIndex for PSOSingleIndex {
-    fn new() -> Self {
-        Self {
-            pso: HashMap::new(),
-        }
+    fn clone_box(&self) -> Box<dyn TripleIndex> {
+        Box::new(self.clone())
     }
+    
+    fn triple_count(&self) -> usize {
+        self.pso.values()
+            .map(|sub_map| sub_map.values().map(|objs| objs.len()).sum::<usize>())
+            .sum()
+    }    
 
     fn supported_access_patterns(&self) -> AccessPatternSupport {
         AccessPatternSupport {
@@ -267,6 +271,12 @@ impl TripleIndex for PSOSingleIndex {
 }
 
 impl PSOSingleIndex {
+    pub fn new() -> Self {
+        Self {
+            pso: HashMap::new(),
+        }
+    }
+
     /// Efficiently merge another index into this one using parallel processing where possible
     pub fn merge_from(&mut self, other: PSOSingleIndex) {
 

@@ -8,7 +8,6 @@
  * you can obtain one at https://mozilla.org/MPL/2.0/.
  */
 
-use serde::{Serialize, Deserialize};
 use std::collections::{HashMap, HashSet};
 use crate::terms::*;
 use crate::terms::Term::*;
@@ -30,9 +29,8 @@ pub struct AccessPatternSupport {
     pub op: bool,   // object+predicate -> subjects
 }
 
-pub trait TripleIndex: Send + Sync {
+pub trait TripleIndex: Send + Sync + std::fmt::Debug {
     // ── Mutation ──
-    fn new() -> Self;
     fn insert(&mut self, triple: &Triple) -> bool;
     fn delete(&mut self, triple: &Triple) -> bool;
     fn clear(&mut self);
@@ -74,6 +72,19 @@ pub trait TripleIndex: Send + Sync {
     // ── Metadata ──
     /// Reports which access patterns this index supports efficiently.
     fn supported_access_patterns(&self) -> AccessPatternSupport;
+    fn triple_count(&self) -> usize {
+        self.query(None, None, None).len()  // default: expensive but correct
+    }
+
+    // ── Cloning support for Box<dyn TripleIndex> ──
+    fn clone_box(&self) -> Box<dyn TripleIndex>;
+}
+
+/// Allow `Clone` on `Box<dyn TripleIndex>`.
+impl Clone for Box<dyn TripleIndex> {
+    fn clone(&self) -> Self {
+        self.clone_box()
+    }
 }
 
 /// Helper function to remove a triple from a nested index structure and clean up empty collections
