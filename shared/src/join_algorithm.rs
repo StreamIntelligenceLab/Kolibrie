@@ -10,7 +10,7 @@
 
 use crate::dictionary::Dictionary;
 use crate::triple::Triple;
-use crate::index_manager::*;
+use crate::index_manager::TripleIndex;
 use std::collections::{BTreeMap, HashMap};
 use std::sync::Arc;
 use rayon::prelude::*;
@@ -19,7 +19,7 @@ pub fn perform_join_par_simd_with_strict_filter_4_redesigned_streaming(
     subject_var: String,
     predicate: String,
     object_var: String,
-    index_manager: Box<HexastoreIndex>,  // ← Pass index instead of database
+    index_manager: Box<dyn TripleIndex>,  // ← Pass index instead of database
     dictionary: &Dictionary,
     final_results: Vec<BTreeMap<String, String>>,
     literal_filter: Option<String>,
