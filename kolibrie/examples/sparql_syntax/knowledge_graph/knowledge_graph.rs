@@ -8,7 +8,6 @@
  * you can obtain one at https://mozilla.org/MPL/2.0/.
  */
 
-use shared::dictionary::Dictionary;
 use shared::terms::Term;
 use shared::rule::Rule;
 use datalog::reasoning::*;
@@ -22,22 +21,27 @@ fn knowledge_graph() {
     graph.add_abox_triple("Bob", "hasParent", "Charlie");
 
     // Define a dynamic rule: If X hasParent Y and Y hasParent Z, then X hasGrandparent Z
+    let mut dict = graph.dictionary.write().unwrap();
+    let has_parent_id = dict.encode("hasParent");
+    let has_grandparent_id = dict.encode("hasGrandparent");
+    drop(dict);
+
     let grandparent_rule = Rule {
         premise: vec![
             (
                 Term::Variable("X".to_string()),
-                Term::Constant(graph.dictionary.encode("hasParent")),
+                Term::Constant(has_parent_id),
                 Term::Variable("Y".to_string()),
             ),
             (
                 Term::Variable("Y".to_string()),
-                Term::Constant(graph.dictionary.encode("hasParent")),
+                Term::Constant(has_parent_id),
                 Term::Variable("Z".to_string()),
             ),
         ],
         conclusion: vec![(
             Term::Variable("X".to_string()),
-            Term::Constant(graph.dictionary.encode("hasGrandparent")),
+            Term::Constant(has_grandparent_id),
             Term::Variable("Z".to_string()),
         )],
         filters: vec![],
@@ -50,28 +54,30 @@ fn knowledge_graph() {
     let inferred_facts = graph.infer_new_facts();
 
     // Print inferred facts
+    let dict = graph.dictionary.read().unwrap();
     for triple in inferred_facts {
         println!(
             "{} -- {} -- {}",
-            graph.dictionary.decode(triple.subject).unwrap(),
-            graph.dictionary.decode(triple.predicate).unwrap(),
-            graph.dictionary.decode(triple.object).unwrap()
+            dict.decode(triple.subject).unwrap(),
+            dict.decode(triple.predicate).unwrap(),
+            dict.decode(triple.object).unwrap()
         );
     }
 }
 
 fn backward_chaining() {
-    let mut dict = Dictionary::new();
-
-    let parent = dict.encode("parent");
-    let ancestor = dict.encode("ancestor");
-    let charlie = dict.encode("Charlie");
-
     let mut kg = Reasoner::new();
 
     // ABox (facts)
     kg.add_abox_triple("Alice", "parent", "Bob");
     kg.add_abox_triple("Bob", "parent", "Charlie");
+
+    // Encode terms
+    let mut dict = kg.dictionary.write().unwrap();
+    let parent = dict.encode("parent");
+    let ancestor = dict.encode("ancestor");
+    let charlie = dict.encode("Charlie");
+    drop(dict);
 
     // Rules
     let rule1 = Rule {
@@ -124,10 +130,11 @@ fn backward_chaining() {
     let results = kg.backward_chaining(&query);
 
     // Decode and print results
+    let dict = kg.dictionary.read().unwrap();
     for res in results {
         if let Some(ancestor_term) = res.get("A") {
             if let Term::Constant(ancestor_id) = resolve_term(ancestor_term, &res) {
-                if let Some(ancestor_name) = kg.dictionary.decode(ancestor_id) {
+                if let Some(ancestor_name) = dict.decode(ancestor_id) {
                     println!("Ancestor: {}", ancestor_name);
                 }
             }
@@ -166,10 +173,11 @@ fn test() {
             let inferred_facts = graph.infer_new_facts();
 
             println!("\nOriginal and Inferred Facts:");
+            let dict = graph.dictionary.read().unwrap();
             for triple in old_facts.iter().chain(inferred_facts.iter()) {
-                let s = graph.dictionary.decode(triple.subject).unwrap();
-                let p = graph.dictionary.decode(triple.predicate).unwrap();
-                let o = graph.dictionary.decode(triple.object).unwrap();
+                let s = dict.decode(triple.subject).unwrap();
+                let p = dict.decode(triple.predicate).unwrap();
+                let o = dict.decode(triple.object).unwrap();
                 println!("<{}> -- <{}> -- <{}> .", s, p, o);
             }
         }
@@ -204,10 +212,11 @@ fn test2() {
             let inferred_facts = kg.infer_new_facts();
 
             println!("\nOriginal and Inferred Facts:");
+            let dict = kg.dictionary.read().unwrap();
             for triple in old_facts.iter().chain(inferred_facts.iter()) {
-                let s = kg.dictionary.decode(triple.subject).unwrap();
-                let p = kg.dictionary.decode(triple.predicate).unwrap();
-                let o = kg.dictionary.decode(triple.object).unwrap();
+                let s = dict.decode(triple.subject).unwrap();
+                let p = dict.decode(triple.predicate).unwrap();
+                let o = dict.decode(triple.object).unwrap();
                 println!("<{}> <{}> <{}>.", s, p, o);
             }
         }
@@ -222,18 +231,25 @@ fn inconsistency() {
     kg.add_abox_triple("john", "isA", "professor");
     kg.add_abox_triple("john", "isA", "student"); // This could be inconsistent
 
+    // Encode terms
+    let mut dict = kg.dictionary.write().unwrap();
+    let is_a = dict.encode("isA");
+    let professor = dict.encode("professor");
+    let student = dict.encode("student");
+    drop(dict);
+
     // Add a constraint: someone cannot be both a professor and a student
     let constraint = Rule {
         premise: vec![
             (
                 Term::Variable("X".to_string()),
-                Term::Constant(kg.dictionary.encode("isA")),
-                Term::Constant(kg.dictionary.encode("professor"))
+                Term::Constant(is_a),
+                Term::Constant(professor)
             ),
             (
                 Term::Variable("X".to_string()),
-                Term::Constant(kg.dictionary.encode("isA")),
-                Term::Constant(kg.dictionary.encode("student"))
+                Term::Constant(is_a),
+                Term::Constant(student)
             )
         ],
         conclusion: vec![(
@@ -248,7 +264,7 @@ fn inconsistency() {
     // Query with inconsistency tolerance
     let query = (
         Term::Variable("X".to_string()),
-        Term::Constant(kg.dictionary.encode("isA")),
+        Term::Constant(is_a),
         Term::Variable("Y".to_string())
     );
     

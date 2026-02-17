@@ -370,12 +370,14 @@ impl<'a> QueryBuilder<'a> {
         let triples = self.get_triples();
         let mut results = Vec::with_capacity(triples.len());
         
+        let dict = db.dictionary.read().unwrap();
         for triple in triples {
-            let subject = db.dictionary.decode(triple.subject).unwrap_or("").to_string();
-            let predicate = db.dictionary.decode(triple.predicate).unwrap_or("").to_string();
-            let object = db.dictionary.decode(triple.object).unwrap_or("").to_string();
+            let subject = dict.decode(triple.subject).unwrap_or("").to_string();
+            let predicate = dict.decode(triple.predicate).unwrap_or("").to_string();
+            let object = dict.decode(triple.object).unwrap_or("").to_string();
             results.push((subject, predicate, object));
         }
+        drop(dict);
         
         results
     }
@@ -390,11 +392,13 @@ impl<'a> QueryBuilder<'a> {
         let triples = self.get_triples();
         let mut results = Vec::with_capacity(triples.len());
         
+        let dict = db.dictionary.read().unwrap();
         for triple in triples {
-            if let Some(s) = db.dictionary.decode(triple.subject) {
+            if let Some(s) = dict.decode(triple.subject) {
                 results.push(s.to_string());
             }
         }
+        drop(dict);
         
         if distinct {
             results.sort();
@@ -414,11 +418,13 @@ impl<'a> QueryBuilder<'a> {
         let triples = self.get_triples();
         let mut results = Vec::with_capacity(triples.len());
         
+        let dict = db.dictionary.read().unwrap();
         for triple in triples {
-            if let Some(p) = db.dictionary.decode(triple.predicate) {
-                results.push(p.to_string());
+            if let Some(s) = dict.decode(triple.predicate) {
+                results.push(s.to_string());
             }
         }
+        drop(dict);
         
         if distinct {
             results.sort();
@@ -438,11 +444,13 @@ impl<'a> QueryBuilder<'a> {
         let triples = self.get_triples();
         let mut results = Vec::with_capacity(triples.len());
         
+        let dict = db.dictionary.read().unwrap();
         for triple in triples {
-            if let Some(o) = db.dictionary.decode(triple.object) {
-                results.push(o.to_string());
+            if let Some(s) = dict.decode(triple.object) {
+                results.push(s.to_string());
             }
         }
+        drop(dict);
         
         if distinct {
             results.sort();
@@ -477,6 +485,7 @@ impl<'a> QueryBuilder<'a> {
     // Applies all the configured filters and returns the matching triples
     fn apply_filters(self) -> BTreeSet<Triple> {
         let mut results = BTreeSet::new();
+        let dict = self.db.dictionary.read().unwrap();
         
         // Apply basic filters
         for triple in &self.db.triples {
@@ -484,7 +493,7 @@ impl<'a> QueryBuilder<'a> {
             
             // Check subject filter
             if let Some(filter) = &self.subject_filter {
-                if let Some(subject) = self.db.dictionary.decode(triple.subject) {
+                if let Some(subject) = dict.decode(triple.subject) {
                     matches &= Self::apply_filter(filter, subject);
                 } else {
                     matches = false;
@@ -494,7 +503,7 @@ impl<'a> QueryBuilder<'a> {
             // Check predicate filter
             if matches {
                 if let Some(filter) = &self.predicate_filter {
-                    if let Some(predicate) = self.db.dictionary.decode(triple.predicate) {
+                    if let Some(predicate) = dict.decode(triple.predicate) {
                         matches &= Self::apply_filter(filter, predicate);
                     } else {
                         matches = false;
@@ -505,7 +514,7 @@ impl<'a> QueryBuilder<'a> {
             // Check object filter
             if matches {
                 if let Some(filter) = &self.object_filter {
-                    if let Some(object) = self.db.dictionary.decode(triple.object) {
+                    if let Some(object) = dict.decode(triple.object) {
                         matches &= Self::apply_filter(filter, object);
                     } else {
                         matches = false;
@@ -553,6 +562,7 @@ impl<'a> QueryBuilder<'a> {
             };
             results = sliced.into_iter().collect();
         }
+        drop(dict);
         
         results
     }

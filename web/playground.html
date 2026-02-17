@@ -942,6 +942,86 @@
     .hidden {
       display: none !important;
     }
+
+    /* Rule sub-tabs (Rules / N3 Logic) inside the Rules editor panel */
+    .rule-subtabs {
+      display: flex;
+      gap: 4px;
+      margin-bottom: 8px;
+    }
+
+    .rule-subtab {
+      padding: 5px 14px;
+      font-size: 12px;
+      height: 28px;
+      line-height: 18px;
+      color: #c0c0c0;
+      background: rgba(43, 43, 43, 0.5);
+      border: 1px solid rgba(219, 88, 156, 0.25);
+      border-radius: 5px;
+      cursor: pointer;
+      transition: all 0.2s ease;
+      font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+      font-weight: 500;
+      text-transform: uppercase;
+      letter-spacing: 0.4px;
+    }
+
+    .rule-subtab.active {
+      background: linear-gradient(135deg, rgba(219, 88, 156, 0.3) 0%, rgba(219, 88, 156, 0.15) 100%);
+      border-color: rgba(219, 88, 156, 0.6);
+      color: #db589c;
+      font-weight: 600;
+    }
+
+    .rule-subtab:hover:not(.active) {
+      background: rgba(219, 88, 156, 0.15);
+      border-color: rgba(219, 88, 156, 0.4);
+      color: #db589c;
+    }
+
+    .rule-subpanel {
+      display: none;
+      flex: 1;
+      flex-direction: column;
+      min-height: 0;
+    }
+
+    .rule-subpanel.active {
+      display: flex;
+    }
+
+    /* N3 Logic info badge shown inside the N3 Logic sub-panel */
+    .n3logic-info-badge {
+      display: flex;
+      align-items: flex-start;
+      gap: 10px;
+      margin-bottom: 8px;
+      padding: 10px 12px;
+      background: rgba(45, 27, 61, 0.35);
+      border-radius: 7px;
+      border: 1px solid rgba(219, 88, 156, 0.25);
+      font-size: 12px;
+      line-height: 1.55;
+      color: #b0b0b0;
+      flex-shrink: 0;
+    }
+
+    .n3logic-info-badge i {
+      color: #db589c;
+      font-size: 14px;
+      margin-top: 1px;
+      flex-shrink: 0;
+    }
+
+    .n3logic-info-badge code {
+      background: rgba(219, 88, 156, 0.15);
+      padding: 1px 5px;
+      border-radius: 3px;
+      font-family: 'IBM Plex Mono', monospace;
+      color: #db589c;
+      font-size: 11px;
+    }
   </style>
 </head>
 
@@ -960,6 +1040,7 @@
         <div class="dropdown-menu">
           <div class="item" data-format="rdfxml">RDF/XML</div>
           <div class="item" data-format="ntriples">N-Triples</div>
+          <div class="item" data-format="turtle">Turtle Dataset</div>
         </div>
       </div>
 
@@ -1050,15 +1131,28 @@ WHERE {
 
             <!-- Rules Panel -->
             <div class="editor-panel" data-panel="rules" id="rules-panel">
-              <!-- Multi-rule controls -->
-              <div class="multi-query-controls">
-                <button class="btn btn-add-query" id="addRuleBtn"><i class="fas fa-plus"></i> Add Rule Tab</button>
+
+              <!-- Sub-tab switcher: Rules vs N3 Logic -->
+              <div class="rule-subtabs">
+                <button class="rule-subtab active" id="ruleSubtabRules" onclick="switchRuleSubtab('rules')">
+                  <i class="fas fa-code-branch"></i> Rules
+                </button>
+                <button class="rule-subtab" id="ruleSubtabN3Logic" onclick="switchRuleSubtab('n3logic')">
+                  <i class="fas fa-code"></i> N3 Logic
+                </button>
               </div>
-              <!-- Rule tabs -->
-              <div class="query-tabs" id="ruleTabs">
-                <button class="query-tab active" data-rule-index="0">Rule Set 1</button>
-              </div>
-              <textarea id="rules-editor">PREFIX ex: <http://example.org#>
+
+              <!-- ── RULES sub-panel ── -->
+              <div class="rule-subpanel active" id="ruleSubpanelRules">
+                <!-- Multi-rule controls -->
+                <div class="multi-query-controls">
+                  <button class="btn btn-add-query" id="addRuleBtn"><i class="fas fa-plus"></i> Add Rule Tab</button>
+                </div>
+                <!-- Rule tabs -->
+                <div class="query-tabs" id="ruleTabs">
+                  <button class="query-tab active" data-rule-index="0">Rule Set 1</button>
+                </div>
+                <textarea id="rules-editor">PREFIX ex: <http://example.org#>
 RULE :OverheatingAlert :- 
 CONSTRUCT { 
     ?room ex:overheatingAlert true .
@@ -1071,6 +1165,25 @@ WHERE {
 
 # Add more rules below to extend inference
 # Each rule will be applied in order</textarea>
+              </div>
+
+              <!-- ── N3 LOGIC sub-panel ── -->
+              <div class="rule-subpanel" id="ruleSubpanelN3Logic">
+                <div class="n3logic-info-badge">
+                  <i class="fas fa-circle-info"></i>
+                  <span>
+                    Write N3 logic rules here using <strong style="color:#db589c;">N3 Logic</strong> syntax.
+                    They are merged with your main RDF data before rules and queries run.
+                    Use <code>@prefix</code> declarations as normal — they are scoped to this block only.
+                  </span>
+                </div>
+                <textarea id="n3logic-editor">@prefix ex: <http://example.org#> .
+
+# Extra triples injected alongside your main RDF data
+# ex:Room101 ex:building ex:BuildingA .
+</textarea>
+              </div>
+
             </div>
 
             <!-- Resizer -->
@@ -1237,6 +1350,12 @@ WHERE {
         <code>RULE :RuleName :- CONSTRUCT { ... } WHERE { ... }</code>
         <p>Rules are applied before query execution to infer new triples.</p>
 
+        <h3>N3 Logic (in Rules tab)</h3>
+        <p>The <strong>Rules</strong> tab has two sub-tabs: <strong>Rules</strong> and <strong>N3 Logic</strong>.</p>
+        <p>In the N3 Logic sub-tab you can write N3 logic inference rules:</p>
+        <code>@prefix ex: &lt;http://example.org#&gt; .<br>ex:Room101 ex:building ex:BuildingA .</code>
+        <p>These triples are automatically merged with the data in your RDF Data tab before rules and queries are executed. This is useful when you want to pair specific background knowledge directly with a rule set.</p>
+
         <h3>Sharing</h3>
         <p>Click "Share" to generate a URL containing your queries, data, and rules. The URL can be shared with others.</p>
 
@@ -1250,6 +1369,74 @@ WHERE {
   <script src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.2/codemirror.min.js"></script>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.2/mode/sparql/sparql.min.js"></script>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.2/mode/xml/xml.min.js"></script>
+  <!-- N3 Logic mode: lightweight syntax highlighting for CodeMirror 5 -->
+
+  <script>
+    // Minimal N3 Logic syntax highlighting for CodeMirror 5
+    CodeMirror.defineMode('turtle', function() {
+      var IRI_RE = /^<[^>]*>/;
+      var PREFIX_NS_RE = /^[A-Za-z_][\w.-]*:/;
+      var PREFIXED_NAME_RE = /^[A-Za-z_][\w.-]*:[A-Za-z_][\w.-]*/;
+      var BLANK_RE = /^_:[A-Za-z_][\w.-]*/;
+      var STRING1_RE = /^"(?:[^"\\]|\\.)*"/;
+      var STRING2_RE = /^'(?:[^'\\]|\\.)*'/;
+      var LANGTYPE_RE = /^@[a-zA-Z]+(?:-[a-zA-Z0-9]+)*/;
+      var DATATYPE_RE = /^\^\^/;
+      var KEYWORD_RE = /^(?:@prefix|@base|a|PREFIX|BASE)\b/;
+      var PUNCT_RE = /^[.,;()[\]{}]/;
+      var NUMBER_RE = /^[-+]?(?:\d+\.?\d*|\.\d+)(?:[eE][-+]?\d+)?/;
+
+      return {
+        startState: function() { return { expectDT: false }; },
+        token: function(stream, state) {
+          // Skip whitespace
+          if (stream.eatSpace()) return null;
+
+          // Comments
+          if (stream.match(/^#.*/)) return 'comment';
+
+          // Keywords / directives
+          if (stream.match(KEYWORD_RE)) return 'keyword';
+
+          // IRIs
+          if (stream.match(IRI_RE)) return 'string-2';
+
+          // Datatypes (^^<iri> or ^^prefix:local)
+          if (state.expectDT) {
+            state.expectDT = false;
+            if (stream.match(IRI_RE) || stream.match(PREFIXED_NAME_RE)) return 'atom';
+          }
+          if (stream.match(DATATYPE_RE)) { state.expectDT = true; return 'meta'; }
+
+          // Language tags
+          if (stream.match(LANGTYPE_RE)) return 'meta';
+
+          // Blank nodes
+          if (stream.match(BLANK_RE)) return 'variable-2';
+
+          // Prefixed names
+          if (stream.match(PREFIXED_NAME_RE)) return 'atom';
+
+          // Strings (triple-quoted first, then single-quoted)
+          if (stream.match(/^"""[\s\S]*?"""/)) return 'string';
+          if (stream.match(/^'''[\s\S]*?'''/)) return 'string';
+          if (stream.match(STRING1_RE)) return 'string';
+          if (stream.match(STRING2_RE)) return 'string';
+
+          // Numbers
+          if (stream.match(NUMBER_RE)) return 'number';
+
+          // Punctuation
+          if (stream.match(PUNCT_RE)) return 'punctuation';
+
+          // Fallback: advance one char
+          stream.next();
+          return null;
+        }
+      };
+    });
+    CodeMirror.defineMIME('text/turtle', 'turtle');
+  </script>
 
   <script>
     // Global state
@@ -1257,9 +1444,11 @@ WHERE {
     let selectedFormat = 'rdfxml';
     let currentQueryIndex = 0;
     let currentRuleIndex = 0;
+    let currentRuleSubtab = 'rules'; // 'rules' | 'n3logic'
     let queryEditors = [];
     let rdfEditor;
     let ruleEditors = [];
+    let n3logicEditor;          // single N3 Logic editor (shared across rule sets)
     let rspSparqlEditor;
 
     let config = {
@@ -1311,6 +1500,16 @@ WHERE {
         indentUnit: 2,
         tabSize: 2,
       });
+
+      // Initialize N3 Logic editor (inside Rules > N3 Logic sub-panel)
+      n3logicEditor = CodeMirror.fromTextArea(document.getElementById('n3logic-editor'), {
+        mode: 'text/turtle',
+        theme: 'dracula',
+        lineNumbers: true,
+        lineWrapping: true,
+        indentUnit: 2,
+        tabSize: 2,
+      });
     }
 
     // Initialize
@@ -1334,6 +1533,22 @@ WHERE {
       });
     }
 
+    // Switch between rule sub-tabs: 'rules' or 'n3logic'
+    function switchRuleSubtab(subtab) {
+      currentRuleSubtab = subtab;
+
+      document.getElementById('ruleSubtabRules').classList.toggle('active', subtab === 'rules');
+      document.getElementById('ruleSubtabN3Logic').classList.toggle('active', subtab === 'n3logic');
+      document.getElementById('ruleSubpanelRules').classList.toggle('active', subtab === 'rules');
+      document.getElementById('ruleSubpanelN3Logic').classList.toggle('active', subtab === 'n3logic');
+
+      if (subtab === 'rules') {
+        ruleEditors.forEach(e => e.refresh());
+      } else {
+        if (n3logicEditor) n3logicEditor.refresh();
+      }
+    }
+
     // Tab switching
     function switchTab(tabName) {
       document.querySelectorAll('.editor-tab').forEach(tab => {
@@ -1350,6 +1565,7 @@ WHERE {
         rdfEditor.refresh();
       } else if (tabName === 'rules') {
         ruleEditors.forEach(e => e.refresh());
+        if (n3logicEditor) n3logicEditor.refresh();
       }
     }
 
@@ -1511,7 +1727,7 @@ WHERE {
         item.addEventListener('click', () => {
           const format = item.dataset.format;
           selectedFormat = format;
-          const label = format === 'rdfxml' ? 'RDF/XML' : 'N-Triples';
+          const label = format === 'rdfxml' ? 'RDF/XML' : format === 'ntriples' ? 'N-Triples' : 'Turtle Dataset';
           document.getElementById('formatLabel').textContent = label;
           formatDropdown.classList.remove('open');
           
@@ -1559,6 +1775,7 @@ WHERE {
       document.getElementById('shareBtn').addEventListener('click', () => {
         const queries = queryEditors.map(e => e.getValue()).filter(q => q.trim());
         const rdf = rdfEditor.getValue();
+        const n3logic = n3logicEditor ? n3logicEditor.getValue() : '';
         
         // Collect all rules from all rule editors
         const allRules = [];
@@ -1570,6 +1787,7 @@ WHERE {
         const state = {
           queries: queries,
           rdf: rdf,
+          n3logic: n3logic,
           rules: allRules,
           format: selectedFormat
         };
@@ -1785,26 +2003,34 @@ WHERE {
         .map(editor => editor.getValue().trim())
         .filter(q => q.length > 0);
 
-      // Parse multiple rules from all rule editors
+      // ONLY collect SPARQL rules from the Rules sub-panel (not N3 Logic)
       const allRules = [];
       ruleEditors.forEach(editor => {
         const editorRules = parseMultipleRules(editor.getValue());
         allRules.push(...editorRules);
       });
 
+      // ONLY collect N3 Logic data from the N3 Logic sub-panel
+      const n3logicData = n3logicEditor ? n3logicEditor.getValue().trim() : '';
+
       if (queries.length === 0) {
         addTerminalMessage('⚠ No queries provided', 'error');
         return;
       }
 
-      addTerminalMessage(`▶ Executing ${queries.length} query(ies) with ${allRules.length} rule(s)...`, 'info');
+      const ruleCount = allRules.length;
+      const n3logicNote = n3logicData ? ' + N3 Logic' : '';
+      addTerminalMessage(`▶ Executing ${queries.length} query(ies) with ${ruleCount} SPARQL rule(s)${n3logicNote}...`, 'info');
       const startTime = performance.now();
 
       try {
         const payload = {
           queries: queries,
           rdf: rdfData || undefined,
+          // SPARQL rules ONLY (from Rules sub-tab)
           rules: allRules.length > 0 ? allRules : undefined,
+          // N3 logic ONLY (from N3 Logic sub-tab)
+          n3logic: n3logicData || undefined,
           format: format
         };
 
@@ -1925,6 +2151,20 @@ WHERE {
 <http://example.org/Room103> <http://example.org#room> "Room103" .
 <http://example.org/Sensor3> <http://example.org#room> "Room103" .
 <http://example.org/Sensor3> <http://example.org#temperature> "95" .`);
+      } else if (format === 'turtle') {
+        // Switch to Turtle Dataset format (full IRIs only — no @prefix support)
+        rdfEditor.setValue(`<http://example.org/Room101> <http://example.org#temperature> "75" .
+<http://example.org/Room101> <http://example.org#room> "Room101" .
+<http://example.org/Sensor1> <http://example.org#room> "Room101" .
+<http://example.org/Sensor1> <http://example.org#temperature> "90" .
+<http://example.org/Room102> <http://example.org#temperature> "35" .
+<http://example.org/Room102> <http://example.org#room> "Room102" .
+<http://example.org/Sensor2> <http://example.org#room> "Room102" .
+<http://example.org/Sensor2> <http://example.org#temperature> "70" .
+<http://example.org/Room103> <http://example.org#temperature> "45" .
+<http://example.org/Room103> <http://example.org#room> "Room103" .
+<http://example.org/Sensor3> <http://example.org#room> "Room103" .
+<http://example.org/Sensor3> <http://example.org#temperature> "95" .`);
       } else {
         // Switch to RDF/XML format
         rdfEditor.setValue(`<?xml version="1.0"?>
@@ -1981,6 +2221,10 @@ WHERE {
           if (state.rdf) {
             rdfEditor.setValue(state.rdf);
           }
+
+          if (state.n3logic && n3logicEditor) {
+            n3logicEditor.setValue(state.n3logic);
+          }
           
           if (state.rules && state.rules.length > 0) {
             // Join all rules with double newlines for clarity
@@ -1990,7 +2234,7 @@ WHERE {
           
           if (state.format) {
             selectedFormat = state.format;
-            const label = state.format === 'rdfxml' ? 'RDF/XML' : 'N-Triples';
+            const label = state.format === 'rdfxml' ? 'RDF/XML' : state.format === 'ntriples' ? 'N-Triples' : 'Turtle Dataset';
             document.getElementById('formatLabel').textContent = label;
           }
         } catch (error) {
@@ -2011,6 +2255,7 @@ WHERE {
       queryEditors.forEach(e => e.refresh());
       rdfEditor.refresh();
       ruleEditors.forEach(e => e.refresh());
+      if (n3logicEditor) n3logicEditor.refresh();
       if (rspSparqlEditor) rspSparqlEditor.refresh();
     }
 
@@ -2063,6 +2308,11 @@ WHERE {
 • Write multiple rules in same tab to extend inference for one task
 • Click "Add Rule Tab" to create separate rule sets for different tasks
 • All queries execute in sequence with shared context
+
+<strong>N3 Logic (in Rules tab):</strong>
+• Switch to the "N3 Logic" sub-tab inside the Rules panel
+• Write N3 logic inference rules — they are applied before SPARQL rules and queries
+• Supports @prefix declarations and { premise } => { conclusion } syntax
 
 <strong>About:</strong>
 • Powered by Kolibrie SPARQL engine (Rust backend)

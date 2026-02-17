@@ -19,30 +19,34 @@ fn main() {
     kg.add_abox_triple("Bob", "parent", "Charlie");
     kg.add_abox_triple("Charlie", "parent", "David");
 
+    // Encode predicates once with proper locking
+    let parent_id = kg.dictionary.write().unwrap().encode("parent");
+    let ancestor_id = kg.dictionary.write().unwrap().encode("ancestor");
+
     let rule1 = Rule {
         premise: vec![
             (Term::Variable("X".to_string()), 
-                          Term::Constant(kg.dictionary.encode("parent")), 
+                          Term::Constant(parent_id), 
                           Term::Variable("Y".to_string())),
         ],
         conclusion: vec![(Term::Variable("X".to_string()), 
-                                  Term::Constant(kg.dictionary.encode("ancestor")), 
+                                  Term::Constant(ancestor_id), 
                                   Term::Variable("Y".to_string())),],
         filters: vec![],
     };
     
     let rule2 = Rule {
         premise: vec![
-            (Term::Variable("X". to_string()), 
-                          Term::Constant(kg. dictionary.encode("parent")), 
+            (Term::Variable("X".to_string()), 
+                          Term::Constant(parent_id), 
                           Term::Variable("Y".to_string())),
             (Term::Variable("Y".to_string()), 
-                          Term::Constant(kg.dictionary.encode("ancestor")), 
-                          Term::Variable("Z". to_string())),
+                          Term::Constant(ancestor_id), 
+                          Term::Variable("Z".to_string())),
         ],
         conclusion: vec![(Term::Variable("X".to_string()), 
-                                  Term::Constant(kg.dictionary. encode("ancestor")), 
-                                  Term::Variable("Z". to_string())),],
+                                  Term::Constant(ancestor_id), 
+                                  Term::Variable("Z".to_string())),],
         filters: vec![],
     };
     
@@ -51,7 +55,14 @@ fn main() {
 
     let inferred_facts = kg.infer_new_facts_semi_naive();
     for fact in inferred_facts {
-        println!("{:?}", kg.dictionary.decode_triple(&fact));
+        let dict = kg.dictionary.read().unwrap();
+        if let (Some(s), Some(p), Some(o)) = (
+            dict.decode(fact.subject),
+            dict.decode(fact.predicate),
+            dict.decode(fact.object)
+        ) {
+            println!("Inferred: {} {} {}", s, p, o);
+        }
     }
 
     let results = kg.query_abox(
@@ -61,6 +72,9 @@ fn main() {
     );
     
     for triple in results {
-        println!("Ancestor: {:?}", kg. dictionary.decode(triple.subject));
+        let dict = kg.dictionary.read().unwrap();
+        if let Some(ancestor) = dict.decode(triple.subject) {
+            println!("Ancestor: {}", ancestor);
+        }
     }
 }

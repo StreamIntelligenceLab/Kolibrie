@@ -34,9 +34,14 @@ fn main() {
     let filtered_triples = db.query()
         .with_predicate("<http://example.org/salary>")
         .filter(|triple| {
-            if let Some(object) = db.dictionary.decode(triple.object) {
-                return object.parse::<i32>().unwrap_or(0) > 5000;
+            // Acquire read lock for dictionary access
+            let dict = db.dictionary.read().unwrap();
+            if let Some(object) = dict.decode(triple.object) {
+                let result = object.parse::<i32>().unwrap_or(0) > 5000;
+                drop(dict); // Release lock early
+                return result;
             }
+            drop(dict);
             false
         })
         .get_triples();
@@ -44,9 +49,11 @@ fn main() {
     // Print the filtered triples
     println!("Filtered Triples:");
     for triple in filtered_triples.clone() {
-        let subject = db.dictionary.decode(triple.subject).unwrap_or("");
-        let predicate = db.dictionary.decode(triple.predicate).unwrap_or("");
-        let object = db.dictionary.decode(triple.object).unwrap_or("");
+        let dict = db.dictionary.read().unwrap();
+        let subject = dict.decode(triple.subject).unwrap_or("").to_string();
+        let predicate = dict.decode(triple.predicate).unwrap_or("").to_string();
+        let object = dict.decode(triple.object).unwrap_or("").to_string();
+        drop(dict);
         println!("{} {} {} .", subject, predicate, object);
     }
 }

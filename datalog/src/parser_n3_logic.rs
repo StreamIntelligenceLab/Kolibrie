@@ -16,10 +16,11 @@ use nom::{
     bytes::complete::{tag, take_until},
     character::complete::{alphanumeric1, multispace0, multispace1},
     sequence::{delimited, preceded, separated_pair, terminated},
-    multi::separated_list1,
+    multi::{separated_list1, many0},
     IResult, Parser,
 };
 use nom::combinator::map;
+use std::collections::HashMap;
 
 // Parsing prefix statements
 fn parse_prefix(input: &str) -> IResult<&str, (&str, &str)> {
@@ -118,7 +119,13 @@ pub fn parse_n3_rule<'a>(
     input: &'a str,
     graph: &mut Reasoner,
 ) -> IResult<&'a str, (Vec<(&'a str, &'a str)>, Rule)> {
-    let (input, prefixes) = separated_list1(multispace1, parse_prefix).parse(input)?;
+    let (input, prefixes) = many0(preceded(multispace0, parse_prefix)).parse(input)?;
+
+    // Build a HashMap for prefix expansion
+    let prefix_map: HashMap<String, String> = prefixes
+        .iter()
+        .map(|(prefix, uri)| (prefix.to_string(), uri.to_string()))
+        .collect();
 
     // Parse to an intermediate unresolved form with multiple conclusions
     let (input, (premise_triples, conclusion_triples)) = parse_unresolved_rule(input)?;
@@ -128,9 +135,9 @@ pub fn parse_n3_rule<'a>(
         .into_iter()
         .map(|(s, p, o)| {
             (
-                to_term(s, graph),
-                to_term(p, graph),
-                to_term(o, graph),
+                to_term(s, graph, &prefix_map),
+                to_term(p, graph, &prefix_map),
+                to_term(o, graph, &prefix_map),
             )
         })
         .collect();
@@ -140,9 +147,9 @@ pub fn parse_n3_rule<'a>(
         .into_iter()
         .map(|(s, p, o)| {
             (
-                to_term(s, graph),
-                to_term(p, graph),
-                to_term(o, graph),
+                to_term(s, graph, &prefix_map),
+                to_term(p, graph, &prefix_map),
+                to_term(o, graph, &prefix_map),
             )
         })
         .collect();
@@ -156,10 +163,36 @@ pub fn parse_n3_rule<'a>(
     Ok((input, (prefixes, rule)))
 }
 
-/// Helper to convert UnresolvedTerm to Term
-fn to_term(ut: UnresolvedTerm, graph: &mut Reasoner) -> Term {
+/// Helper to convert UnresolvedTerm to Term - NOW WITH PREFIX EXPANSION
+fn to_term(ut: UnresolvedTerm, graph: &mut Reasoner, prefix_map: &HashMap<String, String>) -> Term {
     match ut {
         UnresolvedTerm::Var(v) => Term::Variable(v),
-        UnresolvedTerm::Prefixed(s) => Term::Constant(graph.dictionary.encode(&s)),
+        UnresolvedTerm::Prefixed(s) => {
+            // Expand the prefix!
+            let expanded = expand_prefix(&s, prefix_map);
+            let mut dict = graph.dictionary.write().unwrap();
+            let id = dict.encode(&expanded);
+            drop(dict);
+            Term::Constant(id)
+        }
+    }
+}
+
+/// Expand a prefixed name like "ex:hasSensor" to full URI like "http://example.org/hasSensor"
+fn expand_prefix(prefixed: &str, prefix_map: &HashMap<String, String>) -> String {
+    if let Some(colon_pos) = prefixed.find(':') {
+        let prefix = &prefixed[..colon_pos];
+        let local = &prefixed[colon_pos + 1..];
+        
+        if let Some(base_uri) = prefix_map.get(prefix) {
+            // Expand: prefix + local part
+            format!("{}{}", base_uri, local)
+        } else {
+            // No prefix found, return as-is
+            prefixed.to_string()
+        }
+    } else {
+        // No colon, return as-is
+        prefixed.to_string()
     }
 }

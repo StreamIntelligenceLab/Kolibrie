@@ -22,20 +22,25 @@ fn example_with_contradictions() -> Reasoner {
     kg.add_abox_triple("john", "enrolledIn", "physics101");
 
     // Add a constraint: No one can be both a professor and a student
+    let mut dict = kg.dictionary.write().unwrap();
+    let isa_id = dict.encode("isA");
+    let professor_id = dict.encode("professor");
+    let student_id = dict.encode("student");
+    drop(dict);
+    
     let constraint = Rule {
         premise: vec![
             (
                 Term::Variable("X".to_string()),
-                Term::Constant(kg.dictionary.encode("isA")),
-                Term::Constant(kg.dictionary.encode("professor"))
+                Term::Constant(isa_id),
+                Term::Constant(professor_id)
             ),
             (
                 Term::Variable("X".to_string()),
-                Term::Constant(kg.dictionary.encode("isA")),
-                Term::Constant(kg.dictionary.encode("student"))
+                Term::Constant(isa_id),
+                Term::Constant(student_id)
             )
         ],
-        // Using a conclusions vector with a single element for the constraint
         conclusion: vec![
             (
                 Term::Constant(0),
@@ -48,18 +53,22 @@ fn example_with_contradictions() -> Reasoner {
     kg.add_constraint(constraint);
 
     // Add inference rules
+    let mut dict = kg.dictionary.write().unwrap();
+    let teaches_id = dict.encode("teaches");
+    let enrolled_id = dict.encode("enrolledIn");
+    drop(dict);
+    
     let professor_rule = Rule {
         premise: vec![(
             Term::Variable("X".to_string()),
-            Term::Constant(kg.dictionary.encode("teaches")),
+            Term::Constant(teaches_id),
             Term::Variable("Y".to_string())
         )],
-        // Using a conclusions vector with a single element for the professor rule
         conclusion: vec![
             (
                 Term::Variable("X".to_string()),
-                Term::Constant(kg.dictionary.encode("isA")),
-                Term::Constant(kg.dictionary.encode("professor"))
+                Term::Constant(isa_id),
+                Term::Constant(professor_id)
             )
         ],
         filters: vec![],
@@ -69,15 +78,14 @@ fn example_with_contradictions() -> Reasoner {
     let student_rule = Rule {
         premise: vec![(
             Term::Variable("X".to_string()),
-            Term::Constant(kg.dictionary.encode("enrolledIn")),
+            Term::Constant(enrolled_id),
             Term::Variable("Y".to_string())
         )],
-        // Using a conclusions vector with a single element for the student rule
         conclusion: vec![
             (
                 Term::Variable("X".to_string()),
-                Term::Constant(kg.dictionary.encode("isA")),
-                Term::Constant(kg.dictionary.encode("student"))
+                Term::Constant(isa_id),
+                Term::Constant(student_id)
             )
         ],
         filters: vec![],
@@ -102,17 +110,23 @@ fn main() {
     // Print newly inferred facts
     println!("\nNewly inferred facts:");
     for fact in inferred_facts {
+        let dict = kg.dictionary.read().unwrap();
         println!("{} {} {}", 
-            kg.dictionary.decode(fact.subject).unwrap_or("unknown"),
-            kg.dictionary.decode(fact.predicate).unwrap_or("unknown"),
-            kg.dictionary.decode(fact.object).unwrap_or("unknown")
+            dict.decode(fact.subject).unwrap_or("unknown"),
+            dict.decode(fact.predicate).unwrap_or("unknown"),
+            dict.decode(fact.object).unwrap_or("unknown")
         );
     }
 
     // Query for John's status
+    let mut dict = kg.dictionary.write().unwrap();
+    let john_id = dict.encode("john");
+    let isa_id = dict.encode("isA");
+    drop(dict);
+    
     let query = (
-        Term::Constant(kg.dictionary.encode("john")),
-        Term::Constant(kg.dictionary.encode("isA")),
+        Term::Constant(john_id),
+        Term::Constant(isa_id),
         Term::Variable("Role".to_string())
     );
 
@@ -120,18 +134,20 @@ fn main() {
     println!("\nQuery results for John's roles:");
     for binding in results {
         if let Some(&role_id) = binding.get("Role") {
-            println!("Role: {}", kg.dictionary.decode(role_id).unwrap_or("unknown"));
+            let dict = kg.dictionary.read().unwrap();
+            println!("Role: {}", dict.decode(role_id).unwrap_or("unknown"));
         }
     }
 }
 
 fn print_all_facts(kg: &Reasoner) {
     let facts = kg.index_manager.query(None, None, None);
+    let dict = kg.dictionary.read().unwrap();
     for fact in facts {
         println!("{} {} {}", 
-            kg.dictionary.decode(fact.subject).unwrap_or("unknown"),
-            kg.dictionary.decode(fact.predicate).unwrap_or("unknown"),
-            kg.dictionary.decode(fact.object).unwrap_or("unknown")
+            dict.decode(fact.subject).unwrap_or("unknown"),
+            dict.decode(fact.predicate).unwrap_or("unknown"),
+            dict.decode(fact.object).unwrap_or("unknown")
         );
     }
 }

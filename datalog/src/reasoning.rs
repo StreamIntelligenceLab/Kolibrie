@@ -18,13 +18,14 @@ use shared::rule::Rule;
 use shared::join_algorithm::perform_hash_join_for_rules;
 use rayon::prelude::*;
 use std::sync::Arc;
+use std::sync::RwLock;
 use shared::rule::FilterCondition;
 
 // Logic part: Knowledge Graph
 
 #[derive(Debug, Clone)]
 pub struct Reasoner {
-    pub dictionary: Dictionary,
+    pub dictionary: Arc<RwLock<Dictionary>>,
     pub rules: Vec<Rule>, // List of dynamic rules
 
     pub index_manager: UnifiedIndex,
@@ -35,7 +36,7 @@ pub struct Reasoner {
 impl Reasoner {
     pub fn new() -> Self {
         Self {
-            dictionary: Dictionary::new(),
+            dictionary: Arc::new(RwLock::new(Dictionary::new())),
             rules: Vec::new(),
             index_manager: UnifiedIndex::new(),
             rule_index: RuleIndex::new(),
@@ -45,9 +46,11 @@ impl Reasoner {
 
     /// Add an ABox triple (instance-level information)
     pub fn add_abox_triple(&mut self, subject: &str, predicate: &str, object: &str) {
-        let s = self.dictionary.encode(subject);
-        let p = self.dictionary.encode(predicate);
-        let o = self.dictionary.encode(object);
+        let mut dict = self.dictionary.write().unwrap();
+        let s = dict.encode(subject);
+        let p = dict.encode(predicate);
+        let o = dict.encode(object);
+        drop(dict);  // Release lock early
 
         self.index_manager.insert(&Triple { subject: s, predicate: p, object: o });
     }
@@ -59,9 +62,11 @@ impl Reasoner {
         predicate: Option<&str>,
         object: Option<&str>,
     ) -> Vec<Triple> {
-        let s = subject.map(|s| self.dictionary.encode(s));
-        let p = predicate.map(|p| self.dictionary.encode(p));
-        let o = object.map(|o| self.dictionary.encode(o));
+        let mut dict = self.dictionary.write().unwrap();
+        let s = subject.map(|s| dict.encode(s));
+        let p = predicate.map(|p| dict.encode(p));
+        let o = object.map(|o| dict.encode(o));
+        drop(dict);  // Release lock early
 
         self.index_manager.query(s, p, o)
     }
@@ -116,13 +121,14 @@ impl Reasoner {
         // Extract variable names and predicate from the premise
         let (subject_var, predicate_str, object_var) = self.extract_join_parameters(premise);
         
+        let dict = self.dictionary.read().unwrap();
         // Use the optimized hash join
         perform_hash_join_for_rules(
             subject_var,
             predicate_str,
             object_var,
             all_facts.clone(),
-            &self.dictionary,
+            &dict,
             current_bindings,
             None,
         )
@@ -139,13 +145,14 @@ impl Reasoner {
         let mut results = Vec::new();
         
         let (subject_term, _, object_term) = premise;
+        let dictionary = self.dictionary.read().unwrap();
         
         // For each binding
         for binding in current_bindings {
             // Check if predicate variable is already bound
             if let Some(pred_value) = binding.get(pred_var) {
                 // Predicate is bound
-                let pred_id = self.dictionary.string_to_id.get(pred_value).copied();
+                let pred_id = dictionary.string_to_id.get(pred_value).copied();
                 
                 if let Some(pred_id) = pred_id {
                     // Find matching triples
@@ -158,7 +165,7 @@ impl Reasoner {
                             // Match subject
                             match subject_term {
                                 Term::Variable(var) => {
-                                    let subj_str = self.dictionary.decode(triple.subject).unwrap().to_string();
+                                    let subj_str = dictionary.decode(triple.subject).unwrap().to_string();
                                     if let Some(existing) = new_binding.get(var) {
                                         if existing != &subj_str {
                                             matches = false;
@@ -181,7 +188,7 @@ impl Reasoner {
                             // Match object
                             match object_term {
                                 Term::Variable(var) => {
-                                    let obj_str = self.dictionary.decode(triple.object).unwrap().to_string();
+                                    let obj_str = dictionary.decode(triple.object).unwrap().to_string();
                                     if let Some(existing) = new_binding.get(var) {
                                         if existing != &obj_str {
                                             matches = false;
@@ -210,13 +217,13 @@ impl Reasoner {
                     let mut matches = true;
                     
                     // Bind predicate
-                    let pred_str = self.dictionary.decode(triple.predicate).unwrap().to_string();
+                    let pred_str = dictionary.decode(triple.predicate).unwrap().to_string();
                     new_binding.insert(pred_var.to_string(), pred_str);
                     
                     // Match subject
                     match subject_term {
                         Term::Variable(var) => {
-                            let subj_str = self.dictionary.decode(triple.subject).unwrap().to_string();
+                            let subj_str = dictionary.decode(triple.subject).unwrap().to_string();
                             if let Some(existing) = new_binding.get(var) {
                                 if existing != &subj_str {
                                     matches = false;
@@ -239,7 +246,7 @@ impl Reasoner {
                     // Match object
                     match object_term {
                         Term::Variable(var) => {
-                            let obj_str = self.dictionary.decode(triple.object).unwrap().to_string();
+                            let obj_str = dictionary.decode(triple.object).unwrap().to_string();
                             if let Some(existing) = new_binding.get(var) {
                                 if existing != &obj_str {
                                     matches = false;
@@ -266,6 +273,7 @@ impl Reasoner {
     }
 
     fn extract_join_parameters(&self, premise: &TriplePattern) -> (String, String, String) {
+        let dictionary = self.dictionary.read().unwrap();
         let (subject_term, predicate_term, object_term) = premise;
         
         let subject_var = match subject_term {
@@ -286,7 +294,7 @@ impl Reasoner {
         
         let predicate_str = match predicate_term {
             Term::Constant(c) => {
-                self.dictionary.decode(*c).unwrap_or("unknown").to_string()
+                dictionary.decode(*c).unwrap_or("unknown").to_string()
             }
             Term::Variable(v) => {
                 format!("__var_pred_{}", v)
@@ -297,9 +305,10 @@ impl Reasoner {
     }
 
     fn convert_string_binding_to_u32(&self, binding: &BTreeMap<String, String>) -> HashMap<String, u32> {
+        let dictionary = self.dictionary.read().unwrap();
         let mut result = HashMap::new();
         for (var, value) in binding {
-            if let Some(&id) = self.dictionary.string_to_id.get(value) {
+            if let Some(&id) = dictionary.string_to_id.get(value) {
                 result.insert(var.clone(), id);
             }
         }
@@ -319,9 +328,13 @@ impl Reasoner {
                 let bindings = self.evaluate_rule_with_optimized_join(rule, &all_facts);
                 
                 for binding in bindings {
-                    if evaluate_filters(&binding, &rule.filters, &self.dictionary) {
+                    let dict = self.dictionary.read().unwrap();
+                    if evaluate_filters(&binding, &rule.filters, &dict) {
+                        drop(dict);
                         for conclusion in &rule.conclusion {
-                            let inferred = construct_triple(conclusion, &binding, &mut self.dictionary);
+                            let mut dict = self.dictionary.write().unwrap();
+                            let inferred = construct_triple(conclusion, &binding, &mut dict);
+                            drop(dict);
                             if !known_facts.contains(&inferred) {
                                 known_facts.insert(inferred.clone());
                                 new_facts_this_round.push(inferred.clone());
@@ -359,9 +372,13 @@ impl Reasoner {
                 let bindings = self.evaluate_rule_with_delta(&rule, &all_facts.iter().cloned().collect(), &delta);
                 
                 for binding in bindings {
-                    if evaluate_filters(&binding, &rule.filters, &self.dictionary) {
+                    let dict = self.dictionary.read().unwrap();
+                    if evaluate_filters(&binding, &rule.filters, &dict) {
+                        drop(dict);
                         for conclusion in &rule.conclusion {
-                            let inferred = construct_triple(conclusion, &binding, &mut self.dictionary);
+                            let mut dict = self.dictionary.write().unwrap();
+                            let inferred = construct_triple(conclusion, &binding, &mut dict);
+                            drop(dict);
                             if !all_facts.contains(&inferred) {
                                 new_delta.insert(inferred.clone());
                                 self.index_manager.insert(&inferred);
@@ -451,7 +468,9 @@ impl Reasoner {
                                     if matches_rule_pattern(&rule.premise[0], triple1, &mut variable_bindings) {
                                         // Process each conclusion
                                         for conclusion in &rule.conclusion {
-                                            let inferred = construct_triple(conclusion, &variable_bindings, &mut self.dictionary.clone());
+                                            let mut dict = self.dictionary.write().unwrap();
+                                            let inferred = construct_triple(conclusion, &variable_bindings, &mut dict);
+                                            drop(dict);
                                             if !all_facts_arc.contains(&inferred) {
                                                 local_set.insert(inferred);
                                             }
@@ -472,7 +491,9 @@ impl Reasoner {
                                                     // Process each conclusion
                                                     rule.conclusion.iter()
                                                         .filter_map(|conclusion| {
-                                                            let inferred = construct_triple(conclusion, &variable_bindings_2, &mut self.dictionary.clone());
+                                                            let mut dict = self.dictionary.write().unwrap();
+                                                            let inferred = construct_triple(conclusion, &variable_bindings_2, &mut dict);
+                                                            drop(dict);
                                                             if !all_facts_arc.contains(&inferred) {
                                                                 Some(inferred)
                                                             } else {
@@ -499,7 +520,9 @@ impl Reasoner {
                                                     // Process each conclusion
                                                     rule.conclusion.iter()
                                                         .filter_map(|conclusion| {
-                                                            let inferred = construct_triple(conclusion, &variable_bindings_2b, &mut self.dictionary.clone());
+                                                            let mut dict = self.dictionary.write().unwrap();
+                                                            let inferred = construct_triple(conclusion, &variable_bindings_2b, &mut dict);
+                                                            drop(dict);
                                                             if !all_facts_arc.contains(&inferred) {
                                                                 Some(inferred)
                                                             } else {
@@ -687,10 +710,14 @@ impl Reasoner {
             for rule in &self.rules {
                 let bindings = join_rule(rule, &all_facts, &delta);
                 for binding in bindings {
-                    if evaluate_filters(&binding, &rule.filters, &self.dictionary) {
+                    let dict = self.dictionary.read().unwrap();
+                    if evaluate_filters(&binding, &rule.filters, &dict) {
+                        drop(dict);
                         // Process each conclusion
                         for conclusion in &rule.conclusion {
-                            let inferred = construct_triple(conclusion, &binding, &mut self.dictionary);
+                            let mut dict = self.dictionary.write().unwrap();
+                            let inferred = construct_triple(conclusion, &binding, &mut dict);
+                            drop(dict);
                             
                             // Check if adding this fact would cause inconsistency
                             let mut temp_facts = all_facts.clone();
