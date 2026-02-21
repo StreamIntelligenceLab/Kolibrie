@@ -451,6 +451,7 @@ where
     r2s_operator: Arc<Mutex<Relation2StreamOperator<O>>>,
     window_configs: Vec<RSPWindow>,
     query_execution_mode: QueryExecutionMode,
+    operation_mode: OperationMode,
     shared_variables: Vec<String>,
     // Channel for collecting window results for cross-window joins
     window_result_sender: Sender<WindowResult>,
@@ -617,6 +618,7 @@ where
             ))),
             window_configs: query_config.windows.clone(),
             query_execution_mode,
+            operation_mode,
             shared_variables: query_config.shared_variables.clone(),
             window_result_sender: result_sender,
             window_result_receiver: result_receiver,
@@ -628,7 +630,11 @@ where
             mode @ (OperationMode::SingleThread | OperationMode::MultiThread) => {
                 engine.register_windows(mode);
                 if matches!(mode, OperationMode::MultiThread) {
-                    engine.start_cross_window_coordinator();
+                    let has_joins = engine.windows.len() > 1
+                        || engine.rsp_query_plan.static_data_plan.is_some();
+                    if has_joins {
+                        engine.start_cross_window_coordinator();
+                    }
                 }
             }
         }
@@ -638,7 +644,8 @@ where
 
     /// Register windows using macros to eliminate code duplication
     fn register_windows(&mut self, operation_mode: OperationMode) {
-        let has_joins = self.windows.len() > 1 || !self.shared_variables.is_empty();
+        let has_joins = self.windows.len() > 1
+            || self.rsp_query_plan.static_data_plan.is_some();
 
         for (window_idx, window) in self.windows.iter_mut().enumerate() {
             let query = self.rsp_query_plan.window_plans[window_idx].clone();
@@ -678,57 +685,70 @@ where
     }
 
     /// Start a coordinator thread that collects and joins results from multiple windows
+    /// (and optionally joins with static background data).
     fn start_cross_window_coordinator(&self)
     where
         O: From<Vec<(String, String)>>,
     {
-        if self.windows.len() <= 1 {
-            return; // No need for coordinator with single window
-        }
-        
+        // Note: the early-return guard was removed — the caller already ensures
+        // that joining is actually needed before calling this function.
+
         let receiver = self.window_result_receiver.clone();
         let consumer = self.r2s_consumer.function.clone();
         let num_windows = self.windows.len();
-        
+        let static_data_plan = self.rsp_query_plan.static_data_plan.clone();
+        let r2r = self.r2r.clone();
+
         thread::spawn(move || {
             // Keep the most recent results from each window
             let mut latest_window_results: HashMap<String, Vec<HashMap<String, String>>> = HashMap::new();
-            
+
             loop {
                 match receiver.recv() {
                     Ok(window_result) => {
-                        debug!("Coordinator received {} results from window: {}", 
+                        debug!("Coordinator received {} results from window: {}",
                             window_result.results.len(), window_result.window_iri);
-                        
+
                         // Update the latest results for this window (replace old results)
                         latest_window_results.insert(
                             window_result.window_iri.clone(),
                             window_result.results.clone()
                         );
-                        
+
                         // If we have results from ALL windows, perform join
                         if latest_window_results.len() == num_windows {
                             debug!("Coordinator: All {} windows have results, performing join", num_windows);
-                            
+
                             // Check that all windows have non-empty results
                             let all_have_results = latest_window_results.values().all(|v| !v.is_empty());
-                            
+
                             if all_have_results {
                                 let joined = join_window_results(&latest_window_results);
-                                
-                                debug!("Coordinator: Joined {} results", joined.len());
-                                
-                                // Output joined results
-                                for binding in joined {
+
+                                debug!("Coordinator: Joined {} results from windows", joined.len());
+
+                                // Apply static data join if a static plan exists
+                                let final_results = if let Some(ref plan) = static_data_plan {
+                                    let static_bindings = execute_plan_as_bindings(&r2r, plan);
+                                    debug!("Coordinator: Static bindings: {}", static_bindings.len());
+                                    natural_join(&joined, &static_bindings)
+                                } else {
+                                    joined
+                                };
+
+                                debug!("Coordinator: Final {} results after static join", final_results.len());
+
+                                // Output final results
+                                for binding in final_results {
                                     let output: Vec<(String, String)> = binding.into_iter().collect();
                                     (consumer)(output.into());
                                 }
-                                
+
                                 debug!("Coordinator: Join complete, keeping window states");
                             }
                         } else {
-                            debug!("Coordinator: Waiting for more windows ({}/{}) - have results from: {:?}", 
-                                latest_window_results.len(), 
+                            debug!("Coordinator: Waiting for more windows ({}/{}) - have results from: {:?}",
+                                latest_window_results.len(),
                                 num_windows,
                                 latest_window_results.keys().collect::<Vec<_>>());
                         }
@@ -739,14 +759,17 @@ where
                     }
                 }
             }
-            
+
             debug!("Coordinator: Shutdown complete");
         });
     }
 
     /// Add data to appropriate window based on stream IRI
     pub fn add_to_stream(&mut self, stream_iri: &str, event_item: I, ts: usize) {
-        if self.windows.len() > 1 {
+        if matches!(self.operation_mode, OperationMode::SingleThread)
+            && (self.windows.len() > 1
+                || self.rsp_query_plan.static_data_plan.is_some())
+        {
             self.process_single_thread_window_results();
         }
 
@@ -811,22 +834,33 @@ where
         // Check if we have results from ALL windows
         if window_buffers.len() == num_windows {
             debug!("SingleThread: All windows have results, performing join");
-            
+
             // Perform join across all windows
             let joined_results = join_window_results(&window_buffers);
-            
-            debug!("SingleThread: Joined {} results", joined_results.len());
-            
-            // Output joined results
-            for binding in joined_results {
+
+            debug!("SingleThread: Joined {} results from windows", joined_results.len());
+
+            // Apply static data join if a static plan exists
+            let final_results = if let Some(ref plan) = self.rsp_query_plan.static_data_plan {
+                let static_bindings = execute_plan_as_bindings(&self.r2r, plan);
+                debug!("SingleThread: Static bindings: {}", static_bindings.len());
+                natural_join(&joined_results, &static_bindings)
+            } else {
+                joined_results
+            };
+
+            debug!("SingleThread: Final {} results after static join", final_results.len());
+
+            // Output final results
+            for binding in final_results {
                 let output: Vec<(String, String)> = binding.into_iter().collect();
                 (consumer)(output.into());
             }
-            
+
             // Clear buffer after outputting
             window_buffers.clear();
         } else {
-            debug!("SingleThread: Waiting for more windows ({}/{})", 
+            debug!("SingleThread: Waiting for more windows ({}/{})",
                 window_buffers.len(), num_windows);
         }
     }
@@ -842,6 +876,9 @@ where
     pub fn stop(&mut self) {
         for window in &mut self.windows {
             window.stop();
+        }
+        if matches!(self.operation_mode, OperationMode::SingleThread) {
+            self.process_single_thread_window_results();
         }
     }
 
@@ -860,57 +897,90 @@ where
     }
 }
 
-/// Join results from multiple windows based on shared variables
+/// Natural join of two binding sets: compatible bindings are merged, incompatible ones are dropped.
+/// Produces the Cartesian product when the two sets share no variables.
+fn natural_join(
+    left: &[HashMap<String, String>],
+    right: &[HashMap<String, String>],
+) -> Vec<HashMap<String, String>> {
+    if left.is_empty() || right.is_empty() {
+        return Vec::new();
+    }
+
+    let mut result = Vec::new();
+
+    for left_binding in left {
+        for right_binding in right {
+            // Check compatibility: shared variables must agree on value
+            let mut compatible = true;
+            for (var, val) in left_binding {
+                if let Some(right_val) = right_binding.get(var) {
+                    if val != right_val {
+                        compatible = false;
+                        break;
+                    }
+                }
+            }
+
+            if compatible {
+                let mut merged = left_binding.clone();
+                for (k, v) in right_binding {
+                    merged.insert(k.clone(), v.clone());
+                }
+                result.push(merged);
+            }
+        }
+    }
+
+    result
+}
+
+/// Join results from multiple windows using natural join semantics.
 fn join_window_results(window_buffers: &HashMap<String, Vec<HashMap<String, String>>>) -> Vec<HashMap<String, String>> {
     if window_buffers.is_empty() {
         return Vec::new();
     }
-    
-    // Get all window results as a vector
+
     let mut all_windows: Vec<Vec<HashMap<String, String>>> = window_buffers.values().cloned().collect();
-    
+
     if all_windows.len() == 1 {
         return all_windows.into_iter().next().unwrap();
     }
-    
-    // Start with first window results
+
+    // Iteratively natural-join all window result sets
     let mut joined = all_windows.remove(0);
-    
-    // Join with each remaining window
     for window_results in all_windows {
-        let mut new_joined = Vec::new();
-        
-        for left_binding in &joined {
-            for right_binding in &window_results {
-                // Check if bindings are compatible (shared variables have same values)
-                let mut compatible = true;
-                
-                // Check shared variables
-                for (var, val) in left_binding {
-                    if let Some(right_val) = right_binding.get(var) {
-                        // Same variable exists in both - must have same value
-                        if val != right_val {
-                            compatible = false;
-                            break;
-                        }
-                    }
-                }
-                
-                if compatible {
-                    // Merge bindings (Cartesian product if no shared vars, natural join if shared)
-                    let mut merged = left_binding.clone();
-                    for (k, v) in right_binding {
-                        merged.insert(k.clone(), v.clone());
-                    }
-                    new_joined.push(merged);
-                }
-            }
-        }
-        
-        joined = new_joined;
+        joined = natural_join(&joined, &window_results);
     }
-    
+
     joined
+}
+
+/// Execute a physical plan against the R2R store and return the results as
+/// a list of variable-binding maps.  Works by downcasting `O` to
+/// `Vec<(String, String)>`, which is the concrete output type used by
+/// `SimpleR2R`.  Returns an empty vec if the downcast fails (i.e. a
+/// different concrete `O` is in use).
+fn execute_plan_as_bindings<I, O>(
+    r2r: &Arc<Mutex<Box<dyn R2ROperator<I, Vec<PhysicalOperator>, O>>>>,
+    plan: &PhysicalOperator,
+) -> Vec<HashMap<String, String>>
+where
+    I: 'static,
+    O: 'static,
+{
+    let mut store = r2r.lock().unwrap();
+    let results = store.execute_query(plan);
+    drop(store);
+
+    let mut mapped = Vec::new();
+    for res in &results {
+        if let Some(bindings) = (res as &dyn std::any::Any).downcast_ref::<Vec<(String, String)>>() {
+            let map: HashMap<String, String> = bindings.iter().cloned().collect();
+            mapped.push(map);
+        }
+    }
+    mapped
 }
 
 pub struct SimpleR2R {
@@ -1312,8 +1382,201 @@ mod tests {
             let has_s2 = binding.iter().any(|(k, _)| k == "s2");
             has_s1 && has_s2
         }).count();
-        
+
         println!("Number of properly joined results: {}", joined_count);
         assert!(joined_count > 0, "Should have at least one properly joined result");
+    }
+
+    /// Single window + static WHERE patterns: results must contain both
+    /// the window variable (?sensor) and the static variable (?room).
+    #[test]
+    fn rsp_ql_single_window_static_join() {
+        let result_container = Arc::new(Mutex::new(Vec::new()));
+        let result_container_clone = Arc::clone(&result_container);
+        let function = Box::new(move |r: Vec<(String, String)>| {
+            println!("Static-join Bindings: {:?}", r);
+            result_container_clone.lock().unwrap().push(r);
+        });
+        let result_consumer = ResultConsumer {
+            function: Arc::new(function),
+        };
+        let r2r = Box::new(SimpleR2R::with_execution_mode(QueryExecutionMode::Volcano));
+
+        // Query: window pattern + static pattern joined on ?sensor
+        let rsp_ql_query = r#"
+            REGISTER RSTREAM <http://out/stream> AS
+            SELECT *
+            FROM NAMED WINDOW :wind ON :stream1 [RANGE 10 STEP 2]
+            WHERE {
+                WINDOW :wind {
+                    ?sensor a <http://www.w3.org/test/Sensor> .
+                }
+                ?sensor <http://www.w3.org/test/locatedIn> ?room .
+            }
+        "#;
+
+        let mut engine: RSPEngine<Triple, Vec<(String, String)>> = RSPBuilder::new()
+            .add_rsp_ql_query(rsp_ql_query)
+            .add_consumer(result_consumer)
+            .add_r2r(r2r)
+            .set_operation_mode(OperationMode::SingleThread)
+            .build()
+            .expect("Failed to build RSP engine");
+
+        // Pre-parse the static IRI so the dictionary is aligned, then add
+        // the location triple directly to the R2R store (static background data).
+        let location_triple_str =
+            "<http://test.be/sensor0> <http://www.w3.org/test/locatedIn> <http://test.be/room1> .";
+        let location_triples = engine.parse_data(location_triple_str);
+        {
+            let mut store = engine.r2r.lock().unwrap();
+            for t in location_triples {
+                store.add(t);
+            }
+        }
+
+        // Stream: sensor data
+        for i in 0..5 {
+            let data = format!(
+                "<http://test.be/sensor{}> a <http://www.w3.org/test/Sensor> .",
+                i
+            );
+            let triples = engine.parse_data(&data);
+            for triple in triples {
+                engine.add_to_stream("stream1", triple, i);
+            }
+        }
+
+        engine.stop();
+
+        let results = result_container.lock().unwrap();
+        println!("Static-join total results: {}", results.len());
+
+        // At least one result must have both ?sensor and ?room
+        let has_static_join = results.iter().any(|binding| {
+            let has_sensor = binding.iter().any(|(k, _)| k == "sensor");
+            let has_room = binding.iter().any(|(k, _)| k == "room");
+            has_sensor && has_room
+        });
+
+        assert!(
+            has_static_join,
+            "Expected joined results with both ?sensor and ?room, got: {:?}",
+            *results
+        );
+    }
+
+    /// Two windows + static WHERE patterns: results must contain variables
+    /// from both windows (?sensor, ?room) and confirm the static join filtered
+    /// them correctly.
+    #[test]
+    fn rsp_ql_multi_window_static_join() {
+        let result_container = Arc::new(Mutex::new(Vec::new()));
+        let result_container_clone = Arc::clone(&result_container);
+        let function = Box::new(move |r: Vec<(String, String)>| {
+            println!("Multi-window static-join Bindings: {:?}", r);
+            result_container_clone.lock().unwrap().push(r);
+        });
+        let result_consumer = ResultConsumer {
+            function: Arc::new(function),
+        };
+        let r2r = Box::new(SimpleR2R::with_execution_mode(QueryExecutionMode::Volcano));
+
+        // Two windows (sensor / room) joined with static location triples.
+        let rsp_ql_query = r#"
+            REGISTER RSTREAM <http://out/stream> AS
+            SELECT *
+            FROM NAMED WINDOW :wind1 ON :stream1 [RANGE 10 STEP 2]
+            FROM NAMED WINDOW :wind2 ON :stream2 [RANGE 10 STEP 2]
+            WHERE {
+                WINDOW :wind1 {
+                    ?sensor a <http://www.w3.org/test/Sensor> .
+                }
+                WINDOW :wind2 {
+                    ?room a <http://www.w3.org/test/Room> .
+                }
+                ?sensor <http://www.w3.org/test/locatedIn> ?room .
+            }
+        "#;
+
+        let mut engine: RSPEngine<Triple, Vec<(String, String)>> = RSPBuilder::new()
+            .add_rsp_ql_query(rsp_ql_query)
+            .add_consumer(result_consumer)
+            .add_r2r(r2r)
+            .set_operation_mode(OperationMode::SingleThread)
+            .build()
+            .expect("Failed to build RSP engine");
+
+        // Add static location triple: sensor0 is located in room0.
+        let location_triple_str =
+            "<http://test.be/sensor0> <http://www.w3.org/test/locatedIn> <http://test.be/room0> .";
+        let location_triples = engine.parse_data(location_triple_str);
+        {
+            let mut store = engine.r2r.lock().unwrap();
+            for t in location_triples {
+                store.add(t);
+            }
+        }
+
+        // Stream1: sensors (sensor0 will match the static location triple)
+        for i in 0..3 {
+            let data = format!(
+                "<http://test.be/sensor{}> a <http://www.w3.org/test/Sensor> .",
+                i
+            );
+            let triples = engine.parse_data(&data);
+            for triple in triples {
+                engine.add_to_stream("stream1", triple, i);
+            }
+        }
+
+        // Stream2: rooms (room0 will match the static location triple)
+        for i in 0..3 {
+            let data = format!(
+                "<http://test.be/room{}> a <http://www.w3.org/test/Room> .",
+                i
+            );
+            let triples = engine.parse_data(&data);
+            for triple in triples {
+                engine.add_to_stream("stream2", triple, i + 10);
+            }
+        }
+
+        engine.stop();
+
+        let results = result_container.lock().unwrap();
+        println!("Multi-window static-join total results: {}", results.len());
+
+        // Results must have both ?sensor and ?room
+        let has_both_windows = results.iter().any(|binding| {
+            let has_sensor = binding.iter().any(|(k, _)| k == "sensor");
+            let has_room = binding.iter().any(|(k, _)| k == "room");
+            has_sensor && has_room
+        });
+
+        assert!(
+            has_both_windows,
+            "Expected joined results with both ?sensor and ?room, got: {:?}",
+            *results
+        );
+
+        // Verify that the static join filtered: only (sensor0, room0) should appear
+        // (sensor1/sensor2 have no location triple, room1/room2 are not sensor0's location)
+        let all_valid = results.iter().all(|binding| {
+            let sensor = binding.iter().find(|(k, _)| k == "sensor").map(|(_, v)| v.as_str());
+            let room = binding.iter().find(|(k, _)| k == "room").map(|(_, v)| v.as_str());
+            match (sensor, room) {
+                (Some(s), Some(r)) => {
+                    s.contains("sensor0") && r.contains("room0")
+                }
+                _ => true,
+            }
+        });
+
+        assert!(
+            all_valid,
+            "Static join should only produce (sensor0, room0) pairs, got: {:?}",
+            *results
+        );
     }
 }
