@@ -19,15 +19,17 @@ use crate::rsp::s2r::ContentContainer;
 
 #[cfg(not(test))]
 use log::{debug, error}; // Use log crate when building application
-use shared::query::{StreamType, WindowBlock, WindowClause};
+use shared::query::{Fallback, StreamType, SyncPolicy, WindowBlock, WindowClause};
 use shared::terms::Term;
 use shared::triple::Triple;
 use std::collections::HashMap;
 use std::fmt::Debug;
 use std::hash::Hash;
-use crossbeam::channel::{unbounded, Receiver, Sender};
+use crossbeam::channel::{unbounded, RecvTimeoutError, Receiver, Sender};
+use std::collections::HashSet;
 use std::sync::{Arc, Mutex};
 use std::thread;
+use std::time::Instant;
 #[cfg(test)]
 use std::{println as debug, println as error};
 
@@ -89,7 +91,9 @@ pub struct RSPQueryConfig<'a> {
     pub shared_variables: Vec<String>, // Variables that appear across multiple windows
     pub static_patterns: Vec<(&'a str, &'a str, &'a str)>, // Static graph patterns outside windows
     pub static_window_shared_vars: Vec<String>, // Variables shared between static patterns and windows
-    pub database: SparqlDatabase,               // usesd prefixes
+    pub database: SparqlDatabase,               // used prefixes
+    /// Effective synchronization policy for multi-window coordination.
+    pub sync_policy: SyncPolicy,
 }
 
 /// RSP-QL Query Plan using Volcano optimizer
@@ -121,6 +125,8 @@ pub struct RSPBuilder<'a, I, O> {
     operation_mode: OperationMode,
     query_execution_mode: QueryExecutionMode,
     syntax: String,
+    /// Engine-level default policy; overridden by per-window `WITH POLICY` clause.
+    sync_policy: SyncPolicy,
 }
 
 impl<'a, I, O> RSPBuilder<'a, I, O>
@@ -138,7 +144,15 @@ where
             operation_mode: OperationMode::MultiThread,
             query_execution_mode: QueryExecutionMode::Volcano, // Default to Volcano optimizer
             syntax: "ntriples".to_string(),
+            sync_policy: SyncPolicy::default(),
         }
+    }
+
+    /// Override the engine-level default synchronization policy.
+    /// A per-window `WITH POLICY` clause in the query string takes precedence.
+    pub fn set_sync_policy(mut self, policy: SyncPolicy) -> RSPBuilder<'a, I, O> {
+        self.sync_policy = policy;
+        self
     }
 
     /// Add RSP-QL query instead of separate window parameters and SPARQL query
@@ -209,6 +223,14 @@ where
                     // Extract static patterns from WHERE clause (outside window blocks)
                     let static_patterns = register_clause.query.where_clause.0.clone();
 
+                    // Resolve policy: per-window WITH POLICY > builder default
+                    let sync_policy = register_clause
+                        .query
+                        .window_clause
+                        .iter()
+                        .find_map(|wc| wc.policy.clone())
+                        .unwrap_or_else(|| self.sync_policy.clone());
+
                     Ok(RSPQueryConfig {
                         windows,
                         output_stream: register_clause.output_stream_iri.to_string(),
@@ -217,6 +239,7 @@ where
                         static_patterns,
                         static_window_shared_vars: Vec::new(), // Will be populated later
                         database,
+                        sync_policy,
                     })
                 } else {
                     Err("No REGISTER clause found in RSP-QL query".to_string())
@@ -422,6 +445,8 @@ where
         // Parse the RSP-QL query
         let query_config = self.parse_rsp_ql_query(rsp_ql_query)?;
 
+        let sync_policy = query_config.sync_policy.clone();
+
         // Create RSP-QL query plan using Volcano optimizer
         let rsp_query_plan = Self::create_rsp_query_plan(&query_config)?;
 
@@ -435,6 +460,7 @@ where
             operation_mode,
             self.query_execution_mode,
             rsp_query_plan,
+            sync_policy,
         ))
     }
 }
@@ -458,7 +484,10 @@ where
     window_result_receiver: Receiver<WindowResult>,
     // RSP-QL Query Plan using Volcano optimizer
     rsp_query_plan: RSPQueryPlan,
-    single_thread_buffer: Arc<Mutex<HashMap<String, Vec<HashMap<String, String>>>>>,
+    /// Latest materialized results per window (replace semantics); SingleThread only.
+    single_thread_last_materialized: Arc<Mutex<HashMap<String, Vec<HashMap<String, String>>>>>,
+    /// Synchronization policy governing multi-window coordination.
+    sync_policy: SyncPolicy,
 }
 
 pub struct ResultConsumer<I> {
@@ -558,6 +587,7 @@ where
         operation_mode: OperationMode,
         query_execution_mode: QueryExecutionMode,
         rsp_query_plan: RSPQueryPlan,
+        sync_policy: SyncPolicy,
     ) -> RSPEngine<I, O> {
         let mut store = r2r;
 
@@ -623,7 +653,8 @@ where
             window_result_sender: result_sender,
             window_result_receiver: result_receiver,
             rsp_query_plan,
-            single_thread_buffer: Arc::new(Mutex::new(HashMap::new())),
+            single_thread_last_materialized: Arc::new(Mutex::new(HashMap::new())),
+            sync_policy,
         };
 
         match operation_mode {
@@ -685,82 +716,120 @@ where
     }
 
     /// Start a coordinator thread that collects and joins results from multiple windows
-    /// (and optionally joins with static background data).
+    /// (and optionally joins with static background data), respecting `sync_policy`.
     fn start_cross_window_coordinator(&self)
     where
         O: From<Vec<(String, String)>>,
     {
-        // Note: the early-return guard was removed — the caller already ensures
-        // that joining is actually needed before calling this function.
-
         let receiver = self.window_result_receiver.clone();
         let consumer = self.r2s_consumer.function.clone();
         let num_windows = self.windows.len();
         let static_data_plan = self.rsp_query_plan.static_data_plan.clone();
         let r2r = self.r2r.clone();
+        let sync_policy = self.sync_policy.clone();
 
         thread::spawn(move || {
-            // Keep the most recent results from each window
-            let mut latest_window_results: HashMap<String, Vec<HashMap<String, String>>> = HashMap::new();
+            // Latest results per window (replace semantics)
+            let mut last_materialized: HashMap<String, Vec<HashMap<String, String>>> = HashMap::new();
+            // Windows that have fired since the last reset
+            let mut cycle_triggered: HashSet<String> = HashSet::new();
+            // When the first window fired in the current cycle
+            let mut cycle_start: Option<Instant> = None;
 
             loop {
-                match receiver.recv() {
-                    Ok(window_result) => {
-                        debug!("Coordinator received {} results from window: {}",
-                            window_result.results.len(), window_result.window_iri);
-
-                        // Update the latest results for this window (replace old results)
-                        latest_window_results.insert(
-                            window_result.window_iri.clone(),
-                            window_result.results.clone()
-                        );
-
-                        // If we have results from ALL windows, perform join
-                        if latest_window_results.len() == num_windows {
-                            debug!("Coordinator: All {} windows have results, performing join", num_windows);
-
-                            // Check that all windows have non-empty results
-                            let all_have_results = latest_window_results.values().all(|v| !v.is_empty());
-
-                            if all_have_results {
-                                let joined = join_window_results(&latest_window_results);
-
-                                debug!("Coordinator: Joined {} results from windows", joined.len());
-
-                                // Apply static data join if a static plan exists
-                                let final_results = if let Some(ref plan) = static_data_plan {
-                                    let static_bindings = execute_plan_as_bindings(&r2r, plan);
-                                    debug!("Coordinator: Static bindings: {}", static_bindings.len());
-                                    natural_join(&joined, &static_bindings)
-                                } else {
-                                    joined
-                                };
-
-                                debug!("Coordinator: Final {} results after static join", final_results.len());
-
-                                // Output final results
-                                for binding in final_results {
-                                    let output: Vec<(String, String)> = binding.into_iter().collect();
-                                    (consumer)(output.into());
-                                }
-
-                                debug!("Coordinator: Join complete, keeping window states");
-                            }
-                        } else {
-                            debug!("Coordinator: Waiting for more windows ({}/{}) - have results from: {:?}",
-                                latest_window_results.len(),
-                                num_windows,
-                                latest_window_results.keys().collect::<Vec<_>>());
-                        }
+                // Compute recv timeout when policy has a finite deadline
+                let timeout_remaining = match &sync_policy {
+                    SyncPolicy::Timeout { duration, .. } => {
+                        cycle_start.map(|start| duration.saturating_sub(start.elapsed()))
                     }
-                    Err(_) => {
-                        debug!("Coordinator: Channel disconnected, shutting down");
-                        break;
+                    _ => None,
+                };
+
+                // Receive next window result (or timeout/disconnect)
+                let maybe_result: Option<WindowResult> = if let Some(remaining) = timeout_remaining {
+                    match receiver.recv_timeout(remaining) {
+                        Ok(r) => Some(r),
+                        Err(RecvTimeoutError::Timeout) => {
+                            // Deadline elapsed
+                            if !cycle_triggered.is_empty() {
+                                match &sync_policy {
+                                    SyncPolicy::Timeout { fallback: Fallback::Steal, .. } => {
+                                        if last_materialized.len() == num_windows {
+                                            emit_results(&last_materialized, &static_data_plan, &r2r, &consumer);
+                                        }
+                                    }
+                                    SyncPolicy::Timeout { fallback: Fallback::Drop, .. } => {
+                                        // discard this cycle
+                                    }
+                                    _ => {}
+                                }
+                                cycle_triggered.clear();
+                                cycle_start = None;
+                            }
+                            continue;
+                        }
+                        Err(RecvTimeoutError::Disconnected) => break,
+                    }
+                } else {
+                    match receiver.recv() {
+                        Ok(r) => Some(r),
+                        Err(_) => break,
+                    }
+                };
+
+                if let Some(window_result) = maybe_result {
+                    debug!(
+                        "Coordinator received {} results from window: {}",
+                        window_result.results.len(),
+                        window_result.window_iri
+                    );
+
+                    // Update last_materialized (replace)
+                    last_materialized.insert(
+                        window_result.window_iri.clone(),
+                        window_result.results.clone(),
+                    );
+                    if cycle_triggered.is_empty() {
+                        cycle_start = Some(Instant::now());
+                    }
+                    cycle_triggered.insert(window_result.window_iri.clone());
+
+                    // Drain any additional pending results
+                    while let Ok(wr) = receiver.try_recv() {
+                        last_materialized.insert(wr.window_iri.clone(), wr.results.clone());
+                        cycle_triggered.insert(wr.window_iri.clone());
+                    }
+
+                    if cycle_triggered.len() == num_windows {
+                        // All windows fired this cycle
+                        emit_results(&last_materialized, &static_data_plan, &r2r, &consumer);
+                        cycle_triggered.clear();
+                        cycle_start = None;
+                    } else {
+                        match &sync_policy {
+                            SyncPolicy::Steal => {
+                                // Emit immediately using stale data from non-firing windows
+                                if last_materialized.len() == num_windows {
+                                    emit_results(&last_materialized, &static_data_plan, &r2r, &consumer);
+                                }
+                                cycle_triggered.clear();
+                                cycle_start = None;
+                            }
+                            SyncPolicy::Wait | SyncPolicy::Timeout { .. } => {
+                                // Keep waiting for remaining windows
+                                debug!(
+                                    "Coordinator: waiting for more windows ({}/{}) — have: {:?}",
+                                    cycle_triggered.len(),
+                                    num_windows,
+                                    cycle_triggered.iter().collect::<Vec<_>>()
+                                );
+                            }
+                        }
                     }
                 }
             }
 
-            debug!("Coordinator: Shutdown complete");
+            debug!("Coordinator: shutdown complete");
         });
     }
 
@@ -809,59 +878,41 @@ where
     {
         let consumer = self.r2s_consumer.function.clone();
         let num_windows = self.windows.len();
-        let buffer = self.single_thread_buffer.clone();
-        
-        // Collect all available results from the channel
-        let mut new_results = Vec::new();
+        let sync_policy = self.sync_policy.clone();
+
+        // Drain all pending channel results; update last_materialized with replace semantics.
+        let mut last_mat = self.single_thread_last_materialized.lock().unwrap();
+        let mut had_new_results = false;
         while let Ok(window_result) = self.window_result_receiver.try_recv() {
-            new_results.push(window_result);
+            last_mat.insert(window_result.window_iri.clone(), window_result.results);
+            had_new_results = true;
         }
-        
-        // If no new results, nothing to do
-        if new_results.is_empty() {
+
+        if !had_new_results {
             return;
         }
-        
-        // Accumulate into persistent buffer
-        let mut window_buffers = buffer.lock().unwrap();
-        for window_result in new_results {
-            window_buffers
-                .entry(window_result.window_iri.clone())
-                .or_insert_with(Vec::new)
-                .extend(window_result.results);
-        }
-        
-        // Check if we have results from ALL windows
-        if window_buffers.len() == num_windows {
-            debug!("SingleThread: All windows have results, performing join");
 
-            // Perform join across all windows
-            let joined_results = join_window_results(&window_buffers);
+        // Check whether to emit based on policy.
+        if last_mat.len() == num_windows {
+            debug!("SingleThread: all {} windows materialized, emitting", num_windows);
+            let static_data_plan = self.rsp_query_plan.static_data_plan.clone();
+            emit_results(&*last_mat, &static_data_plan, &self.r2r, &consumer);
 
-            debug!("SingleThread: Joined {} results from windows", joined_results.len());
-
-            // Apply static data join if a static plan exists
-            let final_results = if let Some(ref plan) = self.rsp_query_plan.static_data_plan {
-                let static_bindings = execute_plan_as_bindings(&self.r2r, plan);
-                debug!("SingleThread: Static bindings: {}", static_bindings.len());
-                natural_join(&joined_results, &static_bindings)
-            } else {
-                joined_results
-            };
-
-            debug!("SingleThread: Final {} results after static join", final_results.len());
-
-            // Output final results
-            for binding in final_results {
-                let output: Vec<(String, String)> = binding.into_iter().collect();
-                (consumer)(output.into());
+            match sync_policy {
+                // Wait: require all windows to fire again before next emission.
+                // Timeout: no wall-clock timer in single-threaded context; treat as Wait.
+                SyncPolicy::Wait | SyncPolicy::Timeout { .. } => {
+                    last_mat.clear();
+                }
+                // Steal: keep last_mat so stale data from non-firing windows is reused.
+                SyncPolicy::Steal => {}
             }
-
-            // Clear buffer after outputting
-            window_buffers.clear();
         } else {
-            debug!("SingleThread: Waiting for more windows ({}/{})",
-                window_buffers.len(), num_windows);
+            debug!(
+                "SingleThread: waiting for more windows ({}/{})",
+                last_mat.len(),
+                num_windows
+            );
         }
     }
 
@@ -894,6 +945,34 @@ where
     /// Get the RSP-QL query plan information
     pub fn get_query_plan(&self) -> &RSPQueryPlan {
         &self.rsp_query_plan
+    }
+}
+
+/// Join all window results, optionally apply the static-data join, and call `consumer` for each
+/// output binding.  Called from both the coordinator thread and the SingleThread processor.
+fn emit_results<I, O>(
+    last_materialized: &HashMap<String, Vec<HashMap<String, String>>>,
+    static_data_plan: &Option<PhysicalOperator>,
+    r2r: &Arc<Mutex<Box<dyn R2ROperator<I, Vec<PhysicalOperator>, O>>>>,
+    consumer: &Arc<dyn Fn(O) -> () + Send + Sync>,
+) where
+    I: 'static,
+    O: 'static + From<Vec<(String, String)>>,
+{
+    let joined = join_window_results(last_materialized);
+
+    let final_results = if let Some(ref plan) = static_data_plan {
+        let static_bindings = execute_plan_as_bindings(r2r, plan);
+        debug!("emit_results: static bindings = {}", static_bindings.len());
+        natural_join(&joined, &static_bindings)
+    } else {
+        joined
+    };
+
+    debug!("emit_results: emitting {} bindings", final_results.len());
+    for binding in final_results {
+        let output: Vec<(String, String)> = binding.into_iter().collect();
+        (consumer)(output.into());
     }
 }
 
@@ -1465,6 +1544,156 @@ mod tests {
             *results
         );
     }
+
+    // -----------------------------------------------------------------------
+    // Sync-policy tests
+    // -----------------------------------------------------------------------
+
+    fn make_two_window_engine(
+        policy: SyncPolicy,
+    ) -> (RSPEngine<Triple, Vec<(String, String)>>, Arc<Mutex<Vec<Vec<(String, String)>>>>) {
+        let result_container = Arc::new(Mutex::new(Vec::<Vec<(String, String)>>::new()));
+        let rc = Arc::clone(&result_container);
+        let consumer = ResultConsumer {
+            function: Arc::new(move |r: Vec<(String, String)>| {
+                rc.lock().unwrap().push(r);
+            }),
+        };
+        let r2r = Box::new(SimpleR2R::with_execution_mode(QueryExecutionMode::Volcano));
+        let rsp_ql_query = r#"
+            REGISTER RSTREAM <http://out/stream> AS
+            SELECT *
+            FROM NAMED WINDOW :windA ON :streamA [RANGE 10 STEP 2]
+            FROM NAMED WINDOW :windB ON :streamB [RANGE 10 STEP 2]
+            WHERE {
+                WINDOW :windA { ?s1 a <http://test/TypeA> . }
+                WINDOW :windB { ?s2 a <http://test/TypeB> . }
+            }
+        "#;
+        let engine: RSPEngine<Triple, Vec<(String, String)>> = RSPBuilder::new()
+            .add_rsp_ql_query(rsp_ql_query)
+            .add_consumer(consumer)
+            .add_r2r(r2r)
+            .set_operation_mode(OperationMode::SingleThread)
+            .set_sync_policy(policy)
+            .build()
+            .expect("Failed to build engine");
+        (engine, result_container)
+    }
+
+    /// Steal policy: window A fires first, B never fires → no emission
+    /// (last_mat only has A, never reaches num_windows=2).
+    #[test]
+    fn test_steal_policy_emits_after_first_window() {
+        let (mut engine, results) = make_two_window_engine(SyncPolicy::Steal);
+        for i in 0..5usize {
+            let data = format!("<http://test/a{}> a <http://test/TypeA> .", i);
+            let triples = engine.parse_data(&data);
+            for t in triples {
+                engine.add_to_stream("streamA", t, i);
+            }
+        }
+        engine.stop();
+        assert!(
+            results.lock().unwrap().is_empty(),
+            "Steal: no emission expected when B has never fired"
+        );
+    }
+
+    /// Steal policy: B fires once then A fires repeatedly → emission on each A trigger.
+    #[test]
+    fn test_steal_policy_emits_with_stale() {
+        let (mut engine, results) = make_two_window_engine(SyncPolicy::Steal);
+
+        // Fire B first
+        for i in 0..3usize {
+            let data = format!("<http://test/b{}> a <http://test/TypeB> .", i);
+            let triples = engine.parse_data(&data);
+            for t in triples {
+                engine.add_to_stream("streamB", t, i);
+            }
+        }
+        // Fire A repeatedly at much later timestamps so B's windows have already closed
+        for i in 0..5usize {
+            let data = format!("<http://test/a{}> a <http://test/TypeA> .", i);
+            let triples = engine.parse_data(&data);
+            for t in triples {
+                engine.add_to_stream("streamA", t, i + 20);
+            }
+        }
+        engine.stop();
+        assert!(
+            !results.lock().unwrap().is_empty(),
+            "Steal: should emit once both windows have been materialized"
+        );
+    }
+
+    /// Wait policy (default): only A fires → no emission.
+    #[test]
+    fn test_wait_policy_waits_for_both() {
+        let (mut engine, results) = make_two_window_engine(SyncPolicy::Wait);
+        for i in 0..5usize {
+            let data = format!("<http://test/a{}> a <http://test/TypeA> .", i);
+            let triples = engine.parse_data(&data);
+            for t in triples {
+                engine.add_to_stream("streamA", t, i);
+            }
+        }
+        engine.stop();
+        assert!(
+            results.lock().unwrap().is_empty(),
+            "Wait: no emission when only A fires"
+        );
+    }
+
+    /// Timeout(100ms, Steal) in SingleThread mode is treated as Wait.
+    /// Only A fires → no emission on first cycle.
+    #[test]
+    fn test_timeout_steal_policy() {
+        let policy = SyncPolicy::Timeout {
+            duration: std::time::Duration::from_millis(100),
+            fallback: Fallback::Steal,
+        };
+        let (mut engine, results) = make_two_window_engine(policy);
+        for i in 0..5usize {
+            let data = format!("<http://test/a{}> a <http://test/TypeA> .", i);
+            let triples = engine.parse_data(&data);
+            for t in triples {
+                engine.add_to_stream("streamA", t, i);
+            }
+        }
+        engine.stop();
+        // SingleThread: Timeout treated as Wait; B never fired → no emit
+        assert!(
+            results.lock().unwrap().is_empty(),
+            "Timeout/Steal (SingleThread = Wait): no emit when B never fires"
+        );
+    }
+
+    /// Timeout(100ms, Drop) in SingleThread mode is treated as Wait.
+    /// Only A fires → no emission.
+    #[test]
+    fn test_timeout_drop_policy() {
+        let policy = SyncPolicy::Timeout {
+            duration: std::time::Duration::from_millis(100),
+            fallback: Fallback::Drop,
+        };
+        let (mut engine, results) = make_two_window_engine(policy);
+        for i in 0..5usize {
+            let data = format!("<http://test/a{}> a <http://test/TypeA> .", i);
+            let triples = engine.parse_data(&data);
+            for t in triples {
+                engine.add_to_stream("streamA", t, i);
+            }
+        }
+        engine.stop();
+        assert!(
+            results.lock().unwrap().is_empty(),
+            "Timeout/Drop (SingleThread = Wait): no emit when B never fires"
+        );
+    }
+
+    // -----------------------------------------------------------------------
 
     /// Two windows + static WHERE patterns: results must contain variables
     /// from both windows (?sensor, ?room) and confirm the static join filtered
