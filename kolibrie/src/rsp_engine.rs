@@ -488,6 +488,8 @@ where
     single_thread_last_materialized: Arc<Mutex<HashMap<String, Vec<HashMap<String, String>>>>>,
     /// Synchronization policy governing multi-window coordination.
     sync_policy: SyncPolicy,
+    /// Separate store for static background triples (never touched by window processors).
+    static_db: Arc<Mutex<SparqlDatabase>>,
 }
 
 pub struct ResultConsumer<I> {
@@ -605,18 +607,30 @@ where
         // The `store` (R2R operator) has its own Dictionary. If we don't sync them,
         // the store will assign different IDs to incoming data, and the execution engine
         // will fail to match them against the plan.
+        let shared_dict = store
+            .as_any_mut()
+            .downcast_mut::<SimpleR2R>()
+            .map(|s| Arc::clone(&s.item.dictionary));
+
         if let Some(simple_r2r) = store.as_any_mut().downcast_mut::<SimpleR2R>() {
             debug!("Synchronizing R2R dictionary with Query dictionary");
-            
+
             // Acquire locks on both dictionaries
             let mut store_dict = simple_r2r.item.dictionary.write().unwrap();
             let query_dict = query_config.database.dictionary.read().unwrap();
-            
+
             store_dict.merge(&*query_dict);
-            
+
             drop(store_dict);
             drop(query_dict);
         }
+
+        // Build the static-data store sharing the same dictionary as the R2R store.
+        let mut static_sdb = SparqlDatabase::new();
+        if let Some(d) = shared_dict {
+            static_sdb.dictionary = d;
+        }
+        let static_db = Arc::new(Mutex::new(static_sdb));
 
         // Load initial data
         match store.load_triples(triples, syntax) {
@@ -664,6 +678,7 @@ where
             rsp_query_plan,
             single_thread_last_materialized: Arc::new(Mutex::new(HashMap::new())),
             sync_policy,
+            static_db,
         };
 
         match operation_mode {
@@ -734,7 +749,7 @@ where
         let consumer = self.r2s_consumer.function.clone();
         let num_windows = self.windows.len();
         let static_data_plan = self.rsp_query_plan.static_data_plan.clone();
-        let r2r = self.r2r.clone();
+        let static_db = self.static_db.clone();
         let sync_policy = self.sync_policy.clone();
 
         thread::spawn(move || {
@@ -764,7 +779,7 @@ where
                                 match &sync_policy {
                                     SyncPolicy::Timeout { fallback: Fallback::Steal, .. } => {
                                         if last_materialized.len() == num_windows {
-                                            emit_results(&last_materialized, &static_data_plan, &r2r, &consumer);
+                                            emit_results(&last_materialized, &static_data_plan, &static_db, &consumer);
                                         }
                                     }
                                     SyncPolicy::Timeout { fallback: Fallback::Drop, .. } => {
@@ -811,7 +826,7 @@ where
 
                     if cycle_triggered.len() == num_windows {
                         // All windows fired this cycle
-                        emit_results(&last_materialized, &static_data_plan, &r2r, &consumer);
+                        emit_results(&last_materialized, &static_data_plan, &static_db, &consumer);
                         cycle_triggered.clear();
                         cycle_start = None;
                     } else {
@@ -819,7 +834,7 @@ where
                             SyncPolicy::Steal => {
                                 // Emit immediately using stale data from non-firing windows
                                 if last_materialized.len() == num_windows {
-                                    emit_results(&last_materialized, &static_data_plan, &r2r, &consumer);
+                                    emit_results(&last_materialized, &static_data_plan, &static_db, &consumer);
                                 }
                                 cycle_triggered.clear();
                                 cycle_start = None;
@@ -905,7 +920,7 @@ where
         if last_mat.len() == num_windows {
             debug!("SingleThread: all {} windows materialized, emitting", num_windows);
             let static_data_plan = self.rsp_query_plan.static_data_plan.clone();
-            emit_results(&*last_mat, &static_data_plan, &self.r2r, &consumer);
+            emit_results(&*last_mat, &static_data_plan, &self.static_db, &consumer);
 
             match sync_policy {
                 // Wait: require all windows to fire again before next emission.
@@ -947,16 +962,15 @@ where
         self.r2r.lock().unwrap().parse_data(data)
     }
 
-    /// Pre-populate the R2R store with static background N-Triples data.
-    /// These triples are accessible during every window evaluation and are used
-    /// to satisfy static graph patterns in the RSP-QL WHERE clause.
+    /// Pre-populate the static background store with N-Triples data.
+    /// These triples are never placed in the window R2R store, so they cannot
+    /// leak into window query results.  They are only visible when `emit_results`
+    /// joins the window output with the static-data plan.
     pub fn add_static_ntriples(&mut self, data: &str) {
-        let mut r2r = self.r2r.lock().unwrap();
-        if let Some(simple_r2r) = r2r.as_any_mut().downcast_mut::<SimpleR2R>() {
-            simple_r2r.item.parse_ntriples_and_add(data);
-            simple_r2r.item.get_or_build_stats();
-            simple_r2r.item.build_all_indexes();
-        }
+        let mut db = self.static_db.lock().unwrap();
+        db.parse_ntriples_and_add(data);
+        db.get_or_build_stats();
+        db.build_all_indexes();
     }
 
     /// Get information about configured windows
@@ -977,19 +991,18 @@ where
 
 /// Join all window results, optionally apply the static-data join, and call `consumer` for each
 /// output binding.  Called from both the coordinator thread and the SingleThread processor.
-fn emit_results<I, O>(
+fn emit_results<O>(
     last_materialized: &HashMap<String, Vec<HashMap<String, String>>>,
     static_data_plan: &Option<PhysicalOperator>,
-    r2r: &Arc<Mutex<Box<dyn R2ROperator<I, Vec<PhysicalOperator>, O>>>>,
+    static_db: &Arc<Mutex<SparqlDatabase>>,
     consumer: &Arc<dyn Fn(O) -> () + Send + Sync>,
 ) where
-    I: 'static,
     O: 'static + From<Vec<(String, String)>>,
 {
     let joined = join_window_results(last_materialized);
 
     let final_results = if let Some(ref plan) = static_data_plan {
-        let static_bindings = execute_plan_as_bindings(r2r, plan);
+        let static_bindings = execute_plan_as_bindings(static_db, plan);
         debug!("emit_results: static bindings = {}", static_bindings.len());
         natural_join(&joined, &static_bindings)
     } else {
@@ -1062,31 +1075,14 @@ fn join_window_results(window_buffers: &HashMap<String, Vec<HashMap<String, Stri
     joined
 }
 
-/// Execute a physical plan against the R2R store and return the results as
-/// a list of variable-binding maps.  Works by downcasting `O` to
-/// `Vec<(String, String)>`, which is the concrete output type used by
-/// `SimpleR2R`.  Returns an empty vec if the downcast fails (i.e. a
-/// different concrete `O` is in use).
-fn execute_plan_as_bindings<I, O>(
-    r2r: &Arc<Mutex<Box<dyn R2ROperator<I, Vec<PhysicalOperator>, O>>>>,
+/// Execute a physical plan against the static-data `SparqlDatabase` and return the results as
+/// a list of variable-binding maps.
+fn execute_plan_as_bindings(
+    static_db: &Arc<Mutex<SparqlDatabase>>,
     plan: &PhysicalOperator,
-) -> Vec<HashMap<String, String>>
-where
-    I: 'static,
-    O: 'static,
-{
-    let mut store = r2r.lock().unwrap();
-    let results = store.execute_query(plan);
-    drop(store);
-
-    let mut mapped = Vec::new();
-    for res in &results {
-        if let Some(bindings) = (res as &dyn std::any::Any).downcast_ref::<Vec<(String, String)>>() {
-            let map: HashMap<String, String> = bindings.iter().cloned().collect();
-            mapped.push(map);
-        }
-    }
-    mapped
+) -> Vec<HashMap<String, String>> {
+    let mut db = static_db.lock().unwrap();
+    ExecutionEngine::execute(plan, &mut *db)
 }
 
 pub struct SimpleR2R {
@@ -1529,17 +1525,10 @@ mod tests {
             .build()
             .expect("Failed to build RSP engine");
 
-        // Pre-parse the static IRI so the dictionary is aligned, then add
-        // the location triple directly to the R2R store (static background data).
+        // Add the location triple to the static background store.
         let location_triple_str =
             "<http://test.be/sensor0> <http://www.w3.org/test/locatedIn> <http://test.be/room1> .";
-        let location_triples = engine.parse_data(location_triple_str);
-        {
-            let mut store = engine.r2r.lock().unwrap();
-            for t in location_triples {
-                store.add(t);
-            }
-        }
+        engine.add_static_ntriples(location_triple_str);
 
         // Stream: sensor data
         for i in 0..5 {
@@ -1766,13 +1755,7 @@ mod tests {
         // Add static location triple: sensor0 is located in room0.
         let location_triple_str =
             "<http://test.be/sensor0> <http://www.w3.org/test/locatedIn> <http://test.be/room0> .";
-        let location_triples = engine.parse_data(location_triple_str);
-        {
-            let mut store = engine.r2r.lock().unwrap();
-            for t in location_triples {
-                store.add(t);
-            }
-        }
+        engine.add_static_ntriples(location_triple_str);
 
         // Stream1: sensors (sensor0 will match the static location triple)
         for i in 0..3 {
@@ -1833,6 +1816,60 @@ mod tests {
             all_valid,
             "Static join should only produce (sensor0, room0) pairs, got: {:?}",
             *results
+        );
+    }
+
+    #[test]
+    fn test_static_data_not_visible_in_window_query() {
+        // Query has ONLY window patterns — no non-window triple patterns.
+        // Static data matches the window pattern; it must NOT appear in results.
+        let result_container = Arc::new(Mutex::new(Vec::new()));
+        let rc_clone = Arc::clone(&result_container);
+        let result_consumer = ResultConsumer {
+            function: Arc::new(move |r: Vec<(String, String)>| {
+                rc_clone.lock().unwrap().push(r);
+            }),
+        };
+        let r2r = Box::new(SimpleR2R::with_execution_mode(QueryExecutionMode::Volcano));
+
+        let query = r#"
+            REGISTER RSTREAM <http://out/stream> AS
+            SELECT ?s
+            FROM NAMED WINDOW :w ON ?stream [RANGE 10 STEP 10]
+            WHERE { WINDOW :w { ?s a <http://example.org/Type> . } }
+        "#;
+
+        let mut engine: RSPEngine<Triple, Vec<(String, String)>> = RSPBuilder::new()
+            .add_rsp_ql_query(query)
+            .add_consumer(result_consumer)
+            .add_r2r(r2r)
+            .build()
+            .expect("Failed to build RSP engine");
+
+        // Prime dictionary
+        engine.parse_data("<http://example.org/static1> a <http://example.org/Type> .");
+
+        // Add static triple that matches the window pattern
+        engine.add_static_ntriples("<http://example.org/static1> a <http://example.org/Type> .");
+
+        // Push exactly one stream event
+        let triples = engine.parse_data(
+            "<http://example.org/stream1> a <http://example.org/Type> ."
+        );
+        for triple in triples {
+            engine.add(triple, 1);
+        }
+
+        engine.stop();
+        thread::sleep(Duration::from_secs(2));
+
+        let all = result_container.lock().unwrap();
+        // With fix: 1 result (stream1 only).
+        // Without fix: 2 results (stream1 + static1 leaking in).
+        assert_eq!(
+            all.len(), 1,
+            "Window must return only stream events, not static data (got {})",
+            all.len()
         );
     }
 
