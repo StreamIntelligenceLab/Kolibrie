@@ -496,8 +496,9 @@ pub struct ResultConsumer<I> {
 
 /// Macro to generate the window processing logic
 macro_rules! create_window_processor {
-    ($window_iri:expr, $query:expr, $query_execution_mode:expr, 
-     $r2r_store:expr, $has_joins:expr, $window_result_sender:expr, $r2s_consumer_func:expr) => {
+    ($window_iri:expr, $query:expr, $query_execution_mode:expr,
+     $r2r_store:expr, $has_joins:expr, $window_result_sender:expr, $r2s_consumer_func:expr) => {{
+        let mut prev_window_triples: Vec<I> = Vec::new();
         move |content: ContentContainer<I>| {
             debug!(
                 "Processing window {} with query: {:?} using {:?} execution",
@@ -506,8 +507,16 @@ macro_rules! create_window_processor {
 
             let ts = content.get_last_timestamp_changed();
             let mut store = $r2r_store.lock().unwrap();
-            
+
+            // Evict triples from the previous firing of this window
+            for t in &prev_window_triples {
+                store.remove(t);
+            }
+            prev_window_triples.clear();
+
+            // Add current window triples and track them for next eviction
             for t in content.into_iter() {
+                prev_window_triples.push(t.clone());
                 store.add(t);
             }
 
@@ -545,7 +554,7 @@ macro_rules! create_window_processor {
                 }
             }
         }
-    };
+    }};
 }
 
 /// Macro to register windows based on operation mode
@@ -693,7 +702,7 @@ where
             };
 
             // Create processor using macro
-            let processor = create_window_processor!(
+            let mut processor = create_window_processor!(
                 window_iri,
                 query,
                 query_execution_mode,
@@ -872,7 +881,7 @@ where
         }
     }
 
-    fn process_single_thread_window_results(&mut self)
+    pub fn process_single_thread_window_results(&mut self)
     where
         O: From<Vec<(String, String)>>,
     {
@@ -926,6 +935,7 @@ where
 
     pub fn stop(&mut self) {
         for window in &mut self.windows {
+            window.flush();
             window.stop();
         }
         if matches!(self.operation_mode, OperationMode::SingleThread) {
@@ -937,6 +947,18 @@ where
         self.r2r.lock().unwrap().parse_data(data)
     }
 
+    /// Pre-populate the R2R store with static background N-Triples data.
+    /// These triples are accessible during every window evaluation and are used
+    /// to satisfy static graph patterns in the RSP-QL WHERE clause.
+    pub fn add_static_ntriples(&mut self, data: &str) {
+        let mut r2r = self.r2r.lock().unwrap();
+        if let Some(simple_r2r) = r2r.as_any_mut().downcast_mut::<SimpleR2R>() {
+            simple_r2r.item.parse_ntriples_and_add(data);
+            simple_r2r.item.get_or_build_stats();
+            simple_r2r.item.build_all_indexes();
+        }
+    }
+
     /// Get information about configured windows
     pub fn get_window_info(&self) -> Vec<&RSPWindow> {
         self.window_configs.iter().collect()
@@ -945,6 +967,11 @@ where
     /// Get the RSP-QL query plan information
     pub fn get_query_plan(&self) -> &RSPQueryPlan {
         &self.rsp_query_plan
+    }
+
+    /// Return the stream IRIs registered across all configured windows.
+    pub fn stream_iris(&self) -> Vec<String> {
+        self.window_configs.iter().map(|w| w.stream_iri.clone()).collect()
     }
 }
 
@@ -1806,6 +1833,65 @@ mod tests {
             all_valid,
             "Static join should only produce (sensor0, room0) pairs, got: {:?}",
             *results
+        );
+    }
+
+    #[test]
+    fn test_window_evicts_old_data() {
+        // Non-overlapping windows (RANGE 10 STEP 10) with one subject per window.
+        // Without eviction the R2R store accumulates all triples, so window 2 returns
+        // 2 rows and window 3 returns 3 rows (total 6). With eviction each window
+        // returns exactly 1 row (total 3).
+        let result_container = Arc::new(Mutex::new(Vec::new()));
+        let rc_clone = Arc::clone(&result_container);
+        let result_consumer = ResultConsumer {
+            function: Arc::new(move |r: Vec<(String, String)>| {
+                rc_clone.lock().unwrap().push(r);
+            }),
+        };
+        let r2r = Box::new(SimpleR2R::with_execution_mode(QueryExecutionMode::Volcano));
+
+        let query = r#"
+            REGISTER RSTREAM <http://out/stream> AS
+            SELECT ?s
+            FROM NAMED WINDOW :w ON ?stream [RANGE 10 STEP 10]
+            WHERE { WINDOW :w { ?s a <http://example.org/Type> . } }
+        "#;
+
+        let mut engine: RSPEngine<Triple, Vec<(String, String)>> = RSPBuilder::new()
+            .add_rsp_ql_query(query)
+            .add_consumer(result_consumer)
+            .add_r2r(r2r)
+            .build()
+            .expect("Failed to build RSP engine");
+
+        // Prime the dictionary so query and data use the same term IDs
+        engine.parse_data("a a <http://example.org/Type> .");
+
+        // Push one subject per non-overlapping window
+        for (i, ts) in [(1usize, 1usize), (2, 11), (3, 21)] {
+            let data = format!(
+                "<http://example.org/subject{}> a <http://example.org/Type> .",
+                i
+            );
+            let triples = engine.parse_data(&data);
+            for triple in triples {
+                engine.add(triple, ts);
+            }
+        }
+
+        engine.stop();
+        thread::sleep(Duration::from_secs(2));
+
+        let all = result_container.lock().unwrap();
+        // Each of the 3 windows must return exactly 1 result row.
+        // Stale accumulation without the fix gives 1+2+3=6 total rows.
+        assert_eq!(
+            all.len(),
+            3,
+            "Each window should return exactly 1 result row (got {}); \
+             stale data from previous firings is leaking into the store",
+            all.len()
         );
     }
 }
