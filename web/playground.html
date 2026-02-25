@@ -562,14 +562,16 @@
     }
 
     .mode-content.active {
-      display: block;
+      display: flex;
+      flex-direction: column;
     }
 
     /* Editor Container */
     .editor-container {
       display: flex;
       flex-direction: column;
-      height: 100%;
+      flex: 1;
+      min-height: 0;
       background: rgba(26, 26, 26, 0.5);
     }
 
@@ -991,6 +993,285 @@
       display: flex;
     }
 
+    /* ── RSP firing-group cards ─────────────────────────────── */
+    .rsp-firing-group {
+      margin-bottom: 12px;
+      border-radius: 8px;
+      border: 1px solid rgba(219, 88, 156, 0.25);
+      overflow: hidden;
+      animation: slideDown 0.15s ease;
+    }
+
+    @keyframes slideDown {
+      from { opacity: 0; transform: translateY(-6px); }
+      to   { opacity: 1; transform: translateY(0); }
+    }
+
+    .rsp-firing-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 6px 12px;
+      background: linear-gradient(90deg, rgba(219, 88, 156, 0.18) 0%, rgba(219, 88, 156, 0.08) 100%);
+      border-bottom: 1px solid rgba(219, 88, 156, 0.2);
+      font-size: 11px;
+      color: #db589c;
+      font-weight: 600;
+      letter-spacing: 0.4px;
+      text-transform: uppercase;
+    }
+
+    .rsp-firing-header .rsp-firing-count {
+      font-size: 10px;
+      color: #808080;
+      font-weight: normal;
+      text-transform: none;
+      letter-spacing: 0;
+    }
+
+    /* ── RSP split layout ───────────────────────────────────── */
+    .rsp-split-container {
+      display: flex;
+      flex: 1;
+      min-height: 0;
+      overflow: hidden;
+    }
+
+    .rsp-editor-half {
+      flex: 1;
+      min-width: 0;
+      display: flex;
+      flex-direction: column;
+      border-right: 1px solid rgba(219, 88, 156, 0.2);
+    }
+
+    .rsp-input-half {
+      width: 340px;
+      flex-shrink: 0;
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
+      background: rgba(26, 26, 26, 0.3);
+    }
+
+    .rsp-half-header {
+      padding: 10px 16px;
+      font-size: 11px;
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: 0.6px;
+      color: #db589c;
+      background: rgba(43, 43, 43, 0.5);
+      border-bottom: 1px solid rgba(219, 88, 156, 0.2);
+      flex-shrink: 0;
+    }
+
+    .rsp-editor-wrapper {
+      flex: 1;
+      min-height: 0;
+      padding: 12px;
+      overflow: hidden;
+      display: flex;
+      flex-direction: column;
+    }
+
+    /* RSP stream input controls */
+    .rsp-stream-controls {
+      padding: 10px 12px;
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+      border-bottom: 1px solid rgba(219, 88, 156, 0.15);
+      flex-shrink: 0;
+    }
+
+    .rsp-control-row {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+    }
+
+    .rsp-control-row label {
+      font-size: 11px;
+      color: #a0a0a0;
+      width: 68px;
+      flex-shrink: 0;
+      text-transform: uppercase;
+      letter-spacing: 0.4px;
+    }
+
+    .rsp-select {
+      flex: 1;
+      background: rgba(43, 43, 43, 0.7);
+      border: 1px solid rgba(219, 88, 156, 0.35);
+      border-radius: 5px;
+      color: #e0e0e0;
+      padding: 5px 8px;
+      font-size: 12px;
+      font-family: 'IBM Plex Mono', monospace;
+      cursor: pointer;
+    }
+
+    .rsp-select:focus {
+      outline: none;
+      border-color: rgba(219, 88, 156, 0.7);
+    }
+
+    .rsp-number-input {
+      flex: 1;
+      background: rgba(43, 43, 43, 0.7);
+      border: 1px solid rgba(219, 88, 156, 0.35);
+      border-radius: 5px;
+      color: #e0e0e0;
+      padding: 5px 8px;
+      font-size: 12px;
+      font-family: 'IBM Plex Mono', monospace;
+    }
+
+    .rsp-number-input:focus {
+      outline: none;
+      border-color: rgba(219, 88, 156, 0.7);
+    }
+
+    .rsp-content-label {
+      font-size: 11px;
+      color: #a0a0a0;
+      text-transform: uppercase;
+      letter-spacing: 0.4px;
+      padding-top: 4px;
+    }
+
+    .rsp-content-editor-wrapper {
+      flex: 1;
+      min-height: 80px;
+      max-height: 140px;
+      overflow: hidden;
+      display: flex;
+      flex-direction: column;
+    }
+
+    .rsp-content-editor-wrapper .CodeMirror {
+      font-size: 12px !important;
+    }
+
+    .rsp-control-buttons {
+      display: flex;
+      gap: 6px;
+      padding-top: 4px;
+    }
+
+    .rsp-push-btn {
+      flex: 1;
+      height: 30px;
+      line-height: 30px;
+      padding: 0 12px;
+      font-size: 12px;
+      margin: 0;
+    }
+
+    /* RSP events list */
+    .rsp-events-section {
+      flex: 1;
+      display: flex;
+      flex-direction: column;
+      min-height: 0;
+      overflow: hidden;
+    }
+
+    .rsp-events-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 8px 12px;
+      font-size: 11px;
+      font-weight: 600;
+      color: #db589c;
+      text-transform: uppercase;
+      letter-spacing: 0.4px;
+      border-bottom: 1px solid rgba(219, 88, 156, 0.15);
+      background: rgba(43, 43, 43, 0.3);
+      flex-shrink: 0;
+    }
+
+    .rsp-clear-btn {
+      background: transparent;
+      border: 1px solid rgba(219, 88, 156, 0.35);
+      border-radius: 4px;
+      color: #db589c;
+      padding: 2px 8px;
+      font-size: 10px;
+      cursor: pointer;
+      text-transform: uppercase;
+      letter-spacing: 0.3px;
+      transition: all 0.2s ease;
+    }
+
+    .rsp-clear-btn:hover {
+      background: rgba(219, 88, 156, 0.15);
+    }
+
+    .rsp-events-list {
+      flex: 1;
+      overflow-y: auto;
+      padding: 4px 8px;
+    }
+
+    .rsp-event-item {
+      display: flex;
+      align-items: flex-start;
+      gap: 6px;
+      padding: 6px 8px;
+      margin-bottom: 4px;
+      background: rgba(43, 43, 43, 0.4);
+      border: 1px solid rgba(219, 88, 156, 0.2);
+      border-radius: 5px;
+      font-size: 11px;
+      font-family: 'IBM Plex Mono', monospace;
+    }
+
+    .rsp-event-info {
+      flex: 1;
+      min-width: 0;
+    }
+
+    .rsp-event-stream {
+      color: #db589c;
+      font-weight: 600;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+
+    .rsp-event-meta {
+      color: #808080;
+      font-size: 10px;
+      margin-top: 2px;
+    }
+
+    .rsp-event-delete {
+      background: transparent;
+      border: none;
+      color: #606060;
+      cursor: pointer;
+      font-size: 12px;
+      padding: 0 2px;
+      line-height: 1;
+      flex-shrink: 0;
+      transition: color 0.2s ease;
+    }
+
+    .rsp-event-delete:hover {
+      color: #f44336;
+    }
+
+    .rsp-empty-events {
+      padding: 16px 12px;
+      color: #606060;
+      font-size: 12px;
+      text-align: center;
+      font-style: italic;
+    }
+
     /* N3 Logic info badge shown inside the N3 Logic sub-panel */
     .n3logic-info-badge {
       display: flex;
@@ -1202,22 +1483,74 @@ WHERE {
         <!-- RSP Mode -->
         <div id="rsp-mode" class="mode-content">
           <div class="editor-container">
-            <div class="editor-tabs">
-              <button class="editor-tab active" data-tab="rsp-sparql">RSP-QL Query</button>
-            </div>
 
-            <div class="editor-panel active" data-panel="rsp-sparql">
-              <textarea id="rsp-sparql-editor">PREFIX ex: <http://example.org#>
-REGISTER STREAM <http://example.org/stream> AS
+            <!-- Split: query editor (left) | stream input (right) -->
+            <div class="rsp-split-container">
+
+              <!-- Left: RSP-QL Query Editor -->
+              <div class="rsp-editor-half">
+                <div class="rsp-half-header" style="display:flex;align-items:center;justify-content:space-between;">
+                  <span><i class="fas fa-code"></i> RSP-QL Query</span>
+                  <span style="display:flex;align-items:center;gap:8px;">
+                    <span id="rsp-session-status" style="font-size:11px;color:#808080;font-weight:normal;text-transform:none;letter-spacing:0;">Not registered</span>
+                    <button class="btn rsp-push-btn" id="rsp-register-btn" style="height:24px;line-height:24px;font-size:11px;padding:0 10px;margin:0;">
+                      <i class="fas fa-play"></i> Register
+                    </button>
+                  </span>
+                </div>
+                <div class="rsp-editor-wrapper">
+                  <textarea id="rsp-sparql-editor">PREFIX ex: <http://example.org#>
+REGISTER RSTREAM <http://example.org/stream> AS
 SELECT ?reading ?temp
-FROM NAMED WINDOW :window ON <http://example.org/stream> [RANGE PT10S STEP PT5S]
+FROM NAMED WINDOW :window ON <http://example.org/stream> [RANGE 10 STEP 5]
 WHERE {
   WINDOW :window {
     ?reading ex:temperature ?temp .
-    FILTER (?temp > 80)
   }
+  FILTER (?temp > 80)
 }</textarea>
-            </div>
+                </div>
+              </div>
+
+              <!-- Right: Stream Input Panel -->
+              <div class="rsp-input-half">
+                <div class="rsp-half-header"><i class="fas fa-paper-plane"></i> Stream Input</div>
+
+                <div class="rsp-stream-controls">
+                  <div class="rsp-control-row">
+                    <label>Stream</label>
+                    <select class="rsp-select" id="rsp-stream-select">
+                      <option value="">— write a query —</option>
+                    </select>
+                  </div>
+                  <div class="rsp-control-row">
+                    <label>Timestamp</label>
+                    <input type="number" class="rsp-number-input" id="rsp-timestamp" value="1000" step="100" min="0">
+                  </div>
+                  <div class="rsp-content-label">Content (N-Triples)</div>
+                  <div class="rsp-content-editor-wrapper">
+                    <textarea id="rsp-content-editor"><http://example.org/reading1> <http://example.org#temperature> "90" .</textarea>
+                  </div>
+                  <div class="rsp-control-buttons">
+                    <button class="btn rsp-push-btn" id="rsp-push-btn">
+                      <i class="fas fa-plus"></i> Push to Stream
+                    </button>
+                  </div>
+                </div>
+
+                <!-- Push log -->
+                <div class="rsp-events-section">
+                  <div class="rsp-events-header">
+                    <span>Push Log (<span id="rsp-event-count">0</span>)</span>
+                    <button class="rsp-clear-btn" id="rsp-clear-events">Clear Log</button>
+                  </div>
+                  <div class="rsp-events-list" id="rsp-events-list">
+                    <div class="rsp-empty-events">Register a query, then push events above.</div>
+                  </div>
+                </div>
+              </div>
+
+            </div><!-- /.rsp-split-container -->
 
             <div class="resizer" id="resizer-rsp"></div>
 
@@ -1450,6 +1783,10 @@ WHERE {
     let ruleEditors = [];
     let n3logicEditor;          // single N3 Logic editor (shared across rule sets)
     let rspSparqlEditor;
+    let rspContentEditor;       // CodeMirror editor for N-Triples stream event content
+    let rspEvents = [];         // Push log entries (for display only)
+    let rspSessionId = null;    // Persistent engine session ID
+    let rspEventSource = null;  // SSE connection
 
     let config = {
       editorFontSize: 14,
@@ -1510,6 +1847,19 @@ WHERE {
         indentUnit: 2,
         tabSize: 2,
       });
+
+      // Initialize RSP event content editor (N-Triples for individual stream pushes)
+      rspContentEditor = CodeMirror.fromTextArea(document.getElementById('rsp-content-editor'), {
+        mode: 'text/turtle',
+        theme: 'dracula',
+        lineNumbers: false,
+        lineWrapping: true,
+        indentUnit: 2,
+        tabSize: 2,
+      });
+
+      // Refresh stream dropdown whenever the RSP-QL query changes
+      rspSparqlEditor.on('change', debounce(() => updateRspStreamDropdown(), 500));
     }
 
     // Initialize
@@ -1531,6 +1881,10 @@ WHERE {
       document.querySelectorAll('.mode-content').forEach(content => {
         content.classList.toggle('active', content.id === `${mode}-mode`);
       });
+      if (mode === 'rsp') {
+        if (rspSparqlEditor) rspSparqlEditor.refresh();
+        if (rspContentEditor) rspContentEditor.refresh();
+      }
     }
 
     // Switch between rule sub-tabs: 'rules' or 'n3logic'
@@ -1858,6 +2212,11 @@ WHERE {
         updateTheme();
         saveConfig();
       });
+
+      // RSP stream input controls
+      document.getElementById('rsp-register-btn').addEventListener('click', registerRspQuery);
+      document.getElementById('rsp-push-btn').addEventListener('click', pushRspStreamEvent);
+      document.getElementById('rsp-clear-events').addEventListener('click', clearRspEvents);
     }
 
     // Resizer functionality for SPARQL mode
@@ -2115,25 +2474,403 @@ WHERE {
       return div.innerHTML;
     }
 
-    async function executeRspQuery() {
-      const query = rspSparqlEditor.getValue().trim();
-      
+    // ── RSP helpers ─────────────────────────────────────────────────────────
+
+    /** Simple debounce helper */
+    function debounce(fn, delay) {
+      let timer;
+      return (...args) => { clearTimeout(timer); timer = setTimeout(() => fn(...args), delay); };
+    }
+
+    /**
+     * Extract stream IRIs/names from the RSP-QL query by scanning
+     * "FROM NAMED WINDOW :name ON <uri>" clauses.
+     */
+    function extractStreamNames(query) {
+      const re = /FROM\s+NAMED\s+WINDOW\s+\S+\s+ON\s+(<[^>]+>|:\w[\w.-]*|\?\w+|[^\s\[{]+)/gi;
+      const names = [];
+      let m;
+      while ((m = re.exec(query)) !== null) {
+        const name = m[1].trim();
+        if (name && !names.includes(name)) names.push(name);
+      }
+      return names;
+    }
+
+    /** Repopulate the stream dropdown from the current RSP-QL query. */
+    function updateRspStreamDropdown() {
+      const query = rspSparqlEditor ? rspSparqlEditor.getValue() : '';
+      const streams = extractStreamNames(query);
+      const sel = document.getElementById('rsp-stream-select');
+      const prev = sel.value;
+      sel.innerHTML = '';
+      if (streams.length === 0) {
+        sel.innerHTML = '<option value="">— write a query —</option>';
+      } else {
+        streams.forEach(s => {
+          const opt = document.createElement('option');
+          opt.value = s;
+          opt.textContent = s;
+          sel.appendChild(opt);
+        });
+        // Preserve previous selection if still valid
+        if (streams.includes(prev)) sel.value = prev;
+      }
+    }
+
+    /** Render the push log. */
+    function renderRspEvents() {
+      const list = document.getElementById('rsp-events-list');
+      document.getElementById('rsp-event-count').textContent = rspEvents.length;
+
+      if (rspEvents.length === 0) {
+        list.innerHTML = '<div class="rsp-empty-events">Register a query, then push events above.</div>';
+        return;
+      }
+
+      list.innerHTML = rspEvents.map((ev) => {
+        const shortStream = ev.stream.replace(/^<|>$/g, '').split('/').pop() || ev.stream;
+        const lineCount = ev.ntriples.trim().split('\n').filter(l => l.trim()).length;
+        const statusClass = ev.ok ? 'color:#4caf50' : 'color:#f44336';
+        const statusIcon = ev.ok ? '✓' : '✗';
+        return `
+          <div class="rsp-event-item">
+            <div class="rsp-event-info">
+              <div class="rsp-event-stream" title="${escapeHtml(ev.stream)}">${escapeHtml(shortStream)}</div>
+              <div class="rsp-event-meta">t=${ev.timestamp} &middot; ${lineCount} triple(s) <span style="${statusClass}">${statusIcon}</span></div>
+            </div>
+          </div>`;
+      }).join('');
+
+      // Scroll to bottom
+      list.scrollTop = list.scrollHeight;
+    }
+
+    /** Register the RSP-QL query as a persistent engine session and open SSE. */
+    async function registerRspQuery() {
+      const query = rspSparqlEditor ? rspSparqlEditor.getValue().trim() : '';
       if (!query) {
-        const content = document.getElementById('results-content-rsp');
-        content.innerHTML = '<div class="terminal-output terminal-error">⚠ No query provided</div>';
+        alert('Please enter an RSP-QL query first.');
+        return;
+      }
+
+      // Close any existing SSE connection
+      if (rspEventSource) {
+        rspEventSource.close();
+        rspEventSource = null;
+      }
+      rspSessionId = null;
+
+      const statusEl = document.getElementById('rsp-session-status');
+      statusEl.textContent = 'Registering…';
+      statusEl.style.color = '#a0a0a0';
+
+      const staticRdf = rdfEditor ? rdfEditor.getValue().trim() : '';
+      const staticFormat = selectedFormat;
+
+      try {
+        const res = await fetch('/rsp/register', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ query, static_rdf: staticRdf || undefined, static_format: staticFormat }),
+        });
+
+        if (!res.ok) {
+          const err = await res.text();
+          throw new Error(`HTTP ${res.status}: ${err}`);
+        }
+
+        const { session_id, streams } = await res.json();
+        rspSessionId = session_id;
+
+        // Populate stream dropdown from server-provided stream IRIs
+        if (streams && streams.length > 0) {
+          const sel = document.getElementById('rsp-stream-select');
+          sel.innerHTML = '';
+          streams.forEach(iri => {
+            const opt = document.createElement('option');
+            opt.value = iri;
+            opt.textContent = iri.replace(/^<|>$/g, '').split('/').pop() || iri;
+            sel.appendChild(opt);
+          });
+        }
+
+        // Clear push log, result panel, and firing state
+        rspEvents = [];
+        renderRspEvents();
+        if (rspFiringTimer !== null) { clearTimeout(rspFiringTimer); rspFiringTimer = null; }
+        rspFiringBuffer = [];
+        rspFiringCounter = 0;
+        document.getElementById('results-content-rsp').innerHTML =
+          `<div class="terminal-output terminal-info">Engine registered (session ${session_id}). Results will appear here as windows trigger.</div>`;
+
+        // Open SSE connection
+        rspEventSource = new EventSource(`/rsp/events/${session_id}`);
+        rspEventSource.onmessage = (e) => {
+          try {
+            const row = JSON.parse(e.data);
+            appendRspResult(row);
+          } catch (err) {
+            console.error('SSE parse error:', err);
+          }
+        };
+        rspEventSource.onerror = () => {
+          statusEl.textContent = 'SSE disconnected';
+          statusEl.style.color = '#f44336';
+        };
+
+        statusEl.textContent = `Session ${session_id} — live`;
+        statusEl.style.color = '#4caf50';
+
+      } catch (error) {
+        statusEl.textContent = 'Registration failed';
+        statusEl.style.color = '#f44336';
+        document.getElementById('results-content-rsp').innerHTML =
+          `<div class="terminal-output terminal-error">✗ ${escapeHtml(error.message)}</div>`;
+        console.error('RSP register error:', error);
+      }
+    }
+
+    /** Append a single result row (object) to the results panel, grouped by firing. */
+    const MAX_RSP_GROUPS = 50;
+    let rspFiringBuffer = [];      // rows accumulated for the current firing
+    let rspFiringTimer = null;     // debounce timer handle
+    let rspFiringCounter = 0;      // total firings seen so far
+
+    function appendRspResult(row) {
+      if (Object.keys(row).length === 0) return;
+
+      // Accumulate row into the current firing buffer
+      rspFiringBuffer.push(row);
+
+      // (Re-)start debounce: flush after 150 ms of silence
+      if (rspFiringTimer !== null) clearTimeout(rspFiringTimer);
+      rspFiringTimer = setTimeout(flushRspFiring, 150);
+    }
+
+    function flushRspFiring() {
+      rspFiringTimer = null;
+      const rows = rspFiringBuffer.splice(0);
+      if (rows.length === 0) return;
+
+      rspFiringCounter++;
+      const content = document.getElementById('results-content-rsp');
+
+      // On first real result, clear the "waiting…" placeholder
+      if (content.querySelector('.terminal-info')) {
+        content.innerHTML = '';
+        const info = document.createElement('div');
+        info.className = 'terminal-output terminal-success';
+        info.textContent = '✓ Results streaming via SSE…';
+        content.appendChild(info);
+      }
+
+      // Build the firing-group card
+      const keys = Object.keys(rows[0]);
+      const now = new Date().toLocaleTimeString();
+
+      const card = document.createElement('div');
+      card.className = 'rsp-firing-group';
+
+      const header = document.createElement('div');
+      header.className = 'rsp-firing-header';
+      header.innerHTML =
+        `<span>Firing #${rspFiringCounter} <span style="opacity:0.6">— ${now}</span></span>` +
+        `<span class="rsp-firing-count">${rows.length} row${rows.length !== 1 ? 's' : ''}</span>`;
+      card.appendChild(header);
+
+      const wrapper = document.createElement('div');
+      wrapper.className = 'table-wrapper';
+      wrapper.style.marginTop = '0';
+      wrapper.style.borderRadius = '0';
+      wrapper.style.border = 'none';
+
+      const table = document.createElement('table');
+      table.className = 'results-table';
+
+      const thead = document.createElement('thead');
+      const headerRow = document.createElement('tr');
+      keys.forEach(k => {
+        const th = document.createElement('th');
+        th.textContent = k;
+        headerRow.appendChild(th);
+      });
+      thead.appendChild(headerRow);
+      table.appendChild(thead);
+
+      const tbody = document.createElement('tbody');
+      rows.forEach(row => {
+        const tr = document.createElement('tr');
+        keys.forEach(k => {
+          const td = document.createElement('td');
+          td.textContent = row[k] || '';
+          tr.appendChild(td);
+        });
+        tbody.appendChild(tr);
+      });
+      table.appendChild(tbody);
+      wrapper.appendChild(table);
+      card.appendChild(wrapper);
+
+      // Prepend card after the first info line so newest is at top
+      const infoEl = content.querySelector('.terminal-output');
+      if (infoEl && infoEl.nextSibling) {
+        content.insertBefore(card, infoEl.nextSibling);
+      } else {
+        content.appendChild(card);
+      }
+
+      // Cap total groups: remove oldest (last child) when over limit
+      const groups = content.querySelectorAll('.rsp-firing-group');
+      if (groups.length > MAX_RSP_GROUPS) {
+        groups[groups.length - 1].remove();
+      }
+
+      // Scroll to top so newest result is visible
+      const panel = document.getElementById('results-panel-rsp');
+      panel.scrollTop = 0;
+    }
+
+    /** Push a stream event directly to the persistent engine via /rsp/push. */
+    async function pushRspStreamEvent() {
+      const stream = document.getElementById('rsp-stream-select').value;
+      if (!stream) {
+        alert('Please select a stream. Make sure your RSP-QL query has a FROM NAMED WINDOW clause.');
+        return;
+      }
+      if (!rspSessionId) {
+        alert('Register a query first (click the Register button).');
+        return;
+      }
+      const timestamp = parseInt(document.getElementById('rsp-timestamp').value, 10);
+      if (isNaN(timestamp)) {
+        alert('Please enter a valid timestamp.');
+        return;
+      }
+      const ntriples = rspContentEditor ? rspContentEditor.getValue().trim() : '';
+      if (!ntriples) {
+        alert('Please enter N-Triples content.');
+        return;
+      }
+
+      // Auto-advance timestamp for convenience
+      const step = parseInt(document.getElementById('rsp-timestamp').step || '100', 10);
+      document.getElementById('rsp-timestamp').value = timestamp + step;
+
+      let ok = false;
+      try {
+        const res = await fetch('/rsp/push', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ session_id: rspSessionId, stream, timestamp, ntriples }),
+        });
+        ok = res.ok;
+        if (!res.ok) {
+          const err = await res.text();
+          console.error('RSP push error:', err);
+        }
+      } catch (error) {
+        console.error('RSP push error:', error);
+      }
+
+      // Log entry (display only — no local queue)
+      rspEvents.push({ stream, timestamp, ntriples, ok });
+      renderRspEvents();
+    }
+
+    /** Clear the push log display. */
+    function clearRspEvents() {
+      rspEvents = [];
+      renderRspEvents();
+    }
+
+    /** Display RSP query results in the results panel. */
+    function displayRspResults(response, totalTime) {
+      const content = document.getElementById('results-content-rsp');
+      let html = '';
+
+      if (response.total_results === 0) {
+        html += `<div class="terminal-output terminal-success">✓ Query executed in ${totalTime}ms</div>`;
+        html += `<div class="terminal-output terminal-warning">⚠ No results — check window ranges, timestamps, and triple patterns.</div>`;
+      } else {
+        html += `<div class="terminal-output terminal-success">✓ ${response.total_results} result(s) in ${totalTime}ms</div>`;
+        if (response.data.length > 1) {
+          html += '<div class="table-wrapper"><table class="results-table">';
+          html += '<thead><tr>';
+          response.data[0].forEach(h => { html += `<th>${escapeHtml(h)}</th>`; });
+          html += '</tr></thead><tbody>';
+          response.data.slice(1).forEach(row => {
+            html += '<tr>';
+            row.forEach(cell => { html += `<td>${escapeHtml(cell)}</td>`; });
+            html += '</tr>';
+          });
+          html += '</tbody></table></div>';
+        }
+      }
+
+      content.innerHTML = html;
+    }
+
+    async function executeRspQuery() {
+      // In live SSE mode: Run is not needed — results arrive automatically.
+      if (rspSessionId) {
+        document.getElementById('results-content-rsp').innerHTML =
+          '<div class="terminal-output terminal-info">ℹ Engine is registered. Results appear automatically when windows trigger — use Push to Stream to add events.</div>';
+        return;
+      }
+
+      const query = rspSparqlEditor.getValue().trim();
+
+      if (!query) {
+        document.getElementById('results-content-rsp').innerHTML =
+          '<div class="terminal-output terminal-error">⚠ No RSP-QL query provided</div>';
+        return;
+      }
+
+      if (rspEvents.length === 0) {
+        document.getElementById('results-content-rsp').innerHTML =
+          '<div class="terminal-output terminal-warning">⚠ No events in log — click Register to use live SSE mode, or push events first for batch mode.</div>';
         return;
       }
 
       const content = document.getElementById('results-content-rsp');
-      content.innerHTML = '<div class="terminal-output terminal-info">▶ Executing RSP query...</div>';
-      
-      // Placeholder for RSP functionality
-      setTimeout(() => {
-        content.innerHTML = `
-          <div class="terminal-output terminal-warning">⚠ RSP Mode is under development</div>
-          <div class="terminal-output terminal-info">RSP-QL query received and validated. Stream processing will be implemented in a future update.</div>
-        `;
-      }, 500);
+      content.innerHTML = '<div class="terminal-output terminal-info">▶ Executing RSP query (batch mode)...</div>';
+
+      // Reuse static data from the SPARQL tab
+      const staticRdf = rdfEditor ? rdfEditor.getValue().trim() : '';
+      const staticFormat = selectedFormat;
+
+      // Collect events that have ntriples content (log entries)
+      const events = rspEvents.filter(e => e.ntriples);
+
+      const payload = {
+        query,
+        events,
+        static_rdf: staticRdf || undefined,
+        static_format: staticFormat,
+      };
+
+      const startTime = performance.now();
+      try {
+        const response = await fetch('/rsp-query', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(payload),
+        });
+
+        const totalTime = (performance.now() - startTime).toFixed(2);
+
+        if (!response.ok) {
+          const err = await response.text();
+          throw new Error(`HTTP ${response.status}: ${err}`);
+        }
+
+        const result = await response.json();
+        displayRspResults(result, totalTime);
+      } catch (error) {
+        content.innerHTML = `<div class="terminal-output terminal-error">✗ ${escapeHtml(error.message)}</div>`;
+        console.error('RSP execution error:', error);
+      }
     }
 
     function updateEditorForFormat(format) {
@@ -2257,6 +2994,7 @@ WHERE {
       ruleEditors.forEach(e => e.refresh());
       if (n3logicEditor) n3logicEditor.refresh();
       if (rspSparqlEditor) rspSparqlEditor.refresh();
+      if (rspContentEditor) rspContentEditor.refresh();
     }
 
     function updateTerminalFontSize() {
@@ -2329,19 +3067,25 @@ Click "Help" for more information.
         <div class="terminal-output terminal-success"><i class="fas fa-stream"></i> Kolibrie RSP Mode Ready!
 
 <strong>Quick Start:</strong>
-1. Check the pre-loaded RSP-QL query example
-2. Click RUN to execute the stream query
-3. View real-time stream processing results
+1. Write (or keep) the RSP-QL query on the left
+2. The stream dropdown auto-populates from FROM NAMED WINDOW clauses
+3. Select a stream, set a timestamp, enter N-Triples content
+4. Click "Push to Stream" to queue stream events
+5. Click RUN to execute — results appear here
 
-<strong>About RSP:</strong>
-• RDF Stream Processing engine
-• Window-based temporal queries
-• Real-time data analysis
-• Supports RSP-QL syntax
+<strong>Static Data:</strong>
+• The RDF data from the SPARQL tab is reused as background knowledge
+• Use static patterns outside WINDOW blocks in the WHERE clause to join with it
 
-Click "Help" for more information.
+<strong>Tips:</strong>
+• Timestamps are integers — use the window RANGE/STEP to control which events fall inside a window
+• Push multiple events at different timestamps to simulate a stream
+• Clear queued events with "Clear All" before a fresh run
         </div>
       `;
+
+      // Populate stream dropdown from initial query
+      updateRspStreamDropdown();
     }, 100);
   </script>
 </body>
