@@ -2,6 +2,7 @@ use shared::dictionary::Dictionary;
 use shared::rule::Rule;
 use shared::triple::Triple;
 use std::collections::{HashMap, HashSet};
+use std::sync::{Arc, RwLock};
 use crate::reasoning::materialisation::replace_variables_with_bound_values;
 use crate::reasoning::Reasoner;
 use crate::reasoning::rules::evaluate_filters;
@@ -33,7 +34,9 @@ impl Reasoner {
         let idx_before_inference = all_facts.len(); // Used to keep track of which facts are inferred by the algorithm
 
         loop {
-            let mut inferred_facts_this_round = strat.infer_round(&mut self.dictionary, &self.rules, &all_facts, &known_facts);
+
+            let mut dict = self.dictionary.write().unwrap();
+            let mut inferred_facts_this_round = strat.infer_round(&mut dict, &self.rules, &all_facts, &known_facts);
 
             if inferred_facts_this_round.is_empty() {
                 break;

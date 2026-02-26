@@ -1740,7 +1740,9 @@ pub fn process_rule_definition(
         let mut rule_prefixes = prefixes.clone();
         database.share_prefixes_with(&mut rule_prefixes);
 
-        let dynamic_rule = convert_combined_rule(rule.clone(), &mut kg.dictionary, &rule_prefixes);
+        let mut dict = kg.dictionary.write().unwrap();
+        let dynamic_rule = convert_combined_rule(rule.clone(), &mut dict, &rule_prefixes);
+        drop(dict);
         database.dictionary = kg.dictionary.clone();
 
         // Check if this rule has windowing - if so, set up RSP processing
@@ -1765,11 +1767,13 @@ pub fn process_rule_definition(
                 // Process existing triples through the window
                 let mut current_time = 1;
                 for triple in database.triples.iter() {
+                    let dict = database.dictionary.read().unwrap();
                     let window_triple = WindowTriple {
-                        s: database.dictionary.decode(triple.subject).unwrap_or("").to_string(),
-                        p: database.dictionary.decode(triple.predicate).unwrap_or("").to_string(),
-                        o: database.dictionary.decode(triple.object).unwrap_or("").to_string(),
+                        s: dict.decode(triple.subject).unwrap_or("").to_string(),
+                        p: dict.decode(triple.predicate).unwrap_or("").to_string(),
+                        o: dict.decode(triple.object).unwrap_or("").to_string(),
                     };
+                    drop(dict);
 
                     // Add to window
                     rsp_window.add_to_window(window_triple, current_time);
@@ -1869,16 +1873,21 @@ pub fn process_retrieve_clause(
         // Create a temporary knowledge graph to match patterns
         let mut kg = Reasoner::new();
         for triple in database.triples.iter() {
-            let subject = database.dictionary.decode(triple.subject);
-            let predicate = database.dictionary.decode(triple.predicate);
-            let object = database.dictionary.decode(triple.object);
+            let dict = database.dictionary.read().unwrap();
+            let subject = dict.decode(triple.subject).map(|s| s.to_string());
+            let predicate = dict.decode(triple.predicate).map(|p| p.to_string());
+            let object = dict.decode(triple.object).map(|o| o.to_string());
+            drop(dict);
+
             if let (Some(s), Some(p), Some(o)) = (subject, predicate, object) {
                 kg.add_abox_triple(&s, &p, &o);
             }
         }
         
         // Match the pattern against the knowledge graph
-        let pattern_converted = convert_triple_pattern(*pattern, &mut database.dictionary, &database.prefixes);
+        let mut dict = database.dictionary.write().unwrap();
+        let pattern_converted = convert_triple_pattern(*pattern, &mut dict, &database.prefixes);
+        drop(dict);
         
         // Find matching triples based on the pattern
         for triple in database.triples.iter() {
@@ -1958,7 +1967,9 @@ fn create_rsp_window(window_spec: &WindowSpec) -> Result<CSPARQLWindow<WindowTri
 fn register_rule_predicates(rule: &Rule, database: &mut SparqlDatabase) {
     for conclusion in &rule.conclusion {
         if let Term::Constant(code) = conclusion.1 {
-            let expanded = database.dictionary.decode(code).unwrap_or_else(|| "");
+            let dict = database.dictionary.read().unwrap();
+            let expanded = dict.decode(code).unwrap_or_else(|| "").to_string();
+            drop(dict);
             let local = if let Some(idx) = expanded.rfind('#') {
                 &expanded[idx + 1..]
             } else if let Some(idx) = expanded.rfind(':') {

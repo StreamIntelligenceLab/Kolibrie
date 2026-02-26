@@ -19,6 +19,8 @@ impl Reasoner {
         // Keep track of newly inferred facts so we can return them later
         let mut inferred_so_far = Vec::new();
 
+        let mut dict = self.dictionary.write().unwrap();
+
         // Repeat until no new facts are inferred
         loop {
             // Wrap all_facts in an Arc for shared read-only access in parallel
@@ -50,7 +52,7 @@ impl Reasoner {
                                             let inferred = replace_variables_with_bound_values(
                                                 conclusion,
                                                 &variable_bindings,
-                                                &mut self.dictionary.clone(),
+                                                &mut dict.clone(),
                                             );
                                             if !all_facts_arc.contains(&inferred) {
                                                 local_set.insert(inferred);
@@ -85,7 +87,7 @@ impl Reasoner {
                                                             let inferred = replace_variables_with_bound_values(
                                                                 conclusion,
                                                                 &variable_bindings_2,
-                                                                &mut self.dictionary.clone(),
+                                                                &mut dict.clone(),
                                                             );
                                                             if !all_facts_arc.contains(&inferred) {
                                                                 Some(inferred)
@@ -126,7 +128,7 @@ impl Reasoner {
                                                             let inferred = replace_variables_with_bound_values(
                                                                 conclusion,
                                                                 &variable_bindings_2b,
-                                                                &mut self.dictionary.clone(),
+                                                                &mut dict.clone(),
                                                             );
                                                             if !all_facts_arc.contains(&inferred) {
                                                                 Some(inferred)

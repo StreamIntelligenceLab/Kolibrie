@@ -49,7 +49,7 @@ pub struct SparqlDatabase {
     pub triples: BTreeSet<Triple>,
     pub streams: Vec<TimestampedTriple>,
     pub sliding_window: Option<SlidingWindow>,
-    pub dictionary: Dictionary,
+    pub dictionary: Arc<RwLock<Dictionary>>,
     pub prefixes: HashMap<String, String>,
     pub udfs: HashMap<String, ClonableFn>,
     pub index_manager: UnifiedIndex,
@@ -64,7 +64,7 @@ impl SparqlDatabase {
             triples: BTreeSet::new(),
             streams: Vec::new(),
             sliding_window: None,
-            dictionary: Dictionary::new(),
+            dictionary: Arc::new(RwLock::new(Dictionary::new())),
             prefixes: HashMap::new(),
             udfs: HashMap::new(),
             index_manager: UnifiedIndex::new(),
@@ -110,9 +110,11 @@ impl SparqlDatabase {
 
     /// Helper function that accepts parts of a triple, constructs a Triple, and adds it
     pub fn add_triple_parts(&mut self, subject: &str, predicate: &str, object: &str) {
-        let subject_id = self.dictionary.encode(subject);
-        let predicate_id = self.dictionary.encode(predicate);
-        let object_id = self.dictionary.encode(object);
+        let mut dict = self.dictionary.write().unwrap();
+        let subject_id = dict.encode(subject);
+        let predicate_id = dict.encode(predicate);
+        let object_id = dict.encode(object);
+        drop(dict);
 
         let triple = Triple {
             subject: subject_id,
@@ -124,9 +126,11 @@ impl SparqlDatabase {
 
     /// Helper function that accepts parts of a triple, constructs a Triple, and deletes it
     pub fn delete_triple_parts(&mut self, subject: &str, predicate: &str, object: &str) -> bool {
-        let subject_id = self.dictionary.encode(subject);
-        let predicate_id = self.dictionary.encode(predicate);
-        let object_id = self.dictionary.encode(object);
+        let mut dict = self.dictionary.write().unwrap();
+        let subject_id = dict.encode(subject);
+        let predicate_id = dict.encode(predicate);
+        let object_id = dict.encode(object);
+        drop(dict);
 
         let triple = Triple {
             subject: subject_id,
@@ -154,13 +158,15 @@ impl SparqlDatabase {
         xml.push_str(">\n");
     
         // Group triples by subject
+        let dict = self.dictionary.read().unwrap();
         let mut subjects: BTreeMap<String, Vec<(String, String)>> = BTreeMap::new();
         for triple in &self.triples {
-            let subject = self.dictionary.decode(triple.subject);
-            let predicate = self.dictionary.decode(triple.predicate);
-            let object = self.dictionary.decode(triple.object);
+            let subject = dict.decode(triple.subject);
+            let predicate = dict.decode(triple.predicate);
+            let object = dict.decode(triple.object);
             subjects.entry(subject.unwrap().to_string()).or_default().push((predicate.unwrap().to_string(), object.unwrap().to_string()));
         }
+        drop(dict);
     
         // For each subject, create an <rdf:Description> element.
         for (subject, po_pairs) in subjects {
@@ -182,7 +188,7 @@ impl SparqlDatabase {
         let mut current_predicate = Vec::with_capacity(128);
 
         let (sender, receiver) = unbounded::<Vec<Triple>>();
-        let dictionary = Arc::new(RwLock::new(self.dictionary.clone()));
+        let dictionary = Arc::clone(&self.dictionary);
         let triples_set = Arc::new(Mutex::new(Vec::new()));
         let num_threads = utils::get_num_cpus();
 
@@ -345,9 +351,6 @@ impl SparqlDatabase {
         for local_triples in triples_sets {
             self.triples.extend(local_triples);
         }
-
-        // Update the main dictionary
-        self.dictionary = Arc::try_unwrap(dictionary).unwrap().into_inner().unwrap();
     }
 
     pub fn parse_rdf_from_file(&mut self, filename: &str) {
@@ -441,11 +444,13 @@ impl SparqlDatabase {
                                 std::str::from_utf8(&current_subject),
                                 std::str::from_utf8(&object),
                             ) {
+                                let mut dict = self.dictionary.write().unwrap();
                                 let triple = Triple {
-                                    subject: self.dictionary.encode(subject_str),
-                                    predicate: self.dictionary.encode(&resolved_predicate),
-                                    object: self.dictionary.encode(object_str),
+                                    subject: dict.encode(subject_str),
+                                    predicate: dict.encode(&resolved_predicate),
+                                    object: dict.encode(object_str),
                                 };
+                                drop(dict);
                                 triples.push(triple);
                             }
                         }
@@ -460,11 +465,13 @@ impl SparqlDatabase {
                             if let Ok(subject_str) = std::str::from_utf8(&current_subject) {
                                 if let Ok(predicate_str) = std::str::from_utf8(&current_predicate) {
                                     let resolved_predicate = self.resolve_term(predicate_str);
+                                    let mut dict = self.dictionary.write().unwrap();
                                     let triple = Triple {
-                                        subject: self.dictionary.encode(subject_str),
-                                        predicate: self.dictionary.encode(&resolved_predicate),
-                                        object: self.dictionary.encode(trimmed_object),
+                                        subject: dict.encode(subject_str),
+                                        predicate: dict.encode(&resolved_predicate),
+                                        object: dict.encode(trimmed_object),
                                     };
+                                    drop(dict);
                                     triples.push(triple);
                                 }
                             }
@@ -516,18 +523,39 @@ impl SparqlDatabase {
             // Parse triples
             let parts: Vec<&str> = line.split_whitespace().collect();
             if parts.len() >= 3 {
-                let subject = parts[0].trim_end_matches('.').to_string();
-                let predicate = parts[1].trim_end_matches('.').to_string();
-                let object = parts[2..].join(" ").trim_end_matches('.').to_string();
+                let subject_raw = parts[0].trim_end_matches('.');
+                let predicate_raw = parts[1].trim_end_matches('.');
+                let object_raw = parts[2..].join(" ").trim_end_matches('.').to_string();
 
-                // Clean up object by removing quotes and trimming whitespace
-                let cleaned_object = object.trim().trim_matches('"').to_string();
-
-                let triple = Triple {
-                    subject: self.dictionary.encode(&subject),
-                    predicate: self.dictionary.encode(&predicate),
-                    object: self.dictionary.encode(&cleaned_object),
+                // Strip angle brackets from IRIs
+                let subject = if subject_raw.starts_with('<') && subject_raw.ends_with('>') {
+                    subject_raw[1..subject_raw.len()-1].to_string()
+                } else {
+                    subject_raw.to_string()
                 };
+
+                let predicate = if predicate_raw.starts_with('<') && predicate_raw.ends_with('>') {
+                    predicate_raw[1..predicate_raw.len()-1].to_string()
+                } else {
+                    predicate_raw.to_string()
+                };
+
+                // Clean up object by removing quotes and angle brackets
+                let object = if object_raw.starts_with('<') && object_raw.ends_with('>') {
+                    object_raw[1..object_raw.len()-1].to_string()
+                } else if object_raw.starts_with('"') && object_raw.ends_with('"') {
+                    object_raw[1..object_raw.len()-1].to_string()
+                } else {
+                    object_raw.trim().trim_matches('"').to_string()
+                };
+
+                let mut dict = self.dictionary.write().unwrap();
+                let triple = Triple {
+                    subject: dict.encode(&subject),
+                    predicate: dict.encode(&predicate),
+                    object: dict.encode(&object),
+                };
+                drop(dict);
                 self.triples.insert(triple);
             } else {
                 eprintln!("Skipping invalid line: {}", line);
@@ -544,7 +572,7 @@ impl SparqlDatabase {
             .map(|c| c.to_vec())
             .collect();
     
-        let partial_results: Vec<(BTreeSet<Triple>, Dictionary, HashMap<String, String>)> =
+        let partial_results: Vec<(BTreeSet<Triple>, Arc<RwLock<Dictionary>>, HashMap<String, String>)> =
             chunks.par_iter().map(|chunk| {
                 let mut local_db = SparqlDatabase::new();
                 let mut statement = String::new();
@@ -581,11 +609,15 @@ impl SparqlDatabase {
                 (local_db.triples, local_db.dictionary, local_db.prefixes)
             }).collect();
     
-        for (triples, dict, pref) in partial_results {
+        for (triples, dict_arc, pref) in partial_results {
             for t in triples {
                 self.triples.insert(t);
             }
-            self.dictionary.merge(&dict);
+            let mut self_dict = self.dictionary.write().unwrap();
+            let other_dict = dict_arc.read().unwrap();
+            self_dict.merge(&other_dict);
+            drop(other_dict);
+            drop(self_dict);
             for (k, v) in pref {
                 self.prefixes.insert(k, v);
             }
@@ -648,11 +680,13 @@ impl SparqlDatabase {
         let mut encoded_triples = Vec::new();
         for triple_strings in non_encoded_triples {
             for (subject, predicate, object) in triple_strings {
+                let mut dict = self.dictionary.write().unwrap();
                 let main_triple = Triple {
-                    subject: self.dictionary.encode(&subject),
-                    predicate: self.dictionary.encode(&predicate),
-                    object: self.dictionary.encode(&object),
+                    subject: dict.encode(&subject),
+                    predicate: dict.encode(&predicate),
+                    object: dict.encode(&object),
                 };
+                drop(dict);
                 encoded_triples.push(main_triple);
             }
         }
@@ -850,11 +884,13 @@ impl SparqlDatabase {
                         let resolved_predicate = self.resolve_term(&predicate);
                         let resolved_object = self.resolve_term(&object);
 
+                        let mut dict = self.dictionary.write().unwrap();
                         let triple = Triple {
-                            subject: self.dictionary.encode(&resolved_subject),
-                            predicate: self.dictionary.encode(&resolved_predicate),
-                            object: self.dictionary.encode(&resolved_object),
+                            subject: dict.encode(&resolved_subject),
+                            predicate: dict.encode(&resolved_predicate),
+                            object: dict.encode(&resolved_object),
                         };
+                        drop(dict);
                         self.triples.insert(triple);
 
                         current_state = "predicate";
@@ -1435,17 +1471,20 @@ impl SparqlDatabase {
     }
 
     pub fn union(&mut self, other: &SparqlDatabase) -> Self {
-        // Create a new dictionary by merging the dictionaries of both databases
-        let mut merged_dictionary = self.dictionary.clone();
+        // Create a new dictionary by cloning and merging
+        let self_dict = self.dictionary.read().unwrap();
+        let other_dict = other.dictionary.read().unwrap();
+        let mut merged_dictionary = self_dict.clone();
+        drop(self_dict);
 
         // Re-encode triples from the other database using the merged dictionary
         let mut re_encoded_triples = BTreeSet::new();
         for triple in &other.triples {
             let subject =
-                merged_dictionary.encode(other.dictionary.decode(triple.subject).unwrap());
+                merged_dictionary.encode(other_dict.decode(triple.subject).unwrap());
             let predicate =
-                merged_dictionary.encode(other.dictionary.decode(triple.predicate).unwrap());
-            let object = merged_dictionary.encode(other.dictionary.decode(triple.object).unwrap());
+                merged_dictionary.encode(other_dict.decode(triple.predicate).unwrap());
+            let object = merged_dictionary.encode(other_dict.decode(triple.object).unwrap());
             re_encoded_triples.insert(Triple {
                 subject,
                 predicate,
@@ -1459,11 +1498,11 @@ impl SparqlDatabase {
         let mut union_streams = self.streams.clone();
         for ts_triple in &other.streams {
             let subject = merged_dictionary
-                .encode(other.dictionary.decode(ts_triple.triple.subject).unwrap());
+                .encode(other_dict.decode(ts_triple.triple.subject).unwrap());
             let predicate = merged_dictionary
-                .encode(other.dictionary.decode(ts_triple.triple.predicate).unwrap());
+                .encode(other_dict.decode(ts_triple.triple.predicate).unwrap());
             let object =
-                merged_dictionary.encode(other.dictionary.decode(ts_triple.triple.object).unwrap());
+                merged_dictionary.encode(other_dict.decode(ts_triple.triple.object).unwrap());
             let re_encoded_ts_triple = TimestampedTriple {
                 triple: Triple {
                     subject,
@@ -1476,12 +1515,13 @@ impl SparqlDatabase {
                 union_streams.push(re_encoded_ts_triple);
             }
         }
+        drop(other_dict);
 
         Self {
             triples: union_triples,
             streams: union_streams,
             sliding_window: self.sliding_window.clone(),
-            dictionary: merged_dictionary,
+            dictionary: Arc::new(RwLock::new(merged_dictionary)),
             prefixes: self.prefixes.clone(),
             udfs: HashMap::new(),
             index_manager: UnifiedIndex::new(),
@@ -1491,7 +1531,9 @@ impl SparqlDatabase {
     }
 
     pub fn par_join(&mut self, other: &SparqlDatabase, predicate: &str) -> Self {
-        let predicate_id = self.dictionary.encode(predicate);
+        let mut dict = self.dictionary.write().unwrap();
+        let predicate_id = dict.encode(predicate);
+        drop(dict);
         let other_map: BTreeMap<&u32, Vec<&Triple>> = other
             .triples
             .par_iter()
@@ -1550,7 +1592,7 @@ impl SparqlDatabase {
             triples: joined_triples,
             streams: self.streams.clone(),
             sliding_window: self.sliding_window.clone(),
-            dictionary: self.dictionary.clone(),
+            dictionary: Arc::clone(&self.dictionary),
             prefixes: self.prefixes.clone(),
             udfs: HashMap::new(),
             index_manager: UnifiedIndex::new(),
@@ -1614,13 +1656,15 @@ impl SparqlDatabase {
         predicate: String,
         object_var: &'a str,
         triples: Vec<Triple>,
-        dictionary: &'a Dictionary,
+        dictionary: &Arc<RwLock<Dictionary>>,
         final_results: Vec<BTreeMap<&'a str, String>>,
         literal_filter: Option<String>,
     ) -> Vec<BTreeMap<&'a str, String>> {
         if final_results.is_empty() {
             return Vec::new();
         }
+
+        let dictionary = dictionary.read().unwrap();
 
         let predicate_bytes = predicate.as_bytes();
         let literal_filter_bytes = literal_filter.as_ref().map(|s| s.as_bytes());
@@ -2613,9 +2657,10 @@ impl SparqlDatabase {
         let predicate = parts[1];
         let object = parts[2];
 
-        let subject_id = self.dictionary.encode(subject);
-        let predicate_id = self.dictionary.encode(predicate);
-        let object_id = self.dictionary.encode(object);
+        let mut dict = self.dictionary.write().unwrap();
+        let subject_id = dict.encode(subject);
+        let predicate_id = dict.encode(predicate);
+        let object_id = dict.encode(object);
 
         let mut result = String::new();
         for triple in &self.triples {
@@ -2625,12 +2670,13 @@ impl SparqlDatabase {
             {
                 result.push_str(&format!(
                     "Subject: {}, Predicate: {}, Object: {}\n",
-                    self.dictionary.decode(triple.subject).unwrap(),
-                    self.dictionary.decode(triple.predicate).unwrap(),
-                    self.dictionary.decode(triple.object).unwrap()
+                    dict.decode(triple.subject).unwrap(),
+                    dict.decode(triple.predicate).unwrap(),
+                    dict.decode(triple.object).unwrap()
                 ));
             }
         }
+        drop(dict);
 
         if result.is_empty() {
             result = "No matching triples found.".to_string();
@@ -2653,11 +2699,13 @@ impl SparqlDatabase {
                         let predicate = parts[1].to_string();
                         let object = parts[2].to_string();
 
+                        let mut dict = self.dictionary.write().unwrap();
                         let triple = Triple {
-                            subject: self.dictionary.encode(&subject),
-                            predicate: self.dictionary.encode(&predicate),
-                            object: self.dictionary.encode(&object),
+                            subject: dict.encode(&subject),
+                            predicate: dict.encode(&predicate),
+                            object: dict.encode(&object),
                         };
+                        drop(dict);
                         self.triples.insert(triple);
                         return "Update Successful".to_string();
                     }
@@ -2675,11 +2723,13 @@ impl SparqlDatabase {
                         let predicate = parts[1].to_string();
                         let object = parts[2].to_string();
 
+                        let mut dict = self.dictionary.write().unwrap();
                         let triple = Triple {
-                            subject: self.dictionary.encode(&subject),
-                            predicate: self.dictionary.encode(&predicate),
-                            object: self.dictionary.encode(&object),
+                            subject: dict.encode(&subject),
+                            predicate: dict.encode(&predicate),
+                            object: dict.encode(&object),
                         };
+                        drop(dict);
                         self.triples.remove(&triple);
                         return "Update Successful".to_string();
                     }
@@ -2752,12 +2802,13 @@ impl SparqlDatabase {
     }
 
     pub fn debug_print_triples(&self) {
+        let dict = self.dictionary.read().unwrap();
         for triple in &self.triples {
             println!(
                 "Stored Triple -> Subject: {}, Predicate: {}, Object: {}",
-                self.dictionary.decode(triple.subject).unwrap(),
-                self.dictionary.decode(triple.predicate).unwrap(),
-                self.dictionary.decode(triple.object).unwrap()
+                dict.decode(triple.subject).unwrap(),
+                dict.decode(triple.predicate).unwrap(),
+                dict.decode(triple.object).unwrap()
             );
         }
     }
@@ -2973,10 +3024,12 @@ impl SparqlDatabase {
         format!("{} {} {}", subject.unwrap(), predicate.unwrap(), object.unwrap())
     }
 
-    pub fn decode_triple(&self, triple: &Triple) -> Option<(&str, &str, &str)> {
-        let subject = self.dictionary.decode(triple.subject)?;
-        let predicate = self.dictionary.decode(triple.predicate)?;
-        let object = self.dictionary.decode(triple.object)?;
+    pub fn decode_triple(&self, triple: &Triple) -> Option<(String, String, String)> {
+        let dict = self.dictionary.read().unwrap();
+        let subject = dict.decode(triple.subject)?.to_string();
+        let predicate = dict.decode(triple.predicate)?.to_string();
+        let object = dict.decode(triple.object)?.to_string();
+        drop(dict);
         
         Some((subject, predicate, object))
     }

@@ -33,18 +33,19 @@ struct CongestionPrediction {
 fn extract_traffic_data_from_database(
     database: &SparqlDatabase,
 ) -> Result<Vec<TrafficData>, Box<dyn Error>> {
+    let dict = database.dictionary.read().unwrap();
+    
     let traffic_data: Vec<TrafficData> = database
         .triples
         .iter()
         .filter(|triple| {
-            database
-                .dictionary
-                .decode(triple.predicate)
+            // Use dict instead of database.dictionary
+            dict.decode(triple.predicate)
                 .map_or(false, |pred| pred.ends_with("avgVehicleSpeed"))
         })
         .map(|triple| {
-            let road_id = database
-                .dictionary
+            // All decode calls use dict
+            let road_id = dict
                 .decode(triple.subject)
                 .unwrap_or_default()
                 .split('#')
@@ -52,25 +53,21 @@ fn extract_traffic_data_from_database(
                 .unwrap_or_default()
                 .to_string();
 
-            let avg_speed = database
-                .dictionary
+            let avg_speed = dict
                 .decode(triple.object)
                 .unwrap_or_default()
                 .parse()
                 .unwrap_or(0.0);
 
-            // Find vehicle count
             let vehicle_count = database
                 .triples
                 .iter()
                 .find(|t| {
                     t.subject == triple.subject
-                        && database
-                            .dictionary
-                            .decode(t.predicate)
+                        && dict.decode(t.predicate)
                             .map_or(false, |p| p.ends_with("vehicleCount"))
                 })
-                .and_then(|t| database.dictionary.decode(t.object))
+                .and_then(|t| dict.decode(t.object))
                 .and_then(|v| v.parse().ok())
                 .unwrap_or(0.0);
 
@@ -82,6 +79,9 @@ fn extract_traffic_data_from_database(
             }
         })
         .collect();
+
+    // Release lock before printing
+    drop(dict);
 
     println!("Found {} traffic data entries", traffic_data.len());
     for traffic in &traffic_data {
@@ -255,11 +255,9 @@ impl DynamicRuleManager {
 
                             println!("   Enhanced {} fact(s) with ML predictions", ml_facts.len());
                             for triple in ml_facts.iter() {
-                                println!(
-                                    "   {}",
-                                    self.database
-                                        .triple_to_string(triple, &self.database.dictionary)
-                                );
+                                let dict = self.database.dictionary.read().unwrap();
+                                println!("   {}", self.database.triple_to_string(triple, &*dict));
+                                drop(dict);
                             }
                         }
                         Err(e) => eprintln!("ML prediction error: {}", e),
@@ -275,13 +273,11 @@ impl DynamicRuleManager {
                     println!("   Conclusion patterns: {:?}", rule.conclusion);
                     println!("   Inferred {} new fact(s)", inferred_facts.len());
 
+                    let dict = self.database.dictionary.read().unwrap();
                     for triple in inferred_facts.iter() {
-                        println!(
-                            "   {}",
-                            self.database
-                                .triple_to_string(triple, &self.database.dictionary)
-                        );
+                        println!("   {}", self.database.triple_to_string(triple, &*dict));
                     }
+                    drop(dict);
 
                     if inferred_facts.is_empty() {
                         println!("     NO FACTS INFERRED - Applying manual workaround...");
@@ -375,13 +371,14 @@ impl DynamicRuleManager {
     // Helper functions for manual rule application
     fn find_roads_with_emergency_vehicles(&self) -> Vec<(String, i32)> {
         let mut results = Vec::new();
-
+        let dict = self.database.dictionary.read().unwrap();
+        
         for triple in &self.database.triples {
-            if let Some(pred) = self.database.dictionary.decode(triple.predicate) {
+            if let Some(pred) = dict.decode(triple.predicate) {
                 if pred.contains("emergencyVehicles") {
                     if let (Some(subject_str), Some(object_str)) = (
-                        self.database.dictionary.decode(triple.subject),
-                        self.database.dictionary.decode(triple.object),
+                        dict.decode(triple.subject),
+                        dict.decode(triple.object),
                     ) {
                         if let Ok(count) = object_str.parse::<i32>() {
                             results.push((subject_str.to_string(), count));
@@ -390,19 +387,20 @@ impl DynamicRuleManager {
                 }
             }
         }
-
+        
         results
     }
 
     fn find_roads_with_bad_weather(&self) -> Vec<String> {
         let mut results = Vec::new();
-
+        let dict = self.database.dictionary.read().unwrap();
+        
         for triple in &self.database.triples {
-            if let Some(pred) = self.database.dictionary.decode(triple.predicate) {
+            if let Some(pred) = dict.decode(triple.predicate) {
                 if pred.contains("weatherCondition") {
                     if let (Some(subject_str), Some(object_str)) = (
-                        self.database.dictionary.decode(triple.subject),
-                        self.database.dictionary.decode(triple.object),
+                        dict.decode(triple.subject),
+                        dict.decode(triple.object),
                     ) {
                         if object_str == "rain" || object_str == "fog" {
                             results.push(subject_str.to_string());
@@ -411,22 +409,22 @@ impl DynamicRuleManager {
                 }
             }
         }
-
+        
         results
     }
 
     fn find_roads_with_congestion(&self) -> HashMap<String, String> {
         let mut results = HashMap::new();
-
+        let dict = self.database.dictionary.read().unwrap();
+        
         for triple in &self.database.triples {
-            if let Some(pred) = self.database.dictionary.decode(triple.predicate) {
+            if let Some(pred) = dict.decode(triple.predicate) {
                 if pred.contains("congestionLevel") && !pred.starts_with("ex:") {
                     if let (Some(subject_str), Some(object_str)) = (
-                        self.database.dictionary.decode(triple.subject),
-                        self.database.dictionary.decode(triple.object),
+                        dict.decode(triple.subject),
+                        dict.decode(triple.object),
                     ) {
                         if object_str.parse::<f64>().is_ok() {
-                            // Only store the first/latest congestion level for each road
                             results
                                 .entry(subject_str.to_string())
                                 .or_insert(object_str.to_string());
@@ -435,7 +433,7 @@ impl DynamicRuleManager {
                 }
             }
         }
-
+        
         results
     }
 
@@ -446,41 +444,42 @@ impl DynamicRuleManager {
         rule: &CombinedRule,
     ) {
         let road_subject = format!("http://example.org/traffic#{}", prediction.road_id);
-        let road_subject_id = self.database.dictionary.encode(&road_subject);
+        
+        // Encode with write lock
+        let road_subject_id = {
+            let mut dict = self.database.dictionary.write().unwrap();
+            dict.encode(&road_subject)
+        };
 
-        // Check if this prediction should create triples based on WHERE filters
         if !self.prediction_matches_where_clause(prediction, rule) {
-            println!(
-                "  Skipping {} - doesn't match WHERE clause filters",
-                prediction.road_id
-            );
+            println!("  Skipping {} - doesn't match WHERE clause filters", prediction.road_id);
             return;
         }
 
-        // Process each conclusion pattern in the rule
         for conclusion in &rule.conclusion {
             let (subject_str, predicate_str, object_str) = conclusion;
-
-            println!(
-                "Debug: Processing conclusion pattern: {} {} {}",
-                subject_str, predicate_str, object_str
-            );
 
             if *subject_str == "?road" {
                 let expanded_predicate = self
                     .database
                     .resolve_query_term(predicate_str, &self.database.prefixes.clone());
-                let predicate_id = self.database.dictionary.encode(&expanded_predicate);
+                
+                // Acquire write lock for encoding
+                let mut dict = self.database.dictionary.write().unwrap();
+                let predicate_id = dict.encode(&expanded_predicate);
 
                 let object_id = if *object_str == "?level" || *object_str == "?delay" {
                     let ml_value = prediction.congestion_level.to_string();
-                    self.database.dictionary.encode(&ml_value)
+                    dict.encode(&ml_value)
                 } else if object_str.starts_with('?') {
+                    drop(dict);
                     eprintln!("Warning: Unresolved variable {} in conclusion", object_str);
                     continue;
                 } else {
-                    self.database.dictionary.encode(object_str)
+                    dict.encode(object_str)
                 };
+                
+                drop(dict); // Release write lock
 
                 let enhanced_triple = Triple {
                     subject: road_subject_id,
@@ -491,14 +490,13 @@ impl DynamicRuleManager {
                 if self.database.triples.insert(enhanced_triple.clone()) {
                     facts.push(enhanced_triple.clone());
 
+                    // Acquire read lock for printing
+                    let dict = self.database.dictionary.read().unwrap();
                     println!(
                         "  Created triple: {} {} {}",
-                        self.database
-                            .dictionary
-                            .decode(road_subject_id)
-                            .unwrap_or("?"),
+                        dict.decode(road_subject_id).unwrap_or("?"),
                         &expanded_predicate,
-                        self.database.dictionary.decode(object_id).unwrap_or("?")
+                        dict.decode(object_id).unwrap_or("?")
                     );
                 }
             }
@@ -513,7 +511,10 @@ impl DynamicRuleManager {
     ) -> bool {
         // Get the road's data from the database
         let road_subject = format!("http://example.org/traffic#{}", prediction.road_id);
-        let road_subject_id = self.database.dictionary.clone().encode(&road_subject);
+        let road_subject_id = {
+            let mut dict = self.database.dictionary.write().unwrap();
+            dict.encode(&road_subject)
+        };
 
         // Get road data
         let avg_speed = self
@@ -606,18 +607,18 @@ impl DynamicRuleManager {
 
     // Helper method to get road data
     fn get_road_data(&self, road_subject_id: u32, data_type: &str) -> Option<f64> {
+        let dict = self.database.dictionary.read().unwrap();
+        
         self.database
             .triples
             .iter()
             .find(|triple| {
                 triple.subject == road_subject_id
-                    && self
-                        .database
-                        .dictionary
+                    && dict
                         .decode(triple.predicate)
                         .map_or(false, |pred| pred.ends_with(data_type))
             })
-            .and_then(|triple| self.database.dictionary.decode(triple.object))
+            .and_then(|triple| dict.decode(triple.object))
             .and_then(|value_str| value_str.parse::<f64>().ok())
     }
 
@@ -646,9 +647,11 @@ impl DynamicRuleManager {
     }
 
     fn add_triple(&mut self, subject: &str, predicate: &str, object: &str) {
-        let subject_id = self.database.dictionary.encode(subject);
-        let predicate_id = self.database.dictionary.encode(predicate);
-        let object_id = self.database.dictionary.encode(object);
+        let mut dict = self.database.dictionary.write().unwrap();
+        let subject_id = dict.encode(subject);
+        let predicate_id = dict.encode(predicate);
+        let object_id = dict.encode(object);
+        drop(dict);
 
         self.database.triples.insert(Triple {
             subject: subject_id,

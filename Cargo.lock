@@ -265,7 +265,7 @@ checksum = "b94f61472cee1439c0b966b47e3aca9ae07e45d070759512cd390ea2bebc6675"
 
 [[package]]
 name = "cli"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "clap",
  "kolibrie",
@@ -393,7 +393,7 @@ checksum = "460fbee9c2c2f33933d720630a6a0bac33ba7053db5344fac858d4b8952d77d5"
 
 [[package]]
 name = "datalog"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "nom",
  "rayon",
@@ -561,7 +561,7 @@ checksum = "07e28edb80900c19c28f1072f2e8aeca7fa06b23cd4169cefe1af5aa3260783f"
 
 [[package]]
 name = "gpu"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -778,7 +778,7 @@ dependencies = [
 
 [[package]]
 name = "kolibrie"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "annotate-snippets",
  "bincode",
@@ -808,11 +808,13 @@ dependencies = [
 
 [[package]]
 name = "kolibrie-http-server"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
+ "datalog",
  "kolibrie",
  "serde",
  "serde_json",
+ "shared",
 ]
 
 [[package]]
@@ -880,7 +882,7 @@ dependencies = [
 
 [[package]]
 name = "ml"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "pyo3",
  "pyo3-build-config 0.23.5",
@@ -1122,7 +1124,7 @@ dependencies = [
 
 [[package]]
 name = "python"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "datalog",
  "kolibrie",
@@ -1420,7 +1422,7 @@ dependencies = [
 
 [[package]]
 name = "shared"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "rayon",
  "serde",

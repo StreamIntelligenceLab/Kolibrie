@@ -2,6 +2,7 @@ use shared::dictionary::Dictionary;
 use shared::rule::Rule;
 use shared::triple::Triple;
 use std::collections::{BTreeMap, HashMap, HashSet};
+use std::sync::{Arc, RwLock};
 use crate::reasoning::{convert_string_binding_to_u32, Reasoner};
 use crate::reasoning::materialisation::infer_generic::{SolutionMapping, InferenceStrategy};
 use crate::reasoning::materialisation::replace_variables_with_bound_values;
@@ -50,10 +51,11 @@ impl InferenceStrategy for NaiveStrategy {
 
             // For each binding that satisfies the premises of the rule, get to the conclusion and apply bindings
             for binding_set in &binding_sets {
-                if evaluate_filters(&binding_set, &rule.filters, &dictionary) {
+                if evaluate_filters(&binding_set, &rule.filters, dictionary) {
                     // Loop over each conclusion of the rule, since for the current binding,
                     // the conclusions of the rule can be inferred (because premises are met)
                     for conclusion in &rule.conclusion {
+
                         let inferred_fact =
                             replace_variables_with_bound_values(conclusion, binding_set, dictionary);
 

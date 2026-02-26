@@ -16,7 +16,7 @@
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link
-    href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono: ital,wght@0,100;0,200;0,300;0,400;0,500;0,600;0,700;1,100;1,200;1,300;1,400;1,500;1,600;1,700&display=swap"
+    href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:ital,wght@0,100;0,200;0,300;0,400;0,500;0,600;0,700;1,100;1,200;1,300;1,400;1,500;1,600;1,700&display=swap"
     rel="stylesheet">
 
   <!-- LZ-String for compression -->
@@ -51,7 +51,6 @@
         radial-gradient(circle at 20% 50%, rgba(219, 88, 156, 0.1) 0%, transparent 50%),
         radial-gradient(circle at 80% 20%, rgba(219, 88, 156, 0.05) 0%, transparent 50%),
         radial-gradient(circle at 40% 80%, rgba(219, 88, 156, 0.08) 0%, transparent 50%);
-      /* animation: float 20s ease-in-out infinite; */
       pointer-events: none;
       z-index: 0;
     }
@@ -85,7 +84,6 @@
       border-radius: 8px;
       cursor: pointer;
       user-select: none;
-      /* Reduced from 0.3s to 0.2s for snappier feel */
       transition: all 0.2s ease;
       text-transform: uppercase;
       letter-spacing: 0.5px;
@@ -93,7 +91,6 @@
       overflow: hidden;
     }
 
-    /* Simplified pseudo-element */
     .btn::before {
       content: '';
       position: absolute;
@@ -102,7 +99,6 @@
       width: 100%;
       height: 100%;
       background: linear-gradient(90deg, transparent, rgba(219, 88, 156, 0.2), transparent);
-      /* transition: left 0.5s; - this caused repaints on every hover */
       opacity: 0;
     }
 
@@ -116,6 +112,103 @@
     .btn:active {
       transform: translateY(0px);
       background: rgba(219, 88, 156, 0.3);
+    }
+
+    /* Multi-query controls */
+    .multi-query-controls {
+      display: flex;
+      gap: 8px;
+      margin-bottom: 8px;
+      padding: 8px;
+      background: rgba(45, 27, 61, 0.3);
+      border-radius: 8px;
+      border: 1px solid rgba(219, 88, 156, 0.2);
+    }
+
+    .btn-add-query {
+      padding: 6px 12px;
+      font-size: 12px;
+      height: 32px;
+      line-height: 20px;
+      margin: 0;
+    }
+
+    /* Rules info banner */
+    .rules-info-banner {
+      display: flex;
+      align-items: flex-start;
+      gap: 12px;
+      margin-bottom: 8px;
+      padding: 12px;
+      background: rgba(45, 27, 61, 0.4);
+      border-radius: 8px;
+      border: 1px solid rgba(219, 88, 156, 0.3);
+      font-size: 13px;
+      line-height: 1.6;
+    }
+
+    .rules-info-banner i {
+      color: #db589c;
+      font-size: 16px;
+      margin-top: 2px;
+      flex-shrink: 0;
+    }
+
+    .rules-info-content {
+      flex: 1;
+    }
+
+    .rules-info-content strong {
+      color: #db589c;
+      display: block;
+      margin-bottom: 4px;
+    }
+
+    .rules-info-content p {
+      margin: 0;
+      color: #c0c0c0;
+    }
+
+    .rules-info-content code {
+      background: rgba(219, 88, 156, 0.15);
+      padding: 2px 6px;
+      border-radius: 3px;
+      font-family: 'IBM Plex Mono', monospace;
+      color: #db589c;
+      font-size: 12px;
+    }
+
+    /* Query tabs */
+    .query-tabs {
+      display: flex;
+      gap: 4px;
+      margin-bottom: 8px;
+      flex-wrap: wrap;
+    }
+
+    .query-tab {
+      padding: 6px 12px;
+      font-size: 12px;
+      height: 32px;
+      color: #e0e0e0;
+      background: rgba(43, 43, 43, 0.6);
+      border: 1px solid rgba(219, 88, 156, 0.3);
+      border-radius: 6px;
+      cursor: pointer;
+      transition: all 0.2s ease;
+      position: relative;
+    }
+
+    .query-tab.active {
+      background: linear-gradient(135deg, rgba(219, 88, 156, 0.3) 0%, rgba(219, 88, 156, 0.2) 100%);
+      border-color: rgba(219, 88, 156, 0.6);
+      color: #db589c;
+      font-weight: 600;
+    }
+
+    .query-tab:hover {
+      background: rgba(219, 88, 156, 0.2);
+      border-color: rgba(219, 88, 156, 0.5);
     }
 
     .dropdown {
@@ -135,11 +228,9 @@
       overflow: hidden;
       z-index: 10;
       box-shadow: 0 8px 32px rgba(219, 88, 156, 0.15);
-      /* Simplified animation */
       animation: dropIn 0.15s ease-out;
     }
 
-    /* Shorter animation duration */
     @keyframes dropIn {
       from {
         opacity: 0;
@@ -185,7 +276,6 @@
       border-left: 1px solid rgba(219, 88, 156, 0.3);
       box-shadow: -5px 0 20px rgba(0, 0, 0, 0.5);
       z-index: 1000;
-      /* Changed to simpler easing */
       transition: right 0.3s ease;
       display: flex;
       flex-direction: column;
@@ -203,7 +293,6 @@
       display: flex;
       align-items: center;
       justify-content: space-between;
-      flex-shrink: 0;
     }
 
     .config-title,
@@ -245,52 +334,45 @@
     }
 
     .config-section {
-      margin-bottom: 30px;
+      margin-bottom: 24px;
     }
 
-    .config-section:last-child {
-      margin-bottom: 0;
-    }
-
-    .config-section-title {
+    .config-section h3 {
       font-size: 14px;
       font-weight: 600;
       color: #db589c;
       text-transform: uppercase;
       letter-spacing: 0.5px;
-      margin-bottom: 15px;
-      padding-bottom: 8px;
-      border-bottom: 1px solid rgba(219, 88, 156, 0.2);
+      margin-bottom: 16px;
     }
 
-    .config-item {
-      margin-bottom: 15px;
+    .config-row {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      padding: 12px 0;
+      border-bottom: 1px solid rgba(219, 88, 156, 0.1);
     }
 
-    .config-item:last-child {
-      margin-bottom: 0;
+    .config-row:last-child {
+      border-bottom: none;
     }
 
     .config-label {
-      display: block;
-      font-size: 12px;
-      font-weight: 500;
       color: #e0e0e0;
-      margin-bottom: 8px;
-      text-transform: uppercase;
-      letter-spacing: 0.3px;
+      font-size: 13px;
     }
 
-    .config-control {
+    .config-controls {
       display: flex;
       align-items: center;
-      gap: 10px;
+      gap: 8px;
     }
 
     .config-btn {
-      width: 32px;
-      height: 32px;
-      background: transparent;
+      width: 28px;
+      height: 28px;
+      background: rgba(219, 88, 156, 0.1);
       border: 1px solid rgba(219, 88, 156, 0.4);
       border-radius: 6px;
       color: #db589c;
@@ -298,197 +380,223 @@
       display: flex;
       align-items: center;
       justify-content: center;
-      font-size: 14px;
-      font-weight: 600;
+      font-size: 12px;
       transition: all 0.2s ease;
     }
 
     .config-btn:hover {
-      background: rgba(219, 88, 156, 0.15);
+      background: rgba(219, 88, 156, 0.2);
       border-color: rgba(219, 88, 156, 0.6);
     }
 
-    .config-btn:active {
-      background: rgba(219, 88, 156, 0.25);
-    }
-
     .config-value {
-      flex: 1;
+      min-width: 50px;
       text-align: center;
-      background: rgba(219, 88, 156, 0.1);
-      border: 1px solid rgba(219, 88, 156, 0.3);
-      border-radius: 6px;
-      padding: 8px 12px;
-      color: #e0e0e0;
-      font-size: 12px;
-      font-weight: 500;
-      min-width: 60px;
+      color: #db589c;
+      font-size: 13px;
+      font-weight: 600;
     }
 
     .config-select {
-      width: 100%;
-      background: rgba(219, 88, 156, 0.1);
+      background: rgba(43, 43, 43, 0.6);
       border: 1px solid rgba(219, 88, 156, 0.4);
       border-radius: 6px;
-      padding: 10px 12px;
       color: #e0e0e0;
-      font-size: 12px;
-      font-weight: 500;
+      padding: 6px 12px;
+      font-size: 13px;
       cursor: pointer;
-      outline: none;
       transition: all 0.2s ease;
     }
 
     .config-select:hover {
+      background: rgba(219, 88, 156, 0.1);
       border-color: rgba(219, 88, 156, 0.6);
-      background: rgba(219, 88, 156, 0.15);
     }
 
     .config-select:focus {
-      border-color: #db589c;
-      box-shadow: 0 0 0 2px rgba(219, 88, 156, 0.2);
+      outline: none;
+      border-color: rgba(219, 88, 156, 0.8);
     }
 
-    .config-select option {
-      background: #2d1b3d;
-      color: #e0e0e0;
-      padding: 8px;
-    }
-
-    /* Share Panel Specific Styles */
     .share-url-container {
-      background: rgba(219, 88, 156, 0.05);
-      border: 1px solid rgba(219, 88, 156, 0.3);
-      border-radius: 8px;
-      padding: 16px;
-      margin-bottom: 20px;
+      margin-bottom: 16px;
     }
 
     .share-url-label {
-      font-size: 12px;
-      font-weight: 600;
       color: #db589c;
+      font-size: 13px;
+      font-weight: 600;
+      margin-bottom: 8px;
       text-transform: uppercase;
       letter-spacing: 0.5px;
-      margin-bottom: 12px;
     }
 
     .share-url-input {
       width: 100%;
-      background: rgba(0, 0, 0, 0.3);
-      border: 1px solid rgba(219, 88, 156, 0.2);
+      background: rgba(43, 43, 43, 0.6);
+      border: 1px solid rgba(219, 88, 156, 0.4);
       border-radius: 6px;
-      padding: 12px;
       color: #e0e0e0;
-      font-size: 11px;
+      padding: 10px 12px;
+      font-size: 13px;
       font-family: 'IBM Plex Mono', monospace;
-      word-break: break-all;
-      resize: none;
-      outline: none;
-      margin-bottom: 12px;
+      resize: vertical;
       min-height: 80px;
     }
 
     .share-url-input:focus {
-      border-color: rgba(219, 88, 156, 0.5);
+      outline: none;
+      border-color: rgba(219, 88, 156, 0.8);
     }
 
     .share-copy-btn {
       width: 100%;
-      background: linear-gradient(135deg, rgba(219, 88, 156, 0.15) 0%, rgba(219, 88, 156, 0.1) 100%);
+      padding: 12px;
+      background: linear-gradient(135deg, rgba(219, 88, 156, 0.2) 0%, rgba(219, 88, 156, 0.1) 100%);
       border: 1px solid rgba(219, 88, 156, 0.4);
       border-radius: 6px;
-      padding: 12px;
       color: #db589c;
-      font-size: 12px;
+      cursor: pointer;
+      font-size: 13px;
       font-weight: 600;
       text-transform: uppercase;
       letter-spacing: 0.5px;
-      cursor: pointer;
       transition: all 0.2s ease;
     }
 
     .share-copy-btn:hover {
-      background: linear-gradient(135deg, rgba(219, 88, 156, 0.25) 0%, rgba(219, 88, 156, 0.15) 100%);
+      background: linear-gradient(135deg, rgba(219, 88, 156, 0.3) 0%, rgba(219, 88, 156, 0.2) 100%);
       border-color: rgba(219, 88, 156, 0.6);
-    }
-
-    .share-copy-btn:active {
-      background: rgba(219, 88, 156, 0.3);
+      transform: translateY(-1px);
+      box-shadow: 0 4px 15px rgba(219, 88, 156, 0.2);
     }
 
     .share-copy-btn.copied {
-      background: linear-gradient(135deg, rgba(88, 219, 110, 0.15) 0%, rgba(88, 219, 110, 0.1) 100%);
-      border-color: rgba(88, 219, 110, 0.4);
-      color: #58db6e;
+      background: linear-gradient(135deg, rgba(76, 175, 80, 0.2) 0%, rgba(76, 175, 80, 0.1) 100%);
+      border-color: rgba(76, 175, 80, 0.6);
+      color: #4caf50;
     }
 
-    .share-info {
-      background: rgba(219, 88, 156, 0.03);
-      border: 1px solid rgba(219, 88, 156, 0.2);
-      border-radius: 6px;
-      padding: 12px;
-      font-size: 11px;
-      color: rgba(219, 88, 156, 0.8);
-      line-height: 1.4;
-    }
-
-    /* Config overlay */
-    .config-overlay {
+    /* Overlay */
+    .overlay {
+      display: none;
       position: fixed;
       top: 0;
       left: 0;
       width: 100%;
       height: 100%;
-      background: rgba(0, 0, 0, 0.3);
+      background: rgba(0, 0, 0, 0.5);
       z-index: 999;
-      opacity: 0;
-      visibility: hidden;
-      transition: all 0.3s ease;
     }
 
-    .config-overlay.open {
-      opacity: 1;
-      visibility: visible;
+    .overlay.open {
+      display: block;
     }
 
-    /* Main Container */
-    .main-container {
-      height: 100vh;
+    /* Container */
+    .container {
+      position: relative;
+      z-index: 1;
       display: flex;
       flex-direction: column;
+      height: 100vh;
     }
 
-    /* Editor Navigation Tabs */
-    .editor-tabs {
-      position: relative;
-      z-index: 2;
+    .main-content {
+      flex: 1;
       display: flex;
-      background: linear-gradient(90deg, rgba(30, 30, 30, 0.95) 0%, rgba(40, 25, 50, 0.95) 100%);
-      border-bottom: 1px solid rgba(219, 88, 156, 0.2);
-      padding: 0 12px;
-      gap: 8px;
+      overflow: hidden;
+    }
+
+    /* Sidebar */
+    .sidebar {
+      width: 60px;
+      background: linear-gradient(180deg, rgba(43, 43, 43, 0.95) 0%, rgba(45, 27, 61, 0.95) 100%);
+      backdrop-filter: blur(10px);
+      border-right: 1px solid rgba(219, 88, 156, 0.3);
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      padding: 16px 0;
+      gap: 12px;
       flex-shrink: 0;
     }
 
-    .editor-tab {
-      padding: 12px 20px;
-      background: transparent;
-      border: none;
-      border-bottom: 3px solid transparent;
-      color: rgba(219, 88, 156, 0.6);
+    .sidebar-btn {
+      width: 44px;
+      height: 44px;
+      background: rgba(219, 88, 156, 0.1);
+      border: 1px solid rgba(219, 88, 156, 0.3);
+      border-radius: 8px;
+      color: #db589c;
       cursor: pointer;
-      /* Reduced transition time */
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 18px;
       transition: all 0.2s ease;
-      font-size: 13px;
-      font-weight: 600;
-      text-transform: uppercase;
-      letter-spacing: 0.5px;
+    }
+
+    .sidebar-btn:hover {
+      background: rgba(219, 88, 156, 0.2);
+      border-color: rgba(219, 88, 156, 0.5);
+      transform: translateX(2px);
+    }
+
+    .sidebar-btn.active {
+      background: linear-gradient(135deg, rgba(219, 88, 156, 0.3) 0%, rgba(219, 88, 156, 0.2) 100%);
+      border-color: rgba(219, 88, 156, 0.6);
+      box-shadow: 0 4px 15px rgba(219, 88, 156, 0.2);
+    }
+
+    /* Mode Container */
+    .mode-container {
+      flex: 1;
       position: relative;
     }
 
+    .mode-content {
+      display: none;
+      width: 100%;
+      height: 100%;
+    }
+
+    .mode-content.active {
+      display: block;
+    }
+
+    /* Editor Container */
+    .editor-container {
+      display: flex;
+      flex-direction: column;
+      height: 100%;
+      background: rgba(26, 26, 26, 0.5);
+    }
+
+    .editor-tabs {
+      display: flex;
+      gap: 4px;
+      padding: 12px 16px 0;
+      background: rgba(43, 43, 43, 0.3);
+      border-bottom: 1px solid rgba(219, 88, 156, 0.2);
+    }
+
+    .editor-tab {
+      padding: 10px 20px;
+      background: transparent;
+      border: none;
+      border-bottom: 2px solid transparent;
+      color: #c0c0c0;
+      cursor: pointer;
+      font-size: 13px;
+      font-weight: 500;
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+      transition: all 0.2s ease;
+    }
+
     .editor-tab:hover {
-      color: rgba(219, 88, 156, 0.9);
+      color: #db589c;
       background: rgba(219, 88, 156, 0.05);
     }
 
@@ -498,42 +606,11 @@
       background: rgba(219, 88, 156, 0.1);
     }
 
-    /* Simplified pseudo-element */
-    .editor-tab::before {
-      content: '';
-      position: absolute;
-      top: 0;
-      left: 0;
-      right: 0;
-      height: 2px;
-      background: linear-gradient(90deg, transparent, #db589c, transparent);
-      opacity: 0;
-      /* Faster transition */
-      transition: opacity 0.2s ease;
-    }
-
-    .editor-tab.active::before {
-      opacity: 1;
-    }
-
-    /* Editor Container */
-    #editor-container {
-      position: relative;
-      z-index: 1;
-      flex: 1;
-      min-height: 0;
-      background: linear-gradient(135deg, rgba(26, 26, 26, 0.95) 0%, rgba(45, 27, 61, 0.95) 100%);
-      backdrop-filter: blur(10px);
-      display: flex;
-      flex-direction: column;
-      scrollbar-width: thin;
-      scrollbar-color: rgba(219, 88, 156, 0.5) rgba(219, 88, 156, 0.1);
-    }
-
     .editor-panel {
       display: none;
       flex: 1;
-      min-height: 0;
+      padding: 16px;
+      overflow: hidden;
       flex-direction: column;
     }
 
@@ -541,496 +618,238 @@
       display: flex;
     }
 
-    #editor-wrapper, #rdf-wrapper, #rules-wrapper {
-      flex: 1;
-      min-height: 200px;
-      display: flex;
-      flex-direction: column;
-    }
-
-    #sparql-editor, #rdf-editor, #rules-editor {
-      flex: 1;
-      border: none;
-      outline: none;
-      resize: none;
-    }
-
-    /* Resizer */
-    .resizer {
-      height: 4px;
-      background: linear-gradient(90deg, rgba(219, 88, 156, 0.3) 0%, rgba(219, 88, 156, 0.1) 50%, rgba(219, 88, 156, 0.3) 100%);
-      cursor: row-resize;
-      position: relative;
-      z-index: 3;
-      transition: background 0.2s ease;
-      flex-shrink: 0;
-    }
-
-    .resizer:hover {
-      background: linear-gradient(90deg, rgba(219, 88, 156, 0.5) 0%, rgba(219, 88, 156, 0.3) 50%, rgba(219, 88, 156, 0.5) 100%);
-    }
-
-    /* Terminal/Results Panel */
-    #results-panel {
-      flex: 1;
-      min-height: 150px;
-      max-height: 50vh;
-      background: linear-gradient(135deg, rgba(20, 20, 20, 0.98) 0%, rgba(35, 20, 45, 0.98) 100%);
-      border-top: 1px solid rgba(219, 88, 156, 0.3);
-      display: flex;
-      flex-direction: column;
-      backdrop-filter: blur(15px);
-    }
-
-    .results-header {
-      height: 36px;
-      min-height: 36px;
-      background: linear-gradient(90deg, rgba(30, 30, 30, 0.95) 0%, rgba(40, 25, 50, 0.95) 100%);
-      border-bottom: 1px solid rgba(219, 88, 156, 0.2);
-      display: flex;
-      align-items: center;
-      padding: 0 12px;
-      font-size: 12px;
-      font-weight: 600;
-      color: #db589c;
-      text-transform: uppercase;
-      letter-spacing: 0.5px;
-      flex-shrink: 0;
-    }
-
-    .results-tabs {
-      display: flex;
-      gap: 8px;
-    }
-
-    .results-tab {
-      padding: 4px 12px;
-      background: rgba(219, 88, 156, 0.1);
-      border: 1px solid rgba(219, 88, 156, 0.3);
-      border-radius: 4px;
-      cursor: pointer;
-      transition: all 0.2s ease;
-      font-size: 11px;
-    }
-
-    .results-tab.active {
-      background: rgba(219, 88, 156, 0.2);
-      border-color: rgba(219, 88, 156, 0.5);
-    }
-
-    .results-tab:hover {
-      background: rgba(219, 88, 156, 0.15);
-    }
-
-    .results-actions {
-      margin-left: auto;
-      display: flex;
-      gap: 8px;
-    }
-
-    .results-btn {
-      padding: 2px 8px;
-      background: transparent;
-      border: 1px solid rgba(219, 88, 156, 0.4);
-      border-radius: 3px;
-      color: rgba(219, 88, 156, 0.8);
-      cursor: pointer;
-      font-size: 10px;
-      transition: all 0.2s ease;
-    }
-
-    .results-btn:hover {
-      background: rgba(219, 88, 156, 0.1);
-      color: #db589c;
-    }
-
-    .results-content {
-      flex: 1;
-      overflow-y: auto;
-      overflow-x: auto;
-      padding: 12px;
-      font-family: 'Fira Code', 'Monaco', 'Menlo', monospace;
-      font-size: 12px;
-      line-height: 1.4;
-      color: #e0e0e0;
-      min-height: 0;
-      scrollbar-width: thin;
-      scrollbar-color: rgba(219, 88, 156, 0.5) rgba(219, 88, 156, 0.1);
-    }
-
-    /* Custom scrollbar styles */
-    .results-content::-webkit-scrollbar {
-      width: 8px;
-      height: 8px;
-    }
-
-    .results-content::-webkit-scrollbar-track {
-      background: rgba(219, 88, 156, 0.1);
-      border-radius: 4px;
-    }
-
-    .results-content::-webkit-scrollbar-thumb {
-      background: rgba(219, 88, 156, 0.5);
-      border-radius: 4px;
-    }
-
-    .results-content::-webkit-scrollbar-thumb:hover {
-      background: rgba(219, 88, 156, 0.7);
-    }
-
-    .results-content::-webkit-scrollbar-corner {
-      background: rgba(219, 88, 156, 0.1);
-    }
-
-    .results-table {
-      width: 100%;
-      border-collapse: collapse;
-      margin-top: 8px;
-      min-width: 600px;
-    }
-
-    .results-table th {
-      background: rgba(219, 88, 156, 0.15);
-      color: #db589c;
-      padding: 8px 12px;
-      text-align: left;
-      border-bottom: 1px solid rgba(219, 88, 156, 0.3);
-      font-weight: 600;
-      font-size: 11px;
-      text-transform: uppercase;
-      letter-spacing: 0.5px;
-      position: sticky;
-      top: 0;
-      white-space: nowrap;
-    }
-
-    .results-table td {
-      padding: 6px 12px;
-      border-bottom: 1px solid rgba(255, 255, 255, 0.1);
-      font-size: 11px;
-      white-space: nowrap;
-      overflow: hidden;
-      text-overflow: ellipsis;
-      max-width: 300px;
-    }
-
-    .results-table tr:hover {
-      background: rgba(219, 88, 156, 0.05);
-    }
-
-    .terminal-output {
-      color: #e0e0e0;
-      white-space: pre-wrap;
-      word-wrap: break-word;
-      margin-bottom: 4px;
-    }
-
-    .terminal-success {
-      color: #a6e3a1;
-    }
-
-    .terminal-error {
-      color: #f38ba8;
-    }
-
-    .terminal-info {
-      color: #89dceb;
-    }
-
-    .terminal-warning {
-      color: #fab387;
-    }
-
-    .loading-spinner {
-      display: inline-block;
-      width: 12px;
-      height: 12px;
-      border: 2px solid rgba(219, 88, 156, 0.3);
-      border-radius: 50%;
-      border-top-color: #db589c;
-      animation: spin 1s ease-in-out infinite;
-      margin-right: 8px;
-    }
-
-    @keyframes spin {
-      to {
-        transform: rotate(360deg);
-      }
-    }
-
-    /* Custom CodeMirror Theme */
+    /* CodeMirror styling */
     .CodeMirror {
       height: 100% !important;
-      width: 100% !important;
-      background: transparent !important;
-      color: #e0e0e0 !important;
-      font-family: 'IBM Plex Mono', 'Monaco', 'Menlo', monospace !important;
+      background: rgba(43, 43, 43, 0.6) !important;
+      border: 1px solid rgba(219, 88, 156, 0.3);
+      border-radius: 8px;
+      font-family: 'IBM Plex Mono', monospace !important;
       font-size: 14px !important;
-      line-height: 1.6 !important;
-      flex: 1;
     }
 
     .CodeMirror-gutters {
-      background: linear-gradient(135deg, rgba(219, 88, 156, 0.05) 0%, rgba(219, 88, 156, 0.02) 100%) !important;
-      border-right: 1px solid rgba(219, 88, 156, 0.2) !important;
+      background: rgba(35, 35, 35, 0.8) !important;
+      border-right: 1px solid rgba(219, 88, 156, 0.2);
     }
 
     .CodeMirror-linenumber {
-      color: rgba(219, 88, 156, 0.6) !important;
+      color: rgba(219, 88, 156, 0.5);
     }
 
     .CodeMirror-cursor {
-      border-left: 2px solid #db589c !important;
+      border-left-color: #db589c !important;
     }
 
     .CodeMirror-selected {
       background: rgba(219, 88, 156, 0.2) !important;
     }
 
-    .cm-keyword {
-      color: #db589c !important;
-      font-weight: 600 !important;
+    /* Resizer */
+    .resizer {
+      height: 6px;
+      background: rgba(219, 88, 156, 0.1);
+      cursor: ns-resize;
+      position: relative;
+      transition: background 0.2s ease;
     }
 
-    .cm-string {
-      color: #e8a87c !important;
-      font-weight: 500 !important;
+    .resizer:hover {
+      background: rgba(219, 88, 156, 0.3);
     }
 
-    .cm-comment {
-      color: #888 !important;
-      font-style: italic !important;
+    .resizer::before {
+      content: '';
+      position: absolute;
+      top: 50%;
+      left: 50%;
+      transform: translate(-50%, -50%);
+      width: 40px;
+      height: 3px;
+      background: rgba(219, 88, 156, 0.4);
+      border-radius: 2px;
     }
 
-    .cm-variable {
-      color: #f5c2e7 !important;
-      font-weight: 500 !important;
+    /* Results Panel */
+    .results-panel {
+      min-height: 200px;
+      max-height: 60%;
+      display: flex;
+      flex-direction: column;
+      background: rgba(26, 26, 26, 0.8);
+      border-top: 1px solid rgba(219, 88, 156, 0.3);
     }
 
-    .cm-number {
-      color: #fab387 !important;
-      font-weight: 500 !important;
+    .results-header {
+      padding: 12px 16px;
+      background: linear-gradient(90deg, rgba(43, 43, 43, 0.8) 0%, rgba(45, 27, 61, 0.8) 100%);
+      border-bottom: 1px solid rgba(219, 88, 156, 0.2);
+      font-size: 13px;
+      font-weight: 600;
+      color: #db589c;
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+      display: flex;
+      align-items: center;
+      gap: 8px;
     }
 
-    .cm-operator {
-      color: #db589c !important;
-    }
-
-    .cm-atom {
-      color: #cba6f7 !important;
-    }
-
-    .cm-def {
-      color: #f5c2e7 !important;
-      font-weight: 600 !important;
-    }
-
-    .cm-property {
-      color: #94e2d5 !important;
-    }
-
-    .cm-qualifier {
-      color: #f38ba8 !important;
-    }
-
-    .cm-builtin {
-      color: #fab387 !important;
-      font-weight: 500 !important;
-    }
-
-    .cm-meta {
-      color: #cdd6f4 !important;
-    }
-
-    .format-selector select:hover {
-      border-color: rgba(219, 88, 156, 0.8);
-      background: rgba(43, 43, 43, 1);
-    }
-
-    .format-selector select:focus {
-      outline: none;
-      border-color: #db589c;
-      box-shadow: 0 0 0 2px rgba(219, 88, 156, 0.2);
-    }
-
-    .terminal-output {
-      padding: 12px;
-      margin: 8px 0;
-      border-radius: 4px;
+    .results-content {
+      flex: 1;
+      padding: 16px;
+      overflow-y: auto;
       font-family: 'IBM Plex Mono', monospace;
+      font-size: 13px;
+      line-height: 1.6;
+    }
+
+    /* Terminal output styling */
+    .terminal-output {
+      margin-bottom: 12px;
+      padding: 10px 14px;
+      border-radius: 6px;
+      border-left: 3px solid transparent;
+      white-space: pre-line;
     }
 
     .terminal-success {
       background: rgba(76, 175, 80, 0.1);
-      border-left: 3px solid #4caf50;
+      border-left-color: #4caf50;
       color: #81c784;
     }
 
     .terminal-error {
       background: rgba(244, 67, 54, 0.1);
-      border-left: 3px solid #f44336;
+      border-left-color: #f44336;
       color: #e57373;
     }
 
+    .terminal-warning {
+      background: rgba(255, 152, 0, 0.1);
+      border-left-color: #ff9800;
+      color: #ffb74d;
+    }
+
     .terminal-info {
-      background: rgba(219, 88, 156, 0.1);
-      border-left: 3px solid #db589c;
+      background: rgba(33, 150, 243, 0.1);
+      border-left-color: #2196f3;
+      color: #64b5f6;
+    }
+
+    .query-result-section {
+      margin-bottom: 24px;
+      padding: 12px;
+      background: rgba(43, 43, 43, 0.3);
+      border-radius: 8px;
+      border: 1px solid rgba(219, 88, 156, 0.2);
+    }
+
+    /* Results Table */
+    .table-wrapper {
+      overflow-x: auto;
+      margin-top: 12px;
+      border-radius: 6px;
+      border: 1px solid rgba(219, 88, 156, 0.2);
+    }
+
+    .results-table {
+      width: 100%;
+      border-collapse: collapse;
+      background: rgba(43, 43, 43, 0.4);
+    }
+
+    .results-table th {
+      background: linear-gradient(135deg, rgba(219, 88, 156, 0.2) 0%, rgba(219, 88, 156, 0.1) 100%);
       color: #db589c;
-    }
-
-    .CodeMirror-activeline-background {
-      background: rgba(219, 88, 156, 0.08) !important;
-    }
-
-    .CodeMirror-matchingbracket {
-      background: rgba(219, 88, 156, 0.3) !important;
-      color: white !important;
-    }
-
-    /* Status bar at bottom */
-    .status-bar {
-      position: relative;
-      height: 24px;
-      min-height: 24px;
-      background: linear-gradient(90deg, rgba(43, 43, 43, 0.95) 0%, rgba(45, 27, 61, 0.95) 100%);
-      border-top: 1px solid rgba(219, 88, 156, 0.2);
-      display: flex;
-      align-items: center;
-      padding: 0 12px;
+      padding: 10px 14px;
+      text-align: left;
+      font-weight: 600;
+      text-transform: uppercase;
       font-size: 11px;
-      color: rgba(219, 88, 156, 0.8);
-      z-index: 2;
-      flex-shrink: 0;
+      letter-spacing: 0.5px;
+      border-bottom: 1px solid rgba(219, 88, 156, 0.3);
     }
 
-    /* Responsive breakpoints */
-    @media (max-height: 600px) {
-      .toolbar {
-        height: 48px;
-        min-height: 48px;
-      }
-
-      .btn {
-        height: 32px;
-        line-height: 32px;
-        font-size: 11px;
-        padding: 0 12px;
-      }
-
-      #editor-wrapper, #rdf-wrapper, #rules-wrapper {
-        min-height: 150px;
-      }
-
-      #results-panel {
-        min-height: 120px;
-        max-height: 40vh;
-      }
-
-      .results-header {
-        height: 32px;
-        min-height: 32px;
-      }
-
-      .status-bar {
-        height: 20px;
-        min-height: 20px;
-        font-size: 10px;
-      }
+    .results-table td {
+      padding: 10px 14px;
+      border-bottom: 1px solid rgba(219, 88, 156, 0.1);
+      color: #e0e0e0;
     }
 
-    @media (max-height: 480px) {
-      .toolbar {
-        height: 40px;
-        min-height: 40px;
-        padding: 0 8px;
-      }
-
-      .btn {
-        height: 28px;
-        line-height: 28px;
-        font-size: 10px;
-        padding: 0 8px;
-        margin-right: 8px;
-      }
-
-      #editor-wrapper, #rdf-wrapper, #rules-wrapper {
-        min-height: 120px;
-      }
-
-      #results-panel {
-        min-height: 100px;
-        max-height: 35vh;
-      }
-
-      .results-header {
-        height: 28px;
-        min-height: 28px;
-        padding: 0 8px;
-      }
-
-      .results-content {
-        padding: 8px;
-        font-size: 11px;
-      }
-
-      .status-bar {
-        height: 18px;
-        min-height: 18px;
-        font-size: 9px;
-        padding: 0 8px;
-      }
+    .results-table tr:last-child td {
+      border-bottom: none;
     }
 
-    @media (max-height: 400px) {
-      #editor-wrapper, #rdf-wrapper, #rules-wrapper {
-        min-height: 100px;
-      }
-
-      #results-panel {
-        min-height: 80px;
-        max-height: 30vh;
-      }
+    .results-table tr:hover {
+      background: rgba(219, 88, 156, 0.05);
     }
 
-    /* Tools Panel Styles */
-    .tools-panel {
+    /* Scrollbar Styling */
+    ::-webkit-scrollbar {
+      width: 8px;
+      height: 8px;
+    }
+
+    ::-webkit-scrollbar-track {
+      background: rgba(43, 43, 43, 0.3);
+    }
+
+    ::-webkit-scrollbar-thumb {
+      background: rgba(219, 88, 156, 0.4);
+      border-radius: 4px;
+    }
+
+    ::-webkit-scrollbar-thumb:hover {
+      background: rgba(219, 88, 156, 0.6);
+    }
+
+    /* Help Modal */
+    .help-modal {
+      display: none;
       position: fixed;
       top: 0;
-      right: -400px;
-      width: 400px;
-      height: 100vh;
+      left: 0;
+      width: 100%;
+      height: 100%;
+      background: rgba(0, 0, 0, 0.8);
+      backdrop-filter: blur(5px);
+      z-index: 2000;
+      align-items: center;
+      justify-content: center;
+    }
+
+    .help-modal.open {
+      display: flex;
+    }
+
+    .help-content {
       background: linear-gradient(135deg, rgba(26, 26, 26, 0.98) 0%, rgba(45, 27, 61, 0.98) 100%);
       backdrop-filter: blur(20px);
-      border-left: 1px solid rgba(219, 88, 156, 0.3);
-      box-shadow: -5px 0 20px rgba(0, 0, 0, 0.5);
-      z-index: 1000;
-      transition: right 0.3s ease;
-      display: flex;
-      flex-direction: column;
+      border: 1px solid rgba(219, 88, 156, 0.4);
+      border-radius: 12px;
+      padding: 32px;
+      max-width: 600px;
+      max-height: 80vh;
+      overflow-y: auto;
+      box-shadow: 0 10px 50px rgba(219, 88, 156, 0.2);
     }
 
-    .tools-panel.open {
-      right: 0;
-    }
-
-    .tools-header {
-      padding: 20px;
-      border-bottom: 1px solid rgba(219, 88, 156, 0.3);
+    .help-header {
       display: flex;
       align-items: center;
       justify-content: space-between;
-      flex-shrink: 0;
+      margin-bottom: 24px;
     }
 
-    .tools-title {
-      font-size: 18px;
+    .help-title {
+      font-size: 24px;
       font-weight: 600;
       color: #db589c;
       text-transform: uppercase;
       letter-spacing: 0.5px;
     }
 
-    .tools-close {
+    .help-close {
       width: 32px;
       height: 32px;
       background: transparent;
@@ -1045,460 +864,425 @@
       transition: all 0.2s ease;
     }
 
-    .tools-close:hover {
+    .help-close:hover {
       background: rgba(219, 88, 156, 0.1);
       border-color: rgba(219, 88, 156, 0.6);
     }
 
-    .tools-content {
-      flex: 1;
-      padding: 20px;
-      overflow-y: auto;
+    .help-body {
+      color: #e0e0e0;
+      line-height: 1.8;
     }
 
-    .tools-section {
-      margin-bottom: 30px;
-    }
-
-    .tools-section:last-child {
-      margin-bottom: 0;
-    }
-
-    .tools-section-title {
+    .help-body h3 {
+      color: #db589c;
+      margin-top: 20px;
+      margin-bottom: 12px;
       font-size: 16px;
-      font-weight: 600;
-      color: #db589c;
-      text-transform: uppercase;
-      letter-spacing: 0.5px;
-      margin-bottom: 20px;
-      padding-bottom: 10px;
-      border-bottom: 1px solid rgba(219, 88, 156, 0.2);
     }
 
-    .tools-textarea {
-      width: 100%;
-      min-height: 200px;
-      max-height: 400px;
-      background: rgba(0, 0, 0, 0.3);
-      border: 1px solid rgba(219, 88, 156, 0.3);
-      border-radius: 8px;
-      padding: 16px;
-      color: #e0e0e0;
-      font-size: 12px;
+    .help-body p {
+      margin-bottom: 12px;
+    }
+
+    .help-body code {
+      background: rgba(219, 88, 156, 0.1);
+      padding: 2px 6px;
+      border-radius: 4px;
       font-family: 'IBM Plex Mono', monospace;
-      line-height: 1.5;
-      resize: vertical;
-      outline: none;
-      transition: all 0.2s ease;
-      white-space: pre;
-      overflow-wrap: normal;
-      overflow-x: auto;
-    }
-
-    .tools-textarea:focus {
-      border-color: rgba(219, 88, 156, 0.6);
-      background: rgba(0, 0, 0, 0.4);
-      box-shadow: 0 0 0 2px rgba(219, 88, 156, 0.2);
-    }
-
-    .tools-textarea::placeholder {
-      color: rgba(219, 88, 156, 0.5);
-      font-style: italic;
-    }
-
-    .tools-separator {
-      height: 1px;
-      background: linear-gradient(90deg, transparent, rgba(219, 88, 156, 0.3), transparent);
-      margin: 30px 0;
-      position: relative;
-    }
-
-    .tools-separator::after {
-      content: '⚬';
-      position: absolute;
-      top: 50%;
-      left: 50%;
-      transform: translate(-50%, -50%);
-      background: linear-gradient(135deg, rgba(26, 26, 26, 0.98) 0%, rgba(45, 27, 61, 0.98) 100%);
-      color: rgba(219, 88, 156, 0.6);
-      padding: 0 15px;
-      font-size: 12px;
-    }
-
-    /* Ensure icons in tools buttons have the same size as text */
-    .tools-action-btn * {
-      font-size: inherit;
-    }
-
-    .tools-close * {
-      font-size: inherit;
-    }
-
-    /* Left Sidebar Styles */
-    .left-sidebar {
-      position: fixed;
-      left: 0;
-      top: 0;
-      width: 240px;
-      height: 100vh;
-      background: linear-gradient(135deg, rgba(26, 26, 26, 0.98) 0%, rgba(45, 27, 61, 0.98) 100%);
-      backdrop-filter: blur(20px);
-      border-right: 1px solid rgba(219, 88, 156, 0.3);
-      box-shadow: 2px 0 20px rgba(0, 0, 0, 0.5);
-      z-index: 100;
-      display: flex;
-      flex-direction: column;
-      padding: 20px 0;
-      transition: width 0.3s ease;
-    }
-
-    .left-sidebar.collapsed {
-      width: 60px;
-    }
-
-    .sidebar-header {
-      padding: 0 20px 20px 20px;
-      border-bottom: 1px solid rgba(219, 88, 156, 0.3);
-      display: flex;
-      align-items: center;
-      justify-content: space-between;
-    }
-
-    .sidebar-title {
-      font-size: 18px;
-      font-weight: 600;
-      color: #db589c;
-      text-transform: uppercase;
-      letter-spacing: 0.5px;
-      white-space: nowrap;
-      overflow: hidden;
-      transition: opacity 0.3s ease;
-    }
-
-    .left-sidebar.collapsed .sidebar-title {
-      opacity: 0;
-      width: 0;
-    }
-
-    .sidebar-toggle {
-      background: transparent;
-      border: 1px solid rgba(219, 88, 156, 0.4);
-      border-radius: 6px;
-      color: #db589c;
-      cursor: pointer;
-      width: 28px;
-      height: 28px;
-      display: flex;
-      align-items: center;
-      justify-content: center;
-      transition: all 0.2s ease;
-      flex-shrink: 0;
-    }
-
-    .sidebar-toggle:hover {
-      background: rgba(219, 88, 156, 0.1);
-      border-color: rgba(219, 88, 156, 0.6);
-    }
-
-    .sidebar-nav {
-      flex: 1;
-      padding: 20px 0;
-      overflow-y: auto;
-    }
-
-    .nav-item {
-      padding: 16px 20px;
-      cursor: pointer;
-      color: #e0e0e0;
-      transition: all 0.2s ease;
-      border-left: 3px solid transparent;
-      display: flex;
-      align-items: center;
-      gap: 12px;
-      font-size: 14px;
-      font-weight: 500;
-      user-select: none;
-      white-space: nowrap;
-    }
-
-    .left-sidebar.collapsed .nav-item {
-      padding: 16px;
-      justify-content: center;
-    }
-
-    .nav-item:hover {
-      background: rgba(219, 88, 156, 0.1);
-      border-left-color: rgba(219, 88, 156, 0.5);
-    }
-
-    .nav-item.active {
-      background: rgba(219, 88, 156, 0.15);
-      border-left-color: #db589c;
       color: #db589c;
     }
 
-    .nav-item-icon {
-      font-size: 18px;
-      width: 18px;
-      text-align: center;
-      flex-shrink: 0;
+    .help-body ul {
+      margin-left: 20px;
+      margin-bottom: 12px;
     }
 
-    .nav-item-label {
-      transition: opacity 0.3s ease;
+    .help-body li {
+      margin-bottom: 8px;
     }
 
-    .left-sidebar.collapsed .nav-item-label {
-      opacity: 0;
-      width: 0;
-      overflow: hidden;
-    }
-
-    /* Adjust main container for sidebar */
-    .main-container {
-      margin-left: 240px;
-      height: 100vh;
-      display: flex;
-      flex-direction: column;
-      position: relative;
-      z-index: 1;
-      transition: margin-left 0.3s ease;
-    }
-
-    .left-sidebar.collapsed ~ .main-container {
-      margin-left: 60px;
-    }
-
-    /* Mode Content Containers */
-    .mode-content {
-      display: none;
-    }
-
-    .mode-content.active {
-      display: flex;
-      flex-direction: column;
-      flex: 1;
-    }
-
+    /* Responsive */
     @media (max-width: 768px) {
-      .left-sidebar {
-        width: 60px;
+      .toolbar {
+        padding: 0 8px;
+        height: 48px;
       }
 
-      .sidebar-title,
-      .nav-item-label {
-        display: none;
+      .btn {
+        padding: 0 12px;
+        height: 32px;
+        line-height: 32px;
+        font-size: 12px;
       }
 
-      .nav-item {
-        justify-content: center;
-        padding: 16px;
+      .sidebar {
+        width: 50px;
       }
 
-      .main-container {
-        margin-left: 60px;
+      .sidebar-btn {
+        width: 38px;
+        height: 38px;
+        font-size: 16px;
       }
+
+      .config-panel,
+      .share-panel {
+        width: 100%;
+        right: -100%;
+      }
+
+      .help-content {
+        margin: 20px;
+        padding: 24px;
+      }
+    }
+
+    /* Hidden utility */
+    .hidden {
+      display: none !important;
+    }
+
+    /* Rule sub-tabs (Rules / N3 Logic) inside the Rules editor panel */
+    .rule-subtabs {
+      display: flex;
+      gap: 4px;
+      margin-bottom: 8px;
+    }
+
+    .rule-subtab {
+      padding: 5px 14px;
+      font-size: 12px;
+      height: 28px;
+      line-height: 18px;
+      color: #c0c0c0;
+      background: rgba(43, 43, 43, 0.5);
+      border: 1px solid rgba(219, 88, 156, 0.25);
+      border-radius: 5px;
+      cursor: pointer;
+      transition: all 0.2s ease;
+      font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+      font-weight: 500;
+      text-transform: uppercase;
+      letter-spacing: 0.4px;
+    }
+
+    .rule-subtab.active {
+      background: linear-gradient(135deg, rgba(219, 88, 156, 0.3) 0%, rgba(219, 88, 156, 0.15) 100%);
+      border-color: rgba(219, 88, 156, 0.6);
+      color: #db589c;
+      font-weight: 600;
+    }
+
+    .rule-subtab:hover:not(.active) {
+      background: rgba(219, 88, 156, 0.15);
+      border-color: rgba(219, 88, 156, 0.4);
+      color: #db589c;
+    }
+
+    .rule-subpanel {
+      display: none;
+      flex: 1;
+      flex-direction: column;
+      min-height: 0;
+    }
+
+    .rule-subpanel.active {
+      display: flex;
+    }
+
+    /* N3 Logic info badge shown inside the N3 Logic sub-panel */
+    .n3logic-info-badge {
+      display: flex;
+      align-items: flex-start;
+      gap: 10px;
+      margin-bottom: 8px;
+      padding: 10px 12px;
+      background: rgba(45, 27, 61, 0.35);
+      border-radius: 7px;
+      border: 1px solid rgba(219, 88, 156, 0.25);
+      font-size: 12px;
+      line-height: 1.55;
+      color: #b0b0b0;
+      flex-shrink: 0;
+    }
+
+    .n3logic-info-badge i {
+      color: #db589c;
+      font-size: 14px;
+      margin-top: 1px;
+      flex-shrink: 0;
+    }
+
+    .n3logic-info-badge code {
+      background: rgba(219, 88, 156, 0.15);
+      padding: 1px 5px;
+      border-radius: 3px;
+      font-family: 'IBM Plex Mono', monospace;
+      color: #db589c;
+      font-size: 11px;
     }
   </style>
 </head>
 
 <body>
-  <!-- Left Sidebar -->
-  <div class="left-sidebar" id="leftSidebar">
-    <div class="sidebar-header">
-      <div class="sidebar-title">Kolibrie</div>
-      <button class="sidebar-toggle" id="sidebarToggle">
-        <i class="fas fa-chevron-left"></i>
-      </button>
-    </div>
-    <nav class="sidebar-nav">
-      <div class="nav-item active" data-mode="static">
-        <i class="nav-item-icon fas fa-database"></i>
-        <span class="nav-item-label">Static Data</span>
-      </div>
-      <div class="nav-item" data-mode="rsp">
-        <i class="nav-item-icon fas fa-stream"></i>
-        <span class="nav-item-label">RSP</span>
-      </div>
-    </nav>
-  </div>
-
-  <div class="main-container">
-    <!-- Static Data Mode -->
-    <div class="mode-content active" id="static-mode">
+  <div class="container">
+    <!-- Toolbar -->
     <div class="toolbar">
-      <button class="btn" id="runBtn"><i class="fas fa-play"></i> Run</button>
-      <button class="btn" id="shareBtn" style="margin-left: auto;"><i class="fas fa-share"></i> Share</button>
-      <button class="btn" id="configBtn"><i class="fas fa-cog"></i> Config</button>
-      <button class="btn" id="helpBtn"><i class="fas fa-question-circle"></i> Help</button>
-      
-      <!-- Add format selector in the toolbar, after the editor tabs -->
-      <div class="format-selector" style="margin-left: auto; display: flex; align-items: center; gap: 10px;">
-        <label for="rdfFormat" style="color: #db589c; font-weight: 500;">RDF Format:</label>
-        <select id="rdfFormat" class="format-dropdown" style="background: rgba(43, 43, 43, 0.9); color: #e0e0e0; border: 1px solid rgba(219, 88, 156, 0.5); padding: 6px 12px; border-radius: 4px; cursor: pointer;">
-          <option value="rdfxml">RDF/XML</option>
-          <option value="ntriples">N-Triples</option>
-        </select>
-      </div>
-    </div>
-
-    <!-- Editor Navigation Tabs -->
-    <div class="editor-tabs">
-      <button class="editor-tab active" data-editor="sparql">
-        <i class="fas fa-code"></i> SPARQL Query
+      <button class="btn" id="runBtn">
+        <i class="fas fa-play"></i> Run
       </button>
-      <button class="editor-tab" data-editor="rdf">
-        <i class="fas fa-file-code"></i> RDF/XML Data
+
+      <div class="dropdown" id="formatDropdown">
+        <button class="btn" id="formatBtn">
+          <i class="fas fa-file-code"></i> Format: <span id="formatLabel">RDF/XML</span>
+        </button>
+        <div class="dropdown-menu">
+          <div class="item" data-format="rdfxml">RDF/XML</div>
+          <div class="item" data-format="ntriples">N-Triples</div>
+          <div class="item" data-format="turtle">Turtle Dataset</div>
+        </div>
+      </div>
+
+      <button class="btn" id="shareBtn">
+        <i class="fas fa-share-nodes"></i> Share
       </button>
-      <button class="editor-tab" data-editor="rules">
-        <i class="fas fa-sitemap"></i> Rules
+
+      <button class="btn" id="helpBtn">
+        <i class="fas fa-circle-question"></i> Help
+      </button>
+
+      <button class="btn" id="configBtn">
+        <i class="fas fa-gear"></i> Settings
       </button>
     </div>
 
-    <div id="editor-container">
-      <!-- SPARQL Editor Panel -->
-      <div class="editor-panel active" id="sparql-panel">
-        <div id="editor-wrapper">
-          <textarea id="sparql-editor"></textarea>
-        </div>
-      </div>
-
-      <!-- RDF/XML Editor Panel -->
-      <div class="editor-panel" id="rdf-panel">
-        <div id="rdf-wrapper">
-          <textarea id="rdf-editor"></textarea>
-        </div>
-      </div>
-
-      <!-- Rules Editor Panel -->
-      <div class="editor-panel" id="rules-panel">
-        <div id="rules-wrapper">
-          <textarea id="rules-editor"></textarea>
-        </div>
-      </div>
-
-      <div class="resizer" id="resizer"></div>
-
-      <div id="results-panel">
-        <div class="results-header">
-          <div class="results-tabs">
-            <div class="results-tab active" data-tab="results"><i class="fas fa-chart-bar"></i> Results</div>
-          </div>
-          <div class="results-actions">
-            <button class="results-btn" id="clearResults">Clear</button>
-          </div>
-        </div>
-        <div class="results-content" id="results-content">
-          <div class="terminal-output terminal-info"> SPARQL Playground Ready
-             Click "RUN" to execute your query
-             Use the editor above to write SPARQL queries
-
-            Example endpoints you can query:
-            • DBpedia: https://dbpedia.org/sparql
-            • Wikidata: https://query.wikidata.org/sparql
-            • Bio2RDF: https://bio2rdf.org/sparql
-          </div>
-        </div>
-      </div>
-
-      <div class="status-bar">
-        <span>Kolibrie Playground • Ready</span>
-      </div>
-    </div>
-    </div>
-    <!-- End Static Data Mode -->
-
-    <!-- RSP Mode -->
-    <div class="mode-content" id="rsp-mode">
-      <div class="toolbar">
-        <button class="btn" id="runBtnRsp"><i class="fas fa-play"></i> Run</button>
-        <button class="btn" id="shareBtnRsp" style="margin-left: auto;"><i class="fas fa-share"></i> Share</button>
-        <button class="btn" id="configBtnRsp"><i class="fas fa-cog"></i> Config</button>
-        <button class="btn" id="helpBtnRsp"><i class="fas fa-question-circle"></i> Help</button>
-      </div>
-
-      <!-- RSP Editor Navigation Tabs -->
-      <div class="editor-tabs">
-        <button class="editor-tab active" data-editor="rsp-sparql">
-          <i class="fas fa-code"></i> RSP-QL Query
+    <!-- Main Content -->
+    <div class="main-content">
+      <!-- Sidebar -->
+      <div class="sidebar">
+        <button class="sidebar-btn active" data-mode="sparql" title="SPARQL Mode">
+          <i class="fas fa-database"></i>
+        </button>
+        <button class="sidebar-btn" data-mode="rsp" title="RSP Mode">
+          <i class="fas fa-stream"></i>
         </button>
       </div>
 
-      <div id="editor-container">
-        <!-- RSP SPARQL Editor Panel -->
-        <div class="editor-panel active" id="rsp-sparql-panel">
-          <div id="rsp-editor-wrapper">
-            <textarea id="rsp-sparql-editor"></textarea>
+      <!-- Mode Container -->
+      <div class="mode-container">
+        <!-- SPARQL Mode -->
+        <div id="sparql-mode" class="mode-content active">
+          <div class="editor-container" id="editor-container">
+            <div class="editor-tabs">
+              <button class="editor-tab active" data-tab="sparql">SPARQL Query</button>
+              <button class="editor-tab" data-tab="rdf">RDF Data</button>
+              <button class="editor-tab" data-tab="rules">Rules</button>
+            </div>
+
+            <!-- SPARQL Panel -->
+            <div class="editor-panel active" data-panel="sparql" id="sparql-panel">
+              <!-- Multi-query controls -->
+              <div class="multi-query-controls">
+                <button class="btn btn-add-query" id="addQueryBtn"><i class="fas fa-plus"></i> Add Query</button>
+              </div>
+              <!-- Query tabs -->
+              <div class="query-tabs" id="queryTabs">
+                <button class="query-tab active" data-query-index="0">Query 1</button>
+              </div>
+              <textarea id="sparql-editor">PREFIX ex: <http://example.org#>
+SELECT ?room
+WHERE { 
+  ?room ex:overheatingAlert true . 
+}</textarea>
+            </div>
+
+            <!-- RDF Panel -->
+            <div class="editor-panel" data-panel="rdf">
+              <textarea id="rdf-editor"><?xml version="1.0"?>
+<rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#"
+        xmlns:ex="http://example.org#">
+<rdf:Description rdf:about="http://example.org#Room101">
+    <ex:temperature>75</ex:temperature>
+    <ex:room>Room101</ex:room>
+</rdf:Description>
+<rdf:Description rdf:about="http://example.org#Sensor1">
+    <ex:room>Room101</ex:room>
+    <ex:temperature>90</ex:temperature>
+</rdf:Description>
+<rdf:Description rdf:about="http://example.org#Room102">
+    <ex:temperature>35</ex:temperature>
+    <ex:room>Room102</ex:room>
+</rdf:Description>
+<rdf:Description rdf:about="http://example.org#Sensor2">
+    <ex:room>Room102</ex:room>
+    <ex:temperature>70</ex:temperature>
+</rdf:Description>
+<rdf:Description rdf:about="http://example.org#Room103">
+    <ex:temperature>45</ex:temperature>
+    <ex:room>Room103</ex:room>
+</rdf:Description>
+<rdf:Description rdf:about="http://example.org#Sensor3">
+    <ex:room>Room103</ex:room>
+    <ex:temperature>190</ex:temperature>
+</rdf:Description>
+</rdf:RDF></textarea>
+            </div>
+
+            <!-- Rules Panel -->
+            <div class="editor-panel" data-panel="rules" id="rules-panel">
+
+              <!-- Sub-tab switcher: Rules vs N3 Logic -->
+              <div class="rule-subtabs">
+                <button class="rule-subtab active" id="ruleSubtabRules" onclick="switchRuleSubtab('rules')">
+                  <i class="fas fa-code-branch"></i> Rules
+                </button>
+                <button class="rule-subtab" id="ruleSubtabN3Logic" onclick="switchRuleSubtab('n3logic')">
+                  <i class="fas fa-code"></i> N3 Logic
+                </button>
+              </div>
+
+              <!-- ── RULES sub-panel ── -->
+              <div class="rule-subpanel active" id="ruleSubpanelRules">
+                <!-- Multi-rule controls -->
+                <div class="multi-query-controls">
+                  <button class="btn btn-add-query" id="addRuleBtn"><i class="fas fa-plus"></i> Add Rule Tab</button>
+                </div>
+                <!-- Rule tabs -->
+                <div class="query-tabs" id="ruleTabs">
+                  <button class="query-tab active" data-rule-index="0">Rule Set 1</button>
+                </div>
+                <textarea id="rules-editor">PREFIX ex: <http://example.org#>
+RULE :OverheatingAlert :- 
+CONSTRUCT { 
+    ?room ex:overheatingAlert true .
+}
+WHERE { 
+    ?reading ex:room ?room ; 
+            ex:temperature ?temp
+    FILTER (?temp > 80)
+}
+
+# Add more rules below to extend inference
+# Each rule will be applied in order</textarea>
+              </div>
+
+              <!-- ── N3 LOGIC sub-panel ── -->
+              <div class="rule-subpanel" id="ruleSubpanelN3Logic">
+                <div class="n3logic-info-badge">
+                  <i class="fas fa-circle-info"></i>
+                  <span>
+                    Write N3 logic rules here using <strong style="color:#db589c;">N3 Logic</strong> syntax.
+                    They are merged with your main RDF data before rules and queries run.
+                    Use <code>@prefix</code> declarations as normal — they are scoped to this block only.
+                  </span>
+                </div>
+                <textarea id="n3logic-editor">@prefix ex: <http://example.org#> .
+
+# Extra triples injected alongside your main RDF data
+# ex:Room101 ex:building ex:BuildingA .
+</textarea>
+              </div>
+
+            </div>
+
+            <!-- Resizer -->
+            <div class="resizer" id="resizer"></div>
+
+            <!-- Results Panel -->
+            <div class="results-panel" id="results-panel">
+              <div class="results-header">
+                <i class="fas fa-terminal"></i> Results
+              </div>
+              <div class="results-content" id="results-content"></div>
+            </div>
           </div>
         </div>
 
-        <div class="resizer" id="resizer-rsp"></div>
-
-        <div id="results-panel-rsp">
-          <div class="results-header">
-            <div class="results-tabs">
-              <div class="results-tab active" data-tab="results"><i class="fas fa-chart-bar"></i> Results</div>
+        <!-- RSP Mode -->
+        <div id="rsp-mode" class="mode-content">
+          <div class="editor-container">
+            <div class="editor-tabs">
+              <button class="editor-tab active" data-tab="rsp-sparql">RSP-QL Query</button>
             </div>
-            <div class="results-actions">
-              <button class="results-btn" id="clearResultsRsp">Clear</button>
+
+            <div class="editor-panel active" data-panel="rsp-sparql">
+              <textarea id="rsp-sparql-editor">PREFIX ex: <http://example.org#>
+REGISTER STREAM <http://example.org/stream> AS
+SELECT ?reading ?temp
+FROM NAMED WINDOW :window ON <http://example.org/stream> [RANGE PT10S STEP PT5S]
+WHERE {
+  WINDOW :window {
+    ?reading ex:temperature ?temp .
+    FILTER (?temp > 80)
+  }
+}</textarea>
+            </div>
+
+            <div class="resizer" id="resizer-rsp"></div>
+
+            <div class="results-panel" id="results-panel-rsp">
+              <div class="results-header">
+                <i class="fas fa-terminal"></i> Stream Results
+              </div>
+              <div class="results-content" id="results-content-rsp"></div>
             </div>
           </div>
-          <div class="results-content" id="results-content-rsp"></div>
         </div>
-      </div>
-
-      <div class="status-bar">
-        <span>Kolibrie RSP • Ready</span>
       </div>
     </div>
-    <!-- End RSP Mode -->
   </div>
 
   <!-- Config Panel -->
-  <div class="config-overlay" id="configOverlay"></div>
   <div class="config-panel" id="configPanel">
     <div class="config-header">
-      <div class="config-title">⚙ Configuration</div>
-      <button class="config-close" id="configClose">×</button>
+      <div class="config-title">Settings</div>
+      <button class="config-close" id="configClose">
+        <i class="fas fa-times"></i>
+      </button>
     </div>
     <div class="config-content">
       <div class="config-section">
-        <div class="config-section-title">✎ Text Editor</div>
-        <div class="config-item">
-          <label class="config-label">Font Size</label>
-          <div class="config-control">
-            <button class="config-btn" id="editorFontDecrease">−</button>
+        <h3>Editor</h3>
+        <div class="config-row">
+          <div class="config-label">Font Size</div>
+          <div class="config-controls">
+            <button class="config-btn" id="editorFontDecrease">
+              <i class="fas fa-minus"></i>
+            </button>
             <div class="config-value" id="editorFontSize">14px</div>
-            <button class="config-btn" id="editorFontIncrease">+</button>
+            <button class="config-btn" id="editorFontIncrease">
+              <i class="fas fa-plus"></i>
+            </button>
           </div>
         </div>
       </div>
 
       <div class="config-section">
-        <div class="config-section-title"> Results</div>
-        <div class="config-item">
-          <label class="config-label">Font Size</label>
-          <div class="config-control">
-            <button class="config-btn" id="terminalFontDecrease">−</button>
-            <div class="config-value" id="terminalFontSize">12px</div>
-            <button class="config-btn" id="terminalFontIncrease">+</button>
+        <h3>Terminal</h3>
+        <div class="config-row">
+          <div class="config-label">Font Size</div>
+          <div class="config-controls">
+            <button class="config-btn" id="terminalFontDecrease">
+              <i class="fas fa-minus"></i>
+            </button>
+            <div class="config-value" id="terminalFontSize">13px</div>
+            <button class="config-btn" id="terminalFontIncrease">
+              <i class="fas fa-plus"></i>
+            </button>
           </div>
         </div>
       </div>
 
       <div class="config-section">
-        <div class="config-section-title">◐ Theme</div>
-        <div class="config-item">
-          <label class="config-label">Color Theme</label>
+        <h3>Theme</h3>
+        <div class="config-row">
+          <div class="config-label">Color Scheme</div>
           <select class="config-select" id="themeSelect">
-            <option value="default">Default (Fuchsia Midnight)</option>
-            <option value="blue">Ocean Blue</option>
-            <option value="green">Forest Green</option>
-            <option value="orange">Sunset Orange</option>
-            <option value="red">Ruby Red</option>
-            <option value="cyan">Cyber Cyan</option>
-            <option value="lightPurple">Light Purple</option>
-            <option value="lightBlue">Light Blue</option>
+            <option value="purple">Purple (Default)</option>
+            <option value="blue">Blue</option>
+            <option value="green">Green</option>
+            <option value="orange">Orange</option>
           </select>
         </div>
       </div>
@@ -1508,21 +1292,75 @@
   <!-- Share Panel -->
   <div class="share-panel" id="sharePanel">
     <div class="share-header">
-      <div class="share-title">↗ Share Query</div>
-      <button class="share-close" id="shareClose">×</button>
+      <div class="share-title">Share</div>
+      <button class="share-close" id="shareClose">
+        <i class="fas fa-times"></i>
+      </button>
     </div>
     <div class="share-content">
       <div class="share-url-container">
-        <div class="share-url-label">⧉ Shareable URL</div>
-        <textarea class="share-url-input" id="shareUrlInput" readonly placeholder="Generating URL..."></textarea>
-        <button class="share-copy-btn" id="shareCopyBtn">⧉ Copy to Clipboard</button>
+        <div class="share-url-label">Shareable URL</div>
+        <textarea class="share-url-input" id="shareUrlInput" readonly></textarea>
       </div>
-      <div class="share-info">
-        <strong>ⓘ About Sharing:</strong><br>
-        • Your SPARQL query is compressed and encoded in the URL<br>
-        • No data is sent to external servers<br>
-        • Share this URL with anyone to load your query<br>
-        • The URL works offline and is completely client-side
+      <button class="share-copy-btn" id="shareCopyBtn">
+        <i class="fas fa-copy"></i> Copy to Clipboard
+      </button>
+    </div>
+  </div>
+
+  <!-- Config Overlay -->
+  <div class="overlay" id="configOverlay"></div>
+
+  <!-- Help Modal -->
+  <div class="help-modal" id="helpModal">
+    <div class="help-content">
+      <div class="help-header">
+        <div class="help-title">Help</div>
+        <button class="help-close" id="helpClose">
+          <i class="fas fa-times"></i>
+        </button>
+      </div>
+      <div class="help-body">
+        <h3>Getting Started</h3>
+        <p>Kolibrie Playground is an interactive environment for SPARQL queries and RDF data processing with rule-based inference.</p>
+
+        <h3>Basic Usage</h3>
+        <ul>
+          <li><strong>SPARQL Query:</strong> Write your SPARQL SELECT or CONSTRUCT queries</li>
+          <li><strong>RDF Data:</strong> Provide RDF data in RDF/XML or N-Triples format</li>
+          <li><strong>Rules:</strong> Define inference rules to derive new facts</li>
+          <li><strong>Run:</strong> Click the Run button to execute all queries</li>
+        </ul>
+
+        <h3>Multiple Queries</h3>
+        <p>Click "Add Query" to create multiple query tabs for different tasks. Each query executes in sequence with the same data and rules.</p>
+
+        <h3>Multiple Rules</h3>
+        <p><strong>Same Task:</strong> Write multiple rules in the same rule tab. Each rule will be processed sequentially, allowing you to build complex inference chains.</p>
+        <p><strong>Different Tasks:</strong> Click "Add Rule Tab" to create separate rule sets for different purposes.</p>
+
+        <h3>Data Formats</h3>
+        <ul>
+          <li><strong>RDF/XML:</strong> Standard RDF XML format</li>
+          <li><strong>N-Triples:</strong> Line-based triple format with Streamertail optimizer</li>
+        </ul>
+
+        <h3>Inference Rules</h3>
+        <p>Rules use the syntax:</p>
+        <code>RULE :RuleName :- CONSTRUCT { ... } WHERE { ... }</code>
+        <p>Rules are applied before query execution to infer new triples.</p>
+
+        <h3>N3 Logic (in Rules tab)</h3>
+        <p>The <strong>Rules</strong> tab has two sub-tabs: <strong>Rules</strong> and <strong>N3 Logic</strong>.</p>
+        <p>In the N3 Logic sub-tab you can write N3 logic inference rules:</p>
+        <code>@prefix ex: &lt;http://example.org#&gt; .<br>ex:Room101 ex:building ex:BuildingA .</code>
+        <p>These triples are automatically merged with the data in your RDF Data tab before rules and queries are executed. This is useful when you want to pair specific background knowledge directly with a rule set.</p>
+
+        <h3>Sharing</h3>
+        <p>Click "Share" to generate a URL containing your queries, data, and rules. The URL can be shared with others.</p>
+
+        <h3>RSP Mode</h3>
+        <p>Switch to RSP mode for RDF Stream Processing queries (under development).</p>
       </div>
     </div>
   </div>
@@ -1531,691 +1369,380 @@
   <script src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.2/codemirror.min.js"></script>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.2/mode/sparql/sparql.min.js"></script>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.2/mode/xml/xml.min.js"></script>
-  <script src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.2/addon/edit/matchbrackets.min.js"></script>
-  <script src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.2/addon/selection/active-line.min.js"></script>
+  <!-- N3 Logic mode: lightweight syntax highlighting for CodeMirror 5 -->
 
   <script>
-    let currentTab = 'results';
-    let isResizing = false;
-    let sparqlEditor, rdfEditor, rulesEditor, rspSparqlEditor;
-    let currentEditorTab = 'sparql';
-    let currentMode = 'static'; // Track current mode
+    // Minimal N3 Logic syntax highlighting for CodeMirror 5
+    CodeMirror.defineMode('turtle', function() {
+      var IRI_RE = /^<[^>]*>/;
+      var PREFIX_NS_RE = /^[A-Za-z_][\w.-]*:/;
+      var PREFIXED_NAME_RE = /^[A-Za-z_][\w.-]*:[A-Za-z_][\w.-]*/;
+      var BLANK_RE = /^_:[A-Za-z_][\w.-]*/;
+      var STRING1_RE = /^"(?:[^"\\]|\\.)*"/;
+      var STRING2_RE = /^'(?:[^'\\]|\\.)*'/;
+      var LANGTYPE_RE = /^@[a-zA-Z]+(?:-[a-zA-Z0-9]+)*/;
+      var DATATYPE_RE = /^\^\^/;
+      var KEYWORD_RE = /^(?:@prefix|@base|a|PREFIX|BASE)\b/;
+      var PUNCT_RE = /^[.,;()[\]{}]/;
+      var NUMBER_RE = /^[-+]?(?:\d+\.?\d*|\.\d+)(?:[eE][-+]?\d+)?/;
 
-    // Configuration state
+      return {
+        startState: function() { return { expectDT: false }; },
+        token: function(stream, state) {
+          // Skip whitespace
+          if (stream.eatSpace()) return null;
+
+          // Comments
+          if (stream.match(/^#.*/)) return 'comment';
+
+          // Keywords / directives
+          if (stream.match(KEYWORD_RE)) return 'keyword';
+
+          // IRIs
+          if (stream.match(IRI_RE)) return 'string-2';
+
+          // Datatypes (^^<iri> or ^^prefix:local)
+          if (state.expectDT) {
+            state.expectDT = false;
+            if (stream.match(IRI_RE) || stream.match(PREFIXED_NAME_RE)) return 'atom';
+          }
+          if (stream.match(DATATYPE_RE)) { state.expectDT = true; return 'meta'; }
+
+          // Language tags
+          if (stream.match(LANGTYPE_RE)) return 'meta';
+
+          // Blank nodes
+          if (stream.match(BLANK_RE)) return 'variable-2';
+
+          // Prefixed names
+          if (stream.match(PREFIXED_NAME_RE)) return 'atom';
+
+          // Strings (triple-quoted first, then single-quoted)
+          if (stream.match(/^"""[\s\S]*?"""/)) return 'string';
+          if (stream.match(/^'''[\s\S]*?'''/)) return 'string';
+          if (stream.match(STRING1_RE)) return 'string';
+          if (stream.match(STRING2_RE)) return 'string';
+
+          // Numbers
+          if (stream.match(NUMBER_RE)) return 'number';
+
+          // Punctuation
+          if (stream.match(PUNCT_RE)) return 'punctuation';
+
+          // Fallback: advance one char
+          stream.next();
+          return null;
+        }
+      };
+    });
+    CodeMirror.defineMIME('text/turtle', 'turtle');
+  </script>
+
+  <script>
+    // Global state
+    let currentMode = 'sparql';
+    let selectedFormat = 'rdfxml';
+    let currentQueryIndex = 0;
+    let currentRuleIndex = 0;
+    let currentRuleSubtab = 'rules'; // 'rules' | 'n3logic'
+    let queryEditors = [];
+    let rdfEditor;
+    let ruleEditors = [];
+    let n3logicEditor;          // single N3 Logic editor (shared across rule sets)
+    let rspSparqlEditor;
+
     let config = {
       editorFontSize: 14,
-      terminalFontSize: 12,
-      theme: 'default'
+      terminalFontSize: 13,
+      theme: 'purple'
     };
 
-    // Sidebar navigation
-    function switchMode(mode) {
-      // Remove active class from all nav items
-      document.querySelectorAll('.nav-item').forEach(item => {
-        item.classList.remove('active');
-      });
-      
-      // Add active class to selected nav item
-      document.querySelector(`[data-mode="${mode}"]`).classList.add('active');
-      
-      // Hide all mode contents
-      document.querySelectorAll('.mode-content').forEach(content => {
-        content.classList.remove('active');
-      });
-      
-      // Show selected mode content
-      document.getElementById(`${mode}-mode`).classList.add('active');
-      
-      currentMode = mode;
-      
-      // Refresh editors after switching
-      setTimeout(() => {
-        if (mode === 'static') {
-          sparqlEditor.refresh();
-          rdfEditor.refresh();
-          rulesEditor.refresh();
-        } else if (mode === 'rsp') {
-          if (rspSparqlEditor) {
-            rspSparqlEditor.refresh();
-          }
-        }
-      }, 100);
-    }
-
-    // Toggle sidebar collapse/expand
-    function toggleSidebar() {
-      const sidebar = document.getElementById('leftSidebar');
-      const toggleBtn = document.getElementById('sidebarToggle');
-      const icon = toggleBtn.querySelector('i');
-      
-      sidebar.classList.toggle('collapsed');
-      
-      if (sidebar.classList.contains('collapsed')) {
-        icon.className = 'fas fa-chevron-right';
-      } else {
-        icon.className = 'fas fa-chevron-left';
-      }
-      
-      // Refresh editors after toggle
-      setTimeout(() => {
-        if (currentMode === 'static') {
-          sparqlEditor.refresh();
-          rdfEditor.refresh();
-          rulesEditor.refresh();
-        } else if (currentMode === 'rsp') {
-          if (rspSparqlEditor) {
-            rspSparqlEditor.refresh();
-          }
-        }
-      }, 300);
-    }
-
-    // Theme configurations (keep existing themes object)
-    const themes = {
-      default: { primary: '#db589c', primaryRgb: '219, 88, 156', name: 'Default (Fuchsia Midnight)', isLight: false },
-      blue: { primary: '#58a6db', primaryRgb: '88, 166, 219', name: 'Ocean Blue', isLight: false },
-      green: { primary: '#58db6e', primaryRgb: '88, 219, 110', name: 'Forest Green', isLight: false },
-      orange: { primary: '#db9c58', primaryRgb: '219, 156, 88', name: 'Sunset Orange', isLight: false },
-      red: { primary: '#db5858', primaryRgb: '219, 88, 88', name: 'Ruby Red', isLight: false },
-      cyan: { primary: '#58dbdb', primaryRgb: '88, 219, 219', name: 'Cyber Cyan', isLight: false },
-      lightPurple: { primary: '#8b5cf6', primaryRgb: '139, 92, 246', name: 'Light Purple', isLight: true },
-      lightBlue: { primary: '#3b82f6', primaryRgb: '59, 130, 246', name: 'Light Blue', isLight: true }
-    };
-
-    // Helper function for terminal messages
-    function addTerminalMessage(message, type = 'info') {
-      const content = document.getElementById('results-content');
-      if (!content) {
-        console.log(`[${type}] ${message}`);
-        return;
-      }
-      
-      const timestamp = new Date().toLocaleTimeString();
-      const messageDiv = document.createElement('div');
-      messageDiv.className = `terminal-output terminal-${type}`;
-      messageDiv.textContent = `[${timestamp}] ${message}`;
-      content.appendChild(messageDiv);
-      content.scrollTop = content.scrollHeight;
-    }
-
-    function escapeHtml(text) {
-      const div = document.createElement('div');
-      div.textContent = text;
-      return div.innerHTML;
-    }
-
-    // Execute query by sending to backend
-    async function executeKolibrieQuery() {
-      const sparqlQuery = sparqlEditor.getValue().trim();
-      const rdfData = rdfEditor.getValue().trim();
-      const ruleDefinition = rulesEditor.getValue().trim();
-      const format = document.getElementById('rdfFormat').value;
-      
-      if (!sparqlQuery) {
-        addTerminalMessage(' No SPARQL query provided', 'error');
-        return;
-      }
-
-      addTerminalMessage(' Sending query to Kolibrie engine...', 'info');
-      const startTime = performance.now();
-
-      try {
-        // Prepare the request payload with all three components and format
-        const payload = {
-          sparql: sparqlQuery,
-          rdf: rdfData || null,
-          rule: ruleDefinition || null,
-          format: format  // Add format to payload
-        };
-
-        const response = await fetch('/query', {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json'
-          },
-          body: JSON.stringify(payload)
-        });
-
-        const endTime = performance.now();
-        const executionTime = (endTime - startTime).toFixed(2);
-
-        if (!response.ok) {
-          const errorText = await response.text();
-          throw new Error(`HTTP ${response.status}: ${errorText}`);
-        }
-
-        const result = await response.json();
-        displayKolibrieResults(result, executionTime, format);
-
-      } catch (error) {
-        addTerminalMessage(` Execution failed: ${error.message}`, 'error');
-        console.error('Query execution error:', error);
-      }
-    }
-
-    function displayKolibrieResults(result, executionTime, format) {
-      const content = document.getElementById('results-content');
-      const optimizerNote = format === 'ntriples' ? 
-        '<div class="terminal-output terminal-info"> Query executed with Streamertail optimizer</div>' : '';
-      
-      let html = optimizerNote + '<div class="terminal-output terminal-success"> Query executed successfully!</div>';
-      
-      if (result.results && Array.isArray(result.results) && result.results.length > 0) {
-        const results = result.results;
-        html += '<table class="results-table"><thead><tr>';
-        
-        // Determine headers
-        const firstRow = results[0];
-        if (Array.isArray(firstRow)) {
-          // Array of arrays format
-          for (let i = 0; i < firstRow.length; i++) {
-            html += `<th>Column ${i + 1}</th>`;
-          }
-          html += '</tr></thead><tbody>';
-          
-          results.forEach(row => {
-            html += '<tr>';
-            row.forEach(cell => {
-              html += `<td>${escapeHtml(String(cell || ''))}</td>`;
-            });
-            html += '</tr>';
-          });
-        } else if (typeof firstRow === 'object' && firstRow !== null) {
-          // Object format
-          const headers = Object.keys(firstRow);
-          headers.forEach(header => {
-            html += `<th>${escapeHtml(header)}</th>`;
-          });
-          html += '</tr></thead><tbody>';
-          
-          results.forEach(row => {
-            html += '<tr>';
-            headers.forEach(header => {
-              html += `<td>${escapeHtml(String(row[header] || ''))}</td>`;
-            });
-            html += '</tr>';
-          });
-        } else {
-          // Single values
-          html += '<th>Result</th></tr></thead><tbody>';
-          results.forEach(value => {
-            html += `<tr><td>${escapeHtml(String(value || ''))}</td></tr>`;
-          });
-        }
-        
-        html += '</tbody></table>';
-        html += `<div class="terminal-output terminal-info"> ${results.length} results returned in ${executionTime}ms</div>`;
-      } else if (result.message) {
-        html += `<div class="terminal-output terminal-info">${escapeHtml(result.message)}</div>`;
-        html += `<div class="terminal-output terminal-info"> Executed in ${executionTime}ms</div>`;
-      } else {
-        html += '<div class="terminal-output terminal-warning"> No results returned</div>';
-        html += `<div class="terminal-output terminal-info"> Executed in ${executionTime}ms</div>`;
-      }
-      
-      content.innerHTML = html;
-    }
-
-    // Execute RSP query
-    async function executeRspQuery() {
-      const rspQuery = rspSparqlEditor.getValue().trim();
-      
-      if (!rspQuery) {
-        addTerminalMessageRsp('❌ No RSP-QL query provided', 'error');
-        return;
-      }
-
-      addTerminalMessageRsp('🚀 Sending RSP query to Kolibrie engine...', 'info');
-      const startTime = performance.now();
-
-      try {
-        // Prepare the request payload for RSP
-        const payload = {
-          rspql: rspQuery
-        };
-
-        const response = await fetch('/rsp-query', {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json'
-          },
-          body: JSON.stringify(payload)
-        });
-
-        const endTime = performance.now();
-        const executionTime = (endTime - startTime).toFixed(2);
-
-        if (!response.ok) {
-          const errorText = await response.text();
-          throw new Error(`HTTP ${response.status}: ${errorText}`);
-        }
-
-        const result = await response.json();
-        displayRspResults(result, executionTime);
-
-      } catch (error) {
-        addTerminalMessageRsp(`❌ Execution failed: ${error.message}`, 'error');
-        console.error('RSP query execution error:', error);
-      }
-    }
-
-    function addTerminalMessageRsp(message, type = 'info') {
-      const content = document.getElementById('results-content-rsp');
-      if (!content) {
-        console.log(`[${type}] ${message}`);
-        return;
-      }
-      
-      const timestamp = new Date().toLocaleTimeString();
-      const messageDiv = document.createElement('div');
-      messageDiv.className = `terminal-output terminal-${type}`;
-      messageDiv.textContent = `[${timestamp}] ${message}`;
-      content.appendChild(messageDiv);
-      content.scrollTop = content.scrollHeight;
-    }
-
-    function displayRspResults(result, executionTime) {
-      const content = document.getElementById('results-content-rsp');
-      let html = '<div class="terminal-output terminal-success">✅ RSP Query executed successfully!</div>';
-      
-      if (result.results && Array.isArray(result.results) && result.results.length > 0) {
-        const results = result.results;
-        html += '<table class="results-table"><thead><tr>';
-        
-        // Determine headers
-        const firstRow = results[0];
-        if (typeof firstRow === 'object' && firstRow !== null) {
-          const headers = Object.keys(firstRow);
-          headers.forEach(header => {
-            html += `<th>${escapeHtml(header)}</th>`;
-          });
-          html += '</tr></thead><tbody>';
-          
-          results.forEach(row => {
-            html += '<tr>';
-            headers.forEach(header => {
-              html += `<td>${escapeHtml(String(row[header] || ''))}</td>`;
-            });
-            html += '</tr>';
-          });
-        } else {
-          html += '<th>Result</th></tr></thead><tbody>';
-          results.forEach(value => {
-            html += `<tr><td>${escapeHtml(String(value || ''))}</td></tr>`;
-          });
-        }
-        
-        html += '</tbody></table>';
-        html += `<div class="terminal-output terminal-info">📊 ${results.length} results returned in ${executionTime}ms</div>`;
-      } else if (result.message) {
-        html += `<div class="terminal-output terminal-info">${escapeHtml(result.message)}</div>`;
-        html += `<div class="terminal-output terminal-info">⚡ Executed in ${executionTime}ms</div>`;
-      } else {
-        html += '<div class="terminal-output terminal-warning">⚠️ No results returned</div>';
-        html += `<div class="terminal-output terminal-info">⚡ Executed in ${executionTime}ms</div>`;
-      }
-      
-      content.innerHTML = html;
-    }
-
-    // Initialize on page load
-    document.addEventListener("DOMContentLoaded", () => {
-      // Initialize CodeMirror editors
-      sparqlEditor = CodeMirror.fromTextArea(document.getElementById('sparql-editor'), {
+    // Initialize editors
+    function initializeEditors() {
+      // Initialize first query editor
+      const firstQueryEditor = CodeMirror.fromTextArea(document.getElementById('sparql-editor'), {
         mode: 'application/sparql-query',
-        theme: 'default',
+        theme: 'dracula',
         lineNumbers: true,
-        matchBrackets: true,
-        styleActiveLine: true,
+        lineWrapping: true,
         indentUnit: 2,
         tabSize: 2,
-        lineWrapping: false,
-        autoCloseBrackets: true
       });
+      queryEditors.push(firstQueryEditor);
 
+      // Initialize RDF editor
       rdfEditor = CodeMirror.fromTextArea(document.getElementById('rdf-editor'), {
         mode: 'application/xml',
-        theme: 'default',
+        theme: 'dracula',
         lineNumbers: true,
-        matchBrackets: true,
-        styleActiveLine: true,
+        lineWrapping: true,
         indentUnit: 2,
         tabSize: 2,
-        lineWrapping: false,
-        autoCloseBrackets: true
       });
 
-      rulesEditor = CodeMirror.fromTextArea(document.getElementById('rules-editor'), {
+      // Initialize first Rules editor
+      const firstRuleEditor = CodeMirror.fromTextArea(document.getElementById('rules-editor'), {
         mode: 'application/sparql-query',
-        theme: 'default',
+        theme: 'dracula',
         lineNumbers: true,
-        matchBrackets: true,
-        styleActiveLine: true,
+        lineWrapping: true,
         indentUnit: 2,
         tabSize: 2,
-        lineWrapping: false,
-        autoCloseBrackets: true
       });
+      ruleEditors.push(firstRuleEditor);
 
-      // Initialize RSP SPARQL Editor
+      // Initialize RSP editor
       rspSparqlEditor = CodeMirror.fromTextArea(document.getElementById('rsp-sparql-editor'), {
         mode: 'application/sparql-query',
-        theme: 'default',
+        theme: 'dracula',
         lineNumbers: true,
-        matchBrackets: true,
-        styleActiveLine: true,
+        lineWrapping: true,
         indentUnit: 2,
         tabSize: 2,
-        lineWrapping: false,
-        autoCloseBrackets: true
       });
 
-      // Set initial example values
-      sparqlEditor.setValue(`PREFIX ex: <http://example.org#>
-SELECT ?room
+      // Initialize N3 Logic editor (inside Rules > N3 Logic sub-panel)
+      n3logicEditor = CodeMirror.fromTextArea(document.getElementById('n3logic-editor'), {
+        mode: 'text/turtle',
+        theme: 'dracula',
+        lineNumbers: true,
+        lineWrapping: true,
+        indentUnit: 2,
+        tabSize: 2,
+      });
+    }
+
+    // Initialize
+    document.addEventListener('DOMContentLoaded', () => {
+      initializeEditors();
+      setupEventListeners();
+      setupResizer();
+      setupResizerRsp();
+      loadConfig();
+      loadFromUrl();
+    });
+
+    // Mode switching
+    function switchMode(mode) {
+      currentMode = mode;
+      document.querySelectorAll('.sidebar-btn').forEach(btn => {
+        btn.classList.toggle('active', btn.dataset.mode === mode);
+      });
+      document.querySelectorAll('.mode-content').forEach(content => {
+        content.classList.toggle('active', content.id === `${mode}-mode`);
+      });
+    }
+
+    // Switch between rule sub-tabs: 'rules' or 'n3logic'
+    function switchRuleSubtab(subtab) {
+      currentRuleSubtab = subtab;
+
+      document.getElementById('ruleSubtabRules').classList.toggle('active', subtab === 'rules');
+      document.getElementById('ruleSubtabN3Logic').classList.toggle('active', subtab === 'n3logic');
+      document.getElementById('ruleSubpanelRules').classList.toggle('active', subtab === 'rules');
+      document.getElementById('ruleSubpanelN3Logic').classList.toggle('active', subtab === 'n3logic');
+
+      if (subtab === 'rules') {
+        ruleEditors.forEach(e => e.refresh());
+      } else {
+        if (n3logicEditor) n3logicEditor.refresh();
+      }
+    }
+
+    // Tab switching
+    function switchTab(tabName) {
+      document.querySelectorAll('.editor-tab').forEach(tab => {
+        tab.classList.toggle('active', tab.dataset.tab === tabName);
+      });
+      document.querySelectorAll('.editor-panel').forEach(panel => {
+        panel.classList.toggle('active', panel.dataset.panel === tabName);
+      });
+      
+      // Refresh editors when switching tabs
+      if (tabName === 'sparql') {
+        queryEditors.forEach(e => e.refresh());
+      } else if (tabName === 'rdf') {
+        rdfEditor.refresh();
+      } else if (tabName === 'rules') {
+        ruleEditors.forEach(e => e.refresh());
+        if (n3logicEditor) n3logicEditor.refresh();
+      }
+    }
+
+    // Add new query editor
+    function addQueryEditor() {
+      const newIndex = queryEditors.length;
+      
+      const textarea = document.createElement('textarea');
+      textarea.id = `sparql-editor-${newIndex}`;
+      textarea.value = `PREFIX ex: <http://example.org#>
+SELECT ?s ?p ?o
 WHERE { 
-  ?room ex:overheatingAlert true . 
-}`);
+  ?s ?p ?o
+}`;
+      
+      document.getElementById('sparql-panel').appendChild(textarea);
+      
+      const editor = CodeMirror.fromTextArea(textarea, {
+        mode: 'application/sparql-query',
+        theme: 'dracula',
+        lineNumbers: true,
+        lineWrapping: true,
+        indentUnit: 2,
+        tabSize: 2,
+      });
+      
+      editor.getWrapperElement().style.display = 'none';
+      queryEditors.push(editor);
 
-      rdfEditor.setValue(`<?xml version="1.0"?>
-<rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#"
-        xmlns:ex="http://example.org#">
-<rdf:Description rdf:about="http://example.org#Room101">
-    <ex:temperature>75</ex:temperature>
-    <ex:room>Room101</ex:room>
-</rdf:Description>
-<rdf:Description rdf:about="http://example.org#Sensor1">
-    <ex:room>Room101</ex:room>
-    <ex:temperature>90</ex:temperature>
-</rdf:Description>
-<rdf:Description rdf:about="http://example.org#Room102">
-    <ex:temperature>35</ex:temperature>
-    <ex:room>Room102</ex:room>
-</rdf:Description>
-<rdf:Description rdf:about="http://example.org#Sensor2">
-    <ex:room>Room102</ex:room>
-    <ex:temperature>70</ex:temperature>
-</rdf:Description>
-<rdf:Description rdf:about="http://example.org#Room103">
-    <ex:temperature>45</ex:temperature>
-    <ex:room>Room103</ex:room>
-</rdf:Description>
-<rdf:Description rdf:about="http://example.org#Sensor3">
-    <ex:room>Room103</ex:room>
-    <ex:temperature>190</ex:temperature>
-</rdf:Description>
-</rdf:RDF>`);
+      const tab = document.createElement('button');
+      tab.className = 'query-tab';
+      tab.dataset.queryIndex = newIndex;
+      tab.textContent = `Query ${newIndex + 1}`;
+      tab.addEventListener('click', () => switchToQuery(newIndex));
+      document.getElementById('queryTabs').appendChild(tab);
 
-      rulesEditor.setValue(`PREFIX ex: <http://example.org#>
-RULE :OverheatingAlert :- 
+      switchToQuery(newIndex);
+    }
+
+    // Switch between query editors
+    function switchToQuery(index) {
+      queryEditors.forEach((editor, i) => {
+        const wrapper = editor.getWrapperElement();
+        const tab = document.querySelector(`[data-query-index="${i}"]`);
+        
+        if (i === index) {
+          wrapper.style.display = 'block';
+          if (tab) tab.classList.add('active');
+          editor.refresh();
+        } else {
+          wrapper.style.display = 'none';
+          if (tab) tab.classList.remove('active');
+        }
+      });
+      currentQueryIndex = index;
+    }
+
+    // Add new rule editor
+    function addRuleEditor() {
+      const newIndex = ruleEditors.length;
+      
+      const textarea = document.createElement('textarea');
+      textarea.id = `rules-editor-${newIndex}`;
+      textarea.value = `PREFIX ex: <http://example.org#>
+RULE :NewRule :- 
 CONSTRUCT { 
-    ?room ex:overheatingAlert true .
+    ?s ex:newProperty ?o .
 }
 WHERE { 
-    ?reading ex:room ?room ; 
-            ex:temperature ?temp
-    FILTER (?temp > 80)
-}`);
+    ?s ex:someProperty ?o .
+}
 
-      // Set RSP SPARQL Editor initial value
-      rspSparqlEditor.setValue(`PREFIX ex: <http://example.org#>
-REGISTER STREAM <http://example.org/stream> AS
-SELECT ?reading ?temp
-FROM NAMED WINDOW :window ON <http://example.org/stream> [RANGE PT10S STEP PT5S]
-WHERE {
-  WINDOW :window {
-    ?reading ex:temperature ?temp .
-    FILTER (?temp > 80)
-  }
-}`);
+# Add more rules below to extend inference`;
+      
+      document.getElementById('rules-panel').appendChild(textarea);
+      
+      const editor = CodeMirror.fromTextArea(textarea, {
+        mode: 'application/sparql-query',
+        theme: 'dracula',
+        lineNumbers: true,
+        lineWrapping: true,
+        indentUnit: 2,
+        tabSize: 2,
+      });
+      
+      editor.getWrapperElement().style.display = 'none';
+      ruleEditors.push(editor);
 
-      // Sidebar navigation event listeners
-      document.querySelectorAll('.nav-item').forEach(item => {
-        item.addEventListener('click', () => {
-          const mode = item.dataset.mode;
+      const tab = document.createElement('button');
+      tab.className = 'query-tab';
+      tab.dataset.ruleIndex = newIndex;
+      tab.textContent = `Rule Set ${newIndex + 1}`;
+      tab.addEventListener('click', () => switchToRule(newIndex));
+      document.getElementById('ruleTabs').appendChild(tab);
+
+      switchToRule(newIndex);
+    }
+
+    // Switch between rule editors
+    function switchToRule(index) {
+      ruleEditors.forEach((editor, i) => {
+        const wrapper = editor.getWrapperElement();
+        const tab = document.querySelector(`[data-rule-index="${i}"]`);
+        
+        if (i === index) {
+          wrapper.style.display = 'block';
+          if (tab) tab.classList.add('active');
+          editor.refresh();
+        } else {
+          wrapper.style.display = 'none';
+          if (tab) tab.classList.remove('active');
+        }
+      });
+      currentRuleIndex = index;
+    }
+
+    function setupEventListeners() {
+      // Add Query button
+      document.getElementById('addQueryBtn').addEventListener('click', addQueryEditor);
+      
+      // Add Rule button
+      document.getElementById('addRuleBtn').addEventListener('click', addRuleEditor);
+
+      // Mode switching
+      document.querySelectorAll('.sidebar-btn').forEach(btn => {
+        btn.addEventListener('click', () => {
+          const mode = btn.dataset.mode;
           switchMode(mode);
         });
       });
 
-      // Sidebar toggle button
-      document.getElementById('sidebarToggle').addEventListener('click', () => {
-        toggleSidebar();
-      });
-
-      // Editor tab switching
+      // Tab switching
       document.querySelectorAll('.editor-tab').forEach(tab => {
         tab.addEventListener('click', () => {
-          const editorType = tab.dataset.editor;
-          switchEditorTab(editorType);
+          const tabName = tab.dataset.tab;
+          switchTab(tabName);
         });
       });
 
-      function switchEditorTab(editorType) {
-        currentEditorTab = editorType;
-        
-        document.querySelectorAll('.editor-tab').forEach(t => t.classList.remove('active'));
-        document.querySelector(`[data-editor="${editorType}"]`).classList.add('active');
-        
-        document.querySelectorAll('.editor-panel').forEach(p => p.classList.remove('active'));
-        document.getElementById(`${editorType}-panel`).classList.add('active');
-        
-        setTimeout(() => {
-          if (editorType === 'sparql') sparqlEditor.refresh();
-          else if (editorType === 'rdf') rdfEditor.refresh();
-          else if (editorType === 'rules') rulesEditor.refresh();
-        }, 0);
-        
-        updateStatusBar();
-      }
-
-      function updateStatusBar() {
-        let editor, label;
-        if (currentEditorTab === 'sparql') {
-          editor = sparqlEditor;
-          label = 'SPARQL Query';
-        } else if (currentEditorTab === 'rdf') {
-          editor = rdfEditor;
-          label = 'RDF/XML Data';
+      // Run button
+      document.getElementById('runBtn').addEventListener('click', () => {
+        if (currentMode === 'sparql') {
+          executeKolibrieQuery();
         } else {
-          editor = rulesEditor;
-          label = 'Rules';
+          executeRspQuery();
         }
-        
-        const lines = editor.lineCount();
-        const cursor = editor.getCursor();
-        document.querySelector('.status-bar span').textContent =
-          `${label} • Line ${cursor.line + 1}, Column ${cursor.ch + 1} • ${lines} lines`;
-      }
-
-      sparqlEditor.on('change', updateStatusBar);
-      rdfEditor.on('change', updateStatusBar);
-      rulesEditor.on('change', updateStatusBar);
-      sparqlEditor.on('cursorActivity', updateStatusBar);
-      rdfEditor.on('cursorActivity', updateStatusBar);
-      rulesEditor.on('cursorActivity', updateStatusBar);
-
-      // Load saved configuration
-      loadConfig();
-
-      // Add format change handler
-      document.getElementById('rdfFormat').addEventListener('change', function(e) {
-        const format = e.target.value;
-        updateEditorForFormat(format);
-        updateStatusBar();
       });
 
-      function updateEditorForFormat(format) {
-        const rdfTab = document.querySelector('[data-editor="rdf"]');
-        
-        if (format === 'ntriples') {
-          rdfTab.innerHTML = '<i class="fas fa-file-code"></i> N-Triples Data';
+      // Format dropdown
+      const formatDropdown = document.getElementById('formatDropdown');
+      const formatBtn = document.getElementById('formatBtn');
+      
+      formatBtn.addEventListener('click', (e) => {
+        e.stopPropagation();
+        formatDropdown.classList.toggle('open');
+      });
+
+      document.querySelectorAll('#formatDropdown .item').forEach(item => {
+        item.addEventListener('click', () => {
+          const format = item.dataset.format;
+          selectedFormat = format;
+          const label = format === 'rdfxml' ? 'RDF/XML' : format === 'ntriples' ? 'N-Triples' : 'Turtle Dataset';
+          document.getElementById('formatLabel').textContent = label;
+          formatDropdown.classList.remove('open');
           
-          // Update placeholder with N-Triples example if editor is empty or has default
-          if (rdfEditor.getValue().includes('<?xml') || rdfEditor.getValue().trim() === '') {
-            rdfEditor.setValue(`<http://example.org/Room101> <http://example.org#temperature> "75" .
-<http://example.org/Room101> <http://example.org#room> "Room101" .
-<http://example.org/Sensor1> <http://example.org#room> "Room101" .
-<http://example.org/Sensor1> <http://example.org#temperature> "90" .
-<http://example.org/Room102> <http://example.org#temperature> "35" .
-<http://example.org/Room102> <http://example.org#room> "Room102" .
-<http://example.org/Sensor2> <http://example.org#room> "Room102" .
-<http://example.org/Sensor2> <http://example.org#temperature> "70" .
-<http://example.org/Room103> <http://example.org#temperature> "45" .
-<http://example.org/Room103> <http://example.org#room> "Room103" .
-<http://example.org/Sensor3> <http://example.org#room> "Room103" .
-<http://example.org/Sensor3> <http://example.org#temperature> "95" .`);
-          }
-        } else {
-          rdfTab.innerHTML = '<i class="fas fa-file-code"></i> RDF/XML Data';
-          
-          // Restore RDF/XML example if needed
-          if (!rdfEditor.getValue().includes('<?xml') || rdfEditor.getValue().trim() === '') {
-            rdfEditor.setValue(`<?xml version="1.0"?>
-<rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#"
-        xmlns:ex="http://example.org#">
-<rdf:Description rdf:about="http://example.org#Room101">
-    <ex:temperature>75</ex:temperature>
-    <ex:room>Room101</ex:room>
-</rdf:Description>
-<rdf:Description rdf:about="http://example.org#Sensor1">
-    <ex:room>Room101</ex:room>
-    <ex:temperature>90</ex:temperature>
-</rdf:Description>
-<rdf:Description rdf:about="http://example.org#Room102">
-    <ex:temperature>35</ex:temperature>
-    <ex:room>Room102</ex:room>
-</rdf:Description>
-<rdf:Description rdf:about="http://example.org#Sensor2">
-    <ex:room>Room102</ex:room>
-    <ex:temperature>70</ex:temperature>
-</rdf:Description>
-<rdf:Description rdf:about="http://example.org#Room103">
-    <ex:temperature>45</ex:temperature>
-    <ex:room>Room103</ex:room>
-</rdf:Description>
-<rdf:Description rdf:about="http://example.org#Sensor3">
-    <ex:room>Room103</ex:room>
-    <ex:temperature>190</ex:temperature>
-</rdf:Description>
-</rdf:RDF>`);
-          }
-        }
-      }
-
-      // RUN button - Execute query
-      document.getElementById("runBtn").onclick = () => {
-        executeKolibrieQuery();
-      };
-
-      // HELP button
-      document.getElementById("helpBtn").onclick = () => {
-        document.getElementById('results-content').innerHTML = `
-          <div class="terminal-output terminal-info"><i class="fas fa-question-circle"></i> Kolibrie SPARQL Playground Help
-
-<strong>Quick Start:</strong>
-1. Select your RDF format (RDF/XML or N-Triples) from the dropdown
-2. Write or modify RDF data in the "RDF Data" tab
-3. Define rules in the "Rules" tab (optional)
-4. Write your SPARQL query in the "SPARQL Query" tab
-5. Click RUN to execute
-
-<strong>Supported Formats:</strong>
-• RDF/XML - Traditional XML-based RDF format
-• N-Triples - Line-based RDF format (uses Streamertail optimizer)
-
-<strong>N-Triples Format Example:</strong>
-&lt;http://example.org/alice&gt; &lt;http://xmlns.com/foaf/0.1/name&gt; "Alice" .
-&lt;http://example.org/alice&gt; &lt;http://xmlns.com/foaf/0.1/age&gt; "30" .
-
-<strong>Query Structure:</strong>
-PREFIX ex: &lt;http://example.org#&gt;
-SELECT ?variable
-WHERE {
-  ?subject ?predicate ?object .
-}
-
-<strong>Features:</strong>
-• Full SPARQL 1.1 support
-• RDF/XML and N-Triples data loading
-• Streamertail optimizer for N-Triples (high performance)
-• Rule-based inference
-• Real-time execution
-
-<strong>Common Filters:</strong>
-FILTER (?value > 100)
-FILTER (?name = "Alice")
-FILTER (lang(?label) = "en")
-          </div>
-        `;
-      };
-
-      // Clear results button
-      document.getElementById('clearResults').addEventListener('click', () => {
-        document.getElementById('results-content').innerHTML =
-          '<div class="terminal-output terminal-info">Results cleared.</div>';
+          // Update RDF editor content based on format
+          updateEditorForFormat(format);
+        });
       });
 
-      // RSP Mode Buttons
-      document.getElementById("runBtnRsp").onclick = () => {
-        executeRspQuery();
-      };
-
-      document.getElementById("helpBtnRsp").onclick = () => {
-        document.getElementById('results-content-rsp').innerHTML = `
-          <div class="terminal-output terminal-info"><i class="fas fa-question-circle"></i> Kolibrie RSP Help
-
-<strong>Quick Start:</strong>
-1. Write your RSP-QL query in the "RSP-QL Query" tab
-2. Click RUN to execute the stream query
-
-<strong>RSP-QL Features:</strong>
-• RDF Stream Processing
-• Window-based queries
-• Temporal reasoning
-• Real-time stream analysis
-
-<strong>Example Query Structure:</strong>
-REGISTER STREAM &lt;http://example.org/stream&gt; AS
-SELECT ?reading ?temp
-FROM NAMED WINDOW :window ON &lt;http://example.org/stream&gt; [RANGE PT10S STEP PT5S]
-WHERE {
-  WINDOW :window {
-    ?reading ex:temperature ?temp .
-    FILTER (?temp &gt; 80)
-  }
-}
-
-<strong>Window Types:</strong>
-• RANGE - Time-based sliding window
-• TUMBLING - Non-overlapping time windows
-• STEP - Window advancement interval
-          </div>
-        `;
-      };
-
-      document.getElementById('clearResultsRsp').addEventListener('click', () => {
-        document.getElementById('results-content-rsp').innerHTML =
-          '<div class="terminal-output terminal-info">Results cleared.</div>';
+      // Close dropdowns when clicking outside
+      document.addEventListener('click', () => {
+        document.querySelectorAll('.dropdown').forEach(d => d.classList.remove('open'));
       });
 
-      document.getElementById('configBtnRsp').addEventListener('click', () => {
-        document.getElementById('sharePanel').classList.remove('open');
-        document.getElementById('configPanel').classList.add('open');
-        document.getElementById('configOverlay').classList.add('open');
-      });
-
-      document.getElementById('shareBtnRsp').addEventListener('click', () => {
-        document.getElementById('configPanel').classList.remove('open');
-        const query = rspSparqlEditor.getValue();
-        const shareUrl = `${window.location.origin}${window.location.pathname}`;
-        document.getElementById('shareUrlInput').value = shareUrl;
-        document.getElementById('sharePanel').classList.add('open');
-        document.getElementById('configOverlay').classList.add('open');
-      });
-
-      // Config panel (keep existing config functions)
+      // Config panel
       document.getElementById('configBtn').addEventListener('click', () => {
-        document.getElementById('sharePanel').classList.remove('open');
         document.getElementById('configPanel').classList.add('open');
         document.getElementById('configOverlay').classList.add('open');
       });
@@ -2229,11 +1756,45 @@ WHERE {
         document.getElementById('configOverlay').classList.remove('open');
       }
 
-      // Share panel
+      // Help modal
+      document.getElementById('helpBtn').addEventListener('click', () => {
+        document.getElementById('helpModal').classList.add('open');
+      });
+
+      document.getElementById('helpClose').addEventListener('click', () => {
+        document.getElementById('helpModal').classList.remove('open');
+      });
+
+      document.getElementById('helpModal').addEventListener('click', (e) => {
+        if (e.target.id === 'helpModal') {
+          document.getElementById('helpModal').classList.remove('open');
+        }
+      });
+
+      // Share functionality
       document.getElementById('shareBtn').addEventListener('click', () => {
-        document.getElementById('configPanel').classList.remove('open');
-        const query = sparqlEditor.getValue();
-        const shareUrl = `${window.location.origin}${window.location.pathname}`;
+        const queries = queryEditors.map(e => e.getValue()).filter(q => q.trim());
+        const rdf = rdfEditor.getValue();
+        const n3logic = n3logicEditor ? n3logicEditor.getValue() : '';
+        
+        // Collect all rules from all rule editors
+        const allRules = [];
+        ruleEditors.forEach(editor => {
+          const editorRules = parseMultipleRules(editor.getValue());
+          allRules.push(...editorRules);
+        });
+        
+        const state = {
+          queries: queries,
+          rdf: rdf,
+          n3logic: n3logic,
+          rules: allRules,
+          format: selectedFormat
+        };
+        
+        const compressed = LZString.compressToEncodedURIComponent(JSON.stringify(state));
+        const shareUrl = `${window.location.origin}${window.location.pathname}?q=${compressed}`;
+        
         document.getElementById('shareUrlInput').value = shareUrl;
         document.getElementById('sharePanel').classList.add('open');
         document.getElementById('configOverlay').classList.add('open');
@@ -2247,10 +1808,10 @@ WHERE {
 
         try {
           await navigator.clipboard.writeText(urlInput.value);
-          copyBtn.textContent = ' Copied!';
+          copyBtn.innerHTML = '<i class="fas fa-check"></i> Copied!';
           copyBtn.classList.add('copied');
           setTimeout(() => {
-            copyBtn.textContent = '⧉ Copy to Clipboard';
+            copyBtn.innerHTML = '<i class="fas fa-copy"></i> Copy to Clipboard';
             copyBtn.classList.remove('copied');
           }, 2000);
         } catch (error) {
@@ -2285,7 +1846,7 @@ WHERE {
       });
 
       document.getElementById('terminalFontIncrease').addEventListener('click', () => {
-        if (config.terminalFontSize < 20) {
+        if (config.terminalFontSize < 24) {
           config.terminalFontSize++;
           updateTerminalFontSize();
           saveConfig();
@@ -2297,146 +1858,442 @@ WHERE {
         updateTheme();
         saveConfig();
       });
+    }
 
-      function updateEditorFontSize() {
-        const fontSize = config.editorFontSize;
-        document.getElementById('editorFontSize').textContent = `${fontSize}px`;
-        const style = document.createElement('style');
-        style.id = 'editor-font-style';
-        const existingStyle = document.getElementById('editor-font-style');
-        if (existingStyle) existingStyle.remove();
-        style.textContent = `.CodeMirror { font-size: ${fontSize}px !important; }`;
-        document.head.appendChild(style);
-        sparqlEditor.refresh();
-        rdfEditor.refresh();
-        rulesEditor.refresh();
-        if (rspSparqlEditor) rspSparqlEditor.refresh();
-      }
-
-      function updateTerminalFontSize() {
-        const fontSize = config.terminalFontSize;
-        document.getElementById('terminalFontSize').textContent = `${fontSize}px`;
-        const style = document.createElement('style');
-        style.id = 'terminal-font-style';
-        const existingStyle = document.getElementById('terminal-font-style');
-        if (existingStyle) existingStyle.remove();
-        style.textContent = `.results-content { font-size: ${fontSize}px !important; }`;
-        document.head.appendChild(style);
-      }
-
-      function updateTheme() {
-        const theme = themes[config.theme];
-        const style = document.createElement('style');
-        style.id = 'theme-style';
-        const existingStyle = document.getElementById('theme-style');
-        if (existingStyle) existingStyle.remove();
-
-        // (Keep existing theme CSS - too long to include here, but use the same logic from your HTML)
-        style.textContent = `/* Your existing theme CSS */`;
-        document.head.appendChild(style);
-      }
-
-      function saveConfig() {
-        localStorage.setItem('kolibrie-playground-config', JSON.stringify(config));
-      }
-
-      function loadConfig() {
-        const saved = localStorage.getItem('kolibrie-playground-config');
-        if (saved) {
-          config = { ...config, ...JSON.parse(saved) };
-        }
-        document.getElementById('editorFontSize').textContent = `${config.editorFontSize}px`;
-        document.getElementById('terminalFontSize').textContent = `${config.terminalFontSize}px`;
-        document.getElementById('themeSelect').value = config.theme;
-        updateEditorFontSize();
-        updateTerminalFontSize();
-        updateTheme();
-      }
-
-      // Resizer functionality
+    // Resizer functionality for SPARQL mode
+    function setupResizer() {
       const resizer = document.getElementById('resizer');
+      const container = document.getElementById('editor-container');
+      const resultsPanel = document.getElementById('results-panel');
+      
+      let isResizing = false;
+      let startY = 0;
+      let startHeight = 0;
+
       resizer.addEventListener('mousedown', (e) => {
         isResizing = true;
-        document.addEventListener('mousemove', handleResize);
-        document.addEventListener('mouseup', stopResize);
-        e.preventDefault();
+        startY = e.clientY;
+        startHeight = resultsPanel.offsetHeight;
+        document.body.style.cursor = 'ns-resize';
+        document.body.style.userSelect = 'none';
       });
 
-      function handleResize(e) {
+      document.addEventListener('mousemove', (e) => {
         if (!isResizing) return;
-        const container = document.getElementById('editor-container');
-        const containerHeight = container.clientHeight - 24;
-        const containerTop = container.getBoundingClientRect().top;
-        const newEditorHeight = e.clientY - containerTop - 40;
-        const newResultsHeight = containerHeight - newEditorHeight - 4;
-        const minEditorHeight = window.innerHeight < 480 ? 100 : 200;
-        const minResultsHeight = window.innerHeight < 480 ? 80 : 150;
-
-        if (newEditorHeight > minEditorHeight && newResultsHeight > minResultsHeight) {
-          const activePanel = document.querySelector('.editor-panel.active > div');
-          const resultsPanel = document.getElementById('results-panel');
-          activePanel.style.flex = `0 0 ${newEditorHeight}px`;
-          resultsPanel.style.flex = `0 0 ${newResultsHeight}px`;
-          sparqlEditor.refresh();
-          rdfEditor.refresh();
-          rulesEditor.refresh();
-        }
-      }
-
-      function stopResize() {
-        isResizing = false;
-        document.removeEventListener('mousemove', handleResize);
-        document.removeEventListener('mouseup', stopResize);
-      }
-
-      window.addEventListener('resize', () => {
-        setTimeout(() => {
-          sparqlEditor.refresh();
-          rdfEditor.refresh();
-          rulesEditor.refresh();
-          if (rspSparqlEditor) rspSparqlEditor.refresh();
-        }, 100);
-      });
-
-      // RSP Resizer functionality
-      const resizerRsp = document.getElementById('resizer-rsp');
-      if (resizerRsp) {
-        resizerRsp.addEventListener('mousedown', (e) => {
-          isResizing = true;
-          document.addEventListener('mousemove', handleResizeRsp);
-          document.addEventListener('mouseup', stopResizeRsp);
-          e.preventDefault();
-        });
-      }
-
-      function handleResizeRsp(e) {
-        if (!isResizing) return;
-        const container = document.querySelector('#rsp-mode #editor-container');
-        if (!container) return;
         
-        const containerHeight = container.clientHeight - 24;
-        const containerTop = container.getBoundingClientRect().top;
-        const newEditorHeight = e.clientY - containerTop - 40;
-        const newResultsHeight = containerHeight - newEditorHeight - 4;
-        const minEditorHeight = window.innerHeight < 480 ? 100 : 200;
-        const minResultsHeight = window.innerHeight < 480 ? 80 : 150;
+        const delta = startY - e.clientY;
+        const newHeight = startHeight + delta;
+        const containerHeight = container.offsetHeight;
+        
+        if (newHeight >= 200 && newHeight <= containerHeight * 0.8) {
+          resultsPanel.style.minHeight = `${newHeight}px`;
+          resultsPanel.style.maxHeight = `${newHeight}px`;
+        }
+      });
 
-        if (newEditorHeight > minEditorHeight && newResultsHeight > minResultsHeight) {
-          const activePanel = document.querySelector('#rsp-mode .editor-panel.active > div');
-          const resultsPanel = document.getElementById('results-panel-rsp');
-          if (activePanel) activePanel.style.flex = `0 0 ${newEditorHeight}px`;
-          if (resultsPanel) resultsPanel.style.flex = `0 0 ${newResultsHeight}px`;
-          if (rspSparqlEditor) rspSparqlEditor.refresh();
+      document.addEventListener('mouseup', () => {
+        if (isResizing) {
+          isResizing = false;
+          document.body.style.cursor = '';
+          document.body.style.userSelect = '';
+        }
+      });
+    }
+
+    // Resizer functionality for RSP mode
+    function setupResizerRsp() {
+      const resizer = document.getElementById('resizer-rsp');
+      const resultsPanel = document.getElementById('results-panel-rsp');
+      
+      if (!resizer || !resultsPanel) return;
+      
+      let isResizing = false;
+      let startY = 0;
+      let startHeight = 0;
+
+      resizer.addEventListener('mousedown', (e) => {
+        isResizing = true;
+        startY = e.clientY;
+        startHeight = resultsPanel.offsetHeight;
+        document.body.style.cursor = 'ns-resize';
+        document.body.style.userSelect = 'none';
+      });
+
+      document.addEventListener('mousemove', (e) => {
+        if (!isResizing) return;
+        
+        const delta = startY - e.clientY;
+        const newHeight = startHeight + delta;
+        
+        if (newHeight >= 200 && newHeight <= window.innerHeight * 0.6) {
+          resultsPanel.style.minHeight = `${newHeight}px`;
+          resultsPanel.style.maxHeight = `${newHeight}px`;
+        }
+      });
+
+      document.addEventListener('mouseup', () => {
+        if (isResizing) {
+          isResizing = false;
+          document.body.style.cursor = '';
+          document.body.style.userSelect = '';
+        }
+      });
+    }
+
+    // Parse multiple rules from a single text editor
+    function parseMultipleRules(rulesText) {
+      if (!rulesText || !rulesText.trim()) {
+        return [];
+      }
+
+      const rules = [];
+      const lines = rulesText.split('\n');
+      let currentRule = [];
+      let inRule = false;
+      let hasSeenRuleKeyword = false;
+
+      for (let line of lines) {
+        const trimmedLine = line.trim();
+        
+        // Skip empty lines and comments when not in a rule
+        if (!inRule && (trimmedLine === '' || trimmedLine.startsWith('#'))) {
+          continue;
+        }
+
+        // Check if this line starts a new RULE (not PREFIX)
+        // Only RULE keyword should start a new rule, PREFIX is part of the rule
+        if (trimmedLine.toUpperCase().startsWith('RULE')) {
+          if (currentRule.length > 0 && hasSeenRuleKeyword) {
+            // Save previous rule
+            rules.push(currentRule.join('\n'));
+            currentRule = [];
+          }
+          inRule = true;
+          hasSeenRuleKeyword = true;
+        }
+
+        // If we see PREFIX and we're not in a rule yet, or if we just finished a rule
+        // this PREFIX belongs to the next rule
+        if (trimmedLine.toUpperCase().startsWith('PREFIX')) {
+          if (!inRule && currentRule.length === 0) {
+            inRule = true;
+          }
+        }
+
+        if (inRule) {
+          currentRule.push(line);
         }
       }
 
-      function stopResizeRsp() {
-        isResizing = false;
-        document.removeEventListener('mousemove', handleResizeRsp);
-        document.removeEventListener('mouseup', stopResizeRsp);
+      // Don't forget the last rule
+      if (currentRule.length > 0) {
+        rules.push(currentRule.join('\n'));
       }
 
-      // Initial message
+      return rules.filter(r => r.trim());
+    }
+
+    // Modified execute function
+    async function executeKolibrieQuery() {
+      const rdfData = rdfEditor.getValue().trim();
+      const format = selectedFormat;
+
+      // Collect all queries
+      const queries = queryEditors
+        .map(editor => editor.getValue().trim())
+        .filter(q => q.length > 0);
+
+      // ONLY collect SPARQL rules from the Rules sub-panel (not N3 Logic)
+      const allRules = [];
+      ruleEditors.forEach(editor => {
+        const editorRules = parseMultipleRules(editor.getValue());
+        allRules.push(...editorRules);
+      });
+
+      // ONLY collect N3 Logic data from the N3 Logic sub-panel
+      const n3logicData = n3logicEditor ? n3logicEditor.getValue().trim() : '';
+
+      if (queries.length === 0) {
+        addTerminalMessage('⚠ No queries provided', 'error');
+        return;
+      }
+
+      const ruleCount = allRules.length;
+      const n3logicNote = n3logicData ? ' + N3 Logic' : '';
+      addTerminalMessage(`▶ Executing ${queries.length} query(ies) with ${ruleCount} SPARQL rule(s)${n3logicNote}...`, 'info');
+      const startTime = performance.now();
+
+      try {
+        const payload = {
+          queries: queries,
+          rdf: rdfData || undefined,
+          // SPARQL rules ONLY (from Rules sub-tab)
+          rules: allRules.length > 0 ? allRules : undefined,
+          // N3 logic ONLY (from N3 Logic sub-tab)
+          n3logic: n3logicData || undefined,
+          format: format
+        };
+
+        const response = await fetch('/query', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json'
+          },
+          body: JSON.stringify(payload)
+        });
+
+        const endTime = performance.now();
+        const totalTime = (endTime - startTime).toFixed(2);
+
+        if (!response.ok) {
+          const errorText = await response.text();
+          throw new Error(`HTTP ${response.status}: ${errorText}`);
+        }
+
+        const result = await response.json();
+        displayMultipleResults(result, totalTime);
+
+      } catch (error) {
+        addTerminalMessage(`✗ Execution failed: ${error.message}`, 'error');
+        console.error('Query execution error:', error);
+      }
+    }
+
+    // Display results for multiple queries
+    function displayMultipleResults(response, totalTime) {
+      const content = document.getElementById('results-content');
+      let html = '';
+
+      html += `<div class="terminal-output terminal-success">✓ Executed ${response.results.length} query(ies) in ${totalTime}ms</div>`;
+
+      response.results.forEach((queryResult, idx) => {
+        html += `<div class="query-result-section">`;
+        html += `<div class="terminal-output terminal-info"><strong>Query ${idx + 1}:</strong> ${queryResult.data.length} result(s) (${queryResult.execution_time_ms.toFixed(2)}ms)</div>`;
+
+        if (queryResult.data.length > 0) {
+          html += '<div class="table-wrapper"><table class="results-table">';
+
+          // Header
+          html += '<thead><tr>';
+          queryResult.data[0].forEach(cell => {
+            html += `<th>${escapeHtml(cell)}</th>`;
+          });
+          html += '</tr></thead>';
+
+          // Rows
+          html += '<tbody>';
+          queryResult.data.slice(1).forEach(row => {
+            html += '<tr>';
+            row.forEach(cell => {
+              html += `<td>${escapeHtml(cell)}</td>`;
+            });
+            html += '</tr>';
+          });
+          html += '</tbody></table></div>';
+        } else {
+          html += `<div class="terminal-output terminal-warning">⚠ Query ${idx + 1} returned no results</div>`;
+        }
+
+        html += `</div>`;
+      });
+
+      content.innerHTML = html;
+    }
+
+    function addTerminalMessage(message, type) {
+      const content = document.getElementById('results-content');
+      const messageDiv = document.createElement('div');
+      messageDiv.className = `terminal-output terminal-${type}`;
+      messageDiv.textContent = message;
+      content.appendChild(messageDiv);
+      content.scrollTop = content.scrollHeight;
+    }
+
+    function escapeHtml(text) {
+      const div = document.createElement('div');
+      div.textContent = text;
+      return div.innerHTML;
+    }
+
+    async function executeRspQuery() {
+      const query = rspSparqlEditor.getValue().trim();
+      
+      if (!query) {
+        const content = document.getElementById('results-content-rsp');
+        content.innerHTML = '<div class="terminal-output terminal-error">⚠ No query provided</div>';
+        return;
+      }
+
+      const content = document.getElementById('results-content-rsp');
+      content.innerHTML = '<div class="terminal-output terminal-info">▶ Executing RSP query...</div>';
+      
+      // Placeholder for RSP functionality
+      setTimeout(() => {
+        content.innerHTML = `
+          <div class="terminal-output terminal-warning">⚠ RSP Mode is under development</div>
+          <div class="terminal-output terminal-info">RSP-QL query received and validated. Stream processing will be implemented in a future update.</div>
+        `;
+      }, 500);
+    }
+
+    function updateEditorForFormat(format) {
+      if (format === 'ntriples') {
+        // Switch to N-Triples format
+        rdfEditor.setValue(`<http://example.org/Room101> <http://example.org#temperature> "75" .
+<http://example.org/Room101> <http://example.org#room> "Room101" .
+<http://example.org/Sensor1> <http://example.org#room> "Room101" .
+<http://example.org/Sensor1> <http://example.org#temperature> "90" .
+<http://example.org/Room102> <http://example.org#temperature> "35" .
+<http://example.org/Room102> <http://example.org#room> "Room102" .
+<http://example.org/Sensor2> <http://example.org#room> "Room102" .
+<http://example.org/Sensor2> <http://example.org#temperature> "70" .
+<http://example.org/Room103> <http://example.org#temperature> "45" .
+<http://example.org/Room103> <http://example.org#room> "Room103" .
+<http://example.org/Sensor3> <http://example.org#room> "Room103" .
+<http://example.org/Sensor3> <http://example.org#temperature> "95" .`);
+      } else if (format === 'turtle') {
+        // Switch to Turtle Dataset format (full IRIs only — no @prefix support)
+        rdfEditor.setValue(`<http://example.org/Room101> <http://example.org#temperature> "75" .
+<http://example.org/Room101> <http://example.org#room> "Room101" .
+<http://example.org/Sensor1> <http://example.org#room> "Room101" .
+<http://example.org/Sensor1> <http://example.org#temperature> "90" .
+<http://example.org/Room102> <http://example.org#temperature> "35" .
+<http://example.org/Room102> <http://example.org#room> "Room102" .
+<http://example.org/Sensor2> <http://example.org#room> "Room102" .
+<http://example.org/Sensor2> <http://example.org#temperature> "70" .
+<http://example.org/Room103> <http://example.org#temperature> "45" .
+<http://example.org/Room103> <http://example.org#room> "Room103" .
+<http://example.org/Sensor3> <http://example.org#room> "Room103" .
+<http://example.org/Sensor3> <http://example.org#temperature> "95" .`);
+      } else {
+        // Switch to RDF/XML format
+        rdfEditor.setValue(`<?xml version="1.0"?>
+<rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#"
+        xmlns:ex="http://example.org#">
+<rdf:Description rdf:about="http://example.org#Room101">
+    <ex:temperature>75</ex:temperature>
+    <ex:room>Room101</ex:room>
+</rdf:Description>
+<rdf:Description rdf:about="http://example.org#Sensor1">
+    <ex:room>Room101</ex:room>
+    <ex:temperature>90</ex:temperature>
+</rdf:Description>
+<rdf:Description rdf:about="http://example.org#Room102">
+    <ex:temperature>35</ex:temperature>
+    <ex:room>Room102</ex:room>
+</rdf:Description>
+<rdf:Description rdf:about="http://example.org#Sensor2">
+    <ex:room>Room102</ex:room>
+    <ex:temperature>70</ex:temperature>
+</rdf:Description>
+<rdf:Description rdf:about="http://example.org#Room103">
+    <ex:temperature>45</ex:temperature>
+    <ex:room>Room103</ex:room>
+</rdf:Description>
+<rdf:Description rdf:about="http://example.org#Sensor3">
+    <ex:room>Room103</ex:room>
+    <ex:temperature>190</ex:temperature>
+</rdf:Description>
+</rdf:RDF>`);
+      }
+    }
+
+    function loadFromUrl() {
+      const urlParams = new URLSearchParams(window.location.search);
+      const compressed = urlParams.get('q');
+      
+      if (compressed) {
+        try {
+          const decompressed = LZString.decompressFromEncodedURIComponent(compressed);
+          const state = JSON.parse(decompressed);
+          
+          if (state.queries && state.queries.length > 0) {
+            // Load first query
+            queryEditors[0].setValue(state.queries[0]);
+            
+            // Add additional queries
+            for (let i = 1; i < state.queries.length; i++) {
+              addQueryEditor();
+              queryEditors[i].setValue(state.queries[i]);
+            }
+          }
+          
+          if (state.rdf) {
+            rdfEditor.setValue(state.rdf);
+          }
+
+          if (state.n3logic && n3logicEditor) {
+            n3logicEditor.setValue(state.n3logic);
+          }
+          
+          if (state.rules && state.rules.length > 0) {
+            // Join all rules with double newlines for clarity
+            const rulesText = state.rules.join('\n\n');
+            ruleEditors[0].setValue(rulesText);
+          }
+          
+          if (state.format) {
+            selectedFormat = state.format;
+            const label = state.format === 'rdfxml' ? 'RDF/XML' : state.format === 'ntriples' ? 'N-Triples' : 'Turtle Dataset';
+            document.getElementById('formatLabel').textContent = label;
+          }
+        } catch (error) {
+          console.error('Failed to load from URL:', error);
+        }
+      }
+    }
+
+    function updateEditorFontSize() {
+      const fontSize = config.editorFontSize;
+      document.getElementById('editorFontSize').textContent = `${fontSize}px`;
+      const style = document.createElement('style');
+      style.id = 'editor-font-style';
+      const existingStyle = document.getElementById('editor-font-style');
+      if (existingStyle) existingStyle.remove();
+      style.textContent = `.CodeMirror { font-size: ${fontSize}px !important; }`;
+      document.head.appendChild(style);
+      queryEditors.forEach(e => e.refresh());
+      rdfEditor.refresh();
+      ruleEditors.forEach(e => e.refresh());
+      if (n3logicEditor) n3logicEditor.refresh();
+      if (rspSparqlEditor) rspSparqlEditor.refresh();
+    }
+
+    function updateTerminalFontSize() {
+      const fontSize = config.terminalFontSize;
+      document.getElementById('terminalFontSize').textContent = `${fontSize}px`;
+      const style = document.createElement('style');
+      style.id = 'terminal-font-style';
+      const existingStyle = document.getElementById('terminal-font-style');
+      if (existingStyle) existingStyle.remove();
+      style.textContent = `.results-content { font-size: ${fontSize}px !important; }`;
+      document.head.appendChild(style);
+    }
+
+    function updateTheme() {
+      // Theme updates can be added here if needed
+      // For now, keeping the default purple theme
+    }
+
+    function saveConfig() {
+      localStorage.setItem('kolibrie-playground-config', JSON.stringify(config));
+    }
+
+    function loadConfig() {
+      const saved = localStorage.getItem('kolibrie-playground-config');
+      if (saved) {
+        config = { ...config, ...JSON.parse(saved) };
+      }
+      document.getElementById('editorFontSize').textContent = `${config.editorFontSize}px`;
+      document.getElementById('terminalFontSize').textContent = `${config.terminalFontSize}px`;
+      document.getElementById('themeSelect').value = config.theme;
+      updateEditorFontSize();
+      updateTerminalFontSize();
+      updateTheme();
+    }
+
+    // Initial message
+    setTimeout(() => {
       document.getElementById('results-content').innerHTML = `
         <div class="terminal-output terminal-success"><i class="fas fa-rocket"></i> Kolibrie Playground Ready!
 
@@ -2445,6 +2302,17 @@ WHERE {
 2. Check the pre-loaded example in "RDF Data" tab
 3. Review the rule in "Rules" tab (optional)
 4. Click RUN to execute the example query
+
+<strong>Multi-Query & Rules:</strong>
+• Click "Add Query" to create query tabs for different tasks
+• Write multiple rules in same tab to extend inference for one task
+• Click "Add Rule Tab" to create separate rule sets for different tasks
+• All queries execute in sequence with shared context
+
+<strong>N3 Logic (in Rules tab):</strong>
+• Switch to the "N3 Logic" sub-tab inside the Rules panel
+• Write N3 logic inference rules — they are applied before SPARQL rules and queries
+• Supports @prefix declarations and { premise } => { conclusion } syntax
 
 <strong>About:</strong>
 • Powered by Kolibrie SPARQL engine (Rust backend)
@@ -2457,7 +2325,6 @@ Click "Help" for more information.
         </div>
       `;
 
-      // RSP mode initial message
       document.getElementById('results-content-rsp').innerHTML = `
         <div class="terminal-output terminal-success"><i class="fas fa-stream"></i> Kolibrie RSP Mode Ready!
 
@@ -2475,7 +2342,7 @@ Click "Help" for more information.
 Click "Help" for more information.
         </div>
       `;
-    });
+    }, 100);
   </script>
 </body>
 </html>

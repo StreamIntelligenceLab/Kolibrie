@@ -5,6 +5,7 @@ use shared::rule::{FilterCondition, Rule};
 use shared::terms::{Term, TriplePattern};
 use shared::triple::Triple;
 use std::collections::{BTreeMap, HashMap, HashSet};
+use std::sync::Arc;
 
 pub fn matches_rule_pattern(
     pattern: &TriplePattern,

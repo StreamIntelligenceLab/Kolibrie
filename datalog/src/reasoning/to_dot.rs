@@ -18,12 +18,15 @@ fn resolve_term_to_string(term: &Term, dictionary: &Dictionary) -> String {
 }
 
 fn triple_patterns_to_dot(triple_patterns: &Vec<TriplePattern>, kg: &Reasoner) -> String {
+
+    let dict = kg.dictionary.read().unwrap();
+
     triple_patterns
         .iter()
         .map(|pattern| {
-            let subject = resolve_term_to_string(&pattern.0, &kg.dictionary);
-            let predicate_str = resolve_term_to_string(&pattern.1, &kg.dictionary);
-            let object_str = resolve_term_to_string(&pattern.2, &kg.dictionary);
+            let subject = resolve_term_to_string(&pattern.0, &dict);
+            let predicate_str = resolve_term_to_string(&pattern.1, &dict);
+            let object_str = resolve_term_to_string(&pattern.2, &dict);
             format!("({}, {}, {})", subject, predicate_str, object_str)
         })
         .collect::<Vec<_>>()
@@ -35,6 +38,9 @@ fn get_subject_object_iterator(triple: &Triple) -> impl Iterator<Item = u32> {
 }
 
 fn create_nodes(kg: &Reasoner, out: &mut String) {
+
+    let dict = kg.dictionary.read().unwrap();
+
     // These ids represent nodes in the knowledge graph (one id for each subject or object)
     let mut all_subject_object_ids: Vec<u32> = kg
         .index_manager
@@ -47,7 +53,7 @@ fn create_nodes(kg: &Reasoner, out: &mut String) {
     all_subject_object_ids.sort(); // Sorted ids (in order of creation)
 
     for id in all_subject_object_ids {
-        let name = kg.dictionary.id_to_string.get(&id).unwrap();
+        let name = dict.id_to_string.get(&id).unwrap();
         out.push_str(&format!("{} [label=\"{}\"]\n", id, name));
     }
 
@@ -66,9 +72,12 @@ fn create_nodes(kg: &Reasoner, out: &mut String) {
 }
 
 fn create_edges(kg: &Reasoner, out: &mut String) {
+
+    let dict = kg.dictionary.read().unwrap();
+
     let all_facts = kg.index_manager.query(None, None, None);
     for triple in all_facts {
-        let label = kg.dictionary.id_to_string.get(&triple.predicate).unwrap();
+        let label = dict.id_to_string.get(&triple.predicate).unwrap();
         out.push_str(&format!(
             "{} -> {} [label=\"{}\"]\n",
             triple.subject, triple.object, label

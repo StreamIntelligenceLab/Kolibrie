@@ -567,10 +567,15 @@ where
         // will fail to match them against the plan.
         if let Some(simple_r2r) = store.as_any_mut().downcast_mut::<SimpleR2R>() {
             debug!("Synchronizing R2R dictionary with Query dictionary");
-            simple_r2r
-                .item
-                .dictionary
-                .merge(&query_config.database.dictionary);
+            
+            // Acquire locks on both dictionaries
+            let mut store_dict = simple_r2r.item.dictionary.write().unwrap();
+            let query_dict = query_config.database.dictionary.read().unwrap();
+            
+            store_dict.merge(&*query_dict);
+            
+            drop(store_dict);
+            drop(query_dict);
         }
 
         // Load initial data

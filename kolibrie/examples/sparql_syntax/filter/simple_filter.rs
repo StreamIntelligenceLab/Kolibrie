@@ -39,12 +39,14 @@ fn select() {
 
     println!("{:?}", results);
 
+    let dict = database.dictionary.read().unwrap();
     for triple in &database.triples {
-        let subject = database.dictionary.decode(triple.subject).unwrap_or_default();
-        let predicate = database.dictionary.decode(triple.predicate).unwrap_or_default();
-        let object = database.dictionary.decode(triple.object).unwrap_or_default();
+        let subject = dict.decode(triple.subject).unwrap_or_default();
+        let predicate = dict.decode(triple.predicate).unwrap_or_default();
+        let object = dict.decode(triple.object).unwrap_or_default();
         println!("Triple: ({}, {}, {})", subject, predicate, object);
     }
+    drop(dict);
     
 
     // Output the results (if any)

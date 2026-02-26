@@ -68,7 +68,11 @@ WHERE {
       
       println!("Automatically inferred {} new fact(s):", inferred_facts.len());
       for triple in inferred_facts.iter() {
-          println!("{}", database.triple_to_string(triple, &database.dictionary));
+          let dict = database.dictionary.read().unwrap();
+          let subject = dict.decode(triple.subject).unwrap_or("");
+          let predicate = dict.decode(triple.predicate).unwrap_or("");
+          let object = dict.decode(triple.object).unwrap_or("");
+          println!("{} {} {}", subject, predicate, object);
       }
   } else {
       println!("Failed to process rule: {:?}", rule_result.err());

@@ -66,6 +66,15 @@ Then, include it in your project:
 use kolibrie::SparqlDatabase;
 ```
 
+### WebUI
+
+To run webui:
+```bash
+cargo run --bin kolibrie-http-server
+```
+
+After that in the browser type `localhost:8080` or `0.0.0.0:8080`
+
 ### Docker Installation
 
 **Kolibrie** provides Docker support with multiple configurations optimized for different use cases. The Docker setup automatically handles all dependencies including Rust, CUDA (for GPU builds), and Python ML frameworks which are fully integrated into Kolibrie.

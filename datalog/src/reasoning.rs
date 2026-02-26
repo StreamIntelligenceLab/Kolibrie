@@ -15,23 +15,22 @@ pub mod repairs;
 pub mod helpers;
 
 use shared::dictionary::Dictionary;
-use shared::index_manager::*;
-use shared::rule::Rule;
-use shared::rule_index::RuleIndex;
-use shared::terms::{Term, TriplePattern};
 use shared::triple::Triple;
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
+use shared::index_manager::*;
+use shared::rule_index::RuleIndex;
+use shared::rule::Rule;
+use rayon::prelude::*;
+use std::sync::Arc;
+use std::sync::RwLock;
 use crate::reasoning::rules::join_rule;
-
-// Single solution mapping: (V -> I U B U L) (one result entry)
-type Bindings = HashMap<String, Term>;
 
 // Logic part: Knowledge Graph
 
 #[derive(Debug, Clone)]
 // Are there RDF connections here or not?
 pub struct Reasoner {
-    pub dictionary: Dictionary,
+    pub dictionary: Arc<RwLock<Dictionary>>,
     pub rules: Vec<Rule>, // List of dynamic rules
 
     pub index_manager: UnifiedIndex,
@@ -55,7 +54,7 @@ pub fn convert_string_binding_to_u32(
 impl Reasoner {
     pub fn new() -> Self {
         Self {
-            dictionary: Dictionary::new(),
+            dictionary: Arc::new(RwLock::new(Dictionary::new())),
             rules: Vec::new(),
             index_manager: UnifiedIndex::new(),
             rule_index: RuleIndex::new(),
@@ -65,9 +64,11 @@ impl Reasoner {
 
     /// Add an ABox triple (instance-level information)
     pub fn add_abox_triple(&mut self, subject: &str, predicate: &str, object: &str) {
-        let s = self.dictionary.encode(subject);
-        let p = self.dictionary.encode(predicate);
-        let o = self.dictionary.encode(object);
+        let mut dict = self.dictionary.write().unwrap();
+        let s = dict.encode(subject);
+        let p = dict.encode(predicate);
+        let o = dict.encode(object);
+        drop(dict);  // Release lock early
 
         self.index_manager.insert(&Triple {
             subject: s,
@@ -83,9 +84,11 @@ impl Reasoner {
         predicate: Option<&str>,
         object: Option<&str>,
     ) -> Vec<Triple> {
-        let s = subject.map(|s| self.dictionary.encode(s));
-        let p = predicate.map(|p| self.dictionary.encode(p));
-        let o = object.map(|o| self.dictionary.encode(o));
+        let mut dict = self.dictionary.write().unwrap();
+        let s = subject.map(|s| dict.encode(s));
+        let p = predicate.map(|p| dict.encode(p));
+        let o = object.map(|o| dict.encode(o));
+        drop(dict);  // Release lock early
 
         self.index_manager.query(s, p, o)
     }

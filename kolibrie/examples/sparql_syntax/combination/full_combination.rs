@@ -190,20 +190,25 @@ fn run_combined_workflow(
                 engine.add_to_stream("sensorStream", triple.clone(), time);
             }
             
+            // Create a NEW reasoner with its own dictionary
             let mut reasoner = Reasoner::new();
             
-            // Share the same dictionary to maintain ID consistency
-            reasoner.dictionary = database.dictionary.clone();
+            // Decode all triples FIRST with proper scoping
+            let decoded_triples: Vec<(String, String, String)> = {
+                let dict = database.dictionary.read().unwrap();
+                database.triples.iter()
+                    .filter_map(|triple| {
+                        let s = dict.decode(triple.subject)?.to_string();
+                        let p = dict.decode(triple.predicate)?.to_string();
+                        let o = dict.decode(triple.object)?.to_string();
+                        Some((s, p, o))
+                    })
+                    .collect()
+            };
             
-            // Copy all triples from database to reasoner
-            for triple in database.triples.iter() {
-                if let (Some(s), Some(p), Some(o)) = (
-                    database.dictionary.decode(triple.subject),
-                    database.dictionary.decode(triple.predicate),
-                    database.dictionary.decode(triple.object)
-                ) {
-                    reasoner.add_abox_triple(s, p, o);
-                }
+            // Now add to reasoner (reasoner has its own dictionary)
+            for (s, p, o) in decoded_triples {
+                reasoner.add_abox_triple(&s, &p, &o);
             }
             
             // Add the rule
@@ -212,13 +217,25 @@ fn run_combined_workflow(
             // Perform inference
             let inferred_facts = reasoner.infer_new_facts_semi_naive();
             
-            // Add inferred facts back to database
+            // Add inferred facts back with proper encoding and error handling
             for fact in &inferred_facts {
-                database.add_triple(fact.clone());
+                let decoded = {
+                    let reasoner_dict = reasoner.dictionary.read().unwrap();
+                    if let (Some(s), Some(p), Some(o)) = (
+                        reasoner_dict.decode(fact.subject),
+                        reasoner_dict.decode(fact.predicate),
+                        reasoner_dict.decode(fact.object)
+                    ) {
+                        Some((s.to_string(), p.to_string(), o.to_string()))
+                    } else {
+                        None
+                    }
+                }; // Reasoner dict lock dropped
+                
+                if let Some((s, p, o)) = decoded {
+                    database.add_triple_parts(&s, &p, &o);
+                }
             }
-            
-            // Sync dictionaries back
-            database.dictionary = reasoner.dictionary.clone();
             
             // Query for the inferred comfort level
             let comfort_level = query_comfort_level(database, &sensor_uri);
@@ -247,14 +264,20 @@ fn run_combined_workflow(
 
 // Helper function to query the inferred comfort level
 fn query_comfort_level(database: &SparqlDatabase, sensor_uri: &str) -> String {
-    if let (Some(&comfort_pred_id), Some(&sensor_id)) = (
-        database.dictionary.string_to_id.get("http://example.org/comfortLevel"),
-        database.dictionary.string_to_id.get(sensor_uri)
-    ) {
+    // Proper lock scoping
+    let (comfort_pred_id, sensor_id) = {
+        let dict = database.dictionary.read().unwrap();
+        let comfort = dict.string_to_id.get("http://example.org/comfortLevel").copied();
+        let sensor = dict.string_to_id.get(sensor_uri).copied();
+        (comfort, sensor)
+    };
+    
+    if let (Some(comfort_pred_id), Some(sensor_id)) = (comfort_pred_id, sensor_id) {
         if let Some(triple) = database.triples.iter()
             .find(|t| t.subject == sensor_id && t.predicate == comfort_pred_id)
         {
-            if let Some(value) = database.dictionary.decode(triple.object) {
+            let dict = database.dictionary.read().unwrap();
+            if let Some(value) = dict.decode(triple.object) {
                 return value.to_string();
             }
         }

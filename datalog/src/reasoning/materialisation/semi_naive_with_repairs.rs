@@ -28,6 +28,8 @@ impl Reasoner {
         let mut delta = all_facts.clone();
         let mut inferred_so_far = Vec::new();
 
+        let mut dict = self.dictionary.write().unwrap();
+
         loop {
             let mut new_delta = HashSet::new();
 
@@ -35,11 +37,11 @@ impl Reasoner {
             for rule in &self.rules {
                 let bindings = join_rule(rule, &all_facts, &delta);
                 for binding in bindings {
-                    if evaluate_filters(&binding, &rule.filters, &self.dictionary) {
+                    if evaluate_filters(&binding, &rule.filters, &dict) {
                         // Process each conclusion
                         for conclusion in &rule.conclusion {
                             let inferred =
-                                replace_variables_with_bound_values(conclusion, &binding, &mut self.dictionary);
+                                replace_variables_with_bound_values(conclusion, &binding, &mut dict);
 
                             // Check if adding this fact would cause inconsistency
                             let mut temp_facts = all_facts.clone();

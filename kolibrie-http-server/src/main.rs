@@ -14,15 +14,27 @@ use std::thread;
 use kolibrie::execute_query::{execute_query, execute_query_rayon_parallel2_volcano};
 use kolibrie::sparql_database::SparqlDatabase;
 use kolibrie::parser::process_rule_definition;
+use datalog::reasoning::Reasoner;
+use datalog::parser_n3_logic::parse_n3_rule;
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Deserialize)]
 struct QueryRequest {
-    sparql: String,
+    #[serde(default)]
+    sparql: Option<String>,
+    #[serde(default)]
+    queries: Option<Vec<String>>,
     #[serde(default)]
     rdf: Option<String>,
+    // N3 logic rules in { pattern } => { conclusion } syntax with @prefix declarations.
+    // Parsed by parse_n3_rule (parser_n3_logic.rs) via the Reasoner — completely separate
+    // from the SPARQL RULE syntax handled by process_rule_definition (parser.rs).
+    #[serde(default)]
+    n3logic: Option<String>,
     #[serde(default)]
     rule: Option<String>,
+    #[serde(default)]
+    rules: Option<Vec<String>>,
     #[serde(default = "default_format")]
     format: String,
 }
@@ -34,7 +46,15 @@ fn default_format() -> String {
 
 #[derive(Debug, Serialize)]
 struct QueryResponse {
-    results: Vec<Vec<String>>,
+    results: Vec<QueryResult>,
+}
+
+#[derive(Debug, Serialize)]
+struct QueryResult {
+    query_index: usize,
+    query: String,
+    data: Vec<Vec<String>>,
+    execution_time_ms: f64,
 }
 
 #[derive(Debug, Serialize)]
@@ -136,125 +156,176 @@ fn execute_sparql_with_context(body: &str) -> String {
         }
     };
 
-    println!("Received query request:");
-    println!("  SPARQL: {} chars", request.sparql.len());
-    println!("  Format: {}", request.format);
-    if let Some(ref rdf) = request.rdf {
-        println!("  RDF: {} chars", rdf.len());
+    // Collect all queries
+    let mut queries = Vec::new();
+    if let Some(single_query) = request.sparql {
+        queries.push(single_query);
     }
-    if let Some(ref rule) = request.rule {
-        println!("  Rule: {} chars", rule.len());
+    if let Some(multi_queries) = request.queries {
+        queries.extend(multi_queries);
     }
+
+    if queries.is_empty() {
+        return json_error_response("No queries provided");
+    }
+
+    // Collect all rules
+    let mut rules = Vec::new();
+    if let Some(single_rule) = request.rule {
+        rules.push(single_rule);
+    }
+    if let Some(multi_rules) = request.rules {
+        rules.extend(multi_rules);
+    }
+
+    println!("Processing {} query(ies) and {} rule(s)", queries.len(), rules.len());
 
     let mut database = SparqlDatabase::new();
     let use_optimizer = request.format == "ntriples";
     
+    // Load RDF data once
     if let Some(rdf_data) = request.rdf {
         if !rdf_data.trim().is_empty() {
-            // Parse based on format
             match request.format.as_str() {
                 "ntriples" => {
-                    println!("Parsing N-Triples data...");
+                    println!("Parsing N-Triples data with Streamertail optimizer...");
                     database.parse_ntriples_and_add(&rdf_data);
-                    
-                    // CRITICAL: N-Triples MUST use optimizer
-                    println!("Building statistics for Streamertail optimizer (required for N-Triples)...");
                     database.get_or_build_stats();
-                    println!("Building indexes...");
                     database.build_all_indexes();
-                    
-                    println!("✓ N-Triples data loaded with optimizer, triple count: {}", database.triples.len());
-                    
-                    // DEBUG: Print all triples
-                    println!("DEBUG: Database triples:");
-                    for (i, triple) in database.triples.iter().enumerate() {
-                        let s = database.dictionary.decode(triple.subject).unwrap_or("UNKNOWN");
-                        let p = database.dictionary.decode(triple.predicate).unwrap_or("UNKNOWN");
-                        let o = database.dictionary.decode(triple.object).unwrap_or("UNKNOWN");
-                        println!("  Triple {}: {} | {} | {}", i, s, p, o);
-                    }
+                }
+                "turtle" => {
+                    println!("Parsing Turtle dataset...");
+                    database.parse_turtle(&rdf_data);
+                    database.get_or_build_stats();
+                    database.build_all_indexes();
                 }
                 "rdfxml" | _ => {
                     println!("Parsing RDF/XML data...");
                     database.parse_rdf(&rdf_data);
-                    
-                    // Get statistics and build indexes
-                    println!("Building statistics...");
                     database.get_or_build_stats();
-                    println!("Building indexes...");
                     database.build_all_indexes();
-                    
-                    println!("✓ RDF/XML data loaded, triple count: {}", database.triples.len());
-                    
-                    // DEBUG: Print all triples
-                    println!("DEBUG: Database triples:");
-                    for (i, triple) in database.triples.iter().enumerate() {
-                        let s = database.dictionary.decode(triple.subject).unwrap_or("UNKNOWN");
-                        let p = database.dictionary.decode(triple.predicate).unwrap_or("UNKNOWN");
-                        let o = database.dictionary.decode(triple.object).unwrap_or("UNKNOWN");
-                        println!("  Triple {}: {} | {} | {}", i, s, p, o);
-                    }
                 }
             }
         }
     }
     
-    if let Some(rule_def) = request.rule {
+    // Process N3 logic rules (n3logic field) using parse_n3_rule + Reasoner.
+    // Syntax: @prefix declarations followed by { premise } => { conclusion } .
+    // This is completely separate from the SPARQL RULE syntax — it uses the
+    // Reasoner class (datalog/reasoning.rs) exactly as shown in the test example.
+    if let Some(ref n3_rules_text) = request.n3logic {
+    if !n3_rules_text.trim().is_empty() {
+        println!("Processing N3 logic rules from N3 Logic sub-tab...");
+
+        // Mirror the database dictionary so term encodings are shared
+        let mut kg = Reasoner::new();
+        kg.dictionary = database.dictionary.clone();
+
+        // Decode all triples to owned strings using database.dictionary BEFORE
+        // creating kg's mutable borrow — avoids the RwLockReadGuard conflict.
+        let decoded_triples: Vec<(String, String, String)> = {
+            let dict_guard = kg.dictionary.read().unwrap();
+            database.triples.iter()
+                .map(|triple| (
+                    dict_guard.decode(triple.subject).unwrap_or("").to_string(),
+                    dict_guard.decode(triple.predicate).unwrap_or("").to_string(),
+                    dict_guard.decode(triple.object).unwrap_or("").to_string(),
+                ))
+                .collect()
+        };
+
+        println!("Decoded triples are: {:?}", decoded_triples);
+
+        // Now load into the Reasoner — no borrow conflict
+        for (s, p, o) in &decoded_triples {
+            kg.add_abox_triple(s, p, o);
+        }
+
+        let n3_text = n3_rules_text.trim();
+        match parse_n3_rule(n3_text, &mut kg) {
+            Ok((_, (prefixes, rule))) => {
+                println!(
+                    "N3 rule parsed ({} prefix(es), {} premise(s), {} conclusion(s))",
+                    prefixes.len(),
+                    rule.premise.len(),
+                    rule.conclusion.len(),
+                );
+
+                // **IMPORTANT**: Register N3 prefixes with the database so SPARQL rules can use them
+                for (prefix, uri) in prefixes {
+                    database.prefixes.insert(prefix.to_string(), uri.to_string());
+                }
+
+                // Register the rule and infer new facts
+                kg.add_rule(rule);
+                let inferred = kg.infer_new_facts_semi_naive();
+                println!("N3 rule inferred {} fact(s)", inferred.len());
+
+                // Push inferred triples into the database triple store
+                for triple in inferred {
+                    database.triples.insert(triple);
+                }
+
+                // Sync the enriched dictionary back so SPARQL can decode the new terms
+                database.dictionary = kg.dictionary.clone();
+
+                if !database.triples.is_empty() {
+                    database.invalidate_stats_cache();
+                    database.get_or_build_stats();
+                    database.build_all_indexes();
+                }
+            }
+            Err(e) => {
+                eprintln!("N3 rule parse error: {:?}", e);
+            }
+        }
+    }
+}
+
+    // Process all SPARQL-syntax rules (RULE :Name :- CONSTRUCT { } WHERE { })
+    for (idx, rule_def) in rules.iter().enumerate() {
         if !rule_def.trim().is_empty() {
-            println!("Processing rule...");
+            println!("Processing rule {}...", idx + 1);
             match process_rule_definition(&rule_def, &mut database) {
                 Ok((_, inferred_facts)) => {
-                    println!("Rule processed, inferred {} facts", inferred_facts.len());
-                    
-                    // IMPORTANT: Rebuild stats after adding inferred facts
+                    println!("Rule {} processed, inferred {} facts", idx + 1, inferred_facts.len());
                     if !inferred_facts.is_empty() {
-                        println!("Rebuilding statistics after inference...");
-                        database.invalidate_stats_cache();  // Clear old stats
-                        database.get_or_build_stats();       // Rebuild with new triples
+                        database.invalidate_stats_cache();
+                        database.get_or_build_stats();
                         database.build_all_indexes();
                     }
                 }
                 Err(e) => {
-                    eprintln!("Rule processing error: {:?}", e);
+                    eprintln!("Rule {} processing error: {:?}", idx + 1, e);
                 }
             }
         }
     }
     
-    // Execute query with appropriate executor
-    let executor_name = if use_optimizer { "Streamertail optimizer" } else { "Streamertail optimizer (fallback mode)" };
-    println!("Executing SPARQL query with {}...", executor_name);
-    println!("Query: {}", request.sparql);
+    // Execute all queries
+    let mut all_results = Vec::new();
     
-    // N-Triples MUST use volcano optimizer, RDF/XML tries it with fallback
-    let results = match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        execute_query_rayon_parallel2_volcano(&request.sparql, &mut database)
-    })) {
-        Ok(res) => {
-            println!("Streamertail optimizer executed successfully, {} results", res.len());
-            res
-        }
-        Err(e) => {
-            eprintln!("Streamertail optimizer failed: {:?}, falling back to regular executor", e);
-            println!("Executing with regular query executor...");
-            let res = execute_query(&request.sparql, &mut database);
-            println!("Regular executor completed, {} results", res.len());
-            res
-        }
-    };
-    
-    // Debug: Print first few results
-    if !results.is_empty() {
-        println!("Sample results:");
-        for (i, row) in results.iter().take(3).enumerate() {
-            println!("  Row {}: {:?}", i + 1, row);
-        }
-    } else {
-        println!("Query returned 0 results!");
-        println!("Database has {} triples", database.triples.len());
+    for (idx, query) in queries.iter().enumerate() {
+        println!("Executing query {}/{}...", idx + 1, queries.len());
+        let start_time = std::time::Instant::now();
+        
+        let results = if use_optimizer {
+            execute_query_rayon_parallel2_volcano(query, &mut database)
+        } else {
+            execute_query(query, &mut database)
+        };
+        
+        let execution_time = start_time.elapsed().as_secs_f64() * 1000.0;
+        
+        all_results.push(QueryResult {
+            query_index: idx,
+            query: query.clone(),
+            data: results,
+            execution_time_ms: execution_time,
+        });
     }
     
-    let response = QueryResponse { results };
+    let response = QueryResponse { results: all_results };
     let json = match serde_json::to_string(&response) {
         Ok(j) => j,
         Err(e) => {

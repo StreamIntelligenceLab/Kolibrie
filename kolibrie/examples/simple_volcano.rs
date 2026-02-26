@@ -38,22 +38,28 @@ fn main() {
 fn add_sample_data(database: &mut SparqlDatabase) {
     println!("Adding sample data...");
 
+    // Acquire write lock on dictionary for all encoding operations
+    let mut dict = database.dictionary.write().unwrap();
+    
     // Add some triples about people
-    let alice_id = database.dictionary.encode("http://example.org/alice");
-    let bob_id = database.dictionary.encode("http://example.org/bob");
-    let charlie_id = database.dictionary.encode("http://example.org/charlie");
+    let alice_id = dict.encode("http://example.org/alice");
+    let bob_id = dict.encode("http://example.org/bob");
+    let charlie_id = dict.encode("http://example.org/charlie");
 
-    let name_id = database.dictionary.encode("http://example.org/name");
-    let age_id = database.dictionary.encode("http://example.org/age");
-    let works_at_id = database.dictionary.encode("http://example.org/worksAt");
+    let name_id = dict.encode("http://example.org/name");
+    let age_id = dict.encode("http://example.org/age");
+    let works_at_id = dict.encode("http://example.org/worksAt");
 
-    let alice_name = database.dictionary.encode("Alice");
-    let bob_name = database.dictionary.encode("Bob");
-    let charlie_name = database.dictionary.encode("Charlie");
-    let age_25 = database.dictionary.encode("25");
-    let age_30 = database.dictionary.encode("30");
-    let age_35 = database.dictionary.encode("35");
-    let company_id = database.dictionary.encode("http://example.org/company");
+    let alice_name = dict.encode("Alice");
+    let bob_name = dict.encode("Bob");
+    let charlie_name = dict.encode("Charlie");
+    let age_25 = dict.encode("25");
+    let age_30 = dict.encode("30");
+    let age_35 = dict.encode("35");
+    let company_id = dict.encode("http://example.org/company");
+    
+    // Release lock early
+    drop(dict);
 
     // Add triples
     database.add_triple(Triple {
@@ -113,7 +119,9 @@ fn add_sample_data(database: &mut SparqlDatabase) {
 fn simple_scan_example(database: &mut SparqlDatabase) {
     println!("=== Example 1: Simple Scan ===");
 
-    let name_id = database.dictionary.encode("http://example.org/name");
+    let mut dict = database.dictionary.write().unwrap();
+    let name_id = dict.encode("http://example.org/name");
+    drop(dict);
 
     // Create a logical plan: scan for all names
     let logical_plan = LogicalOperator::scan((
@@ -147,8 +155,10 @@ fn simple_scan_example(database: &mut SparqlDatabase) {
 fn join_example(database: &mut SparqlDatabase) {
     println!("=== Example 2: Join Query ===");
 
-    let name_id = database.dictionary.encode("http://example.org/name");
-    let age_id = database.dictionary.encode("http://example.org/age");
+    let mut dict = database.dictionary.write().unwrap();
+    let name_id = dict.encode("http://example.org/name");
+    let age_id = dict.encode("http://example.org/age");
+    drop(dict);
 
     // Create a logical plan: join names with ages
     let name_scan = LogicalOperator::scan((
@@ -190,7 +200,9 @@ fn join_example(database: &mut SparqlDatabase) {
 fn filter_example(database: &mut SparqlDatabase) {
     println!("=== Example 3: Filter Query ===");
 
-    let name_id = database.dictionary.encode("http://example.org/name");
+    let mut dict = database.dictionary.write().unwrap();
+    let name_id = dict.encode("http://example.org/name");
+    drop(dict);
 
     // Create a logical plan: scan for all names and filter for "Alice"
     let scan = LogicalOperator::scan((
