@@ -8,6 +8,8 @@
  * you can obtain one at https://mozilla.org/MPL/2.0/.
  */
 
+pub mod builder;
 pub mod r2r;
 pub mod r2s;
 pub mod s2r;
+pub mod simple_r2r;
