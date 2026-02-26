@@ -16,7 +16,6 @@ impl InferenceStrategy for SemiNaiveStrategy {
     fn find_premise_solutions(&mut self, dict: &Dictionary, rule: &Rule, all_facts: &Vec<Triple>) -> Vec<SolutionMapping> {
         let end_idx_for_delta = all_facts.len();
         let delta_facts = &all_facts[self.start_idx_for_delta..end_idx_for_delta]; // Take derived facts from last round and use as delta
-        self.start_idx_for_delta = end_idx_for_delta; // Update the pointer for the next round
 
         let nr_premises = rule.premise.len();
         let mut results = Vec::new();
@@ -24,9 +23,10 @@ impl InferenceStrategy for SemiNaiveStrategy {
         for i in 0..nr_premises {
             let mut current_bindings = vec![BTreeMap::new()];
 
+            // At least one premise should be satisfied by facts derived from last round (if not, then you simply derive the same things)
             current_bindings = join_premise_with_hash_join(&rule.premise[i], &delta_facts, current_bindings, dict);
 
-            // Join remaining premises with all facts
+            // Join remaining premises with all facts (includes delta facts as well)
             for j in 0..nr_premises {
                 if j == i {
                     continue;
@@ -45,6 +45,11 @@ impl InferenceStrategy for SemiNaiveStrategy {
         }
 
         results
+    }
+
+    fn after_round(&mut self, all_facts: &Vec<Triple>) {
+        let end_idx_for_delta = all_facts.len();
+        self.start_idx_for_delta = end_idx_for_delta; // Update the pointer for the next round
     }
 }
 

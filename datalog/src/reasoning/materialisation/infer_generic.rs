@@ -13,6 +13,12 @@ pub trait InferenceStrategy {
     /// For a given rule, finds all possible solution mappings that solve the premise of a rule.
     /// For each such solution mapping, a corresponding conclusion can be derived with this rule
     fn find_premise_solutions(&mut self, dict: &Dictionary, rule: &Rule, all_facts: &Vec<Triple>) -> Vec<SolutionMapping>;
+
+    /// Called after each round, default: do nothing. But can be overridden by specific inference strategies (e.g. SemiNaive)
+    fn after_round(
+        &mut self,
+        _all_facts: &Vec<Triple>,
+    ) {}
 }
 
 impl Reasoner {
@@ -30,6 +36,7 @@ impl Reasoner {
         // Also HashSet to prevent duplicate triples from being added this round
         let mut inferred_facts_this_round: HashSet<Triple> = HashSet::new();
 
+        // Loop over each rule
         for rule in &self.rules {
             // These are all bindings such that the premise is satisfied for the given rule
             let binding_sets = strat.find_premise_solutions(&mut self.dictionary, rule, all_facts);
@@ -50,6 +57,8 @@ impl Reasoner {
                 }
             }
         }
+
+        strat.after_round(all_facts);
 
         inferred_facts_this_round
     }
