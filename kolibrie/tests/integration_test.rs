@@ -19,33 +19,39 @@ mod tests {
     fn setup_test_db() -> SparqlDatabase {
         let mut db = SparqlDatabase::new();
         
+        // Acquire write lock once for all encoding
+        let mut dict = db.dictionary.write().unwrap();
+        
         // Create common IDs
-        let person1 = db.dictionary.encode("http://example.org/person1");
-        let person2 = db.dictionary.encode("http://example.org/person2");
-        let company = db.dictionary.encode("http://example.org/company1");
+        let person1 = dict.encode("http://example.org/person1");
+        let person2 = dict.encode("http://example.org/person2");
+        let company = dict.encode("http://example.org/company1");
         
         // Create predicates
         let predicates = [
-            (db.dictionary.encode("ex:name"), "name"),
-            (db.dictionary.encode("ex:age"), "age"),
-            (db.dictionary.encode("ex:email"), "email"),
-            (db.dictionary.encode("ex:worksFor"), "worksFor"),
-            (db.dictionary.encode("ex:founded"), "founded"),
-            (db.dictionary.encode("ex:industry"), "industry")
+            (dict.encode("ex:name"), "name"),
+            (dict.encode("ex:age"), "age"),
+            (dict.encode("ex:email"), "email"),
+            (dict.encode("ex:worksFor"), "worksFor"),
+            (dict.encode("ex:founded"), "founded"),
+            (dict.encode("ex:industry"), "industry")
         ];
         
         // Create objects
         let objects = [
-            (db.dictionary.encode("John Smith"), "john"),
-            (db.dictionary.encode("Jane Doe"), "jane"),
-            (db.dictionary.encode("ACME Corp"), "acme"),
-            (db.dictionary.encode("30"), "age30"),
-            (db.dictionary.encode("25"), "age25"),
-            (db.dictionary.encode("john@example.com"), "email1"),
-            (db.dictionary.encode("jane@example.com"), "email2"),
-            (db.dictionary.encode("2000"), "year"),
-            (db.dictionary.encode("Technology"), "tech")
+            (dict.encode("John Smith"), "john"),
+            (dict.encode("Jane Doe"), "jane"),
+            (dict.encode("ACME Corp"), "acme"),
+            (dict.encode("30"), "age30"),
+            (dict.encode("25"), "age25"),
+            (dict.encode("john@example.com"), "email1"),
+            (dict.encode("jane@example.com"), "email2"),
+            (dict.encode("2000"), "year"),
+            (dict.encode("Technology"), "tech")
         ];
+        
+        // Release lock before inserting triples
+        drop(dict);
         
         // Insert triples: Person 1 (John)
         let p = &predicates;
@@ -78,9 +84,11 @@ mod tests {
         assert_eq!(initial_count, 11);
         
         // Create a triple to delete
-        let person1 = db.dictionary.encode("http://example.org/person1");
-        let pred_name = db.dictionary.encode("ex:name");
-        let obj_john = db.dictionary.encode("John Smith");
+        let mut dict = db.dictionary.write().unwrap();
+        let person1 = dict.encode("http://example.org/person1");
+        let pred_name = dict.encode("ex:name");
+        let obj_john = dict.encode("John Smith");
+        drop(dict);
         
         let triple_to_delete = Triple {
             subject: person1,
@@ -150,11 +158,14 @@ mod tests {
         let pred_end = db.query().with_predicate_ending("For").get_triples();
         assert_eq!(pred_end.len(), 2);
         
-        // Test custom filter
-        let nums = db.query()
-            .filter(|t| db.dictionary.decode(t.object).unwrap_or("").parse::<i32>().is_ok())
-            .get_triples();
-        assert_eq!(nums.len(), 3);
+        // Test custom filter - collect numeric objects first
+        let dict = db.dictionary.read().unwrap();
+        let numeric_objects: Vec<_> = db.triples.iter()
+            .filter(|t| dict.decode(t.object).unwrap_or("").parse::<i32>().is_ok())
+            .cloned()
+            .collect();
+        drop(dict);
+        assert_eq!(numeric_objects.len(), 3);
     }
     
     #[test]
@@ -211,22 +222,21 @@ mod tests {
     fn test_result_manipulation() {
         let db = setup_test_db();
         
-        // Test order_by
-        let ages: Vec<_> = db.query()
+        // Test order_by - get triples first then sort
+        let age_triples = db.query()
             .with_predicate("ex:age")
-            .order_by(|t| db.dictionary.decode(t.object).unwrap_or("").to_string())
-            .get_triples()
-            .into_iter()
-            .collect();
-        assert_eq!(ages.len(), 2);
+            .get_triples();
+        assert_eq!(age_triples.len(), 2);
         
-        // Check that we got both ages (without assuming order)
-        let age_values = vec![
-            db.dictionary.decode(ages[0].object).unwrap_or(""),
-            db.dictionary.decode(ages[1].object).unwrap_or(""),
-        ];
-        assert!(age_values.contains(&"25"));
-        assert!(age_values.contains(&"30"));
+        // Check that we got both ages
+        let dict = db.dictionary.read().unwrap();
+        let mut age_values: Vec<_> = age_triples.iter()
+            .map(|t| dict.decode(t.object).unwrap_or("").to_string())
+            .collect();
+        drop(dict);
+        
+        age_values.sort();
+        assert_eq!(age_values, vec!["25", "30"]);
         
         // Test limit and offset
         let all: Vec<_> = db.query().get_triples().into_iter().collect();
@@ -239,9 +249,11 @@ mod tests {
         assert_eq!(offset[0], all[2]);
         
         // Test grouping
+        let dict = db.dictionary.read().unwrap();
         let groups = db.query().group_by(|t| 
-            db.dictionary.decode(t.predicate).unwrap_or("").to_string()
+            dict.decode(t.predicate).unwrap_or("").to_string()
         );
+        drop(dict);
         
         assert_eq!(groups.get("ex:name").map_or(0, |g| g.len()), 3);
         assert_eq!(groups.get("ex:age").map_or(0, |g| g.len()), 2);
@@ -256,9 +268,12 @@ mod tests {
         assert_eq!(orig_count, 11);
         
         // Add a second email for Person1
-        let subject1 = db.dictionary.encode("http://example.org/person1");
-        let pred_email = db.dictionary.encode("ex:email");
-        let new_email = db.dictionary.encode("john.smith@example.com");
+        let mut dict = db.dictionary.write().unwrap();
+        let subject1 = dict.encode("http://example.org/person1");
+        let pred_email = dict.encode("ex:email");
+        let new_email = dict.encode("john.smith@example.com");
+        drop(dict);
+        
         db.triples.insert(Triple { subject: subject1, predicate: pred_email, object: new_email });
         
         // Test all emails for person1
@@ -297,26 +312,31 @@ mod tests {
             .with_predicate("ex:worksFor")
             .with_object(acme[0].as_str())
             .get_triples();
-            
-        let young = employees.iter()
-            .filter(|t| {
-                let age_triples = db.query()
-                    .with_subject(db.dictionary.decode(t.subject).unwrap_or(""))
-                    .with_predicate("ex:age")
-                    .get_triples();
-                    
-                if let Some(triple) = age_triples.iter().next() {
-                    if let Some(age_str) = db.dictionary.decode(triple.object) {
-                        if let Ok(age) = age_str.parse::<i32>() {
-                            return age < 30;
-                        }
-                    }
+        
+        // Filter young employees - collect subject IDs first
+        let dict = db.dictionary.read().unwrap();
+        let young_subject_ids: Vec<u32> = employees.iter()
+            .filter_map(|t| {
+                // let subj_str = dict.decode(t.subject).unwrap_or("");
+                let age_pred = dict.string_to_id.get("ex:age")?;
+                
+                // Find age triple for this subject
+                let age_triple = db.triples.iter()
+                    .find(|triple| triple.subject == t.subject && triple.predicate == *age_pred)?;
+                
+                let age_str = dict.decode(age_triple.object)?;
+                let age: i32 = age_str.parse().ok()?;
+                
+                if age < 30 {
+                    Some(t.subject)
+                } else {
+                    None
                 }
-                false
             })
-            .collect::<Vec<_>>();
-            
-        assert_eq!(young.len(), 1);
-        assert_eq!(db.dictionary.decode(young[0].subject).unwrap_or(""), "http://example.org/person2");
+            .collect();
+        
+        assert_eq!(young_subject_ids.len(), 1);
+        assert_eq!(dict.decode(young_subject_ids[0]).unwrap_or(""), "http://example.org/person2");
+        drop(dict);
     }
 }

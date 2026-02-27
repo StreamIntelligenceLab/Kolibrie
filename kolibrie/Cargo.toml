@@ -1,6 +1,6 @@
 [package]
 name = "kolibrie"
-version = "0.1.0"
+version = "0.1.1"
 authors = ["Volodymyr Kadzhaia <vkadzhaia@gmail.com>", "Pieter Bonte <pieter.bonte@kuleuven.be>"]
 description = """
 A SPARQL database and RDF toolkit
@@ -222,7 +222,7 @@ path = "examples/sparql_syntax/concat/concat.rs"
 
 [[example]]
 name = "volcano"
-path = "examples/sparql_syntax/streamertail_optimizer/volcano.rs"
+path = "examples/sparql_syntax/volcano_optimizer/volcano.rs"
 
 [[example]]
 name = "select_semicolon"

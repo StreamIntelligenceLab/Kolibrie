@@ -22,9 +22,11 @@ fn main() {
     let mut counter = 1;
 
     loop {
-        let subject = db.dictionary.encode(&format!("subject{}", counter));
-        let predicate = db.dictionary.encode(&format!("predicate{}", counter));
-        let object = db.dictionary.encode(&format!("object{}", counter));
+        let mut dict = db.dictionary.write().unwrap();
+        let subject = dict.encode(&format!("subject{}", counter));
+        let predicate = dict.encode(&format!("predicate{}", counter));
+        let object = dict.encode(&format!("object{}", counter));
+        drop(dict);
 
         // Simulate adding triples with timestamps in a loop
         let triple = Triple {

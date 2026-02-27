@@ -78,9 +78,14 @@ RULE :OverheatingAlert(?room, ?temp) :-
           println!("  Conclusion: {:?}", rule.conclusion);
 
           println!("Inferred {} new fact(s):", inferred_facts.len());
+          
+          // Acquire read lock on dictionary
+          let dict = database.dictionary.read().unwrap();
           for triple in inferred_facts.iter() {
-              println!("  {}", database.triple_to_string(triple, &database.dictionary));
+              // Dereference the RwLockReadGuard to get &Dictionary
+              println!("  {}", database.triple_to_string(triple, &*dict));
           }
+          // Lock is automatically released when dict goes out of scope
       }
       Err(error) => {
           eprintln!("Error processing rule definition: {}", error);

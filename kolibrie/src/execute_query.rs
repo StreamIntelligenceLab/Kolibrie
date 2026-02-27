@@ -680,9 +680,12 @@ fn normalize_query(sparql: &str) -> &str {
 fn process_insert_clause(insert_clause: Option<InsertClause>, database: &mut SparqlDatabase) {
     if let Some(insert_clause) = insert_clause {
         for (subject, predicate, object) in insert_clause.triples {
-            let subject_id = database.dictionary.encode(subject);
-            let predicate_id = database.dictionary.encode(predicate);
-            let object_id = database.dictionary.encode(object);
+            let mut dict = database.dictionary.write().unwrap();
+            let subject_id = dict.encode(subject);
+            let predicate_id = dict.encode(predicate);
+            let object_id = dict.encode(object);
+            drop(dict); // Drop lock
+            
             let triple = Triple {
                 subject: subject_id,
                 predicate: predicate_id,
@@ -782,11 +785,12 @@ fn process_rule_call<'a>(
 
     // Find all subjects that match the rule predicate
     let mut matched_subjects = Vec::new();
+    let dict = database.dictionary.read().unwrap();
     for triple in database.triples.iter() {
         if let (Some(subj), Some(pred), Some(obj)) = (
-            database.dictionary.decode(triple.subject),
-            database.dictionary.decode(triple.predicate),
-            database.dictionary.decode(triple.object),
+            dict.decode(triple.subject),
+            dict.decode(triple.predicate),
+            dict.decode(triple.object),
         ) {
             if pred == expanded_rule_predicate && obj == "true" {
                 // Convert to 'static string to avoid lifetime issues
@@ -795,6 +799,7 @@ fn process_rule_call<'a>(
             }
         }
     }
+    drop(dict);
 
     // Process results for rule-based query
     let mut final_results = Vec::new();
@@ -827,11 +832,12 @@ fn process_rule_subject(
         let mut highest_value: Option<(i64, String)> = None;
 
         // First, find all sensors/readings for this room
+        let dict = database.dictionary.read().unwrap();
         for triple in database.triples.iter() {
             if let (Some(rel_subj), Some(rel_pred), Some(rel_obj)) = (
-                database.dictionary.decode(triple.subject),
-                database.dictionary.decode(triple.predicate),
-                database.dictionary.decode(triple.object),
+                dict.decode(triple.subject),
+                dict.decode(triple.predicate),
+                dict.decode(triple.object),
             ) {
                 // Find sensors that relate to our room
                 if rel_pred.ends_with("room") && rel_obj == subject {
@@ -841,6 +847,7 @@ fn process_rule_subject(
                 }
             }
         }
+        drop(dict);
 
         // Add the highest value if found
         if let Some((_, value)) = highest_value {
@@ -871,11 +878,12 @@ fn find_highest_sensor_value(
         var_name
     };
 
+    let dict = database.dictionary.read().unwrap();
     for value_triple in database.triples.iter() {
         if let (Some(val_subj), Some(val_pred), Some(val_obj)) = (
-            database.dictionary.decode(value_triple.subject),
-            database.dictionary.decode(value_triple.predicate),
-            database.dictionary.decode(value_triple.object),
+            dict.decode(value_triple.subject),
+            dict.decode(value_triple.predicate),
+            dict.decode(value_triple.object),
         ) {
             if val_subj == sensor_id && val_pred.contains(var_name) {
                 if let Ok(num_val) = val_obj.parse::<i64>() {
@@ -890,6 +898,7 @@ fn find_highest_sensor_value(
             }
         }
     }
+    drop(dict);
 
     highest_value
 }
