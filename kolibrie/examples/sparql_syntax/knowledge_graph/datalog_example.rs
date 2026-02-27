@@ -49,7 +49,7 @@ fn main() {
                                   Term::Variable("Z".to_string())),],
         filters: vec![],
     };
-    
+
     kg.add_rule(rule1);
     kg.add_rule(rule2);
 

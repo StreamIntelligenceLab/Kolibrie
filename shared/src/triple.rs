@@ -8,6 +8,7 @@
  * you can obtain one at https://mozilla.org/MPL/2.0/.
  */
 use serde::{Serialize, Deserialize};
+use crate::terms::{Term, TriplePattern};
 
 #[derive(PartialEq, Debug, Clone, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 pub struct Triple {
@@ -16,7 +17,20 @@ pub struct Triple {
     pub object: u32,
 }
 
-#[derive(PartialEq, Debug, Clone, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+impl Triple {
+
+    /// Converts a triple (subject, predicate, object) (all u32 values) into a TriplePattern
+    /// Simply wraps each element into a constant
+    pub fn to_pattern(&self) -> TriplePattern {
+        (
+            Term::Constant(self.subject),
+            Term::Constant(self.predicate),
+            Term::Constant(self.object),
+        )
+    }
+}
+
+#[derive(PartialEq, Debug, Clone, Eq, PartialOrd, Ord)]
 pub struct TimestampedTriple {
     pub triple: Triple,
     pub timestamp: u64,

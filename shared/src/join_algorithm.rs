@@ -9,11 +9,12 @@
  */
 
 use crate::dictionary::Dictionary;
-use crate::triple::Triple;
 use crate::index_manager::UnifiedIndex;
+use crate::terms::{Term, TriplePattern};
+use crate::triple::Triple;
+use rayon::prelude::*;
 use std::collections::{BTreeMap, HashMap};
 use std::sync::Arc;
-use rayon::prelude::*;
 
 pub fn perform_join_par_simd_with_strict_filter_4_redesigned_streaming(
     subject_var: String,
@@ -462,36 +463,70 @@ pub fn compact_results(results: Vec<BTreeMap<String, String>>) -> Vec<BTreeMap<S
     compacted
 }
 
+fn extract_join_parameters(premise: &TriplePattern, dict: &Dictionary) -> (String, String, String) {
+    let (subject_term, predicate_term, object_term) = premise;
+
+    let subject_var = match subject_term {
+        Term::Variable(v) => v.clone(),
+        Term::Constant(c) => {
+            // For constants, create a synthetic variable name
+            format!("__const_subj_{}", c)
+        }
+    };
+
+    let object_var = match object_term {
+        Term::Variable(v) => v.clone(),
+        Term::Constant(c) => {
+            // For constants, create a synthetic variable name
+            format!("__const_obj_{}", c)
+        }
+    };
+
+    let predicate_str = match predicate_term {
+        Term::Constant(c) => dict.decode(*c).unwrap_or("unknown").to_string(),
+        Term::Variable(v) => {
+            format!("__var_pred_{}", v)
+        }
+    };
+
+    (subject_var, predicate_str, object_var)
+}
+
 /// Ultra-fast hash join optimized for performance
 pub fn perform_hash_join_for_rules(
-    subject_var: String,
-    predicate: String,
-    object_var: String,
-    triples: Vec<Triple>,
-    dictionary: &Dictionary,
+    premise: &TriplePattern,
+    triples: &[Triple],
+    dict: &Dictionary,
     final_results: Vec<BTreeMap<String, String>>,
     literal_filter: Option<String>,
 ) -> Vec<BTreeMap<String, String>> {
-    
+
+    // Extract variable names and predicate from the premise
+    let (subject, predicate, object) = extract_join_parameters(premise, dict);
+
     if final_results.is_empty() {
         return Vec::new();
     }
 
     // Fast predicate filtering
-    let predicate_id = match dictionary.string_to_id.get(&predicate) {
+    let predicate_id = match dict
+        .string_to_id
+        .get(&predicate)
+    {
         Some(&id) => id,
         None => return Vec::new(),
     };
 
-    let literal_filter_id = literal_filter.as_ref()
-        .and_then(|s| dictionary.string_to_id.get(s).copied());
+    let literal_filter_id = literal_filter
+        .as_ref()
+        .and_then(|s| dict.string_to_id.get(s).copied());
 
     // Pre-filter triples (this is very fast)
-    let filtered_triples: Vec<Triple> = triples
-        .into_iter()
+    let filtered_triples: Vec<&Triple> = triples
+        .iter()
         .filter(|triple| {
-            triple.predicate == predicate_id && 
-            literal_filter_id.map_or(true, |filter_id| triple.object == filter_id)
+            triple.predicate == predicate_id
+                && literal_filter_id.map_or(true, |filter_id| triple.object == filter_id)
         })
         .collect();
 
@@ -500,27 +535,32 @@ pub fn perform_hash_join_for_rules(
     }
 
     // Build simple hash table - this is the key optimization
-    let hash_table = build_simple_hash_table(&final_results, &subject_var, &object_var, dictionary);
+    let hash_table = build_simple_hash_table(
+        &final_results,
+        &subject,
+        &object,
+        dict,
+    );
 
     // Parallel processing with minimal overhead
     let chunk_size = (filtered_triples.len() / rayon::current_num_threads().max(1)).max(1000);
-    
+
     filtered_triples
         .par_chunks(chunk_size)
         .flat_map(|chunk| {
             let mut local_results = Vec::with_capacity(chunk.len());
-            
+
             for triple in chunk {
                 process_triple_fast(
                     triple,
-                    &subject_var,
-                    &object_var,
+                    &subject,
+                    &object,
                     &hash_table,
-                    dictionary,
+                    dict,
                     &mut local_results,
                 );
             }
-            
+
             local_results
         })
         .collect()
