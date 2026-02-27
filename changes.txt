@@ -140,6 +140,8 @@
 139. Fix a bug with reasoning
 140. Fix a bug with dictionary in parser instead of cloning everything, clone a pointer
 141. Modify webui by adding support of N3 logic and Turtle
+141. Add support multiple window + static data for RSP engine
+142. Modify webui to support stream ingestion for RSP
 
 0.1.0
 1. Parsing RDF/XML

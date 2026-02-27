@@ -802,7 +802,12 @@ impl SparqlDatabase {
 
         if parts.len() == 3 {
             let subject = self.clean_ntriples_term(&parts[0]);
-            let predicate = self.clean_ntriples_term(&parts[1]);
+            // Expand the Turtle `a` shorthand for rdf:type in predicate position.
+            let predicate = if parts[1] == "a" {
+                "http://www.w3.org/1999/02/22-rdf-syntax-ns#type".to_string()
+            } else {
+                self.clean_ntriples_term(&parts[1])
+            };
             let object = self.clean_ntriples_term(&parts[2]);
             Some((subject, predicate, object))
         } else {

@@ -222,7 +222,7 @@ path = "examples/sparql_syntax/concat/concat.rs"
 
 [[example]]
 name = "volcano"
-path = "examples/sparql_syntax/streamertail_optimizer/volcano.rs"
+path = "examples/sparql_syntax/volcano_optimizer/volcano.rs"
 
 [[example]]
 name = "select_semicolon"

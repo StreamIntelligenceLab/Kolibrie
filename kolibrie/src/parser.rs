@@ -1239,6 +1239,97 @@ pub fn parse_window_spec(input: &str) -> IResult<&str, WindowSpec<'_>> {
     }))
 }
 
+/// Parse a duration string used in WITH POLICY clauses.
+/// Accepts: `5s`, `5000ms`, `PT5S` / `PT5M` / `PT5H`, bare integer (seconds).
+fn parse_policy_duration(input: &str) -> IResult<&str, std::time::Duration> {
+    alt((parse_policy_duration_iso, parse_policy_duration_numeric)).parse(input)
+}
+
+fn parse_policy_duration_iso(input: &str) -> IResult<&str, std::time::Duration> {
+    let (input, dur_str) = recognize((
+        tag("PT"),
+        take_while1(|c: char| c.is_ascii_digit()),
+        alt((char('S'), char('M'), char('H'))),
+    ))
+    .parse(input)?;
+    let secs = parse_duration_to_seconds(dur_str) as u64;
+    Ok((input, std::time::Duration::from_secs(secs)))
+}
+
+fn parse_policy_duration_numeric(input: &str) -> IResult<&str, std::time::Duration> {
+    let (input, num_str) = take_while1(|c: char| c.is_ascii_digit()).parse(input)?;
+    let (input, suffix) = opt(alt((tag("ms"), tag("s")))).parse(input)?;
+    let num: u64 = num_str.parse().unwrap_or(0);
+    let dur = match suffix {
+        Some("ms") => std::time::Duration::from_millis(num),
+        _ => std::time::Duration::from_secs(num),
+    };
+    Ok((input, dur))
+}
+
+/// Parse the policy name / spec after `WITH POLICY`.
+/// - `steal`  → SyncPolicy::Steal
+/// - `wait`   → SyncPolicy::Wait
+/// - `(timeout=<dur>, fallback=steal|drop)` → SyncPolicy::Timeout{...}
+fn parse_sync_policy(input: &str) -> IResult<&str, shared::query::SyncPolicy> {
+    alt((
+        parse_sync_policy_steal,
+        parse_sync_policy_wait,
+        parse_sync_policy_timeout,
+    ))
+    .parse(input)
+}
+
+fn parse_from_named_window_policy(input: &str) -> IResult<&str, shared::query::SyncPolicy> {
+    let (input, _) = multispace0.parse(input)?;
+    let (input, _) = tag("WITH").parse(input)?;
+    let (input, _) = multispace1.parse(input)?;
+    let (input, _) = tag("POLICY").parse(input)?;
+    let (input, _) = multispace1.parse(input)?;
+    parse_sync_policy(input)
+}
+
+fn parse_sync_policy_steal(input: &str) -> IResult<&str, shared::query::SyncPolicy> {
+    let (input, _) = tag("steal").parse(input)?;
+    Ok((input, shared::query::SyncPolicy::Steal))
+}
+
+fn parse_sync_policy_wait(input: &str) -> IResult<&str, shared::query::SyncPolicy> {
+    let (input, _) = tag("wait").parse(input)?;
+    Ok((input, shared::query::SyncPolicy::Wait))
+}
+
+fn parse_sync_policy_timeout(input: &str) -> IResult<&str, shared::query::SyncPolicy> {
+    let (input, _) = char('(').parse(input)?;
+    let (input, _) = multispace0.parse(input)?;
+    let (input, _) = tag("timeout").parse(input)?;
+    let (input, _) = multispace0.parse(input)?;
+    let (input, _) = char('=').parse(input)?;
+    let (input, _) = multispace0.parse(input)?;
+    let (input, duration) = parse_policy_duration(input)?;
+    let (input, _) = multispace0.parse(input)?;
+    let (input, _) = char(',').parse(input)?;
+    let (input, _) = multispace0.parse(input)?;
+    let (input, _) = tag("fallback").parse(input)?;
+    let (input, _) = multispace0.parse(input)?;
+    let (input, _) = char('=').parse(input)?;
+    let (input, _) = multispace0.parse(input)?;
+    let (input, fallback) = alt((parse_fallback_steal, parse_fallback_drop)).parse(input)?;
+    let (input, _) = multispace0.parse(input)?;
+    let (input, _) = char(')').parse(input)?;
+    Ok((input, shared::query::SyncPolicy::Timeout { duration, fallback }))
+}
+
+fn parse_fallback_steal(input: &str) -> IResult<&str, shared::query::Fallback> {
+    let (input, _) = tag("steal").parse(input)?;
+    Ok((input, shared::query::Fallback::Steal))
+}
+
+fn parse_fallback_drop(input: &str) -> IResult<&str, shared::query::Fallback> {
+    let (input, _) = tag("drop").parse(input)?;
+    Ok((input, shared::query::Fallback::Drop))
+}
+
 // Helper function to convert duration strings to seconds
 fn parse_duration_to_seconds(duration: &str) -> usize {
     if duration.starts_with("PT") && duration.len() > 2 {
@@ -1296,11 +1387,15 @@ pub fn parse_from_named_window(input: &str) -> IResult<&str, WindowClause<'_>> {
     
     // Parse window specification with ISO 8601 duration support
     let (input, window_spec) = parse_window_spec(input)?;
-    
+
+    // Optional: WITH POLICY <policy>
+    let (input, policy) = opt(parse_from_named_window_policy).parse(input)?;
+
     Ok((input, WindowClause {
         window_iri,
         stream_iri,
         window_spec,
+        policy,
     }))
 }
 
