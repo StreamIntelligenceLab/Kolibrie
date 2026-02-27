@@ -19,7 +19,7 @@ impl Reasoner {
         // Keep track of newly inferred facts so we can return them later
         let mut inferred_so_far = Vec::new();
 
-        let mut dict = self.dictionary.write().unwrap();
+        let dict = self.dictionary.write().unwrap();
 
         // Repeat until no new facts are inferred
         loop {

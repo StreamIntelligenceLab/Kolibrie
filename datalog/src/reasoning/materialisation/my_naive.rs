@@ -1,8 +1,7 @@
 use shared::dictionary::Dictionary;
 use shared::rule::Rule;
 use shared::triple::Triple;
-use std::collections::{BTreeMap, HashMap, HashSet};
-use std::sync::{Arc, RwLock};
+use std::collections::{BTreeMap, HashSet};
 use crate::reasoning::{convert_string_binding_to_u32, Reasoner};
 use crate::reasoning::materialisation::infer_generic::{SolutionMapping, InferenceStrategy};
 use crate::reasoning::materialisation::replace_variables_with_bound_values;

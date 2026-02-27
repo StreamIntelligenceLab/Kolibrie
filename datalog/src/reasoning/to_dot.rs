@@ -84,7 +84,7 @@ fn create_edges(kg: &Reasoner, out: &mut String) {
         ));
     }
 
-    for (i, rule) in kg.rules.iter().enumerate() {
+    for (i, _) in kg.rules.iter().enumerate() {
         out.push_str(&format!("Rule{0}_premise -> Rule{0}_conclusion\n", i))
     }
 }

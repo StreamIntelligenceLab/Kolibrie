@@ -2,10 +2,7 @@ use shared::dictionary::Dictionary;
 use shared::rule::Rule;
 use shared::triple::Triple;
 use std::collections::{HashMap, HashSet};
-use std::sync::{Arc, RwLock};
-use crate::reasoning::materialisation::replace_variables_with_bound_values;
 use crate::reasoning::Reasoner;
-use crate::reasoning::rules::evaluate_filters;
 
 pub type SolutionMapping = HashMap<String, u32>;
 

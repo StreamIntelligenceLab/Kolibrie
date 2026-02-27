@@ -1,3 +1,8 @@
+0.2.0
+1. Add support multiple window + static data for RSP engine
+2. Modify webui to support stream ingestion for RSP
+3. Refactoring of materialisation & knowledge graph code
+
 0.1.1
 1. Modify whole project by making Cargo workspace
 2. Modify GPU CUDA
@@ -140,8 +145,6 @@
 139. Fix a bug with reasoning
 140. Fix a bug with dictionary in parser instead of cloning everything, clone a pointer
 141. Modify webui by adding support of N3 logic and Turtle
-141. Add support multiple window + static data for RSP engine
-142. Modify webui to support stream ingestion for RSP
 
 0.1.0
 1. Parsing RDF/XML

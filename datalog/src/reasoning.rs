@@ -20,7 +20,6 @@ use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use shared::index_manager::*;
 use shared::rule_index::RuleIndex;
 use shared::rule::Rule;
-use rayon::prelude::*;
 use std::sync::Arc;
 use std::sync::RwLock;
 use crate::reasoning::rules::join_rule;
