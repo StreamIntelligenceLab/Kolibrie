@@ -202,26 +202,30 @@ fn convert_pattern_to_triple(
     prefixes: &HashMap<String, String>,
     database: &mut SparqlDatabase,
 ) -> TriplePattern {
+    let mut dict = database.dictionary.write().unwrap();
+    
     let subject = if subject_str.starts_with('?') {
         Term::Variable(subject_str.to_string())
     } else {
         let resolved = resolve_with_prefixes(subject_str, prefixes);
-        Term::Constant(database.dictionary.encode(&resolved))
+        Term::Constant(dict.encode(&resolved))
     };
 
     let predicate = if predicate_str.starts_with('?') {
         Term::Variable(predicate_str.to_string())
     } else {
         let resolved = resolve_with_prefixes(predicate_str, prefixes);
-        Term::Constant(database.dictionary.encode(&resolved))
+        Term::Constant(dict.encode(&resolved))
     };
 
     let object = if object_str.starts_with('?') {
         Term::Variable(object_str.to_string())
     } else {
         let resolved = resolve_with_prefixes(object_str, prefixes);
-        Term::Constant(database.dictionary.encode(&resolved))
+        Term::Constant(dict.encode(&resolved))
     };
+    
+    drop(dict);
 
     (subject, predicate, object)
 }

@@ -39,19 +39,19 @@ struct SavingsPrediction {
 fn extract_financial_data_from_database(
     database: &SparqlDatabase,
 ) -> Result<Vec<FinancialData>, Box<dyn Error>> {
+    // Acquire read lock once at the start
+    let dict = database.dictionary.read().unwrap();
+    
     // Extract data from database
     let financial_data: Vec<FinancialData> = database
         .triples
         .iter()
         .filter(|triple| {
-            database
-                .dictionary
-                .decode(triple.predicate)
+            dict.decode(triple.predicate)
                 .map_or(false, |pred| pred.ends_with("income"))
         })
         .map(|triple| {
-            let user_id = database
-                .dictionary
+            let user_id = dict
                 .decode(triple.subject)
                 .unwrap_or_default()
                 .split('#')
@@ -59,8 +59,7 @@ fn extract_financial_data_from_database(
                 .unwrap_or_default()
                 .to_string();
 
-            let income = database
-                .dictionary
+            let income = dict
                 .decode(triple.object)
                 .unwrap_or_default()
                 .parse()
@@ -72,12 +71,11 @@ fn extract_financial_data_from_database(
                 .iter()
                 .find(|t| {
                     t.subject == triple.subject
-                        && database
-                            .dictionary
+                        && dict
                             .decode(t.predicate)
                             .map_or(false, |p| p.ends_with("spending"))
                 })
-                .and_then(|t| database.dictionary.decode(t.object))
+                .and_then(|t| dict.decode(t.object))
                 .and_then(|v| v.parse().ok())
                 .unwrap_or(0.0);
 
@@ -86,12 +84,11 @@ fn extract_financial_data_from_database(
                 .iter()
                 .find(|t| {
                     t.subject == triple.subject
-                        && database
-                            .dictionary
+                        && dict
                             .decode(t.predicate)
                             .map_or(false, |p| p.ends_with("savings_rate"))
                 })
-                .and_then(|t| database.dictionary.decode(t.object))
+                .and_then(|t| dict.decode(t.object))
                 .and_then(|v| v.parse().ok())
                 .unwrap_or(0.10); // Default to 10% savings rate if not specified
 
@@ -104,6 +101,9 @@ fn extract_financial_data_from_database(
             }
         })
         .collect();
+
+    // Release the lock before printing
+    drop(dict);
 
     println!("Found {} financial data entries", financial_data.len());
     for data in &financial_data {
@@ -127,7 +127,7 @@ fn predict_savings(
     best_model: &str,
     financial_data: &[FinancialData],
     feature_names: &[String],
-) -> Result<(Vec<SavingsPrediction>, kolibrie:: execute_ml::MLPredictTiming), Box<dyn Error>> {
+) -> Result<(Vec<SavingsPrediction>, kolibrie::execute_ml::MLPredictTiming), Box<dyn Error>> {
     // Dynamically build feature vectors based on selected variables
     let features: Vec<Vec<f64>> = financial_data
         .iter()
@@ -297,9 +297,13 @@ RULE :SavingsAlert(?user) :-
             println!("  Conclusion: {:?}", rule.conclusion);
 
             println!("Inferred {} new fact(s):", inferred_facts.len());
+            
+            // Acquire read lock for printing triples
+            let dict = database.dictionary.read().unwrap();
             for triple in inferred_facts.iter() {
-                println!("  {}", database.triple_to_string(triple, &database.dictionary));
+                println!("  {}", database.triple_to_string(triple, &*dict));
             }
+            drop(dict);
             
             // Parse the rule to get ML.PREDICT clause
             if let Ok((_rest, (parsed_rule, _))) = parse_standalone_rule(rule_definition) {
@@ -321,41 +325,53 @@ RULE :SavingsAlert(?user) :-
                                     prediction.user_id, prediction.predicted_savings, prediction.confidence
                                 );
 
+                                // Acquire write lock for encoding and adding triples
+                                let mut dict = database.dictionary.write().unwrap();
+                                
                                 // Add predictions to database
                                 let subject = format!("http://example.org#{}", prediction.user_id);
                                 let predicate = "http://example.org/finance#predictedSavings";
-                                let subject_id = database.dictionary.encode(&subject);
-                                let predicate_id = database.dictionary.encode(predicate);
-                                let object_id = database
-                                    .dictionary
-                                    .encode(&prediction.predicted_savings.to_string());
+                                let subject_id = dict.encode(&subject);
+                                let predicate_id = dict.encode(predicate);
+                                let object_id = dict.encode(&prediction.predicted_savings.to_string());
+                                
+                                drop(dict); // Release lock before inserting
+                                
                                 database.triples.insert(Triple {
                                     subject: subject_id,
                                     predicate: predicate_id,
                                     object: object_id,
                                 });
                                 
+                                // Re-acquire lock for confidence score
+                                let mut dict = database.dictionary.write().unwrap();
+                                
                                 // Also add confidence score to the database
                                 let confidence_predicate = "http://example.org/finance#predictionConfidence";
-                                let confidence_predicate_id = database.dictionary.encode(confidence_predicate);
-                                let confidence_object_id = database
-                                    .dictionary
-                                    .encode(&prediction.confidence.to_string());
+                                let confidence_predicate_id = dict.encode(confidence_predicate);
+                                let confidence_object_id = dict.encode(&prediction.confidence.to_string());
+                                
+                                drop(dict);
+                                
                                 database.triples.insert(Triple {
                                     subject: subject_id,
                                     predicate: confidence_predicate_id,
                                     object: confidence_object_id,
                                 });
                                 
+                                // Re-acquire lock for timestamp
+                                let mut dict = database.dictionary.write().unwrap();
+                                
                                 // Add timestamp to the database
                                 let timestamp_predicate = "http://example.org/finance#predictionTimestamp";
                                 let timestamp_str = format!("{}", 
                                     chrono::DateTime::<chrono::Utc>::from(prediction.timestamp)
                                         .format("%Y-%m-%d %H:%M:%S"));
-                                let timestamp_predicate_id = database.dictionary.encode(timestamp_predicate);
-                                let timestamp_object_id = database
-                                    .dictionary
-                                    .encode(&timestamp_str);
+                                let timestamp_predicate_id = dict.encode(timestamp_predicate);
+                                let timestamp_object_id = dict.encode(&timestamp_str);
+                                
+                                drop(dict);
+                                
                                 database.triples.insert(Triple {
                                     subject: subject_id,
                                     predicate: timestamp_predicate_id,
@@ -363,14 +379,19 @@ RULE :SavingsAlert(?user) :-
                                 });
                             }
                             
+                            // Acquire lock for metadata triple
+                            let mut dict = database.dictionary.write().unwrap();
+                            
                             // Add an execution metadata triple with current timestamp
                             let metadata_subject = "http://example.org#predictionExecution";
                             let timestamp_predicate = "http://example.org/metadata#executionTime";
                             let timestamp_value = "2025-05-30 14:49:43"; // Current UTC time
                             
-                            let metadata_subject_id = database.dictionary.encode(metadata_subject);
-                            let timestamp_predicate_id = database.dictionary.encode(timestamp_predicate);
-                            let timestamp_value_id = database.dictionary.encode(timestamp_value);
+                            let metadata_subject_id = dict.encode(metadata_subject);
+                            let timestamp_predicate_id = dict.encode(timestamp_predicate);
+                            let timestamp_value_id = dict.encode(timestamp_value);
+                            
+                            drop(dict);
                             
                             database.triples.insert(Triple {
                                 subject: metadata_subject_id,

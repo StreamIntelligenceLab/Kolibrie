@@ -101,18 +101,10 @@ WHERE {
 
             // DEBUG: Analyze inferred facts for windowing evidence
             for (i, triple) in inferred_facts.iter().enumerate() {
-                let s = database
-                    .dictionary
-                    .decode(triple.subject)
-                    .unwrap_or("unknown");
-                let p = database
-                    .dictionary
-                    .decode(triple.predicate)
-                    .unwrap_or("unknown");
-                let o = database
-                    .dictionary
-                    .decode(triple.object)
-                    .unwrap_or("unknown");
+                let dict = database.dictionary.read().unwrap();
+                let s = dict.decode(triple.subject).unwrap_or("unknown");
+                let p = dict.decode(triple.predicate).unwrap_or("unknown");
+                let o = dict.decode(triple.object).unwrap_or("unknown");
                 println!("DEBUG: Fact {}: {} -> {} -> {}", i + 1, s, p, o);
 
                 if p.contains("hasAlert") {
@@ -123,9 +115,10 @@ WHERE {
             println!("Rule structure: {:#?}", rule);
             println!("Inferred {} new fact(s):", inferred_facts.len());
             for triple in inferred_facts.iter() {
+                let dict = database.dictionary.read().unwrap();
                 println!(
                     "  {}",
-                    database.triple_to_string(triple, &database.dictionary)
+                    database.triple_to_string(triple, &*dict)
                 );
             }
         }
@@ -194,9 +187,10 @@ WHERE {
             println!("Rule has windowing: {}", rule.premise.len() > 0);
             println!("Inferred {} new fact(s):", inferred_facts.len());
             for triple in inferred_facts.iter() {
+                let dict = database.dictionary.read().unwrap();
                 println!(
                     "  {}",
-                    database.triple_to_string(triple, &database.dictionary)
+                    database.triple_to_string(triple, &*dict)
                 );
             }
         }
@@ -284,9 +278,10 @@ ML.PREDICT(
             println!("Rule has {} filter conditions", rule.filters.len());
             println!("Inferred {} new fact(s):", inferred_facts.len());
             for triple in inferred_facts.iter() {
+                let dict = database.dictionary.read().unwrap();
                 println!(
                     "  {}",
-                    database.triple_to_string(triple, &database.dictionary)
+                    database.triple_to_string(triple, &*dict)
                 );
             }
         }

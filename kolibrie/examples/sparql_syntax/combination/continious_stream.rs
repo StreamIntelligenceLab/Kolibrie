@@ -177,9 +177,10 @@ WHERE {
                 
                 // Show what alerts were generated
                 for (i, triple) in inferred_facts.iter().enumerate() {
-                    let s = database.dictionary.decode(triple.subject).unwrap_or("unknown");
-                    let p = database.dictionary.decode(triple.predicate).unwrap_or("unknown");
-                    let o = database.dictionary.decode(triple.object).unwrap_or("unknown");
+                    let dict = database.dictionary.read().unwrap();
+                    let s = dict.decode(triple.subject).unwrap_or("unknown");
+                    let p = dict.decode(triple.predicate).unwrap_or("unknown");
+                    let o = dict.decode(triple.object).unwrap_or("unknown");
                     println!("    Alert {}: {} -> {} -> {}", i + 1, s, p, o);
                 }
             }
@@ -212,9 +213,10 @@ WHERE {
                 
                 // Show what new readings were detected
                 for (i, triple) in inferred_facts.iter().enumerate() {
-                    let s = database.dictionary.decode(triple.subject).unwrap_or("unknown");
-                    let p = database.dictionary.decode(triple.predicate).unwrap_or("unknown");
-                    let o = database.dictionary.decode(triple.object).unwrap_or("unknown");
+                    let dict = database.dictionary.read().unwrap();
+                    let s = dict.decode(triple.subject).unwrap_or("unknown");
+                    let p = dict.decode(triple.predicate).unwrap_or("unknown");
+                    let o = dict.decode(triple.object).unwrap_or("unknown");
                     println!("    New reading {}: {} -> {} -> {}", i + 1, s, p, o);
                 }
             }
@@ -248,9 +250,10 @@ WHERE {
                 
                 // Show what extreme conditions were found
                 for (i, triple) in inferred_facts.iter().enumerate() {
-                    let s = database.dictionary.decode(triple.subject).unwrap_or("unknown");
-                    let p = database.dictionary.decode(triple.predicate).unwrap_or("unknown");
-                    let o = database.dictionary.decode(triple.object).unwrap_or("unknown");
+                    let dict = database.dictionary.read().unwrap();
+                    let s = dict.decode(triple.subject).unwrap_or("unknown");
+                    let p = dict.decode(triple.predicate).unwrap_or("unknown");
+                    let o = dict.decode(triple.object).unwrap_or("unknown");
                     println!("    Extreme condition {}: {} -> {} -> {}", i + 1, s, p, o);
                 }
             }

@@ -33,10 +33,13 @@ impl ExecutionEngine {
         id_results
         .into_par_iter()
         .map(|id_result| {
-            id_result
+            let dict = database.dictionary.read().unwrap();
+            let result: HashMap<String, String> = id_result
             .into_iter()
-            .map(|(var, id)| (var, database.dictionary.decode(id).unwrap().to_string()))
-            .collect()
+            .map(|(var, id)| (var, dict.decode(id).unwrap().to_string()))
+            .collect();
+            drop(dict);
+            result
         })
         .collect()
     }
@@ -58,7 +61,12 @@ impl ExecutionEngine {
                 // Use parallel filtering
                 input_results
                 .into_par_iter()
-                .filter(|result| condition.evaluate_with_ids(result, &database.dictionary))
+                .filter(|result| {
+                    let dict = database.dictionary.read().unwrap();
+                    let result = condition.evaluate_with_ids(result, &*dict);
+                    drop(dict);
+                    result
+                })
                 .collect()
             }
             PhysicalOperator::Projection { input, variables } => {
@@ -120,62 +128,78 @@ impl ExecutionEngine {
                     .collect()
             }
             PhysicalOperator::Bind { input, function_name, arguments, output_variable } => {
-                // Execute the input operator first
                 let mut input_results = Self::execute_with_ids(input, database);
                 let output_var = output_variable.strip_prefix('?').unwrap_or(output_variable);
-    
-                // Process BIND clause
+
                 if function_name == "CONCAT" {
-                    // Handle CONCAT function
-                    for row in &mut input_results {
-                        let concatenated = arguments
-                            .iter()
-                            .map(|arg| {
-                            let arg_stripped = arg.strip_prefix('?').unwrap_or(arg);
-                            if arg.starts_with('?') { 
-                                if let Some(&id) = row.get(arg_stripped) {
-                                    database.dictionary.decode(id).unwrap_or("").to_string()
-                                } else {
-                                    String::new()
-                                }
-                            } else {
-                                arg.trim_matches('"').to_string()
-                            }
+                    // Decode all needed values first
+                    let dict = database.dictionary.read().unwrap();
+                    let decoded_values: Vec<Vec<String>> = input_results
+                        .iter()
+                        .map(|row| {
+                            arguments
+                                .iter()
+                                .map(|arg| {
+                                    let arg_stripped = arg.strip_prefix('?').unwrap_or(arg);
+                                    if arg.starts_with('?') {
+                                        if let Some(&id) = row.get(arg_stripped) {
+                                            dict.decode(id).unwrap_or("").to_string()
+                                        } else {
+                                            String::new()
+                                        }
+                                    } else {
+                                        arg.trim_matches('"').to_string()
+                                    }
+                                })
+                                .collect()
                         })
-                        .collect::<Vec<String>>()
-                        .join("");
-            
-                        // Encode the concatenated result and store it
-                        let result_id = database.dictionary.encode(&concatenated);
+                        .collect();
+                    drop(dict);
+                    
+                    // Now encode the concatenated results
+                    let mut dict_write = database.dictionary.write().unwrap();
+                    for (row, decoded_row) in input_results.iter_mut().zip(decoded_values.iter()) {
+                        let concatenated = decoded_row.join("");
+                        let result_id = dict_write.encode(&concatenated);
                         row.insert(output_var.to_string(), result_id);
                     }
+                    drop(dict_write);
+                    
                     input_results
                 } else if let Some(func) = database.udfs.get(function_name.as_str()) {
-                    // Handle user-defined functions
-                    for row in &mut input_results {
-                        let resolved_args: Vec<&str> = arguments
-                            .iter()
-                            .map(|arg| {
-                                let arg_stripped = arg.strip_prefix('?').unwrap_or(arg);
-                                if arg.starts_with('?') {
-                                    if let Some(&id) = row.get(arg_stripped) {
-                                        // Need to leak this to get 'static lifetime for UDF call
-                                        Box::leak(
-                                            database.dictionary.decode(id).unwrap_or("").to_string().into_boxed_str()
-                                        )
+                    // Similar fix for UDF
+                    let dict = database.dictionary.read().unwrap();
+                    let decoded_args: Vec<Vec<String>> = input_results
+                        .iter()
+                        .map(|row| {
+                            arguments
+                                .iter()
+                                .map(|arg| {
+                                    let arg_stripped = arg.strip_prefix('?').unwrap_or(arg);
+                                    if arg.starts_with('?') {
+                                        if let Some(&id) = row.get(arg_stripped) {
+                                            dict.decode(id).unwrap_or("").to_string()
+                                        } else {
+                                            String::new()
+                                        }
                                     } else {
-                                        ""
+                                        arg.trim_matches('"').to_string()
                                     }
-                                } else {
-                                    Box::leak(arg.trim_matches('"').to_string().into_boxed_str())
-                                }
-                            })
-                            .collect();
-            
+                                })
+                                .collect()
+                        })
+                        .collect();
+                    drop(dict);
+                    
+                    let mut dict_write = database.dictionary.write().unwrap();
+                    for (row, decoded_row) in input_results.iter_mut().zip(decoded_args.iter()) {
+                        let resolved_args: Vec<&str> = decoded_row.iter().map(|s| s.as_str()).collect();
                         let result = func.call(resolved_args);
-                        let result_id = database.dictionary.encode(&result);
+                        let result_id = dict_write.encode(&result);
                         row.insert(output_var.to_string(), result_id);
                     }
+                    drop(dict_write);
+                    
                     input_results
                 } else {
                     eprintln!("Function {} not found", function_name);
@@ -191,13 +215,14 @@ impl ExecutionEngine {
                 // Convert VALUES data to result rows
                 let mut results = Vec::new();
     
+                let mut dict = database.dictionary.write().unwrap();
                 for value_row in values {
                     let mut row = HashMap::new();
         
                     for (i, var) in stripped_vars.iter().enumerate() {
                         if let Some(Some(value)) = value_row.get(i) {
                             // Encode the value in the dictionary
-                            let value_id = database.dictionary.encode(value);
+                            let value_id = dict.encode(value);
                             row.insert(var.clone(), value_id);
                         }
                     }
@@ -207,6 +232,7 @@ impl ExecutionEngine {
                         results.push(row);
                     }
                 }
+                drop(dict);
     
                 results
             }
@@ -258,22 +284,25 @@ impl ExecutionEngine {
             println!("[ML.PREDICT DEBUG] Input variables to check: {:?}", input_variables);
             
             // Show what values decode to
+            let dict = database.dictionary.read().unwrap();
             for (key, &id) in first_row {
-                if let Some(value) = database.dictionary.decode(id) {
+                if let Some(value) = dict.decode(id) {
                     println!("[ML.PREDICT DEBUG]   {} -> {} (parses as f64: {})", 
                         key, value, value.parse::<f64>().is_ok());
                 }
             }
+            drop(dict);
         }
         
         // Identify which variables are actually numeric by checking the first row
         let numeric_vars: Vec<String> = if let Some(first_row) = input_results.first() {
-            input_variables
+            let dict = database.dictionary.read().unwrap();
+            let vars: Vec<String> = input_variables
                 .iter()
                 .filter(|var| {
                     let var_stripped = var.strip_prefix('?').unwrap_or(var);
                     if let Some(&id) = first_row.get(var_stripped) {
-                        if let Some(value_str) = database.dictionary.decode(id) {
+                        if let Some(value_str) = dict.decode(id) {
                             value_str.parse::<f64>().is_ok()
                         } else {
                             false
@@ -283,7 +312,9 @@ impl ExecutionEngine {
                     }
                 })
                 .cloned()
-                .collect()
+                .collect();
+            drop(dict);
+            vars
         } else {
             return Vec::new();
         };
@@ -291,7 +322,8 @@ impl ExecutionEngine {
         println!("[ML.PREDICT] Numeric feature variables: {:?}", numeric_vars);
         
         // Now extract only numeric features
-        input_results
+        let dict = database.dictionary.read().unwrap();
+        let result: Vec<Vec<f64>> = input_results
             .iter()
             .map(|row| {
                 numeric_vars
@@ -300,7 +332,7 @@ impl ExecutionEngine {
                         let var_stripped = var.strip_prefix('?').unwrap_or(var);
                         
                         if let Some(&id) = row.get(var_stripped) {
-                            if let Some(value_str) = database.dictionary.decode(id) {
+                            if let Some(value_str) = dict.decode(id) {
                                 value_str.parse::<f64>().ok()
                             } else {
                                 None
@@ -311,7 +343,9 @@ impl ExecutionEngine {
                     })
                     .collect()
             })
-            .collect()
+            .collect();
+        drop(dict);
+        result
     }
 
     /// Invokes the ML handler to make predictions
@@ -386,13 +420,15 @@ impl ExecutionEngine {
     ) -> Vec<HashMap<String, u32>> {
         let output_var = output_variable.strip_prefix('?').unwrap_or(output_variable);
         
+        let mut dict = database.dictionary.write().unwrap();
         for (i, prediction) in predictions.predictions.iter().enumerate() {
             if i < input_results.len() {
                 let prediction_str = prediction.to_string();
-                let prediction_id = database.dictionary.encode(&prediction_str);
+                let prediction_id = dict.encode(&prediction_str);
                 input_results[i].insert(output_var.to_string(), prediction_id);
             }
         }
+        drop(dict);
         
         println!("[ML.PREDICT] Successfully added {} predictions", predictions.predictions.len());
         input_results

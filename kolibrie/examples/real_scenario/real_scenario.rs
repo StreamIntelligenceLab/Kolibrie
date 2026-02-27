@@ -282,13 +282,23 @@ fn main() {
     database.parse_rdf(&rdf_xml_data);
     println!("Database RDF triples: {:#?}", database.triples);
 
-    // Load data into knowledge graph
+    // FIXED: Load data into knowledge graph with proper lock handling
     let mut kg = Reasoner::new();
-    for triple in database.triples.iter() {
-        let subject = database.dictionary.decode(triple.subject);
-        let predicate = database.dictionary.decode(triple.predicate);
-        let object = database.dictionary.decode(triple.object);
-        kg.add_abox_triple(&subject.unwrap(), &predicate.unwrap(), &object.unwrap());
+    
+    // Collect triples first to avoid holding lock during iteration
+    let triples_to_add: Vec<_> = database.triples.iter().cloned().collect();
+    
+    for triple in triples_to_add {
+        // Acquire read lock, decode to owned strings, release lock
+        let dict = database.dictionary.read().unwrap();
+        let subject = dict.decode(triple.subject).map(|s| s.to_string());
+        let predicate = dict.decode(triple.predicate).map(|p| p.to_string());
+        let object = dict.decode(triple.object).map(|o| o.to_string());
+        drop(dict); // Release lock before calling add_abox_triple
+        
+        if let (Some(s), Some(p), Some(o)) = (subject, predicate, object) {
+            kg.add_abox_triple(&s, &p, &o);
+        }
     }
     println!("KnowledgeGraph ABox loaded.");
 
@@ -400,16 +410,25 @@ WHERE {
             .expect("Failed to parse combined query");
         
         if let Some(rule_def) = combined_query.rule {
-            let dynamic_rule = convert_combined_rule(rule_def, &mut database.dictionary, &combined_query.prefixes);
+            // FIXED: Acquire write lock for conversion
+            let mut dict = database.dictionary.write().unwrap();
+            let dynamic_rule = convert_combined_rule(rule_def, &mut dict, &combined_query.prefixes);
+            drop(dict); // Release lock
+            
             println!("Dynamic rule: {:#?}", dynamic_rule);
             kg.add_rule(dynamic_rule.clone());
             
+            // FIXED: Handle mapping the rule name with proper lock
             if let Some(first_conclusion) = &dynamic_rule.conclusion.first() {
                 if let Term::Constant(code) = first_conclusion.1 {
-                    if let Some(expanded) = database.dictionary.decode(code) {
+                    let dict = database.dictionary.read().unwrap();
+                    if let Some(expanded) = dict.decode(code) {
+                        let expanded = expanded.to_string();
+                        drop(dict); // Release lock before inserting
+                        
                         if let Some(idx) = expanded.rfind('#') {
                             let local = &expanded[idx + 1..];
-                            database.rule_map.insert(local.to_lowercase(), expanded.to_string());
+                            database.rule_map.insert(local.to_lowercase(), expanded.clone());
                         }
                     }
                 }
@@ -420,8 +439,20 @@ WHERE {
     // Execute inference
     let inferred_facts = kg.infer_new_facts_semi_naive();
     println!("Inferred {} new fact(s):", inferred_facts.len());
+    
+    // FIXED: Print inferred facts with proper lock handling
+    {
+        let dict = database.dictionary.read().unwrap();
+        for triple in inferred_facts.iter() {
+            let s = dict.decode(triple.subject).unwrap_or_default();
+            let p = dict.decode(triple.predicate).unwrap_or_default();
+            let o = dict.decode(triple.object).unwrap_or_default();
+            println!("{} {} {}", s, p, o);
+        }
+    } // Lock released here
+    
+    // Add inferred facts to database
     for triple in inferred_facts.iter() {
-        println!("{}", database.triple_to_string(triple, &database.dictionary));
         database.triples.insert(triple.clone());
     }
 

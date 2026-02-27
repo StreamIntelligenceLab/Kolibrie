@@ -274,6 +274,16 @@ where
     ) {
         self.call_back.replace(function);
     }
+    pub fn flush(&mut self) {
+        for (_, content) in &self.active_windows {
+            if let Some(call_back) = &mut self.call_back {
+                (call_back)(content.clone());
+            }
+            if let Some(sender) = &self.consumer {
+                let _ = sender.send(content.clone());
+            }
+        }
+    }
     pub fn stop(&mut self) {
         self.consumer.take();
     }

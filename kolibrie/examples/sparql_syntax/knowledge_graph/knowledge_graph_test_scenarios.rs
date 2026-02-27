@@ -26,22 +26,27 @@ fn test1() {
     }
 
     // Add transitivity rule: likes(X, Y) & likes(Y, Z) => likes(X, Z)
+    let likes_id = {
+        let mut dict = kg.dictionary.write().unwrap();
+        dict.encode("likes")
+    };
+    
     kg.add_rule(Rule {
         premise: vec![
             (
                 Term::Variable("x".to_string()),
-                Term::Constant(kg.dictionary.clone().encode("likes")),
+                Term::Constant(likes_id),
                 Term::Variable("y".to_string()),
             ),
             (
                 Term::Variable("y".to_string()),
-                Term::Constant(kg.dictionary.clone().encode("likes")),
+                Term::Constant(likes_id),
                 Term::Variable("z".to_string()),
             ),
         ],
         conclusion: vec![(
             Term::Variable("x".to_string()),
-            Term::Constant(kg.dictionary.clone().encode("likes")),
+            Term::Constant(likes_id),
             Term::Variable("z".to_string()),
         )],
         filters: vec![],
@@ -51,12 +56,12 @@ fn test1() {
     kg.add_rule(Rule {
         premise: vec![(
             Term::Variable("x".to_string()),
-            Term::Constant(kg.dictionary.clone().encode("likes")),
+            Term::Constant(likes_id),
             Term::Variable("y".to_string()),
         )],
         conclusion: vec![(
             Term::Variable("y".to_string()),
-            Term::Constant(kg.dictionary.clone().encode("likes")),
+            Term::Constant(likes_id),
             Term::Variable("x".to_string()),
         )],
         filters: vec![],
@@ -76,20 +81,22 @@ fn test1() {
 
     println!("person0 likes these people:");
     for triple in results {
-        let s_str = kg.dictionary.decode(triple.subject).unwrap();
-        let p_str = kg.dictionary.decode(triple.predicate).unwrap();
-        let o_str = kg.dictionary.decode(triple.object).unwrap();
+        let dict = kg.dictionary.read().unwrap();
+        let s_str = dict.decode(triple.subject).unwrap();
+        let p_str = dict.decode(triple.predicate).unwrap();
+        let o_str = dict.decode(triple.object).unwrap();
         println!("  {} {} {}", s_str, p_str, o_str);
     }
 
     // Display the newly inferred facts
     println!("Inferred facts:");
     for fact in inferred_facts {
+        let dict = kg.dictionary.read().unwrap();
         println!(
             "({:?}, {:?}, {:?})",
-            kg.dictionary.decode(fact.subject),
-            kg.dictionary.decode(fact.predicate),
-            kg.dictionary.decode(fact.object),
+            dict.decode(fact.subject),
+            dict.decode(fact.predicate),
+            dict.decode(fact.object),
         );
     }
 }
@@ -100,16 +107,24 @@ fn test2() {
     kg.add_abox_triple("myInstance", "type", "Class0");
 
     for i in 0..5 {
+        let (type_id, class_i_id, class_next_id) = {
+            let mut dict = kg.dictionary.write().unwrap();
+            let type_id = dict.encode("type");
+            let class_i_id = dict.encode(&format!("Class{}", i));
+            let class_next_id = dict.encode(&format!("Class{}", i + 1));
+            (type_id, class_i_id, class_next_id)
+        };
+        
         let premise_pattern: TriplePattern = (
             Term::Variable("x".to_string()),
-            Term::Constant(kg.dictionary.encode("type")),
-            Term::Constant(kg.dictionary.encode(&format!("Class{}", i))),
+            Term::Constant(type_id),
+            Term::Constant(class_i_id),
         );
         let conclusion_pattern: Vec<TriplePattern> = vec![
             (
                 Term::Variable("x".to_string()),
-                Term::Constant(kg.dictionary.encode("type")),
-                Term::Constant(kg.dictionary.encode(&format!("Class{}", i + 1))),
+                Term::Constant(type_id),
+                Term::Constant(class_next_id),
             ),
         ];
         let rule = Rule {
@@ -131,19 +146,21 @@ fn test2() {
 
     println!("myInstance has these types after inference:");
     for triple in &results {
-        let s_str = kg.dictionary.decode(triple.subject).unwrap();
-        let p_str = kg.dictionary.decode(triple.predicate).unwrap();
-        let o_str = kg.dictionary.decode(triple.object).unwrap();
+        let dict = kg.dictionary.read().unwrap();
+        let s_str = dict.decode(triple.subject).unwrap();
+        let p_str = dict.decode(triple.predicate).unwrap();
+        let o_str = dict.decode(triple.object).unwrap();
         println!("  {} {} {}", s_str, p_str, o_str);
     }
 
     println!("Inferred facts:");
     for fact in inferred_facts {
+        let dict = kg.dictionary.read().unwrap();
         println!(
             "({:?}, {:?}, {:?})",
-            kg.dictionary.decode(fact.subject),
-            kg.dictionary.decode(fact.predicate),
-            kg.dictionary.decode(fact.object),
+            dict.decode(fact.subject),
+            dict.decode(fact.predicate),
+            dict.decode(fact.object),
         );
     }
 }
@@ -162,22 +179,27 @@ fn transitivity_benchmark() {
         }
 
         // Only transitivity rule
+        let likes_id = {
+            let mut dict = kg.dictionary.write().unwrap();
+            dict.encode("likes")
+        };
+        
         kg.add_rule(Rule {
             premise: vec![
                 (
                     Term::Variable("x".to_string()),
-                    Term::Constant(kg.dictionary.clone().encode("likes")),
+                    Term::Constant(likes_id),
                     Term::Variable("y".to_string()),
                 ),
                 (
                     Term::Variable("y".to_string()),
-                    Term::Constant(kg.dictionary.clone().encode("likes")),
+                    Term::Constant(likes_id),
                     Term::Variable("z".to_string()),
                 ),
             ],
             conclusion: vec![(
                 Term::Variable("x".to_string()),
-                Term::Constant(kg.dictionary.clone().encode("likes")),
+                Term::Constant(likes_id),
                 Term::Variable("z".to_string()),
             )],
             filters: vec![],

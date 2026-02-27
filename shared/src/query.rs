@@ -9,6 +9,7 @@
  */
 
 use std::collections::HashMap;
+use std::time::Duration;
 
 #[derive(Debug, Clone)]
 pub enum FilterExpression<'a> {
@@ -80,6 +81,8 @@ pub struct WindowClause<'a> {
     pub window_iri: &'a str,
     pub stream_iri: &'a str,
     pub window_spec: WindowSpec<'a>,
+    /// Per-window sync policy; `None` means use the engine-level default.
+    pub policy: Option<SyncPolicy>,
 }
 
 #[derive(Clone, Debug)]
@@ -96,6 +99,28 @@ pub enum WindowType {
     Range,
     Tumbling,
     Sliding,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub enum Fallback {
+    Steal,
+    Drop,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub enum SyncPolicy {
+    /// Emit immediately using stale data from non-firing windows (τ=0, fallback=steal)
+    Steal,
+    /// Wait until all windows have fired in the current cycle (τ=∞)
+    Wait,
+    /// Wait up to `duration`; on expiry apply `fallback`
+    Timeout { duration: Duration, fallback: Fallback },
+}
+
+impl Default for SyncPolicy {
+    fn default() -> Self {
+        SyncPolicy::Wait
+    }
 }
 
 #[derive(Clone, Debug)]

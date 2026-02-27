@@ -116,16 +116,23 @@ fn main() {
 fn create_mortality_rule(hierarchy: &mut ReasoningHierarchy) -> Rule {
     let base_kg = hierarchy.levels.get_mut(&ReasoningLevel::Base).unwrap();
     
+    // Acquire lock, encode, and release
+    let mut dict = base_kg.dictionary.write().unwrap();
+    let is_a_id = dict.encode("is_a");
+    let human_id = dict.encode("human");
+    let mortal_id = dict.encode("mortal");
+    drop(dict); // Release lock
+    
     Rule {
         premise: vec![(
             Term::Variable("x".to_string()),
-            Term::Constant(base_kg.dictionary.encode("is_a")),
-            Term::Constant(base_kg.dictionary.encode("human")),
+            Term::Constant(is_a_id),
+            Term::Constant(human_id),
         )],
         conclusion: vec![(
             Term::Variable("x".to_string()),
-            Term::Constant(base_kg.dictionary.encode("is_a")),
-            Term::Constant(base_kg.dictionary.encode("mortal")),
+            Term::Constant(is_a_id),
+            Term::Constant(mortal_id),
         )],
         filters: vec![],
     }
@@ -134,22 +141,27 @@ fn create_mortality_rule(hierarchy: &mut ReasoningHierarchy) -> Rule {
 fn create_teaching_transitivity_rule(hierarchy: &mut ReasoningHierarchy) -> Rule {
     let base_kg = hierarchy.levels.get_mut(&ReasoningLevel::Base).unwrap();
     
+    let mut dict = base_kg.dictionary.write().unwrap();
+    let teaches_id = dict.encode("teaches");
+    let influences_id = dict.encode("influences");
+    drop(dict);
+    
     Rule {
         premise: vec![
             (
                 Term::Variable("x".to_string()),
-                Term::Constant(base_kg.dictionary.encode("teaches")),
+                Term::Constant(teaches_id),
                 Term::Variable("y".to_string()),
             ),
             (
                 Term::Variable("y".to_string()),
-                Term::Constant(base_kg.dictionary.encode("teaches")),
+                Term::Constant(teaches_id),
                 Term::Variable("z".to_string()),
             ),
         ],
         conclusion: vec![(
             Term::Variable("x".to_string()),
-            Term::Constant(base_kg.dictionary.encode("influences")),
+            Term::Constant(influences_id),
             Term::Variable("z".to_string()),
         )],
         filters: vec![],
@@ -159,16 +171,22 @@ fn create_teaching_transitivity_rule(hierarchy: &mut ReasoningHierarchy) -> Rule
 fn create_wisdom_rule(hierarchy: &mut ReasoningHierarchy) -> Rule {
     let base_kg = hierarchy.levels.get_mut(&ReasoningLevel::Base).unwrap();
     
+    let mut dict = base_kg.dictionary.write().unwrap();
+    let teaches_id = dict.encode("teaches");
+    let is_a_id = dict.encode("is_a");
+    let wise_id = dict.encode("wise");
+    drop(dict);
+    
     Rule {
         premise: vec![(
             Term::Variable("x".to_string()),
-            Term::Constant(base_kg.dictionary.encode("teaches")),
+            Term::Constant(teaches_id),
             Term::Variable("y".to_string()),
         )],
         conclusion: vec![(
             Term::Variable("x".to_string()),
-            Term::Constant(base_kg.dictionary.encode("is_a")),
-            Term::Constant(base_kg.dictionary.encode("wise")),
+            Term::Constant(is_a_id),
+            Term::Constant(wise_id),
         )],
         filters: vec![],
     }
@@ -177,24 +195,32 @@ fn create_wisdom_rule(hierarchy: &mut ReasoningHierarchy) -> Rule {
 fn create_soul_hypothesis_rule(hierarchy: &mut ReasoningHierarchy) -> HierarchicalRule {
     let base_kg = hierarchy.levels.get_mut(&ReasoningLevel::Base).unwrap();
     
+    let mut dict = base_kg.dictionary.write().unwrap();
+    let is_a_id = dict.encode("is_a");
+    let wise_id = dict.encode("wise");
+    let mortal_id = dict.encode("mortal");
+    let might_have_id = dict.encode("might_have");
+    let soul_id = dict.encode("soul");
+    drop(dict);
+    
     HierarchicalRule {
         rule: Rule {
             premise: vec![
                 (
                     Term::Variable("x".to_string()),
-                    Term::Constant(base_kg.dictionary.encode("is_a")),
-                    Term::Constant(base_kg.dictionary.encode("wise")),
+                    Term::Constant(is_a_id),
+                    Term::Constant(wise_id),
                 ),
                 (
                     Term::Variable("x".to_string()),
-                    Term::Constant(base_kg.dictionary.encode("is_a")),
-                    Term::Constant(base_kg.dictionary.encode("mortal")),
+                    Term::Constant(is_a_id),
+                    Term::Constant(mortal_id),
                 ),
             ],
             conclusion: vec![(
                 Term::Variable("x".to_string()),
-                Term::Constant(base_kg.dictionary.encode("might_have")),
-                Term::Constant(base_kg.dictionary.encode("soul")),
+                Term::Constant(might_have_id),
+                Term::Constant(soul_id),
             )],
             filters: vec![],
         },
@@ -207,17 +233,23 @@ fn create_soul_hypothesis_rule(hierarchy: &mut ReasoningHierarchy) -> Hierarchic
 fn create_memory_hypothesis_rule(hierarchy: &mut ReasoningHierarchy) -> HierarchicalRule {
     let base_kg = hierarchy.levels.get_mut(&ReasoningLevel::Base).unwrap();
     
+    let mut dict = base_kg.dictionary.write().unwrap();
+    let influences_id = dict.encode("influences");
+    let might_be_id = dict.encode("might_be");
+    let remembered_id = dict.encode("remembered");
+    drop(dict);
+    
     HierarchicalRule {
         rule: Rule {
             premise: vec![(
                 Term::Variable("x".to_string()),
-                Term::Constant(base_kg.dictionary.encode("influences")),
+                Term::Constant(influences_id),
                 Term::Variable("y".to_string()),
             )],
             conclusion: vec![(
                 Term::Variable("x".to_string()),
-                Term::Constant(base_kg.dictionary.encode("might_be")),
-                Term::Constant(base_kg.dictionary.encode("remembered")),
+                Term::Constant(might_be_id),
+                Term::Constant(remembered_id),
             )],
             filters: vec![],
         },
@@ -230,24 +262,33 @@ fn create_memory_hypothesis_rule(hierarchy: &mut ReasoningHierarchy) -> Hierarch
 fn create_significance_meta_rule(hierarchy: &mut ReasoningHierarchy) -> HierarchicalRule {
     let base_kg = hierarchy.levels.get_mut(&ReasoningLevel::Base).unwrap();
     
+    let mut dict = base_kg.dictionary.write().unwrap();
+    let might_have_id = dict.encode("might_have");
+    let soul_id = dict.encode("soul");
+    let might_be_id = dict.encode("might_be");
+    let remembered_id = dict.encode("remembered");
+    let is_a_id = dict.encode("is_a");
+    let significant_figure_id = dict.encode("significant_figure");
+    drop(dict);
+    
     HierarchicalRule {
         rule: Rule {
             premise: vec![
                 (
                     Term::Variable("x".to_string()),
-                    Term::Constant(base_kg.dictionary.encode("might_have")),
-                    Term::Constant(base_kg.dictionary.encode("soul")),
+                    Term::Constant(might_have_id),
+                    Term::Constant(soul_id),
                 ),
                 (
                     Term::Variable("x".to_string()),
-                    Term::Constant(base_kg.dictionary.encode("might_be")),
-                    Term::Constant(base_kg.dictionary.encode("remembered")),
+                    Term::Constant(might_be_id),
+                    Term::Constant(remembered_id),
                 ),
             ],
             conclusion: vec![(
                 Term::Variable("x".to_string()),
-                Term::Constant(base_kg.dictionary.encode("is_a")),
-                Term::Constant(base_kg.dictionary.encode("significant_figure")),
+                Term::Constant(is_a_id),
+                Term::Constant(significant_figure_id),
             )],
             filters: vec![],
         },
@@ -285,7 +326,10 @@ fn display_triple_with_level(hierarchy: &mut ReasoningHierarchy, triple: &Triple
 
 fn get_decoded_term(hierarchy: &mut ReasoningHierarchy, term_id: u32, level: ReasoningLevel) -> String {
     if let Some(kg) = hierarchy.levels.get(&level) {
-        kg.dictionary.decode(term_id).unwrap_or("unknown").to_string()
+        let dict = kg.dictionary.read().unwrap();
+        let result = dict.decode(term_id).unwrap_or("unknown").to_string();
+        drop(dict);
+        result
     } else {
         "unknown".to_string()
     }

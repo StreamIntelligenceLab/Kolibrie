@@ -1,6 +1,6 @@
 [package]
 name = "kolibrie"
-version = "0.1.0"
+version = "0.1.1"
 authors = ["Volodymyr Kadzhaia <vkadzhaia@gmail.com>", "Pieter Bonte <pieter.bonte@kuleuven.be>"]
 description = """
 A SPARQL database and RDF toolkit

@@ -78,7 +78,7 @@ struct PyRule {
     filters: Vec<PyFilterCondition>,
     
     #[pyo3(get, set)]
-    conclusion: Vec<PyTriplePattern>, // Changed from single PyTriplePattern to Vec<PyTriplePattern>
+    conclusion: Vec<PyTriplePattern>,
 }
 
 #[pymethods]
@@ -109,21 +109,27 @@ impl PyKnowledgeGraph {
 
     #[pyo3(signature = (subject=None, predicate=None, object=None))]
     fn query_abox(
-    &mut self,
-    subject: Option<&str>,
-    predicate: Option<&str>,
-    object: Option<&str>,
+        &mut self,
+        subject: Option<&str>,
+        predicate: Option<&str>,
+        object: Option<&str>,
     ) -> Vec<(String, String, String)> {
         let results = self.inner.query_abox(subject, predicate, object);
-        results
+        
+        // Acquire read lock once for all decoding operations
+        let dict = self.inner.dictionary.read().unwrap();
+        let decoded_results: Vec<(String, String, String)> = results
             .into_iter()
             .map(|triple| {
-                let s = self.inner.dictionary.decode(triple.subject).unwrap_or_default().to_string();
-                let p = self.inner.dictionary.decode(triple.predicate).unwrap_or_default().to_string();
-                let o = self.inner.dictionary.decode(triple.object).unwrap_or_default().to_string();
+                let s = dict.decode(triple.subject).unwrap_or_default().to_string();
+                let p = dict.decode(triple.predicate).unwrap_or_default().to_string();
+                let o = dict.decode(triple.object).unwrap_or_default().to_string();
                 (s, p, o)
             })
-            .collect()
+            .collect();
+        drop(dict); // Release lock
+        
+        decoded_results
     }
 
     fn add_rule(&mut self, rule: PyRule) {
@@ -142,7 +148,6 @@ impl PyKnowledgeGraph {
                 })
                 .collect(),
 
-            // Changed to collect multiple conclusion triples
             conclusion: rule.conclusion
                 .into_iter()
                 .map(|c| (convert_term(c.subject), convert_term(c.predicate), convert_term(c.object)))
@@ -154,28 +159,40 @@ impl PyKnowledgeGraph {
 
     fn infer_new_facts(&mut self) -> Vec<(String, String, String)> {
         let inferred = self.inner.infer_new_facts();
-        inferred
+        
+        // Acquire read lock once for all decoding operations
+        let dict = self.inner.dictionary.read().unwrap();
+        let decoded_results: Vec<(String, String, String)> = inferred
             .into_iter()
             .map(|triple| {
-                let s = self.inner.dictionary.decode(triple.subject).unwrap_or_default().to_string();
-                let p = self.inner.dictionary.decode(triple.predicate).unwrap_or_default().to_string();
-                let o = self.inner.dictionary.decode(triple.object).unwrap_or_default().to_string();
+                let s = dict.decode(triple.subject).unwrap_or_default().to_string();
+                let p = dict.decode(triple.predicate).unwrap_or_default().to_string();
+                let o = dict.decode(triple.object).unwrap_or_default().to_string();
                 (s, p, o)
             })
-            .collect()
+            .collect();
+        drop(dict); // Release lock
+        
+        decoded_results
     }
 
     fn infer_new_facts_semi_naive(&mut self) -> Vec<(String, String, String)> {
         let inferred = self.inner.infer_new_facts_semi_naive();
-        inferred
+        
+        // Acquire read lock once for all decoding operations
+        let dict = self.inner.dictionary.read().unwrap();
+        let decoded_results: Vec<(String, String, String)> = inferred
             .into_iter()
             .map(|triple| {
-                let s = self.inner.dictionary.decode(triple.subject).unwrap_or_default().to_string();
-                let p = self.inner.dictionary.decode(triple.predicate).unwrap_or_default().to_string();
-                let o = self.inner.dictionary.decode(triple.object).unwrap_or_default().to_string();
+                let s = dict.decode(triple.subject).unwrap_or_default().to_string();
+                let p = dict.decode(triple.predicate).unwrap_or_default().to_string();
+                let o = dict.decode(triple.object).unwrap_or_default().to_string();
                 (s, p, o)
             })
-            .collect()
+            .collect();
+        drop(dict); // Release lock
+        
+        decoded_results
     }
 
     fn backward_chaining(&self, query: PyTriplePattern) -> Vec<HashMap<String, PyTerm>> {
@@ -199,7 +216,11 @@ impl PyKnowledgeGraph {
     }
 
     fn encode_term(&mut self, term: &str) -> u32 {
-        self.inner.dictionary.encode(term)
+        // Acquire write lock for encoding
+        let mut dict = self.inner.dictionary.write().unwrap();
+        let id = dict.encode(term);
+        drop(dict); // Release lock
+        id
     }
 
     fn add_constraint(&mut self, rule: PyRule) {
@@ -218,7 +239,6 @@ impl PyKnowledgeGraph {
                 })
                 .collect(),
 
-            // Changed to collect multiple conclusion triples
             conclusion: rule.conclusion
                 .into_iter()
                 .map(|c| (convert_term(c.subject), convert_term(c.predicate), convert_term(c.object)))
@@ -255,15 +275,21 @@ impl PyKnowledgeGraph {
 
     fn infer_new_facts_semi_naive_with_repairs(&mut self) -> Vec<(String, String, String)> {
         let inferred = self.inner.infer_new_facts_semi_naive_with_repairs();
-        inferred
+        
+        // Acquire read lock once for all decoding operations
+        let dict = self.inner.dictionary.read().unwrap();
+        let decoded_results: Vec<(String, String, String)> = inferred
             .into_iter()
             .map(|triple| {
-                let s = self.inner.dictionary.decode(triple.subject).unwrap_or_default().to_string();
-                let p = self.inner.dictionary.decode(triple.predicate).unwrap_or_default().to_string();
-                let o = self.inner.dictionary.decode(triple.object).unwrap_or_default().to_string();
+                let s = dict.decode(triple.subject).unwrap_or_default().to_string();
+                let p = dict.decode(triple.predicate).unwrap_or_default().to_string();
+                let o = dict.decode(triple.object).unwrap_or_default().to_string();
                 (s, p, o)
             })
-            .collect()
+            .collect();
+        drop(dict); // Release lock
+        
+        decoded_results
     }
 }
 

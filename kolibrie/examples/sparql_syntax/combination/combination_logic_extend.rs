@@ -69,8 +69,9 @@ RULE :OverheatingAlert(?room, ?temp) :-
       println!("Rule details: {:#?}", rule);
       
       println!("Inferred {} new fact(s):", inferred_facts.len());
+      let dict = database.dictionary.read().unwrap();
       for triple in inferred_facts.iter() {
-          println!("{}", database.triple_to_string(triple, &database.dictionary));
+          println!("{}", database.triple_to_string(triple, &dict));
       }
   } else {
       println!("Failed to process rule definition: {:?}", rule_result.err());
@@ -81,7 +82,7 @@ RULE :OverheatingAlert(?room, ?temp) :-
   let select_query = r#"PREFIX ex: <http://example.org#>
 SELECT ?room ?temp
 WHERE { 
-  RULE(:OverheatingAlert, ?room, ?temp) 
+  ?room ex:overheatingAlert true . 
 }"#;
   
   // Execute the SELECT query that uses the rule
