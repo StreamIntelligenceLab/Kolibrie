@@ -445,6 +445,12 @@ fn rsp_push(body: &str, sessions: &Sessions) -> String {
     // already, so this is a no-op in the simple case.
     session.engine.process_single_thread_window_results();
 
+    // Signal end-of-firing to the SSE client so it can flush its display buffer
+    // immediately rather than waiting for the debounce timeout.
+    if let Some(tx) = session.sse_sender.lock().unwrap().as_ref() {
+        let _ = tx.send("__FIRING_END__".to_string());
+    }
+
     json_ok()
 }
 
@@ -485,8 +491,13 @@ fn rsp_events_sse(session_id: &str, mut stream: TcpStream, sessions: &Sessions) 
     println!("RSP SSE: client connected for session {}", session_id);
 
     // Block-forward events until the client disconnects or the tx is dropped.
-    for json in rx {
-        let msg = format!("data: {}\n\n", json);
+    for received in rx {
+        let msg = if received == "__FIRING_END__" {
+            // Named event so the browser can flush its firing buffer immediately.
+            "event: firing\ndata: {}\n\n".to_string()
+        } else {
+            format!("data: {}\n\n", received)
+        };
         if stream.write_all(msg.as_bytes()).is_err() {
             break;
         }

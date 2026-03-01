@@ -10,7 +10,6 @@
 
 use std::collections::HashSet;
 use std::hash::Hash;
-use std::mem;
 
 #[derive(Clone, Debug)]
 pub enum StreamOperator{
@@ -24,45 +23,38 @@ impl Default  for StreamOperator{
 }
 pub struct Relation2StreamOperator<O> {
     stream_operator: StreamOperator,
-    old_result: HashSet<O>,
-    new_result: HashSet<O>,
-    ts: usize
+    last_result: HashSet<O>,
 }
 
 impl <O> Relation2StreamOperator <O> where O: Clone + Hash + Eq {
-    pub fn new(stream_operator: StreamOperator, start_time: usize) -> Relation2StreamOperator<O> {
-        match stream_operator {
-            StreamOperator::RSTREAM => Relation2StreamOperator {stream_operator, old_result: HashSet::with_capacity(0), new_result: HashSet::with_capacity(0),ts: start_time},
-            _ => Relation2StreamOperator {stream_operator, old_result: HashSet::new(), new_result: HashSet::new(),ts: start_time}
+    pub fn new(stream_operator: StreamOperator, _start_time: usize) -> Relation2StreamOperator<O> {
+        Relation2StreamOperator {
+            stream_operator,
+            last_result: HashSet::new(),
         }
-
     }
-    pub fn eval(&mut self, new_response: Vec<O>, ts: usize) -> Vec<O>{
+
+    pub fn eval(&mut self, new_response: Vec<O>, _ts: usize) -> Vec<O> {
         match self.stream_operator {
             StreamOperator::RSTREAM => new_response,
             StreamOperator::ISTREAM => {
-                let to_compare = new_response.clone();
-                self.prepare_compare(new_response, ts);
-                to_compare.into_iter().filter(|b| !self.old_result.contains(b)).collect()
-            },
+                let new_set: HashSet<O> = new_response.iter().cloned().collect();
+                let emitted: Vec<O> = new_response.into_iter()
+                    .filter(|b| !self.last_result.contains(b))
+                    .collect();
+                self.last_result = new_set;
+                emitted
+            }
             StreamOperator::DSTREAM => {
-                self.prepare_compare(new_response, ts);
-                let to_compare = self.old_result.clone();
-                to_compare.into_iter().filter(|b| !self.new_result.contains(b)).collect()
+                let new_set: HashSet<O> = new_response.into_iter().collect();
+                let emitted: Vec<O> = self.last_result.iter()
+                    .filter(|b| !new_set.contains(*b))
+                    .cloned()
+                    .collect();
+                self.last_result = new_set;
+                emitted
             }
         }
-    }
-
-    fn prepare_compare(&mut self, new_repsonse: Vec<O>, ts: usize) {
-        if  self.ts < ts {
-            mem::swap(&mut self.new_result, &mut self.old_result);
-            self.new_result.clear();
-            self.ts = ts;
-        }
-        new_repsonse.into_iter().for_each(|v| {
-            self.new_result.insert(v);
-            ()
-        });
     }
 }
 #[cfg(test)]

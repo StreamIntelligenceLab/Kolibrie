@@ -6,6 +6,185 @@
 * License, v. 2.0. If a copy of the MPL was not distributed with this file,
 * you can obtain one at https://mozilla.org/MPL/2.0/.
 */
+// -----------------------------------------------------------------------
+// ISTREAM / DSTREAM semantics tests
+// -----------------------------------------------------------------------
+
+/// ISTREAM: sliding window (RANGE=3 STEP=1) across 3 firings.
+///
+/// 3-firing sequence:
+///   - ts=1: add subjectA → no fire (opens first window).
+///   - ts=2: add subjectB → fires [-1,1] with {A};   ISTREAM: old=∅   → emit A.
+///   - ts=3: add subjectC → fires [0,2]  with {A,B}; ISTREAM: old={A}  → emit B only.
+///   - ts=4: add subjectD → fires [1,3]  with {A,B,C}; ISTREAM: old={A,B} → emit C only.
+///
+/// Total consumer calls: 3 → [A], [B], [C].
+/// No stop() — flushing all active windows would corrupt R2S state.
+#[test]
+fn rsp_ql_istream_semantics() {
+    let result_container = Arc::new(Mutex::new(Vec::<Vec<(String, String)>>::new()));
+    let rc = Arc::clone(&result_container);
+    let result_consumer = ResultConsumer {
+        function: Arc::new(move |r: Vec<(String, String)>| {
+            rc.lock().unwrap().push(r);
+        }),
+    };
+    let r2r = Box::new(SimpleR2R::with_execution_mode(QueryExecutionMode::Volcano));
+
+    let query = r#"
+        REGISTER ISTREAM <http://out/stream> AS
+        SELECT *
+        FROM NAMED WINDOW :w ON ?stream [RANGE 3 STEP 1]
+        WHERE { WINDOW :w { ?s a <http://test/IType> . } }
+    "#;
+
+    let mut engine: RSPEngine<Triple, Vec<(String, String)>> = RSPBuilder::new()
+        .add_rsp_ql_query(query)
+        .add_consumer(result_consumer)
+        .add_r2r(r2r)
+        .set_operation_mode(OperationMode::SingleThread)
+        .build()
+        .expect("Failed to build ISTREAM engine");
+
+    // Prime dictionary so query and data share term IDs.
+    engine.parse_data("<http://test/s0> a <http://test/IType> .");
+
+    // ts=1: A → no fire (opens first window).
+    for t in engine.parse_data("<http://test/subjectA> a <http://test/IType> .") {
+        engine.add(t, 1);
+    }
+
+    // ts=2: B → fires [-1,1] with {A}; ISTREAM: old=∅ → emit A.
+    for t in engine.parse_data("<http://test/subjectB> a <http://test/IType> .") {
+        engine.add(t, 2);
+    }
+
+    // ts=3: C → fires [0,2] with {A,B}; ISTREAM: old={A} → emit B only.
+    for t in engine.parse_data("<http://test/subjectC> a <http://test/IType> .") {
+        engine.add(t, 3);
+    }
+
+    // ts=4: D → fires [1,3] with {A,B,C}; ISTREAM: old={A,B} → emit C only.
+    for t in engine.parse_data("<http://test/subjectD> a <http://test/IType> .") {
+        engine.add(t, 4);
+    }
+
+    let results = result_container.lock().unwrap();
+    assert_eq!(
+        results.len(),
+        3,
+        "ISTREAM: 3 firings → 3 consumer calls. Got: {:?}",
+        *results
+    );
+    // Firing 1: [-1,1] → {A}, new since ∅ → emit A.
+    assert_eq!(results[0].len(),1);
+    assert!(
+        results[0].iter().any(|(k, v)| k == "s" && v.contains("subjectA")),
+        "ISTREAM firing 1 must emit subjectA, got: {:?}",
+        results[0]
+    );
+    // Firing 2: [0,2] → {A,B}, new since {A} → emit B only.
+    assert_eq!(results[1].len(),1);
+    assert!(
+        results[1].iter().any(|(k, v)| k == "s" && v.contains("subjectB")),
+        "ISTREAM firing 2 must emit subjectB, got: {:?}",
+        results[1]
+    );
+    // Firing 3: [1,3] → {A,B,C}, new since {A,B} → emit C only.
+    assert_eq!(results[2].len(),1);
+    assert!(
+        results[2].iter().any(|(k, v)| k == "s" && v.contains("subjectC")),
+        "ISTREAM firing 3 must emit subjectC, got: {:?}",
+        results[2]
+    );
+
+}
+
+/// DSTREAM: sliding window (RANGE=3 STEP=1) — 5 window firings, 1 DSTREAM emission.
+///
+/// Window firing sequence (OnWindowClose fires when ts > window.close):
+///   - ts=1: add A → no fire yet.
+///   - ts=2: add B → window (0,1) fires with {A};       DSTREAM: old=∅     → last={A},       no emission.
+///   - ts=3: add C → window (0,2) fires with {A,B};     DSTREAM: old={A}   → last={A,B},     no emission.
+///   - ts=4: add D → window (0,3) fires with {A,B,C};   DSTREAM: old={A,B} → last={A,B,C},   no emission.
+///   - ts=5: add E → window (1,4) fires with {A,B,C,D}; DSTREAM: old={A,B,C} → last={A,B,C,D}, no emission.
+///   - ts=6: add F → window (2,5) fires with {B,C,D,E}; DSTREAM: old={A,B,C,D} → deleted={A} → emit A.
+///
+/// Total consumer calls: 1 → [A].
+/// No stop() — flushing all active windows would corrupt R2S state.
+#[test]
+fn rsp_ql_dstream_semantics() {
+    let result_container = Arc::new(Mutex::new(Vec::<Vec<(String, String)>>::new()));
+    let rc = Arc::clone(&result_container);
+    let result_consumer = ResultConsumer {
+        function: Arc::new(move |r: Vec<(String, String)>| {
+            rc.lock().unwrap().push(r);
+        }),
+    };
+    let r2r = Box::new(SimpleR2R::with_execution_mode(QueryExecutionMode::Volcano));
+
+    let query = r#"
+        REGISTER DSTREAM <http://out/stream> AS
+        SELECT *
+        FROM NAMED WINDOW :w ON ?stream [RANGE 3 STEP 1]
+        WHERE { WINDOW :w { ?s a <http://test/DType> . } }
+    "#;
+
+    let mut engine: RSPEngine<Triple, Vec<(String, String)>> = RSPBuilder::new()
+        .add_rsp_ql_query(query)
+        .add_consumer(result_consumer)
+        .add_r2r(r2r)
+        .set_operation_mode(OperationMode::SingleThread)
+        .build()
+        .expect("Failed to build DSTREAM engine");
+
+    // Prime dictionary.
+    engine.parse_data("<http://test/s0> a <http://test/DType> .");
+
+    // ts=1: A into windows; no fire.
+    for t in engine.parse_data("<http://test/subjectA> a <http://test/DType> .") {
+        engine.add(t, 1);
+    }
+
+    // ts=2: B → window (0,1) fires with {A}; DSTREAM: old=∅ → no emission.
+    for t in engine.parse_data("<http://test/subjectB> a <http://test/DType> .") {
+        engine.add(t, 2);
+    }
+
+    // ts=3: C → window (0,2) fires with {A,B}; DSTREAM: old={A} → no emission.
+    for t in engine.parse_data("<http://test/subjectC> a <http://test/DType> .") {
+        engine.add(t, 3);
+    }
+
+    // ts=4: D → window (0,3) fires with {A,B,C}; DSTREAM: old={A,B} → no emission.
+    for t in engine.parse_data("<http://test/subjectD> a <http://test/DType> .") {
+        engine.add(t, 4);
+    }
+
+    // ts=5: E → window (1,4) fires with {A,B,C,D}; DSTREAM: old={A,B,C} → no emission.
+    for t in engine.parse_data("<http://test/subjectE> a <http://test/DType> .") {
+        engine.add(t, 5);
+    }
+
+    // ts=6: F → window (2,5) fires with {B,C,D,E}; DSTREAM: old={A,B,C,D} → deleted={A} → emit A.
+    for t in engine.parse_data("<http://test/subjectF> a <http://test/DType> .") {
+        engine.add(t, 6);
+    }
+
+    let results = result_container.lock().unwrap();
+    assert_eq!(
+        results.len(),
+        1,
+        "DSTREAM: 5 window firings → 1 consumer call (window (2,5) deletes subjectA). Got: {:?}",
+        *results
+    );
+    // The one result must bind ?s to subjectA (deleted from window (1,4) → (2,5)).
+    assert!(
+        results[0].iter().any(|(k, v)| k == "s" && v.contains("subjectA")),
+        "DSTREAM result must bind ?s to subjectA (deleted), got: {:?}",
+        results[0]
+    );
+}
 
 use kolibrie::rsp_engine::{
     OperationMode, QueryExecutionMode, RSPBuilder, RSPEngine, ResultConsumer, SimpleR2R,
@@ -743,6 +922,110 @@ fn test_static_data_not_visible_in_window_query() {
     );
 }
 
+/// ISTREAM: sliding window (RANGE=3 STEP=1) across 3 firings.
+///
+/// The first event never triggers a firing (same behaviour as other sliding-window
+/// tests).  4 events are needed to produce 3 firings:
+///
+///   ts=1: subjectA added  → no fire (opens first window)
+///   ts=2: subjectB added  → fires [−1,1] → content {A}   → ISTREAM: old=∅   → emit A
+///   ts=3: subjectC added  → fires [0,2]  → content {A,B} → ISTREAM: old={A}  → emit B only
+///   ts=4: subjectA (again)→ fires [1,3]  → content {A,B,C} → ISTREAM: old={A,B} → emit C only
+#[test]
+fn rsp_ql_istream_range3_step1() {
+    let result_container = Arc::new(Mutex::new(Vec::<Vec<(String, String)>>::new()));
+    let rc = Arc::clone(&result_container);
+    let result_consumer = ResultConsumer {
+        function: Arc::new(move |r: Vec<(String, String)>| {
+            rc.lock().unwrap().push(r);
+        }),
+    };
+    let r2r = Box::new(SimpleR2R::with_execution_mode(QueryExecutionMode::Volcano));
+
+    let query = r#"
+        REGISTER ISTREAM <http://out/stream> AS
+        SELECT *
+        FROM NAMED WINDOW :w ON ?stream [RANGE 3 STEP 1]
+        WHERE { WINDOW :w { ?s a <http://test/RType> . } }
+    "#;
+
+    let mut engine: RSPEngine<Triple, Vec<(String, String)>> = RSPBuilder::new()
+        .add_rsp_ql_query(query)
+        .add_consumer(result_consumer)
+        .add_r2r(r2r)
+        .set_operation_mode(OperationMode::SingleThread)
+        .build()
+        .expect("Failed to build ISTREAM RANGE3 engine");
+
+    // Prime dictionary so query and data share term IDs.
+    engine.parse_data("<http://test/s0> a <http://test/RType> .");
+
+    // ts=1: A → no fire (first event opens the window but nothing closes yet).
+    for t in engine.parse_data("<http://test/subjectA> a <http://test/RType> .") {
+        engine.add(t, 1);
+    }
+
+    // ts=2: B → fires window [−1,1] → content {A} → ISTREAM: old=∅ → emit A.
+    for t in engine.parse_data("<http://test/subjectB> a <http://test/RType> .") {
+        engine.add(t, 2);
+    }
+
+    // ts=3: C → fires window [0,2] → content {A,B} → ISTREAM: old={A} → emit B only.
+    for t in engine.parse_data("<http://test/subjectC> a <http://test/RType> .") {
+        engine.add(t, 3);
+    }
+
+    // ts=4: A again (trigger) → fires window [1,3] → content {A,B,C}
+    //       → ISTREAM: old={A,B} → emit C only.
+    for t in engine.parse_data("<http://test/subjectA> a <http://test/RType> .") {
+        engine.add(t, 4);
+    }
+
+    let results = result_container.lock().unwrap();
+    assert_eq!(
+        results.len(),
+        3,
+        "ISTREAM RANGE3/STEP1: expected 3 firings → 3 consumer calls. Got: {:?}",
+        *results
+    );
+
+    // Firing 1 (triggered at ts=2): window {A}, ISTREAM emits A.
+    assert!(
+        results[0].iter().any(|(k, v)| k == "s" && v.contains("subjectA")),
+        "Firing 1 must emit subjectA, got: {:?}",
+        results[0]
+    );
+
+    // Firing 2 (triggered at ts=3): window {A,B}, ISTREAM emits B only.
+    assert!(
+        results[1].iter().any(|(k, v)| k == "s" && v.contains("subjectB")),
+        "Firing 2 must emit subjectB, got: {:?}",
+        results[1]
+    );
+    assert!(
+        !results[1].iter().any(|(k, v)| k == "s" && v.contains("subjectA")),
+        "Firing 2 must NOT re-emit subjectA (already seen), got: {:?}",
+        results[1]
+    );
+
+    // Firing 3 (triggered at ts=4): window {A,B,C}, ISTREAM emits C only.
+    assert!(
+        results[2].iter().any(|(k, v)| k == "s" && v.contains("subjectC")),
+        "Firing 3 must emit subjectC, got: {:?}",
+        results[2]
+    );
+    assert!(
+        !results[2].iter().any(|(k, v)| k == "s" && v.contains("subjectA")),
+        "Firing 3 must NOT re-emit subjectA, got: {:?}",
+        results[2]
+    );
+    assert!(
+        !results[2].iter().any(|(k, v)| k == "s" && v.contains("subjectB")),
+        "Firing 3 must NOT re-emit subjectB, got: {:?}",
+        results[2]
+    );
+}
+
 #[test]
 fn test_window_evicts_old_data() {
     // Non-overlapping windows (RANGE 10 STEP 10) with one subject per window.
@@ -799,5 +1082,116 @@ fn test_window_evicts_old_data() {
         "Each window should return exactly 1 result row (got {}); \
          stale data from previous firings is leaking into the store",
         all.len()
+    );
+}
+
+/// Regression test: ISTREAM with same subject+predicate and changing object values.
+///
+/// Each firing introduces one new (reading1, temp=N) triple.  Because the subject
+/// and predicate are identical across triples, only the object differs.  A HashMap
+/// non-determinism bug caused the Vec<(String,String)> serialisation of a row to
+/// vary between firings, making ISTREAM either re-emit stale rows or drop new ones.
+///
+/// Window RANGE=3 STEP=1.  Event sequence:
+///   ts=1: triple (reading1, hasTemp, "1") — no fire
+///   ts=2: (reading1, hasTemp, "2") — fires window with {"1"}   → ISTREAM: old=∅   → emit "1"
+///   ts=3: (reading1, hasTemp, "3") — fires window with {"1","2"} → ISTREAM: old={"1"} → emit "2"
+///   ts=4: (reading1, hasTemp, "4") — fires window with {"1","2","3"} → ISTREAM: old={"1","2"} → emit "3"
+///
+/// Expected: 3 consumer calls, each with exactly one row.
+#[test]
+fn rsp_ql_istream_same_sp_diff_object() {
+    let result_container = Arc::new(Mutex::new(Vec::<Vec<(String, String)>>::new()));
+    let rc = Arc::clone(&result_container);
+    let result_consumer = ResultConsumer {
+        function: Arc::new(move |r: Vec<(String, String)>| {
+            rc.lock().unwrap().push(r);
+        }),
+    };
+    let r2r = Box::new(SimpleR2R::with_execution_mode(QueryExecutionMode::Volcano));
+
+    let query = r#"
+        REGISTER ISTREAM <http://out/stream> AS
+        SELECT *
+        FROM NAMED WINDOW :w ON ?stream [RANGE 3 STEP 1]
+        WHERE { WINDOW :w { ?reading <http://test/hasTemp> ?temp . } }
+    "#;
+
+    let mut engine: RSPEngine<Triple, Vec<(String, String)>> = RSPBuilder::new()
+        .add_rsp_ql_query(query)
+        .add_consumer(result_consumer)
+        .add_r2r(r2r)
+        .set_operation_mode(OperationMode::SingleThread)
+        .build()
+        .expect("Failed to build ISTREAM same-sp engine");
+
+    // Prime dictionary so query and data share term IDs.
+    engine.parse_data("<http://test/reading1> <http://test/hasTemp> \"0\" .");
+
+    // ts=1: temp=1 — no fire.
+    for t in engine.parse_data("<http://test/reading1> <http://test/hasTemp> \"1\" .") {
+        engine.add(t, 1);
+    }
+
+    // ts=2: temp=2 — fires window with {temp=1}; ISTREAM: old=∅ → emit temp=1.
+    for t in engine.parse_data("<http://test/reading1> <http://test/hasTemp> \"2\" .") {
+        engine.add(t, 2);
+    }
+
+    // ts=3: temp=3 — fires window with {temp=1,temp=2}; ISTREAM: old={temp=1} → emit temp=2.
+    for t in engine.parse_data("<http://test/reading1> <http://test/hasTemp> \"3\" .") {
+        engine.add(t, 3);
+    }
+
+    // ts=4: temp=4 — fires window with {temp=1,temp=2,temp=3}; ISTREAM: old={temp=1,temp=2} → emit temp=3.
+    for t in engine.parse_data("<http://test/reading1> <http://test/hasTemp> \"4\" .") {
+        engine.add(t, 4);
+    }
+
+    let results = result_container.lock().unwrap();
+    assert_eq!(
+        results.len(),
+        3,
+        "ISTREAM same-sp: expected 3 consumer calls, got: {:?}",
+        *results
+    );
+
+    // Each firing must emit exactly one row.
+    for (i, row) in results.iter().enumerate() {
+        assert_eq!(row.len(), 2, "Firing {}: row should have 2 bindings, got: {:?}", i + 1, row);
+    }
+
+    // Firing 1 → temp=1.
+    assert!(
+        results[0].iter().any(|(k, v)| k == "temp" && v.contains('1')),
+        "Firing 1 must emit temp=1, got: {:?}",
+        results[0]
+    );
+    // Firing 2 → temp=2 (not temp=1 again).
+    assert!(
+        results[1].iter().any(|(k, v)| k == "temp" && v.contains('2')),
+        "Firing 2 must emit temp=2, got: {:?}",
+        results[1]
+    );
+    assert!(
+        !results[1].iter().any(|(k, v)| k == "temp" && v == "\"1\""),
+        "Firing 2 must NOT re-emit temp=1, got: {:?}",
+        results[1]
+    );
+    // Firing 3 → temp=3 (not temp=1 or temp=2 again).
+    assert!(
+        results[2].iter().any(|(k, v)| k == "temp" && v.contains('3')),
+        "Firing 3 must emit temp=3, got: {:?}",
+        results[2]
+    );
+    assert!(
+        !results[2].iter().any(|(k, v)| k == "temp" && v == "\"1\""),
+        "Firing 3 must NOT re-emit temp=1, got: {:?}",
+        results[2]
+    );
+    assert!(
+        !results[2].iter().any(|(k, v)| k == "temp" && v == "\"2\""),
+        "Firing 3 must NOT re-emit temp=2, got: {:?}",
+        results[2]
     );
 }

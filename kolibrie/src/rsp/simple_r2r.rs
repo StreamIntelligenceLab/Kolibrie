@@ -81,7 +81,11 @@ impl R2ROperator<Triple, Vec<PhysicalOperator>, Vec<(String, String)>> for Simpl
         // The engine returns Vec<HashMap<String,String>> (bindings per row).
         ExecutionEngine::execute(op, &mut self.item)
             .into_iter()
-            .map(|hashmap| hashmap.into_iter().collect())
+            .map(|hashmap| {
+                let mut v: Vec<(String, String)> = hashmap.into_iter().collect();
+                v.sort_unstable_by(|a, b| a.0.cmp(&b.0));
+                v
+            })
             .collect()
     }
 

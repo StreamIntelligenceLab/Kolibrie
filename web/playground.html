@@ -2619,6 +2619,13 @@ WHERE {
           statusEl.style.color = '#f44336';
         };
 
+        // Flush the firing buffer immediately when the server signals a window
+        // boundary, rather than waiting for the 150 ms debounce timeout.
+        rspEventSource.addEventListener('firing', () => {
+          if (rspFiringTimer !== null) { clearTimeout(rspFiringTimer); rspFiringTimer = null; }
+          flushRspFiring();
+        });
+
         statusEl.textContent = `Session ${session_id} — live`;
         statusEl.style.color = '#4caf50';
 
