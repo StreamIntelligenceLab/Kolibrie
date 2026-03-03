@@ -14,9 +14,20 @@ use crate::terms::Term::*;
 use crate::triple::Triple;
 
 pub use hexastore::HexastoreIndex;
+pub use ops_single::OPSSingleIndex;
+pub use osp_single::OSPSingleIndex;
+pub use pos_single::POSSingleIndex;
 pub use pso_single::PSOSingleIndex;
+pub use sop_single::SOPSingleIndex;
+pub use spo_single::SPOSingleIndex;
 pub mod hexastore;
+pub mod ops_single;
+pub mod osp_single;
+pub mod pos_single;
 pub mod pso_single;
+pub mod sop_single;
+pub mod spo_single;
+
 
 /// Describes which access patterns an index can serve efficiently.
 #[derive(Debug, Clone)]
