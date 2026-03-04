@@ -287,3 +287,7 @@ path = "examples/real_scenario/mqtt_example.rs"
 [[example]]
 name = "mqtt_real_scenario"
 path = "examples/real_scenario/mqtt_real_scenario.rs"
+
+[[example]]
+name = "fraud_detection_system"
+path = "examples/real_scenario/fraud_detection_system.rs"

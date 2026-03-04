@@ -75,7 +75,7 @@ where
                 self.last_change = content.clone();
                 comp
             }
-            ReportStrategy::OnWindowClose => window.close < ts,
+            ReportStrategy::OnWindowClose => window.close <= ts,
             ReportStrategy::Periodic(period) => ts % period == 0,
         })
     }
@@ -183,7 +183,7 @@ where
                     "Processing Window [{:?}, {:?}) for element ({:?},{:?})",
                     window.open, window.close, event_item, ts
                 );
-                if window.open <= event_time && event_time <= window.close {
+                if window.open <= event_time && event_time < window.close {
                     debug!(
                         "Adding element [{:?}] to Window [{:?},{:?})",
                         event_item, window.open, window.close
@@ -379,7 +379,7 @@ mod tests {
 
         window.stop();
         thread::sleep(Duration::from_secs(1));
-        assert_eq!(5, consumer.len());
+        assert_eq!(4, consumer.len());
     }
     #[test]
     fn test_window_with_call_back() {
@@ -415,6 +415,6 @@ mod tests {
         }
 
         window.stop();
-        assert_eq!(5, data_clone.lock().unwrap().len());
+        assert_eq!(4, data_clone.lock().unwrap().len());
     }
 }
