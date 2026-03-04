@@ -27,7 +27,6 @@ use shared::rule::FilterCondition;
 use shared::rule::Rule;
 use shared::terms::*;
 use shared::query::*;
-use shared::index_manager::TripleIndex;
 // Add RSP imports
 use crate::rsp::s2r::{CSPARQLWindow, Report, ReportStrategy, Tick, WindowTriple, ContentContainer};
 use crate::rsp::r2s::{Relation2StreamOperator, StreamOperator};

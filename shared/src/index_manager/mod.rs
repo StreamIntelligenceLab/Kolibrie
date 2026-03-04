@@ -21,6 +21,7 @@ pub use pso_single::PSOSingleIndex;
 pub use sop_single::SOPSingleIndex;
 pub use spo_single::SPOSingleIndex;
 pub use single_table::SingleTableIndex;
+pub use dynamic_hexastore::DynamicHexastoreIndex;
 pub mod hexastore;
 pub mod ops_single;
 pub mod osp_single;
@@ -29,7 +30,49 @@ pub mod pso_single;
 pub mod sop_single;
 pub mod spo_single;
 pub mod single_table;
+pub mod dynamic_hexastore;
 
+#[derive(Debug, Clone)]
+pub enum IndexConfig {
+    /// Full hexastore — all 6 permutations, no questions asked.
+    Hexastore,
+
+    /// A single permutation index.
+    SPO,
+    POS,
+    OSP,
+    PSO,
+    OPS,
+    SOP,
+
+    /// Flat single-table index.
+    SingleTable,
+
+    /// Dynamic hexastore: builds only the permutations the workload
+    /// actually needs and re-evaluates periodically.
+    ///
+    /// `eval_interval` — number of inserts between re-evaluation.
+    /// `queries`       — raw SPARQL strings; SparqlDatabase will parse
+    ///                    them through the real parser + dictionary and
+    ///                    pass the resolved `Vec<TriplePattern>` to the
+    ///                    index constructor.
+    DynamicHexastore {
+        eval_interval: u64,
+        queries: Vec<String>,
+    },
+
+    // ── Future index types go here ──
+    // YourNewIndex {
+    //     some_setting: usize,
+    //     queries: Vec<String>,   // if it needs resolved patterns
+    // },
+}
+
+impl Default for IndexConfig {
+    fn default() -> Self {
+        IndexConfig::Hexastore
+    }
+}
 
 /// Describes which access patterns an index can serve efficiently.
 #[derive(Debug, Clone)]

@@ -30,41 +30,47 @@ use std::io::{BufRead, BufReader};
 use std::time::Instant;
 use shared::index_manager::*;
 
-fn make_index_from_env() -> (String, Box<dyn TripleIndex>) {
-  let index_type = std::env::var("INDEX_TYPE")
-    .unwrap_or_else(|_| "hexastore".to_string())
-    .to_lowercase();
+fn make_config_from_env() -> (String, IndexConfig) {
+    let index_type = std::env::var("INDEX_TYPE")
+        .unwrap_or_else(|_| "hexastore".to_string())
+        .to_lowercase();
 
-  let index: Box<dyn TripleIndex> = match index_type.as_str() {
-    "hexastore"         => Box::new(HexastoreIndex::new()),
-    ""                  => Box::new(HexastoreIndex::new()),
-    "spo"               => Box::new(SPOSingleIndex::new()),
-    "pos"               => Box::new(POSSingleIndex::new()),
-    "osp"               => Box::new(OSPSingleIndex::new()),
-    "pso"               => Box::new(PSOSingleIndex::new()),
-    "ops"               => Box::new(OPSSingleIndex::new()),
-    "sop"               => Box::new(SOPSingleIndex::new()),
-    "table"             => Box::new(SingleTableIndex::new()),
-    other => {
-      eprintln!("WARNING: Unknown INDEX_TYPE '{}', falling back to hexastore.", other);
-      Box::new(HexastoreIndex::new())
-    }
-  };
+    let config = match index_type.as_str() {
+        "hexastore" | ""  => IndexConfig::Hexastore,
+        "spo"             => IndexConfig::SPO,
+        "pos"             => IndexConfig::POS,
+        "osp"             => IndexConfig::OSP,
+        "pso"             => IndexConfig::PSO,
+        "ops"             => IndexConfig::OPS,
+        "sop"             => IndexConfig::SOP,
+        "table"           => IndexConfig::SingleTable,
+        "dynamic"         => IndexConfig::DynamicHexastore {
+            eval_interval: 1000,
+            queries: vec![],   // or read from another env var
+        },
+        other => {
+            eprintln!(
+                "WARNING: Unknown INDEX_TYPE '{}', falling back to hexastore.",
+                other
+            );
+            IndexConfig::Hexastore
+        }
+    };
 
-  (index_type, index)
+    (index_type, config)
 }
 
 fn parse_large_ntriples_file(
   file_path: &str,
 ) -> Result<SparqlDatabase, Box<dyn std::error::Error>> {
-  let (index_name, index) = make_index_from_env();
+  let (index_name, config) = make_config_from_env();
   println!("INDEX_TYPE = {}", index_name);
   println!("Starting to parse N-Triples file: {}", file_path);
   let start_time = Instant::now();
 
   //let mut db = SparqlDatabase::new();
   //let mut db = SparqlDatabase::with_index(Box::new(SPOSingleIndex::new()));
-  let mut db = SparqlDatabase::with_index(index);
+  let mut db = SparqlDatabase::with_config(config);
 
   // Much smaller buffer and more aggressive memory management
   let file = File::open(file_path)?;

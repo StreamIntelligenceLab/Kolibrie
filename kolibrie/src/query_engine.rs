@@ -8,7 +8,6 @@
  * you can obtain one at https://mozilla.org/MPL/2.0/.
  */
 
-use shared::index_manager::TripleIndex;
 use crate::storage_manager::{StorageManager, StorageBackend, StorageStats};
 use crate::storage_trait::{StorageTrait, StorageMode, QueryAnalyzer};
 use crate::disk_storage::lsm_tree::LSMConfig;
@@ -113,7 +112,7 @@ impl QueryEngine {
                 
                 // Extract the encoded triples
                 let triples = self.storage_manager.get_memory_database()
-                    .index_manager
+                    .index_manager.as_ref().expect("Cannot query index before building it")
                     .query(None, None, None);
                 
                 // Insert into LSM-Tree
@@ -122,7 +121,7 @@ impl QueryEngine {
                 // Clear memory database
                 self.storage_manager.get_memory_database_mut().triples.clear();
                 self.storage_manager.get_memory_database_mut().index_manager = 
-                    Box::new(shared::index_manager::HexastoreIndex::new());
+                    Some(Box::new(shared::index_manager::HexastoreIndex::new()));
                 
                 // Build statistics
                 self.storage_manager.get_memory_database_mut().get_or_build_stats();

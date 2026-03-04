@@ -1006,7 +1006,7 @@ impl ExecutionEngine {
         match pattern {
             // FULLY BOUND (3 constants) - just check if triple exists
             (Term::Constant(s), Term::Constant(p), Term::Constant(o)) => {
-                if !database.index_manager.query(Some(*s), Some(*p), Some(*o)).is_empty() {
+                if !database.index().query(Some(*s), Some(*p), Some(*o)).is_empty() {
                     return vec![HashMap::new()];
                 } else {
                     return Vec::new();
@@ -1053,7 +1053,7 @@ impl ExecutionEngine {
         let object_var = object_var.strip_prefix('?').unwrap_or(&object_var).to_string();
 
         // Try efficient two-key scan first
-        if let Some(objects) = database.index_manager.scan_sp(subject, predicate) {
+        if let Some(objects) = database.index().scan_sp(subject, predicate) {
             objects.iter().map(|&object| {
                 let mut result = HashMap::with_capacity(1);
                 result.insert(object_var.clone(), object);
@@ -1061,7 +1061,7 @@ impl ExecutionEngine {
             }).collect()
         } else {
             // Fallback: query(Some(s), Some(p), None)
-            database.index_manager.query(Some(subject), Some(predicate), None)
+            database.index().query(Some(subject), Some(predicate), None)
                 .into_iter()
                 .map(|triple| {
                     let mut result = HashMap::with_capacity(1);
@@ -1081,7 +1081,7 @@ impl ExecutionEngine {
     ) -> Vec<HashMap<String, u32>> {
         let predicate_var = predicate_var.strip_prefix('?').unwrap_or(&predicate_var).to_string();
 
-        if let Some(predicates) = database.index_manager.scan_so(subject, object) {
+        if let Some(predicates) = database.index().scan_so(subject, object) {
             predicates.iter().map(|&predicate| {
                 let mut result = HashMap::with_capacity(1);
                 result.insert(predicate_var.clone(), predicate);
@@ -1089,7 +1089,7 @@ impl ExecutionEngine {
             }).collect()
         } else {
             // Fallback: query(Some(s), None, Some(o))
-            database.index_manager.query(Some(subject), None, Some(object))
+            database.index().query(Some(subject), None, Some(object))
                 .into_iter()
                 .map(|triple| {
                     let mut result = HashMap::with_capacity(1);
@@ -1109,7 +1109,7 @@ impl ExecutionEngine {
     ) -> Vec<HashMap<String, u32>> {
         let subject_var = subject_var.strip_prefix('?').unwrap_or(&subject_var).to_string();
 
-        if let Some(subjects) = database.index_manager.scan_po(predicate, object) {
+        if let Some(subjects) = database.index().scan_po(predicate, object) {
             subjects.iter().map(|&subject| {
                 let mut result = HashMap::with_capacity(1);
                 result.insert(subject_var.clone(), subject);
@@ -1117,7 +1117,7 @@ impl ExecutionEngine {
             }).collect()
         } else {
             // Fallback: query(None, Some(p), Some(o))
-            database.index_manager.query(None, Some(predicate), Some(object))
+            database.index().query(None, Some(predicate), Some(object))
                 .into_iter()
                 .map(|triple| {
                     let mut result = HashMap::with_capacity(1);
@@ -1138,7 +1138,7 @@ impl ExecutionEngine {
         let predicate_var = predicate_var.strip_prefix('?').unwrap_or(&predicate_var).to_string();
         let object_var = object_var.strip_prefix('?').unwrap_or(&object_var).to_string();
 
-        database.index_manager.query(Some(subject), None, None)
+        database.index().query(Some(subject), None, None)
             .into_iter()
             .map(|triple| {
                 let mut result = HashMap::with_capacity(2);
@@ -1159,7 +1159,7 @@ impl ExecutionEngine {
         let subject_var = subject_var.strip_prefix('?').unwrap_or(&subject_var).to_string();
         let object_var = object_var.strip_prefix('?').unwrap_or(&object_var).to_string();
 
-        database.index_manager.query(None, Some(predicate), None)
+        database.index().query(None, Some(predicate), None)
             .into_iter()
             .map(|triple| {
                 let mut result = HashMap::with_capacity(2);
@@ -1180,7 +1180,7 @@ impl ExecutionEngine {
         let subject_var = subject_var.strip_prefix('?').unwrap_or(&subject_var).to_string();
         let predicate_var = predicate_var.strip_prefix('?').unwrap_or(&predicate_var).to_string();
 
-        database.index_manager.query(None, None, Some(object))
+        database.index().query(None, None, Some(object))
             .into_iter()
             .map(|triple| {
                 let mut result = HashMap::with_capacity(2);
