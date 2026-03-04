@@ -14,6 +14,7 @@ use crate::rsp::s2r::{CSPARQLWindow, ContentContainer, Report, ReportStrategy, T
 #[cfg(not(test))]
 use log::{debug, error}; // Use log crate when building application
 use shared::query::{Fallback, SyncPolicy};
+use shared::rule::Rule;
 use std::collections::HashMap;
 use std::fmt::Debug;
 use std::hash::Hash;
@@ -25,6 +26,7 @@ use std::time::Instant;
 #[cfg(test)]
 use std::{println as debug, println as error};
 
+use crate::parser::process_rule_definition;
 use crate::sparql_database::SparqlDatabase;
 use crate::streamertail_optimizer::{ExecutionEngine, LogicalOperator, PhysicalOperator};
 
@@ -100,6 +102,9 @@ macro_rules! create_window_processor {
                 prev_window_triples.push(t.clone());
                 store.add(t);
             }
+
+            // Run forward-chaining inference to materialise derived facts
+            store.materialize();
 
             let results = store.execute_query(&$query);
             debug!("Got # results {} for window {}", results.len(), $window_iri);
@@ -202,6 +207,8 @@ where
         query_execution_mode: QueryExecutionMode,
         rsp_query_plan: RSPQueryPlan,
         sync_policy: SyncPolicy,
+        reasoning_rules: Vec<Rule>,
+        sparql_rules: Vec<String>,
     ) -> RSPEngine<I, O> {
         let mut store = r2r;
 
@@ -244,6 +251,33 @@ where
         match store.load_rules(rules) {
             Ok(_) => debug!("Rules loaded successfully"),
             Err(e) => error!("Failed to load rules: {:?}", e),
+        }
+
+        if !reasoning_rules.is_empty() {
+            if let Some(simple_r2r) = store.as_any_mut().downcast_mut::<SimpleR2R>() {
+                simple_r2r.add_reasoning_rules(reasoning_rules);
+            }
+        }
+
+        if !sparql_rules.is_empty() {
+            if let Some(dict) = store
+                .as_any_mut()
+                .downcast_mut::<SimpleR2R>()
+                .map(|s| Arc::clone(&s.item.dictionary))
+            {
+                for rule_str in &sparql_rules {
+                    let mut temp_db = SparqlDatabase::new();
+                    temp_db.dictionary = Arc::clone(&dict);
+                    match process_rule_definition(rule_str, &mut temp_db) {
+                        Ok((rule, _)) => {
+                            if let Some(simple_r2r) = store.as_any_mut().downcast_mut::<SimpleR2R>() {
+                                simple_r2r.rules.push(rule);
+                            }
+                        }
+                        Err(e) => error!("Failed to parse SPARQL rule: {:?}", e),
+                    }
+                }
+            }
         }
 
         // Create windows based on parsed configuration

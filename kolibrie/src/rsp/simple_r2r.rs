@@ -11,7 +11,11 @@ use crate::rsp::r2r::{AsAnyMut, R2ROperator};
 use crate::rsp_engine::QueryExecutionMode;
 use crate::sparql_database::SparqlDatabase;
 use crate::streamertail_optimizer::{ExecutionEngine, PhysicalOperator};
+use datalog::parser_n3_logic::parse_n3_rule;
+use datalog::reasoning::Reasoner;
+use shared::rule::Rule;
 use shared::triple::Triple;
+use std::sync::Arc;
 
 #[cfg(not(test))]
 use log::{debug, error};
@@ -21,6 +25,8 @@ use std::{println as debug, println as error};
 pub struct SimpleR2R {
     pub item: SparqlDatabase,
     pub execution_mode: QueryExecutionMode,
+    pub rules: Vec<Rule>,
+    derived_triples: Vec<Triple>,
 }
 
 impl SimpleR2R {
@@ -28,6 +34,8 @@ impl SimpleR2R {
         SimpleR2R {
             item: SparqlDatabase::new(),
             execution_mode: QueryExecutionMode::Standard,
+            rules: Vec::new(),
+            derived_triples: Vec::new(),
         }
     }
 
@@ -35,7 +43,13 @@ impl SimpleR2R {
         SimpleR2R {
             item: SparqlDatabase::new(),
             execution_mode,
+            rules: Vec::new(),
+            derived_triples: Vec::new(),
         }
+    }
+
+    pub fn add_reasoning_rules(&mut self, rules: Vec<Rule>) {
+        self.rules.extend(rules);
     }
 }
 
@@ -56,9 +70,26 @@ impl R2ROperator<Triple, Vec<PhysicalOperator>, Vec<(String, String)>> for Simpl
         Err("something went wrong".to_string())
     }
 
-    fn load_rules(&mut self, _data: &str) -> Result<(), &'static str> {
-        error!("Unsupported operation load rules");
-        Err("something went wrong")
+    fn load_rules(&mut self, data: &str) -> Result<(), &'static str> {
+        if data.trim().is_empty() {
+            return Ok(());
+        }
+        let mut temp_reasoner = Reasoner::new();
+        temp_reasoner.dictionary = Arc::clone(&self.item.dictionary);
+        let mut remaining = data;
+        loop {
+            match parse_n3_rule(remaining, &mut temp_reasoner) {
+                Ok((rest, (_, rule))) => {
+                    self.rules.push(rule);
+                    remaining = rest;
+                    if remaining.trim().is_empty() {
+                        break;
+                    }
+                }
+                Err(_) => return Err("Failed to parse N3 rules"),
+            }
+        }
+        Ok(())
     }
 
     fn add(&mut self, data: Triple) {
@@ -70,8 +101,30 @@ impl R2ROperator<Triple, Vec<PhysicalOperator>, Vec<(String, String)>> for Simpl
     }
 
     fn materialize(&mut self) -> Vec<Triple> {
-        error!("Unsupported operation materialize");
-        Vec::new()
+        // Evict derived triples from the previous cycle
+        for t in &self.derived_triples {
+            self.item.delete_triple(t);
+        }
+        self.derived_triples.clear();
+
+        if self.rules.is_empty() {
+            return Vec::new();
+        }
+
+        let mut reasoner = Reasoner::new();
+        reasoner.dictionary = Arc::clone(&self.item.dictionary);
+        for triple in self.item.triples.iter() {
+            reasoner.index_manager.insert(triple);
+        }
+        reasoner.rules = self.rules.clone();
+
+        let derived = reasoner.infer_new_facts_semi_naive();
+        debug!("materialize: {} facts derived by reasoning", derived.len());
+        for t in &derived {
+            self.item.add_triple(t.clone());
+            self.derived_triples.push(t.clone());
+        }
+        derived
     }
 
     fn execute_query(&mut self, op: &PhysicalOperator) -> Vec<Vec<(String, String)>> {

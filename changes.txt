@@ -2,6 +2,7 @@
 1. Add support multiple window + static data for RSP engine
 2. Modify webui to support stream ingestion for RSP
 3. Refactoring of materialisation & knowledge graph code
+4. Adds Reasoning support to RSP
 
 0.1.1
 1. Modify whole project by making Cargo workspace

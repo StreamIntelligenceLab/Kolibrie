@@ -118,6 +118,10 @@ struct RspRegisterRequest {
     static_rdf: Option<String>,
     #[serde(default = "default_format")]
     static_format: String,
+    #[serde(default)]
+    n3logic: Option<String>,
+    #[serde(default)]
+    sparql_rules: Option<Vec<String>>,
 }
 
 #[derive(Debug, Serialize)]
@@ -343,12 +347,17 @@ fn rsp_register(body: &str, sessions: &Sessions) -> String {
 
     let r2r = Box::new(SimpleR2R::with_execution_mode(QueryExecutionMode::Volcano));
 
+    let n3logic = req.n3logic.as_deref().unwrap_or("");
+    let sparql_rules = req.sparql_rules.clone().unwrap_or_default();
+
     let mut engine: kolibrie::rsp_engine::RSPEngine<Triple, Vec<(String, String)>> =
         match RSPBuilder::new()
             .add_rsp_ql_query(&req.query)
             .set_operation_mode(OperationMode::SingleThread)
             .add_consumer(result_consumer)
             .add_r2r(r2r)
+            .add_rules(n3logic)
+            .add_sparql_rules(sparql_rules)
             .build()
         {
             Ok(e) => e,

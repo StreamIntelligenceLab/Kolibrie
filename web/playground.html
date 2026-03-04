@@ -2567,12 +2567,22 @@ WHERE {
 
       const staticRdf = rdfEditor ? rdfEditor.getValue().trim() : '';
       const staticFormat = selectedFormat;
+      const n3logic = n3logicEditor ? n3logicEditor.getValue().trim() : '';
+      const allRules = ruleEditors
+        ? ruleEditors.flatMap(e => parseMultipleRules(e.getValue())).filter(r => r.trim())
+        : [];
 
       try {
         const res = await fetch('/rsp/register', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ query, static_rdf: staticRdf || undefined, static_format: staticFormat }),
+          body: JSON.stringify({
+            query,
+            static_rdf: staticRdf || undefined,
+            static_format: staticFormat,
+            n3logic: n3logic || undefined,
+            sparql_rules: allRules.length > 0 ? allRules : undefined,
+          }),
         });
 
         if (!res.ok) {
