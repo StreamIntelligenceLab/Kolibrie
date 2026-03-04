@@ -1195,3 +1195,70 @@ fn rsp_ql_istream_same_sp_diff_object() {
         results[2]
     );
 }
+
+/// Reasoning test: forward-chaining derives `?s a <http://test/HasValue>` from
+/// `?s <http://test/hasValue> ?v`, enabling a window query that matches on the
+/// inferred type — even though no explicit type triple exists in the stream.
+#[test]
+fn rsp_ql_reasoning_derives_types() {
+    let result_container = Arc::new(Mutex::new(Vec::<Vec<(String, String)>>::new()));
+    let rc = Arc::clone(&result_container);
+    let result_consumer = ResultConsumer {
+        function: Arc::new(move |r: Vec<(String, String)>| {
+            rc.lock().unwrap().push(r);
+        }),
+    };
+    let r2r = Box::new(SimpleR2R::with_execution_mode(QueryExecutionMode::Volcano));
+
+    // N3 rule: { ?s test:hasValue ?v } => { ?s rdf:type test:HasValue }
+    // Passed as a string so load_rules() parses it using the shared dictionary
+    // (same IDs as the query plan).
+    let rule_str = concat!(
+        "@prefix test: <http://test/>.\n",
+        "@prefix rdf: <http://www.w3.org/1999/02/22-rdf-syntax-ns#>.\n",
+        "{ ?s test:hasValue ?v . } => { ?s rdf:type test:HasValue . } .\n",
+    );
+
+    let query = r#"
+        REGISTER RSTREAM <http://out/stream> AS
+        SELECT *
+        FROM NAMED WINDOW :w ON ?stream [RANGE 10 STEP 1]
+        WHERE { WINDOW :w { ?s a <http://test/HasValue> . } }
+    "#;
+
+    let mut engine: RSPEngine<Triple, Vec<(String, String)>> = RSPBuilder::new()
+        .add_rsp_ql_query(query)
+        .add_rules(rule_str)
+        .add_consumer(result_consumer)
+        .add_r2r(r2r)
+        .set_operation_mode(OperationMode::SingleThread)
+        .build()
+        .expect("Failed to build reasoning engine");
+
+    // Feed stream triple: sensor1 hasValue "42" (no explicit type triple)
+    for t in engine.parse_data("<http://test/sensor1> <http://test/hasValue> \"42\" .") {
+        engine.add(t, 1);
+    }
+    // Trigger a second event to fire the window
+    for t in engine.parse_data("<http://test/sensor2> <http://test/hasValue> \"99\" .") {
+        engine.add(t, 2);
+    }
+
+    engine.stop();
+
+    let results = result_container.lock().unwrap();
+    assert!(
+        !results.is_empty(),
+        "Reasoning: expected at least one consumer call (inferred type should match query), got none"
+    );
+
+    // At least one row should bind ?s to sensor1
+    let has_sensor1 = results.iter().any(|row| {
+        row.iter().any(|(k, v)| k == "s" && v.contains("sensor1"))
+    });
+    assert!(
+        has_sensor1,
+        "Reasoning: expected sensor1 to appear via inferred type. Got: {:?}",
+        *results
+    );
+}

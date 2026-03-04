@@ -3,6 +3,7 @@
 2. Modify webui to support stream ingestion for RSP
 3. Refactoring of materialisation & knowledge graph code
 4. Fixes DStream and IStream R2S operators
+5. Adds Reasoning support to RSP (single window materialization)
 
 0.1.1
 1. Modify whole project by making Cargo workspace

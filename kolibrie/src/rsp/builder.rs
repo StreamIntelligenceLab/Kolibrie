@@ -19,6 +19,7 @@ use crate::streamertail_optimizer::{
     build_logical_plan, LogicalOperator, PhysicalOperator, Streamertail,
 };
 use shared::query::{StreamType, SyncPolicy, WindowBlock, WindowClause};
+use shared::rule::Rule;
 use shared::terms::Term;
 use std::fmt::Debug;
 use std::hash::Hash;
@@ -47,6 +48,8 @@ pub struct RSPBuilder<'a, I, O> {
     syntax: String,
     /// Engine-level default policy; overridden by per-window `WITH POLICY` clause.
     sync_policy: SyncPolicy,
+    reasoning_rules: Vec<Rule>,
+    sparql_rules: Vec<String>,
 }
 
 impl<'a, I, O> RSPBuilder<'a, I, O>
@@ -65,6 +68,8 @@ where
             query_execution_mode: QueryExecutionMode::Volcano,
             syntax: "ntriples".to_string(),
             sync_policy: SyncPolicy::default(),
+            reasoning_rules: Vec::new(),
+            sparql_rules: Vec::new(),
         }
     }
 
@@ -72,6 +77,19 @@ where
     /// A per-window `WITH POLICY` clause in the query string takes precedence.
     pub fn set_sync_policy(mut self, policy: SyncPolicy) -> RSPBuilder<'a, I, O> {
         self.sync_policy = policy;
+        self
+    }
+
+    /// Supply pre-parsed reasoning rules (forward-chaining inference applied per window firing).
+    pub fn add_reasoning_rules(mut self, rules: Vec<Rule>) -> RSPBuilder<'a, I, O> {
+        self.reasoning_rules = rules;
+        self
+    }
+
+    /// Supply SPARQL RULE strings (`RULE :Name :- CONSTRUCT{} WHERE{}`) to be parsed after
+    /// dictionary merge in `RSPEngine::new()` so term IDs are consistent.
+    pub fn add_sparql_rules(mut self, rules: Vec<String>) -> RSPBuilder<'a, I, O> {
+        self.sparql_rules = rules;
         self
     }
 
@@ -315,6 +333,8 @@ where
             self.query_execution_mode,
             rsp_query_plan,
             sync_policy,
+            self.reasoning_rules,
+            self.sparql_rules,
         ))
     }
 }
