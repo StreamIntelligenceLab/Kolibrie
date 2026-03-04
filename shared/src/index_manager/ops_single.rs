@@ -37,7 +37,7 @@ impl TripleIndex for OPSSingleIndex {
     let Triple { subject: s, predicate: p, object: o } = *triple;
     if let Some(pred_map) = self.ops.get(&o) {
       if let Some(subjects) = pred_map.get(&p) {
-        if objects.contains(&s) {
+        if subjects.contains(&s) {
           return false; // triple already stored
         }
       }
@@ -86,7 +86,7 @@ impl TripleIndex for OPSSingleIndex {
     let num_threads = rayon::current_num_threads();
     let chunk_size = (triples.len() / num_threads).max(10_000);
 
-    let partial_indexes: Vec<PSOSingleIndex> = triples
+    let partial_indexes: Vec<OPSSingleIndex> = triples
       .par_chunks(chunk_size)
       .map(|chunk| {
         let mut local_index = OPSSingleIndex::new();
@@ -160,7 +160,7 @@ impl TripleIndex for OPSSingleIndex {
       }
       // (S, -, -)
       (Some(ss), None, None) => {
-        for (&obj, pred_map) in self.ops {
+        for (&obj, pred_map) in &self.ops {
           for (&pred, subjects) in pred_map {
             if subjects.contains(&ss) {
               results.push( Triple { subject: ss, predicate: pred, object: obj });
@@ -170,7 +170,7 @@ impl TripleIndex for OPSSingleIndex {
       }
       // (-, P, -)
       (None, Some(pp), None) => {
-        for (&obj, pred_map) in self.ops {
+        for (&obj, pred_map) in &self.ops {
           if let Some(subjects) = pred_map.get(&pp) {
             for &subj in subjects {
               results.push(Triple { subject: subj, predicate: pp, object: obj });
@@ -190,7 +190,7 @@ impl TripleIndex for OPSSingleIndex {
       }
       // (-, -, -) => all
       (None, None, None) => {
-        for (&obj, pred_map) in self.ops {
+        for (&obj, pred_map) in &self.ops {
           for (&pred, subjects) in pred_map {
             for &subj in subjects {
               results.push(Triple { subject: subj, predicate: pred, object: obj });
@@ -256,7 +256,7 @@ impl TripleIndex for OPSSingleIndex {
   fn scan_op(&self, o: u32, p: u32) -> Option<&HashSet<u32>> {
     self.ops
       .get(&o)
-      .and_then(|pred_map| pred_map.get(&p));
+      .and_then(|pred_map| pred_map.get(&p))
   }
 
   fn optimize(&mut self) {

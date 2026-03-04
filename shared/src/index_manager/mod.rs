@@ -20,6 +20,7 @@ pub use pos_single::POSSingleIndex;
 pub use pso_single::PSOSingleIndex;
 pub use sop_single::SOPSingleIndex;
 pub use spo_single::SPOSingleIndex;
+pub use single_table::SingleTableIndex;
 pub mod hexastore;
 pub mod ops_single;
 pub mod osp_single;
@@ -27,6 +28,7 @@ pub mod pos_single;
 pub mod pso_single;
 pub mod sop_single;
 pub mod spo_single;
+pub mod single_table;
 
 
 /// Describes which access patterns an index can serve efficiently.

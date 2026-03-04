@@ -1,111 +1,140 @@
 /*
- * Copyright © 2025 Volodymyr Kadzhaia
- * Copyright © 2025 Pieter Bonte
- * KU Leuven — Stream Intelligence Lab, Belgium
- *
- * This Source Code Form is subject to the terms of the Mozilla Public
- * License, v. 2.0. If a copy of the MPL was not distributed with this file,
- * you can obtain one at https://mozilla.org/MPL/2.0/.
- *
- *
- *
- * NOTE 1: We are using the benchmark dataset from:
- *  Waterloo SPARQL Diversity Test Suite (WatDiv) v0.6
- *  Source: https://dsg.uwaterloo.ca/watdiv/
- *
- * NOTE 2: Before running with the 10M-triple dataset, ensure you have:
- *   1) Downloaded `watdiv.10M.nt` into a `benchmark_dataset` directory
- *      at the project root.
- *   2) Created the `benchmark_dataset` directory next to `kolibrie/`.
- *      (e.g., `mkdir benchmark_dataset && mv watdiv.10M.nt benchmark_dataset/`)
- *
- * NOTE 3: The watdiv.10M.nt file is approximately 1.5 GB in size.
- *
- */
+* Copyright © 2025 Volodymyr Kadzhaia
+* Copyright © 2025 Pieter Bonte
+* KU Leuven — Stream Intelligence Lab, Belgium
+*
+* This Source Code Form is subject to the terms of the Mozilla Public
+* License, v. 2.0. If a copy of the MPL was not distributed with this file,
+* you can obtain one at https://mozilla.org/MPL/2.0/.
+*
+*
+*
+* NOTE 1: We are using the benchmark dataset from:
+*  Waterloo SPARQL Diversity Test Suite (WatDiv) v0.6
+*  Source: https://dsg.uwaterloo.ca/watdiv/
+*
+* NOTE 2: Before running with the 10M-triple dataset, ensure you have:
+*   1) Downloaded `watdiv.10M.nt` into a `benchmark_dataset` directory
+*      at the project root.
+*   2) Created the `benchmark_dataset` directory next to `kolibrie/`.
+*      (e.g., `mkdir benchmark_dataset && mv watdiv.10M.nt benchmark_dataset/`)
+*
+* NOTE 3: The watdiv.10M.nt file is approximately 1.5 GB in size.
+*
+*/
 
 use kolibrie::execute_query::*;
 use kolibrie::sparql_database::*;
 use std::fs::File;
 use std::io::{BufRead, BufReader};
 use std::time::Instant;
+use shared::index_manager::*;
+
+fn make_index_from_env() -> (String, Box<dyn TripleIndex>) {
+  let index_type = std::env::var("INDEX_TYPE")
+    .unwrap_or_else(|_| "hexastore".to_string())
+    .to_lowercase();
+
+  let index: Box<dyn TripleIndex> = match index_type.as_str() {
+    "hexastore"         => Box::new(HexastoreIndex::new()),
+    ""                  => Box::new(HexastoreIndex::new()),
+    "spo"               => Box::new(SPOSingleIndex::new()),
+    "pos"               => Box::new(POSSingleIndex::new()),
+    "osp"               => Box::new(OSPSingleIndex::new()),
+    "pso"               => Box::new(PSOSingleIndex::new()),
+    "ops"               => Box::new(OPSSingleIndex::new()),
+    "sop"               => Box::new(SOPSingleIndex::new()),
+    "table"             => Box::new(SingleTableIndex::new()),
+    other => {
+      eprintln!("WARNING: Unknown INDEX_TYPE '{}', falling back to hexastore.", other);
+      Box::new(HexastoreIndex::new())
+    }
+  };
+
+  (index_type, index)
+}
 
 fn parse_large_ntriples_file(
-    file_path: &str,
+  file_path: &str,
 ) -> Result<SparqlDatabase, Box<dyn std::error::Error>> {
-    println!("Starting to parse N-Triples file: {}", file_path);
-    let start_time = Instant::now();
+  let (index_name, index) = make_index_from_env();
+  println!("INDEX_TYPE = {}", index_name);
+  println!("Starting to parse N-Triples file: {}", file_path);
+  let start_time = Instant::now();
 
-    let mut db = SparqlDatabase::new();
+  //let mut db = SparqlDatabase::new();
+  //let mut db = SparqlDatabase::with_index(Box::new(SPOSingleIndex::new()));
+  let mut db = SparqlDatabase::with_index(index);
 
-    // Much smaller buffer and more aggressive memory management
-    let file = File::open(file_path)?;
-    let reader = BufReader::with_capacity(64 * 1024, file); // Reduced buffer size
+  // Much smaller buffer and more aggressive memory management
+  let file = File::open(file_path)?;
+  let reader = BufReader::with_capacity(64 * 1024, file); // Reduced buffer size
 
-    let mut line_count = 0;
-    let mut batch_lines = Vec::new();
-    const BATCH_SIZE: usize = 10_000; // Much smaller batch size
+  let mut line_count = 0;
+  let mut batch_lines = Vec::new();
+  const BATCH_SIZE: usize = 10_000; // Much smaller batch size
 
-    for line_result in reader.lines() {
-        let line = line_result?;
+  for line_result in reader.lines() {
+    let line = line_result?;
 
-        if line.trim().is_empty() || line.starts_with('#') {
-            continue;
-        }
-
-        batch_lines.push(line);
-        line_count += 1;
-
-        if batch_lines.len() >= BATCH_SIZE {
-            // Process batch immediately
-            let batch_data = batch_lines.join("\n");
-            db.parse_ntriples_and_add(&batch_data);
-
-            // Aggressive cleanup
-            batch_lines.clear();
-            batch_lines.shrink_to_fit();
-
-            // Progress info every 100k triples
-            if line_count % 100_000 == 0 {
-                println!("Processed {} triples", line_count);
-                std::hint::black_box(());
-
-                // Optional: small delay to let the system breathe
-                std::thread::sleep(std::time::Duration::from_millis(10));
-            }
-        }
+    if line.trim().is_empty() || line.starts_with('#') {
+      continue;
     }
 
-    // Process remaining batch
-    if !batch_lines.is_empty() {
-        let batch_data = batch_lines.join("\n");
-        db.parse_ntriples_and_add(&batch_data);
+    batch_lines.push(line);
+    line_count += 1;
+
+    if batch_lines.len() >= BATCH_SIZE {
+      // Process batch immediately
+      let batch_data = batch_lines.join("\n");
+      db.parse_ntriples_and_add(&batch_data);
+
+      // Aggressive cleanup
+      batch_lines.clear();
+      batch_lines.shrink_to_fit();
+
+      // Progress info every 100k triples
+      if line_count % 100_000 == 0 {
+        println!("Processed {} triples", line_count);
+        std::hint::black_box(());
+
+        // Optional: small delay to let the system breathe
+        std::thread::sleep(std::time::Duration::from_millis(10));
+      }
     }
-    db.get_or_build_stats();
+  }
 
-    println!(
-        "Finished parsing {} triples in {:.2} seconds",
-        line_count,
-        start_time.elapsed().as_secs_f64()
-    );
+  // Process remaining batch
+  if !batch_lines.is_empty() {
+    let batch_data = batch_lines.join("\n");
+    db.parse_ntriples_and_add(&batch_data);
+  }
+  db.get_or_build_stats();
 
-    // Build indexes after parsing - this is where the magic happens
-    println!("Building indexes...");
-    let index_start = Instant::now();
-    db.build_all_indexes();
-    println!("Indexes built in {:.2} seconds", index_start.elapsed().as_secs_f64());
+  println!(
+    "Finished parsing {} triples in {:.2} seconds",
+    line_count,
+    start_time.elapsed().as_secs_f64()
+  );
 
-    Ok(db)
+  // Build indexes after parsing - this is where the magic happens
+  println!("Building indexes...");
+  let index_start = Instant::now();
+  db.build_all_indexes();
+  println!("Indexes built in {:.2} seconds", index_start.elapsed().as_secs_f64());
+
+  Ok(db)
 }
 
 fn run_all_queries(db: &mut SparqlDatabase) {
-    const ITERATIONS: usize = 20;
+  const ITERATIONS: usize = 3;
 
-    // (name, query)
-    let queries: &[(&str, &str)] = &[
-        // C1
-        (
-            "C1",
-            r#"PREFIX wsdbm: <http://db.uwaterloo.ca/~galuc/wsdbm/>
+  // (name, query)
+  let queries: &[(&str, &str)] = &[
+    // C1
+    (
+      "C1",
+      r#"PREFIX wsdbm: <http://db.uwaterloo.ca/~galuc/wsdbm/>
             PREFIX sorg: <http://schema.org/>
             PREFIX dc:   <http://purl.org/dc/terms/>
             PREFIX foaf: <http://xmlns.com/foaf/>
@@ -128,11 +157,11 @@ fn run_all_queries(db: &mut SparqlDatabase) {
             ?v7	sorg:language	?v8 .
 }
 "#,
-        ),
-        // C2
-        (
-            "C2",
-            r#"PREFIX wsdbm: <http://db.uwaterloo.ca/~galuc/wsdbm/>
+    ),
+    // C2
+    (
+      "C2",
+      r#"PREFIX wsdbm: <http://db.uwaterloo.ca/~galuc/wsdbm/>
             PREFIX sorg: <http://schema.org/>
             PREFIX dc:   <http://purl.org/dc/terms/>
             PREFIX foaf: <http://xmlns.com/foaf/>
@@ -156,11 +185,11 @@ fn run_all_queries(db: &mut SparqlDatabase) {
             ?v8	rev:totalVotes	?v9 .
 }
 "#,
-        ),
-        // C3
-        (
-            "C3",
-            r#"PREFIX wsdbm: <http://db.uwaterloo.ca/~galuc/wsdbm/>
+    ),
+    // C3
+    (
+      "C3",
+      r#"PREFIX wsdbm: <http://db.uwaterloo.ca/~galuc/wsdbm/>
             PREFIX sorg: <http://schema.org/>
             PREFIX dc:   <http://purl.org/dc/terms/>
             PREFIX foaf: <http://xmlns.com/foaf/>
@@ -181,11 +210,11 @@ fn run_all_queries(db: &mut SparqlDatabase) {
             ?v0	foaf:givenName	?v6 .
 }
 "#,
-        ),
-        // F1
-        (
-            "F1",
-            r#"PREFIX wsdbm: <http://db.uwaterloo.ca/~galuc/wsdbm/>
+    ),
+    // F1
+    (
+      "F1",
+      r#"PREFIX wsdbm: <http://db.uwaterloo.ca/~galuc/wsdbm/>
             PREFIX sorg: <http://schema.org/>
             PREFIX dc:   <http://purl.org/dc/terms/>
             PREFIX foaf: <http://xmlns.com/foaf/>
@@ -205,11 +234,11 @@ fn run_all_queries(db: &mut SparqlDatabase) {
             ?v3	rdf:type	wsdbm:ProductCategory2 .
 }
 "#,
-        ),
-        // F2
-        (
-            "F2",
-            r#"PREFIX wsdbm: <http://db.uwaterloo.ca/~galuc/wsdbm/>
+    ),
+    // F2
+    (
+      "F2",
+      r#"PREFIX wsdbm: <http://db.uwaterloo.ca/~galuc/wsdbm/>
             PREFIX sorg: <http://schema.org/>
             PREFIX dc:   <http://purl.org/dc/terms/>
             PREFIX foaf: <http://xmlns.com/foaf/>
@@ -231,11 +260,11 @@ fn run_all_queries(db: &mut SparqlDatabase) {
             ?v0	wsdbm:hasGenre	<http://db.uwaterloo.ca/~galuc/wsdbm/SubGenre1> .
 }
 "#,
-        ),
-        // F3
-        (
-            "F3",
-            r#"PREFIX wsdbm: <http://db.uwaterloo.ca/~galuc/wsdbm/>
+    ),
+    // F3
+    (
+      "F3",
+      r#"PREFIX wsdbm: <http://db.uwaterloo.ca/~galuc/wsdbm/>
             PREFIX sorg: <http://schema.org/>
             PREFIX dc:   <http://purl.org/dc/terms/>
             PREFIX foaf: <http://xmlns.com/foaf/>
@@ -255,11 +284,11 @@ fn run_all_queries(db: &mut SparqlDatabase) {
             ?v5	wsdbm:purchaseFor	?v0 .
 }
 "#,
-        ),
-        // F4
-        (
-            "F4",
-            r#"PREFIX wsdbm: <http://db.uwaterloo.ca/~galuc/wsdbm/>
+    ),
+    // F4
+    (
+      "F4",
+      r#"PREFIX wsdbm: <http://db.uwaterloo.ca/~galuc/wsdbm/>
             PREFIX sorg: <http://schema.org/>
             PREFIX dc:   <http://purl.org/dc/terms/>
             PREFIX foaf: <http://xmlns.com/foaf/>
@@ -282,11 +311,11 @@ fn run_all_queries(db: &mut SparqlDatabase) {
             ?v7	wsdbm:likes	?v0 .
 }
 "#,
-        ),
-        // F5
-        (
-            "F5",
-            r#"PREFIX wsdbm: <http://db.uwaterloo.ca/~galuc/wsdbm/>
+    ),
+    // F5
+    (
+      "F5",
+      r#"PREFIX wsdbm: <http://db.uwaterloo.ca/~galuc/wsdbm/>
             PREFIX sorg: <http://schema.org/>
             PREFIX dc:   <http://purl.org/dc/terms/>
             PREFIX foaf: <http://xmlns.com/foaf/>
@@ -306,11 +335,11 @@ fn run_all_queries(db: &mut SparqlDatabase) {
             ?v1	rdf:type	?v6 .
 }
 "#,
-        ),
-        // L1
-        (
-            "L1",
-            r#"PREFIX wsdbm: <http://db.uwaterloo.ca/~galuc/wsdbm/>
+    ),
+    // L1
+    (
+      "L1",
+      r#"PREFIX wsdbm: <http://db.uwaterloo.ca/~galuc/wsdbm/>
             PREFIX sorg: <http://schema.org/>
             PREFIX dc:   <http://purl.org/dc/terms/>
             PREFIX foaf: <http://xmlns.com/foaf/>
@@ -327,11 +356,11 @@ fn run_all_queries(db: &mut SparqlDatabase) {
             ?v0 wsdbm:likes ?v2 .
 }
 "#,
-        ),
-        // L2
-        (
-            "L2",
-            r#"PREFIX wsdbm: <http://db.uwaterloo.ca/~galuc/wsdbm/>
+    ),
+    // L2
+    (
+      "L2",
+      r#"PREFIX wsdbm: <http://db.uwaterloo.ca/~galuc/wsdbm/>
             PREFIX sorg: <http://schema.org/>
             PREFIX dc:   <http://purl.org/dc/terms/>
             PREFIX foaf: <http://xmlns.com/foaf/>
@@ -348,11 +377,11 @@ fn run_all_queries(db: &mut SparqlDatabase) {
             ?v2 sorg:nationality ?v1 .
 }
 "#,
-        ),
-        // L3
-        (
-            "L3",
-            r#"PREFIX wsdbm: <http://db.uwaterloo.ca/~galuc/wsdbm/>
+    ),
+    // L3
+    (
+      "L3",
+      r#"PREFIX wsdbm: <http://db.uwaterloo.ca/~galuc/wsdbm/>
             PREFIX sorg: <http://schema.org/>
             PREFIX dc:   <http://purl.org/dc/terms/>
             PREFIX foaf: <http://xmlns.com/foaf/>
@@ -368,11 +397,11 @@ fn run_all_queries(db: &mut SparqlDatabase) {
             ?v0	wsdbm:subscribes	<http://db.uwaterloo.ca/~galuc/wsdbm/Website546> .
 }
 "#,
-        ),
-        // L4
-        (
-            "L4",
-            r#"PREFIX wsdbm: <http://db.uwaterloo.ca/~galuc/wsdbm/>
+    ),
+    // L4
+    (
+      "L4",
+      r#"PREFIX wsdbm: <http://db.uwaterloo.ca/~galuc/wsdbm/>
             PREFIX sorg: <http://schema.org/>
             PREFIX dc:   <http://purl.org/dc/terms/>
             PREFIX foaf: <http://xmlns.com/foaf/>
@@ -388,11 +417,11 @@ fn run_all_queries(db: &mut SparqlDatabase) {
             ?v0 <http://schema.org/caption> ?v2 .
 }
 "#,
-        ),
-        // L5
-        (
-            "L5",
-            r#"PREFIX wsdbm: <http://db.uwaterloo.ca/~galuc/wsdbm/>
+    ),
+    // L5
+    (
+      "L5",
+      r#"PREFIX wsdbm: <http://db.uwaterloo.ca/~galuc/wsdbm/>
             PREFIX sorg: <http://schema.org/>
             PREFIX dc:   <http://purl.org/dc/terms/>
             PREFIX foaf: <http://xmlns.com/foaf/>
@@ -409,11 +438,11 @@ fn run_all_queries(db: &mut SparqlDatabase) {
             ?v0	sorg:nationality	?v3 .
 }
 "#,
-        ),
-        // S1
-        (
-            "S1",
-            r#"PREFIX wsdbm: <http://db.uwaterloo.ca/~galuc/wsdbm/>
+    ),
+    // S1
+    (
+      "S1",
+      r#"PREFIX wsdbm: <http://db.uwaterloo.ca/~galuc/wsdbm/>
             PREFIX sorg: <http://schema.org/>
             PREFIX dc:   <http://purl.org/dc/terms/>
             PREFIX foaf: <http://xmlns.com/foaf/>
@@ -436,11 +465,11 @@ fn run_all_queries(db: &mut SparqlDatabase) {
             ?v0	sorg:priceValidUntil	?v9 .
 }
 "#,
-        ),
-        // S2
-        (
-            "S2",
-            r#"PREFIX wsdbm: <http://db.uwaterloo.ca/~galuc/wsdbm/>
+    ),
+    // S2
+    (
+      "S2",
+      r#"PREFIX wsdbm: <http://db.uwaterloo.ca/~galuc/wsdbm/>
             PREFIX sorg: <http://schema.org/>
             PREFIX dc:   <http://purl.org/dc/terms/>
             PREFIX foaf: <http://xmlns.com/foaf/>
@@ -458,11 +487,11 @@ fn run_all_queries(db: &mut SparqlDatabase) {
             ?v0	rdf:type	wsdbm:Role2 .
 }
 "#,
-        ),
-        // S3
-        (
-            "S3",
-            r#"PREFIX wsdbm: <http://db.uwaterloo.ca/~galuc/wsdbm/>
+    ),
+    // S3
+    (
+      "S3",
+      r#"PREFIX wsdbm: <http://db.uwaterloo.ca/~galuc/wsdbm/>
             PREFIX sorg: <http://schema.org/>
             PREFIX dc:   <http://purl.org/dc/terms/>
             PREFIX foaf: <http://xmlns.com/foaf/>
@@ -480,11 +509,11 @@ fn run_all_queries(db: &mut SparqlDatabase) {
             ?v0	sorg:publisher	?v4 .
 }
 "#,
-        ),
-        // S4
-        (
-            "S4",
-            r#"PREFIX wsdbm: <http://db.uwaterloo.ca/~galuc/wsdbm/>
+    ),
+    // S4
+    (
+      "S4",
+      r#"PREFIX wsdbm: <http://db.uwaterloo.ca/~galuc/wsdbm/>
             PREFIX sorg: <http://schema.org/>
             PREFIX dc:   <http://purl.org/dc/terms/>
             PREFIX foaf: <http://xmlns.com/foaf/>
@@ -502,11 +531,11 @@ fn run_all_queries(db: &mut SparqlDatabase) {
             ?v0	sorg:nationality	wsdbm:Country1 .
 }
 "#,
-        ),
-        // S5
-        (
-            "S5",
-            r#"PREFIX wsdbm: <http://db.uwaterloo.ca/~galuc/wsdbm/>
+    ),
+    // S5
+    (
+      "S5",
+      r#"PREFIX wsdbm: <http://db.uwaterloo.ca/~galuc/wsdbm/>
             PREFIX sorg: <http://schema.org/>
             PREFIX dc:   <http://purl.org/dc/terms/>
             PREFIX foaf: <http://xmlns.com/foaf/>
@@ -524,11 +553,11 @@ fn run_all_queries(db: &mut SparqlDatabase) {
             ?v0	sorg:language	wsdbm:Language0 .
 }
 "#,
-        ),
-        // S6
-        (
-            "S6",
-            r#"PREFIX wsdbm: <http://db.uwaterloo.ca/~galuc/wsdbm/>
+    ),
+    // S6
+    (
+      "S6",
+      r#"PREFIX wsdbm: <http://db.uwaterloo.ca/~galuc/wsdbm/>
             PREFIX sorg: <http://schema.org/>
             PREFIX dc:   <http://purl.org/dc/terms/>
             PREFIX foaf: <http://xmlns.com/foaf/>
@@ -545,11 +574,11 @@ fn run_all_queries(db: &mut SparqlDatabase) {
             ?v0	wsdbm:hasGenre	<http://db.uwaterloo.ca/~galuc/wsdbm/SubGenre26> .
 }
 "#,
-        ),
-        // S7
-        (
-            "S7",
-            r#"PREFIX wsdbm: <http://db.uwaterloo.ca/~galuc/wsdbm/>
+    ),
+    // S7
+    (
+      "S7",
+      r#"PREFIX wsdbm: <http://db.uwaterloo.ca/~galuc/wsdbm/>
             PREFIX sorg: <http://schema.org/>
             PREFIX dc:   <http://purl.org/dc/terms/>
             PREFIX foaf: <http://xmlns.com/foaf/>
@@ -566,46 +595,46 @@ fn run_all_queries(db: &mut SparqlDatabase) {
             <http://db.uwaterloo.ca/~galuc/wsdbm/User7>	wsdbm:likes	?v0 .
 }
 "#,
-        ),
-    ];
+    ),
+  ];
 
-    for (name, query) in queries.iter() {
-        println!("==============================================");
-        println!("Running query {} ({} iterations)...", name, ITERATIONS);
+  for (name, query) in queries.iter() {
+    println!("==============================================");
+    println!("Running query {} ({} iterations)...", name, ITERATIONS);
 
-        let mut total_time = 0.0;
-        // let mut last_result:Vec<Vec<String>> = Vec::new();
+    let mut total_time = 0.0;
+    // let mut last_result:Vec<Vec<String>> = Vec::new();
 
-        for _ in 0..ITERATIONS {
-            let start = Instant::now();
-            let _ = execute_query_rayon_parallel2_volcano(query, db);
-            let elapsed = start.elapsed().as_secs_f64();
-            total_time += elapsed;
-        }
-
-        let avg = total_time / (ITERATIONS as f64);
-        println!("Average time for {}: {:.6} seconds", name, avg);
+    for _ in 0..ITERATIONS {
+      let start = Instant::now();
+      let _ = execute_query_rayon_parallel2_volcano(query, db);
+      let elapsed = start.elapsed().as_secs_f64();
+      total_time += elapsed;
     }
+
+    let avg = total_time / (ITERATIONS as f64);
+    println!("Average time for {}: {:.6} seconds", name, avg);
+  }
 }
 
 fn main() {
-    // Set current directory to the root of the project
-    std::env::set_current_dir(std::path::Path::new(env!("CARGO_MANIFEST_DIR")))
+  // Set current directory to the root of the project
+  std::env::set_current_dir(std::path::Path::new(env!("CARGO_MANIFEST_DIR")))
     .expect("Failed to set project root as current directory");
 
-    let file_path = "../benchmark_dataset/watdiv.10M.nt";
+  let file_path = "../benchmark_dataset/watdiv.10M.nt";
 
-    match parse_large_ntriples_file(file_path) {
-        Ok(mut db) => {
-            println!("Successfully processed N-Triples file");
-            run_all_queries(&mut db);
-        }
-        Err(e) => {
-            eprintln!("Error processing file '{}': {}", file_path, e);
-            println!(
-                "File not found or error occurred. \
-Make sure ../benchmark_dataset/watdiv.10M.nt exists."
-            );
-        }
+  match parse_large_ntriples_file(file_path) {
+    Ok(mut db) => {
+      println!("Successfully processed N-Triples file");
+      run_all_queries(&mut db);
     }
+    Err(e) => {
+      eprintln!("Error processing file '{}': {}", file_path, e);
+      println!(
+      "File not found or error occurred. \
+        Make sure ../benchmark_dataset/watdiv.10M.nt exists."
+    );
+    }
+  }
 }
