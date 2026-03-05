@@ -261,6 +261,22 @@ fn setup_knowledge_base() -> SparqlDatabase {
         db.add_triple_parts(&uri, "http://fraud.example.org/tier", tier);
     }
 
+    for flag in &[
+        "highVelocity", "largeAmount", "highMerchantRisk", "foreignHighRisk",
+        "highWindowActivity", "mlAssistedAlert", "historicalPattern",
+    ] {
+        db.add_triple_parts(
+            &format!("http://fraud.example.org/{}", flag),
+            "http://www.w3.org/1999/02/22-rdf-syntax-ns#type",
+            "http://fraud.example.org/SuspiciousFlag",
+        );
+    }
+    db.add_triple_parts(
+        "http://fraud.example.org/high",
+        "http://www.w3.org/1999/02/22-rdf-syntax-ns#type",
+        "http://fraud.example.org/HighRiskLevel",
+    );
+
     for cat in &["gambling", "cryptoExchange", "wireTransfer", "prepaidCards"] {
         let uri = format!("http://fraud.example.org/merchant/{}", cat);
         db.add_triple_parts(
@@ -279,7 +295,7 @@ PREFIX rdf: <http://www.w3.org/1999/02/22-rdf-syntax-ns#>
 
 RULE :SuspiciousVelocity :-
 CONSTRUCT {
-    ?tx ex:suspiciousFlag "highVelocity" .
+    ?tx ex:suspiciousFlag ex:highVelocity .
 }
 WHERE {
     ?tx ex:velocity1h ?vel .
@@ -294,7 +310,7 @@ PREFIX rdf: <http://www.w3.org/1999/02/22-rdf-syntax-ns#>
 
 RULE :SuspiciousAmount :-
 CONSTRUCT {
-    ?tx ex:suspiciousFlag "largeAmount" .
+    ?tx ex:suspiciousFlag ex:largeAmount .
 }
 WHERE {
     ?tx ex:amount ?amt .
@@ -309,7 +325,7 @@ PREFIX rdf: <http://www.w3.org/1999/02/22-rdf-syntax-ns#>
 
 RULE :HighMerchantRisk :-
 CONSTRUCT {
-    ?tx ex:suspiciousFlag "highMerchantRisk" .
+    ?tx ex:suspiciousFlag ex:highMerchantRisk .
 }
 WHERE {
     ?tx ex:merchantRisk ?mr .
@@ -324,7 +340,7 @@ PREFIX rdf: <http://www.w3.org/1999/02/22-rdf-syntax-ns#>
 
 RULE :ForeignHighRisk :-
 CONSTRUCT {
-    ?tx ex:suspiciousFlag "foreignHighRisk" .
+    ?tx ex:suspiciousFlag ex:foreignHighRisk .
 }
 WHERE {
     ?tx ex:isForeign    ?isF .
@@ -341,7 +357,7 @@ PREFIX rdf: <http://www.w3.org/1999/02/22-rdf-syntax-ns#>
 
 RULE :HighRisk :-
 CONSTRUCT {
-    ?tx ex:riskLevel "high" .
+    ?tx ex:riskLevel ex:high .
 }
 WHERE {
     ?tx ex:amount     ?amt .
@@ -362,7 +378,7 @@ PREFIX rdf: <http://www.w3.org/1999/02/22-rdf-syntax-ns#>
 
 RULE :MLAssistedAlert :-
 CONSTRUCT {
-    ?tx ex:suspiciousFlag "mlAssistedAlert" .
+    ?tx ex:suspiciousFlag ex:mlAssistedAlert .
 }
 WHERE {
     ?tx ex:mlFraudScore ?score .
@@ -379,7 +395,7 @@ PREFIX rdf: <http://www.w3.org/1999/02/22-rdf-syntax-ns#>
 
 RULE :HistoricalPattern :-
 CONSTRUCT {
-    ?tx ex:suspiciousFlag "historicalPattern" .
+    ?tx ex:suspiciousFlag ex:historicalPattern .
 }
 WHERE {
     ?tx ex:recentFraudCount ?cnt .
@@ -394,7 +410,7 @@ PREFIX rdf: <http://www.w3.org/1999/02/22-rdf-syntax-ns#>
 
 RULE :HighWindowActivity :-
 CONSTRUCT {
-    ?tx ex:suspiciousFlag "highWindowActivity" .
+    ?tx ex:suspiciousFlag ex:highWindowActivity .
 }
 WHERE {
     ?tx ex:windowVelocity ?wvel .
@@ -677,7 +693,8 @@ fn run_reasoning(
             for t in database.triples.iter() {
                 if t.subject == tx_id && t.predicate == sflag_id {
                     if let Some(val) = dict.decode(t.object) {
-                        flags.push(val.to_string());
+                        let local = val.rsplit('/').next().unwrap_or(val);
+                        flags.push(local.to_string());
                     }
                 }
             }
@@ -688,7 +705,8 @@ fn run_reasoning(
             for t in database.triples.iter() {
                 if t.subject == tx_id && t.predicate == risk_id {
                     if let Some(val) = dict.decode(t.object) {
-                        flags.push(format!("risk:{}", val));
+                        let local = val.rsplit('/').next().unwrap_or(val);
+                        flags.push(format!("risk:{}", local));
                     }
                 }
             }
