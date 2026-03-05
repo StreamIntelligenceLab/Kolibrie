@@ -34,13 +34,15 @@
 use kolibrie::parser::*;
 use kolibrie::sparql_database::SparqlDatabase;
 use kolibrie::rsp_engine::{RSPBuilder, SimpleR2R, ResultConsumer, QueryExecutionMode};
+use datalog::reasoning::Reasoner;
 use ml::MLHandler;
 use ml::generate_ml_models;
-use datalog::reasoning::Reasoner;
+use pyo3::prepare_freethreaded_python;
 use shared::triple::Triple;
 use shared::rule::Rule;
 
 use std::collections::HashMap;
+use std::error::Error;
 use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::Duration;
@@ -102,14 +104,16 @@ impl AccountHistory {
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
+    prepare_freethreaded_python();
+
     let sep = "=".repeat(70);
     println!("\n{}", sep);
     println!("  Neuro-Symbolic Fraud Detection System");
     println!("  SPARQL + RSP-QL + Datalog Reasoning + GradientBoosting ML");
     println!("{}\n", sep);
 
-    let mut ml_handler = setup_ml_model()?;
-    let mut database   = setup_knowledge_base();
+    let mut database  = setup_knowledge_base();
+    let (mut ml_handler, best_model) = setup_ml_model()?;
 
     // Symbolic rules over raw transaction features
     let (rule_velocity,   _) = process_rule_definition(&rule_suspicious_velocity(),  &mut database)?;
@@ -183,14 +187,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     );
     println!("{}", "-".repeat(142));
 
-    run_simulation(&mut engine, &mut ml_handler, &mut database, &pass1_rules, &pass2_rules, window_results)?;
+    run_simulation(&mut engine, &mut ml_handler, &best_model, &mut database, &pass1_rules, &pass2_rules, window_results)?;
 
     engine.stop();
     thread::sleep(Duration::from_millis(500));
     Ok(())
 }
 
-fn setup_ml_model() -> Result<MLHandler, Box<dyn std::error::Error>> {
+fn setup_ml_model() -> Result<(MLHandler, String), Box<dyn std::error::Error>> {
     let model_dir = {
         let mut path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
         loop {
@@ -230,12 +234,139 @@ fn setup_ml_model() -> Result<MLHandler, Box<dyn std::error::Error>> {
         return Err("No fraud detection model found after generation step".into());
     }
 
-    println!(
-        "[ML] Loaded model: {}",
-        ml_handler.best_model.as_deref().unwrap_or("unknown")
-    );
+    let best_model = ml_handler
+        .best_model
+        .as_deref()
+        .unwrap_or(&model_ids[0])
+        .to_string();
 
-    Ok(ml_handler)
+    println!("[ML] Loaded model: {}", best_model);
+    Ok((ml_handler, best_model))
+}
+
+/// Writes Pass-1 symbolic flags and account history count as numeric (0/1) RDF triples
+/// so the ML.PREDICT INPUT query can SELECT them as features.
+fn write_numeric_flags_to_db(
+    database:         &mut SparqlDatabase,
+    tx_uri:           &str,
+    flags_p1:         &[String],
+    hist_fraud_count: u32,
+) {
+    let flag_pairs = [
+        ("highVelocity",    "http://fraud.example.org/flagHighVelocity"),
+        ("largeAmount",     "http://fraud.example.org/flagLargeAmount"),
+        ("highMerchantRisk","http://fraud.example.org/flagHighMerchantRisk"),
+        ("foreignHighRisk", "http://fraud.example.org/flagForeignHighRisk"),
+        ("risk:high",       "http://fraud.example.org/flagRiskHigh"),
+    ];
+    for (flag_name, predicate) in &flag_pairs {
+        let value = if flags_p1.iter().any(|f| f == flag_name) { "1" } else { "0" };
+        database.add_triple_parts(tx_uri, predicate, value);
+    }
+    database.add_triple_parts(
+        tx_uri,
+        "http://fraud.example.org/recentFraudCount",
+        &hist_fraud_count.to_string(),
+    );
+}
+
+/// Extracts all 14 ML feature values for a single transaction from the RDF database.
+/// Returns a single-row Vec<HashMap<String, u32>> (dictionary-encoded values).
+fn extract_data_for_ml_fraud(
+    database: &mut SparqlDatabase,
+    tx_uri:   &str,
+) -> Result<Vec<HashMap<String, u32>>, Box<dyn Error>> {
+    let feature_predicates = [
+        ("amt",   "http://fraud.example.org/amount"),
+        ("hour",  "http://fraud.example.org/hourOfDay"),
+        ("dow",   "http://fraud.example.org/dayOfWeek"),
+        ("mRisk", "http://fraud.example.org/merchantRisk"),
+        ("vel",   "http://fraud.example.org/velocity1h"),
+        ("dist",  "http://fraud.example.org/distanceKm"),
+        ("isF",   "http://fraud.example.org/isForeign"),
+        ("cp",    "http://fraud.example.org/cardPresent"),
+        ("fHv",   "http://fraud.example.org/flagHighVelocity"),
+        ("fLa",   "http://fraud.example.org/flagLargeAmount"),
+        ("fHmr",  "http://fraud.example.org/flagHighMerchantRisk"),
+        ("fFhr",  "http://fraud.example.org/flagForeignHighRisk"),
+        ("fRh",   "http://fraud.example.org/flagRiskHigh"),
+        ("cnt",   "http://fraud.example.org/recentFraudCount"),
+    ];
+
+    let (tx_id, pred_ids): (Option<u32>, Vec<Option<u32>>) = {
+        let dict = database.dictionary.read().unwrap();
+        let tx_id = dict.string_to_id.get(tx_uri).copied();
+        let pred_ids = feature_predicates
+            .iter()
+            .map(|(_, uri)| dict.string_to_id.get(*uri).copied())
+            .collect();
+        (tx_id, pred_ids)
+    };
+
+    let tx_id = match tx_id {
+        Some(id) => id,
+        None => return Ok(vec![]),
+    };
+
+    let mut row: HashMap<String, u32> = HashMap::new();
+    row.insert("tx".to_string(), tx_id);
+
+    for (i, (var_name, _)) in feature_predicates.iter().enumerate() {
+        if let Some(pred_id) = pred_ids[i] {
+            if let Some(triple) = database.triples.iter()
+                .find(|t| t.subject == tx_id && t.predicate == pred_id)
+            {
+                row.insert(var_name.to_string(), triple.object);
+            }
+        }
+    }
+
+    // Only return the row if we have all 14 features + the tx subject (15 total)
+    if row.len() == 15 {
+        Ok(vec![row])
+    } else {
+        Ok(vec![])
+    }
+}
+
+/// Runs ML prediction for one transaction using a pre-loaded MLHandler.
+/// Features are read from the RDF database (written by write_numeric_flags_to_db).
+/// Feature order must match fraud_predictor.py:
+///   [amt, hour, dow, mRisk, vel, dist, isF, cp, fHv, fLa, fHmr, fFhr, fRh, cnt]
+fn run_ml_predict(
+    database:   &mut SparqlDatabase,
+    tx_uri:     &str,
+    ml_handler: &mut MLHandler,
+    best_model: &str,
+) -> Result<f64, Box<dyn Error>> {
+    let tx_data = extract_data_for_ml_fraud(database, tx_uri)?;
+    if tx_data.is_empty() {
+        return Ok(0.0);
+    }
+    let row = &tx_data[0];
+
+    // Decode dictionary IDs to f64 values in the required feature order
+    let feature_keys = [
+        "amt", "hour", "dow", "mRisk", "vel", "dist",
+        "isF", "cp", "fHv", "fLa", "fHmr", "fFhr", "fRh", "cnt",
+    ];
+    let dict = database.dictionary.read().unwrap();
+    let features: Vec<f64> = feature_keys
+        .iter()
+        .filter_map(|key| {
+            row.get(*key)
+                .and_then(|&id| dict.decode(id))
+                .and_then(|s| s.parse::<f64>().ok())
+        })
+        .collect();
+    drop(dict);
+
+    if features.len() != 14 {
+        return Ok(0.0);
+    }
+
+    let result = ml_handler.predict(best_model, vec![features])?;
+    Ok(result.predictions.first().copied().unwrap_or(0.0))
 }
 
 fn setup_knowledge_base() -> SparqlDatabase {
@@ -422,17 +553,12 @@ WHERE {
 fn run_simulation(
     engine:         &mut kolibrie::rsp_engine::RSPEngine<Triple, Vec<(String, String)>>,
     ml_handler:     &mut MLHandler,
+    best_model:     &str,
     database:       &mut SparqlDatabase,
     pass1_rules:    &[Rule],   // R1–R5, R1b: symbolic rules on raw features
     pass2_rules:    &[Rule],   // R6–R7: rules that read ML output from RDF
     window_results: Arc<Mutex<Vec<HashMap<String, String>>>>,
 ) -> Result<(), Box<dyn std::error::Error>> {
-
-    let best_model = ml_handler
-        .best_model
-        .as_ref()
-        .ok_or("No best model selected")?
-        .clone();
 
     let accounts = vec!["ACC001", "ACC002", "ACC003", "ACC004", "ACC005"];
     let mut velocity_tracker: HashMap<String, u32>    = HashMap::new();
@@ -548,44 +674,21 @@ fn run_simulation(
                 .or_insert_with(AccountHistory::new);
             let hist_fraud_count = history.recent_fraud_count;
 
-            // Symbolic -> ML
+            // Pass 1: symbolic rules on raw features
             let flags_p1 = run_reasoning(database, pass1_rules, &tx_uri);
 
-            let flag_hv  = flags_p1.contains(&"highVelocity".to_string())     as u8 as f64;
-            let flag_la  = flags_p1.contains(&"largeAmount".to_string())       as u8 as f64;
-            let flag_hmr = flags_p1.contains(&"highMerchantRisk".to_string())  as u8 as f64;
-            let flag_fhr = flags_p1.contains(&"foreignHighRisk".to_string())   as u8 as f64;
-            let flag_rh  = flags_p1.contains(&"risk:high".to_string())         as u8 as f64;
+            // Write Pass-1 flags and account history as numeric RDF triples
+            // so ML.PREDICT INPUT can SELECT them as features
+            write_numeric_flags_to_db(database, &tx_uri, &flags_p1, hist_fraud_count);
 
-            // 14 features: 8 raw + 5 symbolic flags + account history
-            // highWindowActivity is excluded, model was trained on 14 features
-            let features = vec![vec![
-                tx.amount,
-                tx.hour_of_day   as f64,
-                tx.day_of_week   as f64,
-                tx.merchant_risk as f64,
-                tx.velocity_1h   as f64,
-                tx.distance_km,
-                tx.is_foreign    as f64,
-                tx.card_present  as f64,
-                flag_hv,
-                flag_la,
-                flag_hmr,
-                flag_fhr,
-                flag_rh,
-                hist_fraud_count as f64,
-            ]];
-            let ml_result   = ml_handler.predict(&best_model, features)?;
-            let fraud_score = ml_result.predictions[0];
+            // ML.PREDICT via pre-loaded handler (14 features: 8 raw + 5 flags + history)
+            let fraud_score = run_ml_predict(database, &tx_uri, ml_handler, best_model)?;
 
-            // ML -> Symbolic
+            // Write ML score back to RDF for Pass-2 Datalog rules (R6, R7)
             let ml_score_int = (fraud_score * 100.0).round() as u32;
             database.add_triple_parts(
                 &tx_uri, "http://fraud.example.org/mlFraudScore",
                 &ml_score_int.to_string());
-            database.add_triple_parts(
-                &tx_uri, "http://fraud.example.org/recentFraudCount",
-                &hist_fraud_count.to_string());
 
             let flags_p2_all = run_reasoning(database, pass2_rules, &tx_uri);
             let flags_p2_new: Vec<String> = flags_p2_all

@@ -260,7 +260,7 @@ impl ExecutionEngine {
                 let input_data = Self::extract_ml_input_data(&input_results, input_variables, database);
 
                 // Call the existing ML handler infrastructure
-                match Self::invoke_ml_handler( model_path, input_data) {
+                match Self::invoke_ml_handler(model_path, model_name, input_data) {
                     Ok(predictions) => {
                         Self::merge_ml_predictions(input_results, predictions, output_variable, database)
                     }
@@ -351,20 +351,21 @@ impl ExecutionEngine {
     /// Invokes the ML handler to make predictions
     fn invoke_ml_handler(
         model_dir: &str,
+        model_name: &str,
         input_data: Vec<Vec<f64>>,
     ) -> Result<MLPredictionResult, Box<dyn std::error::Error>> {
         use ml::MLHandler;
         use ml::generate_ml_models;
-        
+
         println!("[ML.PREDICT] Initializing ML handler...");
         let mut ml_handler = MLHandler::new()?;
-        
+
         println!("[ML.PREDICT] Looking for models in: {}", model_dir);
-        
+
         let model_dir_path = std::path::PathBuf::from(model_dir);
         std::fs::create_dir_all(&model_dir_path)?;
-        
-        // Check if models need to be generated
+
+        // Check if a matching .pkl model exists
         let models_exist = std::fs::read_dir(&model_dir_path)?
             .filter_map(Result::ok)
             .filter(|entry| {
@@ -372,24 +373,25 @@ impl ExecutionEngine {
                 path.is_file() && path.extension().map_or(false, |ext| ext == "pkl") &&
                 path.file_stem().and_then(|s| s.to_str()).map_or(false, |stem| stem.ends_with("_predictor"))
             })
-            .count() >= 3;
-        
+            .count() >= 1;
+
         if !models_exist {
             println!("[ML.PREDICT] Models not found. Generating models...");
-            // Use predictor.py as the generator script
+            // Derive script name from model_name: "fraud_predictor" -> "fraud_predictor.py"
+            let script_name = format!("{}.py", model_name);
             let predictor_script = model_dir_path
                 .parent()
                 .and_then(|p| p.parent())
-                .map(|p| p.join("predictor.py"))
-                .unwrap_or_else(|| std::path::PathBuf::from("predictor.py"));
-            
+                .map(|p| p.join(&script_name))
+                .unwrap_or_else(|| std::path::PathBuf::from(&script_name));
+
             if let Some(script_path) = predictor_script.to_str() {
                 generate_ml_models(&model_dir_path, script_path)?;
             }
         }
         
         println!("[ML.PREDICT] Discovering models and analyzing schemas...");
-        let model_ids = ml_handler.discover_and_load_models(&model_dir_path, "predictor.py")?;
+        let model_ids = ml_handler.discover_and_load_models(&model_dir_path, model_name)?;
         
         if model_ids.is_empty() {
             return Err("No valid models found with TTL schemas".into());
