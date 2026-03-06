@@ -16,8 +16,15 @@ TIMESTAMP=$(date +%Y%m%d_%H%M%S)
 RESULT_DIR="${OUTPUT_DIR}/${TIMESTAMP}"
 
 INDEX_TYPES=(
-    "dynamic_hexastore",
+    "dynamic_hexastore"
     "hexastore"
+    "ops"
+    "osp"
+    "pos"
+    "pso"
+    "sop"
+    "spo"
+    "table"
 )
 
 echo "=============================================="
