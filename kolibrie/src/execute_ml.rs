@@ -165,3 +165,86 @@ where
     
     Ok((predictions, timing))
 }
+
+/// Like `execute_ml_prediction_from_clause` but skips model discovery/loading.
+/// Use this when the `MLHandler` has already been initialised at startup.
+pub fn execute_ml_prediction_with_handler<F, G, T, U>(
+    ml_predict:      &MLPredictClause,
+    database:        &SparqlDatabase,
+    ml_handler:      &MLHandler,
+    best_model_name: &str,
+    extract_data:    F,
+    predict:         G,
+) -> Result<(Vec<U>, MLPredictTiming), Box<dyn Error>>
+where
+    F: FnOnce(&SparqlDatabase) -> Result<Vec<T>, Box<dyn Error>>,
+    G: FnOnce(&MLHandler, &str, &[T], &[String]) -> Result<(Vec<U>, MLPredictTiming), Box<dyn Error>>,
+    T: Clone,
+    U: Clone,
+{
+    let variable_names: Vec<String> = ml_predict.input_select
+        .iter()
+        .map(|(var, _, _)| var.trim_start_matches('?').to_string())
+        .collect();
+
+    let data = extract_data(database)?;
+
+    let feature_names: Vec<String> = variable_names.iter()
+        .filter(|&name| *name != "room" && *name != "road")
+        .cloned()
+        .collect();
+
+    let (predictions, timing) = predict(ml_handler, best_model_name, &data, &feature_names)?;
+    Ok((predictions, timing))
+}
+
+/// Locate the model directory, generate models if absent, discover and load them.
+/// Returns the initialised `MLHandler` and the best-model name.
+/// Call this **once at startup** and reuse the result per transaction.
+pub fn setup_ml_handler(model: &str) -> Result<(MLHandler, String), Box<dyn Error>> {
+    let model_dir = {
+        let mut path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+        loop {
+            let ml_dir = path.join("ml");
+            if ml_dir.exists() && ml_dir.is_dir() {
+                break ml_dir.join("examples").join("models");
+            }
+            if !path.pop() {
+                eprintln!("Warning: Could not locate 'ml' directory in any parent directory!");
+                break std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("models");
+            }
+        }
+    };
+
+    let mut ml_handler = MLHandler::new()?;
+    std::fs::create_dir_all(&model_dir)?;
+
+    println!("Looking for models in: {}", model_dir.display());
+
+    let models_exist = std::fs::read_dir(&model_dir)?
+        .filter_map(Result::ok)
+        .filter(|entry| {
+            let path = entry.path();
+            path.is_file() && path.extension().map_or(false, |ext| ext == "pkl") &&
+            path.file_stem().and_then(|s| s.to_str())
+                .map_or(false, |stem| stem.ends_with("_predictor"))
+        })
+        .count() >= 1;
+
+    if !models_exist {
+        println!("Models not found or outdated. Generating models...");
+        generate_ml_models(&model_dir, model)?;
+    }
+
+    println!("\nDiscovering models and analyzing schemas...");
+    let model_ids = ml_handler.discover_and_load_models(&model_dir, model)?;
+
+    if model_ids.is_empty() {
+        return Err("No valid models found with TTL schemas".into());
+    }
+
+    let best_model = ml_handler.best_model.clone()
+        .unwrap_or_else(|| model_ids[0].clone());
+
+    Ok((ml_handler, best_model))
+}

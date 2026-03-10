@@ -31,7 +31,7 @@
     • FILTER thresholds must be integers (parser stops at '.').
 */ 
 
-use kolibrie::execute_ml::{execute_ml_prediction_from_clause, MLPredictTiming};
+use kolibrie::execute_ml::{execute_ml_prediction_with_handler, setup_ml_handler, MLPredictTiming};
 use kolibrie::parser::*;
 use kolibrie::sparql_database::SparqlDatabase;
 use kolibrie::rsp_engine::{RSPBuilder, SimpleR2R, ResultConsumer, QueryExecutionMode};
@@ -301,7 +301,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     start_sse_server(Arc::clone(&events), 7878);
     println!("Dashboard: http://localhost:7878  (open in browser)\n");
 
-    run_simulation(&mut engine, &mut database, &pass1_rules, &pass2_rules, window_results, events)?;
+    let (ml_handler, best_model_name) = setup_ml_handler("fraud_predictor")?;
+
+    run_simulation(&mut engine, &mut database, &pass1_rules, &pass2_rules, window_results, events, &ml_handler, &best_model_name)?;
 
     engine.stop();
     thread::sleep(Duration::from_millis(500));
@@ -399,9 +401,11 @@ fn extract_data_for_ml_fraud(
 /// input/output contract; `execute_ml_prediction_from_clause` handles model
 /// discovery and loading automatically.
 fn run_ml_predict_from_clause(
-    database: &SparqlDatabase,
-    tx_uri:   &str,
-    rule_str: &str,
+    database:        &SparqlDatabase,
+    tx_uri:          &str,
+    rule_str:        &str,
+    ml_handler:      &MLHandler,
+    best_model_name: &str,
 ) -> Result<(f64, Duration, Duration), Box<dyn Error>> {
     let (_, (combined_rule, _)) = parse_standalone_rule(rule_str)
         .map_err(|e| format!("ML.PREDICT rule parse error: {e:?}"))?;
@@ -474,7 +478,7 @@ fn run_ml_predict_from_clause(
     };
 
     let (scores, timing) =
-        execute_ml_prediction_from_clause(ml_predict, database, "fraud_predictor", extract_fn, predict_fn)?;
+        execute_ml_prediction_with_handler(ml_predict, database, ml_handler, best_model_name, extract_fn, predict_fn)?;
 
     let score = scores.first().copied().unwrap_or(0.0);
     let t_r2p = Duration::from_secs_f64(timing.rust_to_python_time);
@@ -700,12 +704,14 @@ ML.PREDICT(MODEL "fraud_predictor",
 }
 
 fn run_simulation(
-    engine:         &mut kolibrie::rsp_engine::RSPEngine<Triple, Vec<(String, String)>>,
-    database:       &mut SparqlDatabase,
-    pass1_rules:    &[Rule],   // R1–R5, R1b: symbolic rules on raw features
-    pass2_rules:    &[Rule],   // R6–R7: rules that read ML output from RDF
-    window_results: Arc<Mutex<Vec<HashMap<String, String>>>>,
-    events:         EventLog,
+    engine:          &mut kolibrie::rsp_engine::RSPEngine<Triple, Vec<(String, String)>>,
+    database:        &mut SparqlDatabase,
+    pass1_rules:     &[Rule],   // R1–R5, R1b: symbolic rules on raw features
+    pass2_rules:     &[Rule],   // R6–R7: rules that read ML output from RDF
+    window_results:  Arc<Mutex<Vec<HashMap<String, String>>>>,
+    events:          EventLog,
+    ml_handler:      &MLHandler,
+    best_model_name: &str,
 ) -> Result<(), Box<dyn std::error::Error>> {
 
     let ml_rule_str = rule_ml_fraud_predict();
@@ -844,7 +850,7 @@ fn run_simulation(
 
             // ML.PREDICT — driven by rule_ml_fraud_predict() clause
             let (fraud_score, t_r2p, t_p2r) =
-                run_ml_predict_from_clause(database, &tx_uri, &ml_rule_str)?;
+                run_ml_predict_from_clause(database, &tx_uri, &ml_rule_str, ml_handler, best_model_name)?;
             println!("  [Timing] Rust -> Python overhead: {:?}", t_r2p);
             println!("  [Timing] Python -> Rust overhead: {:?}", t_p2r);
 
