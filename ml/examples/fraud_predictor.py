@@ -344,16 +344,9 @@ _model_path = os.path.join(models_dir, 'fraud_predictor.pkl')
 _needs_training = True
 
 if os.path.exists(_model_path):
-    # Probe-load to verify the class path is resolvable in *this* import context.
-    # If the pkl was saved from __main__ this raises AttributeError; we catch it.
     try:
         with open(_model_path, 'rb') as _f:
             _probe = pickle.load(_f)
-        # Load succeeded — the pkl is valid for this module context.
-        # Also check that the feature count matches the current class definition.
-        # If it changed (e.g. symbolic-flag columns were added) the old scaler
-        # was fitted on fewer features and sklearn will raise ValueError at
-        # predict-time.  Detect this now and retrain automatically.
         if (hasattr(_probe, 'feature_names')
                 and len(_probe.feature_names) != len(FraudDetectionPredictor.FEATURE_NAMES)):
             raise ValueError(

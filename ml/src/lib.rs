@@ -414,7 +414,7 @@ pub fn generate_ml_models(model_dir: &std::path::Path, model: &str) -> Result<()
     
     // Get the path to the predictor.py script
     let src_dir = model_dir.parent().unwrap_or_else(|| std::path::Path::new("."));
-    let predictor_script = src_dir.join(model);
+    let predictor_script = src_dir.join(format!("{}.py", model.trim_end_matches(".py")));
     
     if !predictor_script.exists() {
         return Err(format!("Predictor script not found at {}", predictor_script.display()).into());
@@ -477,8 +477,8 @@ pub fn generate_ml_models(model_dir: &std::path::Path, model: &str) -> Result<()
         })
         .count();
     
-    if model_count < 3 {
-        return Err(format!("Expected at least 3 models to be generated, but found {}", model_count).into());
+    if model_count < 1 {
+        return Err(format!("Expected at least 1 model to be generated, but found {}", model_count).into());
     }
     
     println!("Successfully generated {} ML models", model_count);

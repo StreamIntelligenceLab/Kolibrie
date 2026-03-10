@@ -31,21 +31,132 @@
     • FILTER thresholds must be integers (parser stops at '.').
 */ 
 
+use kolibrie::execute_ml::{execute_ml_prediction_from_clause, MLPredictTiming};
 use kolibrie::parser::*;
 use kolibrie::sparql_database::SparqlDatabase;
 use kolibrie::rsp_engine::{RSPBuilder, SimpleR2R, ResultConsumer, QueryExecutionMode};
 use datalog::reasoning::Reasoner;
 use ml::MLHandler;
-use ml::generate_ml_models;
 use pyo3::prepare_freethreaded_python;
 use shared::triple::Triple;
 use shared::rule::Rule;
 
 use std::collections::HashMap;
 use std::error::Error;
+use std::io::{Read, Write};
+use std::net::{TcpListener, TcpStream};
 use std::sync::{Arc, Mutex};
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, Instant};
+
+type EventLog = Arc<Mutex<Vec<String>>>;
+
+fn push_event(events: &EventLog, kind: &str, json: &str) {
+    let msg = format!("event: {}\ndata: {}\n\n", kind, json);
+    events.lock().unwrap().push(msg);
+}
+
+fn handle_sse_connection(mut stream: TcpStream, events: EventLog) {
+    let mut buf = [0u8; 2048];
+    let n = match stream.read(&mut buf) {
+        Ok(n) if n > 0 => n,
+        _ => return,
+    };
+    let req = match std::str::from_utf8(&buf[..n]) {
+        Ok(s) => s,
+        Err(_) => return,
+    };
+    let path = req.lines()
+        .next()
+        .and_then(|line| line.split_whitespace().nth(1))
+        .unwrap_or("/");
+
+    match path {
+        "/events" => {
+            let headers = concat!(
+                "HTTP/1.1 200 OK\r\n",
+                "Content-Type: text/event-stream\r\n",
+                "Cache-Control: no-cache\r\n",
+                "Access-Control-Allow-Origin: *\r\n",
+                "Connection: keep-alive\r\n",
+                "\r\n",
+            );
+            if stream.write_all(headers.as_bytes()).is_err() { return; }
+
+            let _ = stream.set_read_timeout(Some(Duration::from_millis(100)));
+            let mut cursor = 0usize;
+            let mut idle_ms = 0u64;
+            loop {
+                let batch: Vec<String> = {
+                    let log = events.lock().unwrap();
+                    log[cursor..].to_vec()
+                };
+                if batch.is_empty() {
+                    idle_ms += 100;
+                    if idle_ms >= 15_000 {
+                        // heartbeat every 15 s to keep connection alive
+                        if stream.write_all(b": heartbeat\n\n").is_err() { return; }
+                        idle_ms = 0;
+                    }
+                    thread::sleep(Duration::from_millis(100));
+                } else {
+                    for event in &batch {
+                        if stream.write_all(event.as_bytes()).is_err() { return; }
+                    }
+                    cursor += batch.len();
+                    idle_ms = 0;
+                }
+            }
+        }
+        "/" | "/index.html" => {
+            let html_path = {
+                // 1. Co-located next to this source file
+                let sibling = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                    .join("examples/real_scenario/fraud_detection_dashboard.html");
+                if sibling.exists() {
+                    sibling
+                } else {
+                    // 2. Walk up for any other location
+                    let mut p = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+                    loop {
+                        let candidate = p.join("fraud_detection_dashboard.html");
+                        if candidate.exists() { break candidate; }
+                        if !p.pop() {
+                            break std::path::PathBuf::from("fraud_detection_dashboard.html");
+                        }
+                    }
+                }
+            };
+            match std::fs::read(&html_path) {
+                Ok(body) => {
+                    let header = format!(
+                        "HTTP/1.1 200 OK\r\nContent-Type: text/html; charset=utf-8\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                        body.len()
+                    );
+                    let _ = stream.write_all(header.as_bytes());
+                    let _ = stream.write_all(&body);
+                }
+                Err(_) => {
+                    let _ = stream.write_all(b"HTTP/1.1 404 Not Found\r\n\r\nDashboard HTML not found");
+                }
+            }
+        }
+        _ => {
+            let _ = stream.write_all(b"HTTP/1.1 404 Not Found\r\n\r\n");
+        }
+    }
+}
+
+fn start_sse_server(events: EventLog, port: u16) {
+    thread::spawn(move || {
+        let listener = TcpListener::bind(format!("127.0.0.1:{}", port))
+            .expect("SSE server: failed to bind port");
+        for stream in listener.incoming().flatten() {
+            let events = Arc::clone(&events);
+            thread::spawn(move || handle_sse_connection(stream, events));
+        }
+    });
+}
 
 #[derive(Debug, Clone)]
 struct Transaction {
@@ -113,7 +224,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("{}\n", sep);
 
     let mut database  = setup_knowledge_base();
-    let (mut ml_handler, best_model) = setup_ml_model()?;
 
     // Symbolic rules over raw transaction features
     let (rule_velocity,   _) = process_rule_definition(&rule_suspicious_velocity(),  &mut database)?;
@@ -187,62 +297,17 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     );
     println!("{}", "-".repeat(142));
 
-    run_simulation(&mut engine, &mut ml_handler, &best_model, &mut database, &pass1_rules, &pass2_rules, window_results)?;
+    let events: EventLog = Arc::new(Mutex::new(Vec::new()));
+    start_sse_server(Arc::clone(&events), 7878);
+    println!("Dashboard: http://localhost:7878  (open in browser)\n");
+
+    run_simulation(&mut engine, &mut database, &pass1_rules, &pass2_rules, window_results, events)?;
 
     engine.stop();
     thread::sleep(Duration::from_millis(500));
     Ok(())
 }
 
-fn setup_ml_model() -> Result<(MLHandler, String), Box<dyn std::error::Error>> {
-    let model_dir = {
-        let mut path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-        loop {
-            let ml_dir = path.join("ml");
-            if ml_dir.exists() && ml_dir.is_dir() {
-                break ml_dir.join("examples").join("models");
-            }
-            if !path.pop() {
-                break std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("models");
-            }
-        }
-    };
-
-    std::fs::create_dir_all(&model_dir)?;
-
-    let models_exist = std::fs::read_dir(&model_dir)?
-        .filter_map(Result::ok)
-        .filter(|entry| {
-            let p = entry.path();
-            p.is_file()
-                && p.extension().map_or(false, |e| e == "pkl")
-                && p.file_stem()
-                    .and_then(|s| s.to_str())
-                    .map_or(false, |s| s.ends_with("_predictor"))
-        })
-        .count() >= 1;
-
-    if !models_exist {
-        println!("[ML] No model found — running fraud_predictor.py to train ...");
-        generate_ml_models(&model_dir, "fraud_predictor.py")?;
-    }
-
-    let mut ml_handler = MLHandler::new()?;
-    let model_ids = ml_handler.discover_and_load_models(&model_dir, "fraud_predictor")?;
-
-    if model_ids.is_empty() {
-        return Err("No fraud detection model found after generation step".into());
-    }
-
-    let best_model = ml_handler
-        .best_model
-        .as_deref()
-        .unwrap_or(&model_ids[0])
-        .to_string();
-
-    println!("[ML] Loaded model: {}", best_model);
-    Ok((ml_handler, best_model))
-}
 
 /// Writes Pass-1 symbolic flags and account history count as numeric (0/1) RDF triples
 /// so the ML.PREDICT INPUT query can SELECT them as features.
@@ -273,7 +338,7 @@ fn write_numeric_flags_to_db(
 /// Extracts all 14 ML feature values for a single transaction from the RDF database.
 /// Returns a single-row Vec<HashMap<String, u32>> (dictionary-encoded values).
 fn extract_data_for_ml_fraud(
-    database: &mut SparqlDatabase,
+    database: &SparqlDatabase,
     tx_uri:   &str,
 ) -> Result<Vec<HashMap<String, u32>>, Box<dyn Error>> {
     let feature_predicates = [
@@ -329,44 +394,92 @@ fn extract_data_for_ml_fraud(
     }
 }
 
-/// Runs ML prediction for one transaction using a pre-loaded MLHandler.
-/// Features are read from the RDF database (written by write_numeric_flags_to_db).
-/// Feature order must match fraud_predictor.py:
-///   [amt, hour, dow, mRisk, vel, dist, isF, cp, fHv, fLa, fHmr, fFhr, fRh, cnt]
-fn run_ml_predict(
-    database:   &mut SparqlDatabase,
-    tx_uri:     &str,
-    ml_handler: &mut MLHandler,
-    best_model: &str,
-) -> Result<f64, Box<dyn Error>> {
-    let tx_data = extract_data_for_ml_fraud(database, tx_uri)?;
-    if tx_data.is_empty() {
-        return Ok(0.0);
-    }
-    let row = &tx_data[0];
+/// Runs ML prediction for one transaction driven by the ML.PREDICT clause in
+/// `rule_ml_fraud_predict()`. The rule is parsed to extract the model name and
+/// input/output contract; `execute_ml_prediction_from_clause` handles model
+/// discovery and loading automatically.
+fn run_ml_predict_from_clause(
+    database: &SparqlDatabase,
+    tx_uri:   &str,
+    rule_str: &str,
+) -> Result<(f64, Duration, Duration), Box<dyn Error>> {
+    let (_, (combined_rule, _)) = parse_standalone_rule(rule_str)
+        .map_err(|e| format!("ML.PREDICT rule parse error: {e:?}"))?;
 
-    // Decode dictionary IDs to f64 values in the required feature order
-    let feature_keys = [
-        "amt", "hour", "dow", "mRisk", "vel", "dist",
-        "isF", "cp", "fHv", "fLa", "fHmr", "fFhr", "fRh", "cnt",
-    ];
-    let dict = database.dictionary.read().unwrap();
-    let features: Vec<f64> = feature_keys
-        .iter()
-        .filter_map(|key| {
-            row.get(*key)
-                .and_then(|&id| dict.decode(id))
-                .and_then(|s| s.parse::<f64>().ok())
-        })
-        .collect();
-    drop(dict);
+    let ml_predict = combined_rule.ml_predict.as_ref()
+        .ok_or("rule_ml_fraud_predict has no ML.PREDICT clause")?;
 
-    if features.len() != 14 {
-        return Ok(0.0);
-    }
+    // extract closure: decode feature dict IDs → f64 values for this transaction
+    let tx_uri_owned = tx_uri.to_string();
+    let extract_fn = move |db: &SparqlDatabase| {
+        let rows = extract_data_for_ml_fraud(db, &tx_uri_owned)?;
+        if rows.is_empty() {
+            return Ok(vec![]);
+        }
+        let dict = db.dictionary.read().unwrap();
+        let decoded: Vec<HashMap<String, f64>> = rows.iter()
+            .map(|row| {
+                row.iter()
+                    .filter_map(|(k, &id)| {
+                        dict.decode(id)
+                            .and_then(|s| s.parse::<f64>().ok())
+                            .map(|v| (k.clone(), v))
+                    })
+                    .collect()
+            })
+            .collect();
+        Ok(decoded)
+    };
 
-    let result = ml_handler.predict(best_model, vec![features])?;
-    Ok(result.predictions.first().copied().unwrap_or(0.0))
+    // predict closure: build ordered feature vector from clause-declared variable names,
+    // then call the ML model; returns score + timing
+    let predict_fn = |handler: &MLHandler,
+                      best_model: &str,
+                      data: &[HashMap<String, f64>],
+                      feature_names: &[String]|
+     -> Result<(Vec<f64>, MLPredictTiming), Box<dyn Error>> {
+        let t_rust_start = Instant::now();
+
+        let features: Vec<Vec<f64>> = data.iter()
+            .map(|row| {
+                feature_names.iter()
+                    .filter_map(|k| row.get(k.as_str()).copied())
+                    .collect()
+            })
+            .collect();
+
+        if features.is_empty() || features[0].is_empty() {
+            let timing = MLPredictTiming {
+                total_time: 0.0, rust_to_python_time: 0.0,
+                python_preprocessing_time: 0.0, actual_prediction_time: 0.0,
+                python_postprocessing_time: 0.0, python_to_rust_time: 0.0,
+            };
+            return Ok((vec![0.0], timing));
+        }
+
+        let t_before_call = Instant::now();
+        let result = handler.predict(best_model, features)?;
+        let t_p2r = t_before_call.elapsed();
+        let t_r2p = t_before_call.duration_since(t_rust_start);
+
+        let timing = MLPredictTiming {
+            total_time:                  (t_r2p + t_p2r).as_secs_f64(),
+            rust_to_python_time:         t_r2p.as_secs_f64(),
+            python_preprocessing_time:   0.0,
+            actual_prediction_time:      t_p2r.as_secs_f64(),
+            python_postprocessing_time:  0.0,
+            python_to_rust_time:         0.0,
+        };
+        Ok((result.predictions, timing))
+    };
+
+    let (scores, timing) =
+        execute_ml_prediction_from_clause(ml_predict, database, "fraud_predictor", extract_fn, predict_fn)?;
+
+    let score = scores.first().copied().unwrap_or(0.0);
+    let t_r2p = Duration::from_secs_f64(timing.rust_to_python_time);
+    let t_p2r = Duration::from_secs_f64(timing.actual_prediction_time);
+    Ok((score, t_r2p, t_p2r))
 }
 
 fn setup_knowledge_base() -> SparqlDatabase {
@@ -550,19 +663,58 @@ WHERE {
     "#.into()
 }
 
+fn rule_ml_fraud_predict() -> String {
+    r#"PREFIX ex:  <http://fraud.example.org/>
+PREFIX rdf: <http://www.w3.org/1999/02/22-rdf-syntax-ns#>
+
+RULE :FraudMLPredict :-
+CONSTRUCT {
+    ?tx ex:mlFraudScore ?score .
+}
+WHERE {
+    ?tx rdf:type ex:Transaction .
+}
+ML.PREDICT(MODEL "fraud_predictor",
+    INPUT {
+        SELECT ?tx ?amt ?hour ?dow ?mRisk ?vel ?dist ?isF ?cp ?fHv ?fLa ?fHmr ?fFhr ?fRh ?cnt
+        WHERE {
+            ?tx ex:amount              ?amt   ;
+                ex:hourOfDay           ?hour  ;
+                ex:dayOfWeek           ?dow   ;
+                ex:merchantRisk        ?mRisk ;
+                ex:velocity1h          ?vel   ;
+                ex:distanceKm          ?dist  ;
+                ex:isForeign           ?isF   ;
+                ex:cardPresent         ?cp    ;
+                ex:flagHighVelocity    ?fHv   ;
+                ex:flagLargeAmount     ?fLa   ;
+                ex:flagHighMerchantRisk ?fHmr ;
+                ex:flagForeignHighRisk ?fFhr  ;
+                ex:flagRiskHigh        ?fRh   ;
+                ex:recentFraudCount    ?cnt
+        }
+    },
+    OUTPUT ?score
+)
+    "#.into()
+}
+
 fn run_simulation(
     engine:         &mut kolibrie::rsp_engine::RSPEngine<Triple, Vec<(String, String)>>,
-    ml_handler:     &mut MLHandler,
-    best_model:     &str,
     database:       &mut SparqlDatabase,
     pass1_rules:    &[Rule],   // R1–R5, R1b: symbolic rules on raw features
     pass2_rules:    &[Rule],   // R6–R7: rules that read ML output from RDF
     window_results: Arc<Mutex<Vec<HashMap<String, String>>>>,
+    events:         EventLog,
 ) -> Result<(), Box<dyn std::error::Error>> {
+
+    let ml_rule_str = rule_ml_fraud_predict();
 
     let accounts = vec!["ACC001", "ACC002", "ACC003", "ACC004", "ACC005"];
     let mut velocity_tracker: HashMap<String, u32>    = HashMap::new();
     let mut account_history:  HashMap<String, AccountHistory> = HashMap::new();
+
+    push_event(&events, "start", r#"{"steps":12,"accounts":5}"#);
 
     for time_step in 0..12_u64 {
         let mut step_txs: Vec<(Transaction, bool, String, String)> = Vec::new();
@@ -626,19 +778,28 @@ fn run_simulation(
             }
         }
 
+        let rsp_vel_str = if rsp_vel_map.is_empty() {
+            "(window not fired yet)".to_string()
+        } else {
+            rsp_vel_map.iter()
+                .map(|(k, v)| format!("{}:{}", k, v))
+                .collect::<Vec<_>>()
+                .join("  ")
+        };
         println!(
             "  [RSP T={:<2}] window={:>3} bindings | wVel {}",
-            time_step,
-            current_window.len(),
-            if rsp_vel_map.is_empty() {
-                "(window not fired yet)".to_string()
-            } else {
-                rsp_vel_map.iter()
-                    .map(|(k, v)| format!("{}:{}", k, v))
-                    .collect::<Vec<_>>()
-                    .join("  ")
-            },
+            time_step, current_window.len(), rsp_vel_str,
         );
+        {
+            let vel_json: String = rsp_vel_map.iter()
+                .map(|(k, v)| format!("\"{}\":{}", k, v))
+                .collect::<Vec<_>>()
+                .join(",");
+            push_event(&events, "rsp", &format!(
+                r#"{{"time_step":{},"window":{},"vel_map":{{{}}}}}"#,
+                time_step, current_window.len(), vel_json
+            ));
+        }
 
         for (tx, is_injected_fraud, tx_uri, acct_uri) in &step_txs {
 
@@ -681,8 +842,11 @@ fn run_simulation(
             // so ML.PREDICT INPUT can SELECT them as features
             write_numeric_flags_to_db(database, &tx_uri, &flags_p1, hist_fraud_count);
 
-            // ML.PREDICT via pre-loaded handler (14 features: 8 raw + 5 flags + history)
-            let fraud_score = run_ml_predict(database, &tx_uri, ml_handler, best_model)?;
+            // ML.PREDICT — driven by rule_ml_fraud_predict() clause
+            let (fraud_score, t_r2p, t_p2r) =
+                run_ml_predict_from_clause(database, &tx_uri, &ml_rule_str)?;
+            println!("  [Timing] Rust -> Python overhead: {:?}", t_r2p);
+            println!("  [Timing] Python -> Rust overhead: {:?}", t_p2r);
 
             // Write ML score back to RDF for Pass-2 Datalog rules (R6, R7)
             let ml_score_int = (fraud_score * 100.0).round() as u32;
@@ -734,9 +898,32 @@ fn run_simulation(
                 verdict,
                 if *is_injected_fraud { "  <- injected fraud" } else { "" },
             );
+
+            {
+                let p1_json = flags_p1.iter()
+                    .map(|f| format!("\"{}\"", f.replace('"', "\\\"")))
+                    .collect::<Vec<_>>().join(",");
+                let p2_json = flags_p2_new.iter()
+                    .map(|f| format!("\"{}\"", f.replace('"', "\\\"")))
+                    .collect::<Vec<_>>().join(",");
+                push_event(&events, "tx", &format!(
+                    r#"{{"time_step":{},"tx_id":"{}","account_id":"{}","amount":{:.2},"fraud_score":{:.6},"flags_p1":[{}],"flags_p2":[{}],"verdict":"{}","r2p_us":{},"p2r_us":{},"injected":{}}}"#,
+                    time_step,
+                    tx.tx_id.replace('"', "\\\""),
+                    tx.account_id,
+                    tx.amount,
+                    fraud_score,
+                    p1_json, p2_json,
+                    verdict,
+                    t_r2p.as_micros(),
+                    t_p2r.as_micros(),
+                    is_injected_fraud,
+                ));
+            }
         }
     }
 
+    push_event(&events, "done", "{}");
     Ok(())
 }
 

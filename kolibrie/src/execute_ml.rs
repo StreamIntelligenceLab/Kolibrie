@@ -106,7 +106,7 @@ where
             path.is_file() && path.extension().map_or(false, |ext| ext == "pkl") &&
             path.file_stem().and_then(|s| s.to_str()).map_or(false, |stem| stem.ends_with("_predictor"))
         })
-        .count() >= 3;
+        .count() >= 1;
     
     if !models_exist {
         println!("Models not found or outdated. Generating models...");
