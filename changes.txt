@@ -5,7 +5,7 @@
 4. Fixes DStream and IStream R2S operators
 5. Adds Reasoning support to RSP (single window materialization)
 6. Add fraud detection system scenario and fix a bux with windowing
-
+7. Fix a problem with combination_ml example by creating temperature predictor
 0.1.1
 1. Modify whole project by making Cargo workspace
 2. Modify GPU CUDA
