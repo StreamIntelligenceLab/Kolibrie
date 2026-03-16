@@ -133,19 +133,28 @@ pub fn evaluate_filters(
     dict: &Dictionary,
 ) -> bool {
     for filter in filters {
-        if let Some(&value_code) = bindings.get(&filter.variable) {
-            let value_str = dict.decode(value_code).unwrap_or("");
-            // Try to parse both the bound value and the filter's value as numbers.
-            let bound_num: f64 = value_str.parse().unwrap_or(0.0);
-            let filter_num: f64 = filter.value.parse().unwrap_or(0.0);
-            match filter.operator.as_str() {
-                ">" if bound_num <= filter_num => return false,
-                "<" if bound_num >= filter_num => return false,
-                ">=" if bound_num < filter_num => return false,
-                "<=" if bound_num > filter_num => return false,
-                "=" if (bound_num - filter_num).abs() > std::f64::EPSILON => return false,
-                "!=" if (bound_num - filter_num).abs() <= std::f64::EPSILON => return false,
-                _ => {}
+        if let Some(&lhs_code) = bindings.get(&filter.variable) {
+            // If the filter value is itself a bound variable, compare by dictionary ID
+            if let Some(&rhs_code) = bindings.get(&filter.value) {
+                match filter.operator.as_str() {
+                    "!=" if lhs_code == rhs_code => return false,
+                    "=" if lhs_code != rhs_code => return false,
+                    _ => {}
+                }
+            } else {
+                // Compare bound variable against a numeric constant
+                let value_str = dict.decode(lhs_code).unwrap_or("");
+                let bound_num: f64 = value_str.parse().unwrap_or(0.0);
+                let filter_num: f64 = filter.value.parse().unwrap_or(0.0);
+                match filter.operator.as_str() {
+                    ">" if bound_num <= filter_num => return false,
+                    "<" if bound_num >= filter_num => return false,
+                    ">=" if bound_num < filter_num => return false,
+                    "<=" if bound_num > filter_num => return false,
+                    "=" if (bound_num - filter_num).abs() > std::f64::EPSILON => return false,
+                    "!=" if (bound_num - filter_num).abs() <= std::f64::EPSILON => return false,
+                    _ => {}
+                }
             }
         }
     }

@@ -6,6 +6,10 @@
 5. Adds Reasoning support to RSP (single window materialization)
 6. Add fraud detection system scenario and fix a bux with windowing
 7. Fix a problem with combination_ml example by creating temperature predictor
+8. Cover reasoning with tests
+9. Fix a bug in reasoning related to filtering
+10. Extend a bit test with reasoning
+
 0.1.1
 1. Modify whole project by making Cargo workspace
 2. Modify GPU CUDA
