@@ -306,6 +306,7 @@ fn convert_term_back(term: shared::terms::Term) -> PyTerm {
     match term {
         shared::terms::Term::Variable(v) => PyTerm::Variable(v),
         shared::terms::Term::Constant(c) => PyTerm::Constant(c),
+        shared::terms::Term::QuotedTriple(_) => PyTerm::Variable("__quoted_triple".to_string()),
     }
 }
 

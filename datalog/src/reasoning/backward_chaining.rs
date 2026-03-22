@@ -30,10 +30,8 @@ fn unify_terms(term1: &Term, term2: &Term, bindings: &mut HashMap<String, Term>)
     let term2 = resolve_term(term2, bindings);
 
     match (&term1, &term2) {
-        (Term::Constant(c1), Term::Constant(c2)) => c1 == c2, // Returns false if both are constants and inequal
+        (Term::Constant(c1), Term::Constant(c2)) => c1 == c2,
         (Term::Variable(v), Term::Constant(c)) | (Term::Constant(c), Term::Variable(v)) => {
-            // v.clone(): another clone is made here?
-
             bindings.insert(v.clone(), Term::Constant(*c));
             true
         }
@@ -43,6 +41,17 @@ fn unify_terms(term1: &Term, term2: &Term, bindings: &mut HashMap<String, Term>)
             }
             true
         }
+        // QuotedTriple terms unify if their components unify
+        (Term::QuotedTriple(qt1), Term::QuotedTriple(qt2)) => {
+            unify_terms(&qt1.0, &qt2.0, bindings)
+                && unify_terms(&qt1.1, &qt2.1, bindings)
+                && unify_terms(&qt1.2, &qt2.2, bindings)
+        }
+        (Term::Variable(v), Term::QuotedTriple(qt)) | (Term::QuotedTriple(qt), Term::Variable(v)) => {
+            bindings.insert(v.clone(), Term::QuotedTriple(qt.clone()));
+            true
+        }
+        _ => false,
     }
 }
 
@@ -78,6 +87,11 @@ fn substitute_term(term: &Term, bindings: &HashMap<String, Term>) -> Term {
             }
         }
         Term::Constant(value) => Term::Constant(*value),
+        Term::QuotedTriple(qt) => Term::QuotedTriple(Box::new((
+            substitute_term(&qt.0, bindings),
+            substitute_term(&qt.1, bindings),
+            substitute_term(&qt.2, bindings),
+        ))),
     }
 }
 
@@ -96,12 +110,17 @@ fn rename_rule_variables(rule: &Rule, counter: &mut usize) -> Rule {
                     Term::Variable(new_v.clone())
                 } else {
                     let new_v = format!("v{}", *counter);
-                    *counter += 1; // Counter is incremented HERE
-                    var_map.insert(v.clone(), new_v.clone()); // Why create a map between variable names?
+                    *counter += 1;
+                    var_map.insert(v.clone(), new_v.clone());
                     Term::Variable(new_v)
                 }
             }
             Term::Constant(c) => Term::Constant(*c),
+            Term::QuotedTriple(qt) => Term::QuotedTriple(Box::new((
+                rename_term(&qt.0, var_map, counter),
+                rename_term(&qt.1, var_map, counter),
+                rename_term(&qt.2, var_map, counter),
+            ))),
         }
     }
 

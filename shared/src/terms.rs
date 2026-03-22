@@ -14,6 +14,9 @@ use std::collections::HashMap;
 pub enum Term {
     Variable(String),
     Constant(u32),
+    /// RDF-star: a quoted triple pattern with potentially variable components.
+    /// Used in SPARQL-star WHERE clauses like `<< ?s :p ?o >>`.
+    QuotedTriple(Box<(Term, Term, Term)>),
 }
 
 pub type TriplePattern = (Term, Term, Term);
@@ -27,8 +30,12 @@ pub enum UnresolvedTerm {
 
 pub type UnresolvedTriple = (UnresolvedTerm, UnresolvedTerm, UnresolvedTerm);
 
-impl Term{
-    pub fn is_var(&self) -> bool{
+impl Term {
+    pub fn is_var(&self) -> bool {
         matches!(self, Term::Variable(_))
+    }
+
+    pub fn is_quoted_triple(&self) -> bool {
+        matches!(self, Term::QuotedTriple(_))
     }
 }

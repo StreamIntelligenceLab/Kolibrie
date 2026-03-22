@@ -68,11 +68,82 @@ pub fn parse_uri(input: &str) -> IResult<&str, &str> {
     delimited(char('<'), take_while1(|c| c != '>'), char('>')).parse(input)
 }
 
+// Parser for a full URI including angle brackets (e.g., `<http://...>`)
+pub fn parse_full_uri(input: &str) -> IResult<&str, &str> {
+    recognize((char('<'), take_while1(|c: char| c != '>'), char('>'))).parse(input)
+}
+
+// Parser for a full literal including quotes and optional lang/datatype
+pub fn parse_full_literal(input: &str) -> IResult<&str, &str> {
+    recognize((
+        char('"'),
+        take_while1(|c: char| c != '"'),
+        char('"'),
+        opt(alt((
+            recognize((tag("^^"), parse_full_uri)),
+            recognize((char('@'), identifier)),
+        ))),
+    )).parse(input)
+}
+
+/// Parse a subject or object that can appear inside a quoted triple.
+/// Handles: quoted triples (recursive), full URIs, variables, full literals,
+/// prefixed names, and bare identifiers.
+pub fn parse_qt_subject_or_object(input: &str) -> IResult<&str, &str> {
+    alt((
+        parse_quoted_triple,
+        parse_full_uri,
+        variable,
+        parse_full_literal,
+        recognize((char(':'), identifier)),
+        prefixed_identifier,
+        identifier,
+    )).parse(input)
+}
+
+/// Parse a quoted triple: `<< subject predicate object >>`
+/// Returns the entire `<< ... >>` as a single string slice.
+pub fn parse_quoted_triple(input: &str) -> IResult<&str, &str> {
+    recognize((
+        tag("<<"),
+        multispace0,
+        parse_qt_subject_or_object,
+        multispace1,
+        alt((
+            parse_full_uri,
+            variable,
+            recognize((char(':'), identifier)),
+            prefixed_identifier,
+            tag("a"),
+        )),
+        multispace1,
+        parse_qt_subject_or_object,
+        multispace0,
+        tag(">>"),
+    )).parse(input)
+}
+
+/// Parse annotation syntax: `{| predicate object ; ... |}`
+/// Returns predicate-object pairs for the annotation.
+pub fn parse_annotation(input: &str) -> IResult<&str, Vec<(&str, &str)>> {
+    let (input, _) = (tag("{|"), multispace0).parse(input)?;
+    let (input, first) = parse_predicate_object(input)?;
+    let (input, rest) = many0(preceded(
+        (multispace0, char(';'), multispace0),
+        parse_predicate_object,
+    )).parse(input)?;
+    let (input, _) = (multispace0, tag("|}")).parse(input)?;
+    let mut pairs = vec![first];
+    pairs.extend(rest);
+    Ok((input, pairs))
+}
+
 // Helper parser to parse a single predicate-object pair.
 pub fn parse_predicate_object(input: &str) -> IResult<&str, (&str, &str)> {
     let (input, p) = predicate(input)?;
     let (input, _) = multispace1.parse(input)?;
     let (input, o) = alt((
+        parse_quoted_triple,          // << s p o >> (RDF-star)
         parse_uri,                    // <http://...>
         variable,                     // ?variable
         parse_literal,                // "literal"
@@ -85,6 +156,7 @@ pub fn parse_predicate_object(input: &str) -> IResult<&str, (&str, &str)> {
 
 pub fn parse_triple_block(input: &str) -> IResult<&str, Vec<(&str, &str, &str)>> {
     let (input, subject) = alt((
+        parse_quoted_triple,          // << s p o >> (RDF-star)
         parse_uri,                    // <http://...>
         variable,                     // ?variable
         recognize((char(':'), identifier)), // :localname
@@ -447,13 +519,43 @@ fn parse_not(input: &str) -> IResult<&str, FilterExpression<'_>> {
     Ok((input, FilterExpression::Not(Box::new(expr))))
 }
 
+// Parse a SPARQL-star function call: isTRIPLE(?x), SUBJECT(?t), PREDICATE(?t), OBJECT(?t), TRIPLE(?s, ?p, ?o)
+fn parse_function_call(input: &str) -> IResult<&str, FilterExpression<'_>> {
+    let (input, _) = multispace0.parse(input)?;
+    let (input, func_name) = alt((
+        tag("isTRIPLE"),
+        tag("TRIPLE"),
+        tag("SUBJECT"),
+        tag("PREDICATE"),
+        tag("OBJECT"),
+    )).parse(input)?;
+    let (input, _) = multispace0.parse(input)?;
+    let (input, _) = char('(').parse(input)?;
+    let (input, _) = multispace0.parse(input)?;
+    let (input, args) = separated_list1(
+        (multispace0, char(','), multispace0),
+        alt((variable, parse_literal)),
+    ).parse(input)?;
+    let (input, _) = multispace0.parse(input)?;
+    let (input, _) = char(')').parse(input)?;
+    Ok((input, FilterExpression::FunctionCall(func_name, args)))
+}
+
+fn parse_standalone_arith(input: &str) -> IResult<&str, FilterExpression<'_>> {
+    let (input, _) = multispace0.parse(input)?;
+    let (input, expr) = parse_arithmetic_expression(input)?;
+    Ok((input, FilterExpression::ArithmeticExpr(Box::new(expr))))
+}
+
 // Parse a basic term (comparison, parenthesized expression, or negation)
 fn parse_term(input: &str) -> IResult<&str, FilterExpression<'_>> {
     alt((
+        parse_function_call,
         parse_comparison,
         parse_arithmetic_comparison,
         parse_parenthesized,
         parse_not,
+        parse_standalone_arith,
     )).parse(input)
 }
 
@@ -851,12 +953,36 @@ pub fn parse_insert(input: &str) -> IResult<&str, InsertClause<'_>> {
         separated_list1((space0, char('.'), space0), parse_triple_block).parse(input)?;
 
     let (input, _) = multispace0.parse(input)?;
+    // Allow optional trailing dot
+    let (input, _) = opt((char('.'), multispace0)).parse(input)?;
+    let (input, _) = multispace0.parse(input)?;
     let (input, _) = char('}').parse(input)?;
 
     // Flatten all the triple blocks into a single Vec
     let triples = triple_blocks.into_iter().flatten().collect();
 
     Ok((input, InsertClause { triples }))
+}
+
+// Parse DELETE { triple_patterns } clause
+pub fn parse_delete(input: &str) -> IResult<&str, DeleteClause<'_>> {
+    let (input, _) = tag("DELETE").parse(input)?;
+    let (input, _) = multispace0.parse(input)?;
+    let (input, _) = char('{').parse(input)?;
+    let (input, _) = multispace0.parse(input)?;
+
+    let (input, triple_blocks) =
+        separated_list1((space0, char('.'), space0), parse_triple_block).parse(input)?;
+
+    let (input, _) = multispace0.parse(input)?;
+    // Allow optional trailing dot
+    let (input, _) = opt((char('.'), multispace0)).parse(input)?;
+    let (input, _) = multispace0.parse(input)?;
+    let (input, _) = char('}').parse(input)?;
+
+    let triples = triple_blocks.into_iter().flatten().collect();
+
+    Ok((input, DeleteClause { triples }))
 }
 
 pub fn parse_construct_clause(input: &str) -> IResult<&str, Vec<(&str, &str, &str)>> {
@@ -928,8 +1054,8 @@ pub fn parse_sparql_query(
     let (mut input, _) = multispace0.parse(input)?;
 
     let mut variables = Vec::new();
-    if insert_clause.is_none() {
-        // Parse SELECT clause only if there is no INSERT clause
+    if insert_clause.is_none() && !input.trim_start().starts_with("WHERE") {
+        // Parse SELECT clause only if there is no INSERT clause and input doesn't start with WHERE
         let (new_input, vars) = parse_select(input)?;
         variables = vars;
         input = new_input;
@@ -1577,14 +1703,21 @@ pub fn parse_combined_query(input: &str) -> IResult<&str, CombinedQuery<'_>> {
     let (input, rule_opt) = opt(parse_rule).parse(input)?;
     let (input, _) = multispace0.parse(input)?;
     
+    // Optionally parse DELETE clause (before SPARQL query, per SPARQL Update spec)
+    let (input, delete_clause) = opt(parse_delete).parse(input)?;
+    let (input, _) = multispace0.parse(input)?;
+
     // Parse the SPARQL query part
-    let (input, sparql_parse) = if input.trim().is_empty() {
+    let (input, sparql_parse) = if input.trim().is_empty() && delete_clause.is_none() {
         // No remaining input - create empty SPARQL parse result
+        (input, (None, vec![], vec![], vec![], vec![], HashMap::new(), None, vec![], vec![], None, vec![], vec![]))
+    } else if delete_clause.is_some() && input.trim().is_empty() {
+        // DELETE with no WHERE clause — just the delete template
         (input, (None, vec![], vec![], vec![], vec![], HashMap::new(), None, vec![], vec![], None, vec![], vec![]))
     } else {
         // There's remaining input - try to parse it as SPARQL
         parse_sparql_query(input)?
-    }; 
+    };
 
     Ok((
         input,
@@ -1594,6 +1727,7 @@ pub fn parse_combined_query(input: &str) -> IResult<&str, CombinedQuery<'_>> {
             register_clause,
             rule: rule_opt,
             sparql: sparql_parse,
+            delete_clause,
         },
     ))
 }
@@ -2000,19 +2134,19 @@ pub fn process_retrieve_clause(
 fn matches_pattern(pattern: &TriplePattern, triple: &Triple) -> bool {
     // Check subject match
     let subject_match = match &pattern.0 {
-        Term::Variable(_) => true, // Variables match anything
+        Term::Variable(_) | Term::QuotedTriple(_) => true,
         Term::Constant(code) => *code == triple.subject,
     };
-    
+
     // Check predicate match
     let predicate_match = match &pattern.1 {
-        Term::Variable(_) => true,
+        Term::Variable(_) | Term::QuotedTriple(_) => true,
         Term::Constant(code) => *code == triple.predicate,
     };
-    
+
     // Check object match
     let object_match = match &pattern.2 {
-        Term::Variable(_) => true,
+        Term::Variable(_) | Term::QuotedTriple(_) => true,
         Term::Constant(code) => *code == triple.object,
     };
     

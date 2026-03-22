@@ -350,6 +350,84 @@ pub fn execute_query_rayon_parallel2_volcano(
     // Register prefixes from the query string first
     database.register_prefixes_from_query(&sparql);
 
+    // Check for DELETE clause before the main SPARQL parse
+    if let Ok((_, combined)) = parse_combined_query(&sparql) {
+        if combined.delete_clause.is_some() {
+            let delete_clause = combined.delete_clause;
+            let (insert_clause, _, patterns, _, _, _, _, _, _, _, _, _) = combined.sparql;
+            if !patterns.is_empty() {
+                // DELETE { template } WHERE { patterns }
+                // First, execute the WHERE clause as a SELECT query to get bindings
+                let delete_triples = delete_clause.as_ref().unwrap().triples.clone();
+
+                // Build a SELECT * query string from the WHERE patterns
+                let mut select_vars = std::collections::HashSet::new();
+                for (s, p, o) in &delete_triples {
+                    for term in [s, p, o] {
+                        if term.starts_with('?') {
+                            select_vars.insert(*term);
+                        }
+                    }
+                }
+                // Reconstruct as SELECT query and execute it
+                let var_list: String = select_vars.iter().cloned().collect::<Vec<_>>().join(" ");
+                let wrap_term = |t: &str| -> String {
+                    if t.starts_with('?') || t.starts_with('<') || t.starts_with('"') || t.starts_with(':') {
+                        t.to_string()
+                    } else {
+                        format!("<{}>", t)
+                    }
+                };
+                let pattern_strs: Vec<String> = patterns.iter()
+                    .map(|(s, p, o)| format!("{} {} {}", wrap_term(s), wrap_term(p), wrap_term(o)))
+                    .collect();
+                let select_query = format!("SELECT {} WHERE {{ {} . }}", var_list, pattern_strs.join(" . "));
+                let where_results = execute_query_rayon_parallel2_volcano(&select_query, database);
+
+                // Map variable names to column indices
+                let var_names: Vec<&str> = select_vars.iter().cloned().collect();
+
+                // For each result row, substitute variables in delete template
+                for row in &where_results {
+                    for (s, p, o) in &delete_triples {
+                        let resolve = |term: &str| -> String {
+                            if term.starts_with('?') {
+                                if let Some(idx) = var_names.iter().position(|v| *v == term) {
+                                    if idx < row.len() {
+                                        return row[idx].clone();
+                                    }
+                                }
+                                term.to_string()
+                            } else {
+                                term.to_string()
+                            }
+                        };
+                        let rs = resolve(s);
+                        let rp = resolve(p);
+                        let ro = resolve(o);
+                        let sid = database.encode_term_star(&rs);
+                        let pid = database.encode_term_star(&rp);
+                        let oid = database.encode_term_star(&ro);
+                        database.delete_triple(&Triple { subject: sid, predicate: pid, object: oid });
+                    }
+                }
+                // Also process INSERT if present (DELETE/INSERT combo)
+                if let Some(insert_clause) = insert_clause {
+                    process_insert_clause(Some(insert_clause), database);
+                }
+            } else {
+                // Simple DELETE without WHERE — delete specific triples directly
+                process_delete_clause(delete_clause, database);
+                // Also process INSERT if present
+                if let Some(insert_clause) = insert_clause {
+                    process_insert_clause(Some(insert_clause), database);
+                }
+            }
+            database.get_or_build_stats();
+            return Vec::new();
+        }
+    }
+
     let parse_result = parse_sparql_query(sparql);
 
     if let Ok((
@@ -680,18 +758,34 @@ fn normalize_query(sparql: &str) -> &str {
 fn process_insert_clause(insert_clause: Option<InsertClause>, database: &mut SparqlDatabase) {
     if let Some(insert_clause) = insert_clause {
         for (subject, predicate, object) in insert_clause.triples {
-            let mut dict = database.dictionary.write().unwrap();
-            let subject_id = dict.encode(subject);
-            let predicate_id = dict.encode(predicate);
-            let object_id = dict.encode(object);
-            drop(dict); // Drop lock
-            
+            let subject_id = database.encode_term_star(subject);
+            let predicate_id = database.encode_term_star(predicate);
+            let object_id = database.encode_term_star(object);
+
             let triple = Triple {
                 subject: subject_id,
                 predicate: predicate_id,
                 object: object_id,
             };
-            database.triples.insert(triple);
+            database.add_triple(triple);
+        }
+    }
+}
+
+// Helper function to process DELETE clause
+fn process_delete_clause(delete_clause: Option<DeleteClause>, database: &mut SparqlDatabase) {
+    if let Some(delete_clause) = delete_clause {
+        for (subject, predicate, object) in delete_clause.triples {
+            let subject_id = database.encode_term_star(subject);
+            let predicate_id = database.encode_term_star(predicate);
+            let object_id = database.encode_term_star(object);
+
+            let triple = Triple {
+                subject: subject_id,
+                predicate: predicate_id,
+                object: object_id,
+            };
+            database.delete_triple(&triple);
         }
     }
 }
@@ -938,7 +1032,7 @@ fn resolve_triple_pattern(
         )
     } else {
         // Resolve subject if it's not a variable
-        let resolved_subject = if subject_var.starts_with('?') {
+        let resolved_subject = if subject_var.starts_with('?') || subject_var.starts_with("<<") {
             subject_var.to_string()
         } else {
             database.resolve_query_term(subject_var, prefixes)
@@ -952,7 +1046,7 @@ fn resolve_triple_pattern(
         };
 
         // Resolve object if it's not a variable
-        let resolved_object = if object_var.starts_with('?') {
+        let resolved_object = if object_var.starts_with('?') || object_var.starts_with("<<") {
             object_var.to_string()
         } else {
             database.resolve_query_term(object_var, prefixes)
@@ -984,6 +1078,53 @@ fn process_bind_clauses<'a>(
                     .collect::<Vec<&str>>()
                     .join("");
                 row.insert(new_var, concatenated);
+            }
+        } else if func_name == "SUBJECT" || func_name == "PREDICATE" || func_name == "OBJECT" {
+            for row in final_results.iter_mut() {
+                if let Some(arg) = args.first() {
+                    let val = if arg.starts_with('?') {
+                        row.get(*arg).map(|s| s.to_string()).unwrap_or_default()
+                    } else {
+                        arg.to_string()
+                    };
+                    if val.starts_with("<<") && val.ends_with(">>") {
+                        let inner = val[2..val.len()-2].trim();
+                        let (s, p, o) = SparqlDatabase::split_quoted_triple_content(inner);
+                        let extracted = match func_name {
+                            "SUBJECT" => s,
+                            "PREDICATE" => p,
+                            "OBJECT" => o,
+                            _ => unreachable!(),
+                        };
+                        row.insert(new_var, extracted);
+                    }
+                }
+            }
+        } else if func_name == "TRIPLE" {
+            if args.len() == 3 {
+                for row in final_results.iter_mut() {
+                    let resolved: Vec<String> = args.iter().map(|arg| {
+                        if arg.starts_with('?') {
+                            row.get(*arg).map(|s| s.to_string()).unwrap_or_default()
+                        } else {
+                            arg.to_string()
+                        }
+                    }).collect();
+                    let qt_str = format!("<< {} {} {} >>", resolved[0], resolved[1], resolved[2]);
+                    row.insert(new_var, qt_str);
+                }
+            }
+        } else if func_name == "isTRIPLE" {
+            for row in final_results.iter_mut() {
+                if let Some(arg) = args.first() {
+                    let val = if arg.starts_with('?') {
+                        row.get(*arg).map(|s| s.as_str()).unwrap_or("")
+                    } else {
+                        *arg
+                    };
+                    let is_qt = val.starts_with("<<") && val.ends_with(">>");
+                    row.insert(new_var, is_qt.to_string());
+                }
             }
         } else if let Some(func) = database.udfs.get(func_name) {
             for row in final_results.iter_mut() {

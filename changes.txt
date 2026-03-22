@@ -9,6 +9,13 @@
 8. Cover reasoning with tests
 9. Fix a bug in reasoning related to filtering
 10. Extend a bit test with reasoning
+11. Add RDF-star and SPARQL-star support (quoted triples, Turtle-star/N-Triples-star parsing, SPARQL-star querying)
+12. Add SPARQL-star built-in functions: TRIPLE, SUBJECT, PREDICATE, OBJECT, isTRIPLE
+13. Add DELETE keyword support (basic and DELETE WHERE)
+14. Fix INSERT to handle both normal and quoted triples
+15. Add N-Triples-star and Turtle-star serialization (generate_ntriples, generate_turtle)
+16. Improve Streamertail optimizer with quoted triple cardinality estimation
+17. Fix ArithmeticExpression support in FILTER (properly store and evaluate AST instead of raw strings)
 
 0.1.1
 1. Modify whole project by making Cargo workspace

@@ -472,6 +472,7 @@ fn extract_join_parameters(premise: &TriplePattern, dict: &Dictionary) -> (Strin
             // For constants, create a synthetic variable name
             format!("__const_subj_{}", c)
         }
+        Term::QuotedTriple(_) => "__quoted_subj".to_string(),
     };
 
     let object_var = match object_term {
@@ -480,6 +481,7 @@ fn extract_join_parameters(premise: &TriplePattern, dict: &Dictionary) -> (Strin
             // For constants, create a synthetic variable name
             format!("__const_obj_{}", c)
         }
+        Term::QuotedTriple(_) => "__quoted_obj".to_string(),
     };
 
     let predicate_str = match predicate_term {
@@ -487,6 +489,7 @@ fn extract_join_parameters(premise: &TriplePattern, dict: &Dictionary) -> (Strin
         Term::Variable(v) => {
             format!("__var_pred_{}", v)
         }
+        Term::QuotedTriple(_) => "__quoted_pred".to_string(),
     };
 
     (subject_var, predicate_str, object_var)

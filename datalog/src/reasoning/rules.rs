@@ -25,9 +25,10 @@ pub fn matches_rule_pattern(
             }
         }
         Term::Constant(c) => *c == fact.subject,
+        Term::QuotedTriple(_) => false,
     };
     if !s_ok {
-        return false; // Don't modify original bindings on failure
+        return false;
     }
 
     // Predicate
@@ -41,9 +42,10 @@ pub fn matches_rule_pattern(
             }
         }
         Term::Constant(c) => *c == fact.predicate,
+        Term::QuotedTriple(_) => false,
     };
     if !p_ok {
-        return false; // Don't modify original bindings on failure
+        return false;
     }
 
     // Object
@@ -57,6 +59,7 @@ pub fn matches_rule_pattern(
             }
         }
         Term::Constant(c) => *c == fact.object,
+        Term::QuotedTriple(_) => false,
     };
 
     // Only if ALL parts match, commit the bindings

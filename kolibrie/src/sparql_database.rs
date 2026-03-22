@@ -9,6 +9,7 @@
  */
 
 use shared::dictionary::Dictionary;
+use shared::quoted_triple_store::{QuotedTripleStore, is_quoted_triple_id};
 use crate::sliding_window::SlidingWindow;
 use shared::triple::TimestampedTriple;
 use shared::triple::Triple;
@@ -55,6 +56,7 @@ pub struct SparqlDatabase {
     pub index_manager: UnifiedIndex,
     pub rule_map: HashMap<String, String>,
     pub cached_stats: Option<Arc<DatabaseStats>>,
+    pub quoted_triple_store: Arc<RwLock<QuotedTripleStore>>,
 }
 
 #[allow(dead_code)]
@@ -70,6 +72,121 @@ impl SparqlDatabase {
             index_manager: UnifiedIndex::new(),
             rule_map: HashMap::new(),
             cached_stats: None,
+            quoted_triple_store: Arc::new(RwLock::new(QuotedTripleStore::new())),
+        }
+    }
+
+    /// Encode a term that may be a quoted triple `<< s p o >>` (recursive).
+    /// Returns the u32 ID for the term.
+    /// Handles stripping `<>` from URIs and `""` from literals.
+    pub fn encode_term_star(&self, term: &str) -> u32 {
+        let trimmed = term.trim();
+        if trimmed.starts_with("<<") && trimmed.ends_with(">>") {
+            let inner = &trimmed[2..trimmed.len() - 2].trim();
+            let (s_str, p_str, o_str) = Self::split_quoted_triple_content(inner);
+            let s_id = self.encode_term_star(&s_str);
+            let p_id = self.encode_term_star(&p_str);
+            let o_id = self.encode_term_star(&o_str);
+            let mut qt = self.quoted_triple_store.write().unwrap();
+            qt.encode(s_id, p_id, o_id)
+        } else {
+            // Strip angle brackets from URIs
+            let cleaned = if trimmed.starts_with('<') && trimmed.ends_with('>') {
+                &trimmed[1..trimmed.len() - 1]
+            } else if trimmed.starts_with('"') {
+                // Handle literal: strip quotes, keep value
+                if let Some(close_pos) = trimmed[1..].find('"') {
+                    &trimmed[1..close_pos + 1]
+                } else {
+                    trimmed.trim_matches('"')
+                }
+            } else {
+                trimmed
+            };
+            let mut dict = self.dictionary.write().unwrap();
+            dict.encode(cleaned)
+        }
+    }
+
+    /// Decode a u32 ID that may be a regular dictionary ID or a quoted triple ID.
+    pub fn decode_any(&self, id: u32) -> Option<String> {
+        if is_quoted_triple_id(id) {
+            let qt = self.quoted_triple_store.read().unwrap();
+            let dict = self.dictionary.read().unwrap();
+            dict.decode_term(id, &qt)
+        } else {
+            let dict = self.dictionary.read().unwrap();
+            dict.decode(id).map(|s| s.to_string())
+        }
+    }
+
+    /// Split quoted triple content `s p o` into three parts, respecting nested `<< >>`.
+    /// This is used both internally and by the query optimizer for pattern parsing.
+    pub fn split_quoted_triple_content(content: &str) -> (String, String, String) {
+        let mut parts: Vec<String> = Vec::new();
+        let mut current = String::new();
+        let mut depth = 0;
+        let mut in_uri = false;
+        let mut in_literal = false;
+        let mut escaped = false;
+
+        for ch in content.chars() {
+            if escaped {
+                current.push(ch);
+                escaped = false;
+                continue;
+            }
+            match ch {
+                '\\' if in_literal => {
+                    current.push(ch);
+                    escaped = true;
+                }
+                '"' if !in_uri => {
+                    in_literal = !in_literal;
+                    current.push(ch);
+                }
+                '<' if !in_literal => {
+                    current.push(ch);
+                    // Check if this starts a quoted triple (<<)
+                    if current.ends_with("<<") {
+                        depth += 1;
+                    } else if depth == 0 {
+                        in_uri = true;
+                    }
+                }
+                '>' if !in_literal => {
+                    current.push(ch);
+                    if in_uri {
+                        in_uri = false;
+                    } else if current.ends_with(">>") && depth > 0 {
+                        depth -= 1;
+                    }
+                }
+                ' ' | '\t' | '\n' | '\r' if depth == 0 && !in_uri && !in_literal => {
+                    let trimmed = current.trim().to_string();
+                    if !trimmed.is_empty() {
+                        parts.push(trimmed);
+                        current.clear();
+                    }
+                }
+                _ => {
+                    current.push(ch);
+                }
+            }
+        }
+        let trimmed = current.trim().to_string();
+        if !trimmed.is_empty() {
+            parts.push(trimmed);
+        }
+
+        if parts.len() >= 3 {
+            (parts[0].clone(), parts[1].clone(), parts[2..].join(" "))
+        } else {
+            // Fallback: pad with empty strings
+            let s = parts.first().cloned().unwrap_or_default();
+            let p = parts.get(1).cloned().unwrap_or_default();
+            let o = parts.get(2).cloned().unwrap_or_default();
+            (s, p, o)
         }
     }
 
@@ -179,6 +296,89 @@ impl SparqlDatabase {
     
         xml.push_str("</rdf:RDF>\n");
         xml
+    }
+
+    /// Serializes all triples as N-Triples-star format
+    pub fn generate_ntriples(&self) -> String {
+        let mut output = String::new();
+        for triple in &self.triples {
+            let s = self.decode_any(triple.subject).unwrap_or_default();
+            let p = self.decode_any(triple.predicate).unwrap_or_default();
+            let o = self.decode_any(triple.object).unwrap_or_default();
+
+            let s_str = if s.starts_with("<<") { s } else { format!("<{}>", s) };
+            let p_str = format!("<{}>", p);
+            let o_str = if o.starts_with("<<") {
+                o
+            } else if o.starts_with("http://") || o.starts_with("https://") {
+                format!("<{}>", o)
+            } else {
+                format!("\"{}\"", o)
+            };
+
+            output.push_str(&format!("{} {} {} .\n", s_str, p_str, o_str));
+        }
+        output
+    }
+
+    /// Serializes all triples as Turtle-star format with prefix declarations
+    pub fn generate_turtle(&self) -> String {
+        let mut output = String::new();
+
+        // Output prefix declarations
+        for (prefix, uri) in &self.prefixes {
+            output.push_str(&format!("@prefix {}: <{}> .\n", prefix, uri));
+        }
+        if !self.prefixes.is_empty() {
+            output.push('\n');
+        }
+
+        // Group triples by subject, then by predicate
+        let mut subjects: std::collections::BTreeMap<String, std::collections::BTreeMap<String, Vec<String>>> = std::collections::BTreeMap::new();
+        for triple in &self.triples {
+            let s = self.decode_any(triple.subject).unwrap_or_default();
+            let p = self.decode_any(triple.predicate).unwrap_or_default();
+            let o = self.decode_any(triple.object).unwrap_or_default();
+            subjects.entry(s).or_default().entry(p).or_default().push(o);
+        }
+
+        for (subject, predicates) in &subjects {
+            let s_str = if subject.starts_with("<<") {
+                subject.clone()
+            } else {
+                format!("<{}>", subject)
+            };
+            output.push_str(&s_str);
+
+            let pred_count = predicates.len();
+            for (i, (predicate, objects)) in predicates.iter().enumerate() {
+                if i == 0 {
+                    output.push(' ');
+                } else {
+                    output.push_str(" ;\n    ");
+                }
+                output.push_str(&format!("<{}>", predicate));
+
+                for (j, obj) in objects.iter().enumerate() {
+                    if j > 0 {
+                        output.push_str(" ,");
+                    }
+                    output.push(' ');
+                    if obj.starts_with("<<") {
+                        output.push_str(obj);
+                    } else if obj.starts_with("http://") || obj.starts_with("https://") {
+                        output.push_str(&format!("<{}>", obj));
+                    } else {
+                        output.push_str(&format!("\"{}\"", obj));
+                    }
+                }
+
+                if i == pred_count - 1 {
+                    output.push_str(" .\n");
+                }
+            }
+        }
+        output
     }
 
     pub fn parse_rdf(&mut self, rdf_xml: &str) {
@@ -520,46 +720,168 @@ impl SparqlDatabase {
                 continue;
             }
 
-            // Parse triples
-            let parts: Vec<&str> = line.split_whitespace().collect();
-            if parts.len() >= 3 {
-                let subject_raw = parts[0].trim_end_matches('.');
-                let predicate_raw = parts[1].trim_end_matches('.');
-                let object_raw = parts[2..].join(" ").trim_end_matches('.').to_string();
+            // Use quoted-triple-aware tokenization
+            let line_no_dot = line.trim_end_matches('.').trim();
+            let tokens = Self::tokenize_turtle_star_line(line_no_dot);
 
-                // Strip angle brackets from IRIs
-                let subject = if subject_raw.starts_with('<') && subject_raw.ends_with('>') {
-                    subject_raw[1..subject_raw.len()-1].to_string()
+            if tokens.len() >= 3 {
+                let subject_raw = &tokens[0];
+                let predicate_raw = &tokens[1];
+                let object_raw = tokens[2..].join(" ");
+
+                // Check for annotation syntax {| ... |}
+                let (object_part, annotations) = if let Some(ann_start) = object_raw.find("{|") {
+                    let obj = object_raw[..ann_start].trim().to_string();
+                    // Extract annotation content between {| and |}
+                    if let Some(ann_end) = object_raw.find("|}") {
+                        let ann_content = object_raw[ann_start + 2..ann_end].trim();
+                        let ann_parts: Vec<&str> = ann_content.splitn(2, char::is_whitespace).collect();
+                        if ann_parts.len() == 2 {
+                            (obj, vec![(ann_parts[0].to_string(), ann_parts[1].to_string())])
+                        } else {
+                            (obj, vec![])
+                        }
+                    } else {
+                        (object_raw, vec![])
+                    }
                 } else {
-                    subject_raw.to_string()
+                    (object_raw, vec![])
                 };
 
-                let predicate = if predicate_raw.starts_with('<') && predicate_raw.ends_with('>') {
-                    predicate_raw[1..predicate_raw.len()-1].to_string()
+                let subject = Self::clean_turtle_term(subject_raw);
+                let predicate = Self::clean_turtle_term(predicate_raw);
+                let object = Self::clean_turtle_term(&object_part);
+
+                // Check if subject or object is a quoted triple
+                if subject.starts_with("<<") || object.starts_with("<<") {
+                    let s_id = self.encode_term_star(&subject);
+                    let p_id = self.encode_term_star(&predicate);
+                    let o_id = self.encode_term_star(&object);
+                    let triple = Triple { subject: s_id, predicate: p_id, object: o_id };
+                    self.add_triple(triple);
                 } else {
-                    predicate_raw.to_string()
-                };
+                    let mut dict = self.dictionary.write().unwrap();
+                    let triple = Triple {
+                        subject: dict.encode(&subject),
+                        predicate: dict.encode(&predicate),
+                        object: dict.encode(&object),
+                    };
+                    drop(dict);
+                    self.triples.insert(triple);
+                }
 
-                // Clean up object by removing quotes and angle brackets
-                let object = if object_raw.starts_with('<') && object_raw.ends_with('>') {
-                    object_raw[1..object_raw.len()-1].to_string()
-                } else if object_raw.starts_with('"') && object_raw.ends_with('"') {
-                    object_raw[1..object_raw.len()-1].to_string()
-                } else {
-                    object_raw.trim().trim_matches('"').to_string()
-                };
-
-                let mut dict = self.dictionary.write().unwrap();
-                let triple = Triple {
-                    subject: dict.encode(&subject),
-                    predicate: dict.encode(&predicate),
-                    object: dict.encode(&object),
-                };
-                drop(dict);
-                self.triples.insert(triple);
+                // Handle annotations: emit additional triples with << s p o >> as subject
+                for (ann_pred, ann_obj) in &annotations {
+                    let qt_str = format!("<< {} {} {} >>", subject, predicate, object);
+                    let qt_id = self.encode_term_star(&qt_str);
+                    let ann_p_id = self.encode_term_star(&Self::clean_turtle_term(ann_pred));
+                    let ann_o_id = self.encode_term_star(&Self::clean_turtle_term(ann_obj));
+                    let ann_triple = Triple { subject: qt_id, predicate: ann_p_id, object: ann_o_id };
+                    self.add_triple(ann_triple);
+                }
             } else {
                 eprintln!("Skipping invalid line: {}", line);
             }
+        }
+    }
+
+    /// Tokenize a Turtle-star line, keeping `<< ... >>` as a single token.
+    fn tokenize_turtle_star_line(line: &str) -> Vec<String> {
+        let mut tokens = Vec::new();
+        let mut current = String::new();
+        let mut depth = 0i32;
+        let mut in_uri = false;
+        let mut in_literal = false;
+        let mut escaped = false;
+        let mut chars = line.chars().peekable();
+
+        while let Some(ch) = chars.next() {
+            if escaped {
+                current.push(ch);
+                escaped = false;
+                continue;
+            }
+            match ch {
+                '\\' if in_literal => {
+                    current.push(ch);
+                    escaped = true;
+                }
+                '"' if !in_uri && depth == 0 => {
+                    in_literal = !in_literal;
+                    current.push(ch);
+                }
+                '"' if depth > 0 => {
+                    in_literal = !in_literal;
+                    current.push(ch);
+                }
+                '<' if !in_literal => {
+                    if chars.peek() == Some(&'<') && !in_uri {
+                        current.push(ch);
+                        current.push(chars.next().unwrap());
+                        depth += 1;
+                    } else if depth > 0 {
+                        current.push(ch);
+                        if chars.peek() == Some(&'<') {
+                            current.push(chars.next().unwrap());
+                            depth += 1;
+                        }
+                    } else {
+                        in_uri = true;
+                        current.push(ch);
+                    }
+                }
+                '>' if !in_literal => {
+                    if depth > 0 && !in_uri {
+                        current.push(ch);
+                        if chars.peek() == Some(&'>') {
+                            current.push(chars.next().unwrap());
+                            depth -= 1;
+                            if depth == 0 {
+                                tokens.push(current.trim().to_string());
+                                current.clear();
+                            }
+                        }
+                    } else if in_uri {
+                        in_uri = false;
+                        current.push(ch);
+                        if depth == 0 {
+                            tokens.push(current.trim().to_string());
+                            current.clear();
+                        }
+                    } else {
+                        current.push(ch);
+                    }
+                }
+                ' ' | '\t' | '\n' | '\r' if depth == 0 && !in_uri && !in_literal => {
+                    let trimmed = current.trim().to_string();
+                    if !trimmed.is_empty() {
+                        tokens.push(trimmed);
+                        current.clear();
+                    }
+                }
+                _ => {
+                    current.push(ch);
+                }
+            }
+        }
+        let trimmed = current.trim().to_string();
+        if !trimmed.is_empty() {
+            tokens.push(trimmed);
+        }
+        tokens
+    }
+
+    fn clean_turtle_term(term: &str) -> String {
+        let term = term.trim();
+        if term.starts_with("<<") {
+            // Keep quoted triples as-is
+            term.to_string()
+        } else if term.starts_with('<') && term.ends_with('>') {
+            term[1..term.len() - 1].to_string()
+        } else if term.starts_with('"') && term.ends_with('"') {
+            term[1..term.len() - 1].to_string()
+        } else {
+            term.trim_matches('"').to_string()
         }
     }
 
@@ -676,17 +998,14 @@ impl SparqlDatabase {
 
     // Encode triples
     pub fn encode_triples(&mut self, non_encoded_triples: Vec<Vec<(String, String, String)>>) -> Vec<Triple>{
-        // Merge results with main dictionary
         let mut encoded_triples = Vec::new();
         for triple_strings in non_encoded_triples {
             for (subject, predicate, object) in triple_strings {
-                let mut dict = self.dictionary.write().unwrap();
                 let main_triple = Triple {
-                    subject: dict.encode(&subject),
-                    predicate: dict.encode(&predicate),
-                    object: dict.encode(&object),
+                    subject: self.encode_term_star(&subject),
+                    predicate: self.encode_term_star(&predicate),
+                    object: self.encode_term_star(&object),
                 };
-                drop(dict);
                 encoded_triples.push(main_triple);
             }
         }
@@ -706,19 +1025,55 @@ impl SparqlDatabase {
         let mut in_uri = false;
         let mut in_literal = false;
         let mut escaped = false;
+        let mut qt_depth: i32 = 0; // Track quoted triple nesting depth
         let mut chars = line.chars().peekable();
 
         while let Some(ch) = chars.next() {
             match ch {
                 '<' if !in_literal && !escaped => {
-                    in_uri = true;
-                    current_part.push(ch);
+                    if chars.peek() == Some(&'<') && !in_uri {
+                        // Start of quoted triple <<
+                        current_part.push(ch);
+                        current_part.push(chars.next().unwrap());
+                        qt_depth += 1;
+                    } else if qt_depth > 0 {
+                        // Inside a quoted triple, could be a nested << or a URI <
+                        current_part.push(ch);
+                        if chars.peek() == Some(&'<') {
+                            // Nested <<
+                            current_part.push(chars.next().unwrap());
+                            qt_depth += 1;
+                        } else {
+                            // URI inside quoted triple — just accumulate
+                        }
+                    } else {
+                        in_uri = true;
+                        current_part.push(ch);
+                    }
                 }
-                '>' if in_uri && !escaped => {
-                    in_uri = false;
-                    current_part.push(ch);
-                    parts.push(current_part.trim().to_string());
-                    current_part.clear();
+                '>' if !in_literal && !escaped => {
+                    if qt_depth > 0 && !in_uri {
+                        current_part.push(ch);
+                        if chars.peek() == Some(&'>') {
+                            current_part.push(chars.next().unwrap());
+                            qt_depth -= 1;
+                            if qt_depth == 0 {
+                                // Finished top-level quoted triple
+                                parts.push(current_part.trim().to_string());
+                                current_part.clear();
+                            }
+                        }
+                        // else: stray > inside quoted triple, just accumulate
+                    } else if in_uri {
+                        in_uri = false;
+                        current_part.push(ch);
+                        if qt_depth == 0 {
+                            parts.push(current_part.trim().to_string());
+                            current_part.clear();
+                        }
+                    } else {
+                        current_part.push(ch);
+                    }
                 }
                 '"' if !in_uri && !escaped => {
                     in_literal = !in_literal;
@@ -783,7 +1138,7 @@ impl SparqlDatabase {
                     escaped = true;
                     current_part.push(ch);
                 }
-                ' ' | '\t' if !in_uri && !in_literal && !escaped => {
+                ' ' | '\t' if !in_uri && !in_literal && !escaped && qt_depth == 0 => {
                     if !current_part.is_empty() {
                         parts.push(current_part.trim().to_string());
                         current_part.clear();
@@ -819,7 +1174,12 @@ impl SparqlDatabase {
     // Helper method to clean N-Triples terms
     fn clean_ntriples_term(&self, term: &str) -> String {
         let term = term.trim();
-        
+
+        // Keep quoted triples as-is
+        if term.starts_with("<<") && term.ends_with(">>") {
+            return term.to_string();
+        }
+
         // Handle URIs
         if term.starts_with('<') && term.ends_with('>') {
             return term[1..term.len()-1].to_string();
@@ -972,6 +1332,10 @@ impl SparqlDatabase {
     }
 
     pub fn resolve_query_term(&self, term: &str, prefixes: &HashMap<String, String>) -> String {
+        if term.starts_with("<<") && term.ends_with(">>") {
+            // Keep quoted triple patterns as-is (they'll be handled downstream)
+            return term.to_string();
+        }
         if term.starts_with('<') && term.ends_with('>') {
             term.trim_start_matches('<')
                 .trim_end_matches('>')
@@ -1275,11 +1639,27 @@ impl SparqlDatabase {
                         FilterExpression::Not(expr) => {
                             !self.evaluate_filter_expression(result, expr)
                         },
-                        FilterExpression::ArithmeticExpr(expr_str) => {
-                            // True if it's non-zero
-                            match self.evaluate_arithmetic_string(result, expr_str) {
+                        FilterExpression::ArithmeticExpr(expr) => {
+                            match self.evaluate_arithmetic_expression(result, expr) {
                                 Ok(val) => val != 0.0,
                                 Err(_) => false,
+                            }
+                        }
+                        FilterExpression::FunctionCall(func_name, args) => {
+                            match *func_name {
+                                "isTRIPLE" => {
+                                    if let Some(arg) = args.first() {
+                                        let val = if arg.starts_with('?') {
+                                            result.get(arg).map(|s| s.as_str()).unwrap_or("")
+                                        } else {
+                                            arg
+                                        };
+                                        val.starts_with("<<") && val.ends_with(">>")
+                                    } else {
+                                        false
+                                    }
+                                }
+                                _ => false,
                             }
                         }
                     }
@@ -1465,11 +1845,27 @@ impl SparqlDatabase {
             FilterExpression::Not(expr) => {
                 !self.evaluate_filter_expression(result, expr)
             },
-            FilterExpression::ArithmeticExpr(expr_str) => {
-                // An arithmetic expression by itself is evaluated to true if it's non-zero
-                match self.evaluate_arithmetic_string(result, expr_str) {
+            FilterExpression::ArithmeticExpr(expr) => {
+                match self.evaluate_arithmetic_expression(result, expr) {
                     Ok(val) => val != 0.0,
                     Err(_) => false,
+                }
+            }
+            FilterExpression::FunctionCall(func_name, args) => {
+                match *func_name {
+                    "isTRIPLE" => {
+                        if let Some(arg) = args.first() {
+                            let val = if arg.starts_with('?') {
+                                result.get(arg).map(|s| s.as_str()).unwrap_or("")
+                            } else {
+                                arg
+                            };
+                            val.starts_with("<<") && val.ends_with(">>")
+                        } else {
+                            false
+                        }
+                    }
+                    _ => false,
                 }
             }
         }
@@ -1532,6 +1928,7 @@ impl SparqlDatabase {
             index_manager: UnifiedIndex::new(),
             rule_map: HashMap::new(),
             cached_stats: None,
+            quoted_triple_store: Arc::clone(&self.quoted_triple_store),
         }
     }
 
@@ -1603,6 +2000,7 @@ impl SparqlDatabase {
             index_manager: UnifiedIndex::new(),
             rule_map: HashMap::new(),
             cached_stats: None,
+            quoted_triple_store: Arc::clone(&self.quoted_triple_store),
         }
     }
 
@@ -2691,54 +3089,28 @@ impl SparqlDatabase {
     }
 
     pub fn handle_update(&mut self, update: &str) -> String {
-        // Parse the SPARQL update and apply changes to the database
-        if update.starts_with("INSERT") {
-            // Extract the part between curly braces
-            if let Some(start) = update.find('{') {
-                if let Some(end) = update.find('}') {
-                    let triple_str = &update[start + 1..end].trim();
-                    let parts: Vec<&str> = triple_str.split_whitespace().collect();
+        use crate::parser::{parse_insert, parse_delete};
 
-                    if parts.len() == 3 {
-                        let subject = parts[0].to_string();
-                        let predicate = parts[1].to_string();
-                        let object = parts[2].to_string();
-
-                        let mut dict = self.dictionary.write().unwrap();
-                        let triple = Triple {
-                            subject: dict.encode(&subject),
-                            predicate: dict.encode(&predicate),
-                            object: dict.encode(&object),
-                        };
-                        drop(dict);
-                        self.triples.insert(triple);
-                        return "Update Successful".to_string();
-                    }
+        let trimmed = update.trim();
+        if trimmed.starts_with("INSERT") {
+            if let Ok((_, insert_clause)) = parse_insert(trimmed) {
+                for (subject, predicate, object) in insert_clause.triples {
+                    let subject_id = self.encode_term_star(subject);
+                    let predicate_id = self.encode_term_star(predicate);
+                    let object_id = self.encode_term_star(object);
+                    self.add_triple(Triple { subject: subject_id, predicate: predicate_id, object: object_id });
                 }
+                return "Update Successful".to_string();
             }
-        } else if update.starts_with("DELETE") {
-            // Extract the part between curly braces
-            if let Some(start) = update.find('{') {
-                if let Some(end) = update.find('}') {
-                    let triple_str = &update[start + 1..end].trim();
-                    let parts: Vec<&str> = triple_str.split_whitespace().collect();
-
-                    if parts.len() == 3 {
-                        let subject = parts[0].to_string();
-                        let predicate = parts[1].to_string();
-                        let object = parts[2].to_string();
-
-                        let mut dict = self.dictionary.write().unwrap();
-                        let triple = Triple {
-                            subject: dict.encode(&subject),
-                            predicate: dict.encode(&predicate),
-                            object: dict.encode(&object),
-                        };
-                        drop(dict);
-                        self.triples.remove(&triple);
-                        return "Update Successful".to_string();
-                    }
+        } else if trimmed.starts_with("DELETE") {
+            if let Ok((_, delete_clause)) = parse_delete(trimmed) {
+                for (subject, predicate, object) in delete_clause.triples {
+                    let subject_id = self.encode_term_star(subject);
+                    let predicate_id = self.encode_term_star(predicate);
+                    let object_id = self.encode_term_star(object);
+                    self.delete_triple(&Triple { subject: subject_id, predicate: predicate_id, object: object_id });
                 }
+                return "Update Successful".to_string();
             }
         }
         "Update Failed".to_string()
