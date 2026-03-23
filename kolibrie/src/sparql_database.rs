@@ -39,7 +39,7 @@ use url::Url;
 use crate::streamertail_optimizer::DatabaseStats;
 use shared::index_manager::{
   IndexConfig, HexastoreIndex, SPOSingleIndex, POSSingleIndex, OSPSingleIndex,
-  PSOSingleIndex, OPSSingleIndex, SOPSingleIndex, SingleTableIndex, DynamicHexastoreIndex
+  PSOSingleIndex, OPSSingleIndex, SOPSingleIndex, SingleTableIndex, DynamicHexastoreIndex, BucketIndex
 };
 use shared::terms::TriplePattern;
 use crate::parser::convert_triple_pattern;
@@ -102,6 +102,7 @@ impl SparqlDatabase {
       // Pattern-dependent indexes start as hexastore;
       // `build_all_indexes` will swap them out.
       IndexConfig::DynamicHexastore { .. } => Box::new(HexastoreIndex::new()),
+      IndexConfig::Buckets { .. } => Box::new(HexastoreIndex::new()),
     }
   }
 
@@ -149,6 +150,12 @@ impl SparqlDatabase {
         let patterns = self.resolve_query_patterns(queries);
         let eval = *eval_interval as usize;
         Box::new(DynamicHexastoreIndex::new(patterns, eval))
+      }
+
+      IndexConfig::Buckets { queries } => {
+        let patterns = self.resolve_query_patterns(queries);
+        print!("lmkjqdfkmjldfqmlkjqdfmljkqdfsmljkfqsdjlmk:{}", queries[0]);
+        Box::new(BucketIndex::new(patterns))
       }
 
       // Future index types go here:

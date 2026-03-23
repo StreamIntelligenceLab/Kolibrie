@@ -22,6 +22,7 @@ pub use sop_single::SOPSingleIndex;
 pub use spo_single::SPOSingleIndex;
 pub use single_table::SingleTableIndex;
 pub use dynamic_hexastore::DynamicHexastoreIndex;
+pub use buckets::BucketIndex;
 pub mod hexastore;
 pub mod ops_single;
 pub mod osp_single;
@@ -31,6 +32,7 @@ pub mod sop_single;
 pub mod spo_single;
 pub mod single_table;
 pub mod dynamic_hexastore;
+pub mod buckets;
 
 #[derive(Debug, Clone)]
 pub enum IndexConfig {
@@ -61,6 +63,11 @@ pub enum IndexConfig {
         queries: Vec<String>,
     },
 
+    /// Buckets
+    Buckets {
+        queries: Vec<String>,
+    }
+
     // ── Future index types go here ──
     // YourNewIndex {
     //     some_setting: usize,
@@ -75,7 +82,7 @@ impl Default for IndexConfig {
 }
 
 /// Describes which access patterns an index can serve efficiently.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct AccessPatternSupport {
     pub sp: bool,   // subject+predicate -> objects
     pub so: bool,   // subject+object -> predicates
