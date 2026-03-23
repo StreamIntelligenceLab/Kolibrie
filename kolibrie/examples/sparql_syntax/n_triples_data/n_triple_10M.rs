@@ -30,115 +30,11 @@ use std::io::{BufRead, BufReader};
 use std::time::Instant;
 use shared::index_manager::*;
 
-fn make_config_from_env() -> (String, IndexConfig) {
-    let index_type = std::env::var("INDEX_TYPE")
-        .unwrap_or_else(|_| "hexastore".to_string())
-        .to_lowercase();
+type QuerySpec = (&'static str, &'static str);
 
-    let config = match index_type.as_str() {
-        "hexastore" | ""  => IndexConfig::Hexastore,
-        "spo"             => IndexConfig::SPO,
-        "pos"             => IndexConfig::POS,
-        "osp"             => IndexConfig::OSP,
-        "pso"             => IndexConfig::PSO,
-        "ops"             => IndexConfig::OPS,
-        "sop"             => IndexConfig::SOP,
-        "table"           => IndexConfig::SingleTable,
-        "dynamic"         => IndexConfig::DynamicHexastore {
-            eval_interval: 1000,
-            queries: vec![],   // or read from another env var
-        },
-        other => {
-            eprintln!(
-                "WARNING: Unknown INDEX_TYPE '{}', falling back to hexastore.",
-                other
-            );
-            IndexConfig::Hexastore
-        }
-    };
-
-    (index_type, config)
-}
-
-fn parse_large_ntriples_file(
-  file_path: &str,
-) -> Result<SparqlDatabase, Box<dyn std::error::Error>> {
-  let (index_name, config) = make_config_from_env();
-  println!("INDEX_TYPE = {}", index_name);
-  println!("Starting to parse N-Triples file: {}", file_path);
-  let start_time = Instant::now();
-
-  //let mut db = SparqlDatabase::new();
-  //let mut db = SparqlDatabase::with_index(Box::new(SPOSingleIndex::new()));
-  let mut db = SparqlDatabase::with_config(config);
-
-  // Much smaller buffer and more aggressive memory management
-  let file = File::open(file_path)?;
-  let reader = BufReader::with_capacity(64 * 1024, file); // Reduced buffer size
-
-  let mut line_count = 0;
-  let mut batch_lines = Vec::new();
-  const BATCH_SIZE: usize = 10_000; // Much smaller batch size
-
-  for line_result in reader.lines() {
-    let line = line_result?;
-
-    if line.trim().is_empty() || line.starts_with('#') {
-      continue;
-    }
-
-    batch_lines.push(line);
-    line_count += 1;
-
-    if batch_lines.len() >= BATCH_SIZE {
-      // Process batch immediately
-      let batch_data = batch_lines.join("\n");
-      db.parse_ntriples_and_add(&batch_data);
-
-      // Aggressive cleanup
-      batch_lines.clear();
-      batch_lines.shrink_to_fit();
-
-      // Progress info every 100k triples
-      if line_count % 100_000 == 0 {
-        println!("Processed {} triples", line_count);
-        std::hint::black_box(());
-
-        // Optional: small delay to let the system breathe
-        std::thread::sleep(std::time::Duration::from_millis(10));
-      }
-    }
-  }
-
-  // Process remaining batch
-  if !batch_lines.is_empty() {
-    let batch_data = batch_lines.join("\n");
-    db.parse_ntriples_and_add(&batch_data);
-  }
-  db.get_or_build_stats();
-
-  println!(
-    "Finished parsing {} triples in {:.2} seconds",
-    line_count,
-    start_time.elapsed().as_secs_f64()
-  );
-
-  // Build indexes after parsing - this is where the magic happens
-  println!("Building indexes...");
-  let index_start = Instant::now();
-  db.build_all_indexes();
-  println!("Indexes built in {:.2} seconds", index_start.elapsed().as_secs_f64());
-
-  Ok(db)
-}
-
-fn run_all_queries(db: &mut SparqlDatabase) {
-  const ITERATIONS: usize = 3;
-
-  // (name, query)
-  let queries: &[(&str, &str)] = &[
-    // C1
-    (
+fn workload_queries() -> Vec<QuerySpec> {
+    vec![
+        (
       "C1",
       r#"PREFIX wsdbm: <http://db.uwaterloo.ca/~galuc/wsdbm/>
             PREFIX sorg: <http://schema.org/>
@@ -602,45 +498,150 @@ fn run_all_queries(db: &mut SparqlDatabase) {
 }
 "#,
     ),
-  ];
+    ]
+}
 
-  for (name, query) in queries.iter() {
-    println!("==============================================");
-    println!("Running query {} ({} iterations)...", name, ITERATIONS);
+fn queries_for_index_manager(workload: &[QuerySpec]) -> Vec<String> {
+    workload
+        .iter()
+        .map(|(_, q)| q.trim().to_string())
+        .collect()
+}
 
-    let mut total_time = 0.0;
-    // let mut last_result:Vec<Vec<String>> = Vec::new();
+fn make_config_from_env(queries: Vec<String>) -> (String, IndexConfig) {
+    let index_type = std::env::var("INDEX_TYPE")
+        .unwrap_or_else(|_| "hexastore".to_string())
+        .to_lowercase();
 
-    for _ in 0..ITERATIONS {
-      let start = Instant::now();
-      let _ = execute_query_rayon_parallel2_volcano(query, db);
-      let elapsed = start.elapsed().as_secs_f64();
-      total_time += elapsed;
+    let config = match index_type.as_str() {
+        "hexastore" | "" => IndexConfig::Hexastore,
+        "spo" => IndexConfig::SPO,
+        "pos" => IndexConfig::POS,
+        "osp" => IndexConfig::OSP,
+        "pso" => IndexConfig::PSO,
+        "ops" => IndexConfig::OPS,
+        "sop" => IndexConfig::SOP,
+        "table" => IndexConfig::SingleTable,
+        "dynamic" => IndexConfig::DynamicHexastore {
+            eval_interval: 1000,
+            queries,
+        },
+        "buckets" => IndexConfig::Buckets { queries },
+        other => {
+            eprintln!(
+                "WARNING: Unknown INDEX_TYPE '{}', falling back to hexastore.",
+                other
+            );
+            IndexConfig::Hexastore
+        }
+    };
+
+    (index_type, config)
+}
+
+fn parse_large_ntriples_file(
+    file_path: &str,
+    workload: &[QuerySpec],
+) -> Result<SparqlDatabase, Box<dyn std::error::Error>> {
+    let (index_name, config) = make_config_from_env(queries_for_index_manager(workload));
+    println!("INDEX_TYPE = {}", index_name);
+    println!("Starting to parse N-Triples file: {}", file_path);
+
+    let start_time = Instant::now();
+    let mut db = SparqlDatabase::with_config(config);
+
+    let file = File::open(file_path)?;
+    let reader = BufReader::with_capacity(64 * 1024, file);
+
+    let mut line_count = 0;
+    let mut batch_lines = Vec::new();
+    const BATCH_SIZE: usize = 10_000;
+
+    for line_result in reader.lines() {
+        let line = line_result?;
+
+        if line.trim().is_empty() || line.starts_with('#') {
+            continue;
+        }
+
+        batch_lines.push(line);
+        line_count += 1;
+
+        if batch_lines.len() >= BATCH_SIZE {
+            let batch_data = batch_lines.join("\n");
+            db.parse_ntriples_and_add(&batch_data);
+
+            batch_lines.clear();
+            batch_lines.shrink_to_fit();
+
+            if line_count % 100_000 == 0 {
+                println!("Processed {} triples", line_count);
+                std::thread::sleep(std::time::Duration::from_millis(10));
+            }
+        }
     }
 
-    let avg = total_time / (ITERATIONS as f64);
-    println!("Average time for {}: {:.6} seconds", name, avg);
-  }
+    if !batch_lines.is_empty() {
+        let batch_data = batch_lines.join("\n");
+        db.parse_ntriples_and_add(&batch_data);
+    }
+
+    db.get_or_build_stats();
+
+    println!(
+        "Finished parsing {} triples in {:.2} seconds",
+        line_count,
+        start_time.elapsed().as_secs_f64()
+    );
+
+    println!("Building indexes...");
+    let index_start = Instant::now();
+    db.build_all_indexes();
+    println!(
+        "Indexes built in {:.2} seconds",
+        index_start.elapsed().as_secs_f64()
+    );
+
+    Ok(db)
+}
+
+fn run_all_queries(db: &mut SparqlDatabase, workload: &[QuerySpec]) {
+    const ITERATIONS: usize = 3;
+
+    for (name, query) in workload.iter() {
+        println!("==============================================");
+        println!("Running query {} ({} iterations)...", name, ITERATIONS);
+
+        let mut total_time = 0.0;
+
+        for _ in 0..ITERATIONS {
+            let start = Instant::now();
+            let _ = execute_query_rayon_parallel2_volcano(query, db);
+            total_time += start.elapsed().as_secs_f64();
+        }
+
+        let avg = total_time / (ITERATIONS as f64);
+        println!("Average time for {}: {:.6} seconds", name, avg);
+    }
 }
 
 fn main() {
-  // Set current directory to the root of the project
-  std::env::set_current_dir(std::path::Path::new(env!("CARGO_MANIFEST_DIR")))
-    .expect("Failed to set project root as current directory");
+    std::env::set_current_dir(std::path::Path::new(env!("CARGO_MANIFEST_DIR")))
+        .expect("Failed to set project root as current directory");
 
-  let file_path = "../benchmark_dataset/watdiv.10M.nt";
+    let file_path = "../benchmark_dataset/watdiv.10M.nt";
+    let workload = workload_queries();
 
-  match parse_large_ntriples_file(file_path) {
-    Ok(mut db) => {
-      println!("Successfully processed N-Triples file");
-      run_all_queries(&mut db);
+    match parse_large_ntriples_file(file_path, &workload) {
+        Ok(mut db) => {
+            println!("Successfully processed N-Triples file");
+            run_all_queries(&mut db, &workload);
+        }
+        Err(e) => {
+            eprintln!("Error processing file '{}': {}", file_path, e);
+            println!(
+                "Make sure ../benchmark_dataset/watdiv.10M.nt exists."
+            );
+        }
     }
-    Err(e) => {
-      eprintln!("Error processing file '{}': {}", file_path, e);
-      println!(
-      "File not found or error occurred. \
-        Make sure ../benchmark_dataset/watdiv.10M.nt exists."
-    );
-    }
-  }
 }
