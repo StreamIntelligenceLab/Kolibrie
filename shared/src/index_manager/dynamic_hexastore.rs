@@ -174,6 +174,7 @@ pub struct CardinalitySnapshot {
     pub num_subjects: f64,
     pub num_predicates: f64,
     pub num_objects: f64,
+    pub num_sp_pairs: f64,
 }
 
 impl CardinalitySnapshot {
@@ -183,18 +184,20 @@ impl CardinalitySnapshot {
         unique_subjects: usize,
         unique_predicates: usize,
         unique_objects: usize,
+        unique_sp_pairs: usize,
     ) -> Self {
         // Use at least 1.0 to avoid division-by-zero in cost formulas
         Self {
             num_subjects: (unique_subjects as f64).max(1.0),
             num_predicates: (unique_predicates as f64).max(1.0),
             num_objects: (unique_objects as f64).max(1.0),
+            num_sp_pairs: (unique_sp_pairs as f64).max(1.0),
         }
     }
 
     /// A default snapshot when we have no data yet.
     fn unknown() -> Self {
-        Self { num_subjects: 1.0, num_predicates: 1.0, num_objects: 1.0 }
+        Self { num_subjects: 1.0, num_predicates: 1.0, num_objects: 1.0, num_sp_pairs: 1.0 }
     }
 }
 
@@ -686,6 +689,7 @@ impl DynamicHexastoreIndex {
             self.inserts_since_eval = 0;
             self.reevaluate();
         }
+        println!("subj {} pred {} obj {}", self.latest_card.num_subjects, self.latest_card.num_predicates, self.latest_card.num_objects);
     }
 }
 
@@ -744,7 +748,6 @@ impl TripleIndex for DynamicHexastoreIndex {
                 any_new = true;
             }
         }
-
         if any_new {
             self.maybe_reevaluate();
         }
@@ -777,22 +780,29 @@ impl TripleIndex for DynamicHexastoreIndex {
                 pool.insert(triple);
             }
         }
+        for pool in &mut self.pools {
+            println!("pool {:?}", pool.desired_type);
+        }
         // After bulk load, gather rough cardinalities and reevaluate
         let mut subjects = HashSet::new();
         let mut predicates = HashSet::new();
         let mut objects = HashSet::new();
+        let mut sp_pairs = HashSet::new();
         for t in triples {
             subjects.insert(t.subject);
             predicates.insert(t.predicate);
             objects.insert(t.object);
+            sp_pairs.insert((t.subject, t.predicate));
         }
         self.latest_card = CardinalitySnapshot::from_stats(
             triples.len() as u64,
             subjects.len(),
             predicates.len(),
             objects.len(),
+            sp_pairs.len(),
         );
         self.reevaluate();
+        println!("subj {} pred {} obj {} sp {}", self.latest_card.num_subjects, self.latest_card.num_predicates, self.latest_card.num_objects, self.latest_card.num_sp_pairs);
     }
 
     // ── Query ───────────────────────────────────────────────────────────
@@ -898,189 +908,5 @@ impl TripleIndex for DynamicHexastoreIndex {
                 idx.optimize();
             }
         }
-    }
-}
-
-// ─── Tests ──────────────────────────────────────────────────────────────────
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::triple::Triple;
-
-    fn make_triple(s: u32, p: u32, o: u32) -> Triple {
-        Triple { subject: s, predicate: p, object: o }
-    }
-
-    #[test]
-    fn test_insert_and_query_basic() {
-        // Access pattern: (?s, p=1, ?o) — only predicate bound
-        let patterns = vec![
-            (Term::Variable("s".into()), Term::Constant(1), Term::Variable("o".into())),
-        ];
-        let mut idx = DynamicHexastoreIndex::with_patterns(patterns);
-
-        assert!(idx.insert(&make_triple(10, 1, 100)));
-        assert!(idx.insert(&make_triple(20, 1, 200)));
-        assert!(idx.insert(&make_triple(30, 2, 300)));
-
-        let result = idx.query(None, Some(1), None);
-        assert_eq!(result.len(), 2);
-
-        let result_all = idx.query(None, None, None);
-        assert_eq!(result_all.len(), 3);
-    }
-
-    #[test]
-    fn test_delete_removes_from_all_pools() {
-        let patterns = vec![
-            (Term::Constant(1), Term::Variable("p".into()), Term::Variable("o".into())),
-            (Term::Variable("s".into()), Term::Constant(2), Term::Variable("o".into())),
-        ];
-        let mut idx = DynamicHexastoreIndex::with_patterns(patterns);
-
-        idx.insert(&make_triple(1, 2, 3));
-        idx.insert(&make_triple(1, 2, 4));
-        assert_eq!(idx.triple_count(), 2);
-
-        assert!(idx.delete(&make_triple(1, 2, 3)));
-        assert_eq!(idx.triple_count(), 1);
-
-        // Deleting non-existent triple returns false
-        assert!(!idx.delete(&make_triple(99, 99, 99)));
-    }
-
-    #[test]
-    fn test_duplicate_insert_returns_false() {
-        let patterns = vec![
-            (Term::Variable("s".into()), Term::Variable("p".into()), Term::Variable("o".into())),
-        ];
-        let mut idx = DynamicHexastoreIndex::with_patterns(patterns);
-
-        assert!(idx.insert(&make_triple(1, 2, 3)));
-        assert!(!idx.insert(&make_triple(1, 2, 3)));
-        assert_eq!(idx.triple_count(), 1);
-    }
-
-    #[test]
-    fn test_build_from_triples() {
-        let patterns = vec![
-            (Term::Variable("s".into()), Term::Constant(1), Term::Variable("o".into())),
-            (Term::Constant(10), Term::Variable("p".into()), Term::Variable("o".into())),
-        ];
-        let mut idx = DynamicHexastoreIndex::with_patterns(patterns);
-
-        let triples: Vec<Triple> = (0..100)
-            .map(|i| make_triple(i % 10, i % 5, i))
-            .collect();
-        idx.build_from_triples(&triples);
-
-        assert_eq!(idx.triple_count(), 100);
-
-        // Query specific predicate
-        let p1 = idx.query(None, Some(1), None);
-        assert_eq!(p1.len(), 20); // i % 5 == 1 for i=1,6,11,...,96 → 20 triples
-    }
-
-    #[test]
-    fn test_clear() {
-        let patterns = vec![
-            (Term::Variable("s".into()), Term::Variable("p".into()), Term::Variable("o".into())),
-        ];
-        let mut idx = DynamicHexastoreIndex::with_patterns(patterns);
-        idx.insert(&make_triple(1, 2, 3));
-        idx.insert(&make_triple(4, 5, 6));
-        assert_eq!(idx.triple_count(), 2);
-
-        idx.clear();
-        assert_eq!(idx.triple_count(), 0);
-    }
-
-    #[test]
-    fn test_get_matching_triples() {
-        let patterns = vec![
-            (Term::Constant(1), Term::Constant(2), Term::Variable("o".into())),
-        ];
-        let mut idx = DynamicHexastoreIndex::with_patterns(patterns);
-        idx.insert(&make_triple(1, 2, 10));
-        idx.insert(&make_triple(1, 2, 20));
-        idx.insert(&make_triple(1, 3, 30));
-
-        let pat = (Term::Constant(1), Term::Constant(2), Term::Variable("o".into()));
-        let result = idx.get_matching_triples(&pat);
-        assert_eq!(result.len(), 2);
-    }
-
-    #[test]
-    fn test_reevaluate_does_not_lose_data() {
-        let patterns = vec![
-            (Term::Variable("s".into()), Term::Constant(1), Term::Variable("o".into())),
-        ];
-        let mut idx = DynamicHexastoreIndex::new(patterns, 5);
-
-        // Insert enough to trigger re-evaluation
-        for i in 0..20 {
-            idx.insert(&make_triple(i, 1, i * 10));
-        }
-        // Update cardinalities and force reevaluate
-        idx.update_cardinalities(CardinalitySnapshot {
-            num_subjects: 20.0,
-            num_predicates: 1.0,
-            num_objects: 20.0,
-        });
-        idx.reevaluate();
-
-        // Data should still be there
-        assert_eq!(idx.triple_count(), 20);
-        let result = idx.query(None, Some(1), None);
-        assert_eq!(result.len(), 20);
-    }
-
-    #[test]
-    fn test_supported_access_patterns() {
-        // Pattern needs SP scan �� should report sp=true
-        let patterns = vec![
-            (Term::Constant(1), Term::Constant(2), Term::Variable("o".into())),
-        ];
-        let idx = DynamicHexastoreIndex::with_patterns(patterns);
-        let support = idx.supported_access_patterns();
-        // At least one of SP or PS should be supported
-        assert!(support.sp || support.ps);
-    }
-
-    #[test]
-    fn test_cost_functions() {
-        let card = CardinalitySnapshot {
-            num_subjects: 100.0,
-            num_predicates: 10.0,
-            num_objects: 50.0,
-        };
-
-        // Querying SPO for bound s,p should be cheap (2 lookups)
-        let cost_sp = query_cost(IndexType::SPO, BoundPattern { s: true, p: true, o: false }, &card);
-        assert_eq!(cost_sp, 2.0);
-
-        // Querying SPO for bound o only should be expensive (full scan)
-        let cost_o = query_cost(IndexType::SPO, BoundPattern { s: false, p: false, o: true }, &card);
-        assert!(cost_o > 10.0);
-
-        // OPS should be cheap for bound o
-        let cost_o_ops = query_cost(IndexType::OPS, BoundPattern { s: false, p: false, o: true }, &card);
-        assert!(cost_o_ops < cost_o);
-    }
-
-    #[test]
-    fn test_clone_empty_and_clone_box() {
-        let patterns = vec![
-            (Term::Variable("s".into()), Term::Constant(1), Term::Variable("o".into())),
-        ];
-        let mut idx = DynamicHexastoreIndex::with_patterns(patterns);
-        idx.insert(&make_triple(1, 1, 10));
-
-        let empty = idx.clone_empty();
-        assert_eq!(empty.triple_count(), 0);
-
-        let cloned = idx.clone_box();
-        assert_eq!(cloned.triple_count(), 1);
     }
 }

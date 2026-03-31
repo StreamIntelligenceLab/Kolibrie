@@ -522,7 +522,7 @@ fn make_config_from_env(queries: Vec<String>) -> (String, IndexConfig) {
         "ops" => IndexConfig::OPS,
         "sop" => IndexConfig::SOP,
         "table" => IndexConfig::SingleTable,
-        "dynamic" => IndexConfig::DynamicHexastore {
+        "dynamic_hexastore" => IndexConfig::DynamicHexastore {
             eval_interval: 1000,
             queries,
         },

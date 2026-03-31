@@ -154,7 +154,6 @@ impl SparqlDatabase {
 
       IndexConfig::Buckets { queries } => {
         let patterns = self.resolve_query_patterns(queries);
-        print!("lmkjqdfkmjldfqmlkjqdfmljkqdfsmljkfqsdjlmk:{}", queries[0]);
         Box::new(BucketIndex::new(patterns))
       }
 
