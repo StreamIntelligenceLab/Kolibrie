@@ -1,0 +1,451 @@
+==============================================
+  Kolibrie Index Benchmark Runner
+==============================================
+Output directory: ./benchmark_results/20260407_065605
+Index types:      buckets pso hexastore dynamic_hexastore ops osp pos sop spo table
+==============================================
+
+[BUILD] Compiling in release mode...
+warning: unused variable: `i`
+   --> shared\src\index_manager\buckets.rs:219:14
+    |
+219 |         for (i, b) in self.buckets.iter().enumerate() {
+    |              ^ help: if this is intentional, prefix it with an underscore: `_i`
+    |
+    = note: `#[warn(unused_variables)]` (part of `#[warn(unused)]`) on by default
+
+warning: method `insert_optimized` is never used
+   --> shared\src\index_manager\single_table.rs:141:6
+    |
+129 | impl SingleTableIndex {
+    | --------------------- method in this implementation
+...
+141 |   fn insert_optimized(&mut self, triple: &Triple) -> bool {
+    |      ^^^^^^^^^^^^^^^^
+    |
+    = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: method `merge_scan` is never used
+   --> shared\src\index_manager\dynamic_hexastore.rs:409:8
+    |
+316 | impl IndexPool {
+    | -------------- method in this implementation
+...
+409 |     fn merge_scan<F>(&self, scan_fn: F) -> Option<Vec<u32>>
+    |        ^^^^^^^^^^
+
+warning: `shared` (lib) generated 3 warnings (run `cargo fix --lib -p shared` to apply 1 suggestion)
+warning: `shared` (lib) generated 3 warnings (3 duplicates)
+   Compiling kolibrie v0.1.1 (C:\Users\mirov\Documents\1.Bestanden\Kolibrie\kolibrie)
+warning: unused import: `shared::index_manager::TripleIndex`
+  --> datalog\src\reasoning_experimental.rs:13:5
+   |
+13 | use shared::index_manager::TripleIndex;
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+   |
+   = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
+
+warning: `datalog` (lib) generated 1 warning
+warning: unused import: `shared::index_manager::TripleIndex`
+  --> kolibrie\src\storage_manager.rs:16:5
+   |
+16 | use shared::index_manager::TripleIndex;
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+   |
+   = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
+
+warning: `kolibrie` (lib) generated 1 warning
+    Finished `release` profile [optimized + debuginfo] target(s) in 24.04s
+[BUILD] Done.
+
+==============================================
+[RUN] INDEX_TYPE=buckets
+      Output: ./benchmark_results/20260407_065605/buckets.txt
+==============================================
+warning: unused variable: `i`
+   --> shared\src\index_manager\buckets.rs:219:14
+    |
+219 |         for (i, b) in self.buckets.iter().enumerate() {
+    |              ^ help: if this is intentional, prefix it with an underscore: `_i`
+    |
+    = note: `#[warn(unused_variables)]` (part of `#[warn(unused)]`) on by default
+
+warning: method `insert_optimized` is never used
+   --> shared\src\index_manager\single_table.rs:141:6
+    |
+129 | impl SingleTableIndex {
+    | --------------------- method in this implementation
+...
+141 |   fn insert_optimized(&mut self, triple: &Triple) -> bool {
+    |      ^^^^^^^^^^^^^^^^
+    |
+    = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: method `merge_scan` is never used
+   --> shared\src\index_manager\dynamic_hexastore.rs:409:8
+    |
+316 | impl IndexPool {
+    | -------------- method in this implementation
+...
+409 |     fn merge_scan<F>(&self, scan_fn: F) -> Option<Vec<u32>>
+    |        ^^^^^^^^^^
+
+warning: `shared` (lib) generated 3 warnings (run `cargo fix --lib -p shared` to apply 1 suggestion)
+warning: `shared` (lib) generated 3 warnings (3 duplicates)
+warning: unused import: `shared::index_manager::TripleIndex`
+  --> datalog\src\reasoning_experimental.rs:13:5
+   |
+13 | use shared::index_manager::TripleIndex;
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+   |
+   = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
+
+   Compiling kolibrie v0.1.1 (C:\Users\mirov\Documents\1.Bestanden\Kolibrie\kolibrie)
+warning: `datalog` (lib) generated 1 warning
+warning: unused import: `shared::index_manager::TripleIndex`
+  --> kolibrie\src\storage_manager.rs:16:5
+   |
+16 | use shared::index_manager::TripleIndex;
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+   |
+   = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
+
+warning: `kolibrie` (lib) generated 1 warning
+    Finished `release` profile [optimized + debuginfo] target(s) in 23.97s
+     Running `C:\Users\mirov\Documents\1.Bestanden\Kolibrie\target\release\examples\n_triple_10M.exe`
+INDEX_TYPE = buckets
+Starting to parse N-Triples file: ../benchmark_dataset/watdiv.10M.nt
+Processed 100000 triples
+Processed 200000 triples
+Processed 300000 triples
+Processed 400000 triples
+Processed 500000 triples
+Processed 600000 triples
+Processed 700000 triples
+Processed 800000 triples
+Processed 900000 triples
+Processed 1000000 triples
+Processed 1100000 triples
+Processed 1200000 triples
+Processed 1300000 triples
+Processed 1400000 triples
+Processed 1500000 triples
+Processed 1600000 triples
+Processed 1700000 triples
+Processed 1800000 triples
+Processed 1900000 triples
+Processed 2000000 triples
+Processed 2100000 triples
+Processed 2200000 triples
+Processed 2300000 triples
+Processed 2400000 triples
+Processed 2500000 triples
+Processed 2600000 triples
+Processed 2700000 triples
+Processed 2800000 triples
+Processed 2900000 triples
+Processed 3000000 triples
+Processed 3100000 triples
+Processed 3200000 triples
+Processed 3300000 triples
+Processed 3400000 triples
+Processed 3500000 triples
+Processed 3600000 triples
+Processed 3700000 triples
+Processed 3800000 triples
+Processed 3900000 triples
+Processed 4000000 triples
+Processed 4100000 triples
+Processed 4200000 triples
+Processed 4300000 triples
+Processed 4400000 triples
+Processed 4500000 triples
+Processed 4600000 triples
+Processed 4700000 triples
+Processed 4800000 triples
+Processed 4900000 triples
+Processed 5000000 triples
+Processed 5100000 triples
+Processed 5200000 triples
+Processed 5300000 triples
+Processed 5400000 triples
+Processed 5500000 triples
+Processed 5600000 triples
+Processed 5700000 triples
+Processed 5800000 triples
+Processed 5900000 triples
+Processed 6000000 triples
+Processed 6100000 triples
+Processed 6200000 triples
+Processed 6300000 triples
+Processed 6400000 triples
+Processed 6500000 triples
+Processed 6600000 triples
+Processed 6700000 triples
+Processed 6800000 triples
+Processed 6900000 triples
+Processed 7000000 triples
+Processed 7100000 triples
+Processed 7200000 triples
+Processed 7300000 triples
+Processed 7400000 triples
+Processed 7500000 triples
+Processed 7600000 triples
+Processed 7700000 triples
+Processed 7800000 triples
+Processed 7900000 triples
+Processed 8000000 triples
+Processed 8100000 triples
+Processed 8200000 triples
+Processed 8300000 triples
+Processed 8400000 triples
+Processed 8500000 triples
+Processed 8600000 triples
+Processed 8700000 triples
+Processed 8800000 triples
+Processed 8900000 triples
+Processed 9000000 triples
+Processed 9100000 triples
+Processed 9200000 triples
+Processed 9300000 triples
+Processed 9400000 triples
+Processed 9500000 triples
+Processed 9600000 triples
+Processed 9700000 triples
+Processed 9800000 triples
+Processed 9900000 triples
+Processed 10000000 triples
+Processed 10100000 triples
+Processed 10200000 triples
+Processed 10300000 triples
+Processed 10400000 triples
+Processed 10500000 triples
+Processed 10600000 triples
+Processed 10700000 triples
+Processed 10800000 triples
+Processed 10900000 triples
+Finished parsing 10916457 triples in 14.98 seconds
+Building indexes...
+[Bucket Debug] --- BucketIndex Initialization ---
+[Bucket Debug] Requested planned patterns: 103
+[Bucket Debug]   Bucket [0]: Pattern: (Variable("?v0"), Constant(206061), Variable("?v1")), Bound: s=false, p=true, o=false
+[Bucket Debug]   Bucket [1]: Pattern: (Variable("?v0"), Constant(205904), Variable("?v2")), Bound: s=true, p=true, o=false
+[Bucket Debug]   Bucket [2]: Pattern: (Variable("?v0"), Constant(205881), Variable("?v3")), Bound: s=true, p=true, o=false
+[Bucket Debug]   Bucket [3]: Pattern: (Variable("?v0"), Constant(205988), Variable("?v4")), Bound: s=true, p=true, o=false
+[Bucket Debug]   Bucket [4]: Pattern: (Variable("?v4"), Constant(601766), Variable("?v5")), Bound: s=true, p=true, o=false
+[Bucket Debug]   Bucket [5]: Pattern: (Variable("?v4"), Constant(601764), Variable("?v6")), Bound: s=true, p=true, o=false
+[Bucket Debug]   Bucket [6]: Pattern: (Variable("?v7"), Constant(206401), Variable("?v6")), Bound: s=false, p=true, o=true
+[Bucket Debug]   Bucket [7]: Pattern: (Variable("?v7"), Constant(206079), Variable("?v8")), Bound: s=true, p=true, o=false
+[Bucket Debug]   Bucket [8]: Pattern: (Variable("?v2"), Constant(287), Constant(22)), Bound: s=false, p=true, o=true
+[Bucket Debug]   Bucket [9]: Pattern: (Variable("?v0"), Constant(593640), Variable("?v2")), Bound: s=false, p=true, o=true
+[Bucket Debug]   Bucket [10]: Pattern: (Variable("?v2"), Constant(266), Variable("?v3")), Bound: s=true, p=true, o=false
+[Bucket Debug]   Bucket [11]: Pattern: (Variable("?v4"), Constant(779978), Variable("?v5")), Bound: s=false, p=true, o=false
+[Bucket Debug]   Bucket [12]: Pattern: (Variable("?v4"), Constant(205883), Variable("?v6")), Bound: s=true, p=true, o=false
+[Bucket Debug]   Bucket [13]: Pattern: (Variable("?v4"), Constant(780739), Variable("?v7")), Bound: s=true, p=true, o=false
+[Bucket Debug]   Bucket [14]: Pattern: (Variable("?v7"), Constant(443313), Variable("?v3")), Bound: s=true, p=true, o=true
+[Bucket Debug]   Bucket [15]: Pattern: (Variable("?v3"), Constant(205988), Variable("?v8")), Bound: s=true, p=true, o=false
+[Bucket Debug]   Bucket [16]: Pattern: (Variable("?v0"), Constant(593711), Variable("?v1")), Bound: s=true, p=true, o=false
+[Bucket Debug]   Bucket [17]: Pattern: (Variable("?v8"), Constant(601879), Variable("?v9")), Bound: s=true, p=true, o=false
+[Bucket Debug]   Bucket [18]: Pattern: (Variable("?v0"), Constant(779975), Variable("?v1")), Bound: s=false, p=true, o=false
+[Bucket Debug]   Bucket [19]: Pattern: (Variable("?v0"), Constant(779930), Variable("?v2")), Bound: s=true, p=true, o=false
+[Bucket Debug]   Bucket [20]: Pattern: (Variable("?v0"), Constant(779874), Variable("?v3")), Bound: s=true, p=true, o=false
+[Bucket Debug]   Bucket [21]: Pattern: (Variable("?v0"), Constant(779919), Variable("?v4")), Bound: s=true, p=true, o=false
+[Bucket Debug]   Bucket [22]: Pattern: (Variable("?v0"), Constant(779869), Variable("?v5")), Bound: s=true, p=true, o=false
+[Bucket Debug]   Bucket [23]: Pattern: (Variable("?v0"), Constant(779922), Variable("?v6")), Bound: s=true, p=true, o=false
+[Bucket Debug]   Bucket [24]: Pattern: (Variable("?v3"), Constant(205876), Constant(205978)), Bound: s=false, p=true, o=true
+[Bucket Debug]   Bucket [25]: Pattern: (Variable("?v3"), Constant(208830), Variable("?v4")), Bound: s=true, p=true, o=false
+[Bucket Debug]   Bucket [26]: Pattern: (Variable("?v3"), Constant(205954), Variable("?v5")), Bound: s=true, p=true, o=false
+[Bucket Debug]   Bucket [27]: Pattern: (Variable("?v3"), Constant(205867), Variable("?v0")), Bound: s=true, p=true, o=false
+[Bucket Debug]   Bucket [28]: Pattern: (Variable("?v0"), Constant(205887), Constant(205986)), Bound: s=true, p=true, o=true
+[Bucket Debug]   Bucket [29]: Pattern: (Variable("?v0"), Constant(205876), Variable("?v2")), Bound: s=true, p=true, o=false
+[Bucket Debug]   Bucket [30]: Pattern: (Variable("?v0"), Constant(205867), Constant(209611)), Bound: s=false, p=true, o=true
+[Bucket Debug]   Bucket [31]: Pattern: (Variable("?v0"), Constant(205883), Variable("?v1")), Bound: s=true, p=true, o=false
+[Bucket Debug]   Bucket [32]: Pattern: (Variable("?v0"), Constant(205872), Variable("?v2")), Bound: s=true, p=true, o=false
+[Bucket Debug]   Bucket [33]: Pattern: (Variable("?v0"), Constant(1052657), Variable("?v3")), Bound: s=true, p=true, o=false
+[Bucket Debug]   Bucket [34]: Pattern: (Variable("?v0"), Constant(206061), Variable("?v4")), Bound: s=true, p=true, o=false
+[Bucket Debug]   Bucket [35]: Pattern: (Variable("?v0"), Constant(205874), Variable("?v5")), Bound: s=true, p=true, o=false
+[Bucket Debug]   Bucket [36]: Pattern: (Variable("?v1"), Constant(1045092), Variable("?v6")), Bound: s=true, p=true, o=false
+[Bucket Debug]   Bucket [37]: Pattern: (Variable("?v1"), Constant(1045090), Variable("?v7")), Bound: s=true, p=true, o=false
+[Bucket Debug]   Bucket [38]: Pattern: (Variable("?v0"), Constant(205867), Constant(254774)), Bound: s=false, p=true, o=true
+[Bucket Debug]   Bucket [39]: Pattern: (Variable("?v0"), Constant(205881), Variable("?v1")), Bound: s=true, p=true, o=false
+[Bucket Debug]   Bucket [40]: Pattern: (Variable("?v0"), Constant(205901), Variable("?v2")), Bound: s=true, p=true, o=false
+[Bucket Debug]   Bucket [41]: Pattern: (Variable("?v5"), Constant(443313), Variable("?v0")), Bound: s=false, p=true, o=true
+[Bucket Debug]   Bucket [42]: Pattern: (Variable("?v4"), Constant(780739), Variable("?v5")), Bound: s=false, p=true, o=true
+[Bucket Debug]   Bucket [43]: Pattern: (Variable("?v5"), Constant(443311), Variable("?v6")), Bound: s=true, p=true, o=false
+[Bucket Debug]   Bucket [44]: Pattern: (Variable("?v0"), Constant(205887), Constant(205942)), Bound: s=false, p=true, o=true
+[Bucket Debug]   Bucket [45]: Pattern: (Variable("?v0"), Constant(205883), Variable("?v1")), Bound: s=true, p=true, o=false
+[Bucket Debug]   Bucket [46]: Pattern: (Variable("?v2"), Constant(266), Variable("?v0")), Bound: s=false, p=true, o=true
+[Bucket Debug]   Bucket [47]: Pattern: (Variable("?v0"), Constant(205874), Variable("?v4")), Bound: s=true, p=true, o=false
+[Bucket Debug]   Bucket [48]: Pattern: (Variable("?v0"), Constant(205901), Variable("?v8")), Bound: s=true, p=true, o=false
+[Bucket Debug]   Bucket [49]: Pattern: (Variable("?v7"), Constant(779975), Variable("?v0")), Bound: s=false, p=true, o=true
+[Bucket Debug]   Bucket [50]: Pattern: (Variable("?v1"), Constant(1045092), Variable("?v5")), Bound: s=true, p=true, o=false
+[Bucket Debug]   Bucket [51]: Pattern: (Variable("?v1"), Constant(1045090), Variable("?v6")), Bound: s=true, p=true, o=false
+[Bucket Debug]   Bucket [52]: Pattern: (Variable("?v1"), Constant(206079), Constant(206080)), Bound: s=true, p=true, o=true
+[Bucket Debug]   Bucket [53]: Pattern: (Constant(595878), Constant(593640), Variable("?v0")), Bound: s=true, p=true, o=false
+[Bucket Debug]   Bucket [54]: Pattern: (Variable("?v0"), Constant(266), Variable("?v1")), Bound: s=true, p=true, o=false
+[Bucket Debug]   Bucket [55]: Pattern: (Variable("?v0"), Constant(268), Variable("?v3")), Bound: s=true, p=true, o=false
+[Bucket Debug]   Bucket [56]: Pattern: (Variable("?v0"), Constant(278), Variable("?v4")), Bound: s=true, p=true, o=false
+[Bucket Debug]   Bucket [57]: Pattern: (Variable("?v1"), Constant(205872), Variable("?v5")), Bound: s=true, p=true, o=false
+[Bucket Debug]   Bucket [58]: Pattern: (Variable("?v1"), Constant(1052657), Variable("?v6")), Bound: s=true, p=true, o=false
+[Bucket Debug]   Bucket [59]: Pattern: (Variable("?v0"), Constant(779817), Constant(205907)), Bound: s=false, p=true, o=true
+[Bucket Debug]   Bucket [60]: Pattern: (Variable("?v0"), Constant(779975), Variable("?v2")), Bound: s=true, p=true, o=false
+[Bucket Debug]   Bucket [61]: Pattern: (Variable("?v2"), Constant(206061), Variable("?v3")), Bound: s=true, p=true, o=false
+[Bucket Debug]   Bucket [62]: Pattern: (Constant(0), Constant(1), Variable("?v1")), Bound: s=true, p=true, o=false
+[Bucket Debug]   Bucket [63]: Pattern: (Variable("?v2"), Constant(779875), Variable("?v1")), Bound: s=false, p=true, o=true
+[Bucket Debug]   Bucket [64]: Pattern: (Variable("?v2"), Constant(779975), Constant(63618)), Bound: s=true, p=true, o=true
+[Bucket Debug]   Bucket [65]: Pattern: (Variable("?v0"), Constant(779817), Constant(205907)), Bound: s=false, p=true, o=true
+[Bucket Debug]   Bucket [66]: Pattern: (Variable("?v0"), Constant(779975), Variable("?v1")), Bound: s=true, p=true, o=false
+[Bucket Debug]   Bucket [67]: Pattern: (Variable("?v0"), Constant(205887), Constant(205888)), Bound: s=false, p=true, o=true
+[Bucket Debug]   Bucket [68]: Pattern: (Variable("?v0"), Constant(206061), Variable("?v2")), Bound: s=true, p=true, o=false
+[Bucket Debug]   Bucket [69]: Pattern: (Variable("?v0"), Constant(779978), Variable("?v1")), Bound: s=false, p=true, o=false
+[Bucket Debug]   Bucket [70]: Pattern: (Variable("?v0"), Constant(779875), Variable("?v3")), Bound: s=true, p=true, o=false
+[Bucket Debug]   Bucket [71]: Pattern: (Constant(0), Constant(1), Variable("?v3")), Bound: s=true, p=true, o=true
+[Bucket Debug]   Bucket [72]: Pattern: (Constant(593635), Constant(593640), Variable("?v0")), Bound: s=true, p=true, o=false
+[Bucket Debug]   Bucket [73]: Pattern: (Variable("?v0"), Constant(266), Variable("?v1")), Bound: s=true, p=true, o=false
+[Bucket Debug]   Bucket [74]: Pattern: (Variable("?v0"), Constant(268), Variable("?v3")), Bound: s=true, p=true, o=false
+[Bucket Debug]   Bucket [75]: Pattern: (Variable("?v0"), Constant(270), Variable("?v4")), Bound: s=true, p=true, o=false
+[Bucket Debug]   Bucket [76]: Pattern: (Variable("?v0"), Constant(292), Variable("?v5")), Bound: s=true, p=true, o=false
+[Bucket Debug]   Bucket [77]: Pattern: (Variable("?v0"), Constant(278), Variable("?v6")), Bound: s=true, p=true, o=false
+[Bucket Debug]   Bucket [78]: Pattern: (Variable("?v0"), Constant(272), Variable("?v7")), Bound: s=true, p=true, o=false
+[Bucket Debug]   Bucket [79]: Pattern: (Variable("?v0"), Constant(287), Variable("?v8")), Bound: s=true, p=true, o=false
+[Bucket Debug]   Bucket [80]: Pattern: (Variable("?v0"), Constant(296), Variable("?v9")), Bound: s=true, p=true, o=false
+[Bucket Debug]   Bucket [81]: Pattern: (Variable("?v0"), Constant(779875), Constant(2)), Bound: s=false, p=true, o=true
+[Bucket Debug]   Bucket [82]: Pattern: (Variable("?v0"), Constant(1052658), Constant(779980)), Bound: s=true, p=true, o=true
+[Bucket Debug]   Bucket [83]: Pattern: (Variable("?v0"), Constant(779874), Variable("?v1")), Bound: s=true, p=true, o=false
+[Bucket Debug]   Bucket [84]: Pattern: (Variable("?v0"), Constant(779869), Variable("?v3")), Bound: s=true, p=true, o=false
+[Bucket Debug]   Bucket [85]: Pattern: (Variable("?v0"), Constant(1052658), Constant(206168)), Bound: s=false, p=true, o=true
+[Bucket Debug]   Bucket [86]: Pattern: (Variable("?v0"), Constant(206061), Variable("?v2")), Bound: s=true, p=true, o=false
+[Bucket Debug]   Bucket [87]: Pattern: (Variable("?v0"), Constant(205867), Variable("?v3")), Bound: s=true, p=true, o=false
+[Bucket Debug]   Bucket [88]: Pattern: (Variable("?v0"), Constant(206163), Variable("?v4")), Bound: s=true, p=true, o=false
+[Bucket Debug]   Bucket [89]: Pattern: (Variable("?v0"), Constant(779919), Constant(779920)), Bound: s=false, p=true, o=true
+[Bucket Debug]   Bucket [90]: Pattern: (Variable("?v0"), Constant(779875), Constant(11)), Bound: s=true, p=true, o=true
+[Bucket Debug]   Bucket [91]: Pattern: (Variable("?v0"), Constant(779921), Variable("?v2")), Bound: s=true, p=true, o=false
+[Bucket Debug]   Bucket [92]: Pattern: (Variable("?v3"), Constant(205965), Variable("?v0")), Bound: s=false, p=true, o=true
+[Bucket Debug]   Bucket [93]: Pattern: (Variable("?v0"), Constant(1052658), Constant(205978)), Bound: s=false, p=true, o=true
+[Bucket Debug]   Bucket [94]: Pattern: (Variable("?v0"), Constant(206079), Constant(206080)), Bound: s=true, p=true, o=true
+[Bucket Debug]   Bucket [95]: Pattern: (Variable("?v0"), Constant(205874), Variable("?v2")), Bound: s=true, p=true, o=false
+[Bucket Debug]   Bucket [96]: Pattern: (Variable("?v0"), Constant(205954), Variable("?v3")), Bound: s=true, p=true, o=false
+[Bucket Debug]   Bucket [97]: Pattern: (Variable("?v0"), Constant(205867), Constant(205868)), Bound: s=false, p=true, o=true
+[Bucket Debug]   Bucket [98]: Pattern: (Variable("?v0"), Constant(206582), Variable("?v1")), Bound: s=true, p=true, o=false
+[Bucket Debug]   Bucket [99]: Pattern: (Variable("?v0"), Constant(1052658), Variable("?v2")), Bound: s=true, p=true, o=false
+[Bucket Debug]   Bucket [100]: Pattern: (Constant(608516), Constant(779975), Variable("?v0")), Bound: s=true, p=true, o=false
+[Bucket Debug]   Bucket [101]: Pattern: (Variable("?v0"), Constant(1052658), Variable("?v1")), Bound: s=true, p=true, o=false
+[Bucket Debug]   Bucket [102]: Pattern: (Variable("?v0"), Constant(205904), Variable("?v2")), Bound: s=true, p=true, o=false
+Indexes built in 4.25 seconds
+Successfully processed N-Triples file
+==============================================
+Running query C1 (3 iterations)...
+Average time for C1: 0.004475 seconds
+==============================================
+Running query C2 (3 iterations)...
+Average time for C2: 0.552848 seconds
+==============================================
+Running query C3 (3 iterations)...
+Average time for C3: 0.847724 seconds
+==============================================
+Running query F1 (3 iterations)...
+Average time for F1: 0.001397 seconds
+==============================================
+Running query F2 (3 iterations)...
+Average time for F2: 0.000396 seconds
+==============================================
+Running query F3 (3 iterations)...
+Average time for F3: 0.000446 seconds
+==============================================
+Running query F4 (3 iterations)...
+Average time for F4: 0.004124 seconds
+==============================================
+Running query F5 (3 iterations)...
+Average time for F5: 0.000712 seconds
+==============================================
+Running query L1 (3 iterations)...
+Average time for L1: 0.000435 seconds
+==============================================
+Running query L2 (3 iterations)...
+Average time for L2: 0.001124 seconds
+==============================================
+Running query L3 (3 iterations)...
+Average time for L3: 0.000426 seconds
+==============================================
+Running query L4 (3 iterations)...
+Average time for L4: 0.000925 seconds
+==============================================
+Running query L5 (3 iterations)...
+Average time for L5: 0.002918 seconds
+==============================================
+Running query S1 (3 iterations)...
+Average time for S1: 0.000738 seconds
+==============================================
+Running query S2 (3 iterations)...
+Average time for S2: 0.000557 seconds
+==============================================
+Running query S3 (3 iterations)...
+Average time for S3: 0.000215 seconds
+==============================================
+Running query S4 (3 iterations)...
+Average time for S4: 0.009803 seconds
+==============================================
+Running query S5 (3 iterations)...
+Average time for S5: 0.000188 seconds
+==============================================
+Running query S6 (3 iterations)...
+Average time for S6: 0.000411 seconds
+==============================================
+Running query S7 (3 iterations)...
+Average time for S7: 0.000351 seconds
+
+[DONE] buckets -> ./benchmark_results/20260407_065605/buckets.txt
+
+==============================================
+[RUN] INDEX_TYPE=pso
+      Output: ./benchmark_results/20260407_065605/pso.txt
+==============================================
+warning: unused variable: `i`
+   --> shared\src\index_manager\buckets.rs:219:14
+    |
+219 |         for (i, b) in self.buckets.iter().enumerate() {
+    |              ^ help: if this is intentional, prefix it with an underscore: `_i`
+    |
+    = note: `#[warn(unused_variables)]` (part of `#[warn(unused)]`) on by default
+
+warning: method `insert_optimized` is never used
+   --> shared\src\index_manager\single_table.rs:141:6
+    |
+129 | impl SingleTableIndex {
+    | --------------------- method in this implementation
+...
+141 |   fn insert_optimized(&mut self, triple: &Triple) -> bool {
+    |      ^^^^^^^^^^^^^^^^
+    |
+    = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: method `merge_scan` is never used
+   --> shared\src\index_manager\dynamic_hexastore.rs:409:8
+    |
+316 | impl IndexPool {
+    | -------------- method in this implementation
+...
+409 |     fn merge_scan<F>(&self, scan_fn: F) -> Option<Vec<u32>>
+    |        ^^^^^^^^^^
+
+warning: `shared` (lib) generated 3 warnings (run `cargo fix --lib -p shared` to apply 1 suggestion)
+warning: `shared` (lib) generated 3 warnings (3 duplicates)
+warning: unused import: `shared::index_manager::TripleIndex`
+  --> datalog\src\reasoning_experimental.rs:13:5
+   |
+13 | use shared::index_manager::TripleIndex;
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+   |
+   = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
+
+   Compiling kolibrie v0.1.1 (C:\Users\mirov\Documents\1.Bestanden\Kolibrie\kolibrie)
+warning: `datalog` (lib) generated 1 warning
+warning: unused import: `shared::index_manager::TripleIndex`
+  --> kolibrie\src\storage_manager.rs:16:5
+   |
+16 | use shared::index_manager::TripleIndex;
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+   |
+   = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
+
+warning: `kolibrie` (lib) generated 1 warning
