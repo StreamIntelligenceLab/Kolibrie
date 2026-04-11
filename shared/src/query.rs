@@ -11,6 +11,16 @@
 use std::collections::HashMap;
 use std::time::Duration;
 
+use crate::terms::TriplePattern;
+
+#[derive(Debug, Clone)]
+pub struct PlannedAccessPattern {
+    pub pattern: TriplePattern,
+    pub bound_subject: bool,
+    pub bound_predicate: bool,
+    pub bound_object: bool,
+}
+
 #[derive(Debug, Clone)]
 pub enum FilterExpression<'a> {
     Comparison(&'a str, &'a str, &'a str),

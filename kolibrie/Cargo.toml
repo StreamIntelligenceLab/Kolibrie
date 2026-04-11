@@ -17,6 +17,7 @@ exclude = ["target/"]
 build = "build.rs"
 
 [dependencies]
+sysinfo = "0.29"
 quick-xml = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }

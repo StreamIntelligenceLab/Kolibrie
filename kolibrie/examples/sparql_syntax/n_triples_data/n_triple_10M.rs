@@ -606,7 +606,7 @@ fn parse_large_ntriples_file(
 }
 
 fn run_all_queries(db: &mut SparqlDatabase, workload: &[QuerySpec]) {
-    const ITERATIONS: usize = 3;
+    const ITERATIONS: usize = 10;
 
     for (name, query) in workload.iter() {
         println!("==============================================");
