@@ -1438,7 +1438,6 @@ dependencies = [
  "rayon",
  "serde",
  "serde_json",
- "sysinfo",
 ]
 
 [[package]]

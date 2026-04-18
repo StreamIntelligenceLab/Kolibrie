@@ -17,7 +17,9 @@ RESULT_DIR="${OUTPUT_DIR}/${TIMESTAMP}"
 
 INDEX_TYPES=(
     "buckets"
+    "buckets"
     "pso"
+    "partial_hexastore"
     "hexastore"
     "dynamic_hexastore"
     "ops"

@@ -23,6 +23,8 @@ pub use spo_single::SPOSingleIndex;
 pub use single_table::SingleTableIndex;
 pub use dynamic_hexastore::DynamicHexastoreIndex;
 pub use buckets::BucketIndex;
+pub use partial_hexastore::PartialHexastoreIndex;
+pub mod partial_hexastore;
 pub mod hexastore;
 pub mod ops_single;
 pub mod osp_single;
@@ -65,6 +67,10 @@ pub enum IndexConfig {
 
     /// Buckets
     Buckets {
+        queries: Vec<String>,
+    },
+
+    PartialHexastore {
         queries: Vec<String>,
     }
 

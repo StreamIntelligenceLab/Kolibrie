@@ -30,7 +30,7 @@ use shared::index_manager::TripleIndex;
 use shared::index_manager::{
     BucketIndex, DynamicHexastoreIndex, HexastoreIndex, IndexConfig, OPSSingleIndex,
     OSPSingleIndex, POSSingleIndex, PSOSingleIndex, SOPSingleIndex, SPOSingleIndex,
-    SingleTableIndex,
+    SingleTableIndex, PartialHexastoreIndex
 };
 use shared::query::FilterExpression;
 use shared::terms::TriplePattern;
@@ -105,6 +105,7 @@ impl SparqlDatabase {
             // `build_all_indexes` will swap them out.
             IndexConfig::DynamicHexastore { .. } => Box::new(HexastoreIndex::new()),
             IndexConfig::Buckets { .. } => Box::new(HexastoreIndex::new()),
+            IndexConfig::PartialHexastore { .. } => Box::new(HexastoreIndex::new()),
         }
     }
 
@@ -155,20 +156,12 @@ impl SparqlDatabase {
                     values_clause.as_ref(),
                 );
 
-                //println!("\n[Plan Debug] === UNOPTIMIZED LOGICAL PLAN ===");
-                //println!("{:#?}", logical_plan);
-
-                // Fetch database stats & use Streamertail optimizer to find the exact physical execution plan
                 let stats = self.get_or_build_stats();
                 let mut optimizer = Streamertail::with_cached_stats(stats.clone());
                 let optimized_plan = optimizer.find_best_plan(&logical_plan);
 
-                //println!("\n[Plan Debug] === OPTIMIZED PHYSICAL PLAN ===");
-                //println!("{:#?}\n", optimized_plan);
-
                 let mut bound_vars = HashSet::new();
 
-                // Values_clause bindings are available from the very beginning
                 if let Some(vc) = values_clause {
                     for var in &vc.variables {
                         let mut v = var.to_string();
@@ -179,7 +172,6 @@ impl SparqlDatabase {
                     }
                 }
 
-                // Helper recursive function to walk the PHYSICAL plan execution tree
                 fn traverse_physical(
                     op: &PhysicalOperator,
                     bound_vars: &mut HashSet<String>,
@@ -210,7 +202,6 @@ impl SparqlDatabase {
                                 bound_object,
                             });
 
-                            // Variables from this scan are now bound for downstream pipeline operations
                             if let Term::Variable(v) = s {
                                 bound_vars.insert(v.clone());
                             }
@@ -227,8 +218,6 @@ impl SparqlDatabase {
                         } => {
                             let mut sorted_patterns = patterns.clone();
 
-                            // Crucial Fix: StarJoin engine executes patterns by selectivity (most constants first)
-                            // We must sort them exactly how the engine executes them to track variables accurately.
                             sorted_patterns.sort_by_key(|p| {
                                 let mut constants = 0;
                                 if matches!(p.0, Term::Constant(_)) {
@@ -243,29 +232,61 @@ impl SparqlDatabase {
                                 std::cmp::Reverse(constants)
                             });
 
-                            for pattern in &sorted_patterns {
+                            let initial_bound_vars = bound_vars.clone();
+
+                            for (i, pattern) in sorted_patterns.iter().enumerate() {
                                 let (s, p, o) = pattern;
-                                let bound_subject = match s {
+
+                                // The pattern evaluated independently (Hash Join path fallback)
+                                let original_bound_subject = match s {
                                     Term::Constant(_) => true,
-                                    Term::Variable(v) => bound_vars.contains(v),
+                                    Term::Variable(v) => initial_bound_vars.contains(v),
                                 };
-                                let bound_predicate = match p {
+                                let original_bound_predicate = match p {
                                     Term::Constant(_) => true,
-                                    Term::Variable(v) => bound_vars.contains(v),
+                                    Term::Variable(v) => initial_bound_vars.contains(v),
                                 };
-                                let bound_object = match o {
+                                let original_bound_object = match o {
                                     Term::Constant(_) => true,
-                                    Term::Variable(v) => bound_vars.contains(v),
+                                    Term::Variable(v) => initial_bound_vars.contains(v),
                                 };
 
                                 out.push(PlannedAccessPattern {
                                     pattern: pattern.clone(),
-                                    bound_subject,
-                                    bound_predicate,
-                                    bound_object,
+                                    bound_subject: original_bound_subject,
+                                    bound_predicate: original_bound_predicate,
+                                    bound_object: original_bound_object,
                                 });
 
-                                // Post-scan, its variables are bound for the subsequent internal StarJoin patterns
+                                // For i > 0, it might also be executed as a Bind Join
+                                if i > 0 {
+                                    let accum_bound_subject = match s {
+                                        Term::Constant(_) => true,
+                                        Term::Variable(v) => bound_vars.contains(v),
+                                    };
+                                    let accum_bound_predicate = match p {
+                                        Term::Constant(_) => true,
+                                        Term::Variable(v) => bound_vars.contains(v),
+                                    };
+                                    let accum_bound_object = match o {
+                                        Term::Constant(_) => true,
+                                        Term::Variable(v) => bound_vars.contains(v),
+                                    };
+
+                                    if accum_bound_subject != original_bound_subject
+                                        || accum_bound_predicate != original_bound_predicate
+                                        || accum_bound_object != original_bound_object
+                                    {
+                                        out.push(PlannedAccessPattern {
+                                            pattern: pattern.clone(),
+                                            bound_subject: accum_bound_subject,
+                                            bound_predicate: accum_bound_predicate,
+                                            bound_object: accum_bound_object,
+                                        });
+                                    }
+                                }
+
+                                // Update accumulated bound_vars
                                 if let Term::Variable(v) = s {
                                     bound_vars.insert(v.clone());
                                 }
@@ -277,21 +298,30 @@ impl SparqlDatabase {
                                 }
                             }
                         }
-                        PhysicalOperator::NestedLoopJoin { left, right }
-                        | PhysicalOperator::ParallelJoin { left, right } => {
-                            // Pipeline joins: Left executes first, bindings flow completely into right side
-                            traverse_physical(left, bound_vars, out);
-                            traverse_physical(right, bound_vars, out);
+                        PhysicalOperator::ParallelJoin { left, right } => {
+                            // Left executes independently
+                            let mut left_vars = bound_vars.clone();
+                            traverse_physical(left, &mut left_vars, out);
+
+                            // Right can execute independently (Hash/Merge join) OR dependently (Bind join)
+                            let mut right_vars_unbound = bound_vars.clone();
+                            traverse_physical(right, &mut right_vars_unbound, out);
+
+                            let mut right_vars_bound = left_vars.clone();
+                            traverse_physical(right, &mut right_vars_bound, out);
+
+                            bound_vars.extend(left_vars);
+                            bound_vars.extend(right_vars_unbound);
                         }
-                        PhysicalOperator::HashJoin { left, right }
+                        PhysicalOperator::NestedLoopJoin { left, right }
+                        | PhysicalOperator::HashJoin { left, right }
                         | PhysicalOperator::OptimizedHashJoin { left, right } => {
-                            // Hash joins: Both sides evaluate independently using ONLY the pre-join bounds
+                            // Both sides evaluate independently using ONLY the pre-join bounds
                             let mut left_vars = bound_vars.clone();
                             let mut right_vars = bound_vars.clone();
                             traverse_physical(left, &mut left_vars, out);
                             traverse_physical(right, &mut right_vars, out);
 
-                            // After execution, the result contains variables from both sides
                             bound_vars.extend(left_vars);
                             bound_vars.extend(right_vars);
                         }
@@ -397,7 +427,14 @@ impl SparqlDatabase {
                 // Now it's perfectly fine to borrow `self` mutably!
                 let patterns = self.resolve_planned_access_patterns(&queries);
                 Box::new(BucketIndex::new(patterns))
-            } // Future index types go here:
+            }
+
+            IndexConfig::PartialHexastore { queries } => {
+                let parsed_patterns = self.resolve_planned_access_patterns(&queries);
+                Box::new(PartialHexastoreIndex::new(parsed_patterns))
+            } 
+            
+            // Future index types go here:
               // IndexConfig::YourNewIndex { some_param, queries } => {
               //     let patterns = self.resolve_query_patterns(&queries);
               //     Box::new(YourNewIndex::new(patterns, some_param))

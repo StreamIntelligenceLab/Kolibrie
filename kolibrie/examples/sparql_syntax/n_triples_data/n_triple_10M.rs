@@ -25,18 +25,20 @@
 
 use kolibrie::execute_query::*;
 use kolibrie::sparql_database::*;
-use std::fs::File;
-use std::io::{BufRead, BufReader};
-use std::time::Instant;
 use shared::index_manager::*;
+use std::collections::{BTreeMap, HashSet};
+use std::fs::{self, File};
+use std::io::{BufRead, BufReader, Write};
+use std::path::Path;
+use std::time::Instant;
 
 type QuerySpec = (&'static str, &'static str);
 
 fn workload_queries() -> Vec<QuerySpec> {
     vec![
         (
-      "C1",
-      r#"PREFIX wsdbm: <http://db.uwaterloo.ca/~galuc/wsdbm/>
+            "C1",
+            r#"PREFIX wsdbm: <http://db.uwaterloo.ca/~galuc/wsdbm/>
             PREFIX sorg: <http://schema.org/>
             PREFIX dc:   <http://purl.org/dc/terms/>
             PREFIX foaf: <http://xmlns.com/foaf/>
@@ -59,11 +61,11 @@ fn workload_queries() -> Vec<QuerySpec> {
             ?v7	sorg:language	?v8 .
 }
 "#,
-    ),
-    // C2
-    (
-      "C2",
-      r#"PREFIX wsdbm: <http://db.uwaterloo.ca/~galuc/wsdbm/>
+        ),
+        // C2
+        (
+            "C2",
+            r#"PREFIX wsdbm: <http://db.uwaterloo.ca/~galuc/wsdbm/>
             PREFIX sorg: <http://schema.org/>
             PREFIX dc:   <http://purl.org/dc/terms/>
             PREFIX foaf: <http://xmlns.com/foaf/>
@@ -87,11 +89,11 @@ fn workload_queries() -> Vec<QuerySpec> {
             ?v8	rev:totalVotes	?v9 .
 }
 "#,
-    ),
-    // C3
-    (
-      "C3",
-      r#"PREFIX wsdbm: <http://db.uwaterloo.ca/~galuc/wsdbm/>
+        ),
+        // C3
+        (
+            "C3",
+            r#"PREFIX wsdbm: <http://db.uwaterloo.ca/~galuc/wsdbm/>
             PREFIX sorg: <http://schema.org/>
             PREFIX dc:   <http://purl.org/dc/terms/>
             PREFIX foaf: <http://xmlns.com/foaf/>
@@ -112,11 +114,11 @@ fn workload_queries() -> Vec<QuerySpec> {
             ?v0	foaf:givenName	?v6 .
 }
 "#,
-    ),
-    // F1
-    (
-      "F1",
-      r#"PREFIX wsdbm: <http://db.uwaterloo.ca/~galuc/wsdbm/>
+        ),
+        // F1
+        (
+            "F1",
+            r#"PREFIX wsdbm: <http://db.uwaterloo.ca/~galuc/wsdbm/>
             PREFIX sorg: <http://schema.org/>
             PREFIX dc:   <http://purl.org/dc/terms/>
             PREFIX foaf: <http://xmlns.com/foaf/>
@@ -136,11 +138,11 @@ fn workload_queries() -> Vec<QuerySpec> {
             ?v3	rdf:type	wsdbm:ProductCategory2 .
 }
 "#,
-    ),
-    // F2
-    (
-      "F2",
-      r#"PREFIX wsdbm: <http://db.uwaterloo.ca/~galuc/wsdbm/>
+        ),
+        // F2
+        (
+            "F2",
+            r#"PREFIX wsdbm: <http://db.uwaterloo.ca/~galuc/wsdbm/>
             PREFIX sorg: <http://schema.org/>
             PREFIX dc:   <http://purl.org/dc/terms/>
             PREFIX foaf: <http://xmlns.com/foaf/>
@@ -162,11 +164,11 @@ fn workload_queries() -> Vec<QuerySpec> {
             ?v0	wsdbm:hasGenre	<http://db.uwaterloo.ca/~galuc/wsdbm/SubGenre1> .
 }
 "#,
-    ),
-    // F3
-    (
-      "F3",
-      r#"PREFIX wsdbm: <http://db.uwaterloo.ca/~galuc/wsdbm/>
+        ),
+        // F3
+        (
+            "F3",
+            r#"PREFIX wsdbm: <http://db.uwaterloo.ca/~galuc/wsdbm/>
             PREFIX sorg: <http://schema.org/>
             PREFIX dc:   <http://purl.org/dc/terms/>
             PREFIX foaf: <http://xmlns.com/foaf/>
@@ -186,11 +188,11 @@ fn workload_queries() -> Vec<QuerySpec> {
             ?v5	wsdbm:purchaseFor	?v0 .
 }
 "#,
-    ),
-    // F4
-    (
-      "F4",
-      r#"PREFIX wsdbm: <http://db.uwaterloo.ca/~galuc/wsdbm/>
+        ),
+        // F4
+        (
+            "F4",
+            r#"PREFIX wsdbm: <http://db.uwaterloo.ca/~galuc/wsdbm/>
             PREFIX sorg: <http://schema.org/>
             PREFIX dc:   <http://purl.org/dc/terms/>
             PREFIX foaf: <http://xmlns.com/foaf/>
@@ -213,11 +215,11 @@ fn workload_queries() -> Vec<QuerySpec> {
             ?v7	wsdbm:likes	?v0 .
 }
 "#,
-    ),
-    // F5
-    (
-      "F5",
-      r#"PREFIX wsdbm: <http://db.uwaterloo.ca/~galuc/wsdbm/>
+        ),
+        // F5
+        (
+            "F5",
+            r#"PREFIX wsdbm: <http://db.uwaterloo.ca/~galuc/wsdbm/>
             PREFIX sorg: <http://schema.org/>
             PREFIX dc:   <http://purl.org/dc/terms/>
             PREFIX foaf: <http://xmlns.com/foaf/>
@@ -237,11 +239,11 @@ fn workload_queries() -> Vec<QuerySpec> {
             ?v1	rdf:type	?v6 .
 }
 "#,
-    ),
-    // L1
-    (
-      "L1",
-      r#"PREFIX wsdbm: <http://db.uwaterloo.ca/~galuc/wsdbm/>
+        ),
+        // L1
+        (
+            "L1",
+            r#"PREFIX wsdbm: <http://db.uwaterloo.ca/~galuc/wsdbm/>
             PREFIX sorg: <http://schema.org/>
             PREFIX dc:   <http://purl.org/dc/terms/>
             PREFIX foaf: <http://xmlns.com/foaf/>
@@ -258,11 +260,11 @@ fn workload_queries() -> Vec<QuerySpec> {
             ?v0 wsdbm:likes ?v2 .
 }
 "#,
-    ),
-    // L2
-    (
-      "L2",
-      r#"PREFIX wsdbm: <http://db.uwaterloo.ca/~galuc/wsdbm/>
+        ),
+        // L2
+        (
+            "L2",
+            r#"PREFIX wsdbm: <http://db.uwaterloo.ca/~galuc/wsdbm/>
             PREFIX sorg: <http://schema.org/>
             PREFIX dc:   <http://purl.org/dc/terms/>
             PREFIX foaf: <http://xmlns.com/foaf/>
@@ -279,11 +281,11 @@ fn workload_queries() -> Vec<QuerySpec> {
             ?v2 sorg:nationality ?v1 .
 }
 "#,
-    ),
-    // L3
-    (
-      "L3",
-      r#"PREFIX wsdbm: <http://db.uwaterloo.ca/~galuc/wsdbm/>
+        ),
+        // L3
+        (
+            "L3",
+            r#"PREFIX wsdbm: <http://db.uwaterloo.ca/~galuc/wsdbm/>
             PREFIX sorg: <http://schema.org/>
             PREFIX dc:   <http://purl.org/dc/terms/>
             PREFIX foaf: <http://xmlns.com/foaf/>
@@ -299,11 +301,11 @@ fn workload_queries() -> Vec<QuerySpec> {
             ?v0	wsdbm:subscribes	<http://db.uwaterloo.ca/~galuc/wsdbm/Website546> .
 }
 "#,
-    ),
-    // L4
-    (
-      "L4",
-      r#"PREFIX wsdbm: <http://db.uwaterloo.ca/~galuc/wsdbm/>
+        ),
+        // L4
+        (
+            "L4",
+            r#"PREFIX wsdbm: <http://db.uwaterloo.ca/~galuc/wsdbm/>
             PREFIX sorg: <http://schema.org/>
             PREFIX dc:   <http://purl.org/dc/terms/>
             PREFIX foaf: <http://xmlns.com/foaf/>
@@ -319,11 +321,11 @@ fn workload_queries() -> Vec<QuerySpec> {
             ?v0 <http://schema.org/caption> ?v2 .
 }
 "#,
-    ),
-    // L5
-    (
-      "L5",
-      r#"PREFIX wsdbm: <http://db.uwaterloo.ca/~galuc/wsdbm/>
+        ),
+        // L5
+        (
+            "L5",
+            r#"PREFIX wsdbm: <http://db.uwaterloo.ca/~galuc/wsdbm/>
             PREFIX sorg: <http://schema.org/>
             PREFIX dc:   <http://purl.org/dc/terms/>
             PREFIX foaf: <http://xmlns.com/foaf/>
@@ -340,11 +342,11 @@ fn workload_queries() -> Vec<QuerySpec> {
             ?v0	sorg:nationality	?v3 .
 }
 "#,
-    ),
-    // S1
-    (
-      "S1",
-      r#"PREFIX wsdbm: <http://db.uwaterloo.ca/~galuc/wsdbm/>
+        ),
+        // S1
+        (
+            "S1",
+            r#"PREFIX wsdbm: <http://db.uwaterloo.ca/~galuc/wsdbm/>
             PREFIX sorg: <http://schema.org/>
             PREFIX dc:   <http://purl.org/dc/terms/>
             PREFIX foaf: <http://xmlns.com/foaf/>
@@ -367,11 +369,11 @@ fn workload_queries() -> Vec<QuerySpec> {
             ?v0	sorg:priceValidUntil	?v9 .
 }
 "#,
-    ),
-    // S2
-    (
-      "S2",
-      r#"PREFIX wsdbm: <http://db.uwaterloo.ca/~galuc/wsdbm/>
+        ),
+        // S2
+        (
+            "S2",
+            r#"PREFIX wsdbm: <http://db.uwaterloo.ca/~galuc/wsdbm/>
             PREFIX sorg: <http://schema.org/>
             PREFIX dc:   <http://purl.org/dc/terms/>
             PREFIX foaf: <http://xmlns.com/foaf/>
@@ -389,11 +391,11 @@ fn workload_queries() -> Vec<QuerySpec> {
             ?v0	rdf:type	wsdbm:Role2 .
 }
 "#,
-    ),
-    // S3
-    (
-      "S3",
-      r#"PREFIX wsdbm: <http://db.uwaterloo.ca/~galuc/wsdbm/>
+        ),
+        // S3
+        (
+            "S3",
+            r#"PREFIX wsdbm: <http://db.uwaterloo.ca/~galuc/wsdbm/>
             PREFIX sorg: <http://schema.org/>
             PREFIX dc:   <http://purl.org/dc/terms/>
             PREFIX foaf: <http://xmlns.com/foaf/>
@@ -411,11 +413,11 @@ fn workload_queries() -> Vec<QuerySpec> {
             ?v0	sorg:publisher	?v4 .
 }
 "#,
-    ),
-    // S4
-    (
-      "S4",
-      r#"PREFIX wsdbm: <http://db.uwaterloo.ca/~galuc/wsdbm/>
+        ),
+        // S4
+        (
+            "S4",
+            r#"PREFIX wsdbm: <http://db.uwaterloo.ca/~galuc/wsdbm/>
             PREFIX sorg: <http://schema.org/>
             PREFIX dc:   <http://purl.org/dc/terms/>
             PREFIX foaf: <http://xmlns.com/foaf/>
@@ -433,11 +435,11 @@ fn workload_queries() -> Vec<QuerySpec> {
             ?v0	sorg:nationality	wsdbm:Country1 .
 }
 "#,
-    ),
-    // S5
-    (
-      "S5",
-      r#"PREFIX wsdbm: <http://db.uwaterloo.ca/~galuc/wsdbm/>
+        ),
+        // S5
+        (
+            "S5",
+            r#"PREFIX wsdbm: <http://db.uwaterloo.ca/~galuc/wsdbm/>
             PREFIX sorg: <http://schema.org/>
             PREFIX dc:   <http://purl.org/dc/terms/>
             PREFIX foaf: <http://xmlns.com/foaf/>
@@ -455,11 +457,11 @@ fn workload_queries() -> Vec<QuerySpec> {
             ?v0	sorg:language	wsdbm:Language0 .
 }
 "#,
-    ),
-    // S6
-    (
-      "S6",
-      r#"PREFIX wsdbm: <http://db.uwaterloo.ca/~galuc/wsdbm/>
+        ),
+        // S6
+        (
+            "S6",
+            r#"PREFIX wsdbm: <http://db.uwaterloo.ca/~galuc/wsdbm/>
             PREFIX sorg: <http://schema.org/>
             PREFIX dc:   <http://purl.org/dc/terms/>
             PREFIX foaf: <http://xmlns.com/foaf/>
@@ -476,11 +478,11 @@ fn workload_queries() -> Vec<QuerySpec> {
             ?v0	wsdbm:hasGenre	<http://db.uwaterloo.ca/~galuc/wsdbm/SubGenre26> .
 }
 "#,
-    ),
-    // S7
-    (
-      "S7",
-      r#"PREFIX wsdbm: <http://db.uwaterloo.ca/~galuc/wsdbm/>
+        ),
+        // S7
+        (
+            "S7",
+            r#"PREFIX wsdbm: <http://db.uwaterloo.ca/~galuc/wsdbm/>
             PREFIX sorg: <http://schema.org/>
             PREFIX dc:   <http://purl.org/dc/terms/>
             PREFIX foaf: <http://xmlns.com/foaf/>
@@ -497,15 +499,12 @@ fn workload_queries() -> Vec<QuerySpec> {
             <http://db.uwaterloo.ca/~galuc/wsdbm/User7>	wsdbm:likes	?v0 .
 }
 "#,
-    ),
+        ),
     ]
 }
 
 fn queries_for_index_manager(workload: &[QuerySpec]) -> Vec<String> {
-    workload
-        .iter()
-        .map(|(_, q)| q.trim().to_string())
-        .collect()
+    workload.iter().map(|(_, q)| q.trim().to_string()).collect()
 }
 
 fn make_config_from_env(queries: Vec<String>) -> (String, IndexConfig) {
@@ -526,6 +525,7 @@ fn make_config_from_env(queries: Vec<String>) -> (String, IndexConfig) {
             eval_interval: 1000,
             queries,
         },
+        "partial_hexastore" => IndexConfig::PartialHexastore { queries },
         "buckets" => IndexConfig::Buckets { queries },
         other => {
             eprintln!(
@@ -605,15 +605,86 @@ fn parse_large_ntriples_file(
     Ok(db)
 }
 
+/// Helper function to serialize result sets into deterministic, sorted text format
+fn serialize_results(results: &[Vec<String>]) -> Vec<String> {
+    let mut lines = Vec::with_capacity(results.len());
+    for row in results {
+        // Filter out empty rows just in case the engine returns an unpopulated tuple
+        if row.iter().all(|s| s.is_empty()) {
+            continue;
+        }
+        lines.push(row.join("|"));
+    }
+
+    lines.sort_unstable();
+    lines
+}
+
 fn run_all_queries(db: &mut SparqlDatabase, workload: &[QuerySpec]) {
     const ITERATIONS: usize = 10;
+    let dir_path = Path::new("../benchmark_dataset");
 
     for (name, query) in workload.iter() {
         println!("==============================================");
-        println!("Running query {} ({} iterations)...", name, ITERATIONS);
+        println!("Running query {}...", name);
 
+        // Run one validation loop to cache/verify results
+        if *name != "C3" {
+            let initial_run_start = Instant::now();
+            let validation_results = execute_query_rayon_parallel2_volcano(query, db);
+            println!(
+                "Validation run completed in {:.4} seconds",
+                initial_run_start.elapsed().as_secs_f64()
+            );
+
+            let ground_truth_file = dir_path.join(format!("ground_truth_{}.txt", name));
+            let serialized_current = serialize_results(&validation_results);
+
+            if ground_truth_file.exists() {
+                println!(
+                    "[VALIDATION] Checking results against ground truth: {:?}",
+                    ground_truth_file
+                );
+                let file = File::open(&ground_truth_file).unwrap();
+                let reader = BufReader::new(file);
+
+                let mut cached_lines = Vec::new();
+                for line in reader.lines() {
+                    if let Ok(l) = line {
+                        if !l.trim().is_empty() {
+                            cached_lines.push(l);
+                        }
+                    }
+                }
+
+                let current_set: HashSet<_> = serialized_current.into_iter().collect();
+                let cached_set: HashSet<_> = cached_lines.into_iter().collect();
+
+                if current_set != cached_set {
+                    let missing: Vec<_> = cached_set.difference(&current_set).collect();
+                    let extra: Vec<_> = current_set.difference(&cached_set).collect();
+                    panic!(
+                    "[FATAL] Query '{}' produced INVALID results!\nMissing {} lines.\nExtra {} lines.\nFirst few missing: {:?}\nFirst few extra: {:?}",
+                    name, missing.len(), extra.len(), missing.iter().take(5).collect::<Vec<_>>(), extra.iter().take(5).collect::<Vec<_>>()
+                );
+                }
+                println!("[✓] Validation passed for {}!", name);
+            } else {
+                println!(
+                    "[VALIDATION] Ground truth does not exist. Caching results to {:?}",
+                    ground_truth_file
+                );
+                let mut file = File::create(&ground_truth_file).unwrap();
+                for line in &serialized_current {
+                    writeln!(file, "{}", line).unwrap();
+                }
+                println!("Results cached. Note: Make sure the first run uses the 'hexastore' INDEX_TYPE!");
+            }
+        }
+
+        // Run the timed benchmark loop
+        println!("Running {} timed iterations...", ITERATIONS);
         let mut total_time = 0.0;
-
         for _ in 0..ITERATIONS {
             let start = Instant::now();
             let _ = execute_query_rayon_parallel2_volcano(query, db);
@@ -639,9 +710,7 @@ fn main() {
         }
         Err(e) => {
             eprintln!("Error processing file '{}': {}", file_path, e);
-            println!(
-                "Make sure ../benchmark_dataset/watdiv.10M.nt exists."
-            );
+            println!("Make sure ../benchmark_dataset/watdiv.10M.nt exists.");
         }
     }
 }
