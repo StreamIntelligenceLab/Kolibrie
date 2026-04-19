@@ -1043,6 +1043,16 @@ impl SparqlDatabase {
         }
     }
 
+    // Parse_ntriples and remove from DB function
+    pub fn parse_ntriples_and_remove(&mut self, ntriples_data: &str) {
+        let partial_results = self.parse_ntriples(ntriples_data);
+
+        let encoded_triples = self.encode_triples(partial_results);
+        for encoded_triple in encoded_triples {
+            self.delete_triple(&encoded_triple);
+        }
+    }
+
     // Parses ntriples
     pub fn parse_ntriples(&mut self, ntriples_data: &str) -> Vec<Vec<(String, String, String)>> {
         let lines: Vec<&str> = ntriples_data.lines().collect();
