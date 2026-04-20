@@ -1037,7 +1037,7 @@ impl ExecutionEngine {
 
             // FULLY UNBOUND (0 constants, 3 variables) - table scan is appropriate
             (Term::Variable(s), Term::Variable(p), Term::Variable(o)) => {
-                println!("INFO: Full table scan for fully unbound pattern (? {}, ?{}, ?{})", s, p, o);
+                //println!("INFO: Full table scan for fully unbound pattern (? {}, ?{}, ?{})", s, p, o);
                 Self::execute_table_scan_with_ids(database, pattern)
             }
         }

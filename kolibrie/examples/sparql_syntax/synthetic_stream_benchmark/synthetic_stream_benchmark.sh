@@ -1,4 +1,4 @@
-#!/usr/bin/env bash
+#!//usr/bin/env bash
 
 set -e
 
@@ -15,6 +15,10 @@ cargo build --release --example synthetic_stream_benchmark
 
 # Setup Data Directory
 mkdir -p benchmark_dataset
+
+# Clear previous CSV results
+rm -f benchmark_dataset/benchmark_results.csv
+
 echo "Generating native Kolibrie synthetic dataset and rules..."
 python generate_synthetic_stream.py \
     --triples $TRIPLES \
@@ -26,7 +30,7 @@ python generate_synthetic_stream.py \
     --output_nt benchmark_dataset/synthetic_1M.nt \
     --output_queries benchmark_dataset/synthetic_queries.json
 
-INDEXES=("hexastore" "partial_hexastore" "buckets" "pso" "spo" "pos" "table")
+INDEXES=("buckets" "partial_hexastore" "hexastore" "pso" "spo" "pos" "table")
 
 for IDX in "${INDEXES[@]}"; do
     echo "=========================================================="

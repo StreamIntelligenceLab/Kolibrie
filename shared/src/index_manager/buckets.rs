@@ -445,20 +445,20 @@ pub struct BucketIndex {
 
 impl BucketIndex {
     pub fn new(patterns: Vec<PlannedAccessPattern>) -> Self {
-        //println!("[Bucket Debug] --- BucketIndex Initialization ---");
-        //println!(
-        //    "[Bucket Debug] Requested planned patterns: {}",
-        //    patterns.len()
-        //);
+        println!("[Bucket Debug] --- BucketIndex Initialization ---");
+        println!(
+            "[Bucket Debug] Requested planned patterns: {}",
+            patterns.len()
+        );
         let buckets: Vec<DirectedBucket> = patterns
             .into_iter()
             .enumerate()
             .map(|(i, pat)| {
                 let b = DirectedBucket::new(pat);
-                //println!(
-                //    "[Bucket Debug]   Bucket [{}]: Pattern: {:?}, C={:?}, D={:?}, F={:?}",
-                //    i, b.pattern, b.c_positions, b.d_positions, b.f_positions
-                //);
+                println!(
+                    "[Bucket Debug]   Bucket [{}]: Pattern: {:?}, C={:?}, D={:?}, F={:?}",
+                    i, b.pattern, b.c_positions, b.d_positions, b.f_positions
+                );
                 b
             })
             .collect();

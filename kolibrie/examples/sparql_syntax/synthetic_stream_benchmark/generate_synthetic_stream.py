@@ -19,9 +19,9 @@ def generate_synthetic_data(num_triples, num_subjects, num_predicates, num_objec
         return random.sample(pool, k)
 
     # 2. Pick specific constants for queries to ensure they match generated data
-    p_vars = get_distinct(predicates, 8)
-    o_vars = get_distinct(objects, 4)
-    s_vars = get_distinct(subjects, 3)
+    p_vars = get_distinct(predicates, 9)
+    o_vars = get_distinct(objects, 5)
+    s_vars = get_distinct(subjects, 4)
     p_q6 = get_distinct(predicates, 20)
     
     # 3. Formulate standard SPARQL SELECT queries
@@ -36,7 +36,9 @@ def generate_synthetic_data(num_triples, num_subjects, num_predicates, num_objec
         "Q3": f"SELECT * WHERE {{ {s_vars[0]} {p_vars[3]} {o_vars[1]} . }}",
         "Q4": f"SELECT ?v1 ?v5 WHERE {{ ?v1 {p_vars[4]} ?v2 . ?v2 {p_vars[5]} ?v3 . ?v4 {p_vars[6]} ?v3 . ?v4 {p_vars[7]} ?v5 . }}",
         "Q5": f"SELECT ?p WHERE {{ {s_vars[1]} ?p {o_vars[2]} . {s_vars[2]} ?p {o_vars[3]} . }}",
-        "Q6": f"SELECT ?s {q6_select} WHERE {{ {q6_where} }}"
+        "Q6": f"SELECT ?s {q6_select} WHERE {{ {q6_where} }}",
+        "Q7": f"SELECT ?s4 ?p5 ?o6 WHERE {{ {s_vars[3]} ?p1 ?o1 . ?s2 {p_vars[8]} ?o2 . ?s3 ?p3 {o_vars[4]} . ?s4 ?p1 ?o4 . ?s5 ?p5 ?o2 . ?s3 ?p6 ?o6 . ?s4 ?p5 ?o6 }}",
+        "Q8": f"SELECT * WHERE {{ ?n1 ?e12 ?n2 .  ?n2 ?e23 ?n3 .  ?n3 ?e34 ?n4 .  ?n4 ?e41 ?n1 .  ?n1 ?e13 ?n3 .  ?n3 ?e31 ?n1 .  ?n2 ?e24 ?n4 .  ?n4 ?e42 ?n2 .  ?n2 ?e21 ?n1 .  ?n4 ?e43 ?n3 . }}"
     }
     
     with open(output_queries, 'w') as f:
