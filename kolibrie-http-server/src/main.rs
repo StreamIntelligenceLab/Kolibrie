@@ -8,21 +8,24 @@
  * you can obtain one at https://mozilla.org/MPL/2.0/.
  */
 
-use std::io::{Read, Write};
-use std::net::{TcpListener, TcpStream};
-use std::thread;
+use datalog::parser_n3_logic::parse_n3_rule;
+use datalog::reasoning::Reasoner;
+use kolibrie::execute_query::{execute_query, execute_query_rayon_parallel2_volcano};
+use kolibrie::parser::process_rule_definition;
+use kolibrie::rsp_engine::{
+    OperationMode, QueryExecutionMode, RSPBuilder, ResultConsumer, SimpleR2R,
+};
+use kolibrie::sparql_database::SparqlDatabase;
+use serde::{Deserialize, Serialize};
+use shared::triple::Triple;
 use std::collections::HashMap;
-use std::sync::{Arc, Mutex};
+use std::io::{self, Read, Write};
+use std::net::{TcpListener, TcpStream};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc::{self, Sender};
-use kolibrie::execute_query::{execute_query, execute_query_rayon_parallel2_volcano};
-use kolibrie::sparql_database::SparqlDatabase;
-use kolibrie::parser::process_rule_definition;
-use kolibrie::rsp_engine::{RSPBuilder, SimpleR2R, OperationMode, QueryExecutionMode, ResultConsumer};
-use datalog::reasoning::Reasoner;
-use datalog::parser_n3_logic::parse_n3_rule;
-use shared::triple::Triple;
-use serde::{Deserialize, Serialize};
+use std::sync::{Arc, Mutex};
+use std::thread;
+use std::time::Duration;
 
 // ── Session state for persistent RSP engines ────────────────────────────────
 
@@ -35,6 +38,9 @@ struct EngineSession {
 type Sessions = Arc<Mutex<HashMap<String, EngineSession>>>;
 
 static SESSION_COUNTER: AtomicU64 = AtomicU64::new(1);
+
+const READ_CHUNK_SIZE: usize = 8 * 1024;
+const MAX_REQUEST_SIZE: usize = 64 * 1024 * 1024;
 
 // ── Request/response types ───────────────────────────────────────────────────
 
@@ -205,8 +211,7 @@ fn main() {
 
     let sessions: Sessions = Arc::new(Mutex::new(HashMap::new()));
 
-    let listener = TcpListener::bind("0.0.0.0:8080")
-        .expect("Failed to bind to port 8080");
+    let listener = TcpListener::bind("0.0.0.0:8080").expect("Failed to bind to port 8080");
 
     for stream in listener.incoming() {
         match stream {
@@ -224,11 +229,9 @@ fn main() {
 }
 
 fn handle_client(mut stream: TcpStream, sessions: Sessions) {
-    let mut buffer = vec![0u8; 1_048_576]; // 1MB buffer for large RDF data
-
-    match stream.read(&mut buffer) {
-        Ok(size) => {
-            let request = String::from_utf8_lossy(&buffer[..size]);
+    match read_http_request(&mut stream) {
+        Ok(request_bytes) => {
+            let request = String::from_utf8_lossy(&request_bytes);
 
             // Parse method and path from the first line early, so we can
             // detect the SSE route before going through handle_request.
@@ -252,10 +255,189 @@ fn handle_client(mut stream: TcpStream, sessions: Sessions) {
             let _ = stream.write_all(response.as_bytes());
             let _ = stream.flush();
         }
+        Err(e) if e.kind() == io::ErrorKind::InvalidData => {
+            eprintln!("Request rejected: {}", e);
+            let response = error_response(413, "Payload Too Large");
+            let _ = stream.write_all(response.as_bytes());
+            let _ = stream.flush();
+        }
         Err(e) => {
             eprintln!("Failed to read from connection: {}", e);
+            let response = error_response(400, "Bad Request");
+            let _ = stream.write_all(response.as_bytes());
+            let _ = stream.flush();
         }
     }
+}
+
+fn read_http_request(stream: &mut TcpStream) -> io::Result<Vec<u8>> {
+    let _ = stream.set_read_timeout(Some(Duration::from_secs(30)));
+    let mut request = Vec::with_capacity(READ_CHUNK_SIZE);
+    let mut buffer = [0u8; READ_CHUNK_SIZE];
+
+    loop {
+        let size = stream.read(&mut buffer)?;
+        if size == 0 {
+            return Ok(request);
+        }
+        request.extend_from_slice(&buffer[..size]);
+        ensure_request_size(request.len())?;
+
+        let Some(header_end) = header_delimiter_end(&request) else {
+            continue;
+        };
+
+        let headers = String::from_utf8_lossy(&request[..header_end]);
+
+        if has_chunked_transfer_encoding(&headers) {
+            loop {
+                match decode_chunked_body(&request[header_end..])? {
+                    Some(decoded_body) => {
+                        let mut complete = request[..header_end].to_vec();
+                        complete.extend_from_slice(&decoded_body);
+                        ensure_request_size(complete.len())?;
+                        return Ok(complete);
+                    }
+                    None => {
+                        let size = stream.read(&mut buffer)?;
+                        if size == 0 {
+                            return Err(io::Error::new(
+                                io::ErrorKind::UnexpectedEof,
+                                "connection closed before complete chunked body was received",
+                            ));
+                        }
+                        request.extend_from_slice(&buffer[..size]);
+                        ensure_request_size(request.len())?;
+                    }
+                }
+            }
+        }
+
+        let content_length = parse_content_length(&headers).unwrap_or(0);
+        let total_size = header_end
+            .checked_add(content_length)
+            .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "request is too large"))?;
+        ensure_request_size(total_size)?;
+
+        while request.len() < total_size {
+            let size = stream.read(&mut buffer)?;
+            if size == 0 {
+                return Err(io::Error::new(
+                    io::ErrorKind::UnexpectedEof,
+                    "connection closed before complete request body was received",
+                ));
+            }
+            request.extend_from_slice(&buffer[..size]);
+            ensure_request_size(request.len())?;
+        }
+
+        request.truncate(total_size);
+        return Ok(request);
+    }
+}
+
+fn ensure_request_size(size: usize) -> io::Result<()> {
+    if size > MAX_REQUEST_SIZE {
+        Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("request exceeds {} byte limit", MAX_REQUEST_SIZE),
+        ))
+    } else {
+        Ok(())
+    }
+}
+
+fn header_delimiter_end(request: &[u8]) -> Option<usize> {
+    request
+        .windows(4)
+        .position(|window| window == b"\r\n\r\n")
+        .map(|position| position + 4)
+        .or_else(|| {
+            request
+                .windows(2)
+                .position(|window| window == b"\n\n")
+                .map(|position| position + 2)
+        })
+}
+
+fn parse_content_length(headers: &str) -> Option<usize> {
+    headers.lines().find_map(|line| {
+        let (name, value) = line.split_once(':')?;
+        if name.eq_ignore_ascii_case("content-length") {
+            value.trim().parse::<usize>().ok()
+        } else {
+            None
+        }
+    })
+}
+
+fn has_chunked_transfer_encoding(headers: &str) -> bool {
+    headers.lines().any(|line| {
+        let Some((name, value)) = line.split_once(':') else {
+            return false;
+        };
+        name.eq_ignore_ascii_case("transfer-encoding")
+            && value
+                .split(',')
+                .any(|encoding| encoding.trim().eq_ignore_ascii_case("chunked"))
+    })
+}
+
+fn decode_chunked_body(body: &[u8]) -> io::Result<Option<Vec<u8>>> {
+    let mut decoded = Vec::new();
+    let mut position = 0;
+
+    loop {
+        let Some(line_end) = find_crlf(&body[position..]) else {
+            return Ok(None);
+        };
+        let size_line = &body[position..position + line_end];
+        let size_text = std::str::from_utf8(size_line)
+            .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "invalid chunk size"))?;
+        let size_hex = size_text.split(';').next().unwrap_or("").trim();
+        let chunk_size = usize::from_str_radix(size_hex, 16)
+            .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "invalid chunk size"))?;
+        position += line_end + 2;
+
+        if chunk_size == 0 {
+            if body.len() < position + 2 {
+                return Ok(None);
+            }
+            if body[position..].starts_with(b"\r\n") {
+                return Ok(Some(decoded));
+            }
+            if let Some(trailer_end) = body[position..]
+                .windows(4)
+                .position(|window| window == b"\r\n\r\n")
+            {
+                position += trailer_end + 4;
+                let _ = position;
+                return Ok(Some(decoded));
+            }
+            return Ok(None);
+        }
+
+        let chunk_end = position
+            .checked_add(chunk_size)
+            .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "chunk is too large"))?;
+        if body.len() < chunk_end + 2 {
+            return Ok(None);
+        }
+        if &body[chunk_end..chunk_end + 2] != b"\r\n" {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "chunk is missing trailing CRLF",
+            ));
+        }
+
+        decoded.extend_from_slice(&body[position..chunk_end]);
+        ensure_request_size(decoded.len())?;
+        position = chunk_end + 2;
+    }
+}
+
+fn find_crlf(bytes: &[u8]) -> Option<usize> {
+    bytes.windows(2).position(|window| window == b"\r\n")
 }
 
 fn handle_request(request: &str, sessions: &Sessions) -> String {
@@ -280,29 +462,25 @@ fn handle_request(request: &str, sessions: &Sessions) -> String {
     }
 
     if method == "POST" && path == "/query" {
-        if let Some(body_start) = request.find("\r\n\r\n") {
-            let body = &request[body_start + 4..];
+        if let Some(body) = request_body(request) {
             return execute_sparql_with_context(body);
         }
     }
 
     if method == "POST" && path == "/rsp-query" {
-        if let Some(body_start) = request.find("\r\n\r\n") {
-            let body = &request[body_start + 4..];
+        if let Some(body) = request_body(request) {
             return execute_rsp_query(body);
         }
     }
 
     if method == "POST" && path == "/rsp/register" {
-        if let Some(body_start) = request.find("\r\n\r\n") {
-            let body = &request[body_start + 4..];
+        if let Some(body) = request_body(request) {
             return rsp_register(body, sessions);
         }
     }
 
     if method == "POST" && path == "/rsp/push" {
-        if let Some(body_start) = request.find("\r\n\r\n") {
-            let body = &request[body_start + 4..];
+        if let Some(body) = request_body(request) {
             return rsp_push(body, sessions);
         }
     }
@@ -315,6 +493,17 @@ fn handle_request(request: &str, sessions: &Sessions) -> String {
 }
 
 // ── RSP persistent session handlers ─────────────────────────────────────────
+
+fn request_body(request: &str) -> Option<&str> {
+    request
+        .find("\r\n\r\n")
+        .map(|body_start| &request[body_start + 4..])
+        .or_else(|| {
+            request
+                .find("\n\n")
+                .map(|body_start| &request[body_start + 2..])
+        })
+}
 
 fn rsp_register(body: &str, sessions: &Sessions) -> String {
     let req: RspRegisterRequest = match serde_json::from_str(body) {
@@ -383,7 +572,10 @@ fn rsp_register(body: &str, sessions: &Sessions) -> String {
             };
             if !ntriples.is_empty() {
                 engine.add_static_ntriples(&ntriples);
-                println!("RSP register: loaded static data ({} bytes)", ntriples.len());
+                println!(
+                    "RSP register: loaded static data ({} bytes)",
+                    ntriples.len()
+                );
             }
         }
     }
@@ -391,14 +583,20 @@ fn rsp_register(body: &str, sessions: &Sessions) -> String {
     let streams = engine.stream_iris();
     let session_id = SESSION_COUNTER.fetch_add(1, Ordering::Relaxed).to_string();
 
-    sessions.lock().unwrap().insert(
-        session_id.clone(),
-        EngineSession { engine, sse_sender },
+    sessions
+        .lock()
+        .unwrap()
+        .insert(session_id.clone(), EngineSession { engine, sse_sender });
+
+    println!(
+        "RSP register: session {} created, streams: {:?}",
+        session_id, streams
     );
 
-    println!("RSP register: session {} created, streams: {:?}", session_id, streams);
-
-    let response = RspRegisterResponse { session_id, streams };
+    let response = RspRegisterResponse {
+        session_id,
+        streams,
+    };
     let json = serde_json::to_string(&response).unwrap_or_default();
     format!(
         "HTTP/1.1 200 OK\r\n\
@@ -446,7 +644,9 @@ fn rsp_push(body: &str, sessions: &Sessions) -> String {
     );
 
     for triple in triples {
-        session.engine.add_to_stream(&req.stream, triple, req.timestamp);
+        session
+            .engine
+            .add_to_stream(&req.stream, triple, req.timestamp);
     }
 
     // Flush any pending channel results (multi-window / static-data join case).
@@ -563,7 +763,11 @@ fn execute_sparql_with_context(body: &str) -> String {
         rules.extend(multi_rules);
     }
 
-    println!("Processing {} query(ies) and {} rule(s)", queries.len(), rules.len());
+    println!(
+        "Processing {} query(ies) and {} rule(s)",
+        queries.len(),
+        rules.len()
+    );
 
     let mut database = SparqlDatabase::new();
     let use_optimizer = request.format == "ntriples";
@@ -599,73 +803,82 @@ fn execute_sparql_with_context(body: &str) -> String {
     // This is completely separate from the SPARQL RULE syntax — it uses the
     // Reasoner class (datalog/reasoning.rs) exactly as shown in the test example.
     if let Some(ref n3_rules_text) = request.n3logic {
-    if !n3_rules_text.trim().is_empty() {
-        println!("Processing N3 logic rules from N3 Logic sub-tab...");
+        if !n3_rules_text.trim().is_empty() {
+            println!("Processing N3 logic rules from N3 Logic sub-tab...");
 
-        // Mirror the database dictionary so term encodings are shared
-        let mut kg = Reasoner::new();
-        kg.dictionary = database.dictionary.clone();
+            // Mirror the database dictionary so term encodings are shared
+            let mut kg = Reasoner::new();
+            kg.dictionary = database.dictionary.clone();
 
-        // Decode all triples to owned strings using database.dictionary BEFORE
-        // creating kg's mutable borrow — avoids the RwLockReadGuard conflict.
-        let decoded_triples: Vec<(String, String, String)> = {
-            let dict_guard = kg.dictionary.read().unwrap();
-            database.triples.iter()
-                .map(|triple| (
-                    dict_guard.decode(triple.subject).unwrap_or("").to_string(),
-                    dict_guard.decode(triple.predicate).unwrap_or("").to_string(),
-                    dict_guard.decode(triple.object).unwrap_or("").to_string(),
-                ))
-                .collect()
-        };
+            // Decode all triples to owned strings using database.dictionary BEFORE
+            // creating kg's mutable borrow — avoids the RwLockReadGuard conflict.
+            let decoded_triples: Vec<(String, String, String)> = {
+                let dict_guard = kg.dictionary.read().unwrap();
+                database
+                    .triples
+                    .iter()
+                    .map(|triple| {
+                        (
+                            dict_guard.decode(triple.subject).unwrap_or("").to_string(),
+                            dict_guard
+                                .decode(triple.predicate)
+                                .unwrap_or("")
+                                .to_string(),
+                            dict_guard.decode(triple.object).unwrap_or("").to_string(),
+                        )
+                    })
+                    .collect()
+            };
 
-        println!("Decoded triples are: {:?}", decoded_triples);
+            println!("Decoded triples are: {:?}", decoded_triples);
 
-        // Now load into the Reasoner — no borrow conflict
-        for (s, p, o) in &decoded_triples {
-            kg.add_abox_triple(s, p, o);
-        }
-
-        let n3_text = n3_rules_text.trim();
-        match parse_n3_rule(n3_text, &mut kg) {
-            Ok((_, (prefixes, rule))) => {
-                println!(
-                    "N3 rule parsed ({} prefix(es), {} premise(s), {} conclusion(s))",
-                    prefixes.len(),
-                    rule.premise.len(),
-                    rule.conclusion.len(),
-                );
-
-                // **IMPORTANT**: Register N3 prefixes with the database so SPARQL rules can use them
-                for (prefix, uri) in prefixes {
-                    database.prefixes.insert(prefix.to_string(), uri.to_string());
-                }
-
-                // Register the rule and infer new facts
-                kg.add_rule(rule);
-                let inferred = kg.infer_new_facts_semi_naive();
-                println!("N3 rule inferred {} fact(s)", inferred.len());
-
-                // Push inferred triples into the database triple store
-                for triple in inferred {
-                    database.triples.insert(triple);
-                }
-
-                // Sync the enriched dictionary back so SPARQL can decode the new terms
-                database.dictionary = kg.dictionary.clone();
-
-                if !database.triples.is_empty() {
-                    database.invalidate_stats_cache();
-                    database.get_or_build_stats();
-                    database.build_all_indexes();
-                }
+            // Now load into the Reasoner — no borrow conflict
+            for (s, p, o) in &decoded_triples {
+                kg.add_abox_triple(s, p, o);
             }
-            Err(e) => {
-                eprintln!("N3 rule parse error: {:?}", e);
+
+            let n3_text = n3_rules_text.trim();
+            match parse_n3_rule(n3_text, &mut kg) {
+                Ok((_, (prefixes, rule))) => {
+                    println!(
+                        "N3 rule parsed ({} prefix(es), {} premise(s), {} conclusion(s))",
+                        prefixes.len(),
+                        rule.premise.len(),
+                        rule.conclusion.len(),
+                    );
+
+                    // **IMPORTANT**: Register N3 prefixes with the database so SPARQL rules can use them
+                    for (prefix, uri) in prefixes {
+                        database
+                            .prefixes
+                            .insert(prefix.to_string(), uri.to_string());
+                    }
+
+                    // Register the rule and infer new facts
+                    kg.add_rule(rule);
+                    let inferred = kg.infer_new_facts_semi_naive();
+                    println!("N3 rule inferred {} fact(s)", inferred.len());
+
+                    // Push inferred triples into the database triple store
+                    for triple in inferred {
+                        database.triples.insert(triple);
+                    }
+
+                    // Sync the enriched dictionary back so SPARQL can decode the new terms
+                    database.dictionary = kg.dictionary.clone();
+
+                    if !database.triples.is_empty() {
+                        database.invalidate_stats_cache();
+                        database.get_or_build_stats();
+                        database.build_all_indexes();
+                    }
+                }
+                Err(e) => {
+                    eprintln!("N3 rule parse error: {:?}", e);
+                }
             }
         }
     }
-}
 
     // Process all SPARQL-syntax rules (RULE :Name :- CONSTRUCT { } WHERE { })
     for (idx, rule_def) in rules.iter().enumerate() {
@@ -673,7 +886,11 @@ fn execute_sparql_with_context(body: &str) -> String {
             println!("Processing rule {}...", idx + 1);
             match process_rule_definition(&rule_def, &mut database) {
                 Ok((_, inferred_facts)) => {
-                    println!("Rule {} processed, inferred {} facts", idx + 1, inferred_facts.len());
+                    println!(
+                        "Rule {} processed, inferred {} facts",
+                        idx + 1,
+                        inferred_facts.len()
+                    );
                     if !inferred_facts.is_empty() {
                         database.invalidate_stats_cache();
                         database.get_or_build_stats();
@@ -710,7 +927,9 @@ fn execute_sparql_with_context(body: &str) -> String {
         });
     }
 
-    let response = QueryResponse { results: all_results };
+    let response = QueryResponse {
+        results: all_results,
+    };
     let json = match serde_json::to_string(&response) {
         Ok(j) => j,
         Err(e) => {
@@ -749,8 +968,7 @@ fn execute_rsp_query(body: &str) -> String {
     );
 
     // Collect results via a shared container that the engine writes into.
-    let result_container: Arc<Mutex<Vec<Vec<(String, String)>>>> =
-        Arc::new(Mutex::new(Vec::new()));
+    let result_container: Arc<Mutex<Vec<Vec<(String, String)>>>> = Arc::new(Mutex::new(Vec::new()));
     let rc_clone = Arc::clone(&result_container);
 
     let result_consumer = ResultConsumer::<Vec<(String, String)>> {
@@ -794,7 +1012,10 @@ fn execute_rsp_query(body: &str) -> String {
             };
             if !ntriples.is_empty() {
                 engine.add_static_ntriples(&ntriples);
-                println!("RSP: loaded static data ({} bytes as N-Triples)", ntriples.len());
+                println!(
+                    "RSP: loaded static data ({} bytes as N-Triples)",
+                    ntriples.len()
+                );
             }
         }
     }
@@ -882,9 +1103,8 @@ fn json_error_response(message: &str) -> String {
     let error = ErrorResponse {
         error: message.to_string(),
     };
-    let json = serde_json::to_string(&error).unwrap_or_else(|_| {
-        r#"{"error":"Internal server error"}"#.to_string()
-    });
+    let json = serde_json::to_string(&error)
+        .unwrap_or_else(|_| r#"{"error":"Internal server error"}"#.to_string());
 
     format!(
         "HTTP/1.1 400 Bad Request\r\n\
@@ -903,7 +1123,8 @@ fn cors_response() -> String {
      Access-Control-Allow-Origin: *\r\n\
      Access-Control-Allow-Methods: POST, GET, OPTIONS\r\n\
      Access-Control-Allow-Headers: Content-Type\r\n\
-     \r\n".to_string()
+     \r\n"
+        .to_string()
 }
 
 fn error_response(code: u16, message: &str) -> String {
