@@ -86,7 +86,7 @@ fn main() {
         // Pass ONLY the current query to the config so partial indexes are built specifically for it
         let (index_name, config) = make_config_from_env(vec![query_string.clone()]);
 
-        if (query_id == "Q8" && index_name != "hexastore" && index_name != "partial_hexastore" && index_name != "buckets") {
+        if ((query_id == "Q8" || query_id == "Q9") && index_name != "hexastore" && index_name != "partial_hexastore" && index_name != "buckets") {
           continue;
         }
 

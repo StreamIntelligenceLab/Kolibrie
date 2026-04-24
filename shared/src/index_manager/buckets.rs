@@ -446,25 +446,51 @@ pub struct BucketIndex {
 impl BucketIndex {
     pub fn new(patterns: Vec<PlannedAccessPattern>) -> Self {
         println!("[Bucket Debug] --- BucketIndex Initialization ---");
-        println!(
-            "[Bucket Debug] Requested planned patterns: {}",
-            patterns.len()
-        );
-        let buckets: Vec<DirectedBucket> = patterns
-            .into_iter()
-            .enumerate()
-            .map(|(i, pat)| {
-                let b = DirectedBucket::new(pat);
-                println!(
-                    "[Bucket Debug]   Bucket [{}]: Pattern: {:?}, C={:?}, D={:?}, F={:?}",
-                    i, b.pattern, b.c_positions, b.d_positions, b.f_positions
-                );
-                b
-            })
-            .collect();
-        Self { buckets }
-    }
+        println!("[Bucket Debug] Requested planned patterns: {}", patterns.len());
 
+        let mut seen_configs = HashSet::new();
+        let mut unique_buckets = Vec::new();
+
+        for planned in patterns {
+            // 1. Determine positions exactly as DirectedBucket::new would
+            let mut c_pos_vals = Vec::new();
+            let mut d_positions = Vec::new();
+
+            let mut check = |term: &Term, is_bound: bool, pos: usize| match term {
+                Term::Constant(c) => c_pos_vals.push((pos, *c)),
+                Term::Variable(_) => {
+                    if is_bound {
+                        d_positions.push(pos);
+                    }
+                }
+            };
+
+            check(&planned.pattern.0, planned.bound_subject, 0);
+            check(&planned.pattern.1, planned.bound_predicate, 1);
+            check(&planned.pattern.2, planned.bound_object, 2);
+
+            // 2. Create a unique key for this storage configuration
+            // We sort D because the internal logic of DirectedBucket 
+            // usually processes them in positional order.
+            d_positions.sort_unstable();
+            let config_key = (c_pos_vals, d_positions);
+
+            // 3. Only create the bucket if we haven't seen this storage config yet
+            if seen_configs.insert(config_key) {
+                let b = DirectedBucket::new(planned);
+                println!(
+                    "[Bucket Debug]   Created Bucket [{}]: C={:?}, D={:?}, F={:?}",
+                    unique_buckets.len(), b.c_positions, b.d_positions, b.f_positions
+                );
+                unique_buckets.push(b);
+            } else {
+                println!("[Bucket Debug]   Pruned duplicate pattern: {:?}", planned.pattern);
+            }
+        }
+
+        println!("[Bucket Debug] Final unique bucket count: {}", unique_buckets.len());
+        Self { buckets: unique_buckets }
+    }
     fn bucket_covers_query(
         bucket_pat: &TriplePattern,
         q_s: Option<u32>,
