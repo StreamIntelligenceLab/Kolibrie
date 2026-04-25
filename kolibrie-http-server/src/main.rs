@@ -41,6 +41,13 @@ static SESSION_COUNTER: AtomicU64 = AtomicU64::new(1);
 
 const READ_CHUNK_SIZE: usize = 8 * 1024;
 const MAX_REQUEST_SIZE: usize = 64 * 1024 * 1024;
+const INCOMPLETE_JSON_GRACE_PERIOD: Duration = Duration::from_millis(750);
+
+struct HttpRequest {
+    method: String,
+    path: String,
+    body: Vec<u8>,
+}
 
 // ── Request/response types ───────────────────────────────────────────────────
 
@@ -206,6 +213,12 @@ fn results_to_table(results: &[Vec<(String, String)>]) -> Vec<Vec<String>> {
 
 // ── Main & connection handling ───────────────────────────────────────────────
 
+fn has_n3_rule_text(text: &str) -> bool {
+    text.lines()
+        .map(str::trim_start)
+        .any(|line| !line.starts_with('#') && line.contains("=>"))
+}
+
 fn main() {
     println!("Starting Kolibrie HTTP Server on 0.0.0.0:8080");
 
@@ -230,25 +243,13 @@ fn main() {
 
 fn handle_client(mut stream: TcpStream, sessions: Sessions) {
     match read_http_request(&mut stream) {
-        Ok(request_bytes) => {
-            let request = String::from_utf8_lossy(&request_bytes);
-
-            // Parse method and path from the first line early, so we can
-            // detect the SSE route before going through handle_request.
-            let first_line = request.lines().next().unwrap_or("");
-            let parts: Vec<&str> = first_line.split_whitespace().collect();
-
-            if parts.len() >= 2 {
-                let method = parts[0];
-                let path = parts[1];
-
-                // SSE handler — must keep the connection open, so it is
-                // handled here rather than returning a String from handle_request.
-                if method == "GET" && path.starts_with("/rsp/events/") {
-                    let session_id = path["/rsp/events/".len()..].to_string();
-                    rsp_events_sse(&session_id, stream, &sessions);
-                    return;
-                }
+        Ok(request) => {
+            // SSE handler must keep the connection open, so it is handled here
+            // rather than returning a String from handle_request.
+            if request.method == "GET" && request.path.starts_with("/rsp/events/") {
+                let session_id = request.path["/rsp/events/".len()..].to_string();
+                rsp_events_sse(&session_id, stream, &sessions);
+                return;
             }
 
             let response = handle_request(&request, &sessions);
@@ -270,7 +271,7 @@ fn handle_client(mut stream: TcpStream, sessions: Sessions) {
     }
 }
 
-fn read_http_request(stream: &mut TcpStream) -> io::Result<Vec<u8>> {
+fn read_http_request(stream: &mut TcpStream) -> io::Result<HttpRequest> {
     let _ = stream.set_read_timeout(Some(Duration::from_secs(30)));
     let mut request = Vec::with_capacity(READ_CHUNK_SIZE);
     let mut buffer = [0u8; READ_CHUNK_SIZE];
@@ -278,7 +279,10 @@ fn read_http_request(stream: &mut TcpStream) -> io::Result<Vec<u8>> {
     loop {
         let size = stream.read(&mut buffer)?;
         if size == 0 {
-            return Ok(request);
+            return Err(io::Error::new(
+                io::ErrorKind::UnexpectedEof,
+                "connection closed before request headers were received",
+            ));
         }
         request.extend_from_slice(&buffer[..size]);
         ensure_request_size(request.len())?;
@@ -287,17 +291,13 @@ fn read_http_request(stream: &mut TcpStream) -> io::Result<Vec<u8>> {
             continue;
         };
 
-        let headers = String::from_utf8_lossy(&request[..header_end]);
+        let headers = String::from_utf8_lossy(&request[..header_end]).into_owned();
+        let (method, path) = parse_request_line(&headers)?;
 
         if has_chunked_transfer_encoding(&headers) {
             loop {
                 match decode_chunked_body(&request[header_end..])? {
-                    Some(decoded_body) => {
-                        let mut complete = request[..header_end].to_vec();
-                        complete.extend_from_slice(&decoded_body);
-                        ensure_request_size(complete.len())?;
-                        return Ok(complete);
-                    }
+                    Some(body) => return Ok(HttpRequest { method, path, body }),
                     None => {
                         let size = stream.read(&mut buffer)?;
                         if size == 0 {
@@ -313,13 +313,18 @@ fn read_http_request(stream: &mut TcpStream) -> io::Result<Vec<u8>> {
             }
         }
 
-        let content_length = parse_content_length(&headers).unwrap_or(0);
-        let total_size = header_end
-            .checked_add(content_length)
-            .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "request is too large"))?;
-        ensure_request_size(total_size)?;
+        let content_length = parse_content_length(&headers);
+        let mut body_end = if let Some(content_length) = content_length {
+            let total_size = header_end.checked_add(content_length).ok_or_else(|| {
+                io::Error::new(io::ErrorKind::InvalidData, "request is too large")
+            })?;
+            ensure_request_size(total_size)?;
+            total_size
+        } else {
+            request.len()
+        };
 
-        while request.len() < total_size {
+        while request.len() < body_end {
             let size = stream.read(&mut buffer)?;
             if size == 0 {
                 return Err(io::Error::new(
@@ -331,9 +336,39 @@ fn read_http_request(stream: &mut TcpStream) -> io::Result<Vec<u8>> {
             ensure_request_size(request.len())?;
         }
 
-        request.truncate(total_size);
-        return Ok(request);
+        if is_json_request(&headers) && json_body_needs_more_bytes(&request[header_end..body_end]) {
+            if body_end < request.len() {
+                body_end = request.len();
+            }
+
+            let extra_bytes =
+                read_until_json_complete(stream, &mut request, header_end, &mut body_end)?;
+            if extra_bytes > 0 {
+                eprintln!(
+                    "HTTP JSON body needed {} extra byte(s) beyond the initial framing",
+                    extra_bytes
+                );
+            }
+        }
+
+        request.truncate(body_end);
+        let body = request[header_end..].to_vec();
+        return Ok(HttpRequest { method, path, body });
     }
+}
+
+fn parse_request_line(headers: &str) -> io::Result<(String, String)> {
+    let request_line = headers.lines().next().unwrap_or("");
+    let parts: Vec<&str> = request_line.split_whitespace().collect();
+
+    if parts.len() < 2 {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "request line is missing method or path",
+        ));
+    }
+
+    Ok((parts[0].to_string(), parts[1].to_string()))
 }
 
 fn ensure_request_size(size: usize) -> io::Result<()> {
@@ -381,6 +416,64 @@ fn has_chunked_transfer_encoding(headers: &str) -> bool {
                 .split(',')
                 .any(|encoding| encoding.trim().eq_ignore_ascii_case("chunked"))
     })
+}
+
+fn is_json_request(headers: &str) -> bool {
+    headers.lines().any(|line| {
+        let Some((name, value)) = line.split_once(':') else {
+            return false;
+        };
+        name.eq_ignore_ascii_case("content-type")
+            && value
+                .split(';')
+                .next()
+                .map(|content_type| content_type.trim().eq_ignore_ascii_case("application/json"))
+                .unwrap_or(false)
+    })
+}
+
+fn json_body_needs_more_bytes(body: &[u8]) -> bool {
+    match serde_json::from_slice::<serde_json::Value>(body) {
+        Ok(_) => false,
+        Err(e) => e.is_eof(),
+    }
+}
+
+fn read_until_json_complete(
+    stream: &mut TcpStream,
+    request: &mut Vec<u8>,
+    header_end: usize,
+    body_end: &mut usize,
+) -> io::Result<usize> {
+    let previous_timeout = stream.read_timeout().ok().flatten();
+    let _ = stream.set_read_timeout(Some(INCOMPLETE_JSON_GRACE_PERIOD));
+
+    let mut buffer = [0u8; READ_CHUNK_SIZE];
+    let mut extra_bytes = 0;
+
+    while json_body_needs_more_bytes(&request[header_end..*body_end]) {
+        match stream.read(&mut buffer) {
+            Ok(0) => break,
+            Ok(size) => {
+                request.extend_from_slice(&buffer[..size]);
+                ensure_request_size(request.len())?;
+                *body_end = request.len();
+                extra_bytes += size;
+            }
+            Err(e)
+                if e.kind() == io::ErrorKind::WouldBlock || e.kind() == io::ErrorKind::TimedOut =>
+            {
+                break;
+            }
+            Err(e) => {
+                let _ = stream.set_read_timeout(previous_timeout);
+                return Err(e);
+            }
+        }
+    }
+
+    let _ = stream.set_read_timeout(previous_timeout);
+    Ok(extra_bytes)
 }
 
 fn decode_chunked_body(body: &[u8]) -> io::Result<Option<Vec<u8>>> {
@@ -440,49 +533,40 @@ fn find_crlf(bytes: &[u8]) -> Option<usize> {
     bytes.windows(2).position(|window| window == b"\r\n")
 }
 
-fn handle_request(request: &str, sessions: &Sessions) -> String {
-    let lines: Vec<&str> = request.lines().collect();
-
-    if lines.is_empty() {
-        return error_response(400, "Bad Request");
-    }
-
-    let request_line = lines[0];
-    let parts: Vec<&str> = request_line.split_whitespace().collect();
-
-    if parts.len() < 2 {
-        return error_response(400, "Bad Request");
-    }
-
-    let method = parts[0];
-    let path = parts[1];
+fn handle_request(request: &HttpRequest, sessions: &Sessions) -> String {
+    let method = request.method.as_str();
+    let path = request.path.as_str();
 
     if method == "GET" && path == "/" {
         return serve_playground();
     }
 
     if method == "POST" && path == "/query" {
-        if let Some(body) = request_body(request) {
-            return execute_sparql_with_context(body);
-        }
+        return match request_body(&request.body) {
+            Some(body) => execute_sparql_with_context(body),
+            None => json_error_response("Request body is not valid UTF-8"),
+        };
     }
 
     if method == "POST" && path == "/rsp-query" {
-        if let Some(body) = request_body(request) {
-            return execute_rsp_query(body);
-        }
+        return match request_body(&request.body) {
+            Some(body) => execute_rsp_query(body),
+            None => json_error_response("Request body is not valid UTF-8"),
+        };
     }
 
     if method == "POST" && path == "/rsp/register" {
-        if let Some(body) = request_body(request) {
-            return rsp_register(body, sessions);
-        }
+        return match request_body(&request.body) {
+            Some(body) => rsp_register(body, sessions),
+            None => json_error_response("Request body is not valid UTF-8"),
+        };
     }
 
     if method == "POST" && path == "/rsp/push" {
-        if let Some(body) = request_body(request) {
-            return rsp_push(body, sessions);
-        }
+        return match request_body(&request.body) {
+            Some(body) => rsp_push(body, sessions),
+            None => json_error_response("Request body is not valid UTF-8"),
+        };
     }
 
     if method == "OPTIONS" {
@@ -494,15 +578,14 @@ fn handle_request(request: &str, sessions: &Sessions) -> String {
 
 // ── RSP persistent session handlers ─────────────────────────────────────────
 
-fn request_body(request: &str) -> Option<&str> {
-    request
-        .find("\r\n\r\n")
-        .map(|body_start| &request[body_start + 4..])
-        .or_else(|| {
-            request
-                .find("\n\n")
-                .map(|body_start| &request[body_start + 2..])
-        })
+fn request_body(body: &[u8]) -> Option<&str> {
+    match std::str::from_utf8(body) {
+        Ok(body) => Some(body),
+        Err(e) => {
+            eprintln!("Request body is not valid UTF-8: {}", e);
+            None
+        }
+    }
 }
 
 fn rsp_register(body: &str, sessions: &Sessions) -> String {
@@ -536,7 +619,11 @@ fn rsp_register(body: &str, sessions: &Sessions) -> String {
 
     let r2r = Box::new(SimpleR2R::with_execution_mode(QueryExecutionMode::Volcano));
 
-    let n3logic = req.n3logic.as_deref().unwrap_or("");
+    let n3logic = req
+        .n3logic
+        .as_deref()
+        .filter(|text| has_n3_rule_text(text))
+        .unwrap_or("");
     let sparql_rules = req.sparql_rules.clone().unwrap_or_default();
 
     let mut engine: kolibrie::rsp_engine::RSPEngine<Triple, Vec<(String, String)>> =
@@ -736,7 +823,7 @@ fn execute_sparql_with_context(body: &str) -> String {
     let request: QueryRequest = match serde_json::from_str(body) {
         Ok(req) => req,
         Err(e) => {
-            eprintln!("JSON parse error: {}", e);
+            eprintln!("JSON parse error after {} byte(s): {}", body.len(), e);
             return json_error_response(&format!("Invalid JSON: {}", e));
         }
     };
@@ -803,7 +890,7 @@ fn execute_sparql_with_context(body: &str) -> String {
     // This is completely separate from the SPARQL RULE syntax — it uses the
     // Reasoner class (datalog/reasoning.rs) exactly as shown in the test example.
     if let Some(ref n3_rules_text) = request.n3logic {
-        if !n3_rules_text.trim().is_empty() {
+        if has_n3_rule_text(n3_rules_text) {
             println!("Processing N3 logic rules from N3 Logic sub-tab...");
 
             // Mirror the database dictionary so term encodings are shared
