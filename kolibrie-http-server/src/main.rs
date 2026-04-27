@@ -219,6 +219,63 @@ fn has_n3_rule_text(text: &str) -> bool {
         .any(|line| !line.starts_with('#') && line.contains("=>"))
 }
 
+fn strip_hash_comments(text: &str) -> String {
+    let mut output = String::with_capacity(text.len());
+    let mut chars = text.chars().peekable();
+    let mut in_iri = false;
+    let mut in_literal = false;
+    let mut escaped = false;
+
+    while let Some(ch) = chars.next() {
+        match ch {
+            '#' if !in_iri && !in_literal => {
+                while let Some(next) = chars.next() {
+                    if next == '\n' {
+                        output.push('\n');
+                        break;
+                    }
+                }
+                escaped = false;
+            }
+            '<' if !in_literal => {
+                in_iri = false;
+                let mut lookahead = chars.clone();
+                while let Some(next) = lookahead.next() {
+                    if next == '>' {
+                        in_iri = true;
+                        break;
+                    }
+                    if next.is_whitespace() {
+                        break;
+                    }
+                }
+                output.push(ch);
+                escaped = false;
+            }
+            '>' if in_iri && !escaped => {
+                in_iri = false;
+                output.push(ch);
+                escaped = false;
+            }
+            '"' if !in_iri && !escaped => {
+                in_literal = !in_literal;
+                output.push(ch);
+                escaped = false;
+            }
+            '\\' if in_literal && !escaped => {
+                output.push(ch);
+                escaped = true;
+            }
+            _ => {
+                output.push(ch);
+                escaped = false;
+            }
+        }
+    }
+
+    output
+}
+
 fn main() {
     println!("Starting Kolibrie HTTP Server on 0.0.0.0:8080");
 
@@ -619,16 +676,23 @@ fn rsp_register(body: &str, sessions: &Sessions) -> String {
 
     let r2r = Box::new(SimpleR2R::with_execution_mode(QueryExecutionMode::Volcano));
 
-    let n3logic = req
-        .n3logic
+    let cleaned_query = strip_hash_comments(&req.query);
+    let cleaned_n3logic = req.n3logic.as_deref().map(strip_hash_comments);
+    let n3logic = cleaned_n3logic
         .as_deref()
         .filter(|text| has_n3_rule_text(text))
         .unwrap_or("");
-    let sparql_rules = req.sparql_rules.clone().unwrap_or_default();
+    let sparql_rules = req
+        .sparql_rules
+        .clone()
+        .unwrap_or_default()
+        .into_iter()
+        .map(|rule| strip_hash_comments(&rule))
+        .collect::<Vec<_>>();
 
     let mut engine: kolibrie::rsp_engine::RSPEngine<Triple, Vec<(String, String)>> =
         match RSPBuilder::new()
-            .add_rsp_ql_query(&req.query)
+            .add_rsp_ql_query(&cleaned_query)
             .set_operation_mode(OperationMode::SingleThread)
             .add_consumer(result_consumer)
             .add_r2r(r2r)
@@ -646,13 +710,21 @@ fn rsp_register(body: &str, sessions: &Sessions) -> String {
     // Load static background data if provided.
     if let Some(static_rdf) = &req.static_rdf {
         if !static_rdf.trim().is_empty() {
+            let cleaned_static_rdf;
+            let static_rdf_for_parse = match req.static_format.as_str() {
+                "ntriples" | "turtle" => {
+                    cleaned_static_rdf = strip_hash_comments(static_rdf);
+                    cleaned_static_rdf.as_str()
+                }
+                _ => static_rdf.as_str(),
+            };
             let ntriples = match req.static_format.as_str() {
-                "ntriples" => static_rdf.clone(),
+                "ntriples" => static_rdf_for_parse.to_string(),
                 _ => {
                     let mut static_db = SparqlDatabase::new();
                     match req.static_format.as_str() {
-                        "turtle" => static_db.parse_turtle(static_rdf),
-                        _ => static_db.parse_rdf(static_rdf),
+                        "turtle" => static_db.parse_turtle(static_rdf_for_parse),
+                        _ => static_db.parse_rdf(static_rdf_for_parse),
                     }
                     db_to_ntriples(&static_db)
                 }
@@ -708,7 +780,8 @@ fn rsp_push(body: &str, sessions: &Sessions) -> String {
         }
     };
 
-    if req.ntriples.trim().is_empty() {
+    let ntriples = strip_hash_comments(&req.ntriples);
+    if ntriples.trim().is_empty() {
         return json_ok();
     }
 
@@ -721,7 +794,7 @@ fn rsp_push(body: &str, sessions: &Sessions) -> String {
         }
     };
 
-    let triples = session.engine.parse_data(&req.ntriples);
+    let triples = session.engine.parse_data(&ntriples);
     println!(
         "RSP push: {} triple(s) to stream '{}' at t={} (session {})",
         triples.len(),
@@ -862,22 +935,30 @@ fn execute_sparql_with_context(body: &str) -> String {
     // Load RDF data once
     if let Some(rdf_data) = request.rdf {
         if !rdf_data.trim().is_empty() {
+            let cleaned_rdf_data;
+            let rdf_data_for_parse = match request.format.as_str() {
+                "ntriples" | "turtle" => {
+                    cleaned_rdf_data = strip_hash_comments(&rdf_data);
+                    cleaned_rdf_data.as_str()
+                }
+                _ => rdf_data.as_str(),
+            };
             match request.format.as_str() {
                 "ntriples" => {
                     println!("Parsing N-Triples data with Streamertail optimizer...");
-                    database.parse_ntriples_and_add(&rdf_data);
+                    database.parse_ntriples_and_add(rdf_data_for_parse);
                     database.get_or_build_stats();
                     database.build_all_indexes();
                 }
                 "turtle" => {
                     println!("Parsing Turtle dataset...");
-                    database.parse_turtle(&rdf_data);
+                    database.parse_turtle(rdf_data_for_parse);
                     database.get_or_build_stats();
                     database.build_all_indexes();
                 }
                 "rdfxml" | _ => {
                     println!("Parsing RDF/XML data...");
-                    database.parse_rdf(&rdf_data);
+                    database.parse_rdf(rdf_data_for_parse);
                     database.get_or_build_stats();
                     database.build_all_indexes();
                 }
@@ -890,7 +971,8 @@ fn execute_sparql_with_context(body: &str) -> String {
     // This is completely separate from the SPARQL RULE syntax — it uses the
     // Reasoner class (datalog/reasoning.rs) exactly as shown in the test example.
     if let Some(ref n3_rules_text) = request.n3logic {
-        if has_n3_rule_text(n3_rules_text) {
+        let n3_rules_text = strip_hash_comments(n3_rules_text);
+        if has_n3_rule_text(&n3_rules_text) {
             println!("Processing N3 logic rules from N3 Logic sub-tab...");
 
             // Mirror the database dictionary so term encodings are shared
@@ -969,6 +1051,7 @@ fn execute_sparql_with_context(body: &str) -> String {
 
     // Process all SPARQL-syntax rules (RULE :Name :- CONSTRUCT { } WHERE { })
     for (idx, rule_def) in rules.iter().enumerate() {
+        let rule_def = strip_hash_comments(rule_def);
         if !rule_def.trim().is_empty() {
             println!("Processing rule {}...", idx + 1);
             match process_rule_definition(&rule_def, &mut database) {
@@ -997,11 +1080,12 @@ fn execute_sparql_with_context(body: &str) -> String {
     for (idx, query) in queries.iter().enumerate() {
         println!("Executing query {}/{}...", idx + 1, queries.len());
         let start_time = std::time::Instant::now();
+        let executable_query = strip_hash_comments(query);
 
         let results = if use_optimizer {
-            execute_query_rayon_parallel2_volcano(query, &mut database)
+            execute_query_rayon_parallel2_volcano(&executable_query, &mut database)
         } else {
-            execute_query(query, &mut database)
+            execute_query(&executable_query, &mut database)
         };
 
         let execution_time = start_time.elapsed().as_secs_f64() * 1000.0;
@@ -1067,10 +1151,11 @@ fn execute_rsp_query(body: &str) -> String {
     let r2r = Box::new(SimpleR2R::with_execution_mode(QueryExecutionMode::Volcano));
 
     let start_time = std::time::Instant::now();
+    let cleaned_query = strip_hash_comments(&request.query);
 
     let mut engine: kolibrie::rsp_engine::RSPEngine<Triple, Vec<(String, String)>> =
         match RSPBuilder::new()
-            .add_rsp_ql_query(&request.query)
+            .add_rsp_ql_query(&cleaned_query)
             .set_operation_mode(OperationMode::SingleThread)
             .add_consumer(result_consumer)
             .add_r2r(r2r)
@@ -1086,13 +1171,21 @@ fn execute_rsp_query(body: &str) -> String {
     // Load static background data from the SPARQL tab (if provided).
     if let Some(static_rdf) = &request.static_rdf {
         if !static_rdf.trim().is_empty() {
+            let cleaned_static_rdf;
+            let static_rdf_for_parse = match request.static_format.as_str() {
+                "ntriples" | "turtle" => {
+                    cleaned_static_rdf = strip_hash_comments(static_rdf);
+                    cleaned_static_rdf.as_str()
+                }
+                _ => static_rdf.as_str(),
+            };
             let ntriples = match request.static_format.as_str() {
-                "ntriples" => static_rdf.clone(),
+                "ntriples" => static_rdf_for_parse.to_string(),
                 _ => {
                     let mut static_db = SparqlDatabase::new();
                     match request.static_format.as_str() {
-                        "turtle" => static_db.parse_turtle(static_rdf),
-                        _ => static_db.parse_rdf(static_rdf),
+                        "turtle" => static_db.parse_turtle(static_rdf_for_parse),
+                        _ => static_db.parse_rdf(static_rdf_for_parse),
                     }
                     db_to_ntriples(&static_db)
                 }
@@ -1112,10 +1205,11 @@ fn execute_rsp_query(body: &str) -> String {
     events.sort_by_key(|e| e.timestamp);
 
     for event in &events {
-        if event.ntriples.trim().is_empty() {
+        let ntriples = strip_hash_comments(&event.ntriples);
+        if ntriples.trim().is_empty() {
             continue;
         }
-        let triples = engine.parse_data(&event.ntriples);
+        let triples = engine.parse_data(&ntriples);
         println!(
             "RSP: pushing {} triple(s) to stream '{}' at t={}",
             triples.len(),
@@ -1169,6 +1263,27 @@ fn execute_rsp_query(body: &str) -> String {
 }
 
 // ── Response helpers ─────────────────────────────────────────────────────────
+
+#[cfg(test)]
+mod tests {
+    use super::strip_hash_comments;
+
+    #[test]
+    fn strips_hash_comments_without_touching_iris_or_literals() {
+        let input = "PREFIX ex: <http://example.org#>\n\
+SELECT ?s WHERE { ?s ex:p \"value # kept\" . # remove this\n\
+FILTER(?s < 3) # remove too\n\
+FILTER(?s<3) # remove compact comparison\n\
+}";
+        let expected = "PREFIX ex: <http://example.org#>\n\
+SELECT ?s WHERE { ?s ex:p \"value # kept\" . \n\
+FILTER(?s < 3) \n\
+FILTER(?s<3) \n\
+}";
+
+        assert_eq!(strip_hash_comments(input), expected);
+    }
+}
 
 fn json_ok() -> String {
     let json = r#"{"ok":true}"#;
