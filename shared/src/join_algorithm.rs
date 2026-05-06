@@ -10,7 +10,7 @@
 
 use crate::dictionary::Dictionary;
 use crate::triple::Triple;
-use crate::index_manager::UnifiedIndex;
+use crate::index_manager::TripleIndex;
 use std::collections::{BTreeMap, HashMap};
 use std::sync::Arc;
 use rayon::prelude::*;
@@ -19,7 +19,7 @@ pub fn perform_join_par_simd_with_strict_filter_4_redesigned_streaming(
     subject_var: String,
     predicate: String,
     object_var: String,
-    index_manager: &UnifiedIndex,  // ← Pass index instead of database
+    index_manager: Box<dyn TripleIndex>,  // ← Pass index instead of database
     dictionary: &Dictionary,
     final_results: Vec<BTreeMap<String, String>>,
     literal_filter: Option<String>,
@@ -46,45 +46,15 @@ pub fn perform_join_par_simd_with_strict_filter_4_redesigned_streaming(
         dictionary,
     );
 
-    // FIX: Use PSO index instead of POS for better ordering
     let mut filtered_triples: Vec<Triple> = if let Some(pred_id) = predicate_id {
-        // Use PSO index (Predicate -> Subject -> Object)
-        // This gives results sorted by subject first!
-        if let Some(subject_map) = index_manager. pso.get(&pred_id) {
-            // Collect subjects in sorted order
-            let mut subjects: Vec<_> = subject_map.iter().collect();
-            subjects.sort_unstable_by_key(|(subj, _)| *subj);  // Sort by subject
-
-            subjects
-                .par_iter()
-                .flat_map(|(&subject, objects)| {
-                    // Objects are in HashSet, convert to sorted Vec
-                    let mut sorted_objects: Vec<u32> = objects.iter().copied().collect();
-                    sorted_objects.sort_unstable();  // Sort objects within each subject
-
-                    // Build triples - naturally sorted by (subject, object)!
-                    sorted_objects
-                        .into_iter()
-                        .filter_map(|object| {
-                            // Apply literal filter if present
-                            if let Some(filter_id) = literal_filter_id {
-                                if object != filter_id {
-                                    return None;
-                                }
-                            }
-
-                            Some(Triple {
-                                subject,
-                                predicate: pred_id,
-                                object,
-                            })
-                        })
-                        .collect::<Vec<_>>()
-                })
-                .collect()
-        } else {
-            Vec::new()
+        let mut triples = index_manager.query(None, Some(pred_id), None);
+    
+        // Apply literal filter if present
+        if let Some(filter_id) = literal_filter_id {
+            triples.retain(|t| t.object == filter_id);
         }
+    
+        triples
     } else {
         Vec::new()
     };

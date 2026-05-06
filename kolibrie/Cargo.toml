@@ -17,6 +17,7 @@ exclude = ["target/"]
 build = "build.rs"
 
 [dependencies]
+sysinfo = "0.29"
 quick-xml = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
@@ -287,3 +288,7 @@ path = "examples/real_scenario/mqtt_example.rs"
 [[example]]
 name = "mqtt_real_scenario"
 path = "examples/real_scenario/mqtt_real_scenario.rs"
+
+[[example]]
+name = "synthetic_stream_benchmark"
+path = "examples/sparql_syntax/synthetic_stream_benchmark/synthetic_stream_benchmark.rs"

@@ -85,6 +85,8 @@ python/.venv/
 
 # Some other directories
 benchmark_dataset/
+kolibrie/examples/sparql_syntax/n_triples_data/benchmark_results/
+!kolibrie/examples/sparql_syntax/n_triples_data/n_triple_10M_all_indexes.sh
 
 # IntelliJ 
 .idea/

@@ -11,7 +11,7 @@
 use shared::dictionary::Dictionary;
 use shared::triple::Triple;
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
-use shared::index_manager::*;
+use shared::index_manager::TripleIndex;
 use shared::rule_index::RuleIndex;
 use shared::terms::{Term, TriplePattern};
 use shared::rule::Rule;
@@ -27,18 +27,21 @@ use shared::rule::FilterCondition;
 pub struct Reasoner {
     pub dictionary: Arc<RwLock<Dictionary>>,
     pub rules: Vec<Rule>, // List of dynamic rules
-
-    pub index_manager: UnifiedIndex,
+    pub index_manager: Box<dyn TripleIndex>,
     pub rule_index: RuleIndex,
     pub constraints: Vec<Rule>,
 }
 
 impl Reasoner {
     pub fn new() -> Self {
+        Self::with_index(Box::new(shared::index_manager::HexastoreIndex::new()))
+    }
+
+    pub fn with_index(index: Box<dyn TripleIndex>) -> Self {
         Self {
             dictionary: Arc::new(RwLock::new(Dictionary::new())),
             rules: Vec::new(),
-            index_manager: UnifiedIndex::new(),
+            index_manager: index,
             rule_index: RuleIndex::new(),
             constraints: Vec::new(),
         }
@@ -692,7 +695,7 @@ impl Reasoner {
             let repairs = self.compute_repairs(&all_facts);
             if let Some(best_repair) = repairs.into_iter().max_by_key(|r| r.len()) {
                 // Clear index manager and reinsert repaired facts
-                self.index_manager = UnifiedIndex::new();
+                self.index_manager.clear();
                 for fact in &best_repair {
                     self.index_manager.insert(fact);
                 }
