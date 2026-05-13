@@ -8,6 +8,7 @@
 # you can obtain one at https://mozilla.org/MPL/2.0/.
 # 
 
+from sklearn.calibration import CalibratedClassifierCV
 from sklearn.ensemble import GradientBoostingClassifier
 from sklearn.preprocessing import StandardScaler
 from sklearn.model_selection import train_test_split
@@ -73,19 +74,21 @@ class FraudDetectionPredictor:
         # account verdict-history (13)
         'recent_fraud_count',      # FRAUD/SUSPICIOUS verdicts in last 5 tx
     ]
+    MODEL_VERSION = "uncertain-calibrated-v3"
 
     def __init__(
         self,
-        n_estimators=200,
-        learning_rate=0.08,
-        max_depth=4,
-        subsample=0.8,
-        min_samples_leaf=20,
+        n_estimators=90,
+        learning_rate=0.04,
+        max_depth=2,
+        subsample=0.75,
+        min_samples_leaf=80,
         random_state=42,
     ):
         self.scaler = StandardScaler()
         self.feature_names = self.FEATURE_NAMES
-        self.model = GradientBoostingClassifier(
+        self.model_version = self.MODEL_VERSION
+        base_model = GradientBoostingClassifier(
             n_estimators=n_estimators,
             learning_rate=learning_rate,
             max_depth=max_depth,
@@ -93,6 +96,18 @@ class FraudDetectionPredictor:
             min_samples_leaf=min_samples_leaf,
             random_state=random_state,
         )
+        try:
+            self.model = CalibratedClassifierCV(
+                estimator=base_model,
+                method='sigmoid',
+                cv=3,
+            )
+        except TypeError:
+            self.model = CalibratedClassifierCV(
+                base_estimator=base_model,
+                method='sigmoid',
+                cv=3,
+            )
         self.training_time = 0.0
         self.prediction_time = 0.0
         self.memory_usage = 0.0
@@ -118,14 +133,12 @@ class FraudDetectionPredictor:
 
     def predict_proba(self, X):
         """
-        Uncertainty estimate: std of per-estimator raw predictions.
+        Uncertainty estimate: high near 0.5, low near confident 0/1.
         Mirrors GradientBoostingPredictor.predict_proba in predictor.py.
         """
         X_scaled = self.scaler.transform(X)
-        return np.std(
-            [tree[0].predict(X_scaled) for tree in self.model.estimators_],
-            axis=0,
-        )
+        probs = self.model.predict_proba(X_scaled)[:, 1]
+        return 1.0 - np.abs((probs * 2.0) - 1.0)
 
     def evaluate(self, X_test, y_test):
         probs = self.predict(X_test)
@@ -205,7 +218,7 @@ class FraudDetectionPredictor:
 # Synthetic training data
 # ─────────────────────────────────────────────────────────────────────────────
 
-def _generate_training_data(n_samples=20000, fraud_rate=0.05, random_state=42):
+def _generate_training_data(n_samples=20000, fraud_rate=0.12, random_state=42):
     """
     Build a synthetic fraud dataset.
 
@@ -217,29 +230,89 @@ def _generate_training_data(n_samples=20000, fraud_rate=0.05, random_state=42):
     n_fraud = int(n_samples * fraud_rate)
     n_legit = n_samples - n_fraud
 
-    # Legitimate transactions
-    legit_amount       = rng.lognormal(mean=4.0, sigma=1.2, size=n_legit).clip(1, 5000)
-    legit_hour         = rng.integers(6, 22, size=n_legit)
-    legit_dow          = rng.integers(0, 7,  size=n_legit)
-    legit_merch_risk   = (rng.beta(1.5, 8, size=n_legit) * 100).astype(int)
-    legit_velocity     = rng.poisson(1.2, size=n_legit)
-    legit_distance     = rng.exponential(15, size=n_legit).clip(0, 500)
-    legit_is_foreign   = rng.binomial(1, 0.05, size=n_legit)
-    legit_card_present = rng.binomial(1, 0.85, size=n_legit)
+    night_hours = np.concatenate([np.arange(0, 5), np.arange(22, 24)])
+
+    # Legitimate transactions. Real bank traffic is not perfectly clean:
+    # holidays, rent, travel, and repeated card taps can look risky.
+    legit_amount = np.where(
+        rng.random(n_legit) < 0.14,
+        rng.lognormal(mean=6.2, sigma=0.8, size=n_legit),
+        rng.lognormal(mean=4.3, sigma=1.1, size=n_legit),
+    ).clip(1, 10000)
+    legit_hour = np.where(
+        rng.random(n_legit) < 0.10,
+        rng.choice(night_hours, size=n_legit),
+        rng.integers(6, 22, size=n_legit),
+    )
+    legit_dow = rng.integers(0, 7,  size=n_legit)
+    legit_merch_risk = np.where(
+        rng.random(n_legit) < 0.12,
+        rng.beta(4, 3, size=n_legit) * 100,
+        rng.beta(1.8, 7, size=n_legit) * 100,
+    ).astype(int)
+    legit_velocity = np.where(
+        rng.random(n_legit) < 0.16,
+        rng.poisson(5.0, size=n_legit),
+        rng.poisson(1.3, size=n_legit),
+    ).clip(0, 12)
+    legit_distance = np.where(
+        rng.random(n_legit) < 0.10,
+        rng.exponential(220, size=n_legit),
+        rng.exponential(18, size=n_legit),
+    ).clip(0, 5000)
+    legit_is_foreign   = rng.binomial(1, 0.09, size=n_legit)
+    legit_card_present = rng.binomial(1, 0.80, size=n_legit)
     legit_y            = np.zeros(n_legit, dtype=int)
 
-    # Fraudulent transactions
-    fraud_amount       = rng.lognormal(mean=6.5, sigma=1.5, size=n_fraud).clip(50, 20000)
-    fraud_hour         = rng.choice(
-                             np.concatenate([np.arange(0, 5), np.arange(22, 24)]),
-                             size=n_fraud)
-    fraud_dow          = rng.integers(0, 7,  size=n_fraud)
-    fraud_merch_risk   = (rng.beta(5, 2, size=n_fraud) * 100).astype(int)
-    fraud_velocity     = rng.poisson(7, size=n_fraud)
-    fraud_distance     = rng.exponential(300, size=n_fraud).clip(0, 15000)
-    fraud_is_foreign   = rng.binomial(1, 0.60, size=n_fraud)
-    fraud_card_present = rng.binomial(1, 0.15, size=n_fraud)
+    legit_borderline = rng.random(n_legit) < 0.045
+    legit_amount[legit_borderline] = rng.uniform(1100, 3200, size=legit_borderline.sum())
+    legit_hour[legit_borderline] = rng.integers(9, 18, size=legit_borderline.sum())
+    legit_merch_risk[legit_borderline] = rng.integers(15, 61, size=legit_borderline.sum())
+    legit_velocity[legit_borderline] = rng.integers(6, 11, size=legit_borderline.sum())
+    legit_distance[legit_borderline] = rng.uniform(2, 60, size=legit_borderline.sum())
+    legit_is_foreign[legit_borderline] = 0
+    legit_card_present[legit_borderline] = 1
+
+    # Fraudulent transactions. Some fraud is obvious, but some is domestic,
+    # daytime, card-present, or low amount, which creates uncertain cases.
+    fraud_amount = np.where(
+        rng.random(n_fraud) < 0.32,
+        rng.lognormal(mean=4.8, sigma=1.0, size=n_fraud),
+        rng.lognormal(mean=6.4, sigma=1.15, size=n_fraud),
+    ).clip(10, 20000)
+    fraud_hour = np.where(
+        rng.random(n_fraud) < 0.48,
+        rng.choice(night_hours, size=n_fraud),
+        rng.integers(6, 22, size=n_fraud),
+    )
+    fraud_dow = rng.integers(0, 7,  size=n_fraud)
+    fraud_merch_risk = np.where(
+        rng.random(n_fraud) < 0.30,
+        rng.beta(2.2, 5, size=n_fraud) * 100,
+        rng.beta(4.5, 2.5, size=n_fraud) * 100,
+    ).astype(int)
+    fraud_velocity = np.where(
+        rng.random(n_fraud) < 0.28,
+        rng.poisson(2.2, size=n_fraud),
+        rng.poisson(6.2, size=n_fraud),
+    ).clip(0, 15)
+    fraud_distance = np.where(
+        rng.random(n_fraud) < 0.45,
+        rng.exponential(35, size=n_fraud),
+        rng.exponential(450, size=n_fraud),
+    ).clip(0, 15000)
+    fraud_is_foreign   = rng.binomial(1, 0.42, size=n_fraud)
+    fraud_card_present = rng.binomial(1, 0.38, size=n_fraud)
     fraud_y            = np.ones(n_fraud, dtype=int)
+
+    fraud_borderline = rng.random(n_fraud) < 0.35
+    fraud_amount[fraud_borderline] = rng.uniform(1100, 3200, size=fraud_borderline.sum())
+    fraud_hour[fraud_borderline] = rng.integers(9, 18, size=fraud_borderline.sum())
+    fraud_merch_risk[fraud_borderline] = rng.integers(15, 61, size=fraud_borderline.sum())
+    fraud_velocity[fraud_borderline] = rng.integers(6, 11, size=fraud_borderline.sum())
+    fraud_distance[fraud_borderline] = rng.uniform(2, 60, size=fraud_borderline.sum())
+    fraud_is_foreign[fraud_borderline] = 0
+    fraud_card_present[fraud_borderline] = 1
 
     # ── Datalog Pass-1 flag features  (Symbolic → ML direction) ────────────────
     # Computed deterministically from the raw features, mirroring R1-R5 exactly.
@@ -267,8 +340,8 @@ def _generate_training_data(n_samples=20000, fraud_rate=0.05, random_state=42):
     # Legit accounts rarely have recent fraud verdicts; fraud accounts often do.
     # This feature IS safe to use: it's based on binary verdicts, not the
     # continuous ML score, so there is no circular dependency.
-    legit_rfc = rng.integers(0, 2, size=n_legit).astype(float)   # 0 or 1
-    fraud_rfc = rng.integers(1, 4, size=n_fraud).astype(float)   # 1-3
+    legit_rfc = rng.choice([0, 1, 2], size=n_legit, p=[0.86, 0.12, 0.02]).astype(float)
+    fraud_rfc = rng.choice([0, 1, 2, 3], size=n_fraud, p=[0.25, 0.35, 0.25, 0.15]).astype(float)
 
     X = np.column_stack([
         # raw features (0-7)
@@ -290,6 +363,11 @@ def _generate_training_data(n_samples=20000, fraud_rate=0.05, random_state=42):
         np.concatenate([legit_rfc,  fraud_rfc]),
     ])
     y = np.concatenate([legit_y, fraud_y])
+    label_noise = np.concatenate([
+        rng.random(n_legit) < 0.012,
+        rng.random(n_fraud) < 0.080,
+    ])
+    y[label_noise] = 1 - y[label_noise]
     idx = rng.permutation(n_samples)
     return X[idx], y[idx]
 
@@ -297,7 +375,7 @@ def _generate_training_data(n_samples=20000, fraud_rate=0.05, random_state=42):
 def _do_train(model_path):
     """Train a fresh FraudDetectionPredictor and save pkl + ttl."""
     print('[fraud_predictor] Training GradientBoosting classifier ...')
-    X, y = _generate_training_data(n_samples=20000, fraud_rate=0.05)
+    X, y = _generate_training_data(n_samples=20000, fraud_rate=0.12)
     X_train, X_test, y_train, y_test = train_test_split(
         X, y, test_size=0.2, random_state=42, stratify=y,
     )
@@ -311,6 +389,12 @@ def _do_train(model_path):
     print('[fraud_predictor] Evaluation:')
     for k, v in metrics.items():
         print(f'  {k}: {v:.4f}')
+    probs = m.predict(X_test)
+    q05, q25, q50, q75, q95 = np.quantile(probs, [0.05, 0.25, 0.50, 0.75, 0.95])
+    uncertain = np.mean((probs >= 0.20) & (probs <= 0.80))
+    print('[fraud_predictor] Score distribution:')
+    print(f'  q05/q25/q50/q75/q95: {q05:.3f} / {q25:.3f} / {q50:.3f} / {q75:.3f} / {q95:.3f}')
+    print(f'  uncertain_share_20_80: {uncertain:.3f}')
     print('[fraud_predictor] Performance:')
     for k, v in m.get_performance_metrics().items():
         print(f'  {k}: {v}')
@@ -353,6 +437,12 @@ if os.path.exists(_model_path):
                 f"Feature count mismatch: pkl has {len(_probe.feature_names)} "
                 f"features, current class has "
                 f"{len(FraudDetectionPredictor.FEATURE_NAMES)}. Retraining."
+            )
+        if getattr(_probe, 'model_version', None) != FraudDetectionPredictor.MODEL_VERSION:
+            raise ValueError(
+                f"Model version mismatch: pkl has "
+                f"{getattr(_probe, 'model_version', 'unknown')}, current class has "
+                f"{FraudDetectionPredictor.MODEL_VERSION}. Retraining."
             )
         _needs_training = False
         print(f'[fraud_predictor] Existing model verified OK → skipping training.')
