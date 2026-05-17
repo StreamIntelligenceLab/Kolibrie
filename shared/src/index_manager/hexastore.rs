@@ -1,3 +1,13 @@
+/*
+ * Copyright © 2024 Volodymyr Kadzhaia
+ * Copyright © 2024 Pieter Bonte
+ * KU Leuven — Stream Intelligence Lab, Belgium
+ *
+ * This Source Code Form is subject to the terms of the Mozilla Public
+ * License, v. 2.0. If a copy of the MPL was not distributed with this file,
+ * you can obtain one at https://mozilla.org/MPL/2.0/.
+ */
+
 use serde::{Serialize, Deserialize};
 use std::collections::{HashMap, HashSet};
 use crate::terms::*;
@@ -235,14 +245,17 @@ impl TripleIndex for HexastoreIndex {
         let sub = match s {
             Constant(x) => Some(*x),
             Variable(_) => None,
+            QuotedTriple(_) => None,
         };
         let pre = match p {
             Constant(x) => Some(*x),
             Variable(_) => None,
+            QuotedTriple(_) => None,
         };
         let obj = match o {
             Constant(x) => Some(*x),
             Variable(_) => None,
+            QuotedTriple(_) => None,
         };
 
         self.query(sub, pre, obj)

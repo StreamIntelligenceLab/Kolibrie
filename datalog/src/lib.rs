@@ -11,3 +11,4 @@
 pub mod reasoning;
 pub mod parser_n3_logic;
 pub mod reasoning_experimental;
+pub mod cross_window_sds;

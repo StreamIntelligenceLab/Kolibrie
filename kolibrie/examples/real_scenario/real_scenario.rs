@@ -304,70 +304,70 @@ fn main() {
 
     // Rule 1: If it's quiet (noise level < 30), use noise for detection
     let rule1 = r#"PREFIX ex: <http://example.org#>
-RULE :UseNoiseSensor(?room) :- 
-    WHERE { 
+RULE :UseNoiseSensor :-
+    WHERE {
         ?room ex:noiseLevel ?level .
         FILTER (?level < 30)
-    } 
-    => 
-    { 
+    }
+    =>
+    {
         ?room ex:detectionStrategy "NoiseBased" .
     }.
-SELECT ?room 
-WHERE { 
-    :UseNoiseSensor(?room)  
+SELECT ?room
+WHERE {
+    :UseNoiseSensor(?room)
 }"#;
 
     // Rule 2: Universally define motion sensor for all rooms (will be superseded by noise-based if quiet)
     let rule2 = r#"PREFIX ex: <http://example.org#>
-RULE :DefaultMotionSensor(?room) :- 
-    WHERE { 
+RULE :DefaultMotionSensor :-
+    WHERE {
         ?room ex:noiseLevel ?level .
-    } 
-    => 
-    { 
+    }
+    =>
+    {
         ?room ex:fallbackDetectionStrategy "MotionBased" .
     }.
-SELECT ?room 
-WHERE { 
-    :DefaultMotionSensor(?room)  
+SELECT ?room
+WHERE {
+    :DefaultMotionSensor(?room)
 }"#;
 
     // Rule 3a: If it's not dark (light level > 50), use cameras for detection
     let rule3a = r#"PREFIX ex: <http://example.org#>
-RULE :UseCameraDetection(?room) :- 
-    WHERE { 
+RULE :UseCameraDetection :-
+    WHERE {
         ?room ex:lightLevel ?level .
         FILTER (?level > 50)
-    } 
-    => 
-    { 
+    }
+    =>
+    {
         ?room ex:detectionStrategy "CameraBased" .
     }.
-SELECT ?room 
-WHERE { 
-    :UseCameraDetection(?room) 
+SELECT ?room
+WHERE {
+    :UseCameraDetection(?room)
 }"#;
 
     // Rule 3b: If it's not dark (light level > 50), use cameras for identification
     let rule3b = r#"PREFIX ex: <http://example.org#>
-RULE :UseCameraIdentification(?room) :- 
-    WHERE { 
+RULE :UseCameraIdentification :-
+    WHERE {
         ?room ex:lightLevel ?level .
         FILTER (?level > 50)
-    } 
-    => 
-    { 
+    }
+    =>
+    {
         ?room ex:identificationMethod "CameraIdentification" .
     }.
-SELECT ?room 
-WHERE { 
-    :UseCameraIdentification(?room) 
+SELECT ?room
+WHERE {
+    :UseCameraIdentification(?room)
 }"#;
 
     // Mark all detection events as unauthorized:
     let rule_mark_all_unauthorized = r#"PREFIX ex: <http://example.org#>
-RULE :MarkAllEventsUnauthorized(?event) :-
+RULE :MarkAllEventsUnauthorized :-
     WHERE {
         ?event ex:detectedCategory ?person .
     }
@@ -382,7 +382,7 @@ WHERE {
 
     // Override to authorized if event is within the allowed time slot:
     let rule_mark_authorized_if_within_schedule = r#"PREFIX ex: <http://example.org#>
-RULE :MarkAllEventsUnauthorized(?event) :-
+RULE :MarkAllEventsUnauthorized :-
     WHERE {
         ?event ex:detectedCategory ?person .
     }

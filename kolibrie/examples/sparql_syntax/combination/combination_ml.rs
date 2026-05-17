@@ -68,7 +68,7 @@ fn main() -> Result<(), Box<dyn Error>> {
 
     let rule_definition = r#"PREFIX ex: <http://example.org#>
 PREFIX sensor: <http://example.org/sensor#>
-RULE :TemperatureAlert(?room) :- 
+RULE :TemperatureAlert :-
     CONSTRUCT { 
         ?room ex:temperatureAlert "High temperature detected" .
     }

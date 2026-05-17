@@ -156,7 +156,7 @@ fn apply_simplified_windowing_rules(database: &mut SparqlDatabase, _batch_num: u
     let high_temp_rule = r#"PREFIX ex: <http://example.org#>
 PREFIX stream: <http://example.org/stream#>
 
-RULE :TemperatureAlert(?room) :- 
+RULE :TemperatureAlert :-
 RSTREAM
 FROM NAMED WINDOW <http://example.org/window1> ON <http://example.org/temperatureStream> [SLIDING 6 SLIDE 2 REPORT ON_WINDOW_CLOSE TICK TIME_DRIVEN] 
 CONSTRUCT { 
@@ -193,7 +193,7 @@ WHERE {
     let moderate_rule = r#"PREFIX ex: <http://example.org#>
 PREFIX stream: <http://example.org/stream#>
 
-RULE :NewHighTemp(?room) :- 
+RULE :NewHighTemp :-
 ISTREAM
 FROM NAMED WINDOW <http://example.org/window2> ON <http://example.org/tempStream> [TUMBLING 4 REPORT NON_EMPTY_CONTENT TICK TUPLE_DRIVEN] 
 CONSTRUCT { 
@@ -229,7 +229,7 @@ WHERE {
     let extreme_rule = r#"PREFIX ex: <http://example.org#>
 PREFIX stream: <http://example.org/stream#>
 
-RULE :ExtremeAlert(?room) :- 
+RULE :ExtremeAlert :-
 DSTREAM
 FROM NAMED WINDOW <http://example.org/window3> ON <http://example.org/sensorStream> [RANGE 8 REPORT PERIODIC TICK TIME_DRIVEN]
 CONSTRUCT { 

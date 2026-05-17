@@ -180,9 +180,9 @@ impl TripleIndex for SPOSingleIndex {
 
     fn get_matching_triples(&self, pattern: &TriplePattern) -> Vec<Triple> {
         let (s, p, o) = pattern;
-        let sub = match s { Constant(x) => Some(*x), Variable(_) => None };
-        let pre = match p { Constant(x) => Some(*x), Variable(_) => None };
-        let obj = match o { Constant(x) => Some(*x), Variable(_) => None };
+        let sub = match s { Constant(x) => Some(*x), Variable(_) => None, QuotedTriple(_) => None };
+        let pre = match p { Constant(x) => Some(*x), Variable(_) => None, QuotedTriple(_) => None };
+        let obj = match o { Constant(x) => Some(*x), Variable(_) => None, QuotedTriple(_) => None };
         self.query(sub, pre, obj)
     }
 

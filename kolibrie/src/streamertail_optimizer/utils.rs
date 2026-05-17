@@ -194,6 +194,52 @@ pub fn build_logical_plan(
     result
 }
 
+/// Convert a single term string to a Term, handling quoted triple patterns.
+fn convert_term_star(
+    term_str: &str,
+    prefixes: &HashMap<String, String>,
+    database: &mut SparqlDatabase,
+) -> Term {
+    let trimmed = term_str.trim();
+    if trimmed.starts_with("<<") && trimmed.ends_with(">>") {
+        let inner = trimmed[2..trimmed.len() - 2].trim();
+        let (s_str, p_str, o_str) = SparqlDatabase::split_quoted_triple_content(inner);
+        let s_term = convert_term_star(&s_str, prefixes, database);
+        let p_term = convert_term_star(&p_str, prefixes, database);
+        let o_term = convert_term_star(&o_str, prefixes, database);
+
+        // If all components are constants, resolve to a single Constant ID
+        if let (Term::Constant(s_id), Term::Constant(p_id), Term::Constant(o_id)) =
+            (&s_term, &p_term, &o_term)
+        {
+            let mut qt = database.quoted_triple_store.write().unwrap();
+            let qt_id = qt.encode(*s_id, *p_id, *o_id);
+            Term::Constant(qt_id)
+        } else {
+            // Contains variables — use QuotedTriple variant for pattern matching
+            Term::QuotedTriple(Box::new((s_term, p_term, o_term)))
+        }
+    } else if trimmed.starts_with('?') {
+        Term::Variable(trimmed.to_string())
+    } else {
+        // Strip angle brackets from URIs and quotes from literals before resolving
+        let cleaned = if trimmed.starts_with('<') && trimmed.ends_with('>') && !trimmed.starts_with("<<") {
+            &trimmed[1..trimmed.len() - 1]
+        } else if trimmed.starts_with('"') {
+            if let Some(close_pos) = trimmed[1..].find('"') {
+                &trimmed[1..close_pos + 1]
+            } else {
+                trimmed.trim_matches('"')
+            }
+        } else {
+            trimmed
+        };
+        let resolved = resolve_with_prefixes(cleaned, prefixes);
+        let mut dict = database.dictionary.write().unwrap();
+        Term::Constant(dict.encode(&resolved))
+    }
+}
+
 // Helper function to convert pattern strings to TriplePattern
 fn convert_pattern_to_triple(
     subject_str: &str,
@@ -202,31 +248,9 @@ fn convert_pattern_to_triple(
     prefixes: &HashMap<String, String>,
     database: &mut SparqlDatabase,
 ) -> TriplePattern {
-    let mut dict = database.dictionary.write().unwrap();
-    
-    let subject = if subject_str.starts_with('?') {
-        Term::Variable(subject_str.to_string())
-    } else {
-        let resolved = resolve_with_prefixes(subject_str, prefixes);
-        Term::Constant(dict.encode(&resolved))
-    };
-
-    let predicate = if predicate_str.starts_with('?') {
-        Term::Variable(predicate_str.to_string())
-    } else {
-        let resolved = resolve_with_prefixes(predicate_str, prefixes);
-        Term::Constant(dict.encode(&resolved))
-    };
-
-    let object = if object_str.starts_with('?') {
-        Term::Variable(object_str.to_string())
-    } else {
-        let resolved = resolve_with_prefixes(object_str, prefixes);
-        Term::Constant(dict.encode(&resolved))
-    };
-    
-    drop(dict);
-
+    let subject = convert_term_star(subject_str, prefixes, database);
+    let predicate = convert_term_star(predicate_str, prefixes, database);
+    let object = convert_term_star(object_str, prefixes, database);
     (subject, predicate, object)
 }
 
@@ -277,6 +301,17 @@ fn resolve_with_prefixes(uri: &str, prefixes: &HashMap<String, String>) -> Strin
     }
 }
 
+fn make_arith_static(expr: &shared::query::ArithmeticExpression) -> shared::query::ArithmeticExpression<'static> {
+    use shared::query::ArithmeticExpression as AE;
+    match expr {
+        AE::Operand(s) => AE::Operand(Box::leak(s.to_string().into_boxed_str())),
+        AE::Add(l, r) => AE::Add(Box::new(make_arith_static(l)), Box::new(make_arith_static(r))),
+        AE::Subtract(l, r) => AE::Subtract(Box::new(make_arith_static(l)), Box::new(make_arith_static(r))),
+        AE::Multiply(l, r) => AE::Multiply(Box::new(make_arith_static(l)), Box::new(make_arith_static(r))),
+        AE::Divide(l, r) => AE::Divide(Box::new(make_arith_static(l)), Box::new(make_arith_static(r))),
+    }
+}
+
 /// Converts a FilterExpression with any lifetime to 'static lifetime
 fn make_filter_static(filter: &FilterExpression) -> FilterExpression<'static> {
     match filter {
@@ -302,8 +337,14 @@ fn make_filter_static(filter: &FilterExpression) -> FilterExpression<'static> {
             FilterExpression::Not(Box::new(make_filter_static(inner)))
         }
         FilterExpression::ArithmeticExpr(expr) => {
-            let expr_static: &'static str = Box::leak(expr.to_string().into_boxed_str());
-            FilterExpression::ArithmeticExpr(expr_static)
+            FilterExpression::ArithmeticExpr(Box::new(make_arith_static(expr)))
+        }
+        FilterExpression::FunctionCall(name, args) => {
+            let name_static: &'static str = Box::leak(name.to_string().into_boxed_str());
+            let args_static: Vec<&'static str> = args.iter()
+                .map(|a| -> &'static str { Box::leak(a.to_string().into_boxed_str()) })
+                .collect();
+            FilterExpression::FunctionCall(name_static, args_static)
         }
     }
 }

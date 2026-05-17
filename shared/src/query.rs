@@ -27,7 +27,8 @@ pub enum FilterExpression<'a> {
     And(Box<FilterExpression<'a>>, Box<FilterExpression<'a>>),
     Or(Box<FilterExpression<'a>>, Box<FilterExpression<'a>>),
     Not(Box<FilterExpression<'a>>),
-    ArithmeticExpr(&'a str),
+    ArithmeticExpr(Box<ArithmeticExpression<'a>>),
+    FunctionCall(&'a str, Vec<&'a str>),
 }
 
 #[derive(Debug, Clone)]
@@ -37,6 +38,32 @@ pub enum ArithmeticExpression<'a> {
     Subtract(Box<ArithmeticExpression<'a>>, Box<ArithmeticExpression<'a>>),
     Multiply(Box<ArithmeticExpression<'a>>, Box<ArithmeticExpression<'a>>),
     Divide(Box<ArithmeticExpression<'a>>, Box<ArithmeticExpression<'a>>),
+}
+
+impl<'a> ArithmeticExpression<'a> {
+    /// Evaluate the expression. `resolve` maps variable strings (e.g. `?x`) to f64 values.
+    pub fn evaluate<F: Fn(&str) -> Option<f64>>(&self, resolve: &F) -> Result<f64, String> {
+        match self {
+            Self::Operand(s) => {
+                if s.starts_with('?') {
+                    resolve(s).ok_or_else(|| format!("Variable '{}' not found or not numeric", s))
+                } else {
+                    s.parse::<f64>().map_err(|_| format!("Cannot parse '{}' as number", s))
+                }
+            }
+            Self::Add(l, r) => Ok(l.evaluate(resolve)? + r.evaluate(resolve)?),
+            Self::Subtract(l, r) => Ok(l.evaluate(resolve)? - r.evaluate(resolve)?),
+            Self::Multiply(l, r) => Ok(l.evaluate(resolve)? * r.evaluate(resolve)?),
+            Self::Divide(l, r) => {
+                let rv = r.evaluate(resolve)?;
+                if rv == 0.0 {
+                    Err("Division by zero".to_string())
+                } else {
+                    Ok(l.evaluate(resolve)? / rv)
+                }
+            }
+        }
+    }
 }
 
 // Define the Value enum to represent terms or UNDEF in VALUES clause
@@ -59,6 +86,12 @@ pub struct InsertClause<'a> {
     pub triples: Vec<(&'a str, &'a str, &'a str)>,
 }
 
+// Define the DeleteClause struct to hold triple patterns for the DELETE clause
+#[derive(Debug, Clone)]
+pub struct DeleteClause<'a> {
+    pub triples: Vec<(&'a str, &'a str, &'a str)>,
+}
+
 #[derive(Debug, Clone)]
 pub struct SubQuery<'a> {
     pub variables: Vec<(&'a str, &'a str, Option<&'a str>)>, // SELECT variables
@@ -72,7 +105,6 @@ pub struct SubQuery<'a> {
 #[derive(Debug, Clone)]
 pub struct RuleHead<'a> {
     pub predicate: &'a str,
-    pub arguments: Vec<&'a str>,
 }
 
 #[derive(Debug, Clone)]
@@ -83,6 +115,67 @@ pub struct MLPredictClause<'a> {
     pub input_where: Vec<(&'a str, &'a str, &'a str)>,      // Parsed WHERE patterns
     pub input_filters: Vec<FilterExpression<'a>>,    // Parsed FILTER conditions
     pub output: &'a str,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LossFn {
+    CrossEntropy,
+    Nll,
+    Mse,
+    BinaryCrossEntropy,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum OptimizerKind {
+    Adam,
+    Sgd,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ModelArch {
+    Mlp { hidden_layers: Vec<usize> },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum NeuralOutputKind {
+    Exclusive { labels: Vec<String> },
+    Binary { positive_literal: String },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ModelDecl {
+    pub name: String,
+    pub arch: ModelArch,
+    pub output_kind: NeuralOutputKind,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NeuralRelationDecl {
+    pub predicate: String,
+    pub model_name: String,
+    pub input_patterns: Vec<(String, String, String)>,
+    pub feature_vars: Vec<String>,
+    pub anchor_var: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum TrainingDataSource {
+    GraphPattern(Vec<(String, String, String)>),
+    Query(String),
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct TrainNeuralRelationDecl {
+    pub predicate: String,
+    pub data_source: TrainingDataSource,
+    pub label_var: String,
+    pub target_triple: (String, String, String),
+    pub loss: LossFn,
+    pub optimizer: OptimizerKind,
+    pub learning_rate: f64,
+    pub epochs: usize,
+    pub batch_size: usize,
+    pub save_path: Option<String>,
 }
 
 // Add new structs for windowing support
@@ -168,12 +261,24 @@ pub struct WindowBlock<'a> {
     pub patterns: Vec<(&'a str, &'a str, &'a str)>,
 }
 
+/// Probability annotation for a RULE.
+/// Parsed from: PROB(combination=independent, threshold=0.3, confidence=0.9)
+#[derive(Clone, Debug)]
+pub struct ProbAnnotation<'a> {
+    pub combination: &'a str,
+    pub threshold: Option<f64>,
+    pub confidence: Option<f64>,
+}
+
 // Modified CombinedRule to include windowing
 #[derive(Clone, Debug)]
 pub struct CombinedRule<'a> {
     pub head: RuleHead<'a>,
     pub stream_type: Option<StreamType<'a>>,
     pub window_clause: Vec<WindowClause<'a>>,
+    pub model_decls: Vec<ModelDecl>,
+    pub neural_relation_decls: Vec<NeuralRelationDecl>,
+    pub train_neural_relation_decls: Vec<TrainNeuralRelationDecl>,
     pub body: (
         Vec<(&'a str, &'a str, &'a str)>, // triple patterns from WHERE
         Vec<FilterExpression<'a>>, // filters
@@ -181,8 +286,11 @@ pub struct CombinedRule<'a> {
         Vec<(&'a str, Vec<&'a str>, &'a str)>, // BIND clauses
         Vec<SubQuery<'a>>,                     // subqueries
     ),
+    /// Negated body atoms parsed from `NOT triple_pattern` clauses in WHERE.
+    pub negated_body: Vec<(&'a str, &'a str, &'a str)>,
     pub conclusion: Vec<(&'a str, &'a str, &'a str)>,
     pub ml_predict: Option<MLPredictClause<'a>>, // new field for ML.PREDICT clause
+    pub prob_annotation: Option<ProbAnnotation<'a>>, // probabilistic rule annotation
 }
 
 // Add these new enums and structs
@@ -224,6 +332,9 @@ pub struct CombinedQuery<'a> {
     pub prefixes: HashMap<String, String>,
     pub retrieve_clause: Option<RetrieveClause<'a>>,
     pub register_clause: Option<RegisterClause<'a>>,
+    pub model_decls: Vec<ModelDecl>,
+    pub neural_relation_decls: Vec<NeuralRelationDecl>,
+    pub train_neural_relation_decls: Vec<TrainNeuralRelationDecl>,
     pub rule: Option<CombinedRule<'a>>,
     pub sparql: (
         Option<InsertClause<'a>>,
@@ -239,4 +350,5 @@ pub struct CombinedQuery<'a> {
         Vec<WindowBlock<'a>>,
         Vec<OrderCondition<'a>>,
     ),
+    pub delete_clause: Option<DeleteClause<'a>>,
 }

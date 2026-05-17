@@ -8,40 +8,6 @@
  * you can obtain one at https://mozilla.org/MPL/2.0/.
  */
 
-//! Volcano-style query optimizer with cost-based optimization
-//!
-//! This module implements a Volcano-style query optimizer that uses dynamic programming
-//! with memoization to find optimal query execution plans. The optimizer includes:
-//!
-//! - Cost-based optimization with cardinality estimation
-//! - Multiple join algorithms (hash join, nested loop, parallel join)
-//! - Index-based scan optimizations
-//! - Filter pushdown and other transformations
-//! - ID-based execution for performance
-//!
-//! ## Architecture
-//!
-//! The optimizer is structured into several focused modules:
-//!
-//! - `operators`: Logical and physical operator definitions
-//! - `cost`: Cost estimation and cardinality estimation
-//! - `execution`: Physical operator execution engine
-//! - `stats`: Database statistics gathering and management
-//! - `types`: Common types like Condition and IdResult
-//! - `utils`: Utility functions for plan building and optimization
-//!
-//! ## Usage
-//!
-//! ```rust
-//! use streamertail_optimizer::Streamertail;
-//! use streamertail_optimizer::operators::LogicalOperator;
-//!
-//! let mut optimizer = Streamertail::new(&database);
-//! let logical_plan = LogicalOperator::scan(pattern);
-//! let physical_plan = optimizer.find_best_plan(&logical_plan);
-//! let results = optimizer.execute_plan(&physical_plan, &mut database);
-//! ```
-
 pub mod cost;
 pub mod execution;
 pub mod operators;

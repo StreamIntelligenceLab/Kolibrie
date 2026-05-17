@@ -44,6 +44,7 @@ fn test1() {
                 Term::Variable("z".to_string()),
             ),
         ],
+        negative_premise: vec![],
         conclusion: vec![(
             Term::Variable("x".to_string()),
             Term::Constant(likes_id),
@@ -59,6 +60,7 @@ fn test1() {
             Term::Constant(likes_id),
             Term::Variable("y".to_string()),
         )],
+        negative_premise: vec![],
         conclusion: vec![(
             Term::Variable("y".to_string()),
             Term::Constant(likes_id),
@@ -129,6 +131,7 @@ fn test2() {
         ];
         let rule = Rule {
             premise: vec![premise_pattern],
+            negative_premise: vec![],
             conclusion: conclusion_pattern,
             filters: vec![],
         };
@@ -197,6 +200,7 @@ fn transitivity_benchmark() {
                     Term::Variable("z".to_string()),
                 ),
             ],
+            negative_premise: vec![],
             conclusion: vec![(
                 Term::Variable("x".to_string()),
                 Term::Constant(likes_id),

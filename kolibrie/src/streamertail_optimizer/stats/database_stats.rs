@@ -17,6 +17,7 @@ use std::sync::RwLock;
 #[derive(Debug)]
 pub struct DatabaseStats {
     pub total_triples: u64,
+    pub quoted_triple_count: u64,
     pub predicate_cardinalities: HashMap<u32, u64>,
     pub subject_cardinalities: HashMap<u32, u64>,
     pub object_cardinalities: HashMap<u32, u64>,
@@ -29,6 +30,7 @@ impl DatabaseStats {
     pub fn new() -> Self {
         Self {
             total_triples: 0,
+            quoted_triple_count: 0,
             predicate_cardinalities: HashMap::new(),
             subject_cardinalities: HashMap::new(),
             object_cardinalities: HashMap::new(),
@@ -89,8 +91,11 @@ impl DatabaseStats {
             .values_mut()
             .for_each(|v| *v *= scale_factor);
 
+        let quoted_triple_count = database.quoted_triple_store.read().unwrap().len() as u64;
+
         Self {
             total_triples,
+            quoted_triple_count,
             predicate_cardinalities,
             subject_cardinalities,
             object_cardinalities,

@@ -29,6 +29,7 @@ fn main() {
                           Term::Constant(parent_id), 
                           Term::Variable("Y".to_string())),
         ],
+        negative_premise: vec![],
         conclusion: vec![(Term::Variable("X".to_string()), 
                                   Term::Constant(ancestor_id), 
                                   Term::Variable("Y".to_string())),],
@@ -44,12 +45,13 @@ fn main() {
                           Term::Constant(ancestor_id), 
                           Term::Variable("Z".to_string())),
         ],
+        negative_premise: vec![],
         conclusion: vec![(Term::Variable("X".to_string()), 
                                   Term::Constant(ancestor_id), 
                                   Term::Variable("Z".to_string())),],
         filters: vec![],
     };
-    
+
     kg.add_rule(rule1);
     kg.add_rule(rule2);
 

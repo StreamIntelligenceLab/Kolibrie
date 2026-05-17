@@ -138,7 +138,7 @@ impl PyKnowledgeGraph {
                 .into_iter()
                 .map(|p| (convert_term(p.subject), convert_term(p.predicate), convert_term(p.object)))
                 .collect(),
-
+            negative_premise: vec![],
             filters: rule.filters
                 .into_iter()
                 .map(|f| shared::rule::FilterCondition {
@@ -230,6 +230,8 @@ impl PyKnowledgeGraph {
                 .map(|p| (convert_term(p.subject), convert_term(p.predicate), convert_term(p.object)))
                 .collect(),
 
+            negative_premise: vec![],
+
             filters: rule.filters
                 .into_iter()
                 .map(|f| shared::rule::FilterCondition {
@@ -293,7 +295,7 @@ impl PyKnowledgeGraph {
     }
 }
 
-/// Converts `PyTerm` to `knowledge_graph::Term`
+/// Converts `PyTerm` to `reasoning::Term`
 fn convert_term(term: PyTerm) -> shared::terms::Term {
     match term {
         PyTerm::Variable(v) => shared::terms::Term::Variable(v),
@@ -301,11 +303,12 @@ fn convert_term(term: PyTerm) -> shared::terms::Term {
     }
 }
 
-/// Converts `knowledge_graph::Term` to `PyTerm`
+/// Converts `reasoning::Term` to `PyTerm`
 fn convert_term_back(term: shared::terms::Term) -> PyTerm {
     match term {
         shared::terms::Term::Variable(v) => PyTerm::Variable(v),
         shared::terms::Term::Constant(c) => PyTerm::Constant(c),
+        shared::terms::Term::QuotedTriple(_) => PyTerm::Variable("__quoted_triple".to_string()),
     }
 }
 

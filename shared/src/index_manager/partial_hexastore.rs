@@ -3,8 +3,88 @@ use std::collections::{HashMap, HashSet};
 use crate::terms::*;
 use crate::triple::Triple;
 use crate::index_manager::*;
-use crate::index_manager::dynamic_hexastore::{IndexType, CardinalitySnapshot};
 use crate::query::PlannedAccessPattern;
+
+/// The six possible triple-index orderings.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum IndexType {
+    SPO, // subject → predicate → object
+    SOP, // subject → object   → predicate
+    PSO, // predicate → subject → object
+    POS, // predicate → object  → subject
+    OSP, // object → subject   → predicate
+    OPS, // object → predicate → subject
+}
+
+impl IndexType {
+    /// All six permutations.
+    const ALL: [IndexType; 6] = [
+        IndexType::SPO, IndexType::SOP,
+        IndexType::PSO, IndexType::POS,
+        IndexType::OSP, IndexType::OPS,
+    ];
+
+    /// Create a fresh, empty `Box<dyn TripleIndex>` for this type.
+    fn create_empty(&self) -> Box<dyn TripleIndex> {
+        match self {
+            IndexType::SPO => Box::new(SPOSingleIndex::new()),
+            IndexType::SOP => Box::new(SOPSingleIndex::new()),
+            IndexType::PSO => Box::new(PSOSingleIndex::new()),
+            IndexType::POS => Box::new(POSSingleIndex::new()),
+            IndexType::OSP => Box::new(OSPSingleIndex::new()),
+            IndexType::OPS => Box::new(OPSSingleIndex::new()),
+        }
+    }
+
+    /// Which two-key scan does this index natively support?
+    fn native_scan(&self) -> ScanKind {
+        match self {
+            IndexType::SPO => ScanKind::SP,
+            IndexType::SOP => ScanKind::SO,
+            IndexType::PSO => ScanKind::PS,
+            IndexType::POS => ScanKind::PO,
+            IndexType::OSP => ScanKind::OS,
+            IndexType::OPS => ScanKind::OP,
+        }
+    }
+}
+
+/// The six possible two-key scans.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+enum ScanKind { SP, SO, PS, PO, OS, OP }
+
+/// Lightweight snapshot of the unique-count statistics needed by the heuristic.
+#[derive(Debug, Clone)]
+pub struct CardinalitySnapshot {
+    pub num_subjects: f64,
+    pub num_predicates: f64,
+    pub num_objects: f64,
+    pub num_sp_pairs: f64,
+}
+
+impl CardinalitySnapshot {
+    /// Build from raw counts.
+    pub fn from_stats(
+        _total_triples: u64,
+        unique_subjects: usize,
+        unique_predicates: usize,
+        unique_objects: usize,
+        unique_sp_pairs: usize,
+    ) -> Self {
+        // Use at least 1.0 to avoid division-by-zero in cost formulas
+        Self {
+            num_subjects: (unique_subjects as f64).max(1.0),
+            num_predicates: (unique_predicates as f64).max(1.0),
+            num_objects: (unique_objects as f64).max(1.0),
+            num_sp_pairs: (unique_sp_pairs as f64).max(1.0),
+        }
+    }
+
+    /// A default snapshot when we have no data yet.
+    fn unknown() -> Self {
+        Self { num_subjects: 1.0, num_predicates: 1.0, num_objects: 1.0, num_sp_pairs: 1.0 }
+    }
+}
 
 #[derive(Debug, Clone)]
 pub struct PartialHexastoreIndex {
@@ -262,9 +342,9 @@ impl TripleIndex for PartialHexastoreIndex {
 
     fn get_matching_triples(&self, pattern: &TriplePattern) -> Vec<Triple> {
         let (s, p, o) = pattern;
-        let sub = match s { Term::Constant(x) => Some(*x), Term::Variable(_) => None };
-        let pre = match p { Term::Constant(x) => Some(*x), Term::Variable(_) => None };
-        let obj = match o { Term::Constant(x) => Some(*x), Term::Variable(_) => None };
+        let sub = match s { Term::Constant(x) => Some(*x), Term::Variable(_) => None, Term::QuotedTriple(_) => None };
+        let pre = match p { Term::Constant(x) => Some(*x), Term::Variable(_) => None, Term::QuotedTriple(_) => None };
+        let obj = match o { Term::Constant(x) => Some(*x), Term::Variable(_) => None, Term::QuotedTriple(_) => None };
         self.query(sub, pre, obj)
     }
 

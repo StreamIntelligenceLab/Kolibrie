@@ -42,6 +42,11 @@ synthetic_employee_data_100.rdf
 synthetic_employee_data_100K.rdf 
 synthetic_employee_data_1000K.rdf 
 
+# ML model output
+mnist_digit_model.bin
+kolibrie/examples/sparql_syntax/ml_train/mnist-dataset/
+kolibrie/examples/sparql_syntax/ml_train/verify_mnist_model.py
+
 # Some files
 thesis.org
 unused_joins.txt
@@ -67,6 +72,8 @@ kolibrie/src/cuda/*.dll
 
 # .vscode
 .vscode
+.codex
+.claude
 
 # build
 build/

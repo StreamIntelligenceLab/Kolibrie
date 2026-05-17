@@ -1,0 +1,220 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Fraud Detection Dashboard</title>
+<style>
+  *{box-sizing:border-box;margin:0;padding:0}
+  body{font-family:system-ui,sans-serif;background:#f4f6fb;color:#222}
+  header{background:#1a237e;color:#fff;padding:18px 32px;display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:10px}
+  header h1{font-size:22px;font-weight:700}
+  header p{font-size:13px;opacity:.75;margin-top:4px}
+  .status-chip{display:inline-flex;align-items:center;gap:6px;padding:5px 14px;border-radius:20px;font-size:13px;font-weight:600;background:rgba(255,255,255,.15)}
+  .status-dot{width:9px;height:9px;border-radius:50%;background:#aaa}
+  .status-dot.connected{background:#4caf50;box-shadow:0 0 0 3px rgba(76,175,80,.3)}
+  .status-dot.waiting{background:#aaa}
+  .status-dot.done{background:#90caf9}
+  .cards{display:flex;gap:16px;padding:24px 32px;flex-wrap:wrap}
+  .card{background:#fff;border-radius:10px;padding:18px 24px;flex:1;min-width:140px;box-shadow:0 2px 8px rgba(0,0,0,.07)}
+  .card .label{font-size:12px;color:#666;text-transform:uppercase;letter-spacing:.5px}
+  .card .value{font-size:36px;font-weight:700;margin-top:4px}
+  .card.fraud  .value{color:#c0392b}
+  .card.susp   .value{color:#e67e22}
+  .card.review .value{color:#b8860b}
+  .card.clear  .value{color:#27ae60}
+  .section{background:#fff;border-radius:10px;margin:0 32px 24px;box-shadow:0 2px 8px rgba(0,0,0,.07);overflow:hidden}
+  .section-title{padding:14px 20px;font-weight:600;font-size:14px;border-bottom:1px solid #eee;background:#fafafa}
+  .timing-grid{display:flex;gap:40px;padding:20px;flex-wrap:wrap}
+  .timing-item .tval{font-size:28px;font-weight:700;color:#1a237e}
+  .timing-item .tlabel{font-size:12px;color:#666;margin-top:2px}
+  table{width:100%;border-collapse:collapse;font-size:13px}
+  th{background:#f0f2f8;padding:8px 10px;text-align:left;font-size:11px;text-transform:uppercase;letter-spacing:.4px;color:#555;border-bottom:2px solid #dde}
+  td{padding:7px 10px;border-bottom:1px solid #eee}
+  tr:last-child td{border-bottom:none}
+  .chart-wrap{padding:20px}
+  .chart-label{font-size:12px;color:#555;margin-bottom:2px}
+  .bar-row{display:flex;align-items:center;gap:8px;margin:4px 0}
+  .bar-count{width:36px;text-align:right;font-size:13px;flex-shrink:0}
+  .bar-track{flex:1;background:#eee;border-radius:3px;height:22px;overflow:hidden}
+  .bar-fill{height:100%;border-radius:3px;transition:width .4s ease}
+  .rsp-log{font-size:12px;color:#555;padding:12px 20px;max-height:80px;overflow-y:auto;background:#fafafa;border-top:1px solid #eee}
+  @keyframes flash{0%{opacity:.4}100%{opacity:1}}
+  tr.new-row{animation:flash .6s ease}
+  .empty-state{text-align:center;padding:48px 20px;color:#999;font-size:14px}
+  .empty-state .icon{font-size:40px;margin-bottom:12px}
+</style>
+</head>
+<body>
+
+<header>
+  <div>
+    <h1>Neuro-Symbolic Fraud Detection Dashboard</h1>
+    <p>SPARQL · RSP-QL · Datalog Reasoning · GradientBoosting ML</p>
+  </div>
+  <div class="status-chip">
+    <span class="status-dot waiting" id="status-dot"></span>
+    <span id="status-text">Waiting for simulation…</span>
+  </div>
+</header>
+
+<div class="cards">
+  <div class="card"><div class="label">Total</div><div class="value" id="cnt-total">0</div></div>
+  <div class="card fraud"><div class="label">Fraud</div><div class="value" id="cnt-fraud">0</div></div>
+  <div class="card susp"><div class="label">Suspicious</div><div class="value" id="cnt-susp">0</div></div>
+  <div class="card review"><div class="label">Review</div><div class="value" id="cnt-review">0</div></div>
+  <div class="card clear"><div class="label">Clear</div><div class="value" id="cnt-clear">0</div></div>
+</div>
+
+<div class="section">
+  <div class="section-title">Verdict Distribution</div>
+  <div class="chart-wrap">
+    <div class="chart-label">FRAUD</div>
+    <div class="bar-row"><span class="bar-count" id="b-fraud">0</span><div class="bar-track"><div class="bar-fill" id="bf-fraud" style="width:0%;background:#c0392b"></div></div></div>
+    <div class="chart-label" style="margin-top:10px">SUSPICIOUS</div>
+    <div class="bar-row"><span class="bar-count" id="b-susp">0</span><div class="bar-track"><div class="bar-fill" id="bf-susp" style="width:0%;background:#e67e22"></div></div></div>
+    <div class="chart-label" style="margin-top:10px">REVIEW</div>
+    <div class="bar-row"><span class="bar-count" id="b-review">0</span><div class="bar-track"><div class="bar-fill" id="bf-review" style="width:0%;background:#f1c40f"></div></div></div>
+    <div class="chart-label" style="margin-top:10px">CLEAR</div>
+    <div class="bar-row"><span class="bar-count" id="b-clear">0</span><div class="bar-track"><div class="bar-fill" id="bf-clear" style="width:0%;background:#27ae60"></div></div></div>
+  </div>
+</div>
+
+<div class="section">
+  <div class="section-title">RSP Window Activity</div>
+  <div class="rsp-log" id="rsp-log"><em>No RSP window data yet.</em></div>
+</div>
+
+<div class="section">
+  <div class="section-title">Transaction Log <span style="font-weight:400;color:#999;font-size:12px">(newest first)</span></div>
+  <table>
+    <thead><tr>
+      <th>Step</th><th>TxID</th><th>Account</th><th>Amount</th>
+      <th>Score</th><th>P1 Flags</th><th>P2 Flags</th><th>Verdict</th>
+      <th>R→Py µs</th><th>Py→R µs</th><th></th>
+    </tr></thead>
+    <tbody id="tx-tbody">
+      <tr id="empty-row"><td colspan="11" class="empty-state"><div class="icon">⏳</div>Waiting for first transaction…</td></tr>
+    </tbody>
+  </table>
+</div>
+
+<script>
+  const $ = id => document.getElementById(id);
+
+  // counters
+  const counts = {FRAUD:0, SUSPICIOUS:0, REVIEW:0, CLEAR:0};
+  let total = 0;
+
+  function setStatus(text, state) {
+    $('status-text').textContent = text;
+    const dot = $('status-dot');
+    dot.className = 'status-dot ' + state;
+  }
+
+  function updateBars() {
+    const max = Math.max(counts.FRAUD, counts.SUSPICIOUS, counts.REVIEW, counts.CLEAR, 1);
+    const pairs = [
+      ['fraud',   'FRAUD'],
+      ['susp',    'SUSPICIOUS'],
+      ['review',  'REVIEW'],
+      ['clear',   'CLEAR'],
+    ];
+    for (const [key, verdict] of pairs) {
+      const n = counts[verdict];
+      $('b-' + key).textContent = n;
+      $('bf-' + key).style.width = (n / max * 100) + '%';
+    }
+  }
+
+  function verdictStyle(v) {
+    const map = {
+      FRAUD:      {bg:'#ffd6d6', badge:'#c0392b'},
+      SUSPICIOUS: {bg:'#ffe8cc', badge:'#e67e22'},
+      REVIEW:     {bg:'#fffacc', badge:'#f1c40f'},
+      CLEAR:      {bg:'#f0fff0', badge:'#27ae60'},
+    };
+    return map[v] || {bg:'#fff', badge:'#888'};
+  }
+
+  function addTxRow(d) {
+    const empty = $('empty-row');
+    if (empty) empty.remove();
+
+    const {bg, badge} = verdictStyle(d.verdict);
+    const p1 = d.flags_p1.length ? d.flags_p1.join(', ') : '—';
+    const p2 = d.flags_p2.length ? d.flags_p2.join(', ') : '—';
+    const injected = d.injected
+      ? '<span style="background:#c0392b;color:#fff;border-radius:3px;padding:1px 5px;font-size:11px">injected</span>'
+      : '';
+
+    const tr = document.createElement('tr');
+    tr.className = 'new-row';
+    tr.style.background = bg;
+    tr.innerHTML =
+      `<td>${d.time_step}</td>` +
+      `<td style="font-size:11px">${d.tx_id}</td>` +
+      `<td>${d.account_id}</td>` +
+      `<td style="text-align:right">${d.amount.toFixed(2)}</td>` +
+      `<td style="text-align:right">${d.fraud_score.toFixed(3)}</td>` +
+      `<td style="font-size:11px">${p1}</td>` +
+      `<td style="font-size:11px">${p2}</td>` +
+      `<td><span style="background:${badge};color:#fff;border-radius:4px;padding:2px 8px;font-size:12px;font-weight:bold">${d.verdict}</span></td>` +
+      `<td style="text-align:right">${d.r2p_us}</td>` +
+      `<td style="text-align:right">${d.p2r_us}</td>` +
+      `<td style="text-align:center">${injected}</td>`;
+
+    const tbody = $('tx-tbody');
+    tbody.insertBefore(tr, tbody.firstChild);
+  }
+
+  // SSE connection
+  const es = new EventSource('/events');
+
+  es.onopen = () => setStatus('Connected — simulation running', 'connected');
+
+  es.onerror = () => {
+    setStatus('Waiting for simulation…', 'waiting');
+  };
+
+  es.addEventListener('start', () => {
+    // reset state when a new simulation begins
+    counts.FRAUD = counts.SUSPICIOUS = counts.REVIEW = counts.CLEAR = 0;
+    total = 0;
+    ['total','fraud','susp','review','clear'].forEach(k => $('cnt-' + k).textContent = '0');
+    $('rsp-log').innerHTML = '<em>Simulation started…</em>';
+    $('tx-tbody').innerHTML = '<tr id="empty-row"><td colspan="11" class="empty-state"><div class="icon">⏳</div>Waiting for first transaction…</td></tr>';
+    updateBars();
+    setStatus('Connected — simulation running', 'connected');
+  });
+
+  es.addEventListener('rsp', e => {
+    const d = JSON.parse(e.data);
+    const vel = Object.entries(d.vel_map).map(([k,v]) => `${k}:${v}`).join('  ') || '(none)';
+    const line = `T=${d.time_step}  window=${d.window}  wVel ${vel}`;
+    const log = $('rsp-log');
+    log.innerHTML = line + (log.innerHTML === '<em>Simulation started…</em>' ? '' : '<br>' + log.innerHTML);
+  });
+
+  es.addEventListener('tx', e => {
+    const d = JSON.parse(e.data);
+
+    // update counters
+    total++;
+    counts[d.verdict] = (counts[d.verdict] || 0) + 1;
+    $('cnt-total').textContent   = total;
+    $('cnt-fraud').textContent   = counts.FRAUD;
+    $('cnt-susp').textContent    = counts.SUSPICIOUS;
+    $('cnt-review').textContent  = counts.REVIEW;
+    $('cnt-clear').textContent   = counts.CLEAR;
+
+    updateBars();
+    addTxRow(d);
+  });
+
+  es.addEventListener('done', () => {
+    setStatus('Simulation complete', 'done');
+  });
+</script>
+</body>
+</html>

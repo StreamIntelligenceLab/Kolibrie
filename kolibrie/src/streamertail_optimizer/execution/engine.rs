@@ -15,6 +15,7 @@ use ml::MLPredictionResult;
 use rayon::prelude::*;
 
 use shared::terms::{Term, TriplePattern};
+use shared::quoted_triple_store::is_quoted_triple_id;
 
 use std::collections::{HashMap, HashSet};
 
@@ -34,9 +35,14 @@ impl ExecutionEngine {
         .into_par_iter()
         .map(|id_result| {
             let dict = database.dictionary.read().unwrap();
+            let qt_store = database.quoted_triple_store.read().unwrap();
             let result: HashMap<String, String> = id_result
             .into_iter()
-            .map(|(var, id)| (var, dict.decode(id).unwrap().to_string()))
+            .map(|(var, id)| {
+                let decoded = dict.decode_term(id, &qt_store)
+                    .unwrap_or_else(|| "unknown".to_string());
+                (var, decoded)
+            })
             .collect();
             drop(dict);
             result
@@ -51,10 +57,18 @@ impl ExecutionEngine {
     ) -> Vec<HashMap<String, u32>> {
         match operator {
             PhysicalOperator::TableScan { pattern } => {
-                Self::execute_table_scan_with_ids(database, pattern)
+                if Self::has_quoted_triple_term(pattern) {
+                    Self::resolve_quoted_triple_scan(database, pattern)
+                } else {
+                    Self::execute_table_scan_with_ids(database, pattern)
+                }
             }
             PhysicalOperator::IndexScan { pattern } => {
-                Self::execute_index_scan_with_ids(database, pattern)
+                if Self::has_quoted_triple_term(pattern) {
+                    Self::resolve_quoted_triple_scan(database, pattern)
+                } else {
+                    Self::execute_index_scan_with_ids(database, pattern)
+                }
             }
             PhysicalOperator::Filter { input, condition } => {
                 let input_results = Self::execute_with_ids(input, database);
@@ -201,6 +215,62 @@ impl ExecutionEngine {
                     drop(dict_write);
                     
                     input_results
+                } else if function_name == "SUBJECT" || function_name == "PREDICATE" || function_name == "OBJECT" {
+                    let qt_store = database.quoted_triple_store.read().unwrap();
+                    for row in &mut input_results {
+                        if let Some(arg) = arguments.first() {
+                            let arg_stripped = arg.strip_prefix('?').unwrap_or(arg);
+                            if let Some(&id) = row.get(arg_stripped) {
+                                if is_quoted_triple_id(id) {
+                                    if let Some((s, p, o)) = qt_store.decode(id) {
+                                        let component = match function_name.as_str() {
+                                            "SUBJECT" => s,
+                                            "PREDICATE" => p,
+                                            "OBJECT" => o,
+                                            _ => unreachable!(),
+                                        };
+                                        row.insert(output_var.to_string(), component);
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    drop(qt_store);
+                    input_results
+                } else if function_name == "TRIPLE" {
+                    if arguments.len() == 3 {
+                        for row in &mut input_results {
+                            let args: Vec<Option<u32>> = arguments.iter().map(|arg| {
+                                let arg_stripped = arg.strip_prefix('?').unwrap_or(arg);
+                                if arg.starts_with('?') {
+                                    row.get(arg_stripped).copied()
+                                } else {
+                                    let mut dict = database.dictionary.write().unwrap();
+                                    Some(dict.encode(arg_stripped))
+                                }
+                            }).collect();
+                            if let (Some(s), Some(p), Some(o)) = (args[0], args[1], args[2]) {
+                                let mut qt_store = database.quoted_triple_store.write().unwrap();
+                                let qt_id = qt_store.encode(s, p, o);
+                                row.insert(output_var.to_string(), qt_id);
+                            }
+                        }
+                    }
+                    input_results
+                } else if function_name == "isTRIPLE" {
+                    let mut dict_write = database.dictionary.write().unwrap();
+                    for row in &mut input_results {
+                        if let Some(arg) = arguments.first() {
+                            let arg_stripped = arg.strip_prefix('?').unwrap_or(arg);
+                            if let Some(&id) = row.get(arg_stripped) {
+                                let result_str = if is_quoted_triple_id(id) { "true" } else { "false" };
+                                let result_id = dict_write.encode(result_str);
+                                row.insert(output_var.to_string(), result_id);
+                            }
+                        }
+                    }
+                    drop(dict_write);
+                    input_results
                 } else {
                     eprintln!("Function {} not found", function_name);
                     input_results
@@ -245,7 +315,7 @@ impl ExecutionEngine {
             } => {
                 // Execute the input operator first
                 let input_results = Self::execute_with_ids(input, database);
-                
+
                 if input_results.is_empty() {
                     return input_results;
                 }
@@ -256,11 +326,37 @@ impl ExecutionEngine {
                 println!("[ML.PREDICT] Output variable: {}", output_variable);
                 println!("[ML.PREDICT] Input rows: {}", input_results.len());
 
+                // Try Candle first: when the model name maps to exactly one registered
+                // NEURAL RELATION, run the trained Candle MLP. Otherwise fall back to
+                // the legacy Python/sklearn path.
+                match crate::ml_predict_candle::try_candle_predict_by_model_name(
+                    database,
+                    model_name,
+                    &input_results,
+                ) {
+                    Ok(Some(dispatch)) => {
+                        println!("[ML.PREDICT] Dispatched to Candle (model={})", model_name);
+                        return Self::merge_candle_predictions(
+                            input_results,
+                            dispatch.predictions,
+                            output_variable,
+                            database,
+                        );
+                    }
+                    Ok(None) => {
+                        println!("[ML.PREDICT] No Candle registration for model '{}', falling back to Python", model_name);
+                    }
+                    Err(e) => {
+                        eprintln!("[ML.PREDICT] Candle dispatch error: {}", e);
+                        return input_results;
+                    }
+                }
+
                 // Extract input data for ML prediction
                 let input_data = Self::extract_ml_input_data(&input_results, input_variables, database);
 
                 // Call the existing ML handler infrastructure
-                match Self::invoke_ml_handler( model_path, input_data) {
+                match Self::invoke_ml_handler(model_path, model_name, input_data) {
                     Ok(predictions) => {
                         Self::merge_ml_predictions(input_results, predictions, output_variable, database)
                     }
@@ -351,20 +447,21 @@ impl ExecutionEngine {
     /// Invokes the ML handler to make predictions
     fn invoke_ml_handler(
         model_dir: &str,
+        model_name: &str,
         input_data: Vec<Vec<f64>>,
     ) -> Result<MLPredictionResult, Box<dyn std::error::Error>> {
         use ml::MLHandler;
         use ml::generate_ml_models;
-        
+
         println!("[ML.PREDICT] Initializing ML handler...");
         let mut ml_handler = MLHandler::new()?;
-        
+
         println!("[ML.PREDICT] Looking for models in: {}", model_dir);
-        
+
         let model_dir_path = std::path::PathBuf::from(model_dir);
         std::fs::create_dir_all(&model_dir_path)?;
-        
-        // Check if models need to be generated
+
+        // Check if a matching .pkl model exists
         let models_exist = std::fs::read_dir(&model_dir_path)?
             .filter_map(Result::ok)
             .filter(|entry| {
@@ -372,24 +469,25 @@ impl ExecutionEngine {
                 path.is_file() && path.extension().map_or(false, |ext| ext == "pkl") &&
                 path.file_stem().and_then(|s| s.to_str()).map_or(false, |stem| stem.ends_with("_predictor"))
             })
-            .count() >= 3;
-        
+            .count() >= 1;
+
         if !models_exist {
             println!("[ML.PREDICT] Models not found. Generating models...");
-            // Use predictor.py as the generator script
+            // Derive script name from model_name: "fraud_predictor" -> "fraud_predictor.py"
+            let script_name = format!("{}.py", model_name);
             let predictor_script = model_dir_path
                 .parent()
                 .and_then(|p| p.parent())
-                .map(|p| p.join("predictor.py"))
-                .unwrap_or_else(|| std::path::PathBuf::from("predictor.py"));
-            
+                .map(|p| p.join(&script_name))
+                .unwrap_or_else(|| std::path::PathBuf::from(&script_name));
+
             if let Some(script_path) = predictor_script.to_str() {
                 generate_ml_models(&model_dir_path, script_path)?;
             }
         }
         
         println!("[ML.PREDICT] Discovering models and analyzing schemas...");
-        let model_ids = ml_handler.discover_and_load_models(&model_dir_path, "predictor.py")?;
+        let model_ids = ml_handler.discover_and_load_models(&model_dir_path, model_name)?;
         
         if model_ids.is_empty() {
             return Err("No valid models found with TTL schemas".into());
@@ -409,6 +507,28 @@ impl ExecutionEngine {
             result.predictions.len() as f64 / elapsed.as_secs_f64());
         
         Ok(result)
+    }
+
+    /// Merges string-valued Candle predictions back into id-encoded query rows.
+    fn merge_candle_predictions(
+        mut input_results: Vec<HashMap<String, u32>>,
+        predictions: Vec<String>,
+        output_variable: &str,
+        database: &mut SparqlDatabase,
+    ) -> Vec<HashMap<String, u32>> {
+        let output_var = output_variable.strip_prefix('?').unwrap_or(output_variable);
+
+        let mut dict = database.dictionary.write().unwrap();
+        for (i, prediction) in predictions.iter().enumerate() {
+            if i < input_results.len() {
+                let prediction_id = dict.encode(prediction);
+                input_results[i].insert(output_var.to_string(), prediction_id);
+            }
+        }
+        drop(dict);
+
+        println!("[ML.PREDICT] Candle: merged {} predictions", predictions.len());
+        input_results
     }
 
     /// Merges ML predictions back into query results
@@ -457,6 +577,10 @@ impl ExecutionEngine {
                         matches = false;
                     }
                 }
+                Term::QuotedTriple(_) => {
+                    // QuotedTriple patterns are pre-resolved before reaching here
+                    matches = false;
+                }
             }
 
             if !matches {
@@ -474,6 +598,9 @@ impl ExecutionEngine {
                         matches = false;
                     }
                 }
+                Term::QuotedTriple(_) => {
+                    matches = false;
+                }
             }
 
             if !matches {
@@ -490,6 +617,9 @@ impl ExecutionEngine {
                     if triple.object != *constant {
                         matches = false;
                     }
+                }
+                Term::QuotedTriple(_) => {
+                    matches = false;
                 }
             }
 
@@ -997,6 +1127,115 @@ impl ExecutionEngine {
         }
     }
 
+    /// Check if a TriplePattern contains any QuotedTriple terms.
+    fn has_quoted_triple_term(pattern: &TriplePattern) -> bool {
+        pattern.0.is_quoted_triple() || pattern.1.is_quoted_triple() || pattern.2.is_quoted_triple()
+    }
+
+    /// Check if a Term matches a u32 value, binding variables as needed.
+    fn match_term(term: &Term, value: u32, bindings: &mut HashMap<String, u32>) -> bool {
+        match term {
+            Term::Constant(c) => *c == value,
+            Term::Variable(v) => {
+                let v_stripped = v.strip_prefix('?').unwrap_or(v);
+                if let Some(&existing) = bindings.get(v_stripped) {
+                    existing == value
+                } else {
+                    bindings.insert(v_stripped.to_string(), value);
+                    true
+                }
+            }
+            Term::QuotedTriple(_) => {
+                // A quoted triple pattern in this position means we need the value
+                // to itself be a quoted triple ID — this case is handled by
+                // resolve_quoted_triple_pattern before reaching here
+                is_quoted_triple_id(value)
+            }
+        }
+    }
+
+    /// Pre-resolve QuotedTriple terms in a pattern by scanning the QuotedTripleStore.
+    /// For each matching quoted triple, substitute the constant ID and recurse.
+    fn resolve_quoted_triple_scan(
+        database: &SparqlDatabase,
+        pattern: &TriplePattern,
+    ) -> Vec<HashMap<String, u32>> {
+        // Find which positions contain QuotedTriple terms
+        let has_qt_subject = matches!(&pattern.0, Term::QuotedTriple(_));
+        let has_qt_object = matches!(&pattern.2, Term::QuotedTriple(_));
+
+        if !has_qt_subject && !has_qt_object {
+            return Self::execute_index_scan_with_ids(database, pattern);
+        }
+
+        // Collect all quoted triple entries upfront to avoid holding the lock
+        let qt_entries: Vec<(u32, (u32, u32, u32))> = {
+            let qt_store = database.quoted_triple_store.read().unwrap();
+            qt_store.id_to_components.iter().map(|(&id, &comp)| (id, comp)).collect()
+        };
+
+        let mut all_results = Vec::new();
+
+        for (qt_id, (s, p, o)) in &qt_entries {
+            let mut inner_bindings = HashMap::new();
+
+            // If subject is a QuotedTriple pattern, match its components
+            if has_qt_subject {
+                if let Term::QuotedTriple(qt_pattern) = &pattern.0 {
+                    if !Self::match_term(&qt_pattern.0, *s, &mut inner_bindings) { continue; }
+                    if !Self::match_term(&qt_pattern.1, *p, &mut inner_bindings) { continue; }
+                    if !Self::match_term(&qt_pattern.2, *o, &mut inner_bindings) { continue; }
+                }
+            }
+
+            // If object is a QuotedTriple pattern, match its components
+            if has_qt_object {
+                if let Term::QuotedTriple(qt_pattern) = &pattern.2 {
+                    if !Self::match_term(&qt_pattern.0, *s, &mut inner_bindings) { continue; }
+                    if !Self::match_term(&qt_pattern.1, *p, &mut inner_bindings) { continue; }
+                    if !Self::match_term(&qt_pattern.2, *o, &mut inner_bindings) { continue; }
+                }
+            }
+
+            // Create a concrete pattern with quoted triple IDs substituted
+            let concrete_subject = if has_qt_subject {
+                Term::Constant(*qt_id)
+            } else {
+                pattern.0.clone()
+            };
+            let concrete_object = if has_qt_object {
+                Term::Constant(*qt_id)
+            } else {
+                pattern.2.clone()
+            };
+            let concrete_pattern = (concrete_subject, pattern.1.clone(), concrete_object);
+
+            // Execute the concrete pattern against the index
+            let outer_results = Self::execute_index_scan_with_ids(database, &concrete_pattern);
+
+            // Merge inner and outer bindings
+            for outer_row in outer_results {
+                let mut merged = inner_bindings.clone();
+                let mut conflict = false;
+                for (k, v) in &outer_row {
+                    if let Some(&existing) = merged.get(k) {
+                        if existing != *v {
+                            conflict = true;
+                            break;
+                        }
+                    } else {
+                        merged.insert(k.clone(), *v);
+                    }
+                }
+                if !conflict {
+                    all_results.push(merged);
+                }
+            }
+        }
+
+        all_results
+    }
+
     /// Executes an index scan with specialized index-based approach
     fn execute_index_scan_with_ids(
         database: &SparqlDatabase,
@@ -1040,6 +1279,10 @@ impl ExecutionEngine {
                 //println!("INFO: Full table scan for fully unbound pattern (? {}, ?{}, ?{})", s, p, o);
                 Self::execute_table_scan_with_ids(database, pattern)
             }
+
+            // Patterns containing QuotedTriple terms should be pre-resolved
+            // before reaching this function. If they arrive here, return empty.
+            _ => Vec::new(),
         }
     }
 

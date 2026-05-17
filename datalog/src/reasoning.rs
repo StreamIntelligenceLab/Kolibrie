@@ -7,29 +7,52 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this file,
  * you can obtain one at https://mozilla.org/MPL/2.0/.
  */
+pub mod materialisation;
+pub mod to_dot;
+pub mod backward_chaining;
+pub mod rules;
+pub mod repairs;
+pub mod helpers;
 
 use shared::dictionary::Dictionary;
+use shared::rule::FilterCondition;
+use shared::terms::Term;
+use shared::terms::TriplePattern;
 use shared::triple::Triple;
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use shared::index_manager::TripleIndex;
 use shared::rule_index::RuleIndex;
-use shared::terms::{Term, TriplePattern};
 use shared::rule::Rule;
-use shared::join_algorithm::perform_hash_join_for_rules;
-use rayon::prelude::*;
+use shared::provenance::Provenance;
+use shared::tag_store::TagStore;
 use std::sync::Arc;
 use std::sync::RwLock;
-use shared::rule::FilterCondition;
+use crate::reasoning::rules::join_rule;
 
 // Logic part: Knowledge Graph
 
 #[derive(Debug, Clone)]
+// Are there RDF connections here or not?
 pub struct Reasoner {
     pub dictionary: Arc<RwLock<Dictionary>>,
     pub rules: Vec<Rule>, // List of dynamic rules
     pub index_manager: Box<dyn TripleIndex>,
     pub rule_index: RuleIndex,
     pub constraints: Vec<Rule>,
+    pub probability_seeds: HashMap<Triple, f64>, // Input probabilities for provenance seeding
+}
+
+pub fn convert_string_binding_to_u32(
+    binding: &BTreeMap<String, String>,
+    dict: &Dictionary
+) -> HashMap<String, u32> {
+    let mut result = HashMap::new();
+    for (var, value) in binding {
+        if let Some(&id) = dict.string_to_id.get(value) {
+            result.insert(var.clone(), id);
+        }
+    }
+    result
 }
 
 impl Reasoner {
@@ -44,6 +67,34 @@ impl Reasoner {
             index_manager: index,
             rule_index: RuleIndex::new(),
             constraints: Vec::new(),
+            probability_seeds: HashMap::new(),
+        }
+    }
+
+    /// Add a triple with an associated probability value.
+    /// The triple is added to the index; the probability is stored for provenance seeding.
+    pub fn add_tagged_triple(&mut self, subject: &str, predicate: &str, object: &str, probability: f64) {
+        let mut dict = self.dictionary.write().unwrap();
+        let s = dict.encode(subject);
+        let p = dict.encode(predicate);
+        let o = dict.encode(object);
+        drop(dict);
+
+        let triple = Triple { subject: s, predicate: p, object: o };
+        self.index_manager.insert(&triple);
+        self.probability_seeds.insert(triple, probability);
+    }
+
+    /// Materialize provenance tags as RDF-star triples so they are queryable via SPARQL-star.
+    /// Generates triples of the form: << s p o >> <prob:value> "0.7"^^xsd:double
+    pub fn materialize_tags_as_rdf_star<P: Provenance>(&mut self, tag_store: &TagStore<P>) {
+        let mut dict = self.dictionary.write().unwrap();
+        let mut qt_store = shared::quoted_triple_store::QuotedTripleStore::new();
+        let rdf_star_triples = tag_store.encode_as_rdf_star(&mut dict, &mut qt_store);
+        drop(dict);
+
+        for triple in &rdf_star_triples {
+            self.index_manager.insert(triple);
         }
     }
 
@@ -55,7 +106,16 @@ impl Reasoner {
         let o = dict.encode(object);
         drop(dict);  // Release lock early
 
-        self.index_manager.insert(&Triple { subject: s, predicate: p, object: o });
+        self.index_manager.insert(&Triple {
+            subject: s,
+            predicate: p,
+            object: o,
+        });
+    }
+
+    /// Insert an already-ground triple directly into the fact index.
+    pub fn insert_ground_triple(&mut self, triple: Triple) {
+        self.index_manager.insert(&triple);
     }
 
     /// Query the ABox for instance-level assertions (using TrieIndex now)
@@ -72,560 +132,6 @@ impl Reasoner {
         drop(dict);  // Release lock early
 
         self.index_manager.query(s, p, o)
-    }
-
-    /// Add a dynamic rule to the graph
-    pub fn add_rule(&mut self, rule: Rule) {
-        let rule_id = self.rules.len();
-        self.rules.push(rule.clone());
-        for prem in &rule.premise {
-            self.rule_index.insert_premise_pattern(prem, rule_id);
-        }
-    }
-
-    /// Convert rule evaluation to use the optimized hash join
-    fn evaluate_rule_with_optimized_join(&self, rule: &Rule, all_facts: &Vec<Triple>) -> Vec<HashMap<String, u32>> {
-        if rule.premise.is_empty() {
-            return Vec::new();
-        }
-
-        let mut current_bindings = vec![BTreeMap::new()];
-        
-        // Process each premise using the optimized join
-        for premise in &rule.premise {
-            current_bindings = self.join_premise_with_hash_join(premise, all_facts, current_bindings);
-            if current_bindings.is_empty() {
-                break;
-            }
-        }
-
-        // Convert results back to HashMap<String, u32>
-        current_bindings.into_iter()
-            .map(|binding| self.convert_string_binding_to_u32(&binding))
-            .collect()
-    }
-
-    fn join_premise_with_hash_join(
-        &self,
-        premise: &TriplePattern,
-        all_facts: &Vec<Triple>,
-        current_bindings: Vec<BTreeMap<String, String>>,
-    ) -> Vec<BTreeMap<String, String>> {
-        // Check if predicate is a variable
-        if let Term::Variable(pred_var) = &premise.1 {
-            return self.join_with_predicate_variable(
-                premise,
-                all_facts,
-                current_bindings,
-                pred_var,
-            );
-        }
-        
-        // Extract variable names and predicate from the premise
-        let (subject_var, predicate_str, object_var) = self.extract_join_parameters(premise);
-        
-        let dict = self.dictionary.read().unwrap();
-        // Use the optimized hash join
-        perform_hash_join_for_rules(
-            subject_var,
-            predicate_str,
-            object_var,
-            all_facts.clone(),
-            &dict,
-            current_bindings,
-            None,
-        )
-    }
-
-    // Handle joins where predicate is a variable
-    fn join_with_predicate_variable(
-        &self,
-        premise: &TriplePattern,
-        all_facts: &Vec<Triple>,
-        current_bindings: Vec<BTreeMap<String, String>>,
-        pred_var: &str,
-    ) -> Vec<BTreeMap<String, String>> {
-        let mut results = Vec::new();
-        
-        let (subject_term, _, object_term) = premise;
-        let dictionary = self.dictionary.read().unwrap();
-        
-        // For each binding
-        for binding in current_bindings {
-            // Check if predicate variable is already bound
-            if let Some(pred_value) = binding.get(pred_var) {
-                // Predicate is bound
-                let pred_id = dictionary.string_to_id.get(pred_value).copied();
-                
-                if let Some(pred_id) = pred_id {
-                    // Find matching triples
-                    for triple in all_facts {
-                        if triple.predicate == pred_id {
-                            // Match subject and object
-                            let mut new_binding = binding.clone();
-                            let mut matches = true;
-                            
-                            // Match subject
-                            match subject_term {
-                                Term::Variable(var) => {
-                                    let subj_str = dictionary.decode(triple.subject).unwrap().to_string();
-                                    if let Some(existing) = new_binding.get(var) {
-                                        if existing != &subj_str {
-                                            matches = false;
-                                        }
-                                    } else {
-                                        new_binding.insert(var.clone(), subj_str);
-                                    }
-                                }
-                                Term::Constant(c) => {
-                                    if triple.subject != *c {
-                                        matches = false;
-                                    }
-                                }
-                            }
-                            
-                            if !matches {
-                                continue;
-                            }
-                            
-                            // Match object
-                            match object_term {
-                                Term::Variable(var) => {
-                                    let obj_str = dictionary.decode(triple.object).unwrap().to_string();
-                                    if let Some(existing) = new_binding.get(var) {
-                                        if existing != &obj_str {
-                                            matches = false;
-                                        }
-                                    } else {
-                                        new_binding.insert(var.clone(), obj_str);
-                                    }
-                                }
-                                Term::Constant(c) => {
-                                    if triple.object != *c {
-                                        matches = false;
-                                    }
-                                }
-                            }
-                            
-                            if matches {
-                                results.push(new_binding);
-                            }
-                        }
-                    }
-                }
-            } else {
-                // Match all triples and bind predicate
-                for triple in all_facts {
-                    let mut new_binding = binding.clone();
-                    let mut matches = true;
-                    
-                    // Bind predicate
-                    let pred_str = dictionary.decode(triple.predicate).unwrap().to_string();
-                    new_binding.insert(pred_var.to_string(), pred_str);
-                    
-                    // Match subject
-                    match subject_term {
-                        Term::Variable(var) => {
-                            let subj_str = dictionary.decode(triple.subject).unwrap().to_string();
-                            if let Some(existing) = new_binding.get(var) {
-                                if existing != &subj_str {
-                                    matches = false;
-                                }
-                            } else {
-                                new_binding.insert(var.clone(), subj_str);
-                            }
-                        }
-                        Term::Constant(c) => {
-                            if triple.subject != *c {
-                                matches = false;
-                            }
-                        }
-                    }
-                    
-                    if !matches {
-                        continue;
-                    }
-                    
-                    // Match object
-                    match object_term {
-                        Term::Variable(var) => {
-                            let obj_str = dictionary.decode(triple.object).unwrap().to_string();
-                            if let Some(existing) = new_binding.get(var) {
-                                if existing != &obj_str {
-                                    matches = false;
-                                }
-                            } else {
-                                new_binding.insert(var.clone(), obj_str);
-                            }
-                        }
-                        Term::Constant(c) => {
-                            if triple.object != *c {
-                                matches = false;
-                            }
-                        }
-                    }
-                    
-                    if matches {
-                        results.push(new_binding);
-                    }
-                }
-            }
-        }
-        
-        results
-    }
-
-    fn extract_join_parameters(&self, premise: &TriplePattern) -> (String, String, String) {
-        let dictionary = self.dictionary.read().unwrap();
-        let (subject_term, predicate_term, object_term) = premise;
-        
-        let subject_var = match subject_term {
-            Term::Variable(v) => v.clone(),
-            Term::Constant(c) => {
-                // For constants, create a synthetic variable name
-                format!("__const_subj_{}", c)
-            }
-        };
-        
-        let object_var = match object_term {
-            Term::Variable(v) => v.clone(),
-            Term::Constant(c) => {
-                // For constants, create a synthetic variable name  
-                format!("__const_obj_{}", c)
-            }
-        };
-        
-        let predicate_str = match predicate_term {
-            Term::Constant(c) => {
-                dictionary.decode(*c).unwrap_or("unknown").to_string()
-            }
-            Term::Variable(v) => {
-                format!("__var_pred_{}", v)
-            }
-        };
-        
-        (subject_var, predicate_str, object_var)
-    }
-
-    fn convert_string_binding_to_u32(&self, binding: &BTreeMap<String, String>) -> HashMap<String, u32> {
-        let dictionary = self.dictionary.read().unwrap();
-        let mut result = HashMap::new();
-        for (var, value) in binding {
-            if let Some(&id) = dictionary.string_to_id.get(value) {
-                result.insert(var.clone(), id);
-            }
-        }
-        result
-    }
-    
-    pub fn infer_new_facts(&mut self) -> Vec<Triple> {
-        let mut inferred_facts = Vec::new();
-        let mut all_facts = self.index_manager.query(None, None, None);
-        let mut known_facts: HashSet<Triple> = all_facts.iter().cloned().collect();
-
-        loop {
-            let mut new_facts_this_round = Vec::new();
-            let rules = self.rules.clone();
-
-            for rule in &rules {
-                let bindings = self.evaluate_rule_with_optimized_join(rule, &all_facts);
-                
-                for binding in bindings {
-                    let dict = self.dictionary.read().unwrap();
-                    if evaluate_filters(&binding, &rule.filters, &dict) {
-                        drop(dict);
-                        for conclusion in &rule.conclusion {
-                            let mut dict = self.dictionary.write().unwrap();
-                            let inferred = construct_triple(conclusion, &binding, &mut dict);
-                            drop(dict);
-                            if !known_facts.contains(&inferred) {
-                                known_facts.insert(inferred.clone());
-                                new_facts_this_round.push(inferred.clone());
-                                inferred_facts.push(inferred);
-                            }
-                        }
-                    }
-                }
-            }
-
-            if new_facts_this_round.is_empty() {
-                break;
-            }
-
-            for fact in &new_facts_this_round {
-                self.index_manager.insert(fact);
-            }
-
-            all_facts.extend(new_facts_this_round);
-        }
-
-        inferred_facts
-    }
-
-    pub fn infer_new_facts_semi_naive(&mut self) -> Vec<Triple> {
-        let all_initial = self.index_manager.query(None, None, None);
-        let mut all_facts: HashSet<Triple> = all_initial.iter().cloned().collect();
-        let mut delta: Vec<Triple> = all_initial;
-        let mut inferred_so_far = Vec::new();
-
-        loop {
-            let mut new_delta = HashSet::new();
-
-            for rule in &self.rules.clone() {
-                let bindings = self.evaluate_rule_with_delta(&rule, &all_facts.iter().cloned().collect(), &delta);
-                
-                for binding in bindings {
-                    let dict = self.dictionary.read().unwrap();
-                    if evaluate_filters(&binding, &rule.filters, &dict) {
-                        drop(dict);
-                        for conclusion in &rule.conclusion {
-                            let mut dict = self.dictionary.write().unwrap();
-                            let inferred = construct_triple(conclusion, &binding, &mut dict);
-                            drop(dict);
-                            if !all_facts.contains(&inferred) {
-                                new_delta.insert(inferred.clone());
-                                self.index_manager.insert(&inferred);
-                            }
-                        }
-                    }
-                }
-            }
-
-            if new_delta.is_empty() {
-                break;
-            }
-
-            for fact in &new_delta {
-                all_facts.insert(fact.clone());
-                inferred_so_far.push(fact.clone());
-            }
-            
-            delta = new_delta.iter().cloned().collect();
-        }
-
-        inferred_so_far
-    }
-
-    fn evaluate_rule_with_delta(&self, rule: &Rule, all_facts: &Vec<Triple>, delta_facts: &Vec<Triple>) -> Vec<HashMap<String, u32>> {
-        let n = rule.premise.len();
-        let mut results = Vec::new();
-
-        for i in 0..n {
-            let mut current_bindings = vec![BTreeMap::new()];
-            
-            current_bindings = self.join_premise_with_hash_join(&rule.premise[i], delta_facts, current_bindings);
-            
-            // Join remaining premises with all facts
-            for j in 0..n {
-                if j == i {
-                    continue;
-                }
-                current_bindings = self.join_premise_with_hash_join(&rule.premise[j], all_facts, current_bindings);
-                if current_bindings.is_empty() {
-                    break;
-                }
-            }
-            
-            // Convert and add results
-            for binding in current_bindings {
-                let u32_binding = self.convert_string_binding_to_u32(&binding);
-                results.push(u32_binding);
-            }
-        }
-
-        results
-    }
-
-    pub fn infer_new_facts_semi_naive_parallel(&mut self) -> Vec<Triple> {
-        // Collect all known facts
-        let all_initial = self.index_manager.query(None, None, None);
-        let mut all_facts: HashSet<Triple> = all_initial.into_iter().collect();
-
-        // Delta = all the initial facts
-        let mut delta = all_facts.clone();
-
-        // Keep track of newly inferred facts so we can return them later
-        let mut inferred_so_far = Vec::new();
-
-        // Repeat until no new facts are inferred
-        loop {
-            // Wrap all_facts in an Arc for shared read-only access in parallel
-            let all_facts_arc = Arc::new(all_facts.clone());
-            let new_facts: HashSet<Triple> = delta
-                .par_iter()
-                .fold(
-                    || HashSet::new(),
-                    |mut local_set, triple1| {
-                        // Use only the predicate for candidate rule lookup
-                        let candidate_rule_ids = self.rule_index.query_candidate_rules(
-                            None,
-                            Some(triple1.predicate),
-                            None,
-                        );
-                        for &rule_id in candidate_rule_ids.iter() {
-                            let rule = &self.rules[rule_id];
-                            match rule.premise.len() {
-                                1 => {
-                                    // Single-premise rule
-                                    let mut variable_bindings = HashMap::new();
-                                    if matches_rule_pattern(&rule.premise[0], triple1, &mut variable_bindings) {
-                                        // Process each conclusion
-                                        for conclusion in &rule.conclusion {
-                                            let mut dict = self.dictionary.write().unwrap();
-                                            let inferred = construct_triple(conclusion, &variable_bindings, &mut dict);
-                                            drop(dict);
-                                            if !all_facts_arc.contains(&inferred) {
-                                                local_set.insert(inferred);
-                                            }
-                                        }
-                                    }
-                                }
-
-                                2 => {
-                                    // Two-premise rule
-                                    let mut variable_bindings_1 = HashMap::new();
-                                    if matches_rule_pattern(&rule.premise[0], triple1, &mut variable_bindings_1) {
-                                        // Process join in parallel over all_facts
-                                        let local_new: HashSet<Triple> = all_facts_arc
-                                            .par_iter()
-                                            .flat_map(|triple2| {
-                                                let mut variable_bindings_2 = variable_bindings_1.clone();
-                                                if matches_rule_pattern(&rule.premise[1], triple2, &mut variable_bindings_2) {
-                                                    // Process each conclusion
-                                                    rule.conclusion.iter()
-                                                        .filter_map(|conclusion| {
-                                                            let mut dict = self.dictionary.write().unwrap();
-                                                            let inferred = construct_triple(conclusion, &variable_bindings_2, &mut dict);
-                                                            drop(dict);
-                                                            if !all_facts_arc.contains(&inferred) {
-                                                                Some(inferred)
-                                                            } else {
-                                                                None
-                                                            }
-                                                        })
-                                                        .collect::<Vec<_>>()
-                                                } else {
-                                                    Vec::new()
-                                                }
-                                            })
-                                            .collect();
-                                        local_set.extend(local_new);
-                                    }
-
-                                    // Option 2: Assume triple1 matches the second premise
-                                    let mut variable_bindings_1b = HashMap::new();
-                                    if matches_rule_pattern(&rule.premise[1], triple1, &mut variable_bindings_1b) {
-                                        let local_new: HashSet<Triple> = all_facts_arc
-                                            .par_iter()
-                                            .flat_map(|triple2| {
-                                                let mut variable_bindings_2b = variable_bindings_1b.clone();
-                                                if matches_rule_pattern(&rule.premise[0], triple2, &mut variable_bindings_2b) {
-                                                    // Process each conclusion
-                                                    rule.conclusion.iter()
-                                                        .filter_map(|conclusion| {
-                                                            let mut dict = self.dictionary.write().unwrap();
-                                                            let inferred = construct_triple(conclusion, &variable_bindings_2b, &mut dict);
-                                                            drop(dict);
-                                                            if !all_facts_arc.contains(&inferred) {
-                                                                Some(inferred)
-                                                            } else {
-                                                                None
-                                                            }
-                                                        })
-                                                        .collect::<Vec<_>>()
-                                                } else {
-                                                    Vec::new()
-                                                }
-                                            })
-                                            .collect();
-                                        local_set.extend(local_new);
-                                    }
-                                }
-
-                                _ => {}
-                            }
-                        }
-                        local_set
-                    },
-                )
-                .reduce(
-                    || HashSet::new(),
-                    |mut acc, local_set| {
-                        acc.extend(local_set);
-                        acc
-                    },
-                );
-
-            // If no new facts were found, we've reached a fixpoint
-            if new_facts.is_empty() {
-                break;
-            } else {
-                for fact in new_facts.iter() {
-                    all_facts.insert(fact.clone());
-                    inferred_so_far.push(fact.clone());
-                    self.index_manager.insert(fact);
-                }
-                delta = new_facts;
-            }
-        }
-
-        inferred_so_far
-    }
-
-    pub fn backward_chaining(&self, query: &TriplePattern) -> Vec<HashMap<String, Term>> {
-        let bindings = HashMap::new();
-        let mut variable_counter = 0;
-        self.backward_chaining_helper(query, &bindings, 0, &mut variable_counter)
-    }
-
-    fn backward_chaining_helper(
-        &self,
-        query: &TriplePattern,
-        bindings: &HashMap<String, Term>,
-        depth: usize,
-        variable_counter: &mut usize,
-    ) -> Vec<HashMap<String, Term>> {
-        const MAX_DEPTH: usize = 10;
-        if depth > MAX_DEPTH {
-            return Vec::new();
-        }
-
-        let substituted = substitute(query, bindings);
-
-        let mut results = Vec::new();
-        // Get facts from the index manager
-        let all_facts: Vec<Triple> = self.index_manager.query(None, None, None);
-
-        for fact in &all_facts {
-            let fact_pattern = triple_to_pattern(fact);
-            if let Some(new_bindings) = unify_patterns(&substituted, &fact_pattern, bindings) {
-                results.push(new_bindings);
-            }
-        }
-
-        // match with rules
-        for rule in &self.rules {
-            let renamed_rule = rename_rule_variables(rule, variable_counter);
-
-            // Try to unify with each conclusion in the rule
-            for conclusion in &renamed_rule.conclusion {
-                if let Some(rb) = unify_patterns(conclusion, &substituted, bindings) {
-                    // We have a match => we need all premises to succeed
-                    let mut premise_results = vec![rb.clone()];
-                    for prem in &renamed_rule.premise {
-                        let mut new_premise_results = Vec::new();
-                        for b in &premise_results {
-                            let sub_res = self.backward_chaining_helper(prem, b, depth + 1, variable_counter);
-                            new_premise_results.extend(sub_res);
-                        }
-                        premise_results = new_premise_results;
-                    }
-                    results.extend(premise_results);
-                }
-            }
-        }
-
-        results
     }
 
     /// Add new method to handle constraints
@@ -648,12 +154,12 @@ impl Reasoner {
     fn compute_repairs(&self, facts: &HashSet<Triple>) -> Vec<HashSet<Triple>> {
         let mut repairs = Vec::new();
         let mut work_queue = vec![facts.clone()];
-        let mut seen = BTreeSet::new();  // Using BTreeSet instead of HashSet
+        let mut seen = BTreeSet::new(); // Using BTreeSet instead of HashSet
 
         while let Some(current_set) = work_queue.pop() {
             // Convert current_set to a Vec for consistent ordering when inserting into seen
             let current_vec: Vec<_> = current_set.iter().cloned().collect();
-            
+
             // Skip if we've seen this combination before
             if !seen.insert(current_vec.clone()) {
                 continue;
@@ -673,7 +179,7 @@ impl Reasoner {
                 for fact in current_set.iter() {
                     let mut new_set = current_set.clone();
                     new_set.remove(fact);
-                    
+
                     // Convert new_set to Vec for checking seen
                     let new_vec: Vec<_> = new_set.iter().cloned().collect();
                     if !seen.contains(&new_vec) {
@@ -684,104 +190,6 @@ impl Reasoner {
         }
         repairs
     }
-
-    /// Modified infer_new_facts_semi_naive to handle inconsistencies
-    pub fn infer_new_facts_semi_naive_with_repairs(&mut self) -> Vec<Triple> {
-        let all_initial = self.index_manager.query(None, None, None);
-        let mut all_facts: HashSet<Triple> = all_initial.into_iter().collect();
-        
-        // First, check if initial facts are consistent
-        if self.violates_constraints(&all_facts) {
-            let repairs = self.compute_repairs(&all_facts);
-            if let Some(best_repair) = repairs.into_iter().max_by_key(|r| r.len()) {
-                // Clear index manager and reinsert repaired facts
-                self.index_manager.clear();
-                for fact in &best_repair {
-                    self.index_manager.insert(fact);
-                }
-                all_facts = best_repair;
-            }
-        }
-
-        let mut delta = all_facts.clone();
-        let mut inferred_so_far = Vec::new();
-
-        loop {
-            let mut new_delta = HashSet::new();
-            
-            // Process each rule using the semi-naive approach
-            for rule in &self.rules {
-                let bindings = join_rule(rule, &all_facts, &delta);
-                for binding in bindings {
-                    let dict = self.dictionary.read().unwrap();
-                    if evaluate_filters(&binding, &rule.filters, &dict) {
-                        drop(dict);
-                        // Process each conclusion
-                        for conclusion in &rule.conclusion {
-                            let mut dict = self.dictionary.write().unwrap();
-                            let inferred = construct_triple(conclusion, &binding, &mut dict);
-                            drop(dict);
-                            
-                            // Check if adding this fact would cause inconsistency
-                            let mut temp_facts = all_facts.clone();
-                            temp_facts.insert(inferred.clone());
-                            
-                            if !self.violates_constraints(&temp_facts) {
-                                if self.index_manager.insert(&inferred) && !all_facts.contains(&inferred) {
-                                    new_delta.insert(inferred.clone());
-                                    all_facts.insert(inferred.clone());
-                                    inferred_so_far.push(inferred);
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-
-            // Terminate when no new facts were inferred
-            if new_delta.is_empty() {
-                break;
-            }
-            
-            delta = new_delta;
-        }
-
-        inferred_so_far
-    }
-
-    /// New method: Query with inconsistency-tolerant semantics
-    pub fn query_with_repairs(&self, query: &TriplePattern) -> Vec<HashMap<String, u32>> {
-        let all_facts: HashSet<Triple> = self.index_manager.query(None, None, None)
-            .into_iter()
-            .collect();
-
-        // Compute all repairs
-        let repairs = self.compute_repairs(&all_facts);
-        
-        // IAR semantics: only return answers that are present in all repairs
-        let mut results = Vec::new();
-        if let Some(first_repair) = repairs.first() {
-            // Start with results from first repair
-            for fact in first_repair {
-                let mut vmap = HashMap::new();
-                if matches_rule_pattern(query, fact, &mut vmap) {
-                    results.push(vmap);
-                }
-            }
-
-            // Filter out results not present in all repairs
-            results.retain(|binding| {
-                repairs.iter().skip(1).all(|repair| {
-                    repair.iter().any(|fact| {
-                        let mut test_map = HashMap::new();
-                        matches_rule_pattern(query, fact, &mut test_map) && test_map == *binding
-                    })
-                })
-            });
-        }
-        
-        results
-    }            
 }
 
 fn unify_patterns(
@@ -820,6 +228,11 @@ fn unify_terms(term1: &Term, term2: &Term, bindings: &mut HashMap<String, Term>)
             }
             true
         }
+        (Term::Variable(_), Term::QuotedTriple(_)) => todo!(),
+        (Term::Constant(_), Term::QuotedTriple(_)) => todo!(),
+        (Term::QuotedTriple(_), Term::Variable(_)) => todo!(),
+        (Term::QuotedTriple(_), Term::Constant(_)) => todo!(),
+        (Term::QuotedTriple(_), Term::QuotedTriple(_)) => todo!(),
     }
 }
 
@@ -853,6 +266,7 @@ fn substitute_term(term: &Term, bindings: &HashMap<String, Term>) -> Term {
             }
         }
         Term::Constant(value) => Term::Constant(*value),
+        Term::QuotedTriple(_) => todo!(),
     }
 }
 
@@ -884,6 +298,7 @@ fn rename_rule_variables(rule: &Rule, counter: &mut usize) -> Rule {
                 }
             }
             Term::Constant(c) => Term::Constant(*c),
+            Term::QuotedTriple(_) => todo!(),
         }
     }
 
@@ -893,6 +308,14 @@ fn rename_rule_variables(rule: &Rule, counter: &mut usize) -> Rule {
         let p_term = rename_term(&p.1, &mut var_map, counter);
         let o = rename_term(&p.2, &mut var_map, counter);
         new_premise.push((s, p_term, o));
+    }
+
+    let mut new_negative_premise = Vec::new();
+    for p in &rule.negative_premise {
+        let s = rename_term(&p.0, &mut var_map, counter);
+        let p_term = rename_term(&p.1, &mut var_map, counter);
+        let o = rename_term(&p.2, &mut var_map, counter);
+        new_negative_premise.push((s, p_term, o));
     }
 
     // Rename all conclusions
@@ -906,6 +329,7 @@ fn rename_rule_variables(rule: &Rule, counter: &mut usize) -> Rule {
 
     Rule {
         premise: new_premise,
+        negative_premise: new_negative_premise,
         conclusion: new_conclusions,
         filters: rule.filters.clone(),
     }
@@ -925,6 +349,7 @@ pub fn construct_triple(
             })
         },
         Term::Constant(c) => *c,
+        Term::QuotedTriple(_) => todo!(),
     };
     
     let predicate = match &conclusion.1 {
@@ -935,6 +360,7 @@ pub fn construct_triple(
             })
         },
         Term::Constant(c) => *c,
+        Term::QuotedTriple(_) => todo!(),
     };
 
     let object = match &conclusion.2 {
@@ -948,6 +374,7 @@ pub fn construct_triple(
             }
         },
         Term::Constant(c) => *c,
+        Term::QuotedTriple(_) => todo!(),
     };
 
     Triple {
@@ -976,6 +403,7 @@ pub fn matches_rule_pattern(
             }
         }
         Term::Constant(c) => *c == fact.subject,
+        Term::QuotedTriple(_) => todo!(),
     };
     if !s_ok {
         return false; // Don't modify original bindings on failure
@@ -992,6 +420,7 @@ pub fn matches_rule_pattern(
             }
         }
         Term::Constant(c) => *c == fact.predicate,
+        Term::QuotedTriple(_) => todo!(),
     };
     if !p_ok {
         return false; // Don't modify original bindings on failure
@@ -1008,6 +437,7 @@ pub fn matches_rule_pattern(
             }
         }
         Term::Constant(c) => *c == fact.object,
+        Term::QuotedTriple(_) => todo!(),
     };
 
     // Only if ALL parts match, commit the bindings
@@ -1042,31 +472,6 @@ fn evaluate_filters(
         }
     }
     true
-}
-
-/// Given a rule, a set of all facts, and a set of "changed" facts (delta)
-fn join_rule(
-    rule: &Rule,
-    all_facts: &HashSet<Triple>,
-    delta: &HashSet<Triple>,
-) -> Vec<HashMap<String, u32>> {
-    let n = rule.premise.len();
-    let mut results = Vec::new();
-
-    // For each premise position i
-    for i in 0..n {
-        // For each fact in the delta that might "fire" the rule on this premise
-        for fact in delta.iter() {
-            let mut binding = HashMap::new();
-            // NOTE: For a rule with one premise, use index 0 (not 1)
-            if matches_rule_pattern(&rule.premise[i], fact, &mut binding) {
-                // Now join with the remaining premises (all j ≠ i)
-                let joined = join_remaining(rule, i, all_facts, binding);
-                results.extend(joined);
-            }
-        }
-    }
-    results
 }
 
 /// Given a rule, a set of all facts, and a binding that matches some premise

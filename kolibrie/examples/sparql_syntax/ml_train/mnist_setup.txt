@@ -1,0 +1,35 @@
+How to run mnist_train.rs
+=========================
+
+1. Download the MNIST dataset files from http://yann.lecun.com/exdb/mnist/
+   (or a mirror such as https://www.kaggle.com/datasets/hojjatk/mnist-dataset)
+
+   Required files:
+     - train-images.idx3-ubyte   (training set images, ~9.9 MB)
+     - train-labels.idx1-ubyte   (training set labels, ~28 KB)
+     - t10k-images.idx3-ubyte    (test set images, ~1.6 MB)
+     - t10k-labels.idx1-ubyte    (test set labels, ~4.5 KB)
+
+2. Place all four files inside:
+     kolibrie/examples/sparql_syntax/ml_train/mnist-dataset/
+
+   The directory is listed in .gitignore and must be created manually.
+
+3. Run the example from the workspace root:
+
+     cargo run --example mnist_train
+
+   Or with release optimisations (recommended — training is noticeably faster):
+
+     cargo run --release --example mnist_train
+
+4. The trained model is saved to mnist_digit_model.bin in the working directory.
+   That file is also listed in the root .gitignore.
+
+Notes
+-----
+- TRAIN_COUNT (default 300) and TEST_COUNT (default 100) can be adjusted at
+  the top of mnist_train.rs to trade speed for accuracy.
+- The current architecture is 784 → 64 → 32 → 10 with ReLU hidden layers and
+  a softmax output.  Expect ~30 %+ accuracy with 300 samples / 3 epochs and
+  ~50 %+ with 1 000+ samples.

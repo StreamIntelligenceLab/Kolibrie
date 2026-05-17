@@ -28,6 +28,7 @@ pub fn setup_example_hierarchy() -> ReasoningHierarchy {
             Term::Constant(0), // "is_a"
             Term::Constant(1), // "man"
         )],
+        negative_premise: vec![],
         conclusion: vec![(
             Term::Variable("x".to_string()),
             Term::Constant(2), // "is"
@@ -45,6 +46,7 @@ pub fn setup_example_hierarchy() -> ReasoningHierarchy {
                 Term::Constant(2), // "is"
                 Term::Constant(3), // "mortal"
             )],
+            negative_premise: vec![],
             conclusion: vec![(
                 Term::Variable("x".to_string()),
                 Term::Constant(4), // "might_have"

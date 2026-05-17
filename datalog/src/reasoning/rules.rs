@@ -1,0 +1,205 @@
+use crate::reasoning::Reasoner;
+use shared::dictionary::Dictionary;
+use shared::join_algorithm::perform_hash_join_for_rules;
+use shared::rule::{FilterCondition, Rule};
+use shared::terms::{Term, TriplePattern};
+use shared::triple::Triple;
+use std::collections::{BTreeMap, HashMap, HashSet};
+
+pub fn matches_rule_pattern(
+    pattern: &TriplePattern,
+    fact: &Triple,
+    variable_bindings: &mut HashMap<String, u32>,
+) -> bool {
+    // Create a copy of bindings to test against (rollback on failure)
+    let mut temp_bindings = variable_bindings.clone();
+
+    // Subject
+    let s_ok = match &pattern.0 {
+        Term::Variable(v) => {
+            if let Some(&bound) = temp_bindings.get(v) {
+                bound == fact.subject
+            } else {
+                temp_bindings.insert(v.clone(), fact.subject);
+                true
+            }
+        }
+        Term::Constant(c) => *c == fact.subject,
+        Term::QuotedTriple(_) => false,
+    };
+    if !s_ok {
+        return false;
+    }
+
+    // Predicate
+    let p_ok = match &pattern.1 {
+        Term::Variable(v) => {
+            if let Some(&bound) = temp_bindings.get(v) {
+                bound == fact.predicate
+            } else {
+                temp_bindings.insert(v.clone(), fact.predicate);
+                true
+            }
+        }
+        Term::Constant(c) => *c == fact.predicate,
+        Term::QuotedTriple(_) => false,
+    };
+    if !p_ok {
+        return false;
+    }
+
+    // Object
+    let o_ok = match &pattern.2 {
+        Term::Variable(v) => {
+            if let Some(&bound) = temp_bindings.get(v) {
+                bound == fact.object
+            } else {
+                temp_bindings.insert(v.clone(), fact.object);
+                true
+            }
+        }
+        Term::Constant(c) => *c == fact.object,
+        Term::QuotedTriple(_) => false,
+    };
+
+    // Only if ALL parts match, commit the bindings
+    if s_ok && p_ok && o_ok {
+        *variable_bindings = temp_bindings;
+        true
+    } else {
+        false
+    }
+}
+
+/// Given a rule, a set of all facts, and a set of "changed" facts (delta)
+pub fn join_rule(
+    rule: &Rule,
+    all_facts: &HashSet<Triple>,
+    delta: &HashSet<Triple>,
+) -> Vec<HashMap<String, u32>> {
+    let n = rule.premise.len();
+    let mut results = Vec::new();
+
+    // For each premise position i
+    for i in 0..n {
+        // For each fact in the delta that might "fire" the rule on this premise
+        for fact in delta.iter() {
+            let mut binding = HashMap::new();
+            // NOTE: For a rule with one premise, use index 0 (not 1)
+            if matches_rule_pattern(&rule.premise[i], fact, &mut binding) {
+                // Now join with the remaining premises (all j ≠ i)
+                let joined = join_remaining(rule, i, all_facts, binding);
+                results.extend(joined);
+            }
+        }
+    }
+    results
+}
+
+/// Given a rule, a set of all facts, and a binding that matches some premise
+fn join_remaining(
+    rule: &Rule,
+    changed_idx: usize,
+    all_facts: &HashSet<Triple>,
+    binding: HashMap<String, u32>,
+) -> Vec<HashMap<String, u32>> {
+    let mut results = vec![binding];
+    let n = rule.premise.len();
+
+    // For each other premise j (order can be arbitrary)
+    for j in 0..n {
+        if j == changed_idx {
+            continue;
+        }
+        let mut new_results = Vec::new();
+        // For every binding so far
+        for partial_binding in results.into_iter() {
+            // And for every fact in all_facts
+            for fact in all_facts.iter() {
+                let mut b = partial_binding.clone();
+                if matches_rule_pattern(&rule.premise[j], fact, &mut b) {
+                    new_results.push(b);
+                }
+            }
+        }
+        results = new_results;
+        if results.is_empty() {
+            break;
+        }
+    }
+    results
+}
+
+pub fn evaluate_filters(
+    bindings: &HashMap<String, u32>,
+    filters: &Vec<FilterCondition>,
+    dict: &Dictionary,
+) -> bool {
+    for filter in filters {
+        if let Some(&lhs_code) = bindings.get(&filter.variable) {
+            // If the filter value is itself a bound variable, compare by dictionary ID
+            if let Some(&rhs_code) = bindings.get(&filter.value) {
+                match filter.operator.as_str() {
+                    "!=" if lhs_code == rhs_code => return false,
+                    "=" if lhs_code != rhs_code => return false,
+                    _ => {}
+                }
+            } else {
+                // Compare bound variable against a numeric constant
+                let value_str = dict.decode(lhs_code).unwrap_or("");
+                let bound_num: f64 = value_str.parse().unwrap_or(0.0);
+                let filter_num: f64 = filter.value.parse().unwrap_or(0.0);
+                match filter.operator.as_str() {
+                    ">" if bound_num <= filter_num => return false,
+                    "<" if bound_num >= filter_num => return false,
+                    ">=" if bound_num < filter_num => return false,
+                    "<=" if bound_num > filter_num => return false,
+                    "=" if (bound_num - filter_num).abs() > std::f64::EPSILON => return false,
+                    "!=" if (bound_num - filter_num).abs() <= std::f64::EPSILON => return false,
+                    _ => {}
+                }
+            }
+        }
+    }
+    true
+}
+
+pub fn join_premise_with_hash_join(
+    premise: &TriplePattern,
+    all_facts: &[Triple],
+    current_bindings: Vec<BTreeMap<String, String>>,
+    dict: &Dictionary
+) -> Vec<BTreeMap<String, String>> {
+    perform_hash_join_for_rules(
+        premise,
+        all_facts,
+        &dict,
+        current_bindings,
+        None,
+    )
+}
+
+impl Reasoner {
+    /// Add a dynamic rule to the graph.
+    ///
+    /// Panics if the rule has unsafe negation (a variable in `negative_premise`
+    /// that is not bound by `premise`). For a non-panicking version use [`try_add_rule`].
+    ///
+    /// [`try_add_rule`]: Self::try_add_rule
+    pub fn add_rule(&mut self, rule: Rule) {
+        self.try_add_rule(rule).expect("rule safety check failed");
+    }
+
+    /// Add a dynamic rule to the graph, returning `Err` if it violates safety.
+    ///
+    /// Safety requirement: every variable in `negative_premise` must appear in `premise`.
+    pub fn try_add_rule(&mut self, rule: Rule) -> Result<(), String> {
+        shared::rule::check_rule_safety(&rule)?;
+        let rule_id = self.rules.len();
+        self.rules.push(rule.clone());
+        for prem in &rule.premise {
+            self.rule_index.insert_premise_pattern(prem, rule_id);
+        }
+        Ok(())
+    }
+}

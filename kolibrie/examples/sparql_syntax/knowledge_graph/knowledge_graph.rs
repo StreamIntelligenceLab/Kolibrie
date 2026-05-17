@@ -10,9 +10,10 @@
 
 use shared::terms::Term;
 use shared::rule::Rule;
-use shared::index_manager::TripleIndex;
 use datalog::reasoning::*;
+use shared::index_manager::TripleIndex;
 use datalog::parser_n3_logic::parse_n3_rule;
+use datalog::reasoning::backward_chaining::resolve_term;
 
 fn knowledge_graph() {
     let mut graph = Reasoner::new();
@@ -40,6 +41,7 @@ fn knowledge_graph() {
                 Term::Variable("Z".to_string()),
             ),
         ],
+        negative_premise: vec![],
         conclusion: vec![(
             Term::Variable("X".to_string()),
             Term::Constant(has_grandparent_id),
@@ -88,6 +90,7 @@ fn backward_chaining() {
             Term::Constant(parent),
             Term::Variable("Y".to_string()),
         )],
+        negative_premise: vec![],
         conclusion: vec![(
             Term::Variable("X".to_string()),
             Term::Constant(ancestor),
@@ -110,6 +113,7 @@ fn backward_chaining() {
                 Term::Variable("Z".to_string()),
             ),
         ],
+        negative_premise: vec![],
         conclusion: vec![(
             Term::Variable("X".to_string()),
             Term::Constant(ancestor),
@@ -253,6 +257,7 @@ fn inconsistency() {
                 Term::Constant(student)
             )
         ],
+        negative_premise: vec![],
         conclusion: vec![(
             Term::Constant(0), // Dummy values for constraint
             Term::Constant(0),
@@ -285,4 +290,3 @@ fn main() {
     println!("=======================================");
     inconsistency();
 }
-

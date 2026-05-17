@@ -230,7 +230,6 @@ impl ReasoningHierarchy {
     fn match_term(pattern_term: &Term, fact_term: u32, bindings: &mut HashMap<String, u32>) -> bool {
         match pattern_term {
             Term::Variable(var_name) => {
-                // Variable can bind to any value
                 if let Some(&existing_binding) = bindings.get(var_name) {
                     existing_binding == fact_term
                 } else {
@@ -239,9 +238,9 @@ impl ReasoningHierarchy {
                 }
             }
             Term::Constant(pattern_id) => {
-                // Constant must match exactly
                 *pattern_id == fact_term
             }
+            Term::QuotedTriple(_) => false,
         }
     }
 
@@ -261,6 +260,7 @@ impl ReasoningHierarchy {
             Term::Constant(id) => {
                 Some(*id)
             }
+            Term::QuotedTriple(_) => None,
         }
     }
 

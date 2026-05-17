@@ -53,6 +53,13 @@ impl DirectedBucket {
                     f_positions.push(pos);
                 }
             }
+            Term::QuotedTriple(_) => {
+                if is_bound {
+                    d_positions.push(pos);
+                } else {
+                    f_positions.push(pos);
+                }
+            }
         };
 
         check_pos(&planned.pattern.0, planned.bound_subject, 0);
@@ -463,6 +470,11 @@ impl BucketIndex {
                         d_positions.push(pos);
                     }
                 }
+                Term::QuotedTriple(_) => {
+                    if is_bound {
+                        d_positions.push(pos);
+                    }
+                }
             };
 
             check(&planned.pattern.0, planned.bound_subject, 0);
@@ -501,14 +513,17 @@ impl BucketIndex {
         let s_safe = match b_s {
             Variable(_) => true,
             Constant(c) => q_s == Some(*c),
+            QuotedTriple(_) => true,
         };
         let p_safe = match b_p {
             Variable(_) => true,
             Constant(c) => q_p == Some(*c),
+            QuotedTriple(_) => true,
         };
         let o_safe = match b_o {
             Variable(_) => true,
             Constant(c) => q_o == Some(*c),
+            QuotedTriple(_) => true,
         };
         s_safe && p_safe && o_safe
     }
@@ -635,14 +650,17 @@ impl TripleIndex for BucketIndex {
         let sub = match s {
             Constant(x) => Some(*x),
             Variable(_) => None,
+            QuotedTriple(_) => None,
         };
         let pre = match p {
             Constant(x) => Some(*x),
             Variable(_) => None,
+            QuotedTriple(_) => None,
         };
         let obj = match o {
             Constant(x) => Some(*x),
             Variable(_) => None,
+            QuotedTriple(_) => None,
         };
         self.query(sub, pre, obj)
     }

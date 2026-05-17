@@ -61,6 +61,26 @@ name = "my_benchmark"
 path = "benches/my_benchmark.rs"
 harness = false
 
+[[bench]]
+name = "cross_window_benchmark"
+path = "benches/cross_window_benchmark.rs"
+harness = false
+
+[[bench]]
+name = "citybench_cross_window_compare"
+path = "benches/citybench_cross_window_compare.rs"
+harness = false
+
+[[bench]]
+name = "rsp_citybench_cross_window"
+path = "benches/rsp_citybench_cross_window.rs"
+harness = false
+
+[[bench]]
+name = "family_tree_cross_window_compare"
+path = "benches/family_tree_cross_window_compare.rs"
+harness = false
+
 [[example]]
 name = "automate_policy"
 path = "examples/policy/automate_policy.rs"
@@ -270,12 +290,28 @@ name = "full_combination"
 path = "examples/sparql_syntax/combination/full_combination.rs"
 
 [[example]]
+name = "combined_syntax_example"
+path = "examples/sparql_syntax/combination/combined_syntax_example.rs"
+
+[[example]]
 name = "retrieve_rsp"
 path = "examples/sparql_syntax/rsp_ql_syntax/retrieve.rs"
 
 [[example]]
 name = "retrieve_rsp_multiple_window"
 path = "examples/sparql_syntax/rsp_ql_syntax/retrieve_multiple_window.rs"
+
+[[example]]
+name = "mnist_train"
+path = "examples/sparql_syntax/ml_train/mnist_train.rs"
+
+[[example]]
+name = "provenance_feedback_loop"
+path = "examples/sparql_syntax/ml_train/provenance_feedback_loop.rs"
+
+[[example]]
+name = "predict_after_train"
+path = "examples/sparql_syntax/ml_train/predict_after_train.rs"
 
 [[example]]
 name = "real_scenario"
@@ -292,3 +328,11 @@ path = "examples/real_scenario/mqtt_real_scenario.rs"
 [[example]]
 name = "synthetic_stream_benchmark"
 path = "examples/sparql_syntax/synthetic_stream_benchmark/synthetic_stream_benchmark.rs"
+
+[[example]]
+name = "fraud_detection_system"
+path = "examples/real_scenario/fraud_detection_system.rs"
+
+[[example]]
+name = "combined_rules_example"
+path = "examples/sparql_syntax/knowledge_graph/combined_rules_example.rs"

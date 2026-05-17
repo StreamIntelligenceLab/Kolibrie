@@ -209,14 +209,17 @@ impl TripleIndex for OPSSingleIndex {
     let sub = match s {
       Constant(x) => Some(*x),
       Variable(_) => None,
+      QuotedTriple(_) => None,
     };
     let pre = match p {
       Constant(x) => Some(*x),
       Variable(_) => None,
+      QuotedTriple(_) => None,
     };
     let obj = match o {
       Constant(x) => Some(*x),
       Variable(_) => None,
+      QuotedTriple(_) => None,
     };
 
     self.query(sub, pre, obj)
