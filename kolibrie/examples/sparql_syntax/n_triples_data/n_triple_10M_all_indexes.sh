@@ -21,7 +21,6 @@ INDEX_TYPES=(
     "pso"
     "partial_hexastore"
     "hexastore"
-    "dynamic_hexastore"
     "ops"
     "osp"
     "pos"
