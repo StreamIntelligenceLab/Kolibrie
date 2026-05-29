@@ -739,6 +739,23 @@ impl SparqlDatabase {
                 continue;
             }
 
+            if line.starts_with("@prefix") || line.starts_with("PREFIX") {
+                let prefix_line = line
+                    .trim_start_matches("@prefix")
+                    .trim_start_matches("PREFIX")
+                    .trim_end_matches('.')
+                    .trim();
+                let parts: Vec<&str> = prefix_line.split_whitespace().collect();
+                if parts.len() >= 2 {
+                    let prefix = parts[0].trim_end_matches(':').to_string();
+                    let uri = parts[1].trim_start_matches('<').trim_end_matches('>').to_string();
+                    self.prefixes.insert(prefix, uri);
+                } else {
+                    eprintln!("Invalid prefix declaration: {}", line);
+                }
+                continue;
+            }
+
             // Use quoted-triple-aware tokenization
             let line_no_dot = line.trim_end_matches('.').trim();
             let tokens = Self::tokenize_turtle_star_line(line_no_dot);
@@ -767,9 +784,9 @@ impl SparqlDatabase {
                     (object_raw, vec![])
                 };
 
-                let subject = Self::clean_turtle_term(subject_raw);
-                let predicate = Self::clean_turtle_term(predicate_raw);
-                let object = Self::clean_turtle_term(&object_part);
+                let subject = self.clean_turtle_term_with_prefixes(subject_raw);
+                let predicate = self.clean_turtle_term_with_prefixes(predicate_raw);
+                let object = self.clean_turtle_term_with_prefixes(&object_part);
 
                 // Check if subject or object is a quoted triple
                 if subject.starts_with("<<") || object.starts_with("<<") {
@@ -786,15 +803,15 @@ impl SparqlDatabase {
                         object: dict.encode(&object),
                     };
                     drop(dict);
-                    self.triples.insert(triple);
+                    self.add_triple(triple);
                 }
 
                 // Handle annotations: emit additional triples with << s p o >> as subject
                 for (ann_pred, ann_obj) in &annotations {
                     let qt_str = format!("<< {} {} {} >>", subject, predicate, object);
                     let qt_id = self.encode_term_star(&qt_str);
-                    let ann_p_id = self.encode_term_star(&Self::clean_turtle_term(ann_pred));
-                    let ann_o_id = self.encode_term_star(&Self::clean_turtle_term(ann_obj));
+                    let ann_p_id = self.encode_term_star(&self.clean_turtle_term_with_prefixes(ann_pred));
+                    let ann_o_id = self.encode_term_star(&self.clean_turtle_term_with_prefixes(ann_obj));
                     let ann_triple = Triple { subject: qt_id, predicate: ann_p_id, object: ann_o_id };
                     self.add_triple(ann_triple);
                 }
@@ -901,6 +918,15 @@ impl SparqlDatabase {
             term[1..term.len() - 1].to_string()
         } else {
             term.trim_matches('"').to_string()
+        }
+    }
+
+    fn clean_turtle_term_with_prefixes(&self, term: &str) -> String {
+        let cleaned = Self::clean_turtle_term(term);
+        if cleaned.starts_with("<<") {
+            cleaned
+        } else {
+            self.resolve_query_term(&cleaned, &self.prefixes)
         }
     }
 

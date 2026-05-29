@@ -151,6 +151,9 @@ fn apply_order_by<'a>(
     results
 }
 
+#[deprecated(
+    note = "use execute_query_rayon_parallel2_volcano() so queries go through the optimizer"
+)]
 pub fn execute_query(sparql: &str, database: &mut SparqlDatabase) -> Vec<Vec<String>> {
     // Register prefixes from the query string first
     database.register_prefixes_from_query(sparql);
