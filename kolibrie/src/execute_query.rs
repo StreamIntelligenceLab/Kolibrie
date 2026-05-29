@@ -718,9 +718,6 @@ pub fn execute_query_rayon_parallel2_volcano(
             // Convert results to owned strings first to avoid lifetime issues
             let results_owned: Vec<HashMap<String, String>> = results.into_iter().collect();
 
-            // Initialize with VALUES clause for consistency with GPU path
-            let mut final_results = initialize_results(&values_clause);
-
             // Merge optimizer results with VALUES clause results
             let optimizer_results: Vec<BTreeMap<&str, String>> = results_owned
                 .iter()
@@ -740,10 +737,17 @@ pub fn execute_query_rayon_parallel2_volcano(
                 })
                 .collect();
 
-            // If we have optimizer results, use them; otherwise keep VALUES results
-            if !optimizer_results.is_empty() {
-                final_results = optimizer_results;
-            }
+            // Initialize with VALUES clause for consistency with GPU path
+            let mut final_results = if optimizer_results.is_empty() {
+                if values_clause.is_some() {
+                    // If we have optimizer results, use them; otherwise keep VALUES results
+                    initialize_results(&values_clause)
+                } else {
+                    Vec::new()
+                }
+            } else {
+                optimizer_results
+            };
 
             // Process subqueries if any
             for subquery in subqueries {
