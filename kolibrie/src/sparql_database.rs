@@ -784,9 +784,9 @@ impl SparqlDatabase {
                     (object_raw, vec![])
                 };
 
-                let subject = self.clean_turtle_term_with_prefixes(subject_raw);
-                let predicate = self.clean_turtle_term_with_prefixes(predicate_raw);
-                let object = self.clean_turtle_term_with_prefixes(&object_part);
+                let subject = self.resolve_query_term(&Self::clean_turtle_term(subject_raw), &self.prefixes);
+                let predicate = self.resolve_query_term(&Self::clean_turtle_term(predicate_raw), &self.prefixes);
+                let object = self.resolve_query_term(&Self::clean_turtle_term(&object_part), &self.prefixes);
 
                 // Check if subject or object is a quoted triple
                 if subject.starts_with("<<") || object.starts_with("<<") {
@@ -810,8 +810,12 @@ impl SparqlDatabase {
                 for (ann_pred, ann_obj) in &annotations {
                     let qt_str = format!("<< {} {} {} >>", subject, predicate, object);
                     let qt_id = self.encode_term_star(&qt_str);
-                    let ann_p_id = self.encode_term_star(&self.clean_turtle_term_with_prefixes(ann_pred));
-                    let ann_o_id = self.encode_term_star(&self.clean_turtle_term_with_prefixes(ann_obj));
+                    let ann_p_id = self.encode_term_star(
+                        &self.resolve_query_term(&Self::clean_turtle_term(ann_pred), &self.prefixes),
+                    );
+                    let ann_o_id = self.encode_term_star(
+                        &self.resolve_query_term(&Self::clean_turtle_term(ann_obj), &self.prefixes),
+                    );
                     let ann_triple = Triple { subject: qt_id, predicate: ann_p_id, object: ann_o_id };
                     self.add_triple(ann_triple);
                 }
@@ -918,15 +922,6 @@ impl SparqlDatabase {
             term[1..term.len() - 1].to_string()
         } else {
             term.trim_matches('"').to_string()
-        }
-    }
-
-    fn clean_turtle_term_with_prefixes(&self, term: &str) -> String {
-        let cleaned = Self::clean_turtle_term(term);
-        if cleaned.starts_with("<<") {
-            cleaned
-        } else {
-            self.resolve_query_term(&cleaned, &self.prefixes)
         }
     }
 
