@@ -8,8 +8,8 @@
  * you can obtain one at https://mozilla.org/MPL/2.0/.
  */
 
-use kolibrie::sparql_database::SparqlDatabase;
 use kolibrie::execute_query::execute_query_rayon_parallel2_volcano;
+use kolibrie::sparql_database::SparqlDatabase;
 use shared::quoted_triple_store::{QuotedTripleStore, is_quoted_triple_id};
 
 // QuotedTripleStore unit tests

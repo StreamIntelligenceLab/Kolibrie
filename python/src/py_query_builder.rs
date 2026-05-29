@@ -9,6 +9,7 @@
  */
 
 use pyo3::prelude::*;
+use kolibrie::execute_query::execute_query_rayon_parallel2_volcano;
 use kolibrie::sparql_database::SparqlDatabase;
 use std::sync::{Arc, Mutex};
 use std::collections::HashMap;
@@ -31,6 +32,20 @@ impl PySparqlDatabase {
     pub fn add_triple(&self, subject: &str, predicate: &str, object: &str) {
         if let Ok(mut db) = self.db.lock() {
             db.add_triple_parts(subject, predicate, object);
+        }
+    }
+
+    fn parse_turtle(&self, turtle: &str) {
+        if let Ok(mut db) = self.db.lock() {
+            db.parse_turtle(turtle);
+        }
+    }
+
+    fn exec_query(&self, query: &str) -> Vec<Vec<String>> {
+        if let Ok(mut db) = self.db.lock() {
+            execute_query_rayon_parallel2_volcano(query, &mut db)
+        } else {
+            Vec::new()
         }
     }
 

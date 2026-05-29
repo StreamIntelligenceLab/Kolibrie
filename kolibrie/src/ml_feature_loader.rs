@@ -11,7 +11,7 @@
 use std::collections::HashMap;
 use std::error::Error;
 
-use crate::execute_query::{execute_query, execute_query_rayon_parallel2_volcano};
+use crate::execute_query::execute_query_rayon_parallel2_volcano;
 use crate::parser::parse_sparql_query;
 use crate::sparql_database::SparqlDatabase;
 
@@ -42,11 +42,7 @@ pub fn query_training_rows(
         return Err("training data query must SELECT at least one variable".into());
     }
 
-    let rows = if select_query.contains("<<") {
-        execute_query_rayon_parallel2_volcano(select_query, db)
-    } else {
-        execute_query(select_query, db)
-    };
+    let rows = execute_query_rayon_parallel2_volcano(select_query, db);
     Ok(rows
         .into_iter()
         .map(|row| {

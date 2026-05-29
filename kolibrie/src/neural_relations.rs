@@ -474,7 +474,7 @@ pub fn lower_ml_predict_alias(ml_predict: &MLPredictClause<'_>) -> Result<Neural
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::execute_query::execute_query;
+    use crate::execute_query::execute_query_rayon_parallel2_volcano;
     use crate::parser::process_rule_definition;
     use shared::query::{LossFn, OptimizerKind};
 
@@ -610,7 +610,7 @@ WHERE {
 }
         "#;
 
-        let results = execute_query(query, &mut db);
+        let results = execute_query_rayon_parallel2_volcano(query, &mut db);
         assert_eq!(results.len(), 2);
     }
 

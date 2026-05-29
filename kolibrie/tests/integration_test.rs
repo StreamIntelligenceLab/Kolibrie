@@ -9,6 +9,7 @@
  */
 
 extern crate kolibrie;
+use kolibrie::execute_query::execute_query_rayon_parallel2_volcano;
 use kolibrie::sparql_database::SparqlDatabase;
 use shared::triple::Triple;
 
@@ -125,6 +126,31 @@ mod tests {
         
         // Verify count decreased
         assert_eq!(db.triples.len(), initial_count - 1);
+    }
+
+    #[test]
+    fn test_turtle_prefix_query_with_variable_predicate() {
+        let mut db = SparqlDatabase::new();
+        db.parse_turtle(r#"
+            @prefix ex: <http://example.org/> .
+            ex:Alice ex:knows ex:Bob .
+            ex:Bob ex:knows ex:Carol .
+        "#);
+
+        let rows = execute_query_rayon_parallel2_volcano(r#"
+            SELECT ?person ?friend
+            WHERE { ?person ?anything ?friend }
+        "#, &mut db);
+
+        assert_eq!(rows.len(), 2);
+        assert!(rows.contains(&vec![
+            "http://example.org/Alice".to_string(),
+            "http://example.org/Bob".to_string(),
+        ]));
+        assert!(rows.contains(&vec![
+            "http://example.org/Bob".to_string(),
+            "http://example.org/Carol".to_string(),
+        ]));
     }
 
     #[test]

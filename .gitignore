@@ -74,6 +74,7 @@ kolibrie/src/cuda/*.dll
 .vscode
 .codex
 .claude
+.ai-council
 
 # build
 build/
