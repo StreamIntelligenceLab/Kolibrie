@@ -56,7 +56,16 @@ fn push_event(events: &EventLog, kind: &str, json: &str) {
     events.lock().unwrap().push(msg);
 }
 
-fn handle_sse_connection(mut stream: TcpStream, events: EventLog) {
+fn handle_sse_connection(
+    mut stream:  TcpStream,
+    events:      EventLog,
+    demo_state:  DemoState,
+    pass1_rules: Arc<Vec<Rule>>,
+    pass2_rules: Arc<Vec<Rule>>,
+    ml_handler:  Arc<MLHandler>,
+    best_model:  Arc<String>,
+    demo_html:   Arc<String>,
+) {
     let mut buf = [0u8; 2048];
     let n = match stream.read(&mut buf) {
         Ok(n) if n > 0 => n,
@@ -70,6 +79,7 @@ fn handle_sse_connection(mut stream: TcpStream, events: EventLog) {
         .next()
         .and_then(|line| line.split_whitespace().nth(1))
         .unwrap_or("/");
+    let path = path.split('?').next().unwrap_or(path);
 
     match path {
         "/events" => {
@@ -141,19 +151,77 @@ fn handle_sse_connection(mut stream: TcpStream, events: EventLog) {
                 }
             }
         }
+        "/demo" | "/demo/bank" => {
+            let body = demo_html.as_bytes();
+            let header = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: text/html; charset=utf-8\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                body.len()
+            );
+            let _ = stream.write_all(header.as_bytes());
+            let _ = stream.write_all(body);
+        }
+        "/demo/account" => {
+            let json = demo_state.lock().unwrap().to_json();
+            let header = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nAccess-Control-Allow-Origin: *\r\nConnection: close\r\n\r\n",
+                json.len()
+            );
+            let _ = stream.write_all(header.as_bytes());
+            let _ = stream.write_all(json.as_bytes());
+        }
+        "/demo/tx/fraud" | "/demo/tx/normal" | "/demo/tx/clear" | "/demo/tx/suspicious" => {
+            let scenario = match path {
+                "/demo/tx/fraud" => DemoTransferScenario::Fraud,
+                "/demo/tx/suspicious" => DemoTransferScenario::Suspicious,
+                _ => DemoTransferScenario::Clear,
+            };
+            let html_body = process_demo_transaction(
+                &demo_state,
+                &pass1_rules,
+                &pass2_rules,
+                &events,
+                &ml_handler,
+                &best_model,
+                scenario,
+            );
+            let header = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: text/html; charset=utf-8\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                html_body.len()
+            );
+            let _ = stream.write_all(header.as_bytes());
+            let _ = stream.write_all(html_body.as_bytes());
+        }
         _ => {
             let _ = stream.write_all(b"HTTP/1.1 404 Not Found\r\n\r\n");
         }
     }
 }
 
-fn start_sse_server(events: EventLog, port: u16) {
+fn start_sse_server(
+    events:      EventLog,
+    port:        u16,
+    demo_state:  DemoState,
+    pass1_rules: Arc<Vec<Rule>>,
+    pass2_rules: Arc<Vec<Rule>>,
+    ml_handler:  Arc<MLHandler>,
+    best_model:  Arc<String>,
+    demo_html:   Arc<String>,
+) {
     thread::spawn(move || {
-        let listener = TcpListener::bind(format!("127.0.0.1:{}", port))
+        let listener = TcpListener::bind(format!("0.0.0.0:{}", port))
             .expect("SSE server: failed to bind port");
         for stream in listener.incoming().flatten() {
-            let events = Arc::clone(&events);
-            thread::spawn(move || handle_sse_connection(stream, events));
+            let events      = Arc::clone(&events);
+            let demo_state  = Arc::clone(&demo_state);
+            let pass1_rules = Arc::clone(&pass1_rules);
+            let pass2_rules = Arc::clone(&pass2_rules);
+            let ml_handler  = Arc::clone(&ml_handler);
+            let best_model  = Arc::clone(&best_model);
+            let demo_html   = Arc::clone(&demo_html);
+            thread::spawn(move || handle_sse_connection(
+                stream, events, demo_state, pass1_rules,
+                pass2_rules, ml_handler, best_model, demo_html,
+            ));
         }
     });
 }
@@ -213,6 +281,47 @@ impl AccountHistory {
         }
     }
 }
+
+#[derive(Debug)]
+struct DemoAccount {
+    account_id:    String,
+    balance:       f64,
+    tx_count:      u32,
+    fraud_history: u32,
+}
+
+impl DemoAccount {
+    fn new() -> Self {
+        Self {
+            account_id:    "DEMO_ACC_001".to_string(),
+            balance:       10_000.0,
+            tx_count:      0,
+            fraud_history: 0,
+        }
+    }
+
+    fn update_after_verdict(&mut self, amount: f64, verdict: &Verdict) {
+        self.tx_count += 1;
+        match verdict {
+            Verdict::Fraud | Verdict::Suspicious =>
+                self.fraud_history = (self.fraud_history + 1).min(10),
+            _ =>
+                self.fraud_history = self.fraud_history.saturating_sub(1),
+        }
+        if matches!(verdict, Verdict::Clear | Verdict::Review) {
+            self.balance = (self.balance - amount).max(0.0);
+        }
+    }
+
+    fn to_json(&self) -> String {
+        format!(
+            r#"{{"account_id":"{}","balance":{:.2},"tx_count":{},"fraud_history":{}}}"#,
+            self.account_id, self.balance, self.tx_count, self.fraud_history
+        )
+    }
+}
+
+type DemoState = Arc<Mutex<DemoAccount>>;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     prepare_freethreaded_python();
@@ -297,13 +406,39 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     );
     println!("{}", "-".repeat(142));
 
-    let events: EventLog = Arc::new(Mutex::new(Vec::new()));
-    start_sse_server(Arc::clone(&events), 7878);
-    println!("Dashboard: http://localhost:7878  (open in browser)\n");
-
     let (ml_handler, best_model_name) = setup_ml_handler("fraud_predictor")?;
+    let ml_handler_arc  = Arc::new(ml_handler);
+    let best_model_arc  = Arc::new(best_model_name.clone());
+    let pass1_rules_arc = Arc::new(pass1_rules.clone());
+    let pass2_rules_arc = Arc::new(pass2_rules.clone());
+    let demo_state: DemoState = Arc::new(Mutex::new(DemoAccount::new()));
+    let server_base = std::env::var("KOLIBRIE_DEMO_BASE")
+        .ok()
+        .map(|s| s.trim_end_matches('/').to_string())
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| get_lan_ip(7878));
+    println!("  [Network]  LAN address : {}", server_base);
+    try_open_firewall(7878);
+    let demo_html: Arc<String> = Arc::new(
+        load_demo_html().replace("{{SERVER_BASE}}", &server_base)
+    );
 
-    run_simulation(&mut engine, &mut database, &pass1_rules, &pass2_rules, window_results, events, &ml_handler, &best_model_name)?;
+    let events: EventLog = Arc::new(Mutex::new(Vec::new()));
+    start_sse_server(
+        Arc::clone(&events), 7878,
+        Arc::clone(&demo_state),
+        Arc::clone(&pass1_rules_arc),
+        Arc::clone(&pass2_rules_arc),
+        Arc::clone(&ml_handler_arc),
+        Arc::clone(&best_model_arc),
+        Arc::clone(&demo_html),
+    );
+    println!("Dashboard:    http://localhost:7878  (open in browser)");
+    println!("Demo QR page: {}/demo", server_base);
+    println!("  -> If the phone shows 'loading', run as Administrator:");
+    println!("     netsh advfirewall firewall add rule name=\"Kolibrie Demo\" protocol=TCP dir=in localport=7878 action=allow\n");
+
+    run_simulation(&mut engine, &mut database, &pass1_rules, &pass2_rules, window_results, events, &ml_handler_arc, &best_model_arc)?;
 
     engine.stop();
     thread::sleep(Duration::from_millis(500));
@@ -647,7 +782,7 @@ CONSTRUCT {
 }
 WHERE {
     ?tx ex:recentFraudCount ?cnt .
-    FILTER(?cnt > 1)
+    FILTER(?cnt > 4)
 }
     "#.into()
 }
@@ -662,7 +797,7 @@ CONSTRUCT {
 }
 WHERE {
     ?tx ex:windowVelocity ?wvel .
-    FILTER(?wvel > 3)
+    FILTER(?wvel > 7)
 }
     "#.into()
 }
@@ -720,9 +855,10 @@ fn run_simulation(
     let mut velocity_tracker: HashMap<String, u32>    = HashMap::new();
     let mut account_history:  HashMap<String, AccountHistory> = HashMap::new();
 
-    push_event(&events, "start", r#"{"steps":12,"accounts":5}"#);
+    push_event(&events, "start", r#"{"accounts":5}"#);
 
-    for time_step in 0..12_u64 {
+    let mut time_step = 0_u64;
+    loop {
         let mut step_txs: Vec<(Transaction, bool, String, String)> = Vec::new();
 
         for (idx, account) in accounts.iter().enumerate() {
@@ -927,10 +1063,9 @@ fn run_simulation(
                 ));
             }
         }
-    }
 
-    push_event(&events, "done", "{}");
-    Ok(())
+        time_step = time_step.wrapping_add(1);
+    }
 }
 
 fn run_reasoning(
@@ -1030,7 +1165,332 @@ fn fuse_decision(fraud_score: f64, symbolic_flags: &[String]) -> Verdict {
     }
 }
 
-// 
+fn load_demo_html() -> String {
+    let sibling = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("examples/real_scenario/fraud_demo_qr.html");
+    if sibling.exists() {
+        return std::fs::read_to_string(&sibling).unwrap_or_default();
+    }
+    let mut p = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    loop {
+        let candidate = p.join("fraud_demo_qr.html");
+        if candidate.exists() {
+            return std::fs::read_to_string(&candidate).unwrap_or_default();
+        }
+        if !p.pop() { break; }
+    }
+    "<html><body><h1>Demo page not found</h1></body></html>".to_string()
+}
+
+fn get_lan_ip(port: u16) -> String {
+    use std::net::UdpSocket;
+    if let Ok(sock) = UdpSocket::bind("0.0.0.0:0") {
+        if sock.connect("8.8.8.8:80").is_ok() {
+            if let Ok(addr) = sock.local_addr() {
+                return format!("http://{}:{}", addr.ip(), port);
+            }
+        }
+    }
+    format!("http://127.0.0.1:{}", port)
+}
+
+fn try_open_firewall(port: u16) {
+    let rule_name = format!("Kolibrie Demo Port {}", port);
+    let _ = std::process::Command::new("netsh")
+        .args(["advfirewall", "firewall", "delete", "rule",
+               &format!("name={}", rule_name)])
+        .output();
+    let result = std::process::Command::new("netsh")
+        .args([
+            "advfirewall", "firewall", "add", "rule",
+            &format!("name={}", rule_name),
+            "protocol=TCP",
+            "dir=in",
+            &format!("localport={}", port),
+            "action=allow",
+        ])
+        .output();
+    match result {
+        Ok(out) if out.status.success() => {
+            println!("  [Firewall] Inbound rule added for TCP port {}", port);
+        }
+        _ => {
+            println!("  [Firewall] Could not add rule automatically (need Administrator).");
+            println!("  Run this in an elevated PowerShell to allow phone connections:");
+            println!("  netsh advfirewall firewall add rule name=\"Kolibrie Demo\" protocol=TCP dir=in localport={} action=allow", port);
+        }
+    }
+}
+
+fn compile_fraud_rules(
+    database: &mut SparqlDatabase,
+) -> Result<(Vec<Rule>, Vec<Rule>), Box<dyn Error>> {
+    let (rule_velocity,   _) = process_rule_definition(&rule_suspicious_velocity(),  database)?;
+    let (rule_amount,     _) = process_rule_definition(&rule_suspicious_amount(),    database)?;
+    let (rule_merch_risk, _) = process_rule_definition(&rule_high_merchant_risk(),   database)?;
+    let (rule_pattern,    _) = process_rule_definition(&rule_foreign_high_risk(),    database)?;
+    let (rule_high_risk,  _) = process_rule_definition(&rule_high_risk_chained(),    database)?;
+    let (rule_win_vel,    _) = process_rule_definition(&rule_high_window_activity(), database)?;
+    let (rule_ml_alert,   _) = process_rule_definition(&rule_ml_assisted_alert(),    database)?;
+    let (rule_hist_pat,   _) = process_rule_definition(&rule_historical_pattern(),   database)?;
+
+    Ok((
+        vec![
+            rule_velocity, rule_amount, rule_merch_risk, rule_pattern, rule_high_risk,
+            rule_win_vel,
+        ],
+        vec![rule_ml_alert, rule_hist_pat],
+    ))
+}
+
+#[derive(Clone, Copy)]
+enum DemoTransferScenario {
+    Clear,
+    Suspicious,
+    Fraud,
+}
+
+fn process_demo_transaction(
+    demo_state:        &DemoState,
+    _pass1_rules:      &[Rule],
+    _pass2_rules:      &[Rule],
+    events:            &EventLog,
+    ml_handler:        &MLHandler,
+    best_model_name:   &str,
+    scenario:          DemoTransferScenario,
+) -> String {
+    let (tx, scenario_label, hist_fraud_count) = {
+        let state = demo_state.lock().unwrap();
+        let count = state.tx_count;
+        let acct  = state.account_id.clone();
+        let hist  = state.fraud_history;
+        let (tx, label): (Transaction, &'static str) = match scenario {
+            DemoTransferScenario::Fraud => (Transaction {
+                tx_id:         format!("TX_DEMO_{:04}_FRAUD", count),
+                account_id:    acct,
+                amount:        5_000.0,
+                hour_of_day:   3,
+                day_of_week:   1,
+                merchant_risk: 95,
+                velocity_1h:   8,
+                distance_km:   500.0,
+                is_foreign:    1,
+                card_present:  0,
+            }, "FRAUD scenario"),
+            DemoTransferScenario::Suspicious => {
+                // Generate a domestic high-amount/high-velocity profile; the verdict still comes from rules + ML.
+                let seed = count as u64 + 1;
+                (Transaction {
+                    tx_id:         format!("TX_DEMO_{:04}_SUSPICIOUS", count),
+                    account_id:    acct,
+                    amount:        1_250.0 + prng(seed, 901) * 1_750.0,
+                    hour_of_day:   9 + (prng(seed, 902) * 8.0) as u8,
+                    day_of_week:   (prng(seed, 903) * 5.0) as u8,
+                    merchant_risk: 15 + (prng(seed, 904) * 45.0) as u32,
+                    velocity_1h:   6 + (prng(seed, 905) * 5.0) as u32,
+                    distance_km:   2.0 + prng(seed, 906) * 30.0,
+                    is_foreign:    0,
+                    card_present:  1,
+                }, "SUSPICIOUS transfer")
+            },
+            DemoTransferScenario::Clear => (Transaction {
+                tx_id:         format!("TX_DEMO_{:04}_CLEAR", count),
+                account_id:    acct,
+                amount:        42.50,
+                hour_of_day:   14,
+                day_of_week:   3,
+                merchant_risk: 5,
+                velocity_1h:   1,
+                distance_km:   1.5,
+                is_foreign:    0,
+                card_present:  1,
+            }, "CLEAR transfer"),
+        };
+        (tx, label, hist)
+    };
+
+    let tx_uri   = format!("http://fraud.example.org/tx/{}", tx.tx_id);
+    let acct_uri = format!("http://fraud.example.org/account/{}", tx.account_id);
+    let ml_rule_str = rule_ml_fraud_predict();
+
+    let mut database = setup_knowledge_base();
+    let (demo_pass1_rules, demo_pass2_rules) = match compile_fraud_rules(&mut database) {
+        Ok(rules) => rules,
+        Err(e) => {
+            return format!(
+                "<!DOCTYPE html><html><body><h1>Demo rule setup failed</h1><p>{}</p><a href=\"/demo/bank\">Back to Account</a></body></html>",
+                e
+            );
+        }
+    };
+
+    database.add_triple_parts(&tx_uri,
+        "http://www.w3.org/1999/02/22-rdf-syntax-ns#type",
+        "http://fraud.example.org/Transaction");
+    database.add_triple_parts(&tx_uri, "http://fraud.example.org/account",       &acct_uri);
+    database.add_triple_parts(&tx_uri, "http://fraud.example.org/amount",         &tx.amount.to_string());
+    database.add_triple_parts(&tx_uri, "http://fraud.example.org/hourOfDay",      &tx.hour_of_day.to_string());
+    database.add_triple_parts(&tx_uri, "http://fraud.example.org/dayOfWeek",      &tx.day_of_week.to_string());
+    database.add_triple_parts(&tx_uri, "http://fraud.example.org/merchantRisk",   &tx.merchant_risk.to_string());
+    database.add_triple_parts(&tx_uri, "http://fraud.example.org/velocity1h",     &tx.velocity_1h.to_string());
+    database.add_triple_parts(&tx_uri, "http://fraud.example.org/distanceKm",     &tx.distance_km.to_string());
+    database.add_triple_parts(&tx_uri, "http://fraud.example.org/isForeign",      &tx.is_foreign.to_string());
+    database.add_triple_parts(&tx_uri, "http://fraud.example.org/cardPresent",    &tx.card_present.to_string());
+    database.add_triple_parts(&tx_uri, "http://fraud.example.org/windowVelocity", "0");
+
+    let flags_p1 = run_reasoning(&mut database, &demo_pass1_rules, &tx_uri);
+    write_numeric_flags_to_db(&mut database, &tx_uri, &flags_p1, hist_fraud_count);
+
+    let (fraud_score, t_r2p, t_p2r) =
+        run_ml_predict_from_clause(&database, &tx_uri, &ml_rule_str, ml_handler, best_model_name)
+            .unwrap_or((0.0, Duration::from_micros(0), Duration::from_micros(0)));
+
+    let ml_score_int = (fraud_score * 100.0).round() as u32;
+    database.add_triple_parts(&tx_uri, "http://fraud.example.org/mlFraudScore",
+        &ml_score_int.to_string());
+
+    let flags_p2_all = run_reasoning(&mut database, &demo_pass2_rules, &tx_uri);
+    let flags_p2_new: Vec<String> = flags_p2_all.into_iter()
+        .filter(|f| !flags_p1.contains(f)).collect();
+
+    let mut all_flags = flags_p1.clone();
+    for f in &flags_p2_new {
+        if !all_flags.contains(f) { all_flags.push(f.clone()); }
+    }
+
+    let verdict = fuse_decision(fraud_score, &all_flags);
+
+    {
+        let mut state = demo_state.lock().unwrap();
+        state.update_after_verdict(tx.amount, &verdict);
+    }
+
+    let time_step = demo_state.lock().unwrap().tx_count as u64;
+
+    let p1_json = flags_p1.iter()
+        .map(|f| format!("\"{}\"", f.replace('"', "\\\"")))
+        .collect::<Vec<_>>().join(",");
+    let p2_json = flags_p2_new.iter()
+        .map(|f| format!("\"{}\"", f.replace('"', "\\\"")))
+        .collect::<Vec<_>>().join(",");
+    push_event(events, "tx", &format!(
+        r#"{{"time_step":{},"tx_id":"{}","account_id":"{}","amount":{:.2},"fraud_score":{:.6},"flags_p1":[{}],"flags_p2":[{}],"verdict":"{}","r2p_us":{},"p2r_us":{},"injected":true}}"#,
+        time_step, tx.tx_id, tx.account_id, tx.amount, fraud_score,
+        p1_json, p2_json, verdict, t_r2p.as_micros(), t_p2r.as_micros(),
+    ));
+
+    build_result_page(&tx, &verdict, fraud_score, &flags_p1, &flags_p2_new, scenario_label)
+}
+
+fn build_result_page(
+    tx:             &Transaction,
+    verdict:        &Verdict,
+    fraud_score:    f64,
+    flags_p1:       &[String],
+    flags_p2:       &[String],
+    scenario_label: &str,
+) -> String {
+    let (badge_bg, badge_text, page_bg) = match verdict {
+        Verdict::Fraud      => ("#c0392b", "FRAUD",      "#fff0f0"),
+        Verdict::Suspicious => ("#e67e22", "SUSPICIOUS", "#fff8f0"),
+        Verdict::Review     => ("#b8860b", "REVIEW",     "#fffdf0"),
+        Verdict::Clear      => ("#27ae60", "CLEAR",      "#f0fff4"),
+    };
+    let score_pct = (fraud_score * 100.0).round() as u32;
+    let p1_html = if flags_p1.is_empty() {
+        "<em style='color:#999'>None triggered</em>".to_string()
+    } else {
+        flags_p1.iter()
+            .map(|f| format!("<span class='flag'>{}</span>", f))
+            .collect::<Vec<_>>().join(" ")
+    };
+    let p2_html = if flags_p2.is_empty() {
+        "<em style='color:#999'>None triggered</em>".to_string()
+    } else {
+        flags_p2.iter()
+            .map(|f| format!("<span class='flag flag-p2'>{}</span>", f))
+            .collect::<Vec<_>>().join(" ")
+    };
+
+    format!(r#"<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1">
+<title>Fraud Detection Result</title>
+<style>
+*{{box-sizing:border-box;margin:0;padding:0}}
+body{{font-family:system-ui,sans-serif;background:{page_bg};min-height:100vh;display:flex;flex-direction:column;align-items:center;padding:24px 16px}}
+.verdict-badge{{font-size:44px;font-weight:900;color:#fff;background:{badge_bg};border-radius:16px;padding:14px 36px;margin:20px 0 8px;letter-spacing:2px;text-align:center;box-shadow:0 4px 20px rgba(0,0,0,.25)}}
+.score-wrap{{text-align:center;margin-bottom:16px}}
+.score{{font-size:40px;font-weight:700;color:{badge_bg}}}
+.score-label{{font-size:12px;color:#666;margin-top:2px}}
+.card{{background:#fff;border-radius:12px;padding:18px;margin:10px 0;width:100%;max-width:460px;box-shadow:0 2px 12px rgba(0,0,0,.08)}}
+.card-title{{font-size:12px;font-weight:700;color:#555;text-transform:uppercase;letter-spacing:.5px;margin-bottom:10px;border-bottom:1px solid #eee;padding-bottom:6px}}
+.row{{display:flex;justify-content:space-between;padding:5px 0;border-bottom:1px solid #f5f5f5;font-size:14px}}
+.row:last-child{{border-bottom:none}}
+.row .key{{color:#888}}
+.row .val{{font-weight:600;color:#222}}
+.flag{{display:inline-block;background:#e8f0fe;color:#1a237e;border-radius:6px;padding:3px 10px;font-size:12px;margin:3px 2px;font-weight:600}}
+.flag-p2{{background:#fce4ec;color:#880e4f}}
+h1{{font-size:18px;font-weight:700;color:#1a237e;text-align:center;margin-bottom:2px}}
+.subtitle{{font-size:12px;color:#888;text-align:center;margin-bottom:4px}}
+.scenario{{font-size:11px;color:#aaa;text-align:center;margin-top:20px}}
+a.back{{display:block;text-align:center;margin-top:22px;font-size:14px;color:#1a237e;text-decoration:none}}
+</style>
+</head>
+<body>
+<h1>Fraud Detection Demo</h1>
+<p class="subtitle">Neuro-Symbolic AI Pipeline</p>
+<div class="verdict-badge">{badge_text}</div>
+<div class="score-wrap">
+  <div class="score">{score_pct}%</div>
+  <div class="score-label">ML Fraud Score</div>
+</div>
+<div class="card">
+  <div class="card-title">Transaction Details</div>
+  <div class="row"><span class="key">ID</span><span class="val" style="font-size:11px">{tx_id}</span></div>
+  <div class="row"><span class="key">Account</span><span class="val">{account_id}</span></div>
+  <div class="row"><span class="key">Amount</span><span class="val">${amount:.2}</span></div>
+  <div class="row"><span class="key">Hour</span><span class="val">{hour:02}:00</span></div>
+  <div class="row"><span class="key">Merchant Risk</span><span class="val">{risk}%</span></div>
+  <div class="row"><span class="key">Velocity (1h)</span><span class="val">{vel} tx</span></div>
+  <div class="row"><span class="key">Distance</span><span class="val">{dist:.1} km</span></div>
+  <div class="row"><span class="key">Foreign</span><span class="val">{foreign}</span></div>
+  <div class="row"><span class="key">Card Present</span><span class="val">{card}</span></div>
+</div>
+<div class="card">
+  <div class="card-title">Pass-1 Symbolic Flags (R1–R5, R1b)</div>
+  <div style="padding:4px 0">{p1_html}</div>
+</div>
+<div class="card">
+  <div class="card-title">Pass-2 ML-Informed Flags (R6–R7)</div>
+  <div style="padding:4px 0">{p2_html}</div>
+</div>
+<p class="scenario">{scenario_label}</p>
+<a class="back" href="/demo/bank">&#8592; Back to Account</a>
+</body>
+</html>"#,
+        page_bg        = page_bg,
+        badge_bg       = badge_bg,
+        badge_text     = badge_text,
+        score_pct      = score_pct,
+        tx_id          = tx.tx_id,
+        account_id     = tx.account_id,
+        amount         = tx.amount,
+        hour           = tx.hour_of_day,
+        risk           = tx.merchant_risk,
+        vel            = tx.velocity_1h,
+        dist           = tx.distance_km,
+        foreign        = if tx.is_foreign == 1 { "Yes" } else { "No" },
+        card           = if tx.card_present == 1 { "Yes (physical)" } else { "No (CNP)" },
+        p1_html        = p1_html,
+        p2_html        = p2_html,
+        scenario_label = scenario_label,
+    )
+}
+
+//
 // Pseudo-random number generator (splitmix64 finalisation mix)
 //
 // Produces a well-distributed f64 in [0.0, 1.0) from two u64 seeds.
@@ -1136,9 +1596,9 @@ fn synthesise_transaction(
         (tx, false)
 
     } else {
-        // CLEAR: all features below every rule threshold
-        *vel_entry = (*vel_entry).saturating_sub(1);
-        let vel         = *vel_entry;
+        // CLEAR: reset velocity to baseline so accumulated FRAUD velocity doesn't pollute this scenario
+        *vel_entry = 1;
+        let vel         = 1u32;
         let amount      = 10.0 + prng(time_step, account_idx as u64 + 400) * 600.0;  // < 1000
         let hour        = 8 + (prng(time_step, account_idx as u64 + 401) * 13.0) as u8;
         let dow         = (prng(time_step, account_idx as u64 + 402) * 7.0) as u8;

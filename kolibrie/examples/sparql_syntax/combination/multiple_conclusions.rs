@@ -53,7 +53,7 @@ fn main() {
   // Define the rule separately
   let rule_definition = r#"PREFIX ex: <http://example.org#>
 PREFIX alert: <http://example.org/alerts#>
-RULE :OverheatingAlert(?room, ?temp) :- 
+RULE :OverheatingAlert :-
   CONSTRUCT { 
       ?room ex:overheatingAlert true ;
             alert:status "Critical" ;

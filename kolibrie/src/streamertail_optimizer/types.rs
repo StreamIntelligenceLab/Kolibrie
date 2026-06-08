@@ -78,10 +78,30 @@ impl Condition {
             FilterExpression::Not(inner) => {
                 !self.evaluate_filter(inner, result)
             }
-            FilterExpression::ArithmeticExpr(_expr) => {
-                // For now, arithmetic expressions in filters return false
-                // TODO: Implement full arithmetic expression evaluation
-                false
+            FilterExpression::ArithmeticExpr(expr) => {
+                let resolver = |var: &str| -> Option<f64> {
+                    let name = var.strip_prefix('?').unwrap_or(var);
+                    result.get(name)?.parse::<f64>().ok()
+                };
+                expr.evaluate(&resolver).map(|v| v != 0.0).unwrap_or(false)
+            }
+            FilterExpression::FunctionCall(func_name, args) => {
+                match *func_name {
+                    "isTRIPLE" => {
+                        if let Some(arg) = args.first() {
+                            let val = if arg.starts_with('?') {
+                                let var_name = arg.strip_prefix('?').unwrap_or(arg);
+                                result.get(var_name).map(|s| s.as_str()).unwrap_or("")
+                            } else {
+                                arg
+                            };
+                            val.starts_with("<<") && val.ends_with(">>")
+                        } else {
+                            false
+                        }
+                    }
+                    _ => false,
+                }
             }
         }
     }
@@ -135,9 +155,31 @@ impl Condition {
             FilterExpression::Not(inner) => {
                 !self.evaluate_filter_with_ids(inner, result, dictionary)
             }
-            FilterExpression::ArithmeticExpr(_expr) => {
-                // TODO: Implement arithmetic expression evaluation
-                false
+            FilterExpression::ArithmeticExpr(expr) => {
+                let resolver = |var: &str| -> Option<f64> {
+                    let name = var.strip_prefix('?').unwrap_or(var);
+                    let &id = result.get(name)?;
+                    dictionary.decode(id)?.parse::<f64>().ok()
+                };
+                expr.evaluate(&resolver).map(|v| v != 0.0).unwrap_or(false)
+            }
+            FilterExpression::FunctionCall(func_name, args) => {
+                use shared::quoted_triple_store::is_quoted_triple_id;
+                match *func_name {
+                    "isTRIPLE" => {
+                        if let Some(arg) = args.first() {
+                            let var_name = arg.strip_prefix('?').unwrap_or(arg);
+                            if let Some(&id) = result.get(var_name) {
+                                is_quoted_triple_id(id)
+                            } else {
+                                false
+                            }
+                        } else {
+                            false
+                        }
+                    }
+                    _ => false,
+                }
             }
         }
     }

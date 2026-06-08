@@ -10,6 +10,7 @@
 
 use std::collections::HashMap;
 use crate::triple::Triple;
+use crate::quoted_triple_store::{QuotedTripleStore, is_quoted_triple_id, QUOTED_TRIPLE_ID_BIT};
 
 // Dictionary for encoding and decoding strings
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
@@ -32,6 +33,11 @@ impl Dictionary {
         if let Some(&id) = self.string_to_id.get(value) {
             id
         } else {
+            assert!(
+                self.next_id < QUOTED_TRIPLE_ID_BIT,
+                "Dictionary ID space exhausted: next_id {} would collide with quoted triple ID range",
+                self.next_id
+            );
             let id = self.next_id;
             self.string_to_id.insert(value.to_string(), id);
             self.id_to_string.insert(id, value.to_string());
@@ -48,6 +54,28 @@ impl Dictionary {
         let s = self.decode(triple.subject).unwrap_or("unknown");
         let p = self.decode(triple.predicate).unwrap_or("unknown");
         let o = self.decode(triple.object).unwrap_or("unknown");
+        format!("{} {} {} .", s, p, o)
+    }
+
+    /// Decode a term ID that may be either a regular dictionary ID or a quoted triple ID.
+    /// For quoted triple IDs, recursively renders `<< s p o >>`.
+    pub fn decode_term(&self, id: u32, qt_store: &QuotedTripleStore) -> Option<String> {
+        if is_quoted_triple_id(id) {
+            let (s, p, o) = qt_store.decode(id)?;
+            let s_str = self.decode_term(s, qt_store)?;
+            let p_str = self.decode_term(p, qt_store)?;
+            let o_str = self.decode_term(o, qt_store)?;
+            Some(format!("<< {} {} {} >>", s_str, p_str, o_str))
+        } else {
+            self.decode(id).map(|s| s.to_string())
+        }
+    }
+
+    /// Decode a triple, handling quoted triple IDs in any position.
+    pub fn decode_triple_star(&self, triple: &Triple, qt_store: &QuotedTripleStore) -> String {
+        let s = self.decode_term(triple.subject, qt_store).unwrap_or_else(|| "unknown".to_string());
+        let p = self.decode_term(triple.predicate, qt_store).unwrap_or_else(|| "unknown".to_string());
+        let o = self.decode_term(triple.object, qt_store).unwrap_or_else(|| "unknown".to_string());
         format!("{} {} {} .", s, p, o)
     }
 

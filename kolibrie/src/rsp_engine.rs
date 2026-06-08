@@ -9,7 +9,8 @@
 
 use crate::rsp::r2r::R2ROperator;
 use crate::rsp::r2s::Relation2StreamOperator;
-use crate::rsp::s2r::{CSPARQLWindow, ContentContainer, Report, ReportStrategy, Tick};
+use crate::rsp::s2r::{ContentContainer, ReportStrategy, Tick};
+use crate::rsp::window_runner::{WindowRunner, WindowSpec};
 
 #[cfg(not(test))]
 use log::{debug, error}; // Use log crate when building application
@@ -29,6 +30,17 @@ use std::{println as debug, println as error};
 use crate::parser::process_rule_definition;
 use crate::sparql_database::SparqlDatabase;
 use crate::streamertail_optimizer::{ExecutionEngine, LogicalOperator, PhysicalOperator};
+use datalog::cross_window_sds::{
+    all_component_iris, sds_with_expiry_to_external, Sds, WindowData, WindowedTriple,
+};
+use datalog::parser_n3_logic::{parse_n3_rules_for_sds, WindowContext};
+use datalog::reasoning::materialisation::cross_window_incremental::{
+    incremental_sds_plus, SdsWithExpiry,
+};
+use datalog::reasoning::materialisation::cross_window_naive::naive_sds_plus;
+use shared::dictionary::Dictionary;
+use shared::triple::Triple;
+use std::sync::RwLock;
 
 // Re-exports to preserve the public API used by kolibrie-http-server and examples.
 pub use crate::rsp::builder::{RSPBuilder, RSPQueryConfig};
@@ -44,6 +56,12 @@ pub enum OperationMode {
 pub enum QueryExecutionMode {
     Standard,
     Volcano,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CrossWindowReasoningMode {
+    Incremental,
+    Naive,
 }
 
 /// Window configuration extracted from parsed RSP-QL query
@@ -71,7 +89,10 @@ pub struct WindowResult {
     pub window_iri: String,
     pub results: Vec<HashMap<String, String>>, // Variable bindings
     pub timestamp: usize,
+    pub raw_triples: Vec<(Triple, u64)>,
 }
+
+const CROSS_WINDOW_STATIC_IRI: &str = "urn:kolibrie:static:";
 
 pub struct ResultConsumer<I> {
     pub function: Arc<dyn Fn(I) -> () + Send + Sync>,
@@ -80,7 +101,8 @@ pub struct ResultConsumer<I> {
 /// Macro to generate the window processing logic
 macro_rules! create_window_processor {
     ($window_iri:expr, $query:expr, $query_execution_mode:expr,
-     $r2r_store:expr, $has_joins:expr, $window_result_sender:expr, $r2s_consumer_func:expr) => {{
+     $r2r_store:expr, $has_joins:expr, $cross_window_enabled:expr,
+     $window_result_sender:expr, $r2s_consumer_func:expr) => {{
         let mut prev_window_triples: Vec<I> = Vec::new();
         move |content: ContentContainer<I>| {
             debug!(
@@ -89,6 +111,29 @@ macro_rules! create_window_processor {
             );
 
             let ts = content.get_last_timestamp_changed();
+            if $cross_window_enabled {
+                let raw_triples: Vec<(Triple, u64)> = content
+                    .iter_with_timestamps()
+                    .filter_map(|(item, event_ts)| {
+                        (item as &dyn std::any::Any)
+                            .downcast_ref::<Triple>()
+                            .map(|triple| (triple.clone(), event_ts as u64))
+                    })
+                    .collect();
+
+                let window_res = WindowResult {
+                    window_iri: $window_iri.clone(),
+                    results: Vec::new(),
+                    timestamp: ts,
+                    raw_triples,
+                };
+
+                if let Err(e) = $window_result_sender.send(window_res) {
+                    error!("Failed to send cross-window raw content: {:?}", e);
+                }
+                return;
+            }
+
             let mut store = $r2r_store.lock().unwrap();
 
             // Evict triples from the previous firing of this window
@@ -129,6 +174,7 @@ macro_rules! create_window_processor {
                     window_iri: $window_iri.clone(),
                     results: mapped_results,
                     timestamp: ts,
+                    raw_triples: Vec::new(),
                 };
 
                 if let Err(e) = $window_result_sender.send(window_res) {
@@ -170,7 +216,7 @@ where
     I: Eq + PartialEq + Clone + Debug + Hash + Send,
     O: Hash,
 {
-    windows: Vec<CSPARQLWindow<I>>,
+    windows: Vec<WindowRunner<I>>,
     r2r: Arc<Mutex<Box<dyn R2ROperator<I, Vec<PhysicalOperator>, O>>>>,
     r2s_consumer: ResultConsumer<O>,
     window_configs: Vec<RSPWindow>,
@@ -189,6 +235,15 @@ where
     static_db: Arc<Mutex<SparqlDatabase>>,
     /// R2S operator for stream-type filtering (RSTREAM/ISTREAM/DSTREAM).
     r2s_operator: Arc<Mutex<Relation2StreamOperator<O>>>,
+    /// Opt-in cross-window SDS+ reasoning state.
+    cross_window_enabled: bool,
+    cross_window_rules: Arc<Vec<Rule>>,
+    cross_window_context: Option<WindowContext>,
+    cross_window_sds_plus: Arc<Mutex<SdsWithExpiry>>,
+    cross_window_latest_contents: Arc<Mutex<HashMap<String, Vec<(Triple, u64)>>>>,
+    cross_window_dictionary: Option<Arc<RwLock<Dictionary>>>,
+    cross_window_output_iris: Arc<Vec<String>>,
+    cross_window_reasoning_mode: CrossWindowReasoningMode,
 }
 
 impl<I, O> RSPEngine<I, O>
@@ -209,7 +264,9 @@ where
         sync_policy: SyncPolicy,
         reasoning_rules: Vec<Rule>,
         sparql_rules: Vec<String>,
-    ) -> RSPEngine<I, O> {
+        cross_window_rules: Option<&str>,
+        cross_window_reasoning_mode: CrossWindowReasoningMode,
+    ) -> Result<RSPEngine<I, O>, String> {
         let mut store = r2r;
 
         // The PhysicalOperator plans created in `rsp_query_plan` contain integer IDs (constants)
@@ -237,10 +294,44 @@ where
 
         // Build the static-data store sharing the same dictionary as the R2R store.
         let mut static_sdb = SparqlDatabase::new();
-        if let Some(d) = shared_dict {
-            static_sdb.dictionary = d;
+        if let Some(d) = &shared_dict {
+            static_sdb.dictionary = Arc::clone(d);
         }
         let static_db = Arc::new(Mutex::new(static_sdb));
+
+        let mut parsed_cross_window_rules = Vec::new();
+        let mut cross_window_context = None;
+        let mut cross_window_output_iris = Vec::new();
+        if let Some(n3_rules) = cross_window_rules {
+            let dict = shared_dict
+                .as_ref()
+                .ok_or_else(|| {
+                    "Cross-window SDS+ reasoning requires a SimpleR2R shared dictionary"
+                        .to_string()
+                })?;
+            let mut reasoner = datalog::reasoning::Reasoner::new();
+            reasoner.dictionary = Arc::clone(dict);
+            let window_widths: HashMap<String, u64> = query_config
+                .windows
+                .iter()
+                .map(|w| (w.window_iri.clone(), w.width as u64))
+                .collect();
+            let (rules, context) = parse_n3_rules_for_sds(n3_rules, &mut reasoner, window_widths)
+                .map_err(|e| format!("Failed to parse cross-window N3 rules: {}", e))?;
+            let window_iris: HashSet<String> = query_config
+                .windows
+                .iter()
+                .map(|w| w.window_iri.clone())
+                .collect();
+            cross_window_output_iris = context
+                .all_component_iris
+                .iter()
+                .filter(|iri| !window_iris.contains(*iri) && iri.as_str() != CROSS_WINDOW_STATIC_IRI)
+                .cloned()
+                .collect();
+            parsed_cross_window_rules = rules;
+            cross_window_context = Some(context);
+        }
 
         // Load initial data
         match store.load_triples(triples, syntax) {
@@ -283,16 +374,13 @@ where
         // Create windows based on parsed configuration
         let mut windows = Vec::new();
         for window_config in &query_config.windows {
-            let mut report = Report::new();
-            report.add(window_config.report_strategy.clone());
-            let window = CSPARQLWindow::new(
-                window_config.width,
-                window_config.slide,
-                report,
-                window_config.tick.clone(),
-                window_config.window_iri.clone(),
-            );
-            windows.push(window);
+            let spec = WindowSpec {
+                width: window_config.width,
+                slide: window_config.slide,
+                report_strategies: vec![window_config.report_strategy.clone()],
+                tick: window_config.tick.clone(),
+            };
+            windows.push(WindowRunner::new(spec, window_config.window_iri.clone()));
         }
 
         // Create channel for cross-window result coordination
@@ -300,6 +388,7 @@ where
 
         let stream_type = query_config.stream_type.clone();
         let r2s_operator = Arc::new(Mutex::new(Relation2StreamOperator::new(stream_type, 0)));
+        let cross_window_enabled = !parsed_cross_window_rules.is_empty();
 
         let mut engine = RSPEngine {
             windows,
@@ -315,13 +404,22 @@ where
             sync_policy,
             static_db,
             r2s_operator,
+            cross_window_enabled,
+            cross_window_rules: Arc::new(parsed_cross_window_rules),
+            cross_window_context,
+            cross_window_sds_plus: Arc::new(Mutex::new(HashMap::new())),
+            cross_window_latest_contents: Arc::new(Mutex::new(HashMap::new())),
+            cross_window_dictionary: shared_dict,
+            cross_window_output_iris: Arc::new(cross_window_output_iris),
+            cross_window_reasoning_mode,
         };
 
         match operation_mode {
             mode @ (OperationMode::SingleThread | OperationMode::MultiThread) => {
                 engine.register_windows(mode);
                 if matches!(mode, OperationMode::MultiThread) {
-                    let has_joins = engine.windows.len() > 1
+                    let has_joins = engine.cross_window_enabled
+                        || engine.windows.len() > 1
                         || engine.rsp_query_plan.static_data_plan.is_some();
                     if has_joins {
                         engine.start_cross_window_coordinator();
@@ -330,12 +428,13 @@ where
             }
         }
 
-        engine
+        Ok(engine)
     }
 
     /// Register windows using macros to eliminate code duplication
     fn register_windows(&mut self, operation_mode: OperationMode) {
-        let has_joins = self.windows.len() > 1
+        let has_joins = self.cross_window_enabled
+            || self.windows.len() > 1
             || self.rsp_query_plan.static_data_plan.is_some();
 
         for (window_idx, window) in self.windows.iter_mut().enumerate() {
@@ -345,6 +444,7 @@ where
             let query_execution_mode = self.query_execution_mode;
             let window_result_sender = self.window_result_sender.clone();
             let r2r_store = self.r2r.clone();
+            let cross_window_enabled = self.cross_window_enabled;
 
             let r2s_consumer_func: Arc<dyn Fn(Vec<O>, usize) + Send + Sync> = if has_joins {
                 Arc::new(|_, _| {})
@@ -366,6 +466,7 @@ where
                 query_execution_mode,
                 r2r_store,
                 has_joins,
+                cross_window_enabled,
                 window_result_sender,
                 r2s_consumer_func
             );
@@ -395,6 +496,15 @@ where
         let static_db = self.static_db.clone();
         let sync_policy = self.sync_policy.clone();
         let r2s_operator = Arc::clone(&self.r2s_operator);
+        let cross_window_enabled = self.cross_window_enabled;
+        let cross_window_rules = Arc::clone(&self.cross_window_rules);
+        let cross_window_sds_plus = Arc::clone(&self.cross_window_sds_plus);
+        let cross_window_latest_contents = Arc::clone(&self.cross_window_latest_contents);
+        let cross_window_dictionary = self.cross_window_dictionary.clone();
+        let cross_window_output_iris = Arc::clone(&self.cross_window_output_iris);
+        let cross_window_reasoning_mode = self.cross_window_reasoning_mode;
+        let window_configs = self.window_configs.clone();
+        let window_plans = self.rsp_query_plan.window_plans.clone();
 
         thread::spawn(move || {
             // Latest results per window (replace semantics)
@@ -424,7 +534,27 @@ where
                                 match &sync_policy {
                                     SyncPolicy::Timeout { fallback: Fallback::Steal, .. } => {
                                         if last_materialized.len() == num_windows {
-                                            emit_results(&last_materialized, &static_data_plan, &static_db, &r2s_operator, max_ts, &consumer);
+                                            if cross_window_enabled {
+                                                if let Some(dict) = &cross_window_dictionary {
+                                                    emit_cross_window_results(
+                                                        &window_configs,
+                                                        &window_plans,
+                                                        &static_data_plan,
+                                                        &static_db,
+                                                        &r2s_operator,
+                                                        max_ts,
+                                                        &consumer,
+                                                        &cross_window_rules,
+                                                        &cross_window_sds_plus,
+                                                        &cross_window_latest_contents,
+                                                        dict,
+                                                        &cross_window_output_iris,
+                                                        cross_window_reasoning_mode,
+                                                    );
+                                                }
+                                            } else {
+                                                emit_results(&last_materialized, &static_data_plan, &static_db, &r2s_operator, max_ts, &consumer);
+                                            }
                                         }
                                     }
                                     SyncPolicy::Timeout { fallback: Fallback::Drop, .. } => {
@@ -455,6 +585,12 @@ where
                     );
 
                     max_ts = max_ts.max(window_result.timestamp);
+                    if cross_window_enabled {
+                        cross_window_latest_contents.lock().unwrap().insert(
+                            window_result.window_iri.clone(),
+                            window_result.raw_triples.clone(),
+                        );
+                    }
                     // Update last_materialized (replace)
                     last_materialized.insert(
                         window_result.window_iri.clone(),
@@ -468,13 +604,39 @@ where
                     // Drain any additional pending results
                     while let Ok(wr) = receiver.try_recv() {
                         max_ts = max_ts.max(wr.timestamp);
+                        if cross_window_enabled {
+                            cross_window_latest_contents
+                                .lock()
+                                .unwrap()
+                                .insert(wr.window_iri.clone(), wr.raw_triples.clone());
+                        }
                         last_materialized.insert(wr.window_iri.clone(), wr.results.clone());
                         cycle_triggered.insert(wr.window_iri.clone());
                     }
 
                     if cycle_triggered.len() == num_windows {
                         // All windows fired this cycle
-                        emit_results(&last_materialized, &static_data_plan, &static_db, &r2s_operator, max_ts, &consumer);
+                        if cross_window_enabled {
+                            if let Some(dict) = &cross_window_dictionary {
+                                emit_cross_window_results(
+                                    &window_configs,
+                                    &window_plans,
+                                    &static_data_plan,
+                                    &static_db,
+                                    &r2s_operator,
+                                    max_ts,
+                                    &consumer,
+                                    &cross_window_rules,
+                                    &cross_window_sds_plus,
+                                    &cross_window_latest_contents,
+                                    dict,
+                                    &cross_window_output_iris,
+                                    cross_window_reasoning_mode,
+                                );
+                            }
+                        } else {
+                            emit_results(&last_materialized, &static_data_plan, &static_db, &r2s_operator, max_ts, &consumer);
+                        }
                         cycle_triggered.clear();
                         cycle_start = None;
                         max_ts = 0;
@@ -483,7 +645,27 @@ where
                             SyncPolicy::Steal => {
                                 // Emit immediately using stale data from non-firing windows
                                 if last_materialized.len() == num_windows {
-                                    emit_results(&last_materialized, &static_data_plan, &static_db, &r2s_operator, max_ts, &consumer);
+                                    if cross_window_enabled {
+                                        if let Some(dict) = &cross_window_dictionary {
+                                            emit_cross_window_results(
+                                                &window_configs,
+                                                &window_plans,
+                                                &static_data_plan,
+                                                &static_db,
+                                                &r2s_operator,
+                                                max_ts,
+                                                &consumer,
+                                                &cross_window_rules,
+                                                &cross_window_sds_plus,
+                                                &cross_window_latest_contents,
+                                                dict,
+                                                &cross_window_output_iris,
+                                                cross_window_reasoning_mode,
+                                            );
+                                        }
+                                    } else {
+                                        emit_results(&last_materialized, &static_data_plan, &static_db, &r2s_operator, max_ts, &consumer);
+                                    }
                                 }
                                 cycle_triggered.clear();
                                 cycle_start = None;
@@ -510,7 +692,8 @@ where
     /// Add data to appropriate window based on stream IRI
     pub fn add_to_stream(&mut self, stream_iri: &str, event_item: I, ts: usize) {
         if matches!(self.operation_mode, OperationMode::SingleThread)
-            && (self.windows.len() > 1
+            && (self.cross_window_enabled
+                || self.windows.len() > 1
                 || self.rsp_query_plan.static_data_plan.is_some())
         {
             self.process_single_thread_window_results();
@@ -560,7 +743,16 @@ where
         let mut max_ts: usize = 0;
         while let Ok(window_result) = self.window_result_receiver.try_recv() {
             max_ts = max_ts.max(window_result.timestamp);
-            last_mat.insert(window_result.window_iri.clone(), window_result.results);
+            if self.cross_window_enabled {
+                self.cross_window_latest_contents.lock().unwrap().insert(
+                    window_result.window_iri.clone(),
+                    window_result.raw_triples.clone(),
+                );
+            }
+            let rows = last_mat
+                .entry(window_result.window_iri.clone())
+                .or_default();
+            rows.extend(window_result.results);
             had_new_results = true;
         }
 
@@ -572,7 +764,27 @@ where
         if last_mat.len() == num_windows {
             debug!("SingleThread: all {} windows materialized, emitting", num_windows);
             let static_data_plan = self.rsp_query_plan.static_data_plan.clone();
-            emit_results(&*last_mat, &static_data_plan, &self.static_db, &self.r2s_operator, max_ts, &consumer);
+            if self.cross_window_enabled {
+                if let Some(dict) = &self.cross_window_dictionary {
+                    emit_cross_window_results(
+                        &self.window_configs,
+                        &self.rsp_query_plan.window_plans,
+                        &static_data_plan,
+                        &self.static_db,
+                        &self.r2s_operator,
+                        max_ts,
+                        &consumer,
+                        &self.cross_window_rules,
+                        &self.cross_window_sds_plus,
+                        &self.cross_window_latest_contents,
+                        dict,
+                        &self.cross_window_output_iris,
+                        self.cross_window_reasoning_mode,
+                    );
+                }
+            } else {
+                emit_results(&*last_mat, &static_data_plan, &self.static_db, &self.r2s_operator, max_ts, &consumer);
+            }
 
             match sync_policy {
                 // Wait: require all windows to fire again before next emission.
@@ -633,6 +845,11 @@ where
     /// Get the RSP-QL query plan information
     pub fn get_query_plan(&self) -> &RSPQueryPlan {
         &self.rsp_query_plan
+    }
+
+    /// Return parsed cross-window SDS+ metadata when cross-window reasoning is enabled.
+    pub fn get_cross_window_context(&self) -> Option<&WindowContext> {
+        self.cross_window_context.as_ref()
     }
 
     /// Return the stream IRIs registered across all configured windows.
@@ -746,4 +963,150 @@ fn execute_plan_as_bindings(
 ) -> Vec<HashMap<String, String>> {
     let mut db = static_db.lock().unwrap();
     ExecutionEngine::execute(plan, &mut *db)
+}
+
+fn build_cross_window_sds(
+    window_configs: &[RSPWindow],
+    latest_contents: &HashMap<String, Vec<(Triple, u64)>>,
+    static_db: &Arc<Mutex<SparqlDatabase>>,
+    dict: &Arc<RwLock<Dictionary>>,
+    output_iris: &[String],
+) -> Sds {
+    let mut sds = Sds::new();
+
+    {
+        let dict_r = dict.read().unwrap();
+        for window in window_configs {
+            let triples = latest_contents
+                .get(&window.window_iri)
+                .cloned()
+                .unwrap_or_default()
+                .into_iter()
+                .filter_map(|(triple, event_time)| {
+                    let subject = dict_r.decode(triple.subject)?.to_string();
+                    let predicate = dict_r.decode(triple.predicate)?.to_string();
+                    let object = dict_r.decode(triple.object)?.to_string();
+                    Some(WindowedTriple {
+                        subject,
+                        predicate,
+                        object,
+                        event_time,
+                    })
+                })
+                .collect();
+
+            sds.windows.insert(
+                window.window_iri.clone(),
+                WindowData {
+                    alpha: window.width as u64,
+                    triples,
+                },
+            );
+        }
+    }
+
+    for iri in output_iris {
+        sds.output_iris.insert(iri.clone());
+    }
+
+    let static_triples = {
+        let db = static_db.lock().unwrap();
+        let dict_r = dict.read().unwrap();
+        db.triples
+            .iter()
+            .filter_map(|triple| {
+                let subject = dict_r.decode(triple.subject)?.to_string();
+                let predicate = dict_r.decode(triple.predicate)?.to_string();
+                let object = dict_r.decode(triple.object)?.to_string();
+                Some((subject, predicate, object))
+            })
+            .collect::<Vec<_>>()
+    };
+
+    if !static_triples.is_empty() {
+        sds.static_graphs
+            .insert(CROSS_WINDOW_STATIC_IRI.to_string(), static_triples);
+    }
+
+    sds
+}
+
+fn execute_window_plans_on_external_buckets(
+    window_configs: &[RSPWindow],
+    window_plans: &[PhysicalOperator],
+    external_buckets: &HashMap<String, Vec<Triple>>,
+    dict: &Arc<RwLock<Dictionary>>,
+) -> HashMap<String, Vec<HashMap<String, String>>> {
+    let mut materialized = HashMap::new();
+
+    for (window, plan) in window_configs.iter().zip(window_plans.iter()) {
+        let mut db = SparqlDatabase::new();
+        db.dictionary = Arc::clone(dict);
+
+        if let Some(triples) = external_buckets.get(&window.window_iri) {
+            for triple in triples {
+                db.add_triple(triple.clone());
+            }
+        }
+
+        let results = ExecutionEngine::execute(plan, &mut db);
+        materialized.insert(window.window_iri.clone(), results);
+    }
+
+    materialized
+}
+
+fn emit_cross_window_results<O>(
+    window_configs: &[RSPWindow],
+    window_plans: &[PhysicalOperator],
+    static_data_plan: &Option<PhysicalOperator>,
+    static_db: &Arc<Mutex<SparqlDatabase>>,
+    r2s: &Arc<Mutex<Relation2StreamOperator<O>>>,
+    ts: usize,
+    consumer: &Arc<dyn Fn(O) -> () + Send + Sync>,
+    rules: &[Rule],
+    previous_sds_plus: &Arc<Mutex<SdsWithExpiry>>,
+    latest_contents: &Arc<Mutex<HashMap<String, Vec<(Triple, u64)>>>>,
+    dict: &Arc<RwLock<Dictionary>>,
+    output_iris: &[String],
+    mode: CrossWindowReasoningMode,
+) where
+    O: 'static + Clone + Hash + Eq + From<Vec<(String, String)>>,
+{
+    let latest = latest_contents.lock().unwrap().clone();
+    let sds = build_cross_window_sds(window_configs, &latest, static_db, dict, output_iris);
+
+    let external_buckets = match mode {
+        CrossWindowReasoningMode::Incremental => {
+            let new_sds_plus = {
+                let old = previous_sds_plus.lock().unwrap().clone();
+                incremental_sds_plus(rules, &sds, &old, dict, ts as u64)
+            };
+
+            {
+                let mut old = previous_sds_plus.lock().unwrap();
+                *old = new_sds_plus.clone();
+            }
+
+            let component_iris = all_component_iris(&sds);
+            sds_with_expiry_to_external(&new_sds_plus, dict, &component_iris)
+        }
+        CrossWindowReasoningMode::Naive => naive_sds_plus(rules, &sds, dict, ts as u64),
+    };
+
+    let materialized = execute_window_plans_on_external_buckets(
+        window_configs,
+        window_plans,
+        &external_buckets,
+        dict,
+    );
+
+    emit_results(
+        &materialized,
+        static_data_plan,
+        static_db,
+        r2s,
+        ts,
+        consumer,
+    );
 }

@@ -22,6 +22,8 @@ use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use shared::index_manager::*;
 use shared::rule_index::RuleIndex;
 use shared::rule::Rule;
+use shared::provenance::Provenance;
+use shared::tag_store::TagStore;
 use std::sync::Arc;
 use std::sync::RwLock;
 
@@ -36,6 +38,7 @@ pub struct Reasoner {
     pub index_manager: UnifiedIndex,
     pub rule_index: RuleIndex,
     pub constraints: Vec<Rule>,
+    pub probability_seeds: HashMap<Triple, f64>, // Input probabilities for provenance seeding
 }
 
 pub fn convert_string_binding_to_u32(
@@ -59,6 +62,34 @@ impl Reasoner {
             index_manager: UnifiedIndex::new(),
             rule_index: RuleIndex::new(),
             constraints: Vec::new(),
+            probability_seeds: HashMap::new(),
+        }
+    }
+
+    /// Add a triple with an associated probability value.
+    /// The triple is added to the index; the probability is stored for provenance seeding.
+    pub fn add_tagged_triple(&mut self, subject: &str, predicate: &str, object: &str, probability: f64) {
+        let mut dict = self.dictionary.write().unwrap();
+        let s = dict.encode(subject);
+        let p = dict.encode(predicate);
+        let o = dict.encode(object);
+        drop(dict);
+
+        let triple = Triple { subject: s, predicate: p, object: o };
+        self.index_manager.insert(&triple);
+        self.probability_seeds.insert(triple, probability);
+    }
+
+    /// Materialize provenance tags as RDF-star triples so they are queryable via SPARQL-star.
+    /// Generates triples of the form: << s p o >> <prob:value> "0.7"^^xsd:double
+    pub fn materialize_tags_as_rdf_star<P: Provenance>(&mut self, tag_store: &TagStore<P>) {
+        let mut dict = self.dictionary.write().unwrap();
+        let mut qt_store = shared::quoted_triple_store::QuotedTripleStore::new();
+        let rdf_star_triples = tag_store.encode_as_rdf_star(&mut dict, &mut qt_store);
+        drop(dict);
+
+        for triple in &rdf_star_triples {
+            self.index_manager.insert(triple);
         }
     }
 
@@ -75,6 +106,11 @@ impl Reasoner {
             predicate: p,
             object: o,
         });
+    }
+
+    /// Insert an already-ground triple directly into the fact index.
+    pub fn insert_ground_triple(&mut self, triple: Triple) {
+        self.index_manager.insert(&triple);
     }
 
     /// Query the ABox for instance-level assertions (using TrieIndex now)

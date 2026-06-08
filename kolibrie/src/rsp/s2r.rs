@@ -10,8 +10,8 @@
 
 #[cfg(not(test))]
 use log::{debug, warn}; // Use log crate when building application
-use std::collections::hash_set::{IntoIter, Iter};
-use std::collections::{HashMap, HashSet};
+use std::collections::hash_map::{IntoKeys, Keys};
+use std::collections::HashMap;
 use std::fmt::Debug;
 use std::hash::Hash;
 use std::sync::mpsc::Receiver;
@@ -92,7 +92,7 @@ pub struct ContentContainer<I>
 where
     I: Eq + PartialEq + Clone + Debug + Hash + Send,
 {
-    elements: HashSet<I>,
+    elements: HashMap<I, usize>,
     last_timestamp_changed: usize,
     origin: String
 }
@@ -103,14 +103,14 @@ where
 {
     fn new() -> ContentContainer<I> {
         ContentContainer {
-            elements: HashSet::new(),
+            elements: HashMap::new(),
             last_timestamp_changed: 0,
             origin: String::default()
         }
     }
     fn new_with_origin(origin : &str) -> ContentContainer<I> {
         ContentContainer {
-            elements: HashSet::new(),
+            elements: HashMap::new(),
             last_timestamp_changed: 0,
             origin: origin.to_string()
         }
@@ -119,19 +119,25 @@ where
         self.elements.len()
     }
     fn add(&mut self, triple: I, ts: usize) {
-        self.elements.insert(triple);
+        self.elements
+            .entry(triple)
+            .and_modify(|last_ts| *last_ts = (*last_ts).max(ts))
+            .or_insert(ts);
         self.last_timestamp_changed = ts;
     }
     pub fn get_last_timestamp_changed(&self) -> usize {
         self.last_timestamp_changed
     }
 
-    pub fn iter(&self) -> Iter<'_, I> {
-        self.elements.iter()
+    pub fn iter(&self) -> Keys<'_, I, usize> {
+        self.elements.keys()
     }
-    pub fn into_iter(mut self) -> IntoIter<I> {
+    pub fn iter_with_timestamps(&self) -> impl Iterator<Item = (&I, usize)> {
+        self.elements.iter().map(|(item, ts)| (item, *ts))
+    }
+    pub fn into_iter(mut self) -> IntoKeys<I, usize> {
         let map = mem::take(&mut self.elements);
-        map.into_iter()
+        map.into_keys()
     }
 }
 
@@ -275,12 +281,19 @@ where
         self.call_back.replace(function);
     }
     pub fn flush(&mut self) {
-        for (_, content) in &self.active_windows {
+        let mut merged = ContentContainer::new_with_origin(&self.uri);
+        for content in self.active_windows.values() {
+            for (item, ts) in content.iter_with_timestamps() {
+                merged.add(item.clone(), ts);
+            }
+        }
+
+        if merged.len() > 0 {
             if let Some(call_back) = &mut self.call_back {
-                (call_back)(content.clone());
+                (call_back)(merged.clone());
             }
             if let Some(sender) = &self.consumer {
-                let _ = sender.send(content.clone());
+                let _ = sender.send(merged);
             }
         }
     }

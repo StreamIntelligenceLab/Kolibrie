@@ -129,6 +129,7 @@ fn create_mortality_rule(hierarchy: &mut ReasoningHierarchy) -> Rule {
             Term::Constant(is_a_id),
             Term::Constant(human_id),
         )],
+        negative_premise: vec![],
         conclusion: vec![(
             Term::Variable("x".to_string()),
             Term::Constant(is_a_id),
@@ -159,6 +160,7 @@ fn create_teaching_transitivity_rule(hierarchy: &mut ReasoningHierarchy) -> Rule
                 Term::Variable("z".to_string()),
             ),
         ],
+        negative_premise: vec![],
         conclusion: vec![(
             Term::Variable("x".to_string()),
             Term::Constant(influences_id),
@@ -183,6 +185,7 @@ fn create_wisdom_rule(hierarchy: &mut ReasoningHierarchy) -> Rule {
             Term::Constant(teaches_id),
             Term::Variable("y".to_string()),
         )],
+        negative_premise: vec![],
         conclusion: vec![(
             Term::Variable("x".to_string()),
             Term::Constant(is_a_id),
@@ -217,6 +220,7 @@ fn create_soul_hypothesis_rule(hierarchy: &mut ReasoningHierarchy) -> Hierarchic
                     Term::Constant(mortal_id),
                 ),
             ],
+            negative_premise: vec![],
             conclusion: vec![(
                 Term::Variable("x".to_string()),
                 Term::Constant(might_have_id),
@@ -246,6 +250,7 @@ fn create_memory_hypothesis_rule(hierarchy: &mut ReasoningHierarchy) -> Hierarch
                 Term::Constant(influences_id),
                 Term::Variable("y".to_string()),
             )],
+            negative_premise: vec![],
             conclusion: vec![(
                 Term::Variable("x".to_string()),
                 Term::Constant(might_be_id),
@@ -285,6 +290,7 @@ fn create_significance_meta_rule(hierarchy: &mut ReasoningHierarchy) -> Hierarch
                     Term::Constant(remembered_id),
                 ),
             ],
+            negative_premise: vec![],
             conclusion: vec![(
                 Term::Variable("x".to_string()),
                 Term::Constant(is_a_id),

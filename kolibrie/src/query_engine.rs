@@ -157,9 +157,18 @@ impl QueryEngine {
     
     /// Add a single triple to current backend
     fn add_triple(&mut self, subject: &str, predicate: &str, object: &str) -> Result<(), String> {
-        // This would need dictionary encoding
-        self.storage_manager.get_memory_database_mut().add_triple_parts(subject, predicate, object);
-        Ok(())
+        let triple = {
+            let db = self.storage_manager.get_memory_database_mut();
+            let mut dict = db.dictionary.write().unwrap();
+            let encoded = shared::triple::Triple {
+                subject: dict.encode(subject),
+                predicate: dict.encode(predicate),
+                object: dict.encode(object),
+            };
+            drop(dict);
+            encoded
+        };
+        self.storage_manager.add_data(triple, false)
     }
     
     /// Add a single triple to memory specifically

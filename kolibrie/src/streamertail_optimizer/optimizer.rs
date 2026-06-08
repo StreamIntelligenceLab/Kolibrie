@@ -26,6 +26,17 @@ pub struct Streamertail {
     pub stats: Arc<DatabaseStats>,
 }
 
+fn serialize_arith_expr(expr: &shared::query::ArithmeticExpression) -> String {
+    use shared::query::ArithmeticExpression as AE;
+    match expr {
+        AE::Operand(s) => s.to_string(),
+        AE::Add(l, r) => format!("({} + {})", serialize_arith_expr(l), serialize_arith_expr(r)),
+        AE::Subtract(l, r) => format!("({} - {})", serialize_arith_expr(l), serialize_arith_expr(r)),
+        AE::Multiply(l, r) => format!("({} * {})", serialize_arith_expr(l), serialize_arith_expr(r)),
+        AE::Divide(l, r) => format!("({} / {})", serialize_arith_expr(l), serialize_arith_expr(r)),
+    }
+}
+
 impl Streamertail {
     /// Creates a new volcano optimizer
     pub fn new(database: &SparqlDatabase) -> Self {
@@ -495,17 +506,17 @@ impl Streamertail {
 
         match &pattern.0 {
             Term::Constant(_) => count += 1,
-            Term::Variable(_) => {}
+            Term::Variable(_) | Term::QuotedTriple(_) => {}
         }
 
         match &pattern.1 {
             Term::Constant(_) => count += 1,
-            Term::Variable(_) => {}
+            Term::Variable(_) | Term::QuotedTriple(_) => {}
         }
 
         match &pattern.2 {
             Term::Constant(_) => count += 1,
-            Term::Variable(_) => {}
+            Term::Variable(_) | Term::QuotedTriple(_) => {}
         }
 
         count
@@ -620,7 +631,10 @@ impl Streamertail {
                 format!("NOT({})", self.serialize_filter_expression(inner))
             }
             FilterExpression::ArithmeticExpr(expr) => {
-                format!("ARITH({})", expr)
+                format!("ARITH({})", serialize_arith_expr(expr))
+            }
+            FilterExpression::FunctionCall(name, args) => {
+                format!("{}({})", name, args.join(", "))
             }
         }
     }

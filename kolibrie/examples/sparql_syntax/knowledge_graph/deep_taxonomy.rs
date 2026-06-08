@@ -80,6 +80,7 @@ fn main() {
                 Term::Variable("D".to_string())
             ),
         ],
+        negative_premise: vec![],
         conclusion: vec![
             (
                 Term::Variable("X".to_string()),

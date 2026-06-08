@@ -213,15 +213,15 @@ impl RuleIndex {
 fn triple_pattern_to_keys(pattern: &TriplePattern) -> (u32, u32, u32) {
     let s_val = match &pattern.0 {
         Constant(c) => *c,
-        Variable(_) => WILDCARD,
+        Variable(_) | QuotedTriple(_) => WILDCARD,
     };
     let p_val = match &pattern.1 {
         Constant(c) => *c,
-        Variable(_) => WILDCARD,
+        Variable(_) | QuotedTriple(_) => WILDCARD,
     };
     let o_val = match &pattern.2 {
         Constant(c) => *c,
-        Variable(_) => WILDCARD,
+        Variable(_) | QuotedTriple(_) => WILDCARD,
     };
     (s_val, p_val, o_val)
 }

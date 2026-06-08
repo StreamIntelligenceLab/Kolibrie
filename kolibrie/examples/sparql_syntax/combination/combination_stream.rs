@@ -58,7 +58,7 @@ fn main() {
     let rsp_rule_basic = r#"PREFIX ex: <http://example.org#>
 PREFIX stream: <http://example.org/stream#>
 
-RULE :TemperatureAlert(?room) :- 
+RULE :TemperatureAlert :-
 RSTREAM
 FROM NAMED WINDOW <http://example.org/window1> ON <http://example.org/temperatureStream> [SLIDING 10 SLIDE 2 REPORT ON_WINDOW_CLOSE TICK TIME_DRIVEN] 
 CONSTRUCT { 
@@ -130,7 +130,7 @@ WHERE {
     let rsp_rule_istream = r#"PREFIX ex: <http://example.org#>
 PREFIX stream: <http://example.org/stream#>
 
-RULE :NewHighTemp(?room) :- 
+RULE :NewHighTemp :-
 ISTREAM
 FROM NAMED WINDOW <http://example.org/window2> ON <http://example.org/tempStream> [TUMBLING 5 REPORT NON_EMPTY_CONTENT TICK TUPLE_DRIVEN] 
 CONSTRUCT { 

@@ -9,50 +9,53 @@
  */
 
 extern crate kolibrie;
-use kolibrie::sparql_database::*;
-use shared::triple::*;
-use kolibrie::utils::current_timestamp;
+use kolibrie::rsp_engine::{QueryExecutionMode, RSPBuilder, RSPEngine, ResultConsumer, SimpleR2R};
+use shared::triple::Triple;
+use std::sync::Arc;
 
-fn main() {
-    let mut db = SparqlDatabase::new();
+fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let result_consumer = ResultConsumer {
+        function: Arc::new(Box::new(|bindings: Vec<(String, String)>| {
+            println!("Window fired — bindings: {:?}", bindings);
+        })),
+    };
 
-    // Set up a sliding window with a width of 10 seconds and a slide interval of 5 seconds
-    db.set_sliding_window(10, 5);
+    // Replaces the old `set_sliding_window(10, 5)` + imperative `auto_policy_evaluation`
+    // with an RSP-QL query that declares a 10-tick window sliding every 5 ticks, firing
+    // on window close and streaming out via RSTREAM.
+    let rsp_query = r#"
+        PREFIX ex: <http://example.org/>
 
-    let mut counter = 1;
-
-    loop {
-        let mut dict = db.dictionary.write().unwrap();
-        let subject = dict.encode(&format!("subject{}", counter));
-        let predicate = dict.encode(&format!("predicate{}", counter));
-        let object = dict.encode(&format!("object{}", counter));
-        drop(dict);
-
-        // Simulate adding triples with timestamps in a loop
-        let triple = Triple {
-            subject,
-            predicate,
-            object,
-        };
-
-        db.add_stream_data(triple.clone(), current_timestamp());
-
-        // Wait for some time to simulate the stream processing
-        std::thread::sleep(std::time::Duration::from_secs(1));
-
-        // Automatically evaluate policies
-        let auto_policy_triples = db.auto_policy_evaluation();
-        println!(
-            "Automatically Evaluated Policy triples: {:?}",
-            auto_policy_triples
-        );
-
-        // Increment the counter for the next triple
-        counter += 1;
-
-        // Break the loop after adding a few triples for demonstration
-        if counter > 20 {
-            break;
+        REGISTER RSTREAM <http://example.org/out> AS
+        SELECT ?s ?p ?o
+        FROM NAMED WINDOW :policyWindow ON :policyStream [RANGE 10 STEP 5]
+        WHERE {
+            WINDOW :policyWindow {
+                ?s ?p ?o .
+            }
         }
+    "#;
+
+    let mut engine: RSPEngine<Triple, Vec<(String, String)>> = RSPBuilder::new()
+        .add_rsp_ql_query(rsp_query)
+        .add_consumer(result_consumer)
+        .add_r2r(Box::new(SimpleR2R::with_execution_mode(
+            QueryExecutionMode::Volcano,
+        )))
+        .build()?;
+
+    for counter in 1..=20 {
+        let ntriples = format!(
+            "<http://example.org/subject{}> <http://example.org/predicate{}> <http://example.org/object{}> .",
+            counter, counter, counter
+        );
+        for triple in engine.parse_data(&ntriples) {
+            engine.add_to_stream("policyStream", triple, counter);
+        }
+        std::thread::sleep(std::time::Duration::from_secs(1));
     }
+
+    engine.stop();
+    std::thread::sleep(std::time::Duration::from_secs(1));
+    Ok(())
 }

@@ -9,6 +9,69 @@
 8. Cover reasoning with tests
 9. Fix a bug in reasoning related to filtering
 10. Extend a bit test with reasoning
+11. Add RDF-star and SPARQL-star support (quoted triples, Turtle-star/N-Triples-star parsing, SPARQL-star querying)
+12. Add SPARQL-star built-in functions: TRIPLE, SUBJECT, PREDICATE, OBJECT, isTRIPLE
+13. Add DELETE keyword support (basic and DELETE WHERE)
+14. Fix INSERT to handle both normal and quoted triples
+15. Add N-Triples-star and Turtle-star serialization (generate_ntriples, generate_turtle)
+16. Improve Streamertail optimizer with quoted triple cardinality estimation
+17. Fix ArithmeticExpression support in FILTER (properly store and evaluate AST instead of raw strings)
+18. Add probabilistic RULE syntax with PROB annotations (combination, threshold, confidence)
+19. Add ProbabilityStore for per-triple confidence score tracking
+20. Add probabilistic semi-naive materialisation algorithm
+21. Fix literal-in-quoted-triple bug in parse_ntriples_line
+22. Add provenance semiring framework and TagStore for semiring-based reasoning
+23. Remove old probabilistic reasoning path and migrate RULE PROB inference to provenance-based materialisation
+24. Update combined syntax and combined rules examples to use provenance reasoning
+25. Add stratified negation-as-failure (NAF) support: `negative_premise` field in Rule, safety check, `try_add_rule`
+26. Add NOT body atom syntax in SPARQL rule parser
+27. Add single-negative-stratum evaluation in provenance semi-naive materialisation
+28. Add `WmcProvenance` (exact DNF-based WMC with signed literals, De Morgan negation, contradictory-clause pruning)
+29. Add `TopKProofs::negate()` approximate complement via synthetic probability seed
+30. Add polarity-aware RDF-star explanation export (`prob:hasNegatedSeed`)
+31. Add SDD (Sentential Decision Diagram) engine: `SddManager`, vtree, apply, negate, WMC — O(|SDD|) inference
+32. Add `SddProvenance` implementing `Provenance` trait backed by SDD
+33. Add `PROB(combination=sdd)` parser arm
+34. Rename `WmcProvenance` to `DnfWmcProvenance` with backward-compat type alias
+35. Add `pub mod sdd` to shared crate
+36. Add `SeedSpec`, `ExclusiveChoice`, and differentiable SDD utilities for neural fact seeding
+37. Extend `SddManager` with explicit negative weights, variable kinds, and `exactly_one` support
+38. Add neural training query structures: loss functions, optimizer kinds, and training clause metadata
+39. Add seeded SDD materialisation bridge and semi-naive inference with initial tags
+40. Add Candle-based CPU `MlpNeuralPredicate` with binary and categorical outputs
+41. Add ML feature loader for numeric training rows from SPARQL queries
+42. Add end-to-end neural training execution with exact SDD probabilities and gradient backpropagation
+43. Add parser support for first-class neural training and wire training into combined rule execution
+44. Add tests for exclusive SDD semantics, differentiable WMC gradients, feature loading, parser coverage, and end-to-end ML training
+45. Add first-class neurosymbolic syntax: `MODEL`, `NEURAL RELATION`, and `TRAIN NEURAL RELATION`
+46. Extend parser and query model to store neural declarations alongside `PREFIX`, `RULE`, and normal queries
+47. Add neural relation registry and model artifact tracking in `SparqlDatabase`
+48. Add runtime support to materialize neural relations as normal RDF predicates in `WHERE` and `RULE` patterns
+49. Keep `ML.PREDICT` compatibility lowering into the first-class neural relation path
+50. Add relation-driven training with `DATA { ... }` and fallback training with `QUERY { SELECT ... }`
+51. Rewrite MNIST neurosymbolic example to use the new first-class neural syntax
+52. Add parser and runtime tests for first-class neural syntax, `ML.PREDICT` alias lowering, and neural relation execution
+53. Remove the legacy public `ML.TRAIN(...)` compatibility syntax in favor of `TRAIN NEURAL RELATION`
+54. Extend `ML.PREDICT` with Candle-backed execution for models trained via `TRAIN NEURAL RELATION`, automatic rule-time materialization of ML outputs, Python fallback for legacy models, and probability companion facts for binary predictions
+55. Small refactor of SparqlDatabase
+56. Add cross-window SDS/SDS+ representation for RSP-QL reasoning under annotated predicates
+57. Add `ExpirationProvenance` semiring with max/min expiry propagation for cross-window entailment
+58. Add naive cross-window SDS+ materialisation algorithm for full recomputation
+59. Add incremental cross-window SDS+ materialisation algorithm with `SdsWithExpiry`
+60. Fix provenance semi-naive materialisation to re-trigger derivations when existing fact tags improve
+61. Add explicit initial-delta API for provenance semi-naive reasoning so incremental SDS+ starts from `D_new`
+62. Extend N3 document parser for shared prefix blocks, multiple rules, full IRI terms, optional final conclusion dots, and leftover-input validation
+63. Add SDS-aware N3 rule parser wrapper with `WindowContext` and component/window IRI discovery
+64. Add correctness tests comparing naive and incremental cross-window SDS+ outputs and expiry behavior
+65. Add RSP builder API for opt-in cross-window rules via `add_cross_window_rules`
+66. Integrate cross-window SDS+ reasoning into the RSP engine for `Triple` + `SimpleR2R`
+67. Preserve event timestamps in RSP window contents for SDS construction
+68. Add selectable cross-window reasoning mode for RSP evaluation: naive vs incremental
+69. Add RSP integration tests for cross-window derived facts, no-rule baseline, and expiry behavior
+70. Add CityBench-inspired cross-window benchmarks for naive vs incremental SDS+ reasoning
+71. Add RSP-engine CityBench-inspired benchmark using generated streams, S2R windowing, and cross-window rules
+72. Add family-tree cross-window SDS+ benchmark with parentOf facts in SDS stream 1 and all other family facts in SDS stream 2
+73. Add old/new data-ratio evaluation for family-tree benchmark to compare incremental update against naive from-scratch recomputation
 
 0.1.1
 1. Modify whole project by making Cargo workspace

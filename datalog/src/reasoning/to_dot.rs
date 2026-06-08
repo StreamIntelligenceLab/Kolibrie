@@ -14,6 +14,12 @@ fn resolve_term_to_string(term: &Term, dictionary: &Dictionary) -> String {
     match term {
         Term::Variable(s) => s.clone(),
         Term::Constant(c) => String::from(dictionary.decode(*c).unwrap()),
+        Term::QuotedTriple(qt) => {
+            let s = resolve_term_to_string(&qt.0, dictionary);
+            let p = resolve_term_to_string(&qt.1, dictionary);
+            let o = resolve_term_to_string(&qt.2, dictionary);
+            format!("<< {} {} {} >>", s, p, o)
+        }
     }
 }
 

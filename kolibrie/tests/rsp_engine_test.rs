@@ -6,19 +6,16 @@
 * License, v. 2.0. If a copy of the MPL was not distributed with this file,
 * you can obtain one at https://mozilla.org/MPL/2.0/.
 */
-// -----------------------------------------------------------------------
-// ISTREAM / DSTREAM semantics tests
-// -----------------------------------------------------------------------
 
 /// ISTREAM: sliding window (RANGE=3 STEP=1) across 3 firings.
 ///
 /// 3-firing sequence:
-///   - ts=1: add subjectA → no fire (opens first window).
-///   - ts=2: add subjectB → fires [-1,1] with {A};   ISTREAM: old=∅   → emit A.
-///   - ts=3: add subjectC → fires [0,2]  with {A,B}; ISTREAM: old={A}  → emit B only.
-///   - ts=4: add subjectD → fires [1,3]  with {A,B,C}; ISTREAM: old={A,B} → emit C only.
+///   - ts=1: add subjectA -> no fire (opens first window).
+///   - ts=2: add subjectB -> fires [-1,1] with {A};   ISTREAM: old=∅   -> emit A.
+///   - ts=3: add subjectC -> fires [0,2]  with {A,B}; ISTREAM: old={A}  -> emit B only.
+///   - ts=4: add subjectD -> fires [1,3]  with {A,B,C}; ISTREAM: old={A,B} -> emit C only.
 ///
-/// Total consumer calls: 3 → [A], [B], [C].
+/// Total consumer calls: 3 -> [A], [B], [C].
 /// No stop() — flushing all active windows would corrupt R2S state.
 #[test]
 fn rsp_ql_istream_semantics() {
@@ -49,22 +46,22 @@ fn rsp_ql_istream_semantics() {
     // Prime dictionary so query and data share term IDs.
     engine.parse_data("<http://test/s0> a <http://test/IType> .");
 
-    // ts=1: A → no fire (opens first window).
+    // ts=1: A -> no fire (opens first window).
     for t in engine.parse_data("<http://test/subjectA> a <http://test/IType> .") {
         engine.add(t, 1);
     }
 
-    // ts=2: B → fires [-1,1] with {A}; ISTREAM: old=∅ → emit A.
+    // ts=2: B -> fires [-1,1] with {A}; ISTREAM: old=∅ -> emit A.
     for t in engine.parse_data("<http://test/subjectB> a <http://test/IType> .") {
         engine.add(t, 2);
     }
 
-    // ts=3: C → fires [0,2] with {A,B}; ISTREAM: old={A} → emit B only.
+    // ts=3: C -> fires [0,2] with {A,B}; ISTREAM: old={A} -> emit B only.
     for t in engine.parse_data("<http://test/subjectC> a <http://test/IType> .") {
         engine.add(t, 3);
     }
 
-    // ts=4: D → fires [1,3] with {A,B,C}; ISTREAM: old={A,B} → emit C only.
+    // ts=4: D -> fires [1,3] with {A,B,C}; ISTREAM: old={A,B} -> emit C only.
     for t in engine.parse_data("<http://test/subjectD> a <http://test/IType> .") {
         engine.add(t, 4);
     }
@@ -73,24 +70,24 @@ fn rsp_ql_istream_semantics() {
     assert_eq!(
         results.len(),
         3,
-        "ISTREAM: 3 firings → 3 consumer calls. Got: {:?}",
+        "ISTREAM: 3 firings -> 3 consumer calls. Got: {:?}",
         *results
     );
-    // Firing 1: [-1,1] → {A}, new since ∅ → emit A.
+    // Firing 1: [-1,1] -> {A}, new since ∅ -> emit A.
     assert_eq!(results[0].len(),1);
     assert!(
         results[0].iter().any(|(k, v)| k == "s" && v.contains("subjectA")),
         "ISTREAM firing 1 must emit subjectA, got: {:?}",
         results[0]
     );
-    // Firing 2: [0,2] → {A,B}, new since {A} → emit B only.
+    // Firing 2: [0,2] -> {A,B}, new since {A} -> emit B only.
     assert_eq!(results[1].len(),1);
     assert!(
         results[1].iter().any(|(k, v)| k == "s" && v.contains("subjectB")),
         "ISTREAM firing 2 must emit subjectB, got: {:?}",
         results[1]
     );
-    // Firing 3: [1,3] → {A,B,C}, new since {A,B} → emit C only.
+    // Firing 3: [1,3] -> {A,B,C}, new since {A,B} -> emit C only.
     assert_eq!(results[2].len(),1);
     assert!(
         results[2].iter().any(|(k, v)| k == "s" && v.contains("subjectC")),
@@ -103,14 +100,14 @@ fn rsp_ql_istream_semantics() {
 /// DSTREAM: sliding window (RANGE=3 STEP=1) — 5 window firings, 1 DSTREAM emission.
 ///
 /// Window firing sequence (OnWindowClose fires when ts > window.close):
-///   - ts=1: add A → no fire yet.
-///   - ts=2: add B → window (0,1) fires with {A};       DSTREAM: old=∅     → last={A},       no emission.
-///   - ts=3: add C → window (0,2) fires with {A,B};     DSTREAM: old={A}   → last={A,B},     no emission.
-///   - ts=4: add D → window (0,3) fires with {A,B,C};   DSTREAM: old={A,B} → last={A,B,C},   no emission.
-///   - ts=5: add E → window (1,4) fires with {A,B,C,D}; DSTREAM: old={A,B,C} → last={A,B,C,D}, no emission.
-///   - ts=6: add F → window (2,5) fires with {B,C,D,E}; DSTREAM: old={A,B,C,D} → deleted={A} → emit A.
+///   - ts=1: add A -> no fire yet.
+///   - ts=2: add B -> window (0,1) fires with {A};       DSTREAM: old=∅     -> last={A},       no emission.
+///   - ts=3: add C -> window (0,2) fires with {A,B};     DSTREAM: old={A}   -> last={A,B},     no emission.
+///   - ts=4: add D -> window (0,3) fires with {A,B,C};   DSTREAM: old={A,B} -> last={A,B,C},   no emission.
+///   - ts=5: add E -> window (1,4) fires with {A,B,C,D}; DSTREAM: old={A,B,C} -> last={A,B,C,D}, no emission.
+///   - ts=6: add F -> window (2,5) fires with {B,C,D,E}; DSTREAM: old={A,B,C,D} -> deleted={A} -> emit A.
 ///
-/// Total consumer calls: 1 → [A].
+/// Total consumer calls: 1 -> [A].
 /// No stop() — flushing all active windows would corrupt R2S state.
 #[test]
 fn rsp_ql_dstream_semantics() {
@@ -146,27 +143,27 @@ fn rsp_ql_dstream_semantics() {
         engine.add(t, 1);
     }
 
-    // ts=2: B → window (0,1) fires with {A}; DSTREAM: old=∅ → no emission.
+    // ts=2: B -> window (0,1) fires with {A}; DSTREAM: old=∅ -> no emission.
     for t in engine.parse_data("<http://test/subjectB> a <http://test/DType> .") {
         engine.add(t, 2);
     }
 
-    // ts=3: C → window (0,2) fires with {A,B}; DSTREAM: old={A} → no emission.
+    // ts=3: C -> window (0,2) fires with {A,B}; DSTREAM: old={A} -> no emission.
     for t in engine.parse_data("<http://test/subjectC> a <http://test/DType> .") {
         engine.add(t, 3);
     }
 
-    // ts=4: D → window (0,3) fires with {A,B,C}; DSTREAM: old={A,B} → no emission.
+    // ts=4: D -> window (0,3) fires with {A,B,C}; DSTREAM: old={A,B} -> no emission.
     for t in engine.parse_data("<http://test/subjectD> a <http://test/DType> .") {
         engine.add(t, 4);
     }
 
-    // ts=5: E → window (1,4) fires with {A,B,C,D}; DSTREAM: old={A,B,C} → no emission.
+    // ts=5: E -> window (1,4) fires with {A,B,C,D}; DSTREAM: old={A,B,C} -> no emission.
     for t in engine.parse_data("<http://test/subjectE> a <http://test/DType> .") {
         engine.add(t, 5);
     }
 
-    // ts=6: F → window (2,5) fires with {B,C,D,E}; DSTREAM: old={A,B,C,D} → deleted={A} → emit A.
+    // ts=6: F -> window (2,5) fires with {B,C,D,E}; DSTREAM: old={A,B,C,D} -> deleted={A} -> emit A.
     for t in engine.parse_data("<http://test/subjectF> a <http://test/DType> .") {
         engine.add(t, 6);
     }
@@ -175,10 +172,10 @@ fn rsp_ql_dstream_semantics() {
     assert_eq!(
         results.len(),
         1,
-        "DSTREAM: 5 window firings → 1 consumer call (window (2,5) deletes subjectA). Got: {:?}",
+        "DSTREAM: 5 window firings -> 1 consumer call (window (2,5) deletes subjectA). Got: {:?}",
         *results
     );
-    // The one result must bind ?s to subjectA (deleted from window (1,4) → (2,5)).
+    // The one result must bind ?s to subjectA (deleted from window (1,4) -> (2,5)).
     assert!(
         results[0].iter().any(|(k, v)| k == "s" && v.contains("subjectA")),
         "DSTREAM result must bind ?s to subjectA (deleted), got: {:?}",
@@ -638,11 +635,7 @@ fn rsp_ql_single_window_static_join() {
     );
 }
 
-// -----------------------------------------------------------------------
-// Sync-policy tests
-// -----------------------------------------------------------------------
-
-/// Steal policy: window A fires first, B never fires → no emission
+/// Steal policy: window A fires first, B never fires -> no emission
 /// (last_mat only has A, never reaches num_windows=2).
 #[test]
 fn test_steal_policy_emits_after_first_window() {
@@ -661,7 +654,7 @@ fn test_steal_policy_emits_after_first_window() {
     );
 }
 
-/// Steal policy: B fires once then A fires repeatedly → emission on each A trigger.
+/// Steal policy: B fires once then A fires repeatedly -> emission on each A trigger.
 #[test]
 fn test_steal_policy_emits_with_stale() {
     let (mut engine, results) = make_two_window_engine(SyncPolicy::Steal);
@@ -689,7 +682,7 @@ fn test_steal_policy_emits_with_stale() {
     );
 }
 
-/// Wait policy (default): only A fires → no emission.
+/// Wait policy (default): only A fires -> no emission.
 #[test]
 fn test_wait_policy_waits_for_both() {
     let (mut engine, results) = make_two_window_engine(SyncPolicy::Wait);
@@ -708,7 +701,7 @@ fn test_wait_policy_waits_for_both() {
 }
 
 /// Timeout(100ms, Steal) in SingleThread mode is treated as Wait.
-/// Only A fires → no emission on first cycle.
+/// Only A fires -> no emission on first cycle.
 #[test]
 fn test_timeout_steal_policy() {
     let policy = SyncPolicy::Timeout {
@@ -724,7 +717,7 @@ fn test_timeout_steal_policy() {
         }
     }
     engine.stop();
-    // SingleThread: Timeout treated as Wait; B never fired → no emit
+    // SingleThread: Timeout treated as Wait; B never fired -> no emit
     assert!(
         results.lock().unwrap().is_empty(),
         "Timeout/Steal (SingleThread = Wait): no emit when B never fires"
@@ -732,7 +725,7 @@ fn test_timeout_steal_policy() {
 }
 
 /// Timeout(100ms, Drop) in SingleThread mode is treated as Wait.
-/// Only A fires → no emission.
+/// Only A fires -> no emission.
 #[test]
 fn test_timeout_drop_policy() {
     let policy = SyncPolicy::Timeout {
@@ -753,8 +746,6 @@ fn test_timeout_drop_policy() {
         "Timeout/Drop (SingleThread = Wait): no emit when B never fires"
     );
 }
-
-// -----------------------------------------------------------------------
 
 /// Two windows + static WHERE patterns: results must contain variables
 /// from both windows (?sensor, ?room) and confirm the static join filtered
@@ -868,6 +859,164 @@ fn rsp_ql_multi_window_static_join() {
     );
 }
 
+fn make_cross_window_query() -> &'static str {
+    r#"
+        REGISTER RSTREAM <http://out/stream> AS
+        SELECT *
+        FROM NAMED WINDOW :wind1 ON :stream1 [RANGE 10 STEP 10]
+        FROM NAMED WINDOW :wind2 ON :stream2 [RANGE 10 STEP 10]
+        WHERE {
+            WINDOW :wind1 {
+                ?sensor <http://test/hotspot> ?room .
+            }
+            WINDOW :wind2 {
+                ?sensor <http://test/location> ?room .
+            }
+        }
+    "#
+}
+
+fn make_cross_window_rules() -> &'static str {
+    r#"
+{ ?sensor <:wind1http://test/reading> ?value .
+  ?sensor <:wind2http://test/location> ?room }
+=> { ?sensor <:wind1http://test/hotspot> ?room }
+    "#
+}
+
+fn cross_window_result_engine(
+    with_rules: bool,
+) -> (
+    RSPEngine<Triple, Vec<(String, String)>>,
+    Arc<Mutex<Vec<Vec<(String, String)>>>>,
+) {
+    let result_container = Arc::new(Mutex::new(Vec::new()));
+    let result_container_clone = Arc::clone(&result_container);
+    let function = Box::new(move |r: Vec<(String, String)>| {
+        result_container_clone.lock().unwrap().push(r);
+    });
+    let result_consumer = ResultConsumer {
+        function: Arc::new(function),
+    };
+    let r2r = Box::new(SimpleR2R::with_execution_mode(QueryExecutionMode::Volcano));
+
+    let builder = RSPBuilder::new()
+        .add_rsp_ql_query(make_cross_window_query())
+        .add_consumer(result_consumer)
+        .add_r2r(r2r)
+        .set_operation_mode(OperationMode::SingleThread);
+
+    let builder = if with_rules {
+        builder.add_cross_window_rules(make_cross_window_rules())
+    } else {
+        builder
+    };
+
+    let engine = builder
+        .build()
+        .expect("Failed to build cross-window RSP engine");
+    (engine, result_container)
+}
+
+#[test]
+fn rsp_cross_window_rule_derives_queryable_fact() {
+    let (mut engine, results) = cross_window_result_engine(true);
+
+    for triple in engine.parse_data(
+        "<http://test/sensorA> <http://test/reading> \"25\" .",
+    ) {
+        engine.add_to_stream("stream1", triple, 1);
+    }
+    for triple in engine.parse_data(
+        "<http://test/sensorA> <http://test/location> <http://test/room1> .",
+    ) {
+        engine.add_to_stream("stream2", triple, 2);
+    }
+
+    engine.stop();
+
+    let results = results.lock().unwrap();
+    assert!(
+        results.iter().any(|row| {
+            row.iter()
+                .any(|(k, v)| k == "sensor" && v.contains("sensorA"))
+                && row.iter().any(|(k, v)| k == "room" && v.contains("room1"))
+        }),
+        "cross-window SDS+ rule should derive hotspot visible to the window query; got {:?}",
+        *results
+    );
+}
+
+#[test]
+fn rsp_cross_window_without_rules_produces_no_derived_result() {
+    let (mut engine, results) = cross_window_result_engine(false);
+
+    for triple in engine.parse_data(
+        "<http://test/sensorA> <http://test/reading> \"25\" .",
+    ) {
+        engine.add_to_stream("stream1", triple, 1);
+    }
+    for triple in engine.parse_data(
+        "<http://test/sensorA> <http://test/location> <http://test/room1> .",
+    ) {
+        engine.add_to_stream("stream2", triple, 2);
+    }
+
+    engine.stop();
+
+    assert!(
+        results.lock().unwrap().is_empty(),
+        "without cross-window rules there should be no hotspot result"
+    );
+}
+
+#[test]
+fn rsp_cross_window_expired_support_no_longer_emits() {
+    let (mut engine, results) = cross_window_result_engine(true);
+
+    for triple in engine.parse_data(
+        "<http://test/sensorA> <http://test/reading> \"25\" .",
+    ) {
+        engine.add_to_stream("stream1", triple, 1);
+    }
+    for triple in engine.parse_data(
+        "<http://test/sensorA> <http://test/location> <http://test/room1> .",
+    ) {
+        engine.add_to_stream("stream2", triple, 2);
+    }
+
+    for triple in engine.parse_data(
+        "<http://test/otherSensor> <http://test/reading> \"10\" .",
+    ) {
+        engine.add_to_stream("stream1", triple, 15);
+    }
+    for triple in engine.parse_data(
+        "<http://test/otherSensor> <http://test/location> <http://test/room2> .",
+    ) {
+        engine.add_to_stream("stream2", triple, 15);
+    }
+    engine.process_single_thread_window_results();
+    results.lock().unwrap().clear();
+
+    for triple in engine.parse_data(
+        "<http://test/noReadingJoin> <http://test/reading> \"10\" .",
+    ) {
+        engine.add_to_stream("stream1", triple, 25);
+    }
+    for triple in engine.parse_data(
+        "<http://test/noLocationJoin> <http://test/location> <http://test/room3> .",
+    ) {
+        engine.add_to_stream("stream2", triple, 25);
+    }
+
+    engine.stop();
+
+    assert!(
+        results.lock().unwrap().is_empty(),
+        "expired support should prevent hotspot emission"
+    );
+}
+
 #[test]
 fn test_static_data_not_visible_in_window_query() {
     // Query has ONLY window patterns — no non-window triple patterns.
@@ -927,10 +1076,10 @@ fn test_static_data_not_visible_in_window_query() {
 /// The first event never triggers a firing (same behaviour as other sliding-window
 /// tests).  4 events are needed to produce 3 firings:
 ///
-///   ts=1: subjectA added  → no fire (opens first window)
-///   ts=2: subjectB added  → fires [−1,1] → content {A}   → ISTREAM: old=∅   → emit A
-///   ts=3: subjectC added  → fires [0,2]  → content {A,B} → ISTREAM: old={A}  → emit B only
-///   ts=4: subjectA (again)→ fires [1,3]  → content {A,B,C} → ISTREAM: old={A,B} → emit C only
+///   ts=1: subjectA added  -> no fire (opens first window)
+///   ts=2: subjectB added  -> fires [−1,1] -> content {A}   -> ISTREAM: old=∅   -> emit A
+///   ts=3: subjectC added  -> fires [0,2]  -> content {A,B} -> ISTREAM: old={A}  -> emit B only
+///   ts=4: subjectA (again)-> fires [1,3]  -> content {A,B,C} -> ISTREAM: old={A,B} -> emit C only
 #[test]
 fn rsp_ql_istream_range3_step1() {
     let result_container = Arc::new(Mutex::new(Vec::<Vec<(String, String)>>::new()));
@@ -960,23 +1109,23 @@ fn rsp_ql_istream_range3_step1() {
     // Prime dictionary so query and data share term IDs.
     engine.parse_data("<http://test/s0> a <http://test/RType> .");
 
-    // ts=1: A → no fire (first event opens the window but nothing closes yet).
+    // ts=1: A -> no fire (first event opens the window but nothing closes yet).
     for t in engine.parse_data("<http://test/subjectA> a <http://test/RType> .") {
         engine.add(t, 1);
     }
 
-    // ts=2: B → fires window [−1,1] → content {A} → ISTREAM: old=∅ → emit A.
+    // ts=2: B -> fires window [−1,1] -> content {A} -> ISTREAM: old=∅ -> emit A.
     for t in engine.parse_data("<http://test/subjectB> a <http://test/RType> .") {
         engine.add(t, 2);
     }
 
-    // ts=3: C → fires window [0,2] → content {A,B} → ISTREAM: old={A} → emit B only.
+    // ts=3: C -> fires window [0,2] -> content {A,B} -> ISTREAM: old={A} -> emit B only.
     for t in engine.parse_data("<http://test/subjectC> a <http://test/RType> .") {
         engine.add(t, 3);
     }
 
-    // ts=4: A again (trigger) → fires window [1,3] → content {A,B,C}
-    //       → ISTREAM: old={A,B} → emit C only.
+    // ts=4: A again (trigger) -> fires window [1,3] -> content {A,B,C}
+    //       -> ISTREAM: old={A,B} -> emit C only.
     for t in engine.parse_data("<http://test/subjectA> a <http://test/RType> .") {
         engine.add(t, 4);
     }
@@ -985,7 +1134,7 @@ fn rsp_ql_istream_range3_step1() {
     assert_eq!(
         results.len(),
         3,
-        "ISTREAM RANGE3/STEP1: expected 3 firings → 3 consumer calls. Got: {:?}",
+        "ISTREAM RANGE3/STEP1: expected 3 firings -> 3 consumer calls. Got: {:?}",
         *results
     );
 
@@ -1094,9 +1243,9 @@ fn test_window_evicts_old_data() {
 ///
 /// Window RANGE=3 STEP=1.  Event sequence:
 ///   ts=1: triple (reading1, hasTemp, "1") — no fire
-///   ts=2: (reading1, hasTemp, "2") — fires window with {"1"}   → ISTREAM: old=∅   → emit "1"
-///   ts=3: (reading1, hasTemp, "3") — fires window with {"1","2"} → ISTREAM: old={"1"} → emit "2"
-///   ts=4: (reading1, hasTemp, "4") — fires window with {"1","2","3"} → ISTREAM: old={"1","2"} → emit "3"
+///   ts=2: (reading1, hasTemp, "2") — fires window with {"1"}   -> ISTREAM: old=∅   -> emit "1"
+///   ts=3: (reading1, hasTemp, "3") — fires window with {"1","2"} -> ISTREAM: old={"1"} -> emit "2"
+///   ts=4: (reading1, hasTemp, "4") — fires window with {"1","2","3"} -> ISTREAM: old={"1","2"} -> emit "3"
 ///
 /// Expected: 3 consumer calls, each with exactly one row.
 #[test]
@@ -1133,17 +1282,17 @@ fn rsp_ql_istream_same_sp_diff_object() {
         engine.add(t, 1);
     }
 
-    // ts=2: temp=2 — fires window with {temp=1}; ISTREAM: old=∅ → emit temp=1.
+    // ts=2: temp=2 — fires window with {temp=1}; ISTREAM: old=∅ -> emit temp=1.
     for t in engine.parse_data("<http://test/reading1> <http://test/hasTemp> \"2\" .") {
         engine.add(t, 2);
     }
 
-    // ts=3: temp=3 — fires window with {temp=1,temp=2}; ISTREAM: old={temp=1} → emit temp=2.
+    // ts=3: temp=3 — fires window with {temp=1,temp=2}; ISTREAM: old={temp=1} -> emit temp=2.
     for t in engine.parse_data("<http://test/reading1> <http://test/hasTemp> \"3\" .") {
         engine.add(t, 3);
     }
 
-    // ts=4: temp=4 — fires window with {temp=1,temp=2,temp=3}; ISTREAM: old={temp=1,temp=2} → emit temp=3.
+    // ts=4: temp=4 — fires window with {temp=1,temp=2,temp=3}; ISTREAM: old={temp=1,temp=2} -> emit temp=3.
     for t in engine.parse_data("<http://test/reading1> <http://test/hasTemp> \"4\" .") {
         engine.add(t, 4);
     }
@@ -1161,13 +1310,13 @@ fn rsp_ql_istream_same_sp_diff_object() {
         assert_eq!(row.len(), 2, "Firing {}: row should have 2 bindings, got: {:?}", i + 1, row);
     }
 
-    // Firing 1 → temp=1.
+    // Firing 1 -> temp=1.
     assert!(
         results[0].iter().any(|(k, v)| k == "temp" && v.contains('1')),
         "Firing 1 must emit temp=1, got: {:?}",
         results[0]
     );
-    // Firing 2 → temp=2 (not temp=1 again).
+    // Firing 2 -> temp=2 (not temp=1 again).
     assert!(
         results[1].iter().any(|(k, v)| k == "temp" && v.contains('2')),
         "Firing 2 must emit temp=2, got: {:?}",
@@ -1178,7 +1327,7 @@ fn rsp_ql_istream_same_sp_diff_object() {
         "Firing 2 must NOT re-emit temp=1, got: {:?}",
         results[1]
     );
-    // Firing 3 → temp=3 (not temp=1 or temp=2 again).
+    // Firing 3 -> temp=3 (not temp=1 or temp=2 again).
     assert!(
         results[2].iter().any(|(k, v)| k == "temp" && v.contains('3')),
         "Firing 3 must emit temp=3, got: {:?}",

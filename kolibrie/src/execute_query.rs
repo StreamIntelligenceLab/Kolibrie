@@ -11,6 +11,9 @@
 use crate::sparql_database::SparqlDatabase;
 use crate::streamertail_optimizer::*;
 use crate::error_handler::format_parse_error;
+use crate::neural_relations::{
+    execute_train_decl, materialize_neural_relations_for_patterns, register_neural_declarations,
+};
 use crate::parser::*;
 use shared::query::*;
 use shared::triple::Triple;
@@ -148,6 +151,9 @@ fn apply_order_by<'a>(
     results
 }
 
+#[deprecated(
+    note = "use execute_query_rayon_parallel2_volcano() so queries go through the optimizer"
+)]
 pub fn execute_query(sparql: &str, database: &mut SparqlDatabase) -> Vec<Vec<String>> {
     // Register prefixes from the query string first
     database.register_prefixes_from_query(sparql);
@@ -162,11 +168,11 @@ pub fn execute_query(sparql: &str, database: &mut SparqlDatabase) -> Vec<Vec<Str
     let mut prefixes;
     let limit_clause: Option<usize>;
 
-    let parse_result = parse_sparql_query(sparql);
+    let parse_result = parse_combined_query(sparql);
 
-    if let Ok((
-        _,
-        (
+    if let Ok((_, combined)) = parse_result
+    {
+        let (
             insert_clause,
             mut variables,
             patterns,
@@ -179,14 +185,43 @@ pub fn execute_query(sparql: &str, database: &mut SparqlDatabase) -> Vec<Vec<Str
             limit,
             _,
             order_conditions,
-        ),
-    )) = parse_result
-    {
-        prefixes = parsed_prefixes;
+        ) = combined.sparql;
+
+        prefixes = combined.prefixes.clone();
+        prefixes.extend(parsed_prefixes);
         limit_clause = limit;
+
+        register_neural_declarations(
+            database,
+            &prefixes,
+            &combined.model_decls,
+            &combined.neural_relation_decls,
+            &combined.train_neural_relation_decls,
+        );
+        let normalized_trains: Vec<TrainNeuralRelationDecl> = combined
+            .train_neural_relation_decls
+            .iter()
+            .filter_map(|decl| {
+                let normalized_pred = database.resolve_query_term(&decl.predicate, &prefixes);
+                database
+                    .train_neural_relation_decls
+                    .get(&normalized_pred)
+                    .cloned()
+            })
+            .collect();
+        for train_decl in &normalized_trains {
+            if let Err(err) = execute_train_decl(database, train_decl) {
+                eprintln!("Failed to execute TRAIN NEURAL RELATION: {}", err);
+                return Vec::new();
+            }
+        }
 
         // Ensure prefixes from the database are also available
         database.share_prefixes_with(&mut prefixes);
+        if let Err(err) = materialize_neural_relations_for_patterns(database, &patterns, &prefixes) {
+            eprintln!("Failed to materialize neural relations: {}", err);
+            return Vec::new();
+        }
 
         // Process the INSERT clause if present
         process_insert_clause(insert_clause, database);
@@ -350,11 +385,114 @@ pub fn execute_query_rayon_parallel2_volcano(
     // Register prefixes from the query string first
     database.register_prefixes_from_query(&sparql);
 
-    let parse_result = parse_sparql_query(sparql);
+    let combined_parse = parse_combined_query(&sparql);
 
-    if let Ok((
-        _,
-        (
+    // Check for DELETE clause before the main SPARQL parse
+    if let Ok((_, combined)) = &combined_parse {
+        register_neural_declarations(
+            database,
+            &combined.prefixes,
+            &combined.model_decls,
+            &combined.neural_relation_decls,
+            &combined.train_neural_relation_decls,
+        );
+        let normalized_trains: Vec<TrainNeuralRelationDecl> = combined
+            .train_neural_relation_decls
+            .iter()
+            .filter_map(|decl| {
+                let normalized_pred = database.resolve_query_term(&decl.predicate, &combined.prefixes);
+                database
+                    .train_neural_relation_decls
+                    .get(&normalized_pred)
+                    .cloned()
+            })
+            .collect();
+        for train_decl in &normalized_trains {
+            if let Err(err) = execute_train_decl(database, train_decl) {
+                eprintln!("Failed to execute TRAIN NEURAL RELATION: {}", err);
+                return Vec::new();
+            }
+        }
+
+        if combined.delete_clause.is_some() {
+            let delete_clause = combined.delete_clause.clone();
+            let (insert_clause, _, patterns, _, _, _, _, _, _, _, _, _) = combined.sparql.clone();
+            if !patterns.is_empty() {
+                // DELETE { template } WHERE { patterns }
+                // First, execute the WHERE clause as a SELECT query to get bindings
+                let delete_triples = delete_clause.as_ref().unwrap().triples.clone();
+
+                // Build a SELECT * query string from the WHERE patterns
+                let mut select_vars = std::collections::HashSet::new();
+                for (s, p, o) in &delete_triples {
+                    for term in [s, p, o] {
+                        if term.starts_with('?') {
+                            select_vars.insert(*term);
+                        }
+                    }
+                }
+                // Reconstruct as SELECT query and execute it
+                let var_list: String = select_vars.iter().cloned().collect::<Vec<_>>().join(" ");
+                let wrap_term = |t: &str| -> String {
+                    if t.starts_with('?') || t.starts_with('<') || t.starts_with('"') || t.starts_with(':') {
+                        t.to_string()
+                    } else {
+                        format!("<{}>", t)
+                    }
+                };
+                let pattern_strs: Vec<String> = patterns.iter()
+                    .map(|(s, p, o)| format!("{} {} {}", wrap_term(s), wrap_term(p), wrap_term(o)))
+                    .collect();
+                let select_query = format!("SELECT {} WHERE {{ {} . }}", var_list, pattern_strs.join(" . "));
+                let where_results = execute_query_rayon_parallel2_volcano(&select_query, database);
+
+                // Map variable names to column indices
+                let var_names: Vec<&str> = select_vars.iter().cloned().collect();
+
+                // For each result row, substitute variables in delete template
+                for row in &where_results {
+                    for (s, p, o) in &delete_triples {
+                        let resolve = |term: &str| -> String {
+                            if term.starts_with('?') {
+                                if let Some(idx) = var_names.iter().position(|v| *v == term) {
+                                    if idx < row.len() {
+                                        return row[idx].clone();
+                                    }
+                                }
+                                term.to_string()
+                            } else {
+                                term.to_string()
+                            }
+                        };
+                        let rs = resolve(s);
+                        let rp = resolve(p);
+                        let ro = resolve(o);
+                        let sid = database.encode_term_star(&rs);
+                        let pid = database.encode_term_star(&rp);
+                        let oid = database.encode_term_star(&ro);
+                        database.delete_triple(&Triple { subject: sid, predicate: pid, object: oid });
+                    }
+                }
+                // Also process INSERT if present (DELETE/INSERT combo)
+                if let Some(insert_clause) = insert_clause {
+                    process_insert_clause(Some(insert_clause), database);
+                }
+            } else {
+                // Simple DELETE without WHERE — delete specific triples directly
+                process_delete_clause(delete_clause, database);
+                // Also process INSERT if present
+                if let Some(insert_clause) = insert_clause {
+                    process_insert_clause(Some(insert_clause), database);
+                }
+            }
+            database.get_or_build_stats();
+            return Vec::new();
+        }
+    }
+
+    if let Ok((_, combined)) = combined_parse
+    {
+        let (
             insert_clause,
             mut variables,
             patterns,
@@ -367,11 +505,15 @@ pub fn execute_query_rayon_parallel2_volcano(
             limit,
             _,
             order_conditions,
-        ),
-    )) = parse_result
-    {
-        let mut prefixes = parsed_prefixes;
+        ) = combined.sparql;
+
+        let mut prefixes = combined.prefixes.clone();
+        prefixes.extend(parsed_prefixes);
         database.share_prefixes_with(&mut prefixes);
+        if let Err(err) = materialize_neural_relations_for_patterns(database, &patterns, &prefixes) {
+            eprintln!("Failed to materialize neural relations: {}", err);
+            return Vec::new();
+        }
 
         limit_clause = limit;
 
@@ -555,7 +697,14 @@ pub fn execute_query_rayon_parallel2_volcano(
                 logical_plan = LogicalOperator::join(logical_plan, subquery_plan);
             }
 
-            let stats = database.cached_stats.as_ref().expect("AAA");
+            if database.cached_stats.is_none() {
+                database.get_or_build_stats();
+            }
+            
+            let stats = database
+                .cached_stats
+                .as_ref()
+                .expect("database stats should be available");
             let mut optimizer = Streamertail::with_cached_stats(stats.clone());
 
             let optimized_plan = optimizer.find_best_plan(&logical_plan);
@@ -568,9 +717,6 @@ pub fn execute_query_rayon_parallel2_volcano(
 
             // Convert results to owned strings first to avoid lifetime issues
             let results_owned: Vec<HashMap<String, String>> = results.into_iter().collect();
-
-            // Initialize with VALUES clause for consistency with GPU path
-            let mut final_results = initialize_results(&values_clause);
 
             // Merge optimizer results with VALUES clause results
             let optimizer_results: Vec<BTreeMap<&str, String>> = results_owned
@@ -591,10 +737,17 @@ pub fn execute_query_rayon_parallel2_volcano(
                 })
                 .collect();
 
-            // If we have optimizer results, use them; otherwise keep VALUES results
-            if !optimizer_results.is_empty() {
-                final_results = optimizer_results;
-            }
+            // Initialize with VALUES clause for consistency with GPU path
+            let mut final_results = if optimizer_results.is_empty() {
+                if values_clause.is_some() {
+                    // If we have optimizer results, use them; otherwise keep VALUES results
+                    initialize_results(&values_clause)
+                } else {
+                    Vec::new()
+                }
+            } else {
+                optimizer_results
+            };
 
             // Process subqueries if any
             for subquery in subqueries {
@@ -622,15 +775,13 @@ pub fn execute_query_rayon_parallel2_volcano(
 
             return format_results(final_results, &selected_variables);
         }
-    } else {
-        if let Err(err) = parse_result {
-            let error_message = format_parse_error(sparql, err);
-            eprintln!("{}", error_message);
-        } else {
-            eprintln! ("Failed to parse the query with an unknown error.");
-        }
+    } else if let Err(err) = combined_parse {
+        let error_message = format_parse_error(sparql, err);
+        eprintln!("Failed to parse the query: {}", error_message);
         return Vec::new();
     }
+
+    Vec::new()
 }
 
 // Convert the final BTreeMap results into Vec<Vec<String>>
@@ -680,18 +831,34 @@ fn normalize_query(sparql: &str) -> &str {
 fn process_insert_clause(insert_clause: Option<InsertClause>, database: &mut SparqlDatabase) {
     if let Some(insert_clause) = insert_clause {
         for (subject, predicate, object) in insert_clause.triples {
-            let mut dict = database.dictionary.write().unwrap();
-            let subject_id = dict.encode(subject);
-            let predicate_id = dict.encode(predicate);
-            let object_id = dict.encode(object);
-            drop(dict); // Drop lock
-            
+            let subject_id = database.encode_term_star(subject);
+            let predicate_id = database.encode_term_star(predicate);
+            let object_id = database.encode_term_star(object);
+
             let triple = Triple {
                 subject: subject_id,
                 predicate: predicate_id,
                 object: object_id,
             };
-            database.triples.insert(triple);
+            database.add_triple(triple);
+        }
+    }
+}
+
+// Helper function to process DELETE clause
+fn process_delete_clause(delete_clause: Option<DeleteClause>, database: &mut SparqlDatabase) {
+    if let Some(delete_clause) = delete_clause {
+        for (subject, predicate, object) in delete_clause.triples {
+            let subject_id = database.encode_term_star(subject);
+            let predicate_id = database.encode_term_star(predicate);
+            let object_id = database.encode_term_star(object);
+
+            let triple = Triple {
+                subject: subject_id,
+                predicate: predicate_id,
+                object: object_id,
+            };
+            database.delete_triple(&triple);
         }
     }
 }
@@ -938,7 +1105,7 @@ fn resolve_triple_pattern(
         )
     } else {
         // Resolve subject if it's not a variable
-        let resolved_subject = if subject_var.starts_with('?') {
+        let resolved_subject = if subject_var.starts_with('?') || subject_var.starts_with("<<") {
             subject_var.to_string()
         } else {
             database.resolve_query_term(subject_var, prefixes)
@@ -952,7 +1119,7 @@ fn resolve_triple_pattern(
         };
 
         // Resolve object if it's not a variable
-        let resolved_object = if object_var.starts_with('?') {
+        let resolved_object = if object_var.starts_with('?') || object_var.starts_with("<<") {
             object_var.to_string()
         } else {
             database.resolve_query_term(object_var, prefixes)
@@ -984,6 +1151,53 @@ fn process_bind_clauses<'a>(
                     .collect::<Vec<&str>>()
                     .join("");
                 row.insert(new_var, concatenated);
+            }
+        } else if func_name == "SUBJECT" || func_name == "PREDICATE" || func_name == "OBJECT" {
+            for row in final_results.iter_mut() {
+                if let Some(arg) = args.first() {
+                    let val = if arg.starts_with('?') {
+                        row.get(*arg).map(|s| s.to_string()).unwrap_or_default()
+                    } else {
+                        arg.to_string()
+                    };
+                    if val.starts_with("<<") && val.ends_with(">>") {
+                        let inner = val[2..val.len()-2].trim();
+                        let (s, p, o) = SparqlDatabase::split_quoted_triple_content(inner);
+                        let extracted = match func_name {
+                            "SUBJECT" => s,
+                            "PREDICATE" => p,
+                            "OBJECT" => o,
+                            _ => unreachable!(),
+                        };
+                        row.insert(new_var, extracted);
+                    }
+                }
+            }
+        } else if func_name == "TRIPLE" {
+            if args.len() == 3 {
+                for row in final_results.iter_mut() {
+                    let resolved: Vec<String> = args.iter().map(|arg| {
+                        if arg.starts_with('?') {
+                            row.get(*arg).map(|s| s.to_string()).unwrap_or_default()
+                        } else {
+                            arg.to_string()
+                        }
+                    }).collect();
+                    let qt_str = format!("<< {} {} {} >>", resolved[0], resolved[1], resolved[2]);
+                    row.insert(new_var, qt_str);
+                }
+            }
+        } else if func_name == "isTRIPLE" {
+            for row in final_results.iter_mut() {
+                if let Some(arg) = args.first() {
+                    let val = if arg.starts_with('?') {
+                        row.get(*arg).map(|s| s.as_str()).unwrap_or("")
+                    } else {
+                        *arg
+                    };
+                    let is_qt = val.starts_with("<<") && val.ends_with(">>");
+                    row.insert(new_var, is_qt.to_string());
+                }
             }
         } else if let Some(func) = database.udfs.get(func_name) {
             for row in final_results.iter_mut() {

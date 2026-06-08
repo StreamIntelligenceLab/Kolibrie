@@ -264,7 +264,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     let rule_definition = r#"PREFIX finance: <http://example.org/finance#>
 PREFIX ex: <http://example.org#>
 
-RULE :SavingsAlert(?user) :- 
+RULE :SavingsAlert :-
     CONSTRUCT { 
         ?user ex:savingsAlert "High spending detected - savings at risk" .
     }

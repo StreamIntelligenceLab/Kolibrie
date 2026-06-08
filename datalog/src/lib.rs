@@ -11,5 +11,4 @@
 pub mod reasoning;
 pub mod parser_n3_logic;
 pub mod reasoning_experimental;
-
-pub use reasoning::{join_rule, join_remaining};
+pub mod cross_window_sds;

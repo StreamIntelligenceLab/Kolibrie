@@ -10,31 +10,12 @@
 
 use crate::sparql_database::SparqlDatabase;
 use crate::rsp::r2s::{Relation2StreamOperator, StreamOperator};
-use crate::rsp::s2r::{CSPARQLWindow, ContentContainer, Report, ReportStrategy, Tick, WindowTriple};
+use crate::rsp::s2r::{ContentContainer, ReportStrategy, Tick, WindowTriple};
+use crate::rsp::window_runner::{WindowRunner, WindowSpec};
 use shared::triple::Triple;
 use std::collections::{BTreeMap, BTreeSet, HashSet};
 use std::fmt;
-use std::sync::mpsc::Receiver;
 use std::sync::{Arc, Mutex};
-
-#[derive(Debug, Clone)]
-pub struct WindowConfig {
-    pub width: usize,
-    pub slide: usize,
-    pub report_strategies: Vec<ReportStrategy>,
-    pub tick_strategy: Tick,
-}
-
-impl Default for WindowConfig {
-    fn default() -> Self {
-        Self {
-            width: 100,
-            slide: 10,
-            report_strategies: vec![ReportStrategy::OnWindowClose],
-            tick_strategy: Tick::TimeDriven,
-        }
-    }
-}
 
 pub struct QueryBuilder<'a> {
     db: &'a SparqlDatabase,
@@ -51,11 +32,10 @@ pub struct QueryBuilder<'a> {
     offset: Option<usize>,
 
     // RSP Integration fields
-    window_config: Option<WindowConfig>,
+    window_spec: Option<WindowSpec>,
     stream_operator: Option<StreamOperator>,
     r2s_operator: Option<Relation2StreamOperator<Triple>>,
-    window_instance: Option<CSPARQLWindow<WindowTriple>>,
-    window_receiver: Option<Receiver<ContentContainer<WindowTriple>>>,
+    runner: Option<WindowRunner<WindowTriple>>,
     stream_results: Arc<Mutex<Vec<Vec<Triple>>>>,
     current_timestamp: usize,
     is_streaming: bool,
@@ -80,11 +60,10 @@ impl<'a> Clone for QueryBuilder<'a> {
             offset: self.offset,
 
             // RSP fields - reset for cloned instance
-            window_config: self.window_config.clone(),
+            window_spec: self.window_spec.clone(),
             stream_operator: self.stream_operator.clone(),
-            r2s_operator: None,    // Will be recreated if needed
-            window_instance: None, // Will be recreated if needed
-            window_receiver: None,
+            r2s_operator: None, // Will be recreated if needed
+            runner: None,       // Will be recreated if needed
             stream_results: Arc::new(Mutex::new(Vec::new())),
             current_timestamp: 0,
             is_streaming: false,
@@ -187,11 +166,10 @@ impl<'a> QueryBuilder<'a> {
             offset: None,
 
             // RSP fields
-            window_config: None,
+            window_spec: None,
             stream_operator: None,
             r2s_operator: None,
-            window_instance: None,
-            window_receiver: None,
+            runner: None,
             stream_results: Arc::new(Mutex::new(Vec::new())),
             current_timestamp: 0,
             is_streaming: false,
@@ -644,26 +622,26 @@ impl<'a> QueryBuilder<'a> {
 
     /// Configure windowing for stream processing
     pub fn window(mut self, width: usize, slide: usize) -> Self {
-        let mut config = self.window_config.unwrap_or_default();
-        config.width = width;
-        config.slide = slide;
-        self.window_config = Some(config);
+        let mut spec = self.window_spec.unwrap_or_default();
+        spec.width = width;
+        spec.slide = slide;
+        self.window_spec = Some(spec);
         self
     }
 
     /// Add a report strategy for window processing
     pub fn with_report_strategy(mut self, strategy: ReportStrategy) -> Self {
-        let mut config = self.window_config.unwrap_or_default();
-        config.report_strategies.push(strategy);
-        self.window_config = Some(config);
+        let mut spec = self.window_spec.unwrap_or_default();
+        spec.report_strategies.push(strategy);
+        self.window_spec = Some(spec);
         self
     }
 
     /// Set the tick strategy for window processing
     pub fn with_tick_strategy(mut self, tick: Tick) -> Self {
-        let mut config = self.window_config.unwrap_or_default();
-        config.tick_strategy = tick;
-        self.window_config = Some(config);
+        let mut spec = self.window_spec.unwrap_or_default();
+        spec.tick = tick;
+        self.window_spec = Some(spec);
         self
     }
 
@@ -675,31 +653,12 @@ impl<'a> QueryBuilder<'a> {
 
     /// Initialize streaming mode
     pub fn as_stream(mut self) -> Result<Self, String> {
-        // Initialize window if configured
-        if let Some(config) = &self.window_config {
-            let mut report = Report::new();
-            for strategy in &config.report_strategies {
-                match strategy {
-                    ReportStrategy::OnWindowClose => report.add(ReportStrategy::OnWindowClose),
-                    ReportStrategy::NonEmptyContent => report.add(ReportStrategy::NonEmptyContent),
-                    ReportStrategy::OnContentChange => report.add(ReportStrategy::OnContentChange),
-                    ReportStrategy::Periodic(p) => report.add(ReportStrategy::Periodic(*p)),
-                }
-            }
-
-            let mut window = CSPARQLWindow::new(
-                config.width,
-                config.slide,
-                report,
-                config.tick_strategy.clone(),
-                String::default(),
-            );
-            let receiver = window.register();
-            self.window_receiver = Some(receiver);
-            self.window_instance = Some(window);
+        if let Some(spec) = self.window_spec.take() {
+            let mut runner = WindowRunner::new(spec, String::default());
+            runner.start_receiver();
+            self.runner = Some(runner);
         }
 
-        // Initialize stream operator if configured
         if let Some(ref stream_op) = self.stream_operator {
             self.r2s_operator = Some(Relation2StreamOperator::new(
                 stream_op.clone(),
@@ -723,14 +682,13 @@ impl<'a> QueryBuilder<'a> {
             return Err("Query not in streaming mode. Call as_stream() first.".to_string());
         }
 
-        if let Some(ref mut window) = self.window_instance {
+        if let Some(runner) = self.runner.as_mut() {
             let triple = WindowTriple {
                 s: subject.to_string(),
                 p: predicate.to_string(),
                 o: object.to_string(),
             };
-
-            window.add_to_window(triple, timestamp);
+            runner.push(triple, timestamp);
             self.current_timestamp = timestamp;
             Ok(())
         } else {
@@ -744,29 +702,25 @@ impl<'a> QueryBuilder<'a> {
             return Vec::new();
         }
 
+        let contents = match self.runner.as_mut() {
+            Some(runner) => runner.drain(),
+            None => return Vec::new(),
+        };
+
         let mut results = Vec::new();
+        for content in contents {
+            let window_results = self.execute_query_on_window_content(&content);
 
-        if let Some(ref receiver) = self.window_receiver {
-            // Process all available window results
-            while let Ok(content) = receiver.try_recv() {
-                // Execute query on window content
-                let window_results = self.execute_query_on_window_content(&content);
-
-                // Apply stream operator if configured
-                if let Some(ref mut r2s_op) = self.r2s_operator {
-                    let stream_results = r2s_op.eval(window_results, self.current_timestamp);
-                    if !stream_results.is_empty() {
-                        results.push(stream_results);
-                    }
-                } else {
-                    if !window_results.is_empty() {
-                        results.push(window_results);
-                    }
+            if let Some(r2s_op) = self.r2s_operator.as_mut() {
+                let stream_results = r2s_op.eval(window_results, self.current_timestamp);
+                if !stream_results.is_empty() {
+                    results.push(stream_results);
                 }
+            } else if !window_results.is_empty() {
+                results.push(window_results);
             }
         }
 
-        // Store results
         if !results.is_empty() {
             let mut stored_results = self.stream_results.lock().unwrap();
             stored_results.extend(results.clone());
@@ -787,8 +741,8 @@ impl<'a> QueryBuilder<'a> {
 
     /// Stop streaming mode
     pub fn stop_stream(&mut self) {
-        if let Some(ref mut window) = self.window_instance {
-            window.stop();
+        if let Some(runner) = self.runner.as_mut() {
+            runner.stop();
         }
         self.is_streaming = false;
     }

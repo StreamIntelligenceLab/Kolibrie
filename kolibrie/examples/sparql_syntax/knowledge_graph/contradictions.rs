@@ -41,6 +41,7 @@ fn example_with_contradictions() -> Reasoner {
                 Term::Constant(student_id)
             )
         ],
+        negative_premise: vec![],
         conclusion: vec![
             (
                 Term::Constant(0),
@@ -64,6 +65,7 @@ fn example_with_contradictions() -> Reasoner {
             Term::Constant(teaches_id),
             Term::Variable("Y".to_string())
         )],
+        negative_premise: vec![],
         conclusion: vec![
             (
                 Term::Variable("X".to_string()),
@@ -81,6 +83,7 @@ fn example_with_contradictions() -> Reasoner {
             Term::Constant(enrolled_id),
             Term::Variable("Y".to_string())
         )],
+        negative_premise: vec![],
         conclusion: vec![
             (
                 Term::Variable("X".to_string()),

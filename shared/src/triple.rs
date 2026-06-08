@@ -29,9 +29,3 @@ impl Triple {
         )
     }
 }
-
-#[derive(PartialEq, Debug, Clone, Eq, PartialOrd, Ord)]
-pub struct TimestampedTriple {
-    pub triple: Triple,
-    pub timestamp: u64,
-}

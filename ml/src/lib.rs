@@ -15,6 +15,9 @@ use std::time::Instant;
 use serde::{Serialize, Deserialize};
 use pyo3::{prelude::*, types::{PyDict, PyList}};
 
+pub mod candle_model;
+pub use candle_model::{MlpNeuralPredicate, OutputType};
+
 #[derive(Debug, Serialize, Deserialize)]
 pub struct MLPredictionResult {
     pub predictions: Vec<f64>,

@@ -763,8 +763,8 @@ fn main() {
 
                 // Define rule templates
                 let rule_night_motion_template = r#"PREFIX ex: <http://example.org#>
-RULE :UnauthorizedMotion(?detection) :- 
-    WHERE { 
+RULE :UnauthorizedMotion :-
+    WHERE {
         ?env ex:currentTime ?time .
         ?detection ex:objectType ?type ;
                    ex:timeOfDay ?detTime .
@@ -772,18 +772,18 @@ RULE :UnauthorizedMotion(?detection) :-
               ex:endTime "05:00" .
         FILTER(?type = "person" || ?type = "teddy bear")
     }
-    => 
-    { 
+    =>
+    {
         ?detection ex:unauthorized "true" .
     }.
 SELECT ?detection
-WHERE { 
+WHERE {
     :UnauthorizedMotion(?detection)
 }"#;
 
                 let rule_vehicle_restriction_template = r#"PREFIX ex: <http://example.org#>
-RULE :UnauthorizedVehicle(?detection) :- 
-    WHERE { 
+RULE :UnauthorizedVehicle :-
+    WHERE {
         ?env ex:currentTime ?time .
         ?detection ex:objectType ?type ;
                    ex:timeOfDay ?detTime .
@@ -791,30 +791,30 @@ RULE :UnauthorizedVehicle(?detection) :-
               ex:endTime "10:00" .
         FILTER(?type = "truck" || ?type = "bus" || ?type = "car" || ?type = "train")
     }
-    => 
-    { 
+    =>
+    {
         ?detection ex:unauthorized "true" .
     }.
 SELECT ?detection
-WHERE { 
+WHERE {
     :UnauthorizedVehicle(?detection)
 }"#;
 
                 let rule_daytime_allowed_template = r#"PREFIX ex: <http://example.org#>
-RULE :AuthorizedDaytime(?detection) :- 
-    WHERE { 
+RULE :AuthorizedDaytime :-
+    WHERE {
         ?env ex:currentTime ?time .
         ?detection ex:objectType ?type ;
                    ex:timeOfDay ?detTime .
         ?rule ex:startTime "05:00" ;
               ex:endTime "16:00" .
     }
-    => 
-    { 
+    =>
+    {
         ?detection ex:authorized "true" .
     }.
-SELECT ?detection 
-WHERE { 
+SELECT ?detection
+WHERE {
     :AuthorizedDaytime(?detection)
 }"#;
 

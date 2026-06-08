@@ -11,8 +11,10 @@ use crate::parser::parse_combined_query;
 use crate::rsp::r2r::R2ROperator;
 use crate::rsp::r2s::StreamOperator;
 use crate::rsp::s2r::{ReportStrategy, Tick};
+use crate::rsp::simple_r2r::SimpleR2R;
 use crate::rsp_engine::{
-    OperationMode, QueryExecutionMode, RSPEngine, RSPQueryPlan, RSPWindow, ResultConsumer,
+    CrossWindowReasoningMode, OperationMode, QueryExecutionMode, RSPEngine, RSPQueryPlan,
+    RSPWindow, ResultConsumer,
 };
 use crate::sparql_database::SparqlDatabase;
 use crate::streamertail_optimizer::{
@@ -21,6 +23,8 @@ use crate::streamertail_optimizer::{
 use shared::query::{StreamType, SyncPolicy, WindowBlock, WindowClause};
 use shared::rule::Rule;
 use shared::terms::Term;
+use shared::triple::Triple;
+use std::any::TypeId;
 use std::fmt::Debug;
 use std::hash::Hash;
 use std::sync::Arc;
@@ -50,6 +54,8 @@ pub struct RSPBuilder<'a, I, O> {
     sync_policy: SyncPolicy,
     reasoning_rules: Vec<Rule>,
     sparql_rules: Vec<String>,
+    cross_window_rules: Option<&'a str>,
+    cross_window_reasoning_mode: CrossWindowReasoningMode,
 }
 
 impl<'a, I, O> RSPBuilder<'a, I, O>
@@ -70,6 +76,8 @@ where
             sync_policy: SyncPolicy::default(),
             reasoning_rules: Vec::new(),
             sparql_rules: Vec::new(),
+            cross_window_rules: None,
+            cross_window_reasoning_mode: CrossWindowReasoningMode::Incremental,
         }
     }
 
@@ -90,6 +98,21 @@ where
     /// dictionary merge in `RSPEngine::new()` so term IDs are consistent.
     pub fn add_sparql_rules(mut self, rules: Vec<String>) -> RSPBuilder<'a, I, O> {
         self.sparql_rules = rules;
+        self
+    }
+
+    /// Enable cross-window SDS+ reasoning with an N3 rule document
+    pub fn add_cross_window_rules(mut self, n3_rules: &'a str) -> RSPBuilder<'a, I, O> {
+        self.cross_window_rules = Some(n3_rules);
+        self
+    }
+
+    /// Select the cross-window SDS+ materializer used by the RSP engine
+    pub fn set_cross_window_reasoning_mode(
+        mut self,
+        mode: CrossWindowReasoningMode,
+    ) -> RSPBuilder<'a, I, O> {
+        self.cross_window_reasoning_mode = mode;
         self
     }
 
@@ -305,7 +328,7 @@ where
             .rsp_ql_query
             .take()
             .ok_or("Please provide RSP-QL query")?;
-        let r2r = self.r2r.take().ok_or("Please provide R2R operator!")?;
+        let mut r2r = self.r2r.take().ok_or("Please provide R2R operator!")?;
         let triples = self.triples.take().unwrap_or("");
         let syntax = self.syntax.clone();
         let rules = self.rules.take().unwrap_or("");
@@ -313,6 +336,22 @@ where
             function: Arc::new(Box::new(|r| println!("Bindings: {:?}", r))),
         });
         let operation_mode = self.operation_mode;
+        let cross_window_rules = self.cross_window_rules.take();
+
+        if cross_window_rules.is_some() {
+            if TypeId::of::<I>() != TypeId::of::<Triple>() {
+                return Err(
+                    "Cross-window SDS+ reasoning currently requires Triple input items"
+                        .to_string(),
+                );
+            }
+            if r2r.as_any_mut().downcast_mut::<SimpleR2R>().is_none() {
+                return Err(
+                    "Cross-window SDS+ reasoning currently requires the SimpleR2R operator"
+                        .to_string(),
+                );
+            }
+        }
 
         // Parse the RSP-QL query
         let query_config = self.parse_rsp_ql_query(rsp_ql_query)?;
@@ -322,7 +361,7 @@ where
         // Create RSP-QL query plan using Volcano optimizer
         let rsp_query_plan = Self::create_rsp_query_plan(&query_config)?;
 
-        Ok(RSPEngine::new(
+        RSPEngine::new(
             query_config,
             triples,
             syntax,
@@ -335,6 +374,8 @@ where
             sync_policy,
             self.reasoning_rules,
             self.sparql_rules,
-        ))
+            cross_window_rules,
+            self.cross_window_reasoning_mode,
+        )
     }
 }

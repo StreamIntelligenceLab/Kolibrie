@@ -11,7 +11,7 @@
 use crate::sparql_database::SparqlDatabase;
 use crate::disk_storage::lsm_tree::{LSMTree, LSMConfig};
 use crate::storage_trait::{StorageTrait, QueryAnalysis, QueryAnalyzer, StorageMode};
-use crate::execute_query::{execute_query, execute_query_rayon_parallel2_volcano};
+use crate::execute_query::execute_query_rayon_parallel2_volcano;
 use shared::triple::Triple;
 
 /// Storage backend type - determines where data is physically stored
@@ -205,7 +205,7 @@ impl StorageManager {
     /// Execute query on streaming storage
     fn execute_streaming_query(&mut self, query: &str) -> Result<Vec<Vec<String>>, String> {
         // Streaming queries always use memory (real-time processing)
-        Ok(execute_query(query, &mut self.memory_database))
+        Ok(execute_query_rayon_parallel2_volcano(query, &mut self.memory_database))
     }
     
     /// Execute hybrid query (both static and streaming)
