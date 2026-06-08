@@ -2182,6 +2182,10 @@ pub fn parse_combined_query(input: &str) -> IResult<&str, CombinedQuery<'_>> {
         rule.neural_relation_decls = neural_relation_decls.clone();
         rule.train_neural_relation_decls = train_neural_relation_decls.clone();
     }
+
+    // Parse top-level ML.PREDICT independently of RULE syntax.
+    let (input, ml_predict) = opt(parse_ml_predict).parse(input)?;
+    let (input, _) = multispace0.parse(input)?;
     
     // Optionally parse DELETE clause (before SPARQL query, per SPARQL Update spec)
     let (input, delete_clause) = opt(parse_delete).parse(input)?;
@@ -2209,6 +2213,7 @@ pub fn parse_combined_query(input: &str) -> IResult<&str, CombinedQuery<'_>> {
             neural_relation_decls,
             train_neural_relation_decls,
             rule: rule_opt,
+            ml_predict,
             sparql: sparql_parse,
             delete_clause,
         },

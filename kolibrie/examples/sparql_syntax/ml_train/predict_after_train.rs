@@ -9,7 +9,6 @@
  */
 
 use kolibrie::neural_relations::execute_neural_program;
-use kolibrie::parser::process_rule_definition;
 use kolibrie::sparql_database::SparqlDatabase;
 
 fn tmp_model_path(name: &str) -> String {
@@ -17,7 +16,14 @@ fn tmp_model_path(name: &str) -> String {
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_nanos())
         .unwrap_or(0);
-    format!("/tmp/kolibrie_example_{}_{}_{}.bin", name, std::process::id(), nanos)
+    let mut path = std::env::temp_dir();
+    path.push(format!(
+        "kolibrie_example_{}_{}_{}.bin",
+        name,
+        std::process::id(),
+        nanos,
+    ));
+    path.to_string_lossy().into_owned()
 }
 
 fn main() {
@@ -79,16 +85,9 @@ TRAIN NEURAL RELATION ex:predictedDigit {{
         }
     }
 
-    let rule = r#"
+    let predict = r#"
 PREFIX ex: <http://example.org/>
 
-RULE :PredictAfterTrain :-
-CONSTRUCT {
-    ?sample ex:predictedDigit ?label .
-}
-WHERE {
-    ?sample ex:gold ?gold .
-}
 ML.PREDICT(MODEL "digit_model",
     INPUT {
         SELECT ?sample ?x0 ?x1 ?x2
@@ -103,7 +102,7 @@ ML.PREDICT(MODEL "digit_model",
 )
 "#;
 
-    process_rule_definition(rule, &mut database).expect("ML.PREDICT rule failed");
+    execute_neural_program(&mut database, predict).expect("top-level ML.PREDICT failed");
 
     let dict = database.dictionary.read().unwrap();
     let pred_id = dict

@@ -259,6 +259,110 @@ pub fn execute_train_decl(
     Ok(())
 }
 
+fn run_ml_predict_input_query(
+    database: &mut SparqlDatabase,
+    input_raw: &str,
+    prefixes: &HashMap<String, String>,
+) -> NeuralResult<Vec<HashMap<String, String>>> {
+    let mut query_with_prefixes = String::new();
+    for (prefix, uri) in prefixes {
+        let prefix_decl = format!("PREFIX {}:", prefix);
+        if !input_raw.contains(&prefix_decl) {
+            query_with_prefixes.push_str(&format!("PREFIX {}: <{}>\n", prefix, uri));
+        }
+    }
+    query_with_prefixes.push_str(input_raw);
+
+    query_training_rows(database, &query_with_prefixes)
+}
+
+fn encode_prediction_rows(
+    database: &mut SparqlDatabase,
+    rows: &[HashMap<String, String>],
+) -> Vec<HashMap<String, u32>> {
+    rows.iter()
+        .map(|row| {
+            row.iter()
+                .map(|(var, term)| (var.clone(), database.encode_term_star(term)))
+                .collect::<HashMap<String, u32>>()
+        })
+        .collect()
+}
+
+fn resolve_unique_relation_for_model(
+    database: &SparqlDatabase,
+    model_name: &str,
+) -> NeuralResult<NeuralRelationDecl> {
+    let matching: Vec<NeuralRelationDecl> = database
+        .neural_relation_decls
+        .values()
+        .filter(|relation| relation.model_name == model_name)
+        .cloned()
+        .collect();
+
+    match matching.len() {
+        1 => Ok(matching[0].clone()),
+        0 => Err(format!(
+            "Top-level ML.PREDICT MODEL \"{}\" does not match any registered NEURAL RELATION",
+            model_name
+        )
+        .into()),
+        count => Err(format!(
+            "Top-level ML.PREDICT MODEL \"{}\" matches {} NEURAL RELATION declarations; use an unambiguous model-to-relation mapping",
+            model_name, count
+        )
+        .into()),
+    }
+}
+
+pub fn execute_top_level_ml_predict(
+    database: &mut SparqlDatabase,
+    ml_predict: &MLPredictClause<'_>,
+    prefixes: &HashMap<String, String>,
+) -> NeuralResult<()> {
+    let relation = resolve_unique_relation_for_model(database, ml_predict.model)?;
+    let rows = run_ml_predict_input_query(database, ml_predict.input_raw, prefixes)?;
+
+    remove_materialized_triples(database, &relation.predicate);
+    if rows.is_empty() {
+        return Ok(());
+    }
+
+    let encoded_rows = encode_prediction_rows(database, &rows);
+    let dispatch = crate::ml_predict_candle::try_candle_predict_by_model_name(
+        database,
+        ml_predict.model,
+        &encoded_rows,
+    )?
+    .ok_or_else(|| {
+        format!(
+            "Top-level ML.PREDICT MODEL \"{}\" could not be dispatched to a trained NEURAL RELATION",
+            ml_predict.model
+        )
+    })?;
+
+    let anchor_key = relation.anchor_var.trim_start_matches('?');
+    let mut generated = Vec::new();
+    for (row, prediction) in rows.iter().zip(dispatch.predictions.iter()) {
+        let anchor = row
+            .get(anchor_key)
+            .or_else(|| row.get(&relation.anchor_var))
+            .ok_or_else(|| format!("Missing anchor variable {}", relation.anchor_var))?;
+        let triple = Triple {
+            subject: database.encode_term_star(anchor),
+            predicate: database.encode_term_star(&relation.predicate),
+            object: database.encode_term_star(prediction),
+        };
+        database.add_triple(triple.clone());
+        generated.push(triple);
+    }
+
+    database
+        .neural_materialized_triples
+        .insert(relation.predicate.clone(), generated);
+    Ok(())
+}
+
 pub fn execute_neural_program(
     database: &mut SparqlDatabase,
     program: &str,
@@ -269,7 +373,7 @@ pub fn execute_neural_program(
         .map_err(|_| "Failed to parse neural program".to_string())?;
 
     if combined.rule.is_some() {
-        return Err("execute_neural_program only accepts MODEL / NEURAL RELATION / TRAIN NEURAL RELATION declarations".to_string());
+        return Err("execute_neural_program only accepts MODEL / NEURAL RELATION / TRAIN NEURAL RELATION declarations and top-level ML.PREDICT".to_string());
     }
 
     for (prefix, uri) in &combined.prefixes {
@@ -299,6 +403,11 @@ pub fn execute_neural_program(
     for train_decl in &normalized_trains {
         execute_train_decl(database, train_decl).map_err(|err| err.to_string())?;
         materialize_neural_relation(database, &train_decl.predicate)
+            .map_err(|err| err.to_string())?;
+    }
+
+    if let Some(ml_predict) = &combined.ml_predict {
+        execute_top_level_ml_predict(database, ml_predict, &prefixes)
             .map_err(|err| err.to_string())?;
     }
 

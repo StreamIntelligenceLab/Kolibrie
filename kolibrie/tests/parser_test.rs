@@ -569,6 +569,52 @@ WHERE {
     }
 
     #[test]
+    fn parse_top_level_ml_predict_after_neural_decls() {
+        let input = r#"
+PREFIX ex: <http://example.org/>
+
+MODEL "digit_model" {
+    ARCH MLP { HIDDEN [16, 8] }
+    OUTPUT EXCLUSIVE { "A", "B", "C" }
+}
+
+NEURAL RELATION ex:predictedDigit USING MODEL "digit_model" {
+    INPUT {
+        ?sample ex:x0 ?x0 .
+        ?sample ex:x1 ?x1 .
+        ?sample ex:x2 ?x2 .
+    }
+    FEATURES { ?x0, ?x1, ?x2 }
+}
+
+ML.PREDICT(MODEL "digit_model",
+    INPUT {
+        SELECT ?sample ?x0 ?x1 ?x2
+        WHERE {
+            ?sample ex:x0 ?x0 .
+            ?sample ex:x1 ?x1 .
+            ?sample ex:x2 ?x2 .
+        }
+    },
+    OUTPUT ?label
+)
+        "#;
+
+        let (rest, combined) = parse_combined_query(input).unwrap();
+        assert!(rest.trim().is_empty());
+        assert!(combined.rule.is_none());
+        assert_eq!(combined.model_decls.len(), 1);
+        assert_eq!(combined.neural_relation_decls.len(), 1);
+
+        let ml_predict = combined
+            .ml_predict
+            .as_ref()
+            .expect("top-level ML.PREDICT should be parsed");
+        assert_eq!(ml_predict.model, "digit_model");
+        assert_eq!(ml_predict.output, "?label");
+    }
+
+    #[test]
     fn lower_ml_predict_alias_test() {
         let predict_input = r#"
             ML.PREDICT(MODEL "fraud_predictor",
