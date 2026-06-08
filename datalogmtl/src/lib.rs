@@ -8,8 +8,12 @@
  * you can obtain one at https://mozilla.org/MPL/2.0/.
  */
 
-pub mod reasoning;
-pub mod parser_n3_logic;
-pub mod reasoning_experimental;
+pub mod syntax;
+pub mod validate;
+pub mod metrics;
+pub mod store;
+pub mod evaluator;
+pub mod stream;
 
-pub use reasoning::{join_rule, join_remaining};
+#[cfg(test)]
+mod tests;

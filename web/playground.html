@@ -1348,6 +1348,9 @@
         <button class="sidebar-btn" data-mode="rsp" title="RSP Mode">
           <i class="fas fa-stream"></i>
         </button>
+        <button class="sidebar-btn" data-mode="datalogmtl" title="DatalogMTL^RDF">
+          <i class="fas fa-clock"></i>
+        </button>
       </div>
 
       <!-- Mode Container -->
@@ -1562,6 +1565,110 @@ WHERE {
             </div>
           </div>
         </div>
+
+        <!-- DatalogMTL^RDF Mode -->
+        <div id="datalogmtl-mode" class="mode-content">
+          <div class="editor-container">
+            <div class="rsp-split-container">
+
+              <!-- Left: Rules / Background editor + Register -->
+              <div class="rsp-editor-half">
+                <div class="rsp-half-header" style="display:flex;align-items:center;justify-content:space-between;">
+                  <span style="display:flex;align-items:center;gap:4px;">
+                    <button class="editor-tab active" id="dmtl-tab-rules" style="height:24px;line-height:24px;font-size:11px;padding:0 10px;margin:0;">
+                      <i class="fas fa-code-branch"></i> Rules
+                    </button>
+                    <button class="editor-tab" id="dmtl-tab-bg" style="height:24px;line-height:24px;font-size:11px;padding:0 10px;margin:0;">
+                      <i class="fas fa-database"></i> Background
+                    </button>
+                    <button class="editor-tab" id="dmtl-tab-shape" style="height:24px;line-height:24px;font-size:11px;padding:0 10px;margin:0;">
+                      <i class="fas fa-sitemap"></i> Stream Shape
+                    </button>
+                  </span>
+                  <span style="display:flex;align-items:center;gap:8px;">
+                    <span id="dmtl-session-status" style="font-size:11px;color:#808080;font-weight:normal;text-transform:none;letter-spacing:0;">Not registered</span>
+                    <button class="btn rsp-push-btn" id="dmtl-register-btn" style="height:24px;line-height:24px;font-size:11px;padding:0 10px;margin:0;">
+                      <i class="fas fa-play"></i> Register
+                    </button>
+                  </span>
+                </div>
+                <div id="dmtl-panel-rules" class="rsp-editor-wrapper">
+                  <textarea id="dmtl-rules-editor"># Diamond: ?x was near ?y if both were at same location 1–5 seconds ago
+(?x, :wasNear, ?y) :- (?x, :location, ?loc), Diamond[1000, 5000](?y, :location, ?loc).
+
+# Box: stable reading holds throughout a 10-second window
+# (?s, :stableReading, ?v) :- Box[0, 10000](?s, :sensor, ?v).</textarea>
+                </div>
+                <div id="dmtl-panel-bg" class="rsp-editor-wrapper" style="display:none">
+                  <textarea id="dmtl-bg-editor"># Background N-Triples loaded at t=0 (static/contextual facts)
+# Example:
+# <:B> <:type> <:Person> .</textarea>
+                </div>
+                <div id="dmtl-panel-shape" class="rsp-editor-wrapper" style="display:none">
+                  <textarea id="dmtl-shape-editor"># Define stream shapes here, then click Register.
+#
+# Syntax:
+#   STREAM :myStream
+#     PATTERN (?s, :pred, ?o)
+#     KEY ?s
+#     STALENESS 5000
+#   .
+#
+# Example:
+# STREAM :location
+#   PATTERN (?entity, :location, ?loc)
+#   KEY ?entity
+#   STALENESS 6000
+# .</textarea>
+                </div>
+              </div>
+
+              <!-- Right: Push controls + log -->
+              <div class="rsp-input-half">
+                <div class="rsp-half-header"><i class="fas fa-paper-plane"></i> Stream Input</div>
+                <div class="rsp-stream-controls">
+                  <div class="rsp-control-row" id="dmtl-stream-row" style="display:none">
+                    <label>Stream</label>
+                    <select class="rsp-select" id="dmtl-stream-select"></select>
+                  </div>
+                  <div class="rsp-control-row">
+                    <label>Timestamp (ms)</label>
+                    <input type="number" class="rsp-number-input" id="dmtl-timestamp" value="0" step="1000" min="0">
+                  </div>
+                  <div class="rsp-content-label">Content (N-Triples)</div>
+                  <div class="rsp-content-editor-wrapper">
+                    <textarea id="dmtl-content-editor"><:B> <:location> <:room1> .</textarea>
+                  </div>
+                  <div class="rsp-control-buttons">
+                    <button class="btn rsp-push-btn" id="dmtl-push-btn">
+                      <i class="fas fa-plus"></i> Push Event
+                    </button>
+                  </div>
+                </div>
+                <!-- Push log -->
+                <div class="rsp-events-section">
+                  <div class="rsp-events-header">
+                    <span>Push Log (<span id="dmtl-event-count">0</span>)</span>
+                    <button class="rsp-clear-btn" id="dmtl-clear-events">Clear Log</button>
+                  </div>
+                  <div class="rsp-events-list" id="dmtl-events-list">
+                    <div class="rsp-empty-events">Register rules, then push events above.</div>
+                  </div>
+                </div>
+              </div>
+
+            </div><!-- /.rsp-split-container -->
+
+            <div class="resizer" id="resizer-dmtl"></div>
+            <div class="results-panel" id="results-panel-dmtl" style="min-height:200px">
+              <div class="results-header">
+                <i class="fas fa-terminal"></i> Derived Triples
+              </div>
+              <div class="results-content" id="results-content-dmtl"></div>
+            </div>
+          </div>
+        </div>
+
       </div>
     </div>
   </div>
@@ -1788,6 +1895,16 @@ WHERE {
     let rspSessionId = null;    // Persistent engine session ID
     let rspEventSource = null;  // SSE connection
 
+    // DatalogMTL^RDF state
+    let dmtlRulesEditor;
+    let dmtlBgEditor;
+    let dmtlShapeEditor;
+    let dmtlContentEditor;
+    let dmtlSessionId = null;
+    let dmtlEventSource = null;
+    let dmtlEvents = [];
+    let dmtlTickCount = 0;
+
     let config = {
       editorFontSize: 14,
       terminalFontSize: 13,
@@ -1860,6 +1977,40 @@ WHERE {
 
       // Refresh stream dropdown whenever the RSP-QL query changes
       rspSparqlEditor.on('change', debounce(() => updateRspStreamDropdown(), 500));
+
+      // Initialize DatalogMTL editors
+      dmtlRulesEditor = CodeMirror.fromTextArea(document.getElementById('dmtl-rules-editor'), {
+        mode: 'text/turtle',
+        theme: 'dracula',
+        lineNumbers: true,
+        lineWrapping: true,
+        indentUnit: 2,
+        tabSize: 2,
+      });
+      dmtlBgEditor = CodeMirror.fromTextArea(document.getElementById('dmtl-bg-editor'), {
+        mode: 'text/turtle',
+        theme: 'dracula',
+        lineNumbers: true,
+        lineWrapping: true,
+        indentUnit: 2,
+        tabSize: 2,
+      });
+      dmtlShapeEditor = CodeMirror.fromTextArea(document.getElementById('dmtl-shape-editor'), {
+        mode: 'text/turtle',
+        theme: 'dracula',
+        lineNumbers: true,
+        lineWrapping: true,
+        indentUnit: 2,
+        tabSize: 2,
+      });
+      dmtlContentEditor = CodeMirror.fromTextArea(document.getElementById('dmtl-content-editor'), {
+        mode: 'text/turtle',
+        theme: 'dracula',
+        lineNumbers: false,
+        lineWrapping: true,
+        indentUnit: 2,
+        tabSize: 2,
+      });
     }
 
     // Initialize
@@ -1868,6 +2019,7 @@ WHERE {
       setupEventListeners();
       setupResizer();
       setupResizerRsp();
+      setupResizerDmtl();
       loadConfig();
       loadFromUrl();
     });
@@ -1884,6 +2036,11 @@ WHERE {
       if (mode === 'rsp') {
         if (rspSparqlEditor) rspSparqlEditor.refresh();
         if (rspContentEditor) rspContentEditor.refresh();
+      } else if (mode === 'datalogmtl') {
+        if (dmtlRulesEditor) dmtlRulesEditor.refresh();
+        if (dmtlBgEditor) dmtlBgEditor.refresh();
+        if (dmtlShapeEditor) dmtlShapeEditor.refresh();
+        if (dmtlContentEditor) dmtlContentEditor.refresh();
       }
     }
 
@@ -2217,6 +2374,14 @@ WHERE {
       document.getElementById('rsp-register-btn').addEventListener('click', registerRspQuery);
       document.getElementById('rsp-push-btn').addEventListener('click', pushRspStreamEvent);
       document.getElementById('rsp-clear-events').addEventListener('click', clearRspEvents);
+
+      // DatalogMTL^RDF controls
+      document.getElementById('dmtl-tab-rules').addEventListener('click', () => switchDmtlTab('rules'));
+      document.getElementById('dmtl-tab-bg').addEventListener('click', () => switchDmtlTab('bg'));
+      document.getElementById('dmtl-tab-shape').addEventListener('click', () => switchDmtlTab('shape'));
+      document.getElementById('dmtl-register-btn').addEventListener('click', registerDmtlSession);
+      document.getElementById('dmtl-push-btn').addEventListener('click', pushDmtlEvent);
+      document.getElementById('dmtl-clear-events').addEventListener('click', clearDmtlEvents);
     }
 
     // Resizer functionality for SPARQL mode
@@ -3012,6 +3177,10 @@ WHERE {
       if (n3logicEditor) n3logicEditor.refresh();
       if (rspSparqlEditor) rspSparqlEditor.refresh();
       if (rspContentEditor) rspContentEditor.refresh();
+      if (dmtlRulesEditor) dmtlRulesEditor.refresh();
+      if (dmtlBgEditor) dmtlBgEditor.refresh();
+      if (dmtlShapeEditor) dmtlShapeEditor.refresh();
+      if (dmtlContentEditor) dmtlContentEditor.refresh();
     }
 
     function updateTerminalFontSize() {
@@ -3103,7 +3272,303 @@ Click "Help" for more information.
 
       // Populate stream dropdown from initial query
       updateRspStreamDropdown();
+
+      // DatalogMTL welcome message
+      document.getElementById('results-content-dmtl').innerHTML = `
+        <div class="terminal-output terminal-success"><i class="fas fa-clock"></i> Kolibrie DatalogMTL^RDF Mode Ready!
+
+<strong>Quick Start:</strong>
+1. Write temporal Datalog rules in the Rules editor on the left
+2. Click Register to create a session
+3. Set a timestamp (ms) and enter N-Triples in the Stream Input panel
+4. Click Push Event to advance the clock and see derived triples here
+
+<strong>Rule Syntax:</strong>
+  (?x, :wasNear, ?y) :- (?x, :location, ?loc), Diamond[1000, 5000](?y, :location, ?loc).
+  (?s, :stable, ?v) :- Box[0, 10000](?s, :sensor, ?v).
+  (?x, :active, :true) :- Since[0, 60000]((?x, :active, :true), (?x, :started, :true)).
+
+<strong>Terms:</strong>  ?var = Variable  |  &lt;full-iri&gt; = IRI  |  :name = short IRI  |  "lit" = Literal
+
+<strong>Background Data (optional):</strong>
+• Switch to the Background tab for N-Triples loaded at t=0
+        </div>
+      `;
     }, 100);
+
+    // ── DatalogMTL^RDF helpers ───────────────────────────────────────────────
+
+    function switchDmtlTab(tab) {
+      ['rules', 'bg', 'shape'].forEach(t => {
+        document.getElementById(`dmtl-panel-${t}`).style.display = t === tab ? '' : 'none';
+        document.getElementById(`dmtl-tab-${t}`).classList.toggle('active', t === tab);
+      });
+      if (tab === 'rules' && dmtlRulesEditor)  dmtlRulesEditor.refresh();
+      if (tab === 'bg'    && dmtlBgEditor)     dmtlBgEditor.refresh();
+      if (tab === 'shape' && dmtlShapeEditor)  dmtlShapeEditor.refresh();
+    }
+
+    async function registerDmtlSession() {
+      const rules = dmtlRulesEditor ? dmtlRulesEditor.getValue().trim() : '';
+      if (!rules) { alert('Please enter DatalogMTL rules first.'); return; }
+
+      if (dmtlEventSource) { dmtlEventSource.close(); dmtlEventSource = null; }
+      dmtlSessionId = null;
+      dmtlTickCount = 0;
+
+      const statusEl = document.getElementById('dmtl-session-status');
+      statusEl.textContent = 'Registering…';
+      statusEl.style.color = '#a0a0a0';
+
+      // Get background data, stripping comment-only lines
+      const bgRaw  = dmtlBgEditor ? dmtlBgEditor.getValue() : '';
+      const bgData = bgRaw.split('\n')
+        .filter(l => !l.trim().startsWith('#') && l.trim())
+        .join('\n').trim();
+
+      const shapeRaw = dmtlShapeEditor ? dmtlShapeEditor.getValue() : '';
+      const shapeData = shapeRaw.split('\n')
+        .filter(l => !l.trim().startsWith('#') && l.trim())
+        .join('\n').trim();
+
+      try {
+        const res = await fetch('/datalogmtl/register', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            rules,
+            background_ntriples: bgData || undefined,
+            stream_shapes: shapeData || undefined,
+            horizon_ms: 60000,
+          }),
+        });
+        if (!res.ok) {
+          const err = await res.text();
+          throw new Error(`HTTP ${res.status}: ${err}`);
+        }
+
+        const data = await res.json();
+        const { session_id } = data;
+        dmtlSessionId = session_id;
+        dmtlEvents = [];
+        renderDmtlEvents();
+
+        // Show/hide stream dropdown based on returned stream IRIs
+        const streamRow = document.getElementById('dmtl-stream-row');
+        const streamSel = document.getElementById('dmtl-stream-select');
+        if (data.stream_iris && data.stream_iris.length > 0) {
+          streamSel.innerHTML = data.stream_iris
+            .map(iri => `<option value="${iri}">${iri}</option>`)
+            .join('');
+          streamRow.style.display = '';
+        } else {
+          streamRow.style.display = 'none';
+        }
+
+        document.getElementById('results-content-dmtl').innerHTML =
+          `<div class="terminal-output terminal-info">Engine registered (session ${session_id}). Push events to see derived triples.</div>`;
+
+        dmtlEventSource = new EventSource(`/datalogmtl/events/${session_id}`);
+        dmtlEventSource.onmessage = (e) => {
+          try { appendDmtlTick(JSON.parse(e.data)); }
+          catch (err) { console.error('DMTL SSE parse error:', err); }
+        };
+        dmtlEventSource.onerror = () => {
+          statusEl.textContent = 'SSE disconnected';
+          statusEl.style.color = '#f44336';
+        };
+
+        statusEl.textContent = `Session ${session_id} — live`;
+        statusEl.style.color = '#4caf50';
+
+      } catch (error) {
+        statusEl.textContent = 'Registration failed';
+        statusEl.style.color = '#f44336';
+        document.getElementById('results-content-dmtl').innerHTML =
+          `<div class="terminal-output terminal-error">✗ ${escapeHtml(error.message)}</div>`;
+        console.error('DMTL register error:', error);
+      }
+    }
+
+    async function pushDmtlEvent() {
+      if (!dmtlSessionId) {
+        alert('Register rules first (click the Register button).');
+        return;
+      }
+      const timestamp = parseInt(document.getElementById('dmtl-timestamp').value, 10);
+      if (isNaN(timestamp)) { alert('Please enter a valid timestamp.'); return; }
+      const ntriples = dmtlContentEditor ? dmtlContentEditor.getValue().trim() : '';
+      if (!ntriples) { alert('Please enter N-Triples content.'); return; }
+
+      // Auto-advance timestamp
+      const step = parseInt(document.getElementById('dmtl-timestamp').step || '1000', 10);
+      document.getElementById('dmtl-timestamp').value = timestamp + step;
+
+      const streamRow = document.getElementById('dmtl-stream-row');
+      const streamIri = streamRow.style.display !== 'none'
+        ? document.getElementById('dmtl-stream-select').value
+        : undefined;
+
+      let ok = false;
+      try {
+        const res = await fetch('/datalogmtl/push', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ session_id: dmtlSessionId, timestamp, ntriples, stream_iri: streamIri }),
+        });
+        ok = res.ok;
+        if (!res.ok) { const err = await res.text(); console.error('DMTL push error:', err); }
+      } catch (error) {
+        console.error('DMTL push error:', error);
+      }
+
+      dmtlEvents.push({ timestamp, ntriples, ok });
+      renderDmtlEvents();
+    }
+
+    function clearDmtlEvents() {
+      dmtlEvents = [];
+      renderDmtlEvents();
+    }
+
+    function renderDmtlEvents() {
+      const list = document.getElementById('dmtl-events-list');
+      document.getElementById('dmtl-event-count').textContent = dmtlEvents.length;
+      if (dmtlEvents.length === 0) {
+        list.innerHTML = '<div class="rsp-empty-events">Register rules, then push events above.</div>';
+        return;
+      }
+      list.innerHTML = dmtlEvents.map(ev => {
+        const lineCount = ev.ntriples.trim().split('\n').filter(l => l.trim()).length;
+        const statusStyle = ev.ok ? 'color:#4caf50' : 'color:#f44336';
+        const statusIcon  = ev.ok ? '✓' : '✗';
+        return `<div class="rsp-event-item">
+          <div class="rsp-event-info">
+            <div class="rsp-event-stream">t=${ev.timestamp}ms</div>
+            <div class="rsp-event-meta">${lineCount} triple(s) <span style="${statusStyle}">${statusIcon}</span></div>
+          </div>
+        </div>`;
+      }).join('');
+      list.scrollTop = list.scrollHeight;
+    }
+
+    const MAX_DMTL_TICKS = 50;
+
+    function appendDmtlTick(tick) {
+      dmtlTickCount++;
+      const content = document.getElementById('results-content-dmtl');
+
+      // Clear the placeholder on first real tick
+      if (content.querySelector('.terminal-info')) {
+        content.innerHTML = '';
+        const info = document.createElement('div');
+        info.className = 'terminal-output terminal-success';
+        info.textContent = '✓ Derived triples streaming via SSE…';
+        content.appendChild(info);
+      }
+
+      const m = tick.metrics || {};
+      const derivedTriples = tick.derived || [];
+      const ntriplesText = derivedTriples.map(([s, p, o]) => `${s} ${p} ${o} .`).join('\n');
+
+      const card = document.createElement('div');
+      card.className = 'rsp-firing-group';
+
+      const header = document.createElement('div');
+      header.className = 'rsp-firing-header';
+      header.innerHTML =
+        `<span>Tick #${dmtlTickCount} &nbsp;<span style="opacity:0.6">t=${tick.timestamp}ms</span></span>` +
+        `<span class="rsp-firing-count">${derivedTriples.length} derived triple${derivedTriples.length !== 1 ? 's' : ''}</span>`;
+      card.appendChild(header);
+
+      if (ntriplesText) {
+        const pre = document.createElement('pre');
+        pre.style.cssText = 'margin:8px 12px;padding:8px;background:rgba(0,0,0,0.2);border-radius:4px;font-size:12px;overflow-x:auto;white-space:pre;';
+        pre.textContent = ntriplesText;
+        card.appendChild(pre);
+      } else {
+        const empty = document.createElement('div');
+        empty.style.cssText = 'margin:8px 12px;font-size:12px;opacity:0.5;font-style:italic;';
+        empty.textContent = '(no new derived triples this tick)';
+        card.appendChild(empty);
+      }
+
+      // Collapsible metrics badge
+      const details = document.createElement('details');
+      details.style.cssText = 'margin:4px 12px 8px;';
+      const summary = document.createElement('summary');
+      summary.style.cssText = 'font-size:11px;cursor:pointer;color:#a0a0a0;user-select:none;';
+      summary.textContent = `Metrics — ${m.eval_time_us || 0}μs`;
+      details.appendChild(summary);
+      const metricsDiv = document.createElement('div');
+      metricsDiv.style.cssText = 'font-size:11px;color:#808080;padding:4px 0;line-height:1.9;';
+      metricsDiv.innerHTML = [
+        `fixpoint_iters: ${m.fixpoint_iters || 0}`,
+        `rules_fired: ${m.rules_fired || 0}`,
+        `new_triples: ${m.new_triples || 0}`,
+        `diamond_evals: ${m.diamond_evals || 0}`,
+        `box_evals: ${m.box_evals || 0}`,
+        `since_evals: ${m.since_evals || 0}`,
+        `since_scan_depth: ${m.since_scan_depth || 0}`,
+        `snapshot_count: ${m.snapshot_count || 0}`,
+        `total_triples_in_store: ${m.total_triples_in_store || 0}`,
+      ].join('<br>');
+      details.appendChild(metricsDiv);
+      card.appendChild(details);
+
+      // Prepend newest after the leading info line
+      const infoEl = content.querySelector('.terminal-output');
+      if (infoEl && infoEl.nextSibling) {
+        content.insertBefore(card, infoEl.nextSibling);
+      } else {
+        content.appendChild(card);
+      }
+
+      // Cap at MAX_DMTL_TICKS
+      const ticks = content.querySelectorAll('.rsp-firing-group');
+      if (ticks.length > MAX_DMTL_TICKS) {
+        ticks[ticks.length - 1].remove();
+      }
+
+      document.getElementById('results-panel-dmtl').scrollTop = 0;
+    }
+
+    // Resizer for DatalogMTL mode
+    function setupResizerDmtl() {
+      const resizer     = document.getElementById('resizer-dmtl');
+      const resultsPanel = document.getElementById('results-panel-dmtl');
+      if (!resizer || !resultsPanel) return;
+
+      let isResizing = false;
+      let startY = 0;
+      let startHeight = 0;
+
+      resizer.addEventListener('mousedown', (e) => {
+        isResizing  = true;
+        startY      = e.clientY;
+        startHeight = resultsPanel.offsetHeight;
+        document.body.style.cursor     = 'ns-resize';
+        document.body.style.userSelect = 'none';
+      });
+
+      document.addEventListener('mousemove', (e) => {
+        if (!isResizing) return;
+        const delta     = startY - e.clientY;
+        const newHeight = startHeight + delta;
+        if (newHeight >= 200 && newHeight <= window.innerHeight * 0.6) {
+          resultsPanel.style.minHeight = `${newHeight}px`;
+          resultsPanel.style.maxHeight = `${newHeight}px`;
+        }
+      });
+
+      document.addEventListener('mouseup', () => {
+        if (isResizing) {
+          isResizing = false;
+          document.body.style.cursor     = '';
+          document.body.style.userSelect = '';
+        }
+      });
+    }
   </script>
 </body>
 </html>

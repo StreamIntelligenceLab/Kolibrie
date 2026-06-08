@@ -12,7 +12,7 @@ use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream};
 use std::thread;
 use std::collections::HashMap;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, RwLock};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc::{self, Sender};
 use kolibrie::execute_query::{execute_query, execute_query_rayon_parallel2_volcano};
@@ -22,6 +22,12 @@ use kolibrie::rsp_engine::{RSPBuilder, SimpleR2R, OperationMode, QueryExecutionM
 use datalog::reasoning::Reasoner;
 use datalog::parser_n3_logic::parse_n3_rule;
 use shared::triple::Triple;
+use shared::terms::{Term, TriplePattern};
+use shared::dictionary::Dictionary;
+use datalogmtl::evaluator::DatalogMTLEvaluator;
+use datalogmtl::store::IntervalFactStore;
+use datalogmtl::syntax::{DatalogMTLRule, TemporalAtom, Interval};
+use datalogmtl::stream::{StreamShape, StalenessPolicy, ShapeIngester, RdfEvent};
 use serde::{Deserialize, Serialize};
 
 // ── Session state for persistent RSP engines ────────────────────────────────
@@ -35,6 +41,16 @@ struct EngineSession {
 type Sessions = Arc<Mutex<HashMap<String, EngineSession>>>;
 
 static SESSION_COUNTER: AtomicU64 = AtomicU64::new(1);
+
+// ── DatalogMTL^RDF session state ─────────────────────────────────────────────
+
+struct DmtlSession {
+    evaluator: DatalogMTLEvaluator<IntervalFactStore>,
+    shape_ingester: Option<ShapeIngester>,
+    sse_sender: Arc<Mutex<Option<Sender<String>>>>,
+}
+
+type DmtlSessions = Arc<Mutex<HashMap<String, DmtlSession>>>;
 
 // ── Request/response types ───────────────────────────────────────────────────
 
@@ -138,6 +154,41 @@ struct RspPushRequest {
     ntriples: String,
 }
 
+// ── DatalogMTL^RDF request/response types ────────────────────────────────────
+
+#[derive(Debug, Deserialize)]
+struct DmtlRegisterRequest {
+    rules: String,
+    #[serde(default)]
+    background_ntriples: Option<String>,
+    #[serde(default)]
+    stream_shapes: Option<String>,
+    #[serde(default)]
+    horizon_ms: Option<u64>,
+}
+
+#[derive(Debug, Serialize)]
+struct DmtlRegisterResponse {
+    session_id: String,
+    stream_iris: Vec<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct DmtlPushRequest {
+    session_id: String,
+    timestamp: u64,
+    ntriples: String,
+    #[serde(default)]
+    stream_iri: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+struct DmtlTickResult {
+    timestamp: u64,
+    derived: Vec<[String; 3]>,
+    metrics: serde_json::Value,
+}
+
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
 /// Format a decoded dictionary term as an N-Triples token:
@@ -204,6 +255,7 @@ fn main() {
     println!("Starting Kolibrie HTTP Server on 0.0.0.0:8080");
 
     let sessions: Sessions = Arc::new(Mutex::new(HashMap::new()));
+    let dmtl_sessions: DmtlSessions = Arc::new(Mutex::new(HashMap::new()));
 
     let listener = TcpListener::bind("0.0.0.0:8080")
         .expect("Failed to bind to port 8080");
@@ -212,8 +264,9 @@ fn main() {
         match stream {
             Ok(stream) => {
                 let sessions = Arc::clone(&sessions);
+                let dmtl_sessions = Arc::clone(&dmtl_sessions);
                 thread::spawn(move || {
-                    handle_client(stream, sessions);
+                    handle_client(stream, sessions, dmtl_sessions);
                 });
             }
             Err(e) => {
@@ -223,7 +276,7 @@ fn main() {
     }
 }
 
-fn handle_client(mut stream: TcpStream, sessions: Sessions) {
+fn handle_client(mut stream: TcpStream, sessions: Sessions, dmtl_sessions: DmtlSessions) {
     let mut buffer = vec![0u8; 1_048_576]; // 1MB buffer for large RDF data
 
     match stream.read(&mut buffer) {
@@ -231,7 +284,7 @@ fn handle_client(mut stream: TcpStream, sessions: Sessions) {
             let request = String::from_utf8_lossy(&buffer[..size]);
 
             // Parse method and path from the first line early, so we can
-            // detect the SSE route before going through handle_request.
+            // detect the SSE routes before going through handle_request.
             let first_line = request.lines().next().unwrap_or("");
             let parts: Vec<&str> = first_line.split_whitespace().collect();
 
@@ -246,9 +299,15 @@ fn handle_client(mut stream: TcpStream, sessions: Sessions) {
                     rsp_events_sse(&session_id, stream, &sessions);
                     return;
                 }
+
+                if method == "GET" && path.starts_with("/datalogmtl/events/") {
+                    let id = path["/datalogmtl/events/".len()..].to_string();
+                    handle_dmtl_sse(&id, stream, &dmtl_sessions);
+                    return;
+                }
             }
 
-            let response = handle_request(&request, &sessions);
+            let response = handle_request(&request, &sessions, &dmtl_sessions);
             let _ = stream.write_all(response.as_bytes());
             let _ = stream.flush();
         }
@@ -258,7 +317,7 @@ fn handle_client(mut stream: TcpStream, sessions: Sessions) {
     }
 }
 
-fn handle_request(request: &str, sessions: &Sessions) -> String {
+fn handle_request(request: &str, sessions: &Sessions, dmtl_sessions: &DmtlSessions) -> String {
     let lines: Vec<&str> = request.lines().collect();
 
     if lines.is_empty() {
@@ -304,6 +363,20 @@ fn handle_request(request: &str, sessions: &Sessions) -> String {
         if let Some(body_start) = request.find("\r\n\r\n") {
             let body = &request[body_start + 4..];
             return rsp_push(body, sessions);
+        }
+    }
+
+    if method == "POST" && path == "/datalogmtl/register" {
+        if let Some(body_start) = request.find("\r\n\r\n") {
+            let body = &request[body_start + 4..];
+            return handle_dmtl_register(body, dmtl_sessions);
+        }
+    }
+
+    if method == "POST" && path == "/datalogmtl/push" {
+        if let Some(body_start) = request.find("\r\n\r\n") {
+            let body = &request[body_start + 4..];
+            return handle_dmtl_push(body, dmtl_sessions);
         }
     }
 
@@ -858,6 +931,649 @@ fn execute_rsp_query(body: &str) -> String {
         json.len(),
         json
     )
+}
+
+// ── DatalogMTL^RDF handlers ───────────────────────────────────────────────────
+
+fn handle_dmtl_register(body: &str, dmtl_sessions: &DmtlSessions) -> String {
+    let req: DmtlRegisterRequest = match serde_json::from_str(body) {
+        Ok(r) => r,
+        Err(e) => return json_error_response(&format!("Invalid JSON: {}", e)),
+    };
+
+    let mut dict = Dictionary::new();
+    let rules = match parse_dmtl_rules(&req.rules, &mut dict) {
+        Ok(r) => r,
+        Err(e) => {
+            eprintln!("DMTL rule parse error: {}", e);
+            return json_error_response(&format!("Rule parse error: {}", e));
+        }
+    };
+
+    println!("DMTL register: {} rule(s) parsed", rules.len());
+
+    // Parse stream shapes into the same dict before Arc-wrapping
+    let (shapes, stream_iris) = if let Some(ref shape_text) = req.stream_shapes {
+        if !shape_text.trim().is_empty() {
+            match parse_stream_shapes(shape_text, &mut dict) {
+                Ok(s) => {
+                    let iris: Vec<String> = s.iter().map(|sh| sh.stream_iri.clone()).collect();
+                    (s, iris)
+                }
+                Err(e) => return json_error_response(&format!("Shape parse error: {}", e)),
+            }
+        } else {
+            (vec![], vec![])
+        }
+    } else {
+        (vec![], vec![])
+    };
+
+    let horizon_ms = req.horizon_ms.unwrap_or(60_000);
+    let dict_arc: Arc<RwLock<Dictionary>> = Arc::new(RwLock::new(dict));
+
+    let shape_ingester = if shapes.is_empty() {
+        None
+    } else {
+        Some(ShapeIngester::new(shapes, Arc::clone(&dict_arc)))
+    };
+
+    let store = IntervalFactStore::new(horizon_ms);
+
+    let mut eval = match DatalogMTLEvaluator::new(rules, store, Arc::clone(&dict_arc)) {
+        Ok(e) => e,
+        Err(e) => {
+            eprintln!("DMTL evaluator error: {}", e);
+            return json_error_response(&format!("Evaluator error: {}", e));
+        }
+    };
+
+    if let Some(bg) = &req.background_ntriples {
+        if !bg.trim().is_empty() {
+            let triples = tokenize_and_encode_ntriples(bg, &dict_arc);
+            println!("DMTL register: {} background triple(s) at t=0", triples.len());
+            eval.advance(0, triples);
+        }
+    }
+
+    let session_id = SESSION_COUNTER.fetch_add(1, Ordering::Relaxed).to_string();
+    dmtl_sessions.lock().unwrap().insert(
+        session_id.clone(),
+        DmtlSession {
+            evaluator: eval,
+            shape_ingester,
+            sse_sender: Arc::new(Mutex::new(None)),
+        },
+    );
+    println!("DMTL register: session {} created, stream_iris: {:?}", session_id, stream_iris);
+
+    let json = serde_json::to_string(&DmtlRegisterResponse { session_id, stream_iris }).unwrap_or_default();
+    format!(
+        "HTTP/1.1 200 OK\r\n\
+         Content-Type: application/json\r\n\
+         Content-Length: {}\r\n\
+         Access-Control-Allow-Origin: *\r\n\
+         Access-Control-Allow-Methods: POST, OPTIONS\r\n\
+         Access-Control-Allow-Headers: Content-Type\r\n\
+         \r\n\
+         {}",
+        json.len(),
+        json
+    )
+}
+
+fn handle_dmtl_push(body: &str, dmtl_sessions: &DmtlSessions) -> String {
+    let req: DmtlPushRequest = match serde_json::from_str(body) {
+        Ok(r) => r,
+        Err(e) => return json_error_response(&format!("Invalid JSON: {}", e)),
+    };
+
+    let mut sessions_lock = dmtl_sessions.lock().unwrap();
+    let session = match sessions_lock.get_mut(&req.session_id) {
+        Some(s) => s,
+        None => return json_error_response("Session not found"),
+    };
+
+    let dict_arc = Arc::clone(&session.evaluator.dictionary);
+    let triples = match (&mut session.shape_ingester, &req.stream_iri) {
+        (Some(ingester), Some(iri)) => {
+            let raw = tokenize_and_encode_ntriples(&req.ntriples, &dict_arc);
+            let event = RdfEvent { stream_iri: iri.clone(), timestamp: req.timestamp, triples: raw };
+            ingester.evict_expired(req.timestamp);
+            ingester.process_event(&event).into_iter().map(|(t, _)| t).collect()
+        }
+        _ => tokenize_and_encode_ntriples(&req.ntriples, &dict_arc),
+    };
+    println!(
+        "DMTL push: {} triple(s) at t={} (session {})",
+        triples.len(), req.timestamp, req.session_id
+    );
+
+    let (derived, metrics) = session.evaluator.advance(req.timestamp, triples);
+
+    let decoded: Vec<[String; 3]> = {
+        let dict = session.evaluator.dictionary.read().unwrap();
+        derived.iter().map(|t| [
+            decode_dmtl_term(dict.decode(t.subject)),
+            decode_dmtl_term(dict.decode(t.predicate)),
+            decode_dmtl_term(dict.decode(t.object)),
+        ]).collect()
+    };
+
+    let tick_result = DmtlTickResult {
+        timestamp: req.timestamp,
+        derived: decoded,
+        metrics: serde_json::json!({
+            "fixpoint_iters": metrics.fixpoint_iterations,
+            "rules_fired": metrics.rules_fired,
+            "new_triples": metrics.new_triples,
+            "eval_time_us": metrics.eval_time_us,
+            "diamond_evals": metrics.diamond_evals,
+            "box_evals": metrics.box_evals,
+            "since_evals": metrics.since_evals,
+            "since_scan_depth": metrics.since_scan_depth,
+            "snapshot_count": metrics.snapshot_count,
+            "total_triples_in_store": metrics.total_triples_in_store,
+        }),
+    };
+
+    let tick_json = serde_json::to_string(&tick_result).unwrap_or_default();
+    if let Some(tx) = session.sse_sender.lock().unwrap().as_ref() {
+        let _ = tx.send(tick_json);
+        let _ = tx.send("__TICK_END__".to_string());
+    }
+
+    json_ok()
+}
+
+fn handle_dmtl_sse(session_id: &str, mut stream: TcpStream, dmtl_sessions: &DmtlSessions) {
+    let sse_sender_arc = {
+        let lock = dmtl_sessions.lock().unwrap();
+        match lock.get(session_id) {
+            Some(s) => Arc::clone(&s.sse_sender),
+            None => {
+                let resp = error_response(404, "Session not found");
+                let _ = stream.write_all(resp.as_bytes());
+                return;
+            }
+        }
+    };
+
+    let (tx, rx) = mpsc::channel::<String>();
+    sse_sender_arc.lock().unwrap().replace(tx);
+
+    if stream
+        .write_all(
+            b"HTTP/1.1 200 OK\r\n\
+              Content-Type: text/event-stream\r\n\
+              Cache-Control: no-cache\r\n\
+              Access-Control-Allow-Origin: *\r\n\
+              \r\n",
+        )
+        .is_err()
+    {
+        return;
+    }
+    stream.flush().ok();
+    println!("DMTL SSE: client connected for session {}", session_id);
+
+    for received in rx {
+        let msg = if received == "__TICK_END__" {
+            "event: tick\ndata: {}\n\n".to_string()
+        } else {
+            format!("data: {}\n\n", received)
+        };
+        if stream.write_all(msg.as_bytes()).is_err() {
+            break;
+        }
+        stream.flush().ok();
+    }
+    println!("DMTL SSE: client disconnected for session {}", session_id);
+}
+
+// ── DatalogMTL N-Triples helpers ─────────────────────────────────────────────
+
+/// Decode a dictionary term to an N-Triples token.
+/// Literals (start with `"`) and blank nodes (`_:`) are returned as-is;
+/// everything else is wrapped in angle brackets.
+fn decode_dmtl_term(val: Option<&str>) -> String {
+    match val {
+        None => "?".to_string(),
+        Some(s) if s.starts_with('"') || s.starts_with("_:") => s.to_string(),
+        Some(s) => format!("<{}>", s),
+    }
+}
+
+/// Tokenize N-Triples text and encode each term into the shared dictionary.
+fn tokenize_and_encode_ntriples(
+    ntriples: &str,
+    dict_arc: &Arc<RwLock<Dictionary>>,
+) -> Vec<Triple> {
+    let mut triples = Vec::new();
+    for line in ntriples.lines() {
+        if let Some([s, p, o]) = tokenize_ntriples_line(line) {
+            let mut dict = dict_arc.write().unwrap();
+            let s_id = dict.encode(&s);
+            let p_id = dict.encode(&p);
+            let o_id = dict.encode(&o);
+            triples.push(Triple { subject: s_id, predicate: p_id, object: o_id });
+        }
+    }
+    triples
+}
+
+/// Tokenise one N-Triples line. Returns the three raw term strings (IRI
+/// brackets stripped; literals kept with quotes; blank nodes kept as-is).
+/// Returns `None` for comment lines, blank lines, and malformed lines.
+fn tokenize_ntriples_line(line: &str) -> Option<[String; 3]> {
+    let line = line.trim();
+    if line.is_empty() || line.starts_with('#') {
+        return None;
+    }
+    let bytes = line.as_bytes();
+    let mut i = 0;
+    let mut tokens: Vec<String> = Vec::new();
+
+    while tokens.len() < 3 && i < bytes.len() {
+        // Skip whitespace
+        while i < bytes.len() && (bytes[i] == b' ' || bytes[i] == b'\t') {
+            i += 1;
+        }
+        if i >= bytes.len() { break; }
+
+        match bytes[i] {
+            b'<' => {
+                i += 1;
+                let start = i;
+                while i < bytes.len() && bytes[i] != b'>' { i += 1; }
+                tokens.push(String::from_utf8_lossy(&bytes[start..i]).into_owned());
+                if i < bytes.len() { i += 1; } // skip '>'
+            }
+            b'"' => {
+                let start = i;
+                i += 1;
+                while i < bytes.len() {
+                    if bytes[i] == b'\\' { i += 2; continue; }
+                    if bytes[i] == b'"' { i += 1; break; }
+                    i += 1;
+                }
+                // Consume optional @lang tag or ^^<datatype>
+                if i < bytes.len() && bytes[i] == b'@' {
+                    while i < bytes.len() && bytes[i] != b' ' && bytes[i] != b'\t' { i += 1; }
+                } else if i + 1 < bytes.len() && bytes[i] == b'^' && bytes[i + 1] == b'^' {
+                    i += 2;
+                    if i < bytes.len() && bytes[i] == b'<' {
+                        i += 1;
+                        while i < bytes.len() && bytes[i] != b'>' { i += 1; }
+                        if i < bytes.len() { i += 1; }
+                    }
+                }
+                tokens.push(String::from_utf8_lossy(&bytes[start..i]).into_owned());
+            }
+            b'_' if i + 1 < bytes.len() && bytes[i + 1] == b':' => {
+                let start = i;
+                while i < bytes.len()
+                    && bytes[i] != b' '
+                    && bytes[i] != b'\t'
+                    && bytes[i] != b'.'
+                {
+                    i += 1;
+                }
+                tokens.push(String::from_utf8_lossy(&bytes[start..i]).into_owned());
+            }
+            b'.' => break, // end-of-triple marker
+            _ => { i += 1; }
+        }
+    }
+
+    if tokens.len() >= 3 {
+        Some([tokens[0].clone(), tokens[1].clone(), tokens[2].clone()])
+    } else {
+        None
+    }
+}
+
+// ── DatalogMTL rule text parser ───────────────────────────────────────────────
+//
+// Rule format:
+//   (?x, :wasNear, ?y) :- (?x, :loc, ?l), Diamond[1000,5000](?y, :loc, ?l).
+//
+// Terms: ?var = Variable, <iri> = Constant (brackets stripped),
+//        :name = Constant (stored as ":name"), "lit" = Constant (stored with quotes).
+
+fn parse_dmtl_rules(text: &str, dict: &mut Dictionary) -> Result<Vec<DatalogMTLRule>, String> {
+    // Strip line comments and join into one string for depth-0 splitting.
+    let cleaned: String = text
+        .lines()
+        .map(|line| {
+            if let Some(pos) = line.find('#') { &line[..pos] } else { line }
+        })
+        .collect::<Vec<_>>()
+        .join(" ");
+
+    let rule_strs = split_at_depth0(&cleaned, '.');
+    let mut rules = Vec::new();
+
+    for (i, rule_str) in rule_strs.iter().enumerate() {
+        let rule_str = rule_str.trim();
+        if rule_str.is_empty() { continue; }
+
+        let sep_pos = find_rule_sep(rule_str)
+            .ok_or_else(|| format!("Rule {}: no ':-' found in: '{}'", i, rule_str))?;
+
+        let head_str = rule_str[..sep_pos].trim();
+        let body_str = rule_str[sep_pos + 2..].trim();
+
+        let head = parse_dmtl_triple_pattern(head_str, dict)?;
+        let body_parts = split_at_depth0(body_str, ',');
+        let mut body = Vec::new();
+        for part in &body_parts {
+            let part = part.trim();
+            if !part.is_empty() {
+                body.push(parse_dmtl_temporal_atom(part, dict)?);
+            }
+        }
+
+        rules.push(DatalogMTLRule { id: i.to_string(), head, body });
+    }
+
+    Ok(rules)
+}
+
+/// Find the byte offset of `:-` at paren/bracket depth 0.
+fn find_rule_sep(s: &str) -> Option<usize> {
+    let bytes = s.as_bytes();
+    let mut depth: i32 = 0;
+    let mut i = 0;
+    while i < bytes.len() {
+        match bytes[i] {
+            b'(' | b'[' => depth += 1,
+            b')' | b']' => { if depth > 0 { depth -= 1; } }
+            b':' if depth == 0 && i + 1 < bytes.len() && bytes[i + 1] == b'-' => {
+                return Some(i);
+            }
+            _ => {}
+        }
+        i += 1;
+    }
+    None
+}
+
+/// Split `s` at every occurrence of `sep` that is at paren/bracket depth 0.
+fn split_at_depth0(s: &str, sep: char) -> Vec<String> {
+    let mut parts = Vec::new();
+    let mut current = String::new();
+    let mut depth: i32 = 0;
+    for ch in s.chars() {
+        match ch {
+            '(' | '[' => { depth += 1; current.push(ch); }
+            ')' | ']' => { if depth > 0 { depth -= 1; } current.push(ch); }
+            c if c == sep && depth == 0 => {
+                parts.push(current.clone());
+                current.clear();
+            }
+            _ => { current.push(ch); }
+        }
+    }
+    if !current.trim().is_empty() {
+        parts.push(current);
+    }
+    parts
+}
+
+fn parse_dmtl_interval(s: &str) -> Result<Interval, String> {
+    let parts: Vec<&str> = s.splitn(2, ',').collect();
+    if parts.len() != 2 {
+        return Err(format!("Expected 'start,end' interval, got: '{}'", s));
+    }
+    let start = parts[0].trim().parse::<u64>()
+        .map_err(|e| format!("Invalid interval start '{}': {}", parts[0].trim(), e))?;
+    let end = parts[1].trim().parse::<u64>()
+        .map_err(|e| format!("Invalid interval end '{}': {}", parts[1].trim(), e))?;
+    Ok(Interval { start, end })
+}
+
+fn parse_dmtl_term(s: &str, dict: &mut Dictionary) -> Result<Term, String> {
+    let s = s.trim();
+    if s.starts_with('?') {
+        Ok(Term::Variable(s[1..].to_string()))
+    } else if s.starts_with('<') && s.ends_with('>') {
+        Ok(Term::Constant(dict.encode(&s[1..s.len() - 1])))
+    } else if s.starts_with(':') {
+        // ":name" stored as-is
+        Ok(Term::Constant(dict.encode(s)))
+    } else if s.starts_with('"') {
+        // literal kept with quotes
+        Ok(Term::Constant(dict.encode(s)))
+    } else {
+        Err(format!("Cannot parse term: '{}'", s))
+    }
+}
+
+fn parse_dmtl_triple_pattern(s: &str, dict: &mut Dictionary) -> Result<TriplePattern, String> {
+    let s = s.trim();
+    let inner = if s.starts_with('(') && s.ends_with(')') {
+        &s[1..s.len() - 1]
+    } else {
+        s
+    };
+    let parts = split_at_depth0(inner, ',');
+    if parts.len() != 3 {
+        return Err(format!(
+            "Expected 3 terms in triple pattern, got {}: '{}'",
+            parts.len(), s
+        ));
+    }
+    Ok((
+        parse_dmtl_term(parts[0].trim(), dict)?,
+        parse_dmtl_term(parts[1].trim(), dict)?,
+        parse_dmtl_term(parts[2].trim(), dict)?,
+    ))
+}
+
+fn parse_dmtl_temporal_atom(s: &str, dict: &mut Dictionary) -> Result<TemporalAtom, String> {
+    let s = s.trim();
+    if s.starts_with('(') {
+        return Ok(TemporalAtom::Base(parse_dmtl_triple_pattern(s, dict)?));
+    }
+    if let Some(rest) = s.strip_prefix("Diamond[") {
+        return parse_dmtl_interval_atom(rest, dict, "Diamond");
+    }
+    if let Some(rest) = s.strip_prefix("Box[") {
+        return parse_dmtl_interval_atom(rest, dict, "Box");
+    }
+    if let Some(rest) = s.strip_prefix("Prev[") {
+        return parse_dmtl_interval_atom(rest, dict, "Prev");
+    }
+    if let Some(rest) = s.strip_prefix("Since[") {
+        return parse_dmtl_since_atom(rest, dict);
+    }
+    Err(format!("Cannot parse temporal atom: '{}'", s))
+}
+
+fn parse_dmtl_interval_atom(
+    rest: &str,
+    dict: &mut Dictionary,
+    kind: &str,
+) -> Result<TemporalAtom, String> {
+    let close = rest.find(']')
+        .ok_or_else(|| format!("Missing ']' in {} interval", kind))?;
+    let interval = parse_dmtl_interval(&rest[..close])?;
+    let after = rest[close + 1..].trim();
+    let inner = parse_dmtl_temporal_atom(after, dict)?;
+    match kind {
+        "Diamond" => Ok(TemporalAtom::Diamond { interval, inner: Box::new(inner) }),
+        "Box"     => Ok(TemporalAtom::Box_ { interval, inner: Box::new(inner) }),
+        "Prev"    => Ok(TemporalAtom::Prev { interval, inner: Box::new(inner) }),
+        _         => Err(format!("Unknown operator: {}", kind)),
+    }
+}
+
+fn parse_dmtl_since_atom(rest: &str, dict: &mut Dictionary) -> Result<TemporalAtom, String> {
+    let close = rest.find(']')
+        .ok_or_else(|| "Missing ']' in Since interval".to_string())?;
+    let interval = parse_dmtl_interval(&rest[..close])?;
+    let after = rest[close + 1..].trim();
+
+    // Expect (phi_atom, psi_atom) — strip outer parens then split at depth-0 comma
+    if !after.starts_with('(') || !after.ends_with(')') {
+        return Err(format!("Since expects (phi, psi) after interval, got: '{}'", after));
+    }
+    let inner = &after[1..after.len() - 1];
+    let parts = split_at_depth0(inner, ',');
+    if parts.len() < 2 {
+        return Err("Since needs at least 2 atoms in (phi, psi)".to_string());
+    }
+    let phi = parse_dmtl_temporal_atom(parts[0].trim(), dict)?;
+    let psi_str = if parts.len() == 2 {
+        parts[1].trim().to_string()
+    } else {
+        parts[1..].iter().map(|s| s.trim()).collect::<Vec<_>>().join(",")
+    };
+    let psi = parse_dmtl_temporal_atom(&psi_str, dict)?;
+    Ok(TemporalAtom::Since {
+        interval,
+        phi: Box::new(phi),
+        psi: Box::new(psi),
+    })
+}
+
+// ── Stream shape text parser ──────────────────────────────────────────────────
+//
+// Syntax:
+//   STREAM :myStream
+//     PATTERN (?s, :pred, ?o)
+//     KEY ?s
+//     STALENESS 5000
+//   .
+//
+// Keywords are case-sensitive. Blocks are separated by depth-0 `.`.
+
+fn find_whole_word(text: &str, word: &str) -> Option<usize> {
+    let wlen = word.len();
+    let tbytes = text.as_bytes();
+    let wbytes = word.as_bytes();
+    let mut i = 0;
+    while i + wlen <= text.len() {
+        if &tbytes[i..i + wlen] == wbytes {
+            let before_ok = i == 0
+                || (!tbytes[i - 1].is_ascii_alphanumeric() && tbytes[i - 1] != b'_');
+            let after_pos = i + wlen;
+            let after_ok = after_pos >= text.len()
+                || (!tbytes[after_pos].is_ascii_alphanumeric() && tbytes[after_pos] != b'_');
+            if before_ok && after_ok {
+                return Some(i);
+            }
+        }
+        i += 1;
+    }
+    None
+}
+
+fn parse_stream_shapes(text: &str, dict: &mut Dictionary) -> Result<Vec<StreamShape>, String> {
+    let cleaned: String = text
+        .lines()
+        .map(|l| if let Some(p) = l.find('#') { &l[..p] } else { l })
+        .collect::<Vec<_>>()
+        .join(" ");
+
+    let blocks = split_at_depth0(&cleaned, '.');
+    let mut shapes = Vec::new();
+
+    for (bi, block) in blocks.iter().enumerate() {
+        let block = block.trim();
+        if block.is_empty() { continue; }
+
+        // Find positions of each keyword and sort
+        let kws = ["STREAM", "PATTERN", "KEY", "STALENESS"];
+        let mut kw_positions: Vec<(&str, usize)> = kws
+            .iter()
+            .filter_map(|&kw| find_whole_word(block, kw).map(|pos| (kw, pos)))
+            .collect();
+        kw_positions.sort_by_key(|(_, pos)| *pos);
+
+        // Build keyword → content map (text from end-of-keyword to start-of-next-keyword)
+        let mut sections: HashMap<&str, String> = HashMap::new();
+        for i in 0..kw_positions.len() {
+            let (kw, kw_pos) = kw_positions[i];
+            let content_start = kw_pos + kw.len();
+            let content_end = if i + 1 < kw_positions.len() {
+                kw_positions[i + 1].1
+            } else {
+                block.len()
+            };
+            sections.insert(kw, block[content_start..content_end].trim().to_string());
+        }
+
+        // STREAM: first whitespace-delimited token is the IRI
+        let stream_raw = sections
+            .get("STREAM")
+            .ok_or_else(|| format!("Shape block {}: missing STREAM keyword", bi))?;
+        let stream_iri_raw = stream_raw
+            .split_whitespace()
+            .next()
+            .ok_or_else(|| format!("Shape block {}: empty STREAM value", bi))?;
+        let stream_iri = if stream_iri_raw.starts_with('<') && stream_iri_raw.ends_with('>') {
+            stream_iri_raw[1..stream_iri_raw.len() - 1].to_string()
+        } else {
+            stream_iri_raw.to_string()
+        };
+
+        // PATTERN: collect all (…,…,…) groups
+        let pattern_text = sections.get("PATTERN").cloned().unwrap_or_default();
+        if pattern_text.trim().is_empty() {
+            return Err(format!("Shape '{}': missing PATTERN section", stream_iri));
+        }
+        let mut event_pattern = Vec::new();
+        let pb = pattern_text.as_bytes();
+        let mut pi = 0;
+        while pi < pb.len() {
+            if pb[pi] == b'(' {
+                let start = pi;
+                let mut depth = 1usize;
+                pi += 1;
+                while pi < pb.len() && depth > 0 {
+                    match pb[pi] {
+                        b'(' => depth += 1,
+                        b')' => depth -= 1,
+                        _ => {}
+                    }
+                    pi += 1;
+                }
+                event_pattern.push(parse_dmtl_triple_pattern(&pattern_text[start..pi], dict)?);
+            } else {
+                pi += 1;
+            }
+        }
+        if event_pattern.is_empty() {
+            return Err(format!("Shape '{}': no triple patterns found in PATTERN", stream_iri));
+        }
+
+        // KEY: collect ?var tokens
+        let key_text = sections.get("KEY").cloned().unwrap_or_default();
+        let channel_key: Vec<String> = key_text
+            .split_whitespace()
+            .filter(|s| s.starts_with('?'))
+            .map(|s| s[1..].to_string())
+            .collect();
+
+        // STALENESS: first token parsed as u64
+        let staleness_text = sections.get("STALENESS").cloned().unwrap_or_default();
+        let max_gap_ms = staleness_text
+            .split_whitespace()
+            .next()
+            .and_then(|s| s.parse::<u64>().ok())
+            .unwrap_or(0);
+
+        shapes.push(StreamShape {
+            stream_iri,
+            event_pattern,
+            channel_key,
+            staleness: StalenessPolicy { max_gap_ms },
+        });
+    }
+
+    Ok(shapes)
 }
 
 // ── Response helpers ─────────────────────────────────────────────────────────

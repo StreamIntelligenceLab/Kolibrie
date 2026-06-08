@@ -93,8 +93,27 @@ pub fn join_rule(
     results
 }
 
+/// Construct a new Triple from a conclusion pattern and bound variables.
+pub fn construct_triple(
+    conclusion: &TriplePattern,
+    vars: &HashMap<String, u32>,
+    _dict: &mut Dictionary,
+) -> Triple {
+    fn resolve(term: &Term, vars: &HashMap<String, u32>) -> u32 {
+        match term {
+            Term::Variable(v) => vars.get(v).copied().unwrap_or(0),
+            Term::Constant(c) => *c,
+        }
+    }
+    Triple {
+        subject:   resolve(&conclusion.0, vars),
+        predicate: resolve(&conclusion.1, vars),
+        object:    resolve(&conclusion.2, vars),
+    }
+}
+
 /// Given a rule, a set of all facts, and a binding that matches some premise
-fn join_remaining(
+pub fn join_remaining(
     rule: &Rule,
     changed_idx: usize,
     all_facts: &HashSet<Triple>,

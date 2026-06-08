@@ -14,6 +14,8 @@ pub mod rules;
 pub mod repairs;
 pub mod helpers;
 
+pub use rules::{matches_rule_pattern, construct_triple, join_rule, join_remaining};
+
 use shared::dictionary::Dictionary;
 use shared::triple::Triple;
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
@@ -22,7 +24,6 @@ use shared::rule_index::RuleIndex;
 use shared::rule::Rule;
 use std::sync::Arc;
 use std::sync::RwLock;
-use crate::reasoning::rules::join_rule;
 
 // Logic part: Knowledge Graph
 

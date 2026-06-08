@@ -1,0 +1,11 @@
+[package]
+name = "datalogmtl"
+version = "0.1.0"
+edition = "2021"
+license = "MPL-2.0"
+
+[dependencies]
+shared  = { path = "../shared" }
+datalog = { path = "../datalog" }
+serde   = { workspace = true }
+rayon   = { workspace = true }
