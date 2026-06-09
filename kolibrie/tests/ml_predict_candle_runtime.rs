@@ -17,7 +17,9 @@ fn tmp_model_path(name: &str) -> String {
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_nanos())
         .unwrap_or(0);
-    format!("/tmp/kolibrie_ml_predict_{}_{}_{}.bin", name, id, nanos)
+    let mut path = std::env::temp_dir();
+    path.push(format!("kolibrie_ml_predict_{}_{}_{}.bin", name, id, nanos));
+    path.to_string_lossy().into_owned()
 }
 
 fn populate_multiclass_db(db: &mut SparqlDatabase) {
@@ -236,6 +238,85 @@ ML.PREDICT(MODEL "digit_model",
 
     // Filtered-out sample has no prediction
     assert!(lookup_object(&db, "s2", "http://example.org/predictedDigit").is_none());
+}
+
+#[test]
+fn top_level_ml_predict_materializes_after_training() {
+    let mut db = SparqlDatabase::new();
+    populate_multiclass_db(&mut db);
+    train_multiclass(&mut db, &tmp_model_path("top_level"));
+
+    let predict = r#"
+PREFIX ex: <http://example.org/>
+
+ML.PREDICT(MODEL "digit_model",
+    INPUT {
+        SELECT ?sample ?x0 ?x1 ?x2
+        WHERE {
+            ?sample ex:x0 ?x0 .
+            ?sample ex:x1 ?x1 .
+            ?sample ex:x2 ?x2 .
+            FILTER (?x0 > 0)
+        }
+    },
+    OUTPUT ?label
+)
+"#;
+
+    kolibrie::neural_relations::execute_neural_program(&mut db, predict)
+        .expect("top-level ML.PREDICT failed");
+
+    let count = count_triples_with_predicate(&db, "http://example.org/predictedDigit");
+    assert_eq!(count, 2, "top-level ML.PREDICT should respect INPUT FILTER");
+    assert_eq!(
+        lookup_object(&db, "s0", "http://example.org/predictedDigit").as_deref(),
+        Some("A")
+    );
+    assert_eq!(
+        lookup_object(&db, "s1", "http://example.org/predictedDigit").as_deref(),
+        Some("A")
+    );
+    assert!(lookup_object(&db, "s2", "http://example.org/predictedDigit").is_none());
+}
+
+#[test]
+fn top_level_ml_predict_rejects_ambiguous_model_relation_mapping() {
+    let mut db = SparqlDatabase::new();
+
+    let program = r#"
+PREFIX ex: <http://example.org/>
+
+MODEL "shared_model" {
+    ARCH MLP { HIDDEN [4] }
+    OUTPUT EXCLUSIVE { "A", "B" }
+}
+
+NEURAL RELATION ex:firstPrediction USING MODEL "shared_model" {
+    INPUT { ?sample ex:x0 ?x0 . }
+    FEATURES { ?x0 }
+}
+
+NEURAL RELATION ex:secondPrediction USING MODEL "shared_model" {
+    INPUT { ?sample ex:x0 ?x0 . }
+    FEATURES { ?x0 }
+}
+
+ML.PREDICT(MODEL "shared_model",
+    INPUT {
+        SELECT ?sample ?x0
+        WHERE { ?sample ex:x0 ?x0 . }
+    },
+    OUTPUT ?label
+)
+"#;
+
+    let err = kolibrie::neural_relations::execute_neural_program(&mut db, program)
+        .expect_err("ambiguous model-to-relation mapping should fail");
+    assert!(
+        err.contains("matches 2 NEURAL RELATION"),
+        "unexpected error: {}",
+        err
+    );
 }
 
 /// Binary output emits every row and adds the `_prob` companion

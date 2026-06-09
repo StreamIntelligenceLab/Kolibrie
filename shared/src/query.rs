@@ -326,6 +326,7 @@ pub struct CombinedQuery<'a> {
     pub neural_relation_decls: Vec<NeuralRelationDecl>,
     pub train_neural_relation_decls: Vec<TrainNeuralRelationDecl>,
     pub rule: Option<CombinedRule<'a>>,
+    pub ml_predict: Option<MLPredictClause<'a>>,
     pub sparql: (
         Option<InsertClause<'a>>,
         Vec<(&'a str, &'a str, Option<&'a str>)>,
