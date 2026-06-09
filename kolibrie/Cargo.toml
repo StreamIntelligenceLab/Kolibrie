@@ -32,6 +32,7 @@ pyo3 = { workspace = true }
 gpu = { path = "../gpu" }
 shared = { path = "../shared" }
 datalog =  { path = "../datalog" }
+datalogmtl = { path = "../datalogmtl" }
 ml = { path = "../ml" }
 chrono = "0.4.40"
 rumqttc = "0.21.0"
@@ -327,6 +328,10 @@ path = "examples/real_scenario/mqtt_real_scenario.rs"
 [[example]]
 name = "fraud_detection_system"
 path = "examples/real_scenario/fraud_detection_system.rs"
+
+[[example]]
+name = "drone_traffic_safety_demo"
+path = "examples/real_scenario/drone_traffic_safety_demo.rs"
 
 [[example]]
 name = "combined_rules_example"

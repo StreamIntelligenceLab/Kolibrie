@@ -1196,6 +1196,7 @@ dependencies = [
  "criterion",
  "crossbeam",
  "datalog",
+ "datalogmtl",
  "gpu",
  "httparse",
  "libc",

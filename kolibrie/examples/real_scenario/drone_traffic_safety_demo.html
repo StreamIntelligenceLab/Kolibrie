@@ -1,0 +1,251 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Ghent Drone Safety Demo</title>
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"
+      integrity="sha256-p4NxAoJBhIINfQ0tfsWCQt7RuB2N2RJY+/WPQmXKGQw="
+      crossorigin="">
+<style>
+  *{box-sizing:border-box}
+  body{margin:0;font-family:system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;background:#eef2f5;color:#17212f}
+  .app{height:100vh;display:grid;grid-template-columns:minmax(0,1fr) 390px}
+  .app>section:first-child{height:100vh;min-width:0;position:relative;overflow:hidden}
+  #map{height:100vh;width:100%;background:#dfe7e4}
+  .sidebar{height:100vh;overflow:auto;border-left:1px solid #cbd5df;background:#f8fafc;position:relative;z-index:20}
+  .leaflet-container{overflow:hidden;position:relative;outline-offset:1px}
+  .leaflet-pane,.leaflet-tile,.leaflet-marker-icon,.leaflet-marker-shadow,.leaflet-tile-container,.leaflet-pane>svg,.leaflet-pane>canvas,.leaflet-zoom-box,.leaflet-image-layer,.leaflet-layer{position:absolute;left:0;top:0}
+  .leaflet-tile,.leaflet-marker-icon,.leaflet-marker-shadow{user-select:none;-webkit-user-drag:none}
+  .leaflet-tile{filter:inherit;visibility:hidden}
+  .leaflet-tile-loaded{visibility:inherit}
+  .leaflet-zoom-animated{transform-origin:0 0}
+  .leaflet-marker-icon,.leaflet-marker-shadow{display:block}
+  .leaflet-interactive{cursor:pointer}
+  .leaflet-grab{cursor:grab}
+  .leaflet-dragging .leaflet-grab{cursor:move;cursor:grabbing}
+  .leaflet-control{position:relative;z-index:800;pointer-events:auto}
+  .leaflet-top,.leaflet-bottom{position:absolute;z-index:1000;pointer-events:none}
+  .leaflet-top{top:0}.leaflet-right{right:0}.leaflet-bottom{bottom:0}.leaflet-left{left:0}
+  .leaflet-control{float:left;clear:both}
+  .leaflet-right .leaflet-control{float:right}
+  .leaflet-top .leaflet-control{margin-top:10px}
+  .leaflet-bottom .leaflet-control{margin-bottom:10px}
+  .leaflet-left .leaflet-control{margin-left:10px}
+  .leaflet-right .leaflet-control{margin-right:10px}
+  .leaflet-control-zoom a{display:block;width:30px;height:30px;line-height:30px;text-align:center;text-decoration:none;background:#fff;color:#17212f;border-bottom:1px solid #cbd5df;font-weight:800}
+  .leaflet-control-zoom a:first-child{border-radius:4px 4px 0 0}
+  .leaflet-control-zoom a:last-child{border-radius:0 0 4px 4px;border-bottom:0}
+  .leaflet-control-attribution{background:rgba(255,255,255,.82);padding:2px 6px;font-size:11px}
+  .leaflet-overlay-pane svg{max-width:none}
+  .topbar{position:absolute;z-index:500;top:14px;left:14px;display:flex;gap:8px;align-items:center;flex-wrap:wrap}
+  .chip,.button{border:1px solid #c7d2df;background:#fff;border-radius:8px;padding:8px 10px;font-size:12px;font-weight:700;box-shadow:0 2px 8px rgba(15,23,42,.12)}
+  .button{cursor:pointer;color:#17212f}
+  .button.paused{border-color:#b91c1c;color:#b91c1c;background:#fff7f7}
+  .panel{border-bottom:1px solid #dce3eb;padding:14px 16px}
+  .panel h1{font-size:18px;line-height:1.2;margin:0 0 4px}
+  .panel h2{font-size:12px;letter-spacing:.06em;text-transform:uppercase;margin:0 0 10px;color:#607086}
+  .status-row{display:grid;grid-template-columns:1fr auto;gap:10px;padding:8px 0;border-top:1px solid #e4eaf0;font-size:13px}
+  .status-row:first-of-type{border-top:0}
+  .key{color:#64748b}
+  .val{font-weight:800;text-align:right}
+  .alert{border:1px solid #e6b0a8;background:#fff3f0;border-radius:8px;padding:10px;margin:8px 0}
+  .alert.warning{border-color:#f4d08c;background:#fff9e8}
+  .alert strong{display:block;font-size:13px;margin-bottom:3px}
+  .alert span{display:block;font-size:12px;color:#5d6876;line-height:1.35}
+  .log{max-height:210px;overflow:auto;border:1px solid #dbe3ec;background:#fff;border-radius:8px;padding:8px}
+  .log div{font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-size:11px;line-height:1.4;border-top:1px solid #edf1f5;padding:5px 0;word-break:break-word}
+  .log div:first-child{border-top:0}
+  .empty{font-size:12px;color:#708095;padding:8px 0}
+  .legend{display:flex;gap:8px;flex-wrap:wrap;margin-top:10px}
+  .legend span{font-size:11px;border-radius:999px;padding:4px 8px;background:#e8eef5;color:#435167}
+  .drone-marker{width:24px;height:24px;border-radius:50%;display:grid;place-items:center;color:#fff;font-weight:900;font-size:12px;border:2px solid #fff;box-shadow:0 2px 8px rgba(0,0,0,.32)}
+  .drone-a{background:#0f766e}
+  .drone-b{background:#1d4ed8}
+  .leaflet-div-icon{background:transparent;border:0}
+  @media (max-width:900px){
+    .app{grid-template-columns:1fr;grid-template-rows:62vh 38vh}
+    #map{height:62vh}
+    .sidebar{height:38vh;border-left:0;border-top:1px solid #cbd5df}
+  }
+</style>
+</head>
+<body>
+<main class="app">
+  <section>
+    <div class="topbar">
+      <div class="chip" id="clock">T=0s</div>
+      <button class="button" id="link-toggle" type="button">Pause Drone B Link</button>
+    </div>
+    <div id="map"></div>
+  </section>
+  <aside class="sidebar">
+    <section class="panel">
+      <h1>Ghent Drone Safety</h1>
+      <div class="legend">
+        <span>UZ Gent</span>
+        <span>Ghent City Hall</span>
+        <span>Citadelpark</span>
+      </div>
+    </section>
+    <section class="panel">
+      <h2>Drone State</h2>
+      <div id="drone-state"></div>
+    </section>
+    <section class="panel">
+      <h2>Active Alerts</h2>
+      <div id="alerts"><div class="empty">No active alerts.</div></div>
+    </section>
+    <section class="panel">
+      <h2>DatalogMTL Output</h2>
+      <div class="log" id="derived"><div>No derived facts yet.</div></div>
+    </section>
+    <section class="panel">
+      <h2>RDF Telemetry</h2>
+      <div class="log" id="rdf-log"><div>Waiting for stream events.</div></div>
+    </section>
+  </aside>
+</main>
+
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"
+        integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo="
+        crossorigin=""></script>
+<script>
+  const map = L.map('map', { zoomControl: true }).setView([51.0398, 3.7242], 13);
+  L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+    maxZoom: 19,
+    attribution: '&copy; OpenStreetMap contributors'
+  }).addTo(map);
+
+  const droneIcons = {
+    droneA: L.divIcon({ className: '', html: '<div class="drone-marker drone-a">A</div>', iconSize: [24,24], iconAnchor: [12,12] }),
+    droneB: L.divIcon({ className: '', html: '<div class="drone-marker drone-b">B</div>', iconSize: [24,24], iconAnchor: [12,12] })
+  };
+  const markers = {
+    droneA: L.marker([51.0261, 3.7178], { icon: droneIcons.droneA }).addTo(map),
+    droneB: L.marker([51.0518, 3.7179], { icon: droneIcons.droneB, draggable: true }).addTo(map)
+  };
+  const zoneLayers = new Map();
+  let telemetryPaused = false;
+  let latestB = { lat: 51.0518, lng: 3.7179 };
+  let suppressBMove = false;
+
+  const routeA = [
+    [51.02565, 3.7178],
+    [51.02565, 3.7252],
+    [51.02565, 3.7316],
+    [51.0262, 3.7385]
+  ];
+  L.polyline(routeA, { color: '#0f766e', weight: 3, opacity: .75, dashArray: '5,6' }).addTo(map);
+
+  markers.droneB.on('drag', function(e) {
+    const pos = e.target.getLatLng();
+    latestB = { lat: pos.lat, lng: pos.lng };
+    postDroneB();
+  });
+
+  document.getElementById('link-toggle').addEventListener('click', function() {
+    telemetryPaused = !telemetryPaused;
+    this.textContent = telemetryPaused ? 'Resume Drone B Link' : 'Pause Drone B Link';
+    this.classList.toggle('paused', telemetryPaused);
+    if (!telemetryPaused) postDroneB();
+  });
+
+  function postDroneB() {
+    if (telemetryPaused) return;
+    fetch('/api/drone-b', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(latestB)
+    }).catch(function() {});
+  }
+
+  setInterval(postDroneB, 2000);
+  postDroneB();
+
+  function renderZones(zones) {
+    zones.forEach(function(zone) {
+      if (zoneLayers.has(zone.id)) return;
+      const layer = L.circle([zone.center.lat, zone.center.lng], {
+        radius: zone.radius_m,
+        color: '#b91c1c',
+        weight: 2,
+        fillColor: '#ef4444',
+        fillOpacity: .18
+      }).bindTooltip(zone.label, { permanent: false });
+      layer.addTo(map);
+      zoneLayers.set(zone.id, layer);
+    });
+  }
+
+  function renderDrones(drones) {
+    const box = document.getElementById('drone-state');
+    box.innerHTML = drones.map(function(drone) {
+      const pos = drone.position;
+      if (markers[drone.id]) {
+        suppressBMove = drone.id === 'droneB';
+        markers[drone.id].setLatLng([pos.lat, pos.lng]);
+        suppressBMove = false;
+      }
+      if (drone.id === 'droneB' && !telemetryPaused) {
+        latestB = { lat: pos.lat, lng: pos.lng };
+      }
+      return '<div class="status-row">' +
+        '<span class="key">' + drone.label + '</span>' +
+        '<span class="val">' + drone.link + '</span>' +
+        '</div>' +
+        '<div class="status-row">' +
+        '<span class="key">Zone</span>' +
+        '<span class="val">' + (drone.current_zone || 'clear') + '</span>' +
+        '</div>' +
+        '<div class="status-row">' +
+        '<span class="key">Flight plan</span>' +
+        '<span class="val">' + (drone.off_plan ? 'off course' : 'nominal') + '</span>' +
+        '</div>';
+    }).join('');
+  }
+
+  function renderAlerts(alerts) {
+    const box = document.getElementById('alerts');
+    if (!alerts.length) {
+      box.innerHTML = '<div class="empty">No active alerts.</div>';
+      return;
+    }
+    box.innerHTML = alerts.map(function(alert) {
+      return '<div class="alert ' + alert.level + '">' +
+        '<strong>' + alert.drone + ' - ' + alert.rule + '</strong>' +
+        '<span>' + alert.message + (alert.zone ? ' Zone: ' + alert.zone + '.' : '') + '</span>' +
+        '</div>';
+    }).join('');
+  }
+
+  function renderLog(id, lines, fallback) {
+    const box = document.getElementById(id);
+    const selected = lines.slice(-12).reverse();
+    box.innerHTML = selected.length
+      ? selected.map(function(line) { return '<div>' + escapeHtml(line) + '</div>'; }).join('')
+      : '<div>' + fallback + '</div>';
+  }
+
+  function escapeHtml(value) {
+    return String(value)
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;')
+      .replace(/'/g, '&#039;');
+  }
+
+  const es = new EventSource('/events');
+  es.addEventListener('state', function(event) {
+    const data = JSON.parse(event.data);
+    document.getElementById('clock').textContent = 'T=' + Math.floor(data.time_ms / 1000) + 's';
+    renderZones(data.zones || []);
+    renderDrones(data.drones || []);
+    renderAlerts(data.alerts || []);
+    renderLog('derived', data.derived || [], 'No derived facts yet.');
+    renderLog('rdf-log', data.rdf_events || [], 'Waiting for stream events.');
+  });
+</script>
+</body>
+</html>
