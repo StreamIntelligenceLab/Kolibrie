@@ -13,6 +13,7 @@ use crate::disk_storage::lsm_tree::{LSMTree, LSMConfig};
 use crate::storage_trait::{StorageTrait, QueryAnalysis, QueryAnalyzer, StorageMode};
 use crate::execute_query::execute_query_rayon_parallel2_volcano;
 use shared::triple::Triple;
+use shared::index_manager::TripleIndex;
 
 /// Storage backend type - determines where data is physically stored
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -160,7 +161,7 @@ impl StorageManager {
         match self.current_backend {
             StorageBackend::Memory => {
                 // Query the UnifiedIndex in memory database
-                self.memory_database.index_manager.query(s, p, o)
+                self.memory_database.index().query(s, p, o)
             }
             StorageBackend::Disk => {
                 if let Some(ref lsm) = self.disk_database {
@@ -187,7 +188,7 @@ impl StorageManager {
                     
                     // Create temporary database with the disk's index
                     let mut temp_db = SparqlDatabase::new();
-                    temp_db.index_manager = unified_index;
+                    temp_db.index_manager = Some(unified_index);
                     
                     // Share dictionary and prefixes from memory database
                     temp_db.dictionary = self.memory_database.dictionary.clone();
@@ -221,7 +222,7 @@ impl StorageManager {
         }
         
         // Get all triples from memory's UnifiedIndex
-        let triples = self.memory_database.index_manager.query(None, None, None);
+        let triples = self.memory_database.index().query(None, None, None);
         
         // Insert into disk
         if let Some(ref lsm) = self.disk_database {
@@ -258,7 +259,7 @@ impl StorageManager {
     
     /// Get statistics about current storage
     pub fn get_storage_stats(&self) -> StorageStats {
-        let memory_triples = self.memory_database.index_manager.query(None, None, None).len();
+        let memory_triples = self.memory_database.index().query(None, None, None).len();
         let disk_triples = if let Some(ref lsm) = self.disk_database {
             lsm.get_all_triples().len()
         } else {

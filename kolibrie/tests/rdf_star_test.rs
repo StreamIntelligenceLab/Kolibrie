@@ -299,7 +299,7 @@ fn test_bind_subject_predicate_object() {
 "#;
     db.parse_ntriples_and_add(ntriples);
     let triples_vec: Vec<_> = db.triples.iter().cloned().collect();
-    db.index_manager.build_from_triples(&triples_vec);
+    Option::expect(db.index_manager.as_mut(), "index should not be None").build_from_triples(&triples_vec);
     db.get_or_build_stats();
 
     // Query using BIND(SUBJECT(?t) AS ?s)
@@ -324,7 +324,7 @@ fn test_bind_triple_constructor() {
 "#;
     db.parse_ntriples_and_add(ntriples);
     let triples_vec: Vec<_> = db.triples.iter().cloned().collect();
-    db.index_manager.build_from_triples(&triples_vec);
+    Option::expect(db.index_manager.as_mut(), "index should not be None").build_from_triples(&triples_vec);
     db.get_or_build_stats();
 
     // Use BIND(TRIPLE(...) AS ?t) to construct a quoted triple
@@ -405,7 +405,7 @@ fn test_delete_where() {
 "#;
     db.parse_ntriples_and_add(ntriples);
     let triples_vec: Vec<_> = db.triples.iter().cloned().collect();
-    db.index_manager.build_from_triples(&triples_vec);
+    Option::expect(db.index_manager.as_mut(), "index should not be None").build_from_triples(&triples_vec);
     db.get_or_build_stats();
     assert_eq!(db.triples.len(), 3, "Should start with 3 triples");
 

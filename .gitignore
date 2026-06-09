@@ -92,7 +92,8 @@ kolibrie/src/cuda/cudajoin.lib
 python/.venv/
 
 # Some other directories
-benchmark_dataset/
+**/benchmark_results/
+**/benchmark_dataset/
 
 # IntelliJ 
 .idea/

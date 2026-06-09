@@ -1,6 +1,7 @@
 use datalog::reasoning::Reasoner;
 use shared::terms::Term;
 use shared::rule::Rule;
+use shared::index_manager::TripleIndex;
 use kolibrie::sparql_database::SparqlDatabase;
 use std::fs;
 use std::time::Instant;

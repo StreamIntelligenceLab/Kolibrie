@@ -10,6 +10,7 @@
 
 use shared::rule::Rule;
 use shared::triple::Triple;
+use shared::index_manager::TripleIndex;
 use crate::reasoning::Reasoner;
 use std::collections::{BTreeMap, HashMap, HashSet};
 use shared::terms::Term;

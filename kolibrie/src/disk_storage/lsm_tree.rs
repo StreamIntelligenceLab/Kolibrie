@@ -9,7 +9,7 @@
  */
 
 use shared::triple::Triple;
-use shared::index_manager::UnifiedIndex;
+use shared::index_manager::*;
 use std::collections::VecDeque;
 use std::sync::{Arc, RwLock, Mutex};
 use std::path::PathBuf;
@@ -480,16 +480,21 @@ impl LSMTree {
     }
 
     /// Build UnifiedIndex from all data in LSM-Tree
-    pub fn build_unified_index(&self) -> UnifiedIndex {
-        let mut index = UnifiedIndex::new();
+    pub fn build_unified_index(&self) -> HexastoreIndex {
+        let mut index = HexastoreIndex::new();
         let all_triples = self.get_all_triples();
         index.build_from_triples(&all_triples);
         index
     }
 
-    /// Export to UnifiedIndex for use in SparqlDatabase
-    pub fn export_to_unified_index(&self) -> UnifiedIndex {
-        self.build_unified_index()
+    /// Export as Box<dyn TripleIndex> for use in SparqlDatabase
+    pub fn export_to_trait_index(&self) -> Box<HexastoreIndex> {
+        Box::new(self.build_unified_index())
+    }
+
+    /// Keep old name for backward compat, now returns boxed
+    pub fn export_to_unified_index(&self) -> Box<HexastoreIndex> {
+        self.export_to_trait_index()
     }
 }
 

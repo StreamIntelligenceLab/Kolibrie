@@ -1,24 +1,25 @@
 /*
- * Copyright © 2025 Volodymyr Kadzhaia
- * Copyright © 2025 Pieter Bonte
- * KU Leuven — Stream Intelligence Lab, Belgium
- *
- * This Source Code Form is subject to the terms of the Mozilla Public
- * License, v. 2.0. If a copy of the MPL was not distributed with this file,
- * you can obtain one at https://mozilla.org/MPL/2.0/.
- */
+* Copyright © 2025 Volodymyr Kadzhaia
+* Copyright © 2025 Pieter Bonte
+* KU Leuven — Stream Intelligence Lab, Belgium
+*
+* This Source Code Form is subject to the terms of the Mozilla Public
+* License, v. 2.0. If a copy of the MPL was not distributed with this file,
+* you can obtain one at https://mozilla.org/MPL/2.0/.
+*/
 
+#[cfg(feature = "cuda")]
+use crate::cuda::cuda_join::*;
 use shared::dictionary::Dictionary;
 use shared::query::{FilterExpression, ModelDecl, NeuralRelationDecl, TrainNeuralRelationDecl};
 use shared::quoted_triple_store::{QuotedTripleStore, is_quoted_triple_id};
 use shared::triple::Triple;
 use crate::parser;
+use crate::parser::convert_triple_pattern;
+use crate::query_builder::QueryBuilder;
+use crate::streamertail_optimizer::DatabaseStats;
 use crate::utils;
 use crate::utils::ClonableFn;
-#[cfg(feature = "cuda")]
-use crate::cuda::cuda_join::*;
-use shared::index_manager::UnifiedIndex;
-use crate::query_builder::QueryBuilder;
 use crossbeam::channel::unbounded;
 use crossbeam::scope;
 use percent_encoding::percent_decode;
@@ -26,15 +27,22 @@ use quick_xml::events::Event;
 use quick_xml::name::QName;
 use quick_xml::Reader;
 use rayon::prelude::*;
-#[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
-use std::arch::x86_64::*;
+use shared::index_manager::TripleIndex;
+use shared::index_manager::{
+    BucketIndex, HexastoreIndex, IndexConfig, OPSSingleIndex,
+    OSPSingleIndex, POSSingleIndex, PSOSingleIndex, SOPSingleIndex, SPOSingleIndex,
+    SingleTableIndex, PartialHexastoreIndex
+};
+use shared::terms::TriplePattern;
 #[cfg(target_arch = "aarch64")]
 use std::arch::aarch64::*;
+#[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+use std::arch::x86_64::*;
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::sync::Arc;
 use std::sync::{Mutex, RwLock};
+use sysinfo::{ProcessExt, System, SystemExt};
 use url::Url;
-use crate::streamertail_optimizer::DatabaseStats;
 
 const MIN_CHUNK_SIZE: usize = 1024;
 const HASHMAP_INITIAL_CAPACITY: usize = 4096;
@@ -48,7 +56,7 @@ pub struct SparqlDatabase {
     pub dictionary: Arc<RwLock<Dictionary>>,
     pub prefixes: HashMap<String, String>,
     pub udfs: HashMap<String, ClonableFn>,
-    pub index_manager: UnifiedIndex,
+    pub index_manager: Option<Box<dyn TripleIndex>>,
     pub rule_map: HashMap<String, String>,
     pub model_decls: HashMap<String, ModelDecl>,
     pub neural_relation_decls: HashMap<String, NeuralRelationDecl>,
@@ -58,18 +66,24 @@ pub struct SparqlDatabase {
     pub ml_predict_materialized_triples: HashMap<String, Vec<Triple>>,
     pub probability_seeds: HashMap<Triple, f64>,
     pub cached_stats: Option<Arc<DatabaseStats>>,
+    pub index_config: IndexConfig,
     pub quoted_triple_store: Arc<RwLock<QuotedTripleStore>>,
 }
 
 #[allow(dead_code)]
 impl SparqlDatabase {
     pub fn new() -> Self {
+        Self::with_config(IndexConfig::Hexastore)
+    }
+
+    /// Creates a new database with a user-chosen indexing strategy.
+    pub fn with_config(config: IndexConfig) -> Self {
         Self {
             triples: BTreeSet::new(),
             dictionary: Arc::new(RwLock::new(Dictionary::new())),
             prefixes: HashMap::new(),
             udfs: HashMap::new(),
-            index_manager: UnifiedIndex::new(),
+            index_manager: None,
             rule_map: HashMap::new(),
             model_decls: HashMap::new(),
             neural_relation_decls: HashMap::new(),
@@ -79,7 +93,28 @@ impl SparqlDatabase {
             ml_predict_materialized_triples: HashMap::new(),
             probability_seeds: HashMap::new(),
             cached_stats: None,
+            index_config: config,
             quoted_triple_store: Arc::new(RwLock::new(QuotedTripleStore::new())),
+        }
+    }
+    pub fn set_prefixes(&mut self, prefixes: HashMap<String, String>) {
+        self.prefixes = prefixes;
+    }
+
+    fn make_initial_index(config: &IndexConfig) -> Box<dyn TripleIndex> {
+        match config {
+            IndexConfig::Hexastore => Box::new(HexastoreIndex::new()),
+            IndexConfig::SPO => Box::new(SPOSingleIndex::new()),
+            IndexConfig::POS => Box::new(POSSingleIndex::new()),
+            IndexConfig::OSP => Box::new(OSPSingleIndex::new()),
+            IndexConfig::PSO => Box::new(PSOSingleIndex::new()),
+            IndexConfig::OPS => Box::new(OPSSingleIndex::new()),
+            IndexConfig::SOP => Box::new(SOPSingleIndex::new()),
+            IndexConfig::SingleTable => Box::new(SingleTableIndex::new()),
+            // Pattern-dependent indexes start as hexastore;
+            // `build_all_indexes` will swap them out.
+            IndexConfig::Buckets { .. } => Box::new(HexastoreIndex::new()),
+            IndexConfig::PartialHexastore { .. } => Box::new(HexastoreIndex::new()),
         }
     }
 
@@ -197,20 +232,377 @@ impl SparqlDatabase {
         }
     }
 
-    pub fn set_prefixes(&mut self, prefixes: HashMap<String, String>){
-        self.prefixes=prefixes;
+    fn resolve_planned_access_patterns(
+        &mut self,
+        raw_queries: &[String],
+    ) -> Vec<shared::query::PlannedAccessPattern> {
+        use crate::streamertail_optimizer::operators::PhysicalOperator;
+        use crate::streamertail_optimizer::utils::build_logical_plan;
+        use crate::streamertail_optimizer::Streamertail;
+        use shared::query::PlannedAccessPattern;
+        use shared::terms::Term;
+        use std::collections::HashSet;
+
+        let mut planned_patterns = Vec::new();
+
+        for query_str in raw_queries {
+            if let Ok((
+                _,
+                (
+                    _insert_clause,
+                    variables,
+                    patterns,
+                    filters,
+                    _group_vars,
+                    parsed_prefixes,
+                    values_clause,
+                    binds,
+                    _subqueries,
+                    _limit,
+                    _,
+                    _order_conditions,
+                ),
+            )) = crate::parser::parse_sparql_query(query_str)
+            {
+                let mut prefixes = self.prefixes.clone();
+                for (k, v) in parsed_prefixes {
+                    prefixes.insert(k, v);
+                }
+
+                let logical_plan = build_logical_plan(
+                    variables.iter().map(|(t, v, _)| (*t, *v)).collect(),
+                    patterns,
+                    filters.clone(),
+                    &prefixes,
+                    self,
+                    &binds,
+                    values_clause.as_ref(),
+                );
+
+                let stats = self.get_or_build_stats();
+                let mut optimizer = Streamertail::with_cached_stats(stats.clone());
+                let optimized_plan = optimizer.find_best_plan(&logical_plan);
+
+                let mut bound_vars = HashSet::new();
+
+                if let Some(vc) = values_clause {
+                    for var in &vc.variables {
+                        let mut v = var.to_string();
+                        if !v.starts_with('?') {
+                            v = format!("?{}", v);
+                        }
+                        bound_vars.insert(v);
+                    }
+                }
+
+                fn traverse_physical(
+                    op: &PhysicalOperator,
+                    bound_vars: &mut HashSet<String>,
+                    out: &mut Vec<PlannedAccessPattern>,
+                ) {
+                    match op {
+                        PhysicalOperator::TableScan { pattern }
+                        | PhysicalOperator::IndexScan { pattern } => {
+                            let (s, p, o) = pattern;
+
+                            let bound_subject = match s {
+                                Term::Constant(_) => true,
+                                Term::Variable(v) => bound_vars.contains(v),
+                                Term::QuotedTriple(_) => false,
+                            };
+                            let bound_predicate = match p {
+                                Term::Constant(_) => true,
+                                Term::Variable(v) => bound_vars.contains(v),
+                                Term::QuotedTriple(_) => false,
+                            };
+                            let bound_object = match o {
+                                Term::Constant(_) => true,
+                                Term::Variable(v) => bound_vars.contains(v),
+                                Term::QuotedTriple(_) => false,
+                            };
+
+                            out.push(PlannedAccessPattern {
+                                pattern: pattern.clone(),
+                                bound_subject,
+                                bound_predicate,
+                                bound_object,
+                            });
+
+                            if let Term::Variable(v) = s {
+                                bound_vars.insert(v.clone());
+                            }
+                            if let Term::Variable(v) = p {
+                                bound_vars.insert(v.clone());
+                            }
+                            if let Term::Variable(v) = o {
+                                bound_vars.insert(v.clone());
+                            }
+                        }
+                        PhysicalOperator::StarJoin {
+                            join_var: _,
+                            patterns,
+                        } => {
+                            let mut sorted_patterns = patterns.clone();
+
+                            sorted_patterns.sort_by_key(|p| {
+                                let mut constants = 0;
+                                if matches!(p.0, Term::Constant(_)) {
+                                    constants += 1;
+                                }
+                                if matches!(p.1, Term::Constant(_)) {
+                                    constants += 1;
+                                }
+                                if matches!(p.2, Term::Constant(_)) {
+                                    constants += 1;
+                                }
+                                std::cmp::Reverse(constants)
+                            });
+
+                            let initial_bound_vars = bound_vars.clone();
+
+                            for (i, pattern) in sorted_patterns.iter().enumerate() {
+                                let (s, p, o) = pattern;
+
+                                // The pattern evaluated independently (Hash Join path fallback)
+                                let original_bound_subject = match s {
+                                    Term::Constant(_) => true,
+                                    Term::Variable(v) => initial_bound_vars.contains(v),
+                                    Term::QuotedTriple(_) => false,
+                                };
+                                let original_bound_predicate = match p {
+                                    Term::Constant(_) => true,
+                                    Term::Variable(v) => initial_bound_vars.contains(v),
+                                    Term::QuotedTriple(_) => false,
+                                };
+                                let original_bound_object = match o {
+                                    Term::Constant(_) => true,
+                                    Term::Variable(v) => initial_bound_vars.contains(v),
+                                    Term::QuotedTriple(_) => false,
+                                };
+
+                                out.push(PlannedAccessPattern {
+                                    pattern: pattern.clone(),
+                                    bound_subject: original_bound_subject,
+                                    bound_predicate: original_bound_predicate,
+                                    bound_object: original_bound_object,
+                                });
+
+                                // For i > 0, it might also be executed as a Bind Join
+                                if i > 0 {
+                                    let accum_bound_subject = match s {
+                                        Term::Constant(_) => true,
+                                        Term::Variable(v) => bound_vars.contains(v),
+                                        Term::QuotedTriple(_) => false,
+                                    };
+                                    let accum_bound_predicate = match p {
+                                        Term::Constant(_) => true,
+                                        Term::Variable(v) => bound_vars.contains(v),
+                                        Term::QuotedTriple(_) => false,
+                                    };
+                                    let accum_bound_object = match o {
+                                        Term::Constant(_) => true,
+                                        Term::Variable(v) => bound_vars.contains(v),
+                                        Term::QuotedTriple(_) => false,
+                                    };
+
+                                    if accum_bound_subject != original_bound_subject
+                                        || accum_bound_predicate != original_bound_predicate
+                                        || accum_bound_object != original_bound_object
+                                    {
+                                        out.push(PlannedAccessPattern {
+                                            pattern: pattern.clone(),
+                                            bound_subject: accum_bound_subject,
+                                            bound_predicate: accum_bound_predicate,
+                                            bound_object: accum_bound_object,
+                                        });
+                                    }
+                                }
+
+                                // Update accumulated bound_vars
+                                if let Term::Variable(v) = s {
+                                    bound_vars.insert(v.clone());
+                                }
+                                if let Term::Variable(v) = p {
+                                    bound_vars.insert(v.clone());
+                                }
+                                if let Term::Variable(v) = o {
+                                    bound_vars.insert(v.clone());
+                                }
+                            }
+                        }
+                        PhysicalOperator::ParallelJoin { left, right } => {
+                            // Left executes independently
+                            let mut left_vars = bound_vars.clone();
+                            traverse_physical(left, &mut left_vars, out);
+
+                            // Right can execute independently (Hash/Merge join) OR dependently (Bind join)
+                            let mut right_vars_unbound = bound_vars.clone();
+                            traverse_physical(right, &mut right_vars_unbound, out);
+
+                            let mut right_vars_bound = left_vars.clone();
+                            traverse_physical(right, &mut right_vars_bound, out);
+
+                            bound_vars.extend(left_vars);
+                            bound_vars.extend(right_vars_unbound);
+                        }
+                        PhysicalOperator::NestedLoopJoin { left, right }
+                        | PhysicalOperator::HashJoin { left, right }
+                        | PhysicalOperator::OptimizedHashJoin { left, right } => {
+                            // Both sides evaluate independently using ONLY the pre-join bounds
+                            let mut left_vars = bound_vars.clone();
+                            let mut right_vars = bound_vars.clone();
+                            traverse_physical(left, &mut left_vars, out);
+                            traverse_physical(right, &mut right_vars, out);
+
+                            bound_vars.extend(left_vars);
+                            bound_vars.extend(right_vars);
+                        }
+                        PhysicalOperator::Filter { input, .. }
+                        | PhysicalOperator::Projection { input, .. } => {
+                            traverse_physical(input, bound_vars, out);
+                        }
+                        PhysicalOperator::Subquery { inner, .. } => {
+                            traverse_physical(inner, bound_vars, out);
+                        }
+                        PhysicalOperator::Bind {
+                            input,
+                            output_variable,
+                            ..
+                        }
+                        | PhysicalOperator::MLPredict {
+                            input,
+                            output_variable,
+                            ..
+                        } => {
+                            traverse_physical(input, bound_vars, out);
+                            bound_vars.insert(output_variable.clone());
+                        }
+                        PhysicalOperator::Values { variables, .. } => {
+                            for var in variables {
+                                let mut v = var.clone();
+                                if !v.starts_with('?') {
+                                    v = format!("?{}", v);
+                                }
+                                bound_vars.insert(v);
+                            }
+                        }
+                        PhysicalOperator::InMemoryBuffer { .. } => {}
+                    }
+                }
+
+                traverse_physical(&optimized_plan, &mut bound_vars, &mut planned_patterns);
+            }
+        }
+
+        planned_patterns
+    }
+
+    fn resolve_query_patterns(&self, raw_queries: &[String]) -> Vec<TriplePattern> {
+        let mut patterns = Vec::new();
+
+        for query_str in raw_queries {
+            // parse_sparql_query returns a big tuple; field index 2
+            // is the Vec of raw (&str, &str, &str) triple patterns,
+            // field index 5 is the HashMap of prefixes.
+            if let Ok((_rest, parsed)) = crate::parser::parse_sparql_query(query_str) {
+                let raw_patterns = parsed.2; // Vec<(&str, &str, &str)>
+                let query_prefixes = parsed.5; // HashMap<String, String>
+
+                // Merge query prefixes with database prefixes
+                let mut all_prefixes = self.prefixes.clone();
+                for (k, v) in query_prefixes {
+                    all_prefixes.insert(k, v);
+                }
+
+                let mut dict = self.dictionary.write().unwrap();
+                for triple in raw_patterns {
+                    patterns.push(convert_triple_pattern(triple, &mut dict, &all_prefixes));
+                }
+            }
+        }
+
+        patterns
+    }
+
+    pub fn build_all_indexes(&mut self) {
+        // Memory usage logging
+        let mut sys = System::new_all();
+        let pid = sysinfo::get_current_pid().unwrap();
+        sys.refresh_process(pid);
+        let mem_before = sys.process(pid).unwrap().memory();
+
+        let triples: Vec<Triple> = self.triples.iter().cloned().collect();
+
+        // Clone the config to avoid holding an immutable borrow of `self`
+        let config = self.index_config.clone();
+
+        let mut index: Box<dyn TripleIndex> = match config {
+            IndexConfig::Hexastore => Box::new(HexastoreIndex::new()),
+            IndexConfig::SPO => Box::new(SPOSingleIndex::new()),
+            IndexConfig::POS => Box::new(POSSingleIndex::new()),
+            IndexConfig::OSP => Box::new(OSPSingleIndex::new()),
+            IndexConfig::PSO => Box::new(PSOSingleIndex::new()),
+            IndexConfig::OPS => Box::new(OPSSingleIndex::new()),
+            IndexConfig::SOP => Box::new(SOPSingleIndex::new()),
+            IndexConfig::SingleTable => Box::new(SingleTableIndex::new()),
+
+            IndexConfig::Buckets { queries } => {
+                let patterns = self.resolve_planned_access_patterns(&queries);
+                Box::new(BucketIndex::new(patterns))
+            }
+
+            IndexConfig::PartialHexastore { queries } => {
+                let parsed_patterns = self.resolve_planned_access_patterns(&queries);
+                Box::new(PartialHexastoreIndex::new(parsed_patterns))
+            } 
+            
+            // Future index types go here:
+              // IndexConfig::YourNewIndex { some_param, queries } => {
+              //     let patterns = self.resolve_query_patterns(&queries);
+              //     Box::new(YourNewIndex::new(patterns, some_param))
+              // }
+        };
+
+        index.build_from_triples(&triples);
+        index.optimize();
+
+        // Memory usage logging
+        sys.refresh_process(pid);
+        let mem_after = sys.process(pid).unwrap().memory();
+        println!(
+            "[Memory Debug] Index Build memory cost: {} MB",
+            (mem_after - mem_before) / 1024 / 1024
+        );
+
+        self.index_manager = Some(index);
+    }
+
+    /// Get a reference to the index.
+    /// Panics if `build_all_indexes()` hasn't been called yet.
+    pub fn index(&self) -> &dyn TripleIndex {
+        self.index_manager
+            .as_deref()
+            .expect("index not built — call build_all_indexes() first")
+    }
+
+    /// Get a mutable reference to the index.
+    /// Panics if `build_all_indexes()` hasn't been called yet.
+    pub fn index_mut(&mut self) -> &mut dyn TripleIndex {
+        self.index_manager
+            .as_deref_mut()
+            .expect("index not built — call build_all_indexes() first")
     }
 
     pub fn get_or_build_stats(&mut self) -> Arc<DatabaseStats> {
         if let Some(stats) = &self.cached_stats {
-            return stats.clone();  // ← Clone the Arc (cheap), not the DatabaseStats
+            return stats.clone(); // ← Clone the Arc (cheap), not the DatabaseStats
         }
-        
+
         let stats = Arc::new(DatabaseStats::gather_stats_fast(self));
         self.cached_stats = Some(stats.clone());
         stats
     }
-    
+
     pub fn invalidate_stats_cache(&mut self) {
         self.cached_stats = None;
     }
@@ -221,13 +613,17 @@ impl SparqlDatabase {
 
     pub fn add_triple(&mut self, triple: Triple) {
         self.triples.insert(triple.clone());
-        self.index_manager.insert(&triple);
+        if let Some(ref mut idx) = self.index_manager {
+            idx.insert(&triple);
+        }
     }
-    
+
     pub fn delete_triple(&mut self, triple: &Triple) -> bool {
         let removed = self.triples.remove(triple);
         if removed {
-            self.index_manager.delete(triple);
+            if let Some(ref mut idx) = self.index_manager {
+                idx.delete(triple);
+            }
         }
         removed
     }
@@ -280,7 +676,7 @@ impl SparqlDatabase {
         let mut xml = String::new();
         xml.push_str("<?xml version=\"1.0\"?>\n");
         xml.push_str("<rdf:RDF");
-    
+
         // Write namespace declarations (from the stored prefixes)
         for (prefix, uri) in &self.prefixes {
             if prefix.is_empty() {
@@ -292,7 +688,7 @@ impl SparqlDatabase {
         // Always include the standard RDF namespace
         xml.push_str(" xmlns:rdf=\"http://www.w3.org/1999/02/22-rdf-syntax-ns#\"");
         xml.push_str(">\n");
-    
+
         // Group triples by subject
         let dict = self.dictionary.read().unwrap();
         let mut subjects: BTreeMap<String, Vec<(String, String)>> = BTreeMap::new();
@@ -300,10 +696,13 @@ impl SparqlDatabase {
             let subject = dict.decode(triple.subject);
             let predicate = dict.decode(triple.predicate);
             let object = dict.decode(triple.object);
-            subjects.entry(subject.unwrap().to_string()).or_default().push((predicate.unwrap().to_string(), object.unwrap().to_string()));
+            subjects
+                .entry(subject.unwrap().to_string())
+                .or_default()
+                .push((predicate.unwrap().to_string(), object.unwrap().to_string()));
         }
         drop(dict);
-    
+
         // For each subject, create an <rdf:Description> element.
         for (subject, po_pairs) in subjects {
             xml.push_str(&format!("  <rdf:Description rdf:about=\"{}\">\n", subject));
@@ -312,7 +711,7 @@ impl SparqlDatabase {
             }
             xml.push_str("  </rdf:Description>\n");
         }
-    
+
         xml.push_str("</rdf:RDF>\n");
         xml
     }
@@ -518,7 +917,9 @@ impl SparqlDatabase {
                             // Skip empty or whitespace-only text
                             if !trimmed_object.is_empty() {
                                 if let Ok(subject_str) = std::str::from_utf8(&current_subject) {
-                                    if let Ok(predicate_str) = std::str::from_utf8(&current_predicate) {
+                                    if let Ok(predicate_str) =
+                                        std::str::from_utf8(&current_predicate)
+                                    {
                                         let resolved_predicate = self.resolve_term(predicate_str);
                                         // Lock the dictionary for encoding
                                         let mut dict = dictionary.write().unwrap();
@@ -929,16 +1330,18 @@ impl SparqlDatabase {
     pub fn parse_n3(&mut self, n3_data: &str) {
         let lines: Vec<String> = n3_data.lines().map(|l| l.trim().to_string()).collect();
         let chunk_size = 1000;
-        let chunks: Vec<Vec<String>> = lines
-            .chunks(chunk_size)
-            .map(|c| c.to_vec())
-            .collect();
-    
-        let partial_results: Vec<(BTreeSet<Triple>, Arc<RwLock<Dictionary>>, HashMap<String, String>)> =
-            chunks.par_iter().map(|chunk| {
+        let chunks: Vec<Vec<String>> = lines.chunks(chunk_size).map(|c| c.to_vec()).collect();
+
+        let partial_results: Vec<(
+            BTreeSet<Triple>,
+            Arc<RwLock<Dictionary>>,
+            HashMap<String, String>,
+        )> = chunks
+            .par_iter()
+            .map(|chunk| {
                 let mut local_db = SparqlDatabase::new();
                 let mut statement = String::new();
-    
+
                 for raw_line in chunk {
                     let mut line = raw_line.as_str();
                     if let Some(comment_start) = line.find('#') {
@@ -953,7 +1356,10 @@ impl SparqlDatabase {
                         let parts: Vec<&str> = line.split_whitespace().collect();
                         if parts.len() >= 2 {
                             let prefix = parts[0].trim_end_matches(':').to_string();
-                            let uri = parts[1].trim_start_matches('<').trim_end_matches('>').to_string();
+                            let uri = parts[1]
+                                .trim_start_matches('<')
+                                .trim_end_matches('>')
+                                .to_string();
                             local_db.prefixes.insert(prefix, uri);
                         } else {
                             eprintln!("Invalid prefix declaration: {}", line);
@@ -967,10 +1373,11 @@ impl SparqlDatabase {
                         }
                     }
                 }
-    
+
                 (local_db.triples, local_db.dictionary, local_db.prefixes)
-            }).collect();
-    
+            })
+            .collect();
+
         for (triples, dict_arc, pref) in partial_results {
             for t in triples {
                 self.triples.insert(t);
@@ -991,8 +1398,18 @@ impl SparqlDatabase {
         let partial_results = self.parse_ntriples(ntriples_data);
 
         let encoded_triples = self.encode_triples(partial_results);
-        for encoded_triple in encoded_triples{
+        for encoded_triple in encoded_triples {
             self.add_triple(encoded_triple);
+        }
+    }
+
+    // Parse_ntriples and remove from DB function
+    pub fn parse_ntriples_and_remove(&mut self, ntriples_data: &str) {
+        let partial_results = self.parse_ntriples(ntriples_data);
+
+        let encoded_triples = self.encode_triples(partial_results);
+        for encoded_triple in encoded_triples {
+            self.delete_triple(&encoded_triple);
         }
     }
 
@@ -1025,7 +1442,9 @@ impl SparqlDatabase {
                     let line_without_dot = &line[..line.len() - 1].trim();
 
                     // Parse the triple
-                    if let Some((subject, predicate, object)) = self.parse_ntriples_line(line_without_dot) {
+                    if let Some((subject, predicate, object)) =
+                        self.parse_ntriples_line(line_without_dot)
+                    {
                         local_triples.push((subject, predicate, object));
                     }
                 }
@@ -1052,7 +1471,7 @@ impl SparqlDatabase {
         encoded_triples
     }
 
-    pub fn parse_and_encode_ntriples(&mut self, ntriples_data: &str) -> Vec<Triple>{
+    pub fn parse_and_encode_ntriples(&mut self, ntriples_data: &str) -> Vec<Triple> {
         let partial_results = self.parse_ntriples(ntriples_data);
 
         self.encode_triples(partial_results)
@@ -1208,7 +1627,11 @@ impl SparqlDatabase {
             let object = self.clean_ntriples_term(&parts[2]);
             Some((subject, predicate, object))
         } else {
-            eprintln!("Invalid N-Triples line (expected 3 parts, got {}): {}", parts.len(), line);
+            eprintln!(
+                "Invalid N-Triples line (expected 3 parts, got {}): {}",
+                parts.len(),
+                line
+            );
             None
         }
     }
@@ -1224,9 +1647,9 @@ impl SparqlDatabase {
 
         // Handle URIs
         if term.starts_with('<') && term.ends_with('>') {
-            return term[1..term.len()-1].to_string();
+            return term[1..term.len() - 1].to_string();
         }
-        
+
         // Handle literals (keep quotes and datatype/language info)
         if term.starts_with('"') {
             if let Some(close_quote_pos) = term[1..].find('"') {
@@ -1242,7 +1665,7 @@ impl SparqlDatabase {
                 }
             }
         }
-        
+
         // Return as-is for other cases
         term.to_string()
     }
@@ -1356,7 +1779,7 @@ impl SparqlDatabase {
     pub fn register_prefixes_from_query(&mut self, query: &str) {
         // Simple regex to extract PREFIX declarations
         let prefix_pattern = regex::Regex::new(r"PREFIX\s+([a-zA-Z0-9_]+):\s*<([^>]+)>").unwrap();
-        
+
         for captures in prefix_pattern.captures_iter(query) {
             if captures.len() >= 3 {
                 let prefix = captures[1].to_string();
@@ -1365,7 +1788,7 @@ impl SparqlDatabase {
             }
         }
     }
-    
+
     // Method to ensure prefixes are properly shared between components
     pub fn share_prefixes_with(&self, prefixes: &mut HashMap<String, String>) {
         for (prefix, uri) in &self.prefixes {
@@ -1391,11 +1814,11 @@ impl SparqlDatabase {
             let mut parts = term.splitn(2, ':');
             let prefix = parts.next().unwrap();
             let local_name = parts.next().unwrap_or("");
-            
+
             // First check the passed prefixes map
             if let Some(uri) = prefixes.get(prefix) {
                 format!("{}{}", uri, local_name)
-            } 
+            }
             // Then check the database's own prefixes map as a fallback
             else if let Some(uri) = self.prefixes.get(prefix) {
                 format!("{}{}", uri, local_name)
@@ -1420,16 +1843,20 @@ impl SparqlDatabase {
                     match filter_expr {
                         FilterExpression::Comparison(var, operator, value) => {
                             // Check if either side contains arithmetic operations
-                            let has_arithmetic = var.contains('+') || var.contains('-') || 
-                                                var.contains('*') || var.contains('/') ||
-                                                value.contains('+') || value.contains('-') || 
-                                                value.contains('*') || value.contains('/');
-                            
+                            let has_arithmetic = var.contains('+')
+                                || var.contains('-')
+                                || var.contains('*')
+                                || var.contains('/')
+                                || value.contains('+')
+                                || value.contains('-')
+                                || value.contains('*')
+                                || value.contains('/');
+
                             if has_arithmetic {
                                 // Use the non-SIMD arithmetic expression evaluator for complex expressions
                                 let left_result = self.evaluate_arithmetic_string(result, var);
                                 let right_result = self.evaluate_arithmetic_string(result, value);
-                                
+
                                 match (left_result, right_result) {
                                     (Ok(left_val), Ok(right_val)) => {
                                         // Both sides are numeric, perform comparison
@@ -1442,8 +1869,8 @@ impl SparqlDatabase {
                                             "<=" => left_val <= right_val,
                                             _ => false,
                                         }
-                                    },
-                                    _ => false // At least one expression couldn't be evaluated
+                                    }
+                                    _ => false, // At least one expression couldn't be evaluated
                                 }
                             } else {
                                 // For simple expressions without arithmetic operators, use the SIMD approach
@@ -1451,12 +1878,12 @@ impl SparqlDatabase {
                                     // First, try parsing both values as numbers
                                     let var_value_num = var_value_str.parse::<i32>();
                                     let filter_value_num = value.parse::<i32>();
-    
+
                                     if var_value_num.is_ok() && filter_value_num.is_ok() {
                                         // Both values are numeric, perform SIMD numeric comparison
                                         let var_value = var_value_num.unwrap();
                                         let filter_value = filter_value_num.unwrap();
-    
+
                                         // On x86 (SSE2) or x86_64 (SSE2) use SIMD intrinsics
                                         #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
                                         {
@@ -1465,37 +1892,51 @@ impl SparqlDatabase {
                                                 let var_simd = _mm_set1_epi32(var_value);
                                                 let filter_simd = _mm_set1_epi32(filter_value);
                                                 return match *operator {
-                                                    "=" => _mm_movemask_epi8(_mm_cmpeq_epi32(
-                                                        var_simd,
-                                                        filter_simd,
-                                                    )) == 0xFFFF,
-                                                    "!=" => _mm_movemask_epi8(_mm_cmpeq_epi32(
-                                                        var_simd,
-                                                        filter_simd,
-                                                    )) != 0xFFFF,
-                                                    ">" => _mm_movemask_epi8(_mm_cmpgt_epi32(
-                                                        var_simd,
-                                                        filter_simd,
-                                                    )) == 0xFFFF,
-                                                    ">=" => {
-                                                        let eq = _mm_cmpeq_epi32(var_simd, filter_simd);
-                                                        let gt = _mm_cmpgt_epi32(var_simd, filter_simd);
-                                                        _mm_movemask_epi8(_mm_or_si128(eq, gt)) == 0xFFFF
+                                                    "=" => {
+                                                        _mm_movemask_epi8(_mm_cmpeq_epi32(
+                                                            var_simd,
+                                                            filter_simd,
+                                                        )) == 0xFFFF
                                                     }
-                                                    "<" => _mm_movemask_epi8(_mm_cmpgt_epi32(
-                                                        filter_simd,
-                                                        var_simd,
-                                                    )) == 0xFFFF,
+                                                    "!=" => {
+                                                        _mm_movemask_epi8(_mm_cmpeq_epi32(
+                                                            var_simd,
+                                                            filter_simd,
+                                                        )) != 0xFFFF
+                                                    }
+                                                    ">" => {
+                                                        _mm_movemask_epi8(_mm_cmpgt_epi32(
+                                                            var_simd,
+                                                            filter_simd,
+                                                        )) == 0xFFFF
+                                                    }
+                                                    ">=" => {
+                                                        let eq =
+                                                            _mm_cmpeq_epi32(var_simd, filter_simd);
+                                                        let gt =
+                                                            _mm_cmpgt_epi32(var_simd, filter_simd);
+                                                        _mm_movemask_epi8(_mm_or_si128(eq, gt))
+                                                            == 0xFFFF
+                                                    }
+                                                    "<" => {
+                                                        _mm_movemask_epi8(_mm_cmpgt_epi32(
+                                                            filter_simd,
+                                                            var_simd,
+                                                        )) == 0xFFFF
+                                                    }
                                                     "<=" => {
-                                                        let eq = _mm_cmpeq_epi32(var_simd, filter_simd);
-                                                        let lt = _mm_cmpgt_epi32(filter_simd, var_simd);
-                                                        _mm_movemask_epi8(_mm_or_si128(eq, lt)) == 0xFFFF
+                                                        let eq =
+                                                            _mm_cmpeq_epi32(var_simd, filter_simd);
+                                                        let lt =
+                                                            _mm_cmpgt_epi32(filter_simd, var_simd);
+                                                        _mm_movemask_epi8(_mm_or_si128(eq, lt))
+                                                            == 0xFFFF
                                                     }
                                                     _ => false,
                                                 };
                                             }
                                         }
-    
+
                                         // On ARM (aarch64) use NEON intrinsics
                                         #[cfg(target_arch = "aarch64")]
                                         {
@@ -1506,54 +1947,72 @@ impl SparqlDatabase {
                                                     "=" => {
                                                         let cmp = vceqq_s32(var_neon, filter_neon);
                                                         (vgetq_lane_u32(cmp, 0) == 0xFFFFFFFF)
-                                                            && (vgetq_lane_u32(cmp, 1) == 0xFFFFFFFF)
-                                                            && (vgetq_lane_u32(cmp, 2) == 0xFFFFFFFF)
-                                                            && (vgetq_lane_u32(cmp, 3) == 0xFFFFFFFF)
+                                                            && (vgetq_lane_u32(cmp, 1)
+                                                                == 0xFFFFFFFF)
+                                                            && (vgetq_lane_u32(cmp, 2)
+                                                                == 0xFFFFFFFF)
+                                                            && (vgetq_lane_u32(cmp, 3)
+                                                                == 0xFFFFFFFF)
                                                     }
                                                     "!=" => {
                                                         let cmp = vceqq_s32(var_neon, filter_neon);
                                                         !((vgetq_lane_u32(cmp, 0) == 0xFFFFFFFF)
-                                                            && (vgetq_lane_u32(cmp, 1) == 0xFFFFFFFF)
-                                                            && (vgetq_lane_u32(cmp, 2) == 0xFFFFFFFF)
-                                                            && (vgetq_lane_u32(cmp, 3) == 0xFFFFFFFF))
+                                                            && (vgetq_lane_u32(cmp, 1)
+                                                                == 0xFFFFFFFF)
+                                                            && (vgetq_lane_u32(cmp, 2)
+                                                                == 0xFFFFFFFF)
+                                                            && (vgetq_lane_u32(cmp, 3)
+                                                                == 0xFFFFFFFF))
                                                     }
                                                     ">" => {
                                                         let cmp = vcgtq_s32(var_neon, filter_neon);
                                                         (vgetq_lane_u32(cmp, 0) == 0xFFFFFFFF)
-                                                            && (vgetq_lane_u32(cmp, 1) == 0xFFFFFFFF)
-                                                            && (vgetq_lane_u32(cmp, 2) == 0xFFFFFFFF)
-                                                            && (vgetq_lane_u32(cmp, 3) == 0xFFFFFFFF)
+                                                            && (vgetq_lane_u32(cmp, 1)
+                                                                == 0xFFFFFFFF)
+                                                            && (vgetq_lane_u32(cmp, 2)
+                                                                == 0xFFFFFFFF)
+                                                            && (vgetq_lane_u32(cmp, 3)
+                                                                == 0xFFFFFFFF)
                                                     }
                                                     ">=" => {
                                                         let eq = vceqq_s32(var_neon, filter_neon);
                                                         let gt = vcgtq_s32(var_neon, filter_neon);
                                                         let cmp = vorrq_u32(eq, gt);
                                                         (vgetq_lane_u32(cmp, 0) == 0xFFFFFFFF)
-                                                            && (vgetq_lane_u32(cmp, 1) == 0xFFFFFFFF)
-                                                            && (vgetq_lane_u32(cmp, 2) == 0xFFFFFFFF)
-                                                            && (vgetq_lane_u32(cmp, 3) == 0xFFFFFFFF)
+                                                            && (vgetq_lane_u32(cmp, 1)
+                                                                == 0xFFFFFFFF)
+                                                            && (vgetq_lane_u32(cmp, 2)
+                                                                == 0xFFFFFFFF)
+                                                            && (vgetq_lane_u32(cmp, 3)
+                                                                == 0xFFFFFFFF)
                                                     }
                                                     "<" => {
                                                         let cmp = vcgtq_s32(filter_neon, var_neon);
                                                         (vgetq_lane_u32(cmp, 0) == 0xFFFFFFFF)
-                                                            && (vgetq_lane_u32(cmp, 1) == 0xFFFFFFFF)
-                                                            && (vgetq_lane_u32(cmp, 2) == 0xFFFFFFFF)
-                                                            && (vgetq_lane_u32(cmp, 3) == 0xFFFFFFFF)
+                                                            && (vgetq_lane_u32(cmp, 1)
+                                                                == 0xFFFFFFFF)
+                                                            && (vgetq_lane_u32(cmp, 2)
+                                                                == 0xFFFFFFFF)
+                                                            && (vgetq_lane_u32(cmp, 3)
+                                                                == 0xFFFFFFFF)
                                                     }
                                                     "<=" => {
                                                         let eq = vceqq_s32(var_neon, filter_neon);
                                                         let lt = vcgtq_s32(filter_neon, var_neon);
                                                         let cmp = vorrq_u32(eq, lt);
                                                         (vgetq_lane_u32(cmp, 0) == 0xFFFFFFFF)
-                                                            && (vgetq_lane_u32(cmp, 1) == 0xFFFFFFFF)
-                                                            && (vgetq_lane_u32(cmp, 2) == 0xFFFFFFFF)
-                                                            && (vgetq_lane_u32(cmp, 3) == 0xFFFFFFFF)
+                                                            && (vgetq_lane_u32(cmp, 1)
+                                                                == 0xFFFFFFFF)
+                                                            && (vgetq_lane_u32(cmp, 2)
+                                                                == 0xFFFFFFFF)
+                                                            && (vgetq_lane_u32(cmp, 3)
+                                                                == 0xFFFFFFFF)
                                                     }
                                                     _ => false,
-                                                }
+                                                };
                                             }
                                         }
-    
+
                                         // Fallback (or if compiled for a non‐SIMD platform)
                                         #[cfg(not(any(
                                             target_arch = "x86",
@@ -1575,10 +2034,10 @@ impl SparqlDatabase {
                                         // At least one value is a string, perform string comparison
                                         let var_bytes = var_value_str.as_bytes();
                                         let filter_bytes = value.as_bytes();
-    
+
                                         let var_len = var_bytes.len();
                                         let filter_len = filter_bytes.len();
-    
+
                                         // If lengths differ, they can't be equal
                                         if var_len != filter_len {
                                             return match *operator {
@@ -1587,19 +2046,20 @@ impl SparqlDatabase {
                                                 _ => false, // Other operators are not supported for strings
                                             };
                                         }
-    
+
                                         let mut i = 0;
                                         #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
                                         {
                                             unsafe {
                                                 while i + 16 <= var_len {
-                                                    let var_chunk = _mm_loadu_si128(
-                                                        var_bytes[i..].as_ptr() as *const __m128i,
-                                                    );
-                                                    let filter_chunk = _mm_loadu_si128(
-                                                        filter_bytes[i..].as_ptr() as *const __m128i,
-                                                    );
-                                                    let cmp = _mm_cmpeq_epi8(var_chunk, filter_chunk);
+                                                    let var_chunk =
+                                                        _mm_loadu_si128(var_bytes[i..].as_ptr()
+                                                            as *const __m128i);
+                                                    let filter_chunk =
+                                                        _mm_loadu_si128(filter_bytes[i..].as_ptr()
+                                                            as *const __m128i);
+                                                    let cmp =
+                                                        _mm_cmpeq_epi8(var_chunk, filter_chunk);
                                                     let mask = _mm_movemask_epi8(cmp);
                                                     if mask != 0xFFFF {
                                                         return match *operator {
@@ -1612,15 +2072,18 @@ impl SparqlDatabase {
                                                 }
                                             }
                                         }
-    
+
                                         #[cfg(target_arch = "aarch64")]
                                         {
                                             unsafe {
                                                 while i + 16 <= var_len {
-                                                    let var_chunk = vld1q_u8(var_bytes[i..].as_ptr());
-                                                    let filter_chunk = vld1q_u8(filter_bytes[i..].as_ptr());
+                                                    let var_chunk =
+                                                        vld1q_u8(var_bytes[i..].as_ptr());
+                                                    let filter_chunk =
+                                                        vld1q_u8(filter_bytes[i..].as_ptr());
                                                     let cmp = vceqq_u8(var_chunk, filter_chunk);
-                                                    let cmp_arr: [u8; 16] = std::mem::transmute(cmp);
+                                                    let cmp_arr: [u8; 16] =
+                                                        std::mem::transmute(cmp);
                                                     if cmp_arr.iter().any(|&lane| lane != 0xFF) {
                                                         return match *operator {
                                                             "=" => false,
@@ -1632,7 +2095,7 @@ impl SparqlDatabase {
                                                 }
                                             }
                                         }
-    
+
                                         // Handle remaining bytes
                                         if i < var_len {
                                             for j in i..var_len {
@@ -1645,7 +2108,7 @@ impl SparqlDatabase {
                                                 }
                                             }
                                         }
-    
+
                                         // Strings are equal
                                         match *operator {
                                             "=" => true,
@@ -1657,15 +2120,15 @@ impl SparqlDatabase {
                                     false
                                 }
                             }
-                        },
+                        }
                         FilterExpression::And(left, right) => {
-                            self.evaluate_filter_expression(result, left) && 
-                            self.evaluate_filter_expression(result, right)
-                        },
+                            self.evaluate_filter_expression(result, left)
+                                && self.evaluate_filter_expression(result, right)
+                        }
                         FilterExpression::Or(left, right) => {
-                            self.evaluate_filter_expression(result, left) || 
-                            self.evaluate_filter_expression(result, right)
-                        },
+                            self.evaluate_filter_expression(result, left)
+                                || self.evaluate_filter_expression(result, right)
+                        }
                         FilterExpression::Not(expr) => {
                             !self.evaluate_filter_expression(result, expr)
                         },
@@ -1702,7 +2165,7 @@ impl SparqlDatabase {
     fn evaluate_arithmetic_expression<'a>(
         &self,
         result: &BTreeMap<&'a str, String>,
-        expr: &shared::query::ArithmeticExpression<'a>
+        expr: &shared::query::ArithmeticExpression<'a>,
     ) -> Result<f64, String> {
         match expr {
             shared::query::ArithmeticExpression::Operand(operand) => {
@@ -1710,39 +2173,48 @@ impl SparqlDatabase {
                 if operand.starts_with('?') {
                     if let Some(var_value) = result.get(*operand) {
                         // Parse the variable value as a number
-                        var_value.parse::<f64>().map_err(|_| format!("Cannot parse '{}' as a number", var_value))
+                        var_value
+                            .parse::<f64>()
+                            .map_err(|_| format!("Cannot parse '{}' as a number", var_value))
                     } else {
                         Err(format!("Variable '{}' not found", operand))
                     }
-                } 
+                }
                 // Check if it's a numeric literal
                 else if operand.chars().all(|c| c.is_digit(10) || c == '.') {
-                    operand.parse::<f64>().map_err(|_| format!("Cannot parse '{}' as a number", operand))
-                } 
+                    operand
+                        .parse::<f64>()
+                        .map_err(|_| format!("Cannot parse '{}' as a number", operand))
+                }
                 // Check if it's a string literal
                 else if operand.starts_with('"') && operand.ends_with('"') {
-                    Err(format!("Cannot perform arithmetic on string literal '{}'", operand))
-                } 
+                    Err(format!(
+                        "Cannot perform arithmetic on string literal '{}'",
+                        operand
+                    ))
+                }
                 // Parse it as a number
                 else {
-                    operand.parse::<f64>().map_err(|_| format!("Cannot parse '{}' as a number", operand))
+                    operand
+                        .parse::<f64>()
+                        .map_err(|_| format!("Cannot parse '{}' as a number", operand))
                 }
-            },
+            }
             shared::query::ArithmeticExpression::Add(left, right) => {
                 let left_val = self.evaluate_arithmetic_expression(result, left)?;
                 let right_val = self.evaluate_arithmetic_expression(result, right)?;
                 Ok(left_val + right_val)
-            },
+            }
             shared::query::ArithmeticExpression::Subtract(left, right) => {
                 let left_val = self.evaluate_arithmetic_expression(result, left)?;
                 let right_val = self.evaluate_arithmetic_expression(result, right)?;
                 Ok(left_val - right_val)
-            },
+            }
             shared::query::ArithmeticExpression::Multiply(left, right) => {
                 let left_val = self.evaluate_arithmetic_expression(result, left)?;
                 let right_val = self.evaluate_arithmetic_expression(result, right)?;
                 Ok(left_val * right_val)
-            },
+            }
             shared::query::ArithmeticExpression::Divide(left, right) => {
                 let left_val = self.evaluate_arithmetic_expression(result, left)?;
                 let right_val = self.evaluate_arithmetic_expression(result, right)?;
@@ -1759,38 +2231,48 @@ impl SparqlDatabase {
     fn evaluate_arithmetic_string<'a>(
         &self,
         result: &BTreeMap<&'a str, String>,
-        expr_str: &'a str
+        expr_str: &'a str,
     ) -> Result<f64, String> {
         // Check for parenthesized expressions and remove them if needed
         let expr_to_parse = if expr_str.starts_with('(') && expr_str.ends_with(')') {
-            &expr_str[1..expr_str.len()-1]
+            &expr_str[1..expr_str.len() - 1]
         } else {
             expr_str
         };
-        
-        if expr_to_parse.contains('+') || expr_to_parse.contains('-') || 
-           expr_to_parse.contains('*') || expr_to_parse.contains('/') {
+
+        if expr_to_parse.contains('+')
+            || expr_to_parse.contains('-')
+            || expr_to_parse.contains('*')
+            || expr_to_parse.contains('/')
+        {
             // Parse the expression string into an ArithmeticExpression
             match parser::parse_arithmetic_expression(expr_to_parse) {
                 Ok((_, arithmetic_expr)) => {
                     // Evaluate the parsed expression
                     self.evaluate_arithmetic_expression(result, &arithmetic_expr)
-                },
+                }
                 Err(e) => {
                     // Print the error
-                    eprintln!("Failed to parse arithmetic expression '{}': {:?}", expr_to_parse, e);
-                    
+                    eprintln!(
+                        "Failed to parse arithmetic expression '{}': {:?}",
+                        expr_to_parse, e
+                    );
+
                     // If parsing fails, try to treat it as a simple operand
                     if expr_to_parse.starts_with('?') {
                         // It's a variable
                         if let Some(var_value) = result.get(expr_to_parse) {
-                            var_value.parse::<f64>().map_err(|_| format!("Cannot parse '{}' as a number", var_value))
+                            var_value
+                                .parse::<f64>()
+                                .map_err(|_| format!("Cannot parse '{}' as a number", var_value))
                         } else {
                             Err(format!("Variable '{}' not found", expr_to_parse))
                         }
                     } else {
                         // Parse as a number
-                        expr_to_parse.parse::<f64>().map_err(|_| format!("Cannot parse '{}' as a number", expr_to_parse))
+                        expr_to_parse
+                            .parse::<f64>()
+                            .map_err(|_| format!("Cannot parse '{}' as a number", expr_to_parse))
                     }
                 }
             }
@@ -1799,13 +2281,17 @@ impl SparqlDatabase {
             if expr_to_parse.starts_with('?') {
                 // It's a variable
                 if let Some(var_value) = result.get(expr_to_parse) {
-                    var_value.parse::<f64>().map_err(|_| format!("Cannot parse '{}' as a number", var_value))
+                    var_value
+                        .parse::<f64>()
+                        .map_err(|_| format!("Cannot parse '{}' as a number", var_value))
                 } else {
                     Err(format!("Variable '{}' not found", expr_to_parse))
                 }
             } else {
                 // Parse as a number
-                expr_to_parse.parse::<f64>().map_err(|_| format!("Cannot parse '{}' as a number", expr_to_parse))
+                expr_to_parse
+                    .parse::<f64>()
+                    .map_err(|_| format!("Cannot parse '{}' as a number", expr_to_parse))
             }
         }
     }
@@ -1814,14 +2300,14 @@ impl SparqlDatabase {
     fn evaluate_filter_expression<'a>(
         &self,
         result: &BTreeMap<&'a str, String>,
-        filter_expr: &FilterExpression<'a>
+        filter_expr: &FilterExpression<'a>,
     ) -> bool {
         match filter_expr {
             FilterExpression::Comparison(left, operator, right) => {
                 // Evaluate both sides as arithmetic expressions
                 let left_result = self.evaluate_arithmetic_string(result, left);
                 let right_result = self.evaluate_arithmetic_string(result, right);
-                
+
                 match (left_result, right_result) {
                     (Ok(left_val), Ok(right_val)) => {
                         // Both sides are numeric, perform numeric comparison
@@ -1834,7 +2320,7 @@ impl SparqlDatabase {
                             "<=" => left_val <= right_val,
                             _ => false,
                         }
-                    },
+                    }
                     _ => {
                         let left_str = if left.starts_with('?') {
                             // Fix for the type mismatch error - convert to string
@@ -1845,7 +2331,7 @@ impl SparqlDatabase {
                         } else {
                             left
                         };
-                        
+
                         let right_str = if right.starts_with('?') {
                             // Fix for the type mismatch error - convert to string
                             match result.get(right) {
@@ -1855,7 +2341,7 @@ impl SparqlDatabase {
                         } else {
                             right
                         };
-                        
+
                         match *operator {
                             "=" => left_str == right_str,
                             "!=" => left_str != right_str,
@@ -1863,11 +2349,11 @@ impl SparqlDatabase {
                         }
                     }
                 }
-            },
+            }
             FilterExpression::And(left, right) => {
-                self.evaluate_filter_expression(result, left) && 
-                self.evaluate_filter_expression(result, right)
-            },
+                self.evaluate_filter_expression(result, left)
+                    && self.evaluate_filter_expression(result, right)
+            }
             FilterExpression::Or(left, right) => {
                 self.evaluate_filter_expression(result, left) || 
                 self.evaluate_filter_expression(result, right)
@@ -1911,10 +2397,8 @@ impl SparqlDatabase {
         // Re-encode triples from the other database using the merged dictionary
         let mut re_encoded_triples = BTreeSet::new();
         for triple in &other.triples {
-            let subject =
-                merged_dictionary.encode(other_dict.decode(triple.subject).unwrap());
-            let predicate =
-                merged_dictionary.encode(other_dict.decode(triple.predicate).unwrap());
+            let subject = merged_dictionary.encode(other_dict.decode(triple.subject).unwrap());
+            let predicate = merged_dictionary.encode(other_dict.decode(triple.predicate).unwrap());
             let object = merged_dictionary.encode(other_dict.decode(triple.object).unwrap());
             re_encoded_triples.insert(Triple {
                 subject,
@@ -1939,7 +2423,7 @@ impl SparqlDatabase {
             dictionary: Arc::new(RwLock::new(merged_dictionary)),
             prefixes: self.prefixes.clone(),
             udfs: HashMap::new(),
-            index_manager: UnifiedIndex::new(),
+            index_manager: Some(self.index().clone_empty()),
             rule_map: HashMap::new(),
             model_decls: self.model_decls.clone(),
             neural_relation_decls: self.neural_relation_decls.clone(),
@@ -1949,6 +2433,7 @@ impl SparqlDatabase {
             ml_predict_materialized_triples: self.ml_predict_materialized_triples.clone(),
             probability_seeds: merged_seeds,
             cached_stats: None,
+            index_config: self.index_config.clone(),
             quoted_triple_store: Arc::clone(&self.quoted_triple_store),
         }
     }
@@ -2016,7 +2501,7 @@ impl SparqlDatabase {
             dictionary: Arc::clone(&self.dictionary),
             prefixes: self.prefixes.clone(),
             udfs: HashMap::new(),
-            index_manager: UnifiedIndex::new(),
+            index_manager: Some(self.index().clone_empty()),
             rule_map: HashMap::new(),
             model_decls: self.model_decls.clone(),
             neural_relation_decls: self.neural_relation_decls.clone(),
@@ -2026,6 +2511,7 @@ impl SparqlDatabase {
             ml_predict_materialized_triples: self.ml_predict_materialized_triples.clone(),
             probability_seeds: HashMap::new(),
             cached_stats: None,
+            index_config: self.index_config.clone(),
             quoted_triple_store: Arc::clone(&self.quoted_triple_store),
         }
     }
@@ -2256,7 +2742,8 @@ impl SparqlDatabase {
         let literal_filter_bytes = literal_filter.as_ref().map(|s| s.as_bytes());
 
         // Partition final_results into groups based on variable bindings.
-        let mut both_vars_bound: HashMap<(String, String), Vec<BTreeMap<&'a str, String>>> = HashMap::new();
+        let mut both_vars_bound: HashMap<(String, String), Vec<BTreeMap<&'a str, String>>> =
+            HashMap::new();
         let mut subject_var_bound: HashMap<String, Vec<BTreeMap<&'a str, String>>> = HashMap::new();
         let mut object_var_bound: HashMap<String, Vec<BTreeMap<&'a str, String>>> = HashMap::new();
         let mut neither_var_bound: Vec<BTreeMap<&'a str, String>> = Vec::new();
@@ -2273,10 +2760,16 @@ impl SparqlDatabase {
                         .push(result);
                 }
                 (Some(subj_val), None) => {
-                    subject_var_bound.entry(subj_val.clone()).or_default().push(result);
+                    subject_var_bound
+                        .entry(subj_val.clone())
+                        .or_default()
+                        .push(result);
                 }
                 (None, Some(obj_val)) => {
-                    object_var_bound.entry(obj_val.clone()).or_default().push(result);
+                    object_var_bound
+                        .entry(obj_val.clone())
+                        .or_default()
+                        .push(result);
                 }
                 (None, None) => {
                     neither_var_bound.push(result);
@@ -2702,13 +3195,13 @@ impl SparqlDatabase {
 
         // Preallocate with capacity estimation to avoid rehashing
         let estimated_capacity = (final_results.len() / 4).max(HASHMAP_INITIAL_CAPACITY);
-        
+
         // Use with_capacity to preallocate hashmap space
-        let mut both_vars_bound: HashMap<(String, String), Vec<usize>> = 
+        let mut both_vars_bound: HashMap<(String, String), Vec<usize>> =
             HashMap::with_capacity(estimated_capacity);
-        let mut subject_var_bound: HashMap<String, Vec<usize>> = 
+        let mut subject_var_bound: HashMap<String, Vec<usize>> =
             HashMap::with_capacity(estimated_capacity);
-        let mut object_var_bound: HashMap<String, Vec<usize>> = 
+        let mut object_var_bound: HashMap<String, Vec<usize>> =
             HashMap::with_capacity(estimated_capacity);
         let mut neither_var_bound: Vec<usize> = Vec::with_capacity(final_results.len() / 2);
 
@@ -2751,29 +3244,33 @@ impl SparqlDatabase {
 
         // Calculate optimal chunk size based on available processors and dataset size
         let chunk_size = (triples.len() / rayon::current_num_threads()).max(MIN_CHUNK_SIZE);
-        
+
         // Process triples in chunks for better cache locality and load balancing
         let results = triples
             .par_chunks(chunk_size)
             .flat_map(|triple_chunk| {
                 // Preallocate result vector for this chunk based on estimated hit rate
                 let mut local_results = Vec::with_capacity(triple_chunk.len() / 4);
-                
+
                 // Process each triple in the chunk
                 for triple in triple_chunk {
                     // Step 1: Quick predicate check first (early filter)
                     let pred_opt = dictionary.decode(triple.predicate);
-                    if pred_opt.is_none() || pred_opt.as_ref().unwrap().as_bytes() != predicate_bytes {
+                    if pred_opt.is_none()
+                        || pred_opt.as_ref().unwrap().as_bytes() != predicate_bytes
+                    {
                         continue;
                     }
-                    
+
                     // Step 2: Filter check if needed
                     if let Some(filter_bytes) = &literal_filter_bytes {
                         let obj_opt = dictionary.decode(triple.object);
-                        if obj_opt.is_none() || obj_opt.as_ref().unwrap().as_bytes() != *filter_bytes {
+                        if obj_opt.is_none()
+                            || obj_opt.as_ref().unwrap().as_bytes() != *filter_bytes
+                        {
                             continue;
                         }
-                        
+
                         // Decode subject only if predicate and object pass filters
                         if let Some(subj) = dictionary.decode(triple.subject) {
                             process_join(
@@ -2793,7 +3290,7 @@ impl SparqlDatabase {
                         // No filter - decode both subject and object
                         let subj_opt = dictionary.decode(triple.subject);
                         let obj_opt = dictionary.decode(triple.object);
-                        
+
                         if let (Some(subj), Some(obj)) = (subj_opt, obj_opt) {
                             process_join(
                                 &subj,
@@ -2810,7 +3307,7 @@ impl SparqlDatabase {
                         }
                     }
                 }
-                
+
                 local_results
             })
             .collect();
@@ -2838,12 +3335,12 @@ impl SparqlDatabase {
         let literal_filter_bytes = literal_filter.as_ref().map(|s| s.as_bytes());
 
         let estimated_capacity = (final_results.len() / 3).max(HASHMAP_INITIAL_CAPACITY1);
-        
-        let mut both_vars_bound: HashMap<(String, String), Vec<usize>> = 
-            HashMap::with_capacity(estimated_capacity / 2);  // This tends to be smaller
-        let mut subject_var_bound: HashMap<String, Vec<usize>> = 
+
+        let mut both_vars_bound: HashMap<(String, String), Vec<usize>> =
+            HashMap::with_capacity(estimated_capacity / 2); // This tends to be smaller
+        let mut subject_var_bound: HashMap<String, Vec<usize>> =
             HashMap::with_capacity(estimated_capacity);
-        let mut object_var_bound: HashMap<String, Vec<usize>> = 
+        let mut object_var_bound: HashMap<String, Vec<usize>> =
             HashMap::with_capacity(estimated_capacity);
         let mut neither_var_bound: Vec<usize> = Vec::with_capacity(final_results.len() / 2);
 
@@ -2884,12 +3381,13 @@ impl SparqlDatabase {
         let object_var_bound_arc = Arc::new(object_var_bound);
         let neither_var_bound_arc = Arc::new(neither_var_bound);
 
-        let chunk_size = ((triples.len() / rayon::current_num_threads()) * 3 / 2).max(MIN_CHUNK_SIZE1);
-        
+        let chunk_size =
+            ((triples.len() / rayon::current_num_threads()) * 3 / 2).max(MIN_CHUNK_SIZE1);
+
         let results = triples
             .par_chunks(chunk_size)
             .fold(
-                || Vec::with_capacity(chunk_size / 4),  // Local vector capacity based on chunk size
+                || Vec::with_capacity(chunk_size / 4), // Local vector capacity based on chunk size
                 |mut local_results, triple_chunk| {
                     // Create a local result buffer
                     process_triple_chunk(
@@ -2906,7 +3404,7 @@ impl SparqlDatabase {
                         &mut local_results,
                         dictionary,
                     );
-                    
+
                     local_results
                 },
             )
@@ -2919,7 +3417,7 @@ impl SparqlDatabase {
                     if chunk.is_empty() {
                         return acc;
                     }
-                    
+
                     // Pre-allocate to avoid reallocation during append
                     if acc.capacity() < acc.len() + chunk.len() {
                         acc.reserve(chunk.len());
@@ -3244,45 +3742,17 @@ impl SparqlDatabase {
         self.udfs.insert(name.to_string(), ClonableFn::new(f));
     }
 
-    /// Rebuild all indexes from the current state of `self.triples`.
-    pub fn build_all_indexes(&mut self) {
-        // Clear existing indexes
-        self.index_manager.clear();
-        
-        // Get all triples as a vector for parallel processing
-        let triples: Vec<Triple> = self.triples.iter().cloned().collect();
-        
-        // Calculate optimal chunk size based on available cores and data size
-        let num_threads = rayon::current_num_threads();
-        let chunk_size = (triples.len() / num_threads).max(1000);
-        
-        // Build indexes in parallel chunks
-        let partial_indexes: Vec<_> = triples
-            .par_chunks(chunk_size)
-            .map(|chunk| {
-                let mut local_index = shared::index_manager::UnifiedIndex::new();
-                for triple in chunk {
-                    local_index.insert(triple);
-                }
-                local_index
-            })
-            .collect();
-        
-        // Merge all partial indexes
-        for partial_index in partial_indexes {
-            self.index_manager.merge_from(partial_index);
-        }
-        
-        // Optimize the final merged index
-        self.index_manager.optimize();
-    }
-
     /// Triple to string
     pub fn triple_to_string(&self, triple: &Triple, dict: &Dictionary) -> String {
         let subject = dict.decode(triple.subject);
         let predicate = dict.decode(triple.predicate);
         let object = dict.decode(triple.object);
-        format!("{} {} {}", subject.unwrap(), predicate.unwrap(), object.unwrap())
+        format!(
+            "{} {} {}",
+            subject.unwrap(),
+            predicate.unwrap(),
+            object.unwrap()
+        )
     }
 
     pub fn decode_triple(&self, triple: &Triple) -> Option<(String, String, String)> {
@@ -3291,12 +3761,15 @@ impl SparqlDatabase {
         let predicate = dict.decode(triple.predicate)?.to_string();
         let object = dict.decode(triple.object)?.to_string();
         drop(dict);
-        
+
         Some((subject, predicate, object))
     }
 }
 
-#[cfg_attr(any(target_arch = "x86", target_arch = "x86_64"), target_feature(enable = "sse2"))]
+#[cfg_attr(
+    any(target_arch = "x86", target_arch = "x86_64"),
+    target_feature(enable = "sse2")
+)]
 #[cfg_attr(target_arch = "aarch64", target_feature(enable = "neon"))]
 pub unsafe fn simd_eq(a: &[u8], b: &[u8]) -> bool {
     if a.len() != b.len() {
@@ -3460,7 +3933,7 @@ fn process_join<'a>(
     // Process neither_var_bound - least restrictive case last
     for &idx in neither_var_bound.iter() {
         let base_result = &final_results_arc[idx];
-        
+
         // Check both consistency constraints
         let subject_consistent = base_result
             .get(subject_var)
@@ -3471,7 +3944,7 @@ fn process_join<'a>(
 
         if subject_consistent && object_consistent {
             let mut extended_result = base_result.clone();
-            
+
             // Only insert if not already present
             if !base_result.contains_key(subject_var) {
                 extended_result.insert(subject_var, subject.to_string());
@@ -3479,7 +3952,7 @@ fn process_join<'a>(
             if !base_result.contains_key(object_var) {
                 extended_result.insert(object_var, object.to_string());
             }
-            
+
             local_results.push(extended_result);
         }
     }
@@ -3506,13 +3979,13 @@ fn process_triple_chunk<'a>(
         if pred_opt.is_none() || pred_opt.as_ref().unwrap().as_bytes() != predicate_bytes {
             continue;
         }
-        
+
         if let Some(filter_bytes) = literal_filter_bytes {
             let obj_opt = dictionary.decode(triple.object);
             if obj_opt.is_none() || obj_opt.as_ref().unwrap().as_bytes() != *filter_bytes {
                 continue;
             }
-            
+
             if let Some(subj) = dictionary.decode(triple.subject) {
                 process_join_efficiently(
                     &subj,
@@ -3530,7 +4003,7 @@ fn process_triple_chunk<'a>(
         } else {
             let subj_opt = dictionary.decode(triple.subject);
             let obj_opt = dictionary.decode(triple.object);
-            
+
             if let (Some(subj), Some(obj)) = (subj_opt, obj_opt) {
                 process_join_efficiently(
                     &subj,
@@ -3548,7 +4021,6 @@ fn process_triple_chunk<'a>(
         }
     }
 }
-
 
 #[inline(always)]
 fn process_join_efficiently<'a>(
@@ -3608,7 +4080,7 @@ fn process_join_efficiently<'a>(
     // Process least restrictive case - neither var bound
     for &idx in neither_var_bound.iter() {
         let base_result = &final_results_arc[idx];
-        
+
         // Check both consistency constraints
         let subject_consistent = base_result
             .get(subject_var)
@@ -3619,7 +4091,7 @@ fn process_join_efficiently<'a>(
 
         if subject_consistent && object_consistent {
             let mut extended_result = base_result.clone();
-            
+
             // Only insert if not already present
             if !base_result.contains_key(subject_var) {
                 extended_result.insert(subject_var, subject.to_string());
@@ -3627,7 +4099,7 @@ fn process_join_efficiently<'a>(
             if !base_result.contains_key(object_var) {
                 extended_result.insert(object_var, object.to_string());
             }
-            
+
             local_results.push(extended_result);
         }
     }

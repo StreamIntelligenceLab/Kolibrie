@@ -1,5 +1,5 @@
 use std::collections::HashSet;
-use shared::index_manager::UnifiedIndex;
+use shared::index_manager::HexastoreIndex;
 use shared::triple::Triple;
 use crate::reasoning::materialisation::replace_variables_with_bound_values;
 use crate::reasoning::Reasoner;
@@ -17,7 +17,7 @@ impl Reasoner {
             let repairs = self.compute_repairs(&all_facts);
             if let Some(best_repair) = repairs.into_iter().max_by_key(|r| r.len()) {
                 // Clear index manager and reinsert repaired facts
-                self.index_manager = UnifiedIndex::new();
+                self.index_manager = Box::new(HexastoreIndex::new());
                 for fact in &best_repair {
                     self.index_manager.insert(fact);
                 }

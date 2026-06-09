@@ -112,7 +112,7 @@ impl QueryEngine {
                 
                 // Extract the encoded triples
                 let triples = self.storage_manager.get_memory_database()
-                    .index_manager
+                    .index_manager.as_ref().expect("Cannot query index before building it")
                     .query(None, None, None);
                 
                 // Insert into LSM-Tree
@@ -121,7 +121,7 @@ impl QueryEngine {
                 // Clear memory database
                 self.storage_manager.get_memory_database_mut().triples.clear();
                 self.storage_manager.get_memory_database_mut().index_manager = 
-                    shared::index_manager::UnifiedIndex::new();
+                    Some(Box::new(shared::index_manager::HexastoreIndex::new()));
                 
                 // Build statistics
                 self.storage_manager.get_memory_database_mut().get_or_build_stats();
