@@ -38,6 +38,13 @@
   .leaflet-control-zoom a:last-child{border-radius:0 0 4px 4px;border-bottom:0}
   .leaflet-control-attribution{background:rgba(255,255,255,.82);padding:2px 6px;font-size:11px}
   .leaflet-overlay-pane svg{max-width:none}
+  .leaflet-map-pane{z-index:400}
+  .leaflet-tile-pane{z-index:200}
+  .leaflet-overlay-pane{z-index:450}
+  .leaflet-shadow-pane{z-index:500}
+  .leaflet-marker-pane{z-index:600}
+  .leaflet-tooltip-pane{z-index:650}
+  .leaflet-popup-pane{z-index:700}
   .topbar{position:absolute;z-index:500;top:14px;left:14px;display:flex;gap:8px;align-items:center;flex-wrap:wrap}
   .chip,.button{border:1px solid #c7d2df;background:#fff;border-radius:8px;padding:8px 10px;font-size:12px;font-weight:700;box-shadow:0 2px 8px rgba(15,23,42,.12)}
   .button{cursor:pointer;color:#17212f}
@@ -168,12 +175,13 @@
       if (zoneLayers.has(zone.id)) return;
       const layer = L.circle([zone.center.lat, zone.center.lng], {
         radius: zone.radius_m,
-        color: '#b91c1c',
-        weight: 2,
+        color: '#991b1b',
+        weight: 3,
         fillColor: '#ef4444',
         fillOpacity: .18
       }).bindTooltip(zone.label, { permanent: false });
       layer.addTo(map);
+      layer.bringToFront();
       zoneLayers.set(zone.id, layer);
     });
   }

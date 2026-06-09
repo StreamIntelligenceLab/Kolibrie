@@ -700,22 +700,22 @@ fn zones() -> Vec<Zone> {
             id: "hospital",
             label: "UZ Gent Hospital",
             kind: "restricted",
-            center: LatLng { lat: 51.0256, lng: 3.72885 },
-            radius_m: 420.0,
+            center: LatLng { lat: 51.0257, lng: 3.7297 },
+            radius_m: 620.0,
         },
         Zone {
             id: "government",
             label: "Ghent City Hall",
             kind: "restricted",
             center: LatLng { lat: 51.05444, lng: 3.72528 },
-            radius_m: 260.0,
+            radius_m: 320.0,
         },
         Zone {
             id: "event",
             label: "Citadelpark Event",
             kind: "restricted",
-            center: LatLng { lat: 51.03747, lng: 3.71926 },
-            radius_m: 470.0,
+            center: LatLng { lat: 51.0379, lng: 3.7201 },
+            radius_m: 720.0,
         },
     ]
 }
