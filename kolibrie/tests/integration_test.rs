@@ -154,6 +154,81 @@ mod tests {
     }
 
     #[test]
+    fn test_turtle_semicolon_predicate_shorthand() {
+        let mut db = SparqlDatabase::new();
+        db.parse_turtle(r#"
+            @prefix ex: <http://example.org/> .
+            ex:Alex ex:Age 10; ex:Friend ex:Bob .
+        "#);
+
+        let rows = execute_query_rayon_parallel2_volcano(r#"
+            PREFIX ex: <http://example.org/>
+            SELECT ?age ?friend
+            WHERE {
+                ex:Alex ex:Age ?age .
+                ex:Alex ex:Friend ?friend .
+            }
+        "#, &mut db);
+
+        assert_eq!(rows, vec![vec![
+            "10".to_string(),
+            "http://example.org/Bob".to_string(),
+        ]]);
+    }
+
+    #[test]
+    fn test_turtle_comma_object_shorthand() {
+        let mut db = SparqlDatabase::new();
+        db.parse_turtle(r#"
+            @prefix ex: <http://example.org/> .
+            ex:Alex ex:Friend ex:Bob, ex:Charlie .
+        "#);
+
+        let rows = execute_query_rayon_parallel2_volcano(r#"
+            PREFIX ex: <http://example.org/>
+            SELECT ?friend
+            WHERE {
+                ex:Alex ex:Friend ?friend .
+            }
+        "#, &mut db);
+
+        assert_eq!(rows.len(), 2);
+        assert!(rows.contains(&vec!["http://example.org/Bob".to_string()]));
+        assert!(rows.contains(&vec!["http://example.org/Charlie".to_string()]));
+    }
+
+    #[test]
+    fn test_turtle_semicolon_and_comma_shorthand_together() {
+        let mut db = SparqlDatabase::new();
+        db.parse_turtle(r#"
+            @prefix ex: <http://example.org/> .
+            ex:Alex ex:Age 10; ex:Friend ex:Bob, ex:Charlie .
+        "#);
+
+        let rows = execute_query_rayon_parallel2_volcano(r#"
+            PREFIX ex: <http://example.org/>
+            SELECT ?predicate ?object
+            WHERE {
+                ex:Alex ?predicate ?object .
+            }
+        "#, &mut db);
+
+        assert_eq!(rows.len(), 3);
+        assert!(rows.contains(&vec![
+            "http://example.org/Age".to_string(),
+            "10".to_string(),
+        ]));
+        assert!(rows.contains(&vec![
+            "http://example.org/Friend".to_string(),
+            "http://example.org/Bob".to_string(),
+        ]));
+        assert!(rows.contains(&vec![
+            "http://example.org/Friend".to_string(),
+            "http://example.org/Charlie".to_string(),
+        ]));
+    }
+
+    #[test]
     fn test_basic_filters() {
         let db = setup_test_db();
         
