@@ -34,9 +34,6 @@ Voor meer informatie over ons onderzoek en lopende projecten, bezoek de [Stream 
 - **Uitbreidbare Dictionary Encoding**: Codeert en decodeert RDF-termen efficiënt met behulp van een aanpasbare dictionary.
 - **Uitgebreide API**: Biedt een rijke set methoden voor gegevensmanipulatie, querying en resultaatsverwerking.
 
-> [!WARNING]
-> het gebruik van CUDA is experimenteel en in ontwikkeling
-
 ## Installatie
 
 ### Native Installatie
@@ -64,29 +61,22 @@ use kolibrie::SparqlDatabase;
 
 ### Docker Installatie
 
-**Kolibrie** biedt Docker-ondersteuning met meerdere configuraties voor verschillende gebruikssituaties. De Docker-setup behandelt automatisch alle afhankelijkheden inclusief Rust, CUDA (voor GPU builds), en Python ML frameworks.
+**Kolibrie** biedt Docker-ondersteuning voor de Web UI en ontwikkelomgevingen. De Docker-setup behandelt automatisch Rust- en Python ML-afhankelijkheden.
 
 #### Vereisten
 
 * [Docker](https://docs.docker.com/get-docker/) geïnstalleerd
 * [Docker Compose](https://docs.docker.com/compose/install/) geïnstalleerd
-* Voor GPU-ondersteuning: [NVIDIA Docker runtime](https://github.com/NVIDIA/nvidia-docker) geïnstalleerd
 
 #### Snelstart
 
-1. **Alleen CPU build** (aanbevolen voor de meeste gebruikers):
+1. **Web UI build**:
 
 ```bash
 docker compose --profile cpu up --build
 ```
 
-2. **GPU-enabled build** (vereist NVIDIA GPU en nvidia-docker):
-
-```bash
-docker compose --profile gpu up --build
-```
-
-3. **Development build** (detecteert automatisch GPU-beschikbaarheid):
+2. **Development build**:
 
 ```bash
 docker compose --profile dev up --build

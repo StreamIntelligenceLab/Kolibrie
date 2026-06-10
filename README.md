@@ -38,9 +38,6 @@ For more information about our research and ongoing projects, please visit the [
 - **Comprehensive API**: Offers a rich set of methods for data manipulation, querying, and result processing.
 - **Support Python**
 
-> [!WARNING]
-> utilizing CUDA is experimental and under the development
-
 ## Installation
 
 ### Native Installation
@@ -77,19 +74,18 @@ After that in the browser type `localhost:8080` or `0.0.0.0:8080`
 
 ### Docker Installation
 
-**Kolibrie** provides Docker support with multiple configurations optimized for different use cases. The Docker setup automatically handles all dependencies including Rust, CUDA (for GPU builds), and Python ML frameworks which are fully integrated into Kolibrie.
+**Kolibrie** provides Docker support for running the web UI or opening a development shell. The Docker setup automatically handles Rust and Python ML dependencies which are fully integrated into Kolibrie.
 
 #### Prerequisites
 
 - [Docker](https://docs.docker.com/get-docker/) installed
 - [Docker Compose](https://docs.docker.com/compose/install/) installed
-- For GPU support: [NVIDIA Docker runtime](https://github.com/NVIDIA/nvidia-docker) installed
 
 #### Quick Start with Docker Compose
 
-Kolibrie offers three deployment profiles:
+Kolibrie offers two deployment profiles:
 
-**1. CPU Build (Default - Recommended for Most Users)**
+**1. Web UI Build (Default)**
 
 Runs with web UI on port 8080:
 ```bash
@@ -100,18 +96,9 @@ docker compose --profile cpu up --build
 
 Access the web UI at `http://localhost:8080`
 
-**2. GPU Build (Requires NVIDIA GPU)**
+**2. Development Build**
 
-GPU-accelerated build with CUDA support:
-```bash
-docker compose --profile gpu up --build
-```
-
-Access the web UI at `http://localhost:8080`
-
-**3. Development Build**
-
-Interactive shell for development (auto-detects GPU):
+Interactive shell for development:
 ```bash
 docker compose --profile dev up --build
 ```
@@ -127,7 +114,6 @@ If you prefer using Docker directly:
 Build:
 ```bash
 docker build \
-  --build-arg GPU_VENDOR=none \
   --build-arg ENABLE_WEB_UI=true \
   -t kolibrie:cpu \
   .
@@ -143,36 +129,11 @@ docker run -d \
   kolibrie:cpu
 ```
 
-**GPU Build with Web UI:**
-
-Build:
-```bash
-docker build \
-  --build-arg GPU_VENDOR=nvidia \
-  --build-arg CUDA_VERSION=11.8 \
-  --build-arg BASE_IMAGE=nvidia/cuda:11.8-devel-ubuntu22.04 \
-  --build-arg ENABLE_WEB_UI=true \
-  -t kolibrie:gpu \
-  .
-```
-
-Run:
-```bash
-docker run -d \
-  --name kolibrie-gpu \
-  --gpus all \
-  -p 8080:8080 \
-  -v $(pwd)/data:/app/data \
-  -v $(pwd)/models:/app/ml/examples/models \
-  kolibrie:gpu
-```
-
 **Development Build (Shell Access):**
 
 Build:
 ```bash
 docker build \
-  --build-arg GPU_VENDOR=none \
   --build-arg ENABLE_WEB_UI=false \
   -t kolibrie:dev \
   .
@@ -184,16 +145,6 @@ docker run -it \
   --name kolibrie-dev \
   -v $(pwd):/app \
   kolibrie:dev \
-  bash
-```
-
-For GPU-enabled development shell:
-```bash
-docker run -it \
-  --name kolibrie-gpu-dev \
-  --gpus all \
-  -v $(pwd):/app \
-  kolibrie:gpu \
   bash
 ```
 

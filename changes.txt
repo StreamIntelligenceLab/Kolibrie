@@ -72,7 +72,6 @@
 71. Add RSP-engine CityBench-inspired benchmark using generated streams, S2R windowing, and cross-window rules
 72. Add family-tree cross-window SDS+ benchmark with parentOf facts in SDS stream 1 and all other family facts in SDS stream 2
 73. Add old/new data-ratio evaluation for family-tree benchmark to compare incremental update against naive from-scratch recomputation
-74. Add first-class top-level `ML.PREDICT` syntax outside `RULE`, with neural-relation-based materialization after training, ambiguity checks for model-to-relation mapping, parser/runtime tests, and updated `predict_after_train` example
 
 0.1.1
 1. Modify whole project by making Cargo workspace

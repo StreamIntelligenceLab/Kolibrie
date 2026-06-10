@@ -36,9 +36,6 @@ Pour plus d’informations, veuillez consulter le [site web du Stream Intelligen
 - **Codage de Dictionnaire Extensible** : encodage/décodage efficace des termes RDF via un dictionnaire personnalisable.
 - **API Complète** : un ensemble riche de méthodes pour manipuler les données, exécuter des requêtes et traiter les résultats.
 
-> [!WARNING]
-> L’utilisation de CUDA est expérimentale et en cours de développement.
-
 ## Installation
 
 ### Installation Native
@@ -66,29 +63,22 @@ use kolibrie::SparqlDatabase;
 
 ### Installation Docker
 
-**Kolibrie** fournit un support Docker avec plusieurs configurations pour différents cas d’usage. L’environnement Docker gère automatiquement toutes les dépendances, y compris Rust, CUDA (pour les builds GPU) et les frameworks Python ML.
+**Kolibrie** fournit un support Docker pour la Web UI et les environnements de développement. L’environnement Docker gère automatiquement les dépendances Rust et Python ML.
 
 #### Prérequis
 
 * [Docker](https://docs.docker.com/get-docker/) installé
 * [Docker Compose](https://docs.docker.com/compose/install/) installé
-* Pour le support GPU : [NVIDIA Docker runtime](https://github.com/NVIDIA/nvidia-docker) installé
 
 #### Démarrage Rapide
 
-1. **Build CPU uniquement** (recommandé pour la plupart des utilisateurs) :
+1. **Build Web UI** :
 
 ```bash
 docker compose --profile cpu up --build
 ```
 
-2. **Build avec GPU activé** (nécessite un GPU NVIDIA et nvidia-docker) :
-
-```bash
-docker compose --profile gpu up --build
-```
-
-3. **Build de développement** (détecte automatiquement la disponibilité GPU) :
+2. **Build de développement** :
 
 ```bash
 docker compose --profile dev up --build
