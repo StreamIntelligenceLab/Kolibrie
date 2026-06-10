@@ -76,9 +76,6 @@
 
 0.1.1
 1. Modify whole project by making Cargo workspace
-2. Modify GPU CUDA
-3. Add proc_macro for GPU ```[gpu::main]```
-4. Add cuda example
 5. Add possibility to make a user defined function
 6. Add user defined function example
 7. Add 'CONCAT' keyword
@@ -97,7 +94,6 @@
 20. Modify SPARQL syntax by combining SPARQL + LP 
 21. Modify SPARQL syntax make execution of SPARQL + LP (N3 logic)
 22. Integrate project with Python (currently only Datalog)
-23. Modify SPARQL by making CUDA as a feature (by default disabled)
 24. Add ARM instructions to 'FILTER'
 25. Small cleaning
 26. Modify Datalog by adding inconsistency

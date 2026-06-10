@@ -14,8 +14,6 @@ exclude = ["target/"]
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
-build = "build.rs"
-
 [dependencies]
 quick-xml = { workspace = true }
 serde = { workspace = true }
@@ -29,7 +27,6 @@ percent-encoding = { workspace = true }
 httparse = { workspace = true }
 crossbeam = { workspace = true }
 pyo3 = { workspace = true }
-gpu = { path = "../gpu" }
 shared = { path = "../shared" }
 datalog =  { path = "../datalog" }
 ml = { path = "../ml" }
@@ -37,7 +34,6 @@ chrono = "0.4.40"
 rumqttc = "0.21.0"
 log = "0.4.27"
 annotate-snippets = "0.12.10"
-bincode = "1.3"
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2.161"
@@ -50,10 +46,6 @@ criterion = "0.5.1"
 
 [lib]
 path = "src/lib.rs"
-
-[features]
-# When the "cuda" feature is enabled, all CUDA code is compiled in
-cuda = []
 
 [[bench]]
 name = "my_benchmark"
@@ -227,10 +219,6 @@ path = "examples/sparql_syntax/from_file/multi_thread.rs"
 [[example]]
 name = "one_thread"
 path = "examples/sparql_syntax/from_file/one_thread.rs"
-
-[[example]]
-name = "cuda_example"
-path = "examples/sparql_syntax/from_file/cuda_example.rs"
 
 [[example]]
 name = "udf"

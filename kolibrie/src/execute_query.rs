@@ -17,7 +17,6 @@ use crate::neural_relations::{
 use crate::parser::*;
 use shared::query::*;
 use shared::triple::Triple;
-use shared::GPU_MODE_ENABLED;
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 
 pub fn execute_subquery<'a>(
@@ -298,40 +297,19 @@ pub fn execute_query(sparql: &str, database: &mut SparqlDatabase) -> Vec<Vec<Str
             let join_subject_static: &'static str = Box::leak(join_subject.into_boxed_str());
             let join_object_static: &'static str = Box::leak(join_object.into_boxed_str());
 
-            if GPU_MODE_ENABLED.load(std::sync::atomic::Ordering::SeqCst) {
-                println!("CUDA");
-                #[cfg(feature = "cuda")]
-                {
-                    final_results = database.perform_hash_join_cuda_wrapper(
-                        join_subject_static,
-                        join_predicate,
-                        join_object_static,
-                        triples_vec.clone(),
-                        &database.dictionary,
-                        final_results,
-                        if !join_object_static.starts_with('?') {
-                            Some(join_object_static.to_string())
-                        } else {
-                            None
-                        },
-                    );
-                }
-            } else {
-                // println!("NORM");
-                final_results = database.perform_join_par_simd_with_strict_filter_1(
-                    join_subject_static,
-                    join_predicate,
-                    join_object_static,
-                    triples_vec.clone(),
-                    &database.dictionary,
-                    final_results,
-                    if !join_object_static.starts_with('?') {
-                        Some(join_object_static.to_string())
-                    } else {
-                        None
-                    },
-                );
-            }
+            final_results = database.perform_join_par_simd_with_strict_filter_1(
+                join_subject_static,
+                join_predicate,
+                join_object_static,
+                triples_vec.clone(),
+                &database.dictionary,
+                final_results,
+                if !join_object_static.starts_with('?') {
+                    Some(join_object_static.to_string())
+                } else {
+                    None
+                },
+            );
         }
 
         // Apply filters
@@ -558,223 +536,94 @@ pub fn execute_query_rayon_parallel2_volcano(
         // Build indexes before optimization - this is crucial for performance
         // database.build_all_indexes();
 
-        // Check if we should use GPU mode for execution
-        if GPU_MODE_ENABLED.load(std::sync::atomic::Ordering::SeqCst) {
-            println!("CUDA with Volcano Optimizer");
+        // Use Volcano optimizer for CPU execution
+        let mut logical_plan = build_logical_plan(
+            selected_variables
+                .iter()
+                .map(|(t, v)| (t.as_str(), v.as_str()))
+                .collect(),
+            resolved_patterns,
+            filters.clone(),
+            &prefixes,
+            database,
+            &binds,
+            values_clause.as_ref(),
+        ); 
 
-            // Use Volcano optimizer for plan generation
-            let logical_plan = build_logical_plan(
-                selected_variables
-                    .iter()
-                    .map(|(t, v)| (t.as_str(), v.as_str()))
-                    .collect(),
-                resolved_patterns,
-                filters,
+        // Integrate subqueries into the logical plan
+        for subquery in &subqueries {
+            let subquery_plan = build_logical_plan_from_subquery(
+                subquery,
                 &prefixes,
                 database,
-                &binds,
-                values_clause.as_ref(),
             );
+        
+            // Join the subquery with the main query
+            logical_plan = LogicalOperator::join(logical_plan, subquery_plan);
+        }
 
-            let stats = database.cached_stats.as_ref().expect("Error");
-            let mut optimizer = Streamertail::with_cached_stats(stats.clone());
-            let _optimized_plan = optimizer.find_best_plan(&logical_plan);
+        if database.cached_stats.is_none() {
+            database.get_or_build_stats();
+        }
+        
+        let stats = database
+            .cached_stats
+            .as_ref()
+            .expect("database stats should be available");
+        let mut optimizer = Streamertail::with_cached_stats(stats.clone());
 
-            #[cfg(feature = "cuda")]
-            {
-                // For now, fall back to the original GPU implementation
-                // until execute_gpu is properly implemented for the optimized plan
+        let optimized_plan = optimizer.find_best_plan(&logical_plan);
+        let results = optimized_plan.execute(database);
 
-                // Initialize final_results based on the VALUES clause
-                let mut final_results = initialize_results(&values_clause);
+        let results_owned: Vec<HashMap<String, String>> = results.into_iter().collect();
 
-                // Convert BTreeSet to a vector of Triple
-                let triples_vec: Vec<Triple> = database.triples.iter().cloned().collect();
+        let optimizer_results: Vec<BTreeMap<&str, String>> = results_owned
+            .iter()
+            .map(|result| {
+                result
+                    .iter()
+                    .map(|(k, v)| {
+                    let key_with_prefix = if k.starts_with('?') {
+                        k.as_str()
+                    } else {
+                        Box::leak(format!("?{}", k).into_boxed_str())
+                    };
+                    (key_with_prefix, v.clone())
+                })
+                .collect()
+            })
+            .collect();
 
-                // Process each pattern in the WHERE clause
-                for (subject_var, predicate, object_var) in patterns {
-                    if predicate == "RULECALL" {
-                        final_results =
-                            process_rule_call(subject_var, object_var, database, &prefixes);
-                        continue;
-                    }
-
-                    // Handle non-RULECALL patterns
-                    let (join_subject, join_predicate, join_object) = resolve_triple_pattern(
-                        subject_var,
-                        predicate,
-                        object_var,
-                        database,
-                        &prefixes,
-                    );
-
-                    // To satisfy lifetime requirements, leak the computed join_subject and join_object
-                    let join_subject_static: &'static str =
-                        Box::leak(join_subject.into_boxed_str());
-                    let join_object_static: &'static str = Box::leak(join_object.into_boxed_str());
-
-                    final_results = database.perform_hash_join_cuda_wrapper(
-                        join_subject_static,
-                        join_predicate,
-                        join_object_static,
-                        triples_vec.clone(),
-                        &database.dictionary,
-                        final_results,
-                        if !join_object_static.starts_with('?') {
-                            Some(join_object_static.to_string())
-                        } else {
-                            None
-                        },
-                    );
-                }
-
-                // Apply filters
-                final_results = database.apply_filters_simd(final_results, filters);
-
-                // Process subqueries
-                for subquery in subqueries {
-                    let subquery_results =
-                        execute_subquery(&subquery, database, &prefixes, final_results.clone());
-                    final_results = merge_results(final_results, subquery_results);
-                }
-
-                // Apply BIND (UDF) clauses
-                process_bind_clauses(&mut final_results, binds, database);
-
-                // Apply GROUP BY and aggregations
-                if !group_vars.is_empty() {
-                    final_results =
-                        group_and_aggregate_results(final_results, &group_vars, &aggregation_vars);
-                }
-
-                final_results = apply_order_by(final_results, &order_conditions);
-
-                // Apply LIMIT clause
-                if let Some(limit_value) = limit_clause {
-                    if limit_value > 0 {
-                        final_results.truncate(limit_value);
-                    }
-                }
-
-                return format_results(final_results, &selected_variables);
-            }
-
-            #[cfg(not(feature = "cuda"))]
-            {
-                eprintln!("CUDA feature not enabled");
-                return Vec::new();
+        let mut final_results = if optimizer_results.is_empty() {
+            if values_clause.is_some() {
+                initialize_results(&values_clause)
+            } else {
+                Vec::new()
             }
         } else {
-            /*let guard = pprof::ProfilerGuardBuilder::default()
-                .frequency(1000)
-                .blocklist(&["libc", "libgcc", "pthread", "vdso"])
-                .build()
-                . unwrap();*/
+            optimizer_results
+        };
 
-            // Use Volcano optimizer for CPU execution
-            let mut logical_plan = build_logical_plan(
-                selected_variables
-                    .iter()
-                    .map(|(t, v)| (t.as_str(), v.as_str()))
-                    .collect(),
-                resolved_patterns,
-                filters.clone(),
-                &prefixes,
-                database,
-                &binds,
-                values_clause.as_ref(),
-            ); 
-
-            // Integrate subqueries into the logical plan
-            for subquery in &subqueries {
-                let subquery_plan = build_logical_plan_from_subquery(
-                    subquery,
-                    &prefixes,
-                    database,
-                );
-            
-                // Join the subquery with the main query
-                logical_plan = LogicalOperator::join(logical_plan, subquery_plan);
-            }
-
-            if database.cached_stats.is_none() {
-                database.get_or_build_stats();
-            }
-            
-            let stats = database
-                .cached_stats
-                .as_ref()
-                .expect("database stats should be available");
-            let mut optimizer = Streamertail::with_cached_stats(stats.clone());
-
-            let optimized_plan = optimizer.find_best_plan(&logical_plan);
-            let results = optimized_plan.execute(database);
-            /*if let Ok(report) = guard.report().build() {
-                let file = std::fs::File::create("streamertail_optimizer_flamegraph.svg").unwrap();
-                report.flamegraph(file).unwrap();
-                println!("Volcano optimizer flamegraph saved to: streamertail_optimizer_flamegraph. svg");
-            }*/
-
-            // Convert results to owned strings first to avoid lifetime issues
-            let results_owned: Vec<HashMap<String, String>> = results.into_iter().collect();
-
-            // Merge optimizer results with VALUES clause results
-            let optimizer_results: Vec<BTreeMap<&str, String>> = results_owned
-                .iter()
-                .map(|result| {
-                    result
-                        .iter()
-                        .map(|(k, v)| {
-                        // Add '?' prefix back for consistency with format_results
-                        let key_with_prefix = if k.starts_with('?') {
-                            k.as_str()
-                        } else {
-                            Box::leak(format!("?{}", k).into_boxed_str())
-                        };
-                        (key_with_prefix, v.clone())
-                    })
-                    .collect()
-                })
-                .collect();
-
-            // Initialize with VALUES clause for consistency with GPU path
-            let mut final_results = if optimizer_results.is_empty() {
-                if values_clause.is_some() {
-                    // If we have optimizer results, use them; otherwise keep VALUES results
-                    initialize_results(&values_clause)
-                } else {
-                    Vec::new()
-                }
-            } else {
-                optimizer_results
-            };
-
-            // Process subqueries if any
-            for subquery in subqueries {
-                let subquery_results =
-                    execute_subquery(&subquery, database, &prefixes, final_results.clone());
-                final_results = merge_results(final_results, subquery_results);
-            }
-
-            // Apply BIND (UDF) clauses
-            // process_bind_clauses(&mut final_results, binds, database);
-
-            // Apply GROUP BY and aggregations
-            if !group_vars.is_empty() {
-                final_results =
-                    group_and_aggregate_results(final_results, &group_vars, &aggregation_vars);
-            }
-
-            final_results = apply_order_by(final_results, order_conditions);
-
-            if let Some(limit_value) = limit_clause {
-                if limit_value > 0 {
-                    final_results.truncate(limit_value);
-                }
-            }
-
-            return format_results(final_results, &selected_variables);
+        for subquery in subqueries {
+            let subquery_results =
+                execute_subquery(&subquery, database, &prefixes, final_results.clone());
+            final_results = merge_results(final_results, subquery_results);
         }
+
+        if !group_vars.is_empty() {
+            final_results =
+                group_and_aggregate_results(final_results, &group_vars, &aggregation_vars);
+        }
+
+        final_results = apply_order_by(final_results, order_conditions);
+
+        if let Some(limit_value) = limit_clause {
+            if limit_value > 0 {
+                final_results.truncate(limit_value);
+            }
+        }
+
+        return format_results(final_results, &selected_variables);
     } else if let Err(err) = combined_parse {
         let error_message = format_parse_error(sparql, err);
         eprintln!("Failed to parse the query: {}", error_message);

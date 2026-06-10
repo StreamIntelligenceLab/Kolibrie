@@ -1,10 +1,9 @@
 #!/bin/bash
 
 PACKAGES_STATUS_FILE="/app/.packages_status"
-BASE_PACKAGES="build-essential cmake curl git libssl-dev pkg-config python3 python3-dev python3-pip python3-setuptools python3-wheel pciutils lshw wget bc bash"
+BASE_PACKAGES="build-essential cmake curl git libssl-dev pkg-config python3 python3-dev python3-pip python3-setuptools python3-wheel wget bc bash"
 
 echo "=== System Packages Verification Starting ==="
-echo "Build context: GPU_VENDOR=${GPU_VENDOR:-none}"
 
 # Since packages are pre-installed, this is mainly for verification
 REQUIRED_PACKAGES="$BASE_PACKAGES"
@@ -30,5 +29,4 @@ else
     echo "MISSING_PACKAGES=$MISSING_PACKAGES" >> "$PACKAGES_STATUS_FILE"
 fi
 
-echo "GPU_VENDOR=${GPU_VENDOR:-none}" >> "$PACKAGES_STATUS_FILE"
 echo "=== System Packages Verification Complete ==="

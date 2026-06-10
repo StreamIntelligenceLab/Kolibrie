@@ -1,13 +1,11 @@
 version: '3.8'
 
 services:
-  # CPU-only service
-  kolibrie-cpu:
+  kolibrie:
     build:
       context: .
       dockerfile: Dockerfile
       args:
-        GPU_VENDOR: none
         BASE_TAG: "22.04"
         ENABLE_WEB_UI: "true"
     image: kolibrie:cpu
@@ -25,48 +23,11 @@ services:
       - cpu
       - default
 
-  # GPU-enabled service
-  kolibrie-gpu:
-    build:
-      context: .
-      dockerfile: Dockerfile
-      args:
-        GPU_VENDOR: nvidia
-        CUDA_VERSION: "11.8"
-        BASE_TAG: "22.04"
-        BASE_IMAGE: nvidia/cuda:11.8-devel-ubuntu22.04
-        ENABLE_WEB_UI: "true"
-    image: kolibrie:gpu
-    ports:
-      - "8080:8080"
-    deploy:
-      resources:
-        reservations:
-          devices:
-            - driver: nvidia
-              count: all
-              capabilities: [gpu]
-    volumes:
-      - ./data:/app/data
-      - ./models:/app/ml/examples/models
-      - ./web:/app/web
-    environment:
-      - CUDA_VISIBLE_DEVICES=all
-      - RUST_LOG=info
-      - PYTHONPATH=/app/ml/src:/app/python/target/release
-    command: /app/target/release/kolibrie-http-server
-    profiles:
-      - gpu
-      - nvidia
-
-  # Development service
   kolibrie-dev:
     build:
       context: .
       dockerfile: Dockerfile
       args:
-        GPU_VENDOR: ${GPU_VENDOR:-none}
-        CUDA_VERSION: ${CUDA_VERSION:-11.8}
         BASE_TAG: ${BASE_TAG:-22.04}
         BASE_IMAGE: ${BASE_IMAGE:-ubuntu:22.04}
         ENABLE_WEB_UI: "false"
