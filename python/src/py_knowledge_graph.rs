@@ -13,7 +13,7 @@ use datalog::reasoning::Reasoner;
 use std::collections::HashMap;
 
 /// Represents a condition to filter rules
-#[pyclass]
+#[pyclass(name = "FilterCondition")]
 #[derive(Debug, Clone)]
 struct PyFilterCondition {
     #[pyo3(get, set)]
@@ -35,7 +35,7 @@ impl PyFilterCondition {
 }
 
 /// Represents a term in a triple pattern
-#[pyclass]
+#[pyclass(name = "Term")]
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 enum PyTerm {
     #[pyo3(name = "Variable")]
@@ -46,7 +46,7 @@ enum PyTerm {
 }
 
 /// Represents a triple pattern used in rules
-#[pyclass]
+#[pyclass(name = "TriplePattern")]
 #[derive(Debug, Clone)]
 struct PyTriplePattern {
     #[pyo3(get, set)]
@@ -68,7 +68,7 @@ impl PyTriplePattern {
 }
 
 /// Represents a logical rule in the knowledge graph
-#[pyclass]
+#[pyclass(name = "Rule")]
 #[derive(Debug, Clone)]
 struct PyRule {
     #[pyo3(get, set)]
@@ -89,7 +89,7 @@ impl PyRule {
     }
 }
 
-#[pyclass]
+#[pyclass(name = "KnowledgeGraph")]
 struct PyKnowledgeGraph {
     inner: Reasoner,
 }

@@ -9,10 +9,10 @@
 # 
 
 #!/usr/bin/env python3
-from py_kolibrie import PySparqlDatabase
+from kolibrie import SparqlDatabase
 
 def main():
-    db = PySparqlDatabase()
+    db = SparqlDatabase()
 
     # load some data
     db.add_triple("http://example.org/Alice",   "http://example.org/knows", "http://example.org/Bob")

@@ -1197,6 +1197,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "kolibrie-python"
+version = "0.1.1"
+dependencies = [
+ "datalog",
+ "kolibrie",
+ "pyo3",
+ "shared",
+]
+
+[[package]]
 name = "libc"
 version = "0.2.174"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1667,16 +1677,6 @@ dependencies = [
  "pyo3-build-config 0.25.1",
  "quote",
  "syn",
-]
-
-[[package]]
-name = "python"
-version = "0.1.1"
-dependencies = [
- "datalog",
- "kolibrie",
- "pyo3",
- "shared",
 ]
 
 [[package]]

@@ -1,13 +1,13 @@
-import py_kolibrie as kolibrie
+import kolibrie
 
 def test_streaming_query_integration():
     # Create a new database
-    db = kolibrie.PySparqlDatabase()
+    db = kolibrie.SparqlDatabase()
 
     stream_query = (db.query()
                       .window(10, 2)
                       .with_predicate("knows")
-                      .with_stream_operator(kolibrie.PyStreamOperator.RSTREAM)
+                      .with_stream_operator(kolibrie.StreamOperator.RSTREAM)
                       .as_stream())
     
     result1 = stream_query.add_stream_triple("Alice", "knows", "Bob", 1)
@@ -51,12 +51,12 @@ def test_istream_operator():
     """
     
     # Create a new database
-    db = kolibrie.PySparqlDatabase()
+    db = kolibrie.SparqlDatabase()
     
     stream_query = (db.query()
                       .window(10, 2)
                       .with_subject_like("Alice")
-                      .with_stream_operator(kolibrie.PyStreamOperator.ISTREAM)
+                      .with_stream_operator(kolibrie.StreamOperator.ISTREAM)
                       .as_stream())
     
     print("\nAdding triples over multiple time points...")
