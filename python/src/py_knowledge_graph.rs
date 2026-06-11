@@ -37,7 +37,7 @@ impl PyFilterCondition {
 /// Represents a term in a triple pattern
 #[pyclass(name = "Term")]
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
-enum PyTerm {
+enum Term {
     #[pyo3(name = "Variable")]
     Variable(String),
 
@@ -45,24 +45,38 @@ enum PyTerm {
     Constant(u32),
 }
 
+#[pymethods]
+impl Term {
+    fn __repr__(&self) -> String {
+        match self {
+            Term::Variable(value) => format!("Term.Variable({value:?})"),
+            Term::Constant(value) => format!("Term.Constant({value})"),
+        }
+    }
+
+    fn __str__(&self) -> String {
+        self.__repr__()
+    }
+}
+
 /// Represents a triple pattern used in rules
 #[pyclass(name = "TriplePattern")]
 #[derive(Debug, Clone)]
 struct PyTriplePattern {
     #[pyo3(get, set)]
-    subject: PyTerm,
+    subject: Term,
     
     #[pyo3(get, set)]
-    predicate: PyTerm,
+    predicate: Term,
     
     #[pyo3(get, set)]
-    object: PyTerm,
+    object: Term,
 }
 
 #[pymethods]
 impl PyTriplePattern {
     #[new]
-    fn new(subject: PyTerm, predicate: PyTerm, object: PyTerm) -> Self {
+    fn new(subject: Term, predicate: Term, object: Term) -> Self {
         Self { subject, predicate, object }
     }
 }
@@ -195,7 +209,7 @@ impl PyKnowledgeGraph {
         decoded_results
     }
 
-    fn backward_chaining(&self, query: PyTriplePattern) -> Vec<HashMap<String, PyTerm>> {
+    fn backward_chaining(&self, query: PyTriplePattern) -> Vec<HashMap<String, Term>> {
         let rust_query = (
             convert_term(query.subject),
             convert_term(query.predicate),
@@ -250,7 +264,7 @@ impl PyKnowledgeGraph {
         self.inner.add_constraint(converted_rule);
     }
 
-    fn query_with_repairs(&mut self, query: PyTriplePattern) -> Vec<HashMap<String, PyTerm>> {
+    fn query_with_repairs(&mut self, query: PyTriplePattern) -> Vec<HashMap<String, Term>> {
         let rust_query = (
             convert_term(query.subject),
             convert_term(query.predicate),
@@ -295,20 +309,20 @@ impl PyKnowledgeGraph {
     }
 }
 
-/// Converts `PyTerm` to `reasoning::Term`
-fn convert_term(term: PyTerm) -> shared::terms::Term {
+/// Converts Python `Term` to `reasoning::Term`
+fn convert_term(term: Term) -> shared::terms::Term {
     match term {
-        PyTerm::Variable(v) => shared::terms::Term::Variable(v),
-        PyTerm::Constant(c) => shared::terms::Term::Constant(c),
+        Term::Variable(v) => shared::terms::Term::Variable(v),
+        Term::Constant(c) => shared::terms::Term::Constant(c),
     }
 }
 
-/// Converts `reasoning::Term` to `PyTerm`
-fn convert_term_back(term: shared::terms::Term) -> PyTerm {
+/// Converts `reasoning::Term` to Python `Term`
+fn convert_term_back(term: shared::terms::Term) -> Term {
     match term {
-        shared::terms::Term::Variable(v) => PyTerm::Variable(v),
-        shared::terms::Term::Constant(c) => PyTerm::Constant(c),
-        shared::terms::Term::QuotedTriple(_) => PyTerm::Variable("__quoted_triple".to_string()),
+        shared::terms::Term::Variable(v) => Term::Variable(v),
+        shared::terms::Term::Constant(c) => Term::Constant(c),
+        shared::terms::Term::QuotedTriple(_) => Term::Variable("__quoted_triple".to_string()),
     }
 }
 
@@ -318,6 +332,6 @@ pub fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyRule>()?;             
     m.add_class::<PyFilterCondition>()?;  
     m.add_class::<PyTriplePattern>()?;    
-    m.add_class::<PyTerm>()?;             
+    m.add_class::<Term>()?;             
     Ok(())
 }
