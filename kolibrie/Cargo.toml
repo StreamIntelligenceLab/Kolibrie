@@ -39,7 +39,7 @@ annotate-snippets = "0.12.10"
 libc = "0.2.161"
 
 [target.'cfg(windows)'.dependencies]
-winapi = { version = "0.3.9", features = ["sysinfoapi"] }
+winapi = { version = "0.3.9", features = ["processthreadsapi", "psapi", "sysinfoapi"] }
 
 [dev-dependencies]
 criterion = "0.5.1"
@@ -179,6 +179,10 @@ path = "examples/sparql_syntax/n_triples_data/n_triples_data.rs"
 [[example]]
 name = "n_triple_10M"
 path = "examples/sparql_syntax/n_triples_data/n_triple_10M.rs"
+
+[[example]]
+name = "repro_sensor_path_benchmark"
+path = "examples/sparql_syntax/n_triples_data/repro_sensor_path_benchmark.rs"
 
 [[example]]
 name = "n3_data_simple"

@@ -89,25 +89,20 @@ impl Streamertail {
             return None;
         }
 
-        // Count how many patterns each variable appears
+        // Count subject-centered stars only. Object-position "stars" can explode
+        // path queries by enumerating unrelated combinations before path joins run.
         let mut var_counts: std::collections::BTreeMap<String, Vec<usize>> = BTreeMap::new();
 
         for (idx, pattern) in patterns.iter().enumerate() {
             if let Term::Variable(var) = &pattern.0 {
                 var_counts.entry(var.clone()).or_default().push(idx);
             }
-            if let Term::Variable(var) = &pattern.1 {
-                var_counts.entry(var.clone()).or_default().push(idx);
-            }
-            if let Term::Variable(var) = &pattern.2 {
-                var_counts.entry(var.clone()).or_default().push(idx);
-            }
         }
 
-        // Find all variables that appear in 2+ patterns
+        // Find variables that appear as the subject in at least 3 patterns.
         let mut star_vars: Vec<(&String, &Vec<usize>)> = var_counts
             .iter()
-            .filter(|(_, indices)| indices.len() >= 2)  // <- Lowered from 3 to 2
+            .filter(|(_, indices)| indices.len() >= 3)
             .collect();
 
         // Sort by number of occurrences (most frequent first)
@@ -129,7 +124,7 @@ impl Streamertail {
                 .copied()
                 .collect();
 
-            if available.len() >= 2 {  // Need at least 2 patterns for a star
+            if available.len() >= 3 {
                 let star_patterns: Vec<TriplePattern> = available
                     .iter()
                     .map(|&idx| patterns[idx].clone())
@@ -797,6 +792,23 @@ mod tests {
         Streamertail::new(&database)
     }
 
+    fn var(name: &str) -> Term {
+        Term::Variable(name.to_string())
+    }
+
+    fn constant(id: u32) -> Term {
+        Term::Constant(id)
+    }
+
+    fn scan(subject: Term, predicate: Term, object: Term) -> LogicalOperator {
+        LogicalOperator::scan((subject, predicate, object))
+    }
+
+    fn join_all(mut plans: Vec<LogicalOperator>) -> LogicalOperator {
+        let first = plans.remove(0);
+        plans.into_iter().fold(first, LogicalOperator::join)
+    }
+
     #[test]
     fn test_count_bound_variables_all_vars() {
         let optimizer = create_test_optimizer();
@@ -824,5 +836,67 @@ mod tests {
         let optimizer = create_test_optimizer();
         let pattern = (Term::Constant(1), Term::Constant(2), Term::Constant(3));
         assert_eq!(optimizer.count_bound_variables(&pattern), 3);
+    }
+
+    #[test]
+    fn test_subject_centered_star_is_detected() {
+        let optimizer = create_test_optimizer();
+        let plan = join_all(vec![
+            scan(var("?segment"), constant(1), var("?sensor")),
+            scan(var("?segment"), constant(2), var("?length")),
+            scan(var("?segment"), constant(3), constant(4)),
+        ]);
+
+        let stars = optimizer
+            .is_star_query(&plan)
+            .expect("subject star should be detected");
+
+        assert_eq!(stars.len(), 1);
+        assert_eq!(stars[0].0, "?segment");
+        assert_eq!(stars[0].1.len(), 3);
+    }
+
+    #[test]
+    fn test_object_centered_repeated_variable_is_not_detected() {
+        let optimizer = create_test_optimizer();
+        let plan = join_all(vec![
+            scan(var("?segment1"), constant(1), var("?sensor")),
+            scan(var("?segment2"), constant(1), var("?sensor")),
+            scan(var("?segment3"), constant(1), var("?sensor")),
+            scan(var("?sensor"), constant(2), constant(3)),
+        ]);
+
+        let stars = optimizer.is_star_query(&plan).unwrap_or_default();
+
+        assert!(!stars.iter().any(|(var, _)| var == "?sensor"));
+    }
+
+    #[test]
+    fn test_sensor_path_query_does_not_use_sensor_as_star_center() {
+        let optimizer = create_test_optimizer();
+        let plan = join_all(vec![
+            scan(var("?segment1"), constant(1), var("?segment2")),
+            scan(var("?segment2"), constant(1), var("?segment3")),
+            scan(var("?segment3"), constant(1), var("?segment4")),
+            scan(var("?segment4"), constant(1), var("?segment5")),
+            scan(var("?segment5"), constant(1), var("?segment6")),
+            scan(var("?sensor"), constant(2), constant(3)),
+            scan(var("?segment1"), constant(4), var("?sensor")),
+            scan(var("?segment2"), constant(4), var("?sensor")),
+            scan(var("?segment3"), constant(4), var("?sensor")),
+            scan(var("?segment4"), constant(4), var("?sensor")),
+            scan(var("?segment5"), constant(4), var("?sensor")),
+            scan(var("?segment6"), constant(4), var("?sensor")),
+            scan(var("?segment1"), constant(2), constant(5)),
+            scan(var("?segment2"), constant(2), constant(5)),
+            scan(var("?segment3"), constant(2), constant(5)),
+            scan(var("?segment4"), constant(2), constant(5)),
+            scan(var("?segment5"), constant(2), constant(5)),
+            scan(var("?segment6"), constant(2), constant(5)),
+        ]);
+
+        let stars = optimizer.is_star_query(&plan).unwrap_or_default();
+
+        assert!(!stars.iter().any(|(var, _)| var == "?sensor"));
     }
 }

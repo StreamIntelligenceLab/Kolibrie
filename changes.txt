@@ -74,6 +74,7 @@
 73. Add old/new data-ratio evaluation for family-tree benchmark to compare incremental update against naive from-scratch recomputation
 74. Add first-class top-level `ML.PREDICT` syntax outside `RULE`, with neural-relation-based materialization after training, ambiguity checks for model-to-relation mapping, parser/runtime tests, and updated `predict_after_train` example
 75. Clean Python bindings API by exposing `kolibrie.SparqlDatabase`, `KnowledgeGraph`, and related classes without `Py*` prefixes; add `SparqlDatabase.load_file(path, format=None)` with Turtle, N-Triples, and RDF/XML dispatch; update Python examples
+76. Fix Streamertail star-join planning to avoid object-position star explosions in path queries
 
 0.1.1
 1. Modify whole project by making Cargo workspace
