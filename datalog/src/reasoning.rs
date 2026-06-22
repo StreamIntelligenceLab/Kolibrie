@@ -15,9 +15,9 @@ pub mod repairs;
 pub mod helpers;
 
 use shared::dictionary::Dictionary;
+use shared::dataset_index::DatasetIndex;
 use shared::triple::Triple;
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
-use shared::index_manager::*;
 use shared::rule_index::RuleIndex;
 use shared::rule::Rule;
 use shared::provenance::Provenance;
@@ -34,7 +34,7 @@ pub struct Reasoner {
     pub dictionary: Arc<RwLock<Dictionary>>,
     pub rules: Vec<Rule>, // List of dynamic rules
 
-    pub index_manager: UnifiedIndex,
+    pub dataset_index: DatasetIndex,
     pub rule_index: RuleIndex,
     pub constraints: Vec<Rule>,
     pub probability_seeds: HashMap<Triple, f64>, // Input probabilities for provenance seeding
@@ -58,7 +58,7 @@ impl Reasoner {
         Self {
             dictionary: Arc::new(RwLock::new(Dictionary::new())),
             rules: Vec::new(),
-            index_manager: UnifiedIndex::new(),
+            dataset_index: DatasetIndex::new(),
             rule_index: RuleIndex::new(),
             constraints: Vec::new(),
             probability_seeds: HashMap::new(),
@@ -75,7 +75,7 @@ impl Reasoner {
         drop(dict);
 
         let triple = Triple { subject: s, predicate: p, object: o };
-        self.index_manager.insert(&triple);
+        self.dataset_index.insert(&triple);
         self.probability_seeds.insert(triple, probability);
     }
 
@@ -88,7 +88,7 @@ impl Reasoner {
         drop(dict);
 
         for triple in &rdf_star_triples {
-            self.index_manager.insert(triple);
+            self.dataset_index.insert(triple);
         }
     }
 
@@ -100,7 +100,7 @@ impl Reasoner {
         let o = dict.encode(object);
         drop(dict);  // Release lock early
 
-        self.index_manager.insert(&Triple {
+        self.dataset_index.insert(&Triple {
             subject: s,
             predicate: p,
             object: o,
@@ -109,7 +109,7 @@ impl Reasoner {
 
     /// Insert an already-ground triple directly into the fact index.
     pub fn insert_ground_triple(&mut self, triple: Triple) {
-        self.index_manager.insert(&triple);
+        self.dataset_index.insert(&triple);
     }
 
     /// Query the ABox for instance-level assertions (using TrieIndex now)
@@ -125,7 +125,7 @@ impl Reasoner {
         let o = object.map(|o| dict.encode(o));
         drop(dict);  // Release lock early
 
-        self.index_manager.query(s, p, o)
+        self.dataset_index.query(s, p, o)
     }
 
     /// Add new method to handle constraints
@@ -185,3 +185,4 @@ impl Reasoner {
         repairs
     }
 }
+

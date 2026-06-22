@@ -12,6 +12,18 @@ use kolibrie::execute_query::execute_query_rayon_parallel2_volcano;
 use kolibrie::sparql_database::SparqlDatabase;
 use shared::quoted_triple_store::{QuotedTripleStore, is_quoted_triple_id};
 
+fn default_triples(db: &SparqlDatabase) -> Vec<shared::triple::Triple> {
+    db.query_default_triples(None, None, None)
+}
+
+fn default_len(db: &SparqlDatabase) -> usize {
+    default_triples(db).len()
+}
+
+fn default_is_empty(db: &SparqlDatabase) -> bool {
+    default_triples(db).is_empty()
+}
+
 // QuotedTripleStore unit tests
 #[test]
 fn test_quoted_triple_store_encode_decode() {
@@ -51,7 +63,7 @@ fn test_ntriples_star_basic_quoted_triple() {
     db.parse_ntriples_and_add(ntriples);
 
     // The outer triple should exist: qt_id :statedBy :emp22
-    assert!(!db.triples.is_empty(), "Should have parsed the outer triple");
+    assert!(!default_is_empty(&db), "Should have parsed the outer triple");
 
     // The quoted triple store should have one entry
     let qt = db.quoted_triple_store.read().unwrap();
@@ -65,7 +77,7 @@ fn test_ntriples_star_multiple_quoted_triples() {
 << <http://example.org/d> <http://example.org/e> <http://example.org/f> >> <http://example.org/source> <http://example.org/y> .
 "#;
     db.parse_ntriples_and_add(ntriples);
-    assert_eq!(db.triples.len(), 2, "Should have two outer triples");
+    assert_eq!(default_len(&db), 2, "Should have two outer triples");
     let qt = db.quoted_triple_store.read().unwrap();
     assert_eq!(qt.len(), 2, "Should have two quoted triples");
 }
@@ -80,7 +92,7 @@ fn test_ntriples_star_literal_in_quoted_triple() {
 "#;
     db.parse_ntriples_and_add(ntriples);
 
-    assert_eq!(db.triples.len(), 2, "Should have two outer triples (literal-in-qt bug)");
+    assert_eq!(default_len(&db), 2, "Should have two outer triples (literal-in-qt bug)");
     let qt = db.quoted_triple_store.read().unwrap();
     assert_eq!(qt.len(), 2, "Should have two quoted triples");
 }
@@ -92,7 +104,7 @@ fn test_turtle_star_basic() {
     let turtle = r#"<< <http://example.org/emp38> <http://example.org/jobTitle> <http://example.org/AssistantDesigner> >> <http://example.org/statedBy> <http://example.org/emp22> ."#;
     db.parse_turtle(turtle);
 
-    assert!(!db.triples.is_empty(), "Should have parsed at least one triple");
+    assert!(!default_is_empty(&db), "Should have parsed at least one triple");
     let qt = db.quoted_triple_store.read().unwrap();
     assert_eq!(qt.len(), 1, "Should have one quoted triple");
 }
@@ -298,8 +310,7 @@ fn test_bind_subject_predicate_object() {
     let ntriples = r#"<< <http://example.org/alice> <http://example.org/knows> <http://example.org/bob> >> <http://example.org/source> <http://example.org/doc1> .
 "#;
     db.parse_ntriples_and_add(ntriples);
-    let triples_vec: Vec<_> = db.triples.iter().cloned().collect();
-    db.index_manager.build_from_triples(&triples_vec);
+    db.build_all_indexes();
     db.get_or_build_stats();
 
     // Query using BIND(SUBJECT(?t) AS ?s)
@@ -323,8 +334,7 @@ fn test_bind_triple_constructor() {
     let ntriples = r#"<http://example.org/alice> <http://example.org/knows> <http://example.org/bob> .
 "#;
     db.parse_ntriples_and_add(ntriples);
-    let triples_vec: Vec<_> = db.triples.iter().cloned().collect();
-    db.index_manager.build_from_triples(&triples_vec);
+    db.build_all_indexes();
     db.get_or_build_stats();
 
     // Use BIND(TRIPLE(...) AS ?t) to construct a quoted triple
@@ -352,7 +362,7 @@ fn test_insert_quoted_triple() {
     assert_eq!(result, "Update Successful");
 
     // Verify the triple was inserted
-    assert!(!db.triples.is_empty(), "Triple should have been inserted");
+    assert!(!default_is_empty(&db), "Triple should have been inserted");
 
     // Verify the quoted triple store has an entry
     let qt_store = db.quoted_triple_store.read().unwrap();
@@ -365,7 +375,7 @@ fn test_insert_normal_triple() {
 
     let result = db.handle_update(r#"INSERT { <http://example.org/alice> <http://example.org/knows> <http://example.org/bob> . }"#);
     assert_eq!(result, "Update Successful");
-    assert_eq!(db.triples.len(), 1, "Should have inserted one triple");
+    assert_eq!(default_len(&db), 1, "Should have inserted one triple");
 }
 
 #[test]
@@ -375,12 +385,12 @@ fn test_delete_basic() {
 <http://example.org/alice> <http://example.org/name> "Alice" .
 "#;
     db.parse_ntriples_and_add(ntriples);
-    assert_eq!(db.triples.len(), 2, "Should start with 2 triples");
+    assert_eq!(default_len(&db), 2, "Should start with 2 triples");
 
     // Use handle_update for simple DELETE
     let result = db.handle_update(r#"DELETE { <http://example.org/alice> <http://example.org/knows> <http://example.org/bob> . }"#);
     assert_eq!(result, "Update Successful");
-    assert_eq!(db.triples.len(), 1, "Should have 1 triple after delete");
+    assert_eq!(default_len(&db), 1, "Should have 1 triple after delete");
 }
 
 #[test]
@@ -389,11 +399,11 @@ fn test_delete_quoted_triple() {
     let ntriples = r#"<< <http://example.org/alice> <http://example.org/knows> <http://example.org/bob> >> <http://example.org/source> <http://example.org/doc1> .
 "#;
     db.parse_ntriples_and_add(ntriples);
-    assert_eq!(db.triples.len(), 1, "Should start with 1 triple");
+    assert_eq!(default_len(&db), 1, "Should start with 1 triple");
 
     let result = db.handle_update(r#"DELETE { << <http://example.org/alice> <http://example.org/knows> <http://example.org/bob> >> <http://example.org/source> <http://example.org/doc1> . }"#);
     assert_eq!(result, "Update Successful");
-    assert_eq!(db.triples.len(), 0, "Should have 0 triples after delete");
+    assert_eq!(default_len(&db), 0, "Should have 0 triples after delete");
 }
 
 #[test]
@@ -404,10 +414,9 @@ fn test_delete_where() {
 <http://example.org/alice> <http://example.org/name> "Alice" .
 "#;
     db.parse_ntriples_and_add(ntriples);
-    let triples_vec: Vec<_> = db.triples.iter().cloned().collect();
-    db.index_manager.build_from_triples(&triples_vec);
+    db.build_all_indexes();
     db.get_or_build_stats();
-    assert_eq!(db.triples.len(), 3, "Should start with 3 triples");
+    assert_eq!(default_len(&db), 3, "Should start with 3 triples");
 
     // DELETE WHERE — delete all "knows" triples
     let delete_query = r#"
@@ -415,7 +424,7 @@ fn test_delete_where() {
         WHERE { ?s <http://example.org/knows> ?o . }
     "#;
     execute_query_rayon_parallel2_volcano(delete_query, &mut db);
-    assert_eq!(db.triples.len(), 1, "Should have 1 triple after DELETE WHERE, got {}", db.triples.len());
+    assert_eq!(default_len(&db), 1, "Should have 1 triple after DELETE WHERE, got {}", default_len(&db));
 }
 
 // Serialization tests
@@ -481,18 +490,18 @@ fn test_handle_update_insert() {
     let mut db = SparqlDatabase::new();
     let result = db.handle_update(r#"INSERT { <http://example.org/a> <http://example.org/b> <http://example.org/c> . }"#);
     assert_eq!(result, "Update Successful");
-    assert_eq!(db.triples.len(), 1);
+    assert_eq!(default_len(&db), 1);
 }
 
 #[test]
 fn test_handle_update_delete() {
     let mut db = SparqlDatabase::new();
     db.handle_update(r#"INSERT { <http://example.org/a> <http://example.org/b> <http://example.org/c> . }"#);
-    assert_eq!(db.triples.len(), 1);
+    assert_eq!(default_len(&db), 1);
 
     let result = db.handle_update(r#"DELETE { <http://example.org/a> <http://example.org/b> <http://example.org/c> . }"#);
     assert_eq!(result, "Update Successful");
-    assert_eq!(db.triples.len(), 0);
+    assert_eq!(default_len(&db), 0);
 }
 
 #[test]
@@ -500,7 +509,8 @@ fn test_handle_update_insert_quoted_triple() {
     let mut db = SparqlDatabase::new();
     let result = db.handle_update(r#"INSERT { << <http://example.org/a> <http://example.org/b> <http://example.org/c> >> <http://example.org/src> <http://example.org/d> . }"#);
     assert_eq!(result, "Update Successful");
-    assert_eq!(db.triples.len(), 1);
+    assert_eq!(default_len(&db), 1);
     let qt_store = db.quoted_triple_store.read().unwrap();
     assert!(!qt_store.is_empty(), "QuotedTripleStore should have entry");
 }
+

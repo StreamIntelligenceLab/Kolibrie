@@ -8,17 +8,17 @@
  * you can obtain one at https://mozilla.org/MPL/2.0/.
  */
 
+pub mod dataset_index;
 pub mod dictionary;
-pub mod triple;
-pub mod index_manager;
-pub mod terms;
-pub mod rule_index;
-pub mod rule;
-pub mod query;
+pub mod diff_sdd;
 pub mod join_algorithm;
-pub mod quoted_triple_store;
 pub mod provenance;
-pub mod tag_store;
+pub mod query;
+pub mod quoted_triple_store;
+pub mod rule;
+pub mod rule_index;
 pub mod sdd;
 pub mod seed_spec;
-pub mod diff_sdd;
+pub mod tag_store;
+pub mod terms;
+pub mod triple;

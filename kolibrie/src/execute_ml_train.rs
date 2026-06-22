@@ -35,8 +35,13 @@ pub struct OwnedNeuralChoice {
 
 #[derive(Debug, Clone)]
 pub enum OwnedNeuralGroupType {
-    Exclusive { choices: Vec<OwnedNeuralChoice> },
-    Independent { fact_template: (String, String, String), prob_var: String },
+    Exclusive {
+        choices: Vec<OwnedNeuralChoice>,
+    },
+    Independent {
+        fact_template: (String, String, String),
+        prob_var: String,
+    },
 }
 
 #[derive(Debug, Clone)]
@@ -112,7 +117,8 @@ pub fn execute_ml_training_owned(
             let mut tracked_tensors = Vec::with_capacity(clause.neural_calls.len());
             let mut detached_probs = Vec::with_capacity(clause.neural_calls.len());
             for call in &clause.neural_calls {
-                let feature_refs: Vec<&str> = call.feature_vars.iter().map(String::as_str).collect();
+                let feature_refs: Vec<&str> =
+                    call.feature_vars.iter().map(String::as_str).collect();
                 let features: Vec<Vec<f64>> = batch
                     .iter()
                     .map(|row| build_feature_vec(row, &feature_refs))
@@ -123,12 +129,22 @@ pub fn execute_ml_training_owned(
             }
 
             let mut per_call_grad_batches: Vec<Vec<HashMap<u32, f64>>> =
-                (0..clause.neural_calls.len()).map(|_| vec![HashMap::new(); batch.len()]).collect();
+                (0..clause.neural_calls.len())
+                    .map(|_| vec![HashMap::new(); batch.len()])
+                    .collect();
 
             for (sample_idx, row) in batch.iter().enumerate() {
                 let mut local_reasoner = base_reasoner.clone();
-                let seeds = build_seed_specs_for_row(clause, &detached_probs, sample_idx, row, db, output_dim)?;
-                let (_facts, tag_store) = infer_new_facts_with_sdd_seed_specs(&mut local_reasoner, seeds);
+                let seeds = build_seed_specs_for_row(
+                    clause,
+                    &detached_probs,
+                    sample_idx,
+                    row,
+                    db,
+                    output_dim,
+                )?;
+                let (_facts, tag_store) =
+                    infer_new_facts_with_sdd_seed_specs(&mut local_reasoner, seeds);
 
                 let target = instantiate_triple(
                     (
@@ -140,8 +156,12 @@ pub fn execute_ml_training_owned(
                     db,
                 )?;
                 let has_target = !local_reasoner
-                    .index_manager
-                    .query(Some(target.subject), Some(target.predicate), Some(target.object))
+                    .dataset_index
+                    .query(
+                        Some(target.subject),
+                        Some(target.predicate),
+                        Some(target.object),
+                    )
                     .is_empty();
 
                 let explicit_tag = if has_target && tag_store.has_explicit_tag(&target) {
@@ -171,7 +191,11 @@ pub fn execute_ml_training_owned(
             }
 
             for (call_idx, tracked) in tracked_tensors.iter().enumerate() {
-                model.surrogate_backward(tracked, &per_call_grad_batches[call_idx], &var_to_col[call_idx])?;
+                model.surrogate_backward(
+                    tracked,
+                    &per_call_grad_batches[call_idx],
+                    &var_to_col[call_idx],
+                )?;
             }
             model.optimizer_step(clause.optimizer, clause.learning_rate);
         }
@@ -246,19 +270,21 @@ fn build_seed_specs_for_row(
                         choices: choice_specs,
                     })
                 }
-                OwnedNeuralGroupType::Independent { fact_template, .. } => Ok(SeedSpec::Independent {
-                    triple: instantiate_triple(
-                        (
-                            fact_template.0.as_str(),
-                            fact_template.1.as_str(),
-                            fact_template.2.as_str(),
-                        ),
-                        row,
-                        db,
-                    )?,
-                    prob: detached_probs[call_idx][sample_idx][0],
-                    seed_id: base_var,
-                }),
+                OwnedNeuralGroupType::Independent { fact_template, .. } => {
+                    Ok(SeedSpec::Independent {
+                        triple: instantiate_triple(
+                            (
+                                fact_template.0.as_str(),
+                                fact_template.1.as_str(),
+                                fact_template.2.as_str(),
+                            ),
+                            row,
+                            db,
+                        )?,
+                        prob: detached_probs[call_idx][sample_idx][0],
+                        seed_id: base_var,
+                    })
+                }
             }
         })
         .collect()
@@ -291,7 +317,10 @@ fn instantiate_term(
             .or_else(|| row.get(term).cloned())
             .ok_or_else(|| format!("Missing row binding for variable {}", term).into())
     } else if term.starts_with('<') && term.ends_with('>') {
-        Ok(term.trim_start_matches('<').trim_end_matches('>').to_string())
+        Ok(term
+            .trim_start_matches('<')
+            .trim_end_matches('>')
+            .to_string())
     } else if term.contains(':') && !term.starts_with("http://") && !term.starts_with("https://") {
         let mut parts = term.splitn(2, ':');
         let prefix = parts.next().unwrap_or_default();
@@ -337,8 +366,8 @@ fn loss_gradient(
 pub fn build_ground_reasoner_from_db(db: &SparqlDatabase, extra_rule: Option<Rule>) -> Reasoner {
     let mut reasoner = Reasoner::new();
     reasoner.dictionary = db.dictionary.clone();
-    for triple in &db.triples {
-        reasoner.index_manager.insert(triple);
+    for triple in db.query_default_triples(None, None, None) {
+        reasoner.dataset_index.insert(&triple);
     }
     if let Some(rule) = extra_rule {
         reasoner.add_rule(rule);
@@ -403,15 +432,27 @@ mod tests {
                 group_type: OwnedNeuralGroupType::Exclusive {
                     choices: vec![
                         OwnedNeuralChoice {
-                            triple_template: ("?sensor".to_string(), "http://example.org/pred".to_string(), "A".to_string()),
+                            triple_template: (
+                                "?sensor".to_string(),
+                                "http://example.org/pred".to_string(),
+                                "A".to_string(),
+                            ),
                             prob_var: "?p0".to_string(),
                         },
                         OwnedNeuralChoice {
-                            triple_template: ("?sensor".to_string(), "http://example.org/pred".to_string(), "B".to_string()),
+                            triple_template: (
+                                "?sensor".to_string(),
+                                "http://example.org/pred".to_string(),
+                                "B".to_string(),
+                            ),
                             prob_var: "?p1".to_string(),
                         },
                         OwnedNeuralChoice {
-                            triple_template: ("?sensor".to_string(), "http://example.org/pred".to_string(), "C".to_string()),
+                            triple_template: (
+                                "?sensor".to_string(),
+                                "http://example.org/pred".to_string(),
+                                "C".to_string(),
+                            ),
                             prob_var: "?p2".to_string(),
                         },
                     ],
@@ -482,11 +523,19 @@ mod tests {
                     group_type: OwnedNeuralGroupType::Exclusive {
                         choices: vec![
                             OwnedNeuralChoice {
-                                triple_template: ("?sample".to_string(), "http://example.org/left".to_string(), "L0".to_string()),
+                                triple_template: (
+                                    "?sample".to_string(),
+                                    "http://example.org/left".to_string(),
+                                    "L0".to_string(),
+                                ),
                                 prob_var: "?p0".to_string(),
                             },
                             OwnedNeuralChoice {
-                                triple_template: ("?sample".to_string(), "http://example.org/left".to_string(), "L1".to_string()),
+                                triple_template: (
+                                    "?sample".to_string(),
+                                    "http://example.org/left".to_string(),
+                                    "L1".to_string(),
+                                ),
                                 prob_var: "?p1".to_string(),
                             },
                         ],
@@ -497,11 +546,19 @@ mod tests {
                     group_type: OwnedNeuralGroupType::Exclusive {
                         choices: vec![
                             OwnedNeuralChoice {
-                                triple_template: ("?sample".to_string(), "http://example.org/right".to_string(), "R0".to_string()),
+                                triple_template: (
+                                    "?sample".to_string(),
+                                    "http://example.org/right".to_string(),
+                                    "R0".to_string(),
+                                ),
                                 prob_var: "?p0".to_string(),
                             },
                             OwnedNeuralChoice {
-                                triple_template: ("?sample".to_string(), "http://example.org/right".to_string(), "R1".to_string()),
+                                triple_template: (
+                                    "?sample".to_string(),
+                                    "http://example.org/right".to_string(),
+                                    "R1".to_string(),
+                                ),
                                 prob_var: "?p1".to_string(),
                             },
                         ],
@@ -521,7 +578,14 @@ mod tests {
         let (_tracked_right, right_probs) = model
             .forward_with_grads(&[build_feature_vec(row, &["?rx0", "?rx1"]).unwrap()])
             .unwrap();
-        assert!(left_probs[0][1] > 0.8, "left call did not receive useful gradient");
-        assert!(right_probs[0][1] > 0.8, "right call did not receive useful gradient");
+        assert!(
+            left_probs[0][1] > 0.8,
+            "left call did not receive useful gradient"
+        );
+        assert!(
+            right_probs[0][1] > 0.8,
+            "right call did not receive useful gradient"
+        );
     }
 }
+

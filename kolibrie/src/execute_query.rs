@@ -8,16 +8,17 @@
  * you can obtain one at https://mozilla.org/MPL/2.0/.
  */
 
-use crate::sparql_database::SparqlDatabase;
-use crate::streamertail_optimizer::*;
 use crate::error_handler::format_parse_error;
 use crate::neural_relations::{
     execute_train_decl, materialize_neural_relations_for_patterns, register_neural_declarations,
 };
 use crate::parser::*;
+use crate::sparql_database::SparqlDatabase;
+use crate::streamertail_optimizer::*;
+use shared::dataset_index::{GraphId, Quad};
 use shared::query::*;
 use shared::triple::Triple;
-use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 
 pub fn execute_subquery<'a>(
     subquery: &SubQuery<'a>,
@@ -29,7 +30,7 @@ pub fn execute_subquery<'a>(
     let mut results = current_results;
 
     for (subject_var, predicate, object_var) in &subquery.patterns {
-        let triples_vec: Vec<Triple> = database.triples.iter().cloned().collect();
+        let triples_vec: Vec<Triple> = database.query_default_triples(None, None, None);
 
         // IMPORTANT: resolve the prefixed name to its full IRI
         let resolved_predicate = database.resolve_query_term(predicate, prefixes);
@@ -169,8 +170,7 @@ pub fn execute_query(sparql: &str, database: &mut SparqlDatabase) -> Vec<Vec<Str
 
     let parse_result = parse_combined_query(sparql);
 
-    if let Ok((_, combined)) = parse_result
-    {
+    if let Ok((_, combined)) = parse_result {
         let (
             insert_clause,
             mut variables,
@@ -217,7 +217,8 @@ pub fn execute_query(sparql: &str, database: &mut SparqlDatabase) -> Vec<Vec<Str
 
         // Ensure prefixes from the database are also available
         database.share_prefixes_with(&mut prefixes);
-        if let Err(err) = materialize_neural_relations_for_patterns(database, &patterns, &prefixes) {
+        if let Err(err) = materialize_neural_relations_for_patterns(database, &patterns, &prefixes)
+        {
             eprintln!("Failed to materialize neural relations: {}", err);
             return Vec::new();
         }
@@ -242,7 +243,7 @@ pub fn execute_query(sparql: &str, database: &mut SparqlDatabase) -> Vec<Vec<Str
         group_by_variables = group_vars;
 
         // Convert BTreeSet to a vector of Triple
-        let triples_vec: Vec<Triple> = database.triples.iter().cloned().collect();
+        let triples_vec: Vec<Triple> = database.query_default_triples(None, None, None);
 
         // Initialize final_results based on the VALUES clause
         final_results = initialize_results(&values_clause);
@@ -363,6 +364,10 @@ pub fn execute_query_rayon_parallel2_volcano(
     // Register prefixes from the query string first
     database.register_prefixes_from_query(&sparql);
 
+    if let Some(results) = execute_dataset_graph_update_or_query(&sparql, database) {
+        return results;
+    }
+
     let combined_parse = parse_combined_query(&sparql);
 
     // Check for DELETE clause before the main SPARQL parse
@@ -378,7 +383,8 @@ pub fn execute_query_rayon_parallel2_volcano(
             .train_neural_relation_decls
             .iter()
             .filter_map(|decl| {
-                let normalized_pred = database.resolve_query_term(&decl.predicate, &combined.prefixes);
+                let normalized_pred =
+                    database.resolve_query_term(&decl.predicate, &combined.prefixes);
                 database
                     .train_neural_relation_decls
                     .get(&normalized_pred)
@@ -412,16 +418,25 @@ pub fn execute_query_rayon_parallel2_volcano(
                 // Reconstruct as SELECT query and execute it
                 let var_list: String = select_vars.iter().cloned().collect::<Vec<_>>().join(" ");
                 let wrap_term = |t: &str| -> String {
-                    if t.starts_with('?') || t.starts_with('<') || t.starts_with('"') || t.starts_with(':') {
+                    if t.starts_with('?')
+                        || t.starts_with('<')
+                        || t.starts_with('"')
+                        || t.starts_with(':')
+                    {
                         t.to_string()
                     } else {
                         format!("<{}>", t)
                     }
                 };
-                let pattern_strs: Vec<String> = patterns.iter()
+                let pattern_strs: Vec<String> = patterns
+                    .iter()
                     .map(|(s, p, o)| format!("{} {} {}", wrap_term(s), wrap_term(p), wrap_term(o)))
                     .collect();
-                let select_query = format!("SELECT {} WHERE {{ {} . }}", var_list, pattern_strs.join(" . "));
+                let select_query = format!(
+                    "SELECT {} WHERE {{ {} . }}",
+                    var_list,
+                    pattern_strs.join(" . ")
+                );
                 let where_results = execute_query_rayon_parallel2_volcano(&select_query, database);
 
                 // Map variable names to column indices
@@ -448,7 +463,11 @@ pub fn execute_query_rayon_parallel2_volcano(
                         let sid = database.encode_term_star(&rs);
                         let pid = database.encode_term_star(&rp);
                         let oid = database.encode_term_star(&ro);
-                        database.delete_triple(&Triple { subject: sid, predicate: pid, object: oid });
+                        database.delete_triple(&Triple {
+                            subject: sid,
+                            predicate: pid,
+                            object: oid,
+                        });
                     }
                 }
                 // Also process INSERT if present (DELETE/INSERT combo)
@@ -468,8 +487,7 @@ pub fn execute_query_rayon_parallel2_volcano(
         }
     }
 
-    if let Ok((_, combined)) = combined_parse
-    {
+    if let Ok((_, combined)) = combined_parse {
         let (
             insert_clause,
             mut variables,
@@ -488,7 +506,8 @@ pub fn execute_query_rayon_parallel2_volcano(
         let mut prefixes = combined.prefixes.clone();
         prefixes.extend(parsed_prefixes);
         database.share_prefixes_with(&mut prefixes);
-        if let Err(err) = materialize_neural_relations_for_patterns(database, &patterns, &prefixes) {
+        if let Err(err) = materialize_neural_relations_for_patterns(database, &patterns, &prefixes)
+        {
             eprintln!("Failed to materialize neural relations: {}", err);
             return Vec::new();
         }
@@ -523,12 +542,12 @@ pub fn execute_query_rayon_parallel2_volcano(
             .map(|(subject_var, predicate, object_var)| {
                 let (resolved_subject, resolved_predicate, resolved_object) =
                     resolve_triple_pattern(subject_var, predicate, object_var, database, &prefixes);
-                
+
                 // Leak strings to get 'static lifetime
                 let subject_static: &'static str = Box::leak(resolved_subject.into_boxed_str());
                 let predicate_static: &'static str = Box::leak(resolved_predicate.into_boxed_str());
                 let object_static: &'static str = Box::leak(resolved_object.into_boxed_str());
-                
+
                 (subject_static, predicate_static, object_static)
             })
             .collect();
@@ -548,16 +567,12 @@ pub fn execute_query_rayon_parallel2_volcano(
             database,
             &binds,
             values_clause.as_ref(),
-        ); 
+        );
 
         // Integrate subqueries into the logical plan
         for subquery in &subqueries {
-            let subquery_plan = build_logical_plan_from_subquery(
-                subquery,
-                &prefixes,
-                database,
-            );
-        
+            let subquery_plan = build_logical_plan_from_subquery(subquery, &prefixes, database);
+
             // Join the subquery with the main query
             logical_plan = LogicalOperator::join(logical_plan, subquery_plan);
         }
@@ -565,7 +580,7 @@ pub fn execute_query_rayon_parallel2_volcano(
         if database.cached_stats.is_none() {
             database.get_or_build_stats();
         }
-        
+
         let stats = database
             .cached_stats
             .as_ref()
@@ -583,14 +598,14 @@ pub fn execute_query_rayon_parallel2_volcano(
                 result
                     .iter()
                     .map(|(k, v)| {
-                    let key_with_prefix = if k.starts_with('?') {
-                        k.as_str()
-                    } else {
-                        Box::leak(format!("?{}", k).into_boxed_str())
-                    };
-                    (key_with_prefix, v.clone())
-                })
-                .collect()
+                        let key_with_prefix = if k.starts_with('?') {
+                            k.as_str()
+                        } else {
+                            Box::leak(format!("?{}", k).into_boxed_str())
+                        };
+                        (key_with_prefix, v.clone())
+                    })
+                    .collect()
             })
             .collect();
 
@@ -646,10 +661,11 @@ fn format_results(
                 .map(|(_, var)| {
                     // Strip '?' prefix from the variable we're looking for
                     let var_stripped = var.strip_prefix('?').unwrap_or(var);
-                    
+
                     // Try multiple lookup strategies
-                    result.get(var_stripped)           // without prefix
-                        .or_else(|| result.get(var.as_str()))  // with prefix
+                    result
+                        .get(var_stripped) // without prefix
+                        .or_else(|| result.get(var.as_str())) // with prefix
                         .or_else(|| {
                             // Try with ? added if not present
                             let with_prefix = format!("?{}", var_stripped);
@@ -661,6 +677,457 @@ fn format_results(
                 .collect()
         })
         .collect()
+}
+
+#[derive(Debug)]
+struct ParsedGraphQuery<'a> {
+    select_vars: Vec<&'a str>,
+    default_patterns: Vec<(&'a str, &'a str, &'a str)>,
+    graph_blocks: Vec<ParsedGraphBlock<'a>>,
+    from_named: HashSet<GraphId>,
+}
+
+#[derive(Debug)]
+struct ParsedGraphBlock<'a> {
+    graph_term: &'a str,
+    patterns: Vec<(&'a str, &'a str, &'a str)>,
+}
+
+#[derive(Clone)]
+enum GraphScope {
+    Default,
+    Named(GraphId),
+    NamedVariable {
+        variable: String,
+        visible_graphs: Option<HashSet<GraphId>>,
+    },
+}
+
+fn execute_dataset_graph_update_or_query(
+    sparql: &str,
+    database: &mut SparqlDatabase,
+) -> Option<Vec<Vec<String>>> {
+    let upper = sparql.to_ascii_uppercase();
+    if !upper.contains("GRAPH") && !upper.contains("FROM NAMED") {
+        return None;
+    }
+
+    let prefixes = collect_prefixes(sparql, database);
+
+    if upper.trim_start().starts_with("INSERT") || upper.trim_start().starts_with("DELETE") {
+        return execute_dataset_graph_update(sparql, database, &prefixes);
+    }
+
+    if upper.contains("SELECT") {
+        return execute_dataset_graph_select(sparql, database, &prefixes);
+    }
+
+    None
+}
+
+fn execute_dataset_graph_update(
+    sparql: &str,
+    database: &mut SparqlDatabase,
+    prefixes: &HashMap<String, String>,
+) -> Option<Vec<Vec<String>>> {
+    let is_insert = sparql
+        .trim_start()
+        .to_ascii_uppercase()
+        .starts_with("INSERT");
+    let keyword = if is_insert { "INSERT" } else { "DELETE" };
+    let (_, graph_blocks) =
+        split_default_and_graph_blocks(extract_braced_body_after_keyword(sparql, keyword)?);
+    if graph_blocks.is_empty() {
+        return None;
+    }
+
+    for block in graph_blocks {
+        let graph_id = graph_id_from_term(block.graph_term, database, prefixes)?;
+        for (s, p, o) in block.patterns {
+            let (subject, predicate, object) = resolve_triple_pattern(s, p, o, database, prefixes);
+            let quad = Quad {
+                subject: database.encode_term_star(&subject),
+                predicate: database.encode_term_star(&predicate),
+                object: database.encode_term_star(&object),
+                graph: graph_id,
+            };
+            if is_insert {
+                database.add_quad(quad);
+            } else {
+                database.delete_quad(&quad);
+            }
+        }
+    }
+
+    database.invalidate_stats_cache();
+    Some(Vec::new())
+}
+
+fn execute_dataset_graph_select(
+    sparql: &str,
+    database: &mut SparqlDatabase,
+    prefixes: &HashMap<String, String>,
+) -> Option<Vec<Vec<String>>> {
+    let parsed = parse_dataset_graph_select(sparql, database, prefixes)?;
+    let mut rows: Vec<HashMap<String, u32>> = vec![HashMap::new()];
+
+    for (s, p, o) in parsed.default_patterns {
+        let matches = query_dataset_pattern(database, prefixes, s, p, o, GraphScope::Default);
+        rows = join_binding_rows(rows, matches);
+    }
+
+    for block in parsed.graph_blocks {
+        let scope = if block.graph_term.starts_with('?') {
+            GraphScope::NamedVariable {
+                variable: normalize_var(block.graph_term),
+                visible_graphs: if parsed.from_named.is_empty() {
+                    None
+                } else {
+                    Some(parsed.from_named.clone())
+                },
+            }
+        } else {
+            let graph = graph_id_from_term(block.graph_term, database, prefixes)?;
+            if !parsed.from_named.is_empty() && !parsed.from_named.contains(&graph) {
+                return Some(Vec::new());
+            }
+            GraphScope::Named(graph)
+        };
+
+        for (s, p, o) in block.patterns {
+            let matches = query_dataset_pattern(database, prefixes, s, p, o, scope.clone());
+            rows = join_binding_rows(rows, matches);
+        }
+    }
+
+    let select_vars: Vec<String> = if parsed.select_vars == vec!["*"] {
+        let mut vars = BTreeSet::new();
+        for row in &rows {
+            vars.extend(row.keys().cloned());
+        }
+        vars.into_iter().collect()
+    } else {
+        parsed
+            .select_vars
+            .iter()
+            .map(|var| normalize_var(var))
+            .collect()
+    };
+
+    let dict = database.dictionary.read().unwrap();
+    Some(
+        rows.into_iter()
+            .map(|row| {
+                select_vars
+                    .iter()
+                    .map(|var| {
+                        row.get(var)
+                            .and_then(|id| dict.decode(*id))
+                            .unwrap_or("")
+                            .to_string()
+                    })
+                    .collect()
+            })
+            .collect(),
+    )
+}
+
+fn query_dataset_pattern(
+    database: &SparqlDatabase,
+    prefixes: &HashMap<String, String>,
+    subject: &str,
+    predicate: &str,
+    object: &str,
+    scope: GraphScope,
+) -> Vec<HashMap<String, u32>> {
+    let (subject, predicate, object) =
+        resolve_triple_pattern(subject, predicate, object, database, prefixes);
+    let s = bound_id(&subject, database);
+    let p = bound_id(&predicate, database);
+    let o = bound_id(&object, database);
+
+    match scope {
+        GraphScope::Default => database
+            .dataset_index
+            .query_default(s, p, o)
+            .into_iter()
+            .filter_map(|triple| bind_triple_pattern(&subject, &predicate, &object, &triple))
+            .collect(),
+        GraphScope::Named(graph) => database
+            .dataset_index
+            .query_graph(graph, s, p, o)
+            .into_iter()
+            .filter_map(|quad| bind_triple_pattern(&subject, &predicate, &object, &quad.triple()))
+            .collect(),
+        GraphScope::NamedVariable {
+            variable,
+            visible_graphs,
+        } => database
+            .dataset_index
+            .query_named_graphs(s, p, o, visible_graphs.as_ref())
+            .into_iter()
+            .filter_map(|quad| {
+                let mut row = bind_triple_pattern(&subject, &predicate, &object, &quad.triple())?;
+                if let GraphId::Named(graph_id) = quad.graph {
+                    row.insert(variable.clone(), graph_id);
+                }
+                Some(row)
+            })
+            .collect(),
+    }
+}
+
+fn bind_triple_pattern(
+    subject: &str,
+    predicate: &str,
+    object: &str,
+    triple: &Triple,
+) -> Option<HashMap<String, u32>> {
+    let mut row = HashMap::new();
+    bind_term(subject, triple.subject, &mut row)?;
+    bind_term(predicate, triple.predicate, &mut row)?;
+    bind_term(object, triple.object, &mut row)?;
+    Some(row)
+}
+
+fn bind_term(term: &str, value: u32, row: &mut HashMap<String, u32>) -> Option<()> {
+    if term.starts_with('?') {
+        let key = normalize_var(term);
+        if let Some(existing) = row.get(&key) {
+            if *existing != value {
+                return None;
+            }
+        } else {
+            row.insert(key, value);
+        }
+    }
+    Some(())
+}
+
+fn join_binding_rows(
+    left: Vec<HashMap<String, u32>>,
+    right: Vec<HashMap<String, u32>>,
+) -> Vec<HashMap<String, u32>> {
+    let mut joined = Vec::new();
+    for left_row in left {
+        for right_row in &right {
+            if rows_compatible(&left_row, right_row) {
+                let mut row = left_row.clone();
+                row.extend(right_row.iter().map(|(k, v)| (k.clone(), *v)));
+                joined.push(row);
+            }
+        }
+    }
+    joined
+}
+
+fn rows_compatible(left: &HashMap<String, u32>, right: &HashMap<String, u32>) -> bool {
+    right
+        .iter()
+        .all(|(key, value)| left.get(key).map_or(true, |left_value| left_value == value))
+}
+
+fn bound_id(term: &str, database: &SparqlDatabase) -> Option<u32> {
+    if term.starts_with('?') {
+        None
+    } else {
+        Some(database.encode_term_star(term))
+    }
+}
+
+fn parse_dataset_graph_select<'a>(
+    sparql: &'a str,
+    database: &SparqlDatabase,
+    prefixes: &HashMap<String, String>,
+) -> Option<ParsedGraphQuery<'a>> {
+    let select_start = find_keyword_ascii(sparql, "SELECT")?;
+    let where_start = find_keyword_ascii(sparql, "WHERE")?;
+    let select_part = sparql[select_start + "SELECT".len()..where_start].trim();
+    let select_without_from = select_part
+        .split("FROM NAMED")
+        .next()
+        .unwrap_or(select_part)
+        .trim();
+    let select_vars = if select_without_from == "*" {
+        vec!["*"]
+    } else {
+        select_without_from
+            .split_whitespace()
+            .filter(|var| var.starts_with('?'))
+            .collect()
+    };
+
+    let from_named =
+        parse_from_named_graphs(&sparql[select_start..where_start], database, prefixes);
+    let where_body = extract_braced_body_after_keyword(sparql, "WHERE")?;
+    let (default_patterns, graph_blocks) = split_default_and_graph_blocks(where_body);
+
+    Some(ParsedGraphQuery {
+        select_vars,
+        default_patterns,
+        graph_blocks,
+        from_named,
+    })
+}
+
+fn collect_prefixes(sparql: &str, database: &SparqlDatabase) -> HashMap<String, String> {
+    let mut prefixes = database.prefixes.clone();
+    let mut input = sparql;
+    while let Ok((rest, (prefix, iri))) = parse_prefix(input) {
+        prefixes.insert(prefix.to_string(), iri.to_string());
+        input = rest;
+    }
+    prefixes
+}
+
+fn parse_from_named_graphs(
+    text: &str,
+    database: &SparqlDatabase,
+    prefixes: &HashMap<String, String>,
+) -> HashSet<GraphId> {
+    let mut graphs = HashSet::new();
+    let mut cursor = 0;
+    let upper = text.to_ascii_uppercase();
+    while let Some(relative) = upper[cursor..].find("FROM NAMED") {
+        let start = cursor + relative + "FROM NAMED".len();
+        let rest = text[start..].trim_start();
+        if rest.to_ascii_uppercase().starts_with("WINDOW") {
+            cursor = start;
+            continue;
+        }
+        if let Some((graph_term, consumed)) = read_graph_term(rest) {
+            if let Some(graph_id) = graph_id_from_term(graph_term, database, prefixes) {
+                graphs.insert(graph_id);
+            }
+            cursor = start + consumed;
+        } else {
+            cursor = start;
+        }
+    }
+    graphs
+}
+
+fn split_default_and_graph_blocks<'a>(
+    body: &'a str,
+) -> (Vec<(&'a str, &'a str, &'a str)>, Vec<ParsedGraphBlock<'a>>) {
+    let mut default_text = String::new();
+    let mut default_ranges = Vec::new();
+    let mut graph_blocks = Vec::new();
+    let mut cursor = 0;
+    let upper = body.to_ascii_uppercase();
+
+    while let Some(relative) = upper[cursor..].find("GRAPH") {
+        let graph_start = cursor + relative;
+        default_ranges.push((cursor, graph_start));
+        let after_graph = graph_start + "GRAPH".len();
+        let rest = body[after_graph..].trim_start();
+        if let Some((graph_term, consumed)) = read_graph_term(rest) {
+            let term_start = after_graph + (body[after_graph..].len() - rest.len());
+            let after_term = term_start + consumed;
+            if let Some((content_start, content_end)) = braced_range(&body[after_term..]) {
+                let absolute_start = after_term + content_start;
+                let absolute_end = after_term + content_end;
+                let content = &body[absolute_start + 1..absolute_end];
+                graph_blocks.push(ParsedGraphBlock {
+                    graph_term,
+                    patterns: parse_pattern_text(content),
+                });
+                cursor = absolute_end + 1;
+                continue;
+            }
+        }
+        cursor = after_graph;
+    }
+    default_ranges.push((cursor, body.len()));
+
+    for (start, end) in default_ranges {
+        default_text.push_str(&body[start..end]);
+        default_text.push(' ');
+    }
+
+    let leaked_default_text: &'static str = Box::leak(default_text.into_boxed_str());
+    (parse_pattern_text(leaked_default_text), graph_blocks)
+}
+
+fn parse_pattern_text(input: &str) -> Vec<(&str, &str, &str)> {
+    let mut current = input.trim();
+    let mut patterns = Vec::new();
+
+    while !current.is_empty() {
+        match parse_triple_block(current) {
+            Ok((rest, triples)) => {
+                patterns.extend(triples);
+                current = rest.trim_start();
+                if let Some(after_dot) = current.strip_prefix('.') {
+                    current = after_dot.trim_start();
+                }
+            }
+            Err(_) => break,
+        }
+    }
+
+    patterns
+}
+
+fn extract_braced_body_after_keyword<'a>(text: &'a str, keyword: &str) -> Option<&'a str> {
+    let keyword_start = find_keyword_ascii(text, keyword)?;
+    let after_keyword = &text[keyword_start + keyword.len()..];
+    let (start, end) = braced_range(after_keyword)?;
+    Some(&after_keyword[start + 1..end])
+}
+
+fn braced_range(text: &str) -> Option<(usize, usize)> {
+    let start = text.find('{')?;
+    let mut depth = 0usize;
+    for (idx, ch) in text[start..].char_indices() {
+        match ch {
+            '{' => depth += 1,
+            '}' => {
+                depth -= 1;
+                if depth == 0 {
+                    return Some((start, start + idx));
+                }
+            }
+            _ => {}
+        }
+    }
+    None
+}
+
+fn read_graph_term(input: &str) -> Option<(&str, usize)> {
+    let trimmed_len = input.len() - input.trim_start().len();
+    let input = input.trim_start();
+    if input.starts_with('<') {
+        let end = input.find('>')?;
+        Some((&input[..=end], trimmed_len + end + 1))
+    } else {
+        let end = input.find(char::is_whitespace).unwrap_or(input.len());
+        Some((&input[..end], trimmed_len + end))
+    }
+}
+
+fn graph_id_from_term(
+    term: &str,
+    database: &SparqlDatabase,
+    prefixes: &HashMap<String, String>,
+) -> Option<GraphId> {
+    if term.starts_with('?') {
+        return None;
+    }
+    let resolved = database.resolve_query_term(term, prefixes);
+    let graph_id = {
+        let mut dict = database.dictionary.write().unwrap();
+        dict.encode(&resolved)
+    };
+    Some(GraphId::Named(graph_id))
+}
+
+fn find_keyword_ascii(text: &str, keyword: &str) -> Option<usize> {
+    text.to_ascii_uppercase().find(keyword)
+}
+
+fn normalize_var(var: &str) -> String {
+    var.trim_start_matches('?').to_string()
 }
 
 // Helper function to normalize the query by removing any RULE prefix
@@ -802,7 +1269,8 @@ fn process_rule_call<'a>(
     // Find all subjects that match the rule predicate
     let mut matched_subjects = Vec::new();
     let dict = database.dictionary.read().unwrap();
-    for triple in database.triples.iter() {
+    let default_triples = database.query_default_triples(None, None, None);
+    for triple in default_triples.iter() {
         if let (Some(subj), Some(pred), Some(obj)) = (
             dict.decode(triple.subject),
             dict.decode(triple.predicate),
@@ -849,7 +1317,8 @@ fn process_rule_subject(
 
         // First, find all sensors/readings for this room
         let dict = database.dictionary.read().unwrap();
-        for triple in database.triples.iter() {
+        let default_triples = database.query_default_triples(None, None, None);
+        for triple in default_triples.iter() {
             if let (Some(rel_subj), Some(rel_pred), Some(rel_obj)) = (
                 dict.decode(triple.subject),
                 dict.decode(triple.predicate),
@@ -895,7 +1364,8 @@ fn find_highest_sensor_value(
     };
 
     let dict = database.dictionary.read().unwrap();
-    for value_triple in database.triples.iter() {
+    let default_triples = database.query_default_triples(None, None, None);
+    for value_triple in default_triples.iter() {
         if let (Some(val_subj), Some(val_pred), Some(val_obj)) = (
             dict.decode(value_triple.subject),
             dict.decode(value_triple.predicate),
@@ -1010,7 +1480,7 @@ fn process_bind_clauses<'a>(
                         arg.to_string()
                     };
                     if val.starts_with("<<") && val.ends_with(">>") {
-                        let inner = val[2..val.len()-2].trim();
+                        let inner = val[2..val.len() - 2].trim();
                         let (s, p, o) = SparqlDatabase::split_quoted_triple_content(inner);
                         let extracted = match func_name {
                             "SUBJECT" => s,
@@ -1025,13 +1495,16 @@ fn process_bind_clauses<'a>(
         } else if func_name == "TRIPLE" {
             if args.len() == 3 {
                 for row in final_results.iter_mut() {
-                    let resolved: Vec<String> = args.iter().map(|arg| {
-                        if arg.starts_with('?') {
-                            row.get(*arg).map(|s| s.to_string()).unwrap_or_default()
-                        } else {
-                            arg.to_string()
-                        }
-                    }).collect();
+                    let resolved: Vec<String> = args
+                        .iter()
+                        .map(|arg| {
+                            if arg.starts_with('?') {
+                                row.get(*arg).map(|s| s.to_string()).unwrap_or_default()
+                            } else {
+                                arg.to_string()
+                            }
+                        })
+                        .collect();
                     let qt_str = format!("<< {} {} {} >>", resolved[0], resolved[1], resolved[2]);
                     row.insert(new_var, qt_str);
                 }

@@ -10,7 +10,7 @@ impl Reasoner {
 
     pub fn infer_new_facts_semi_naive_parallel(&mut self) -> Vec<Triple> {
         // Collect all known facts
-        let all_initial = self.index_manager.query(None, None, None);
+        let all_initial = self.dataset_index.query(None, None, None);
         let mut all_facts: HashSet<Triple> = all_initial.into_iter().collect();
 
         // Delta = all the initial facts
@@ -167,7 +167,7 @@ impl Reasoner {
                 for fact in new_facts.iter() {
                     all_facts.insert(fact.clone());
                     inferred_so_far.push(fact.clone());
-                    self.index_manager.insert(fact);
+                    self.dataset_index.insert(fact);
                 }
                 delta = new_facts;
             }

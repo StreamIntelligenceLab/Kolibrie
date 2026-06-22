@@ -17,6 +17,10 @@ use shared::triple::Triple;
 mod tests {
     use super::*;
 
+    fn default_triples(db: &SparqlDatabase) -> Vec<Triple> {
+        db.query_default_triples(None, None, None)
+    }
+
     fn setup_test_db() -> SparqlDatabase {
         let mut db = SparqlDatabase::new();
         
@@ -57,21 +61,21 @@ mod tests {
         // Insert triples: Person 1 (John)
         let p = &predicates;
         let o = &objects;
-        db.triples.insert(Triple { subject: person1, predicate: p[0].0, object: o[0].0 }); // name: John
-        db.triples.insert(Triple { subject: person1, predicate: p[1].0, object: o[3].0 }); // age: 30
-        db.triples.insert(Triple { subject: person1, predicate: p[2].0, object: o[5].0 }); // email: john@...
-        db.triples.insert(Triple { subject: person1, predicate: p[3].0, object: company }); // worksFor: company1
+        db.add_triple(Triple { subject: person1, predicate: p[0].0, object: o[0].0 }); // name: John
+        db.add_triple(Triple { subject: person1, predicate: p[1].0, object: o[3].0 }); // age: 30
+        db.add_triple(Triple { subject: person1, predicate: p[2].0, object: o[5].0 }); // email: john@...
+        db.add_triple(Triple { subject: person1, predicate: p[3].0, object: company }); // worksFor: company1
         
         // Person 2 (Jane)
-        db.triples.insert(Triple { subject: person2, predicate: p[0].0, object: o[1].0 }); // name: Jane
-        db.triples.insert(Triple { subject: person2, predicate: p[1].0, object: o[4].0 }); // age: 25
-        db.triples.insert(Triple { subject: person2, predicate: p[2].0, object: o[6].0 }); // email: jane@...
-        db.triples.insert(Triple { subject: person2, predicate: p[3].0, object: company }); // worksFor: company1
+        db.add_triple(Triple { subject: person2, predicate: p[0].0, object: o[1].0 }); // name: Jane
+        db.add_triple(Triple { subject: person2, predicate: p[1].0, object: o[4].0 }); // age: 25
+        db.add_triple(Triple { subject: person2, predicate: p[2].0, object: o[6].0 }); // email: jane@...
+        db.add_triple(Triple { subject: person2, predicate: p[3].0, object: company }); // worksFor: company1
         
         // Company
-        db.triples.insert(Triple { subject: company, predicate: p[0].0, object: o[2].0 }); // name: ACME
-        db.triples.insert(Triple { subject: company, predicate: p[4].0, object: o[7].0 }); // founded: 2000
-        db.triples.insert(Triple { subject: company, predicate: p[5].0, object: o[8].0 }); // industry: Technology
+        db.add_triple(Triple { subject: company, predicate: p[0].0, object: o[2].0 }); // name: ACME
+        db.add_triple(Triple { subject: company, predicate: p[4].0, object: o[7].0 }); // founded: 2000
+        db.add_triple(Triple { subject: company, predicate: p[5].0, object: o[8].0 }); // industry: Technology
         
         db
     }
@@ -81,7 +85,7 @@ mod tests {
         let mut db = setup_test_db();
         
         // Initial count
-        let initial_count = db.triples.len();
+        let initial_count = default_triples(&db).len();
         assert_eq!(initial_count, 11);
         
         // Create a triple to delete
@@ -102,10 +106,10 @@ mod tests {
         assert!(deleted, "Triple should be deleted successfully");
         
         // Verify count decreased
-        assert_eq!(db.triples.len(), initial_count - 1);
+        assert_eq!(default_triples(&db).len(), initial_count - 1);
         
         // Verify triple is gone
-        assert!(!db.triples.contains(&triple_to_delete));
+        assert!(!default_triples(&db).contains(&triple_to_delete));
     }
 
     #[test]
@@ -113,7 +117,7 @@ mod tests {
         let mut db = setup_test_db();
         
         // Initial count
-        let initial_count = db.triples.len();
+        let initial_count = default_triples(&db).len();
         assert_eq!(initial_count, 11);
         
         // Delete using string parts
@@ -125,7 +129,7 @@ mod tests {
         assert!(deleted, "Triple should be deleted successfully");
         
         // Verify count decreased
-        assert_eq!(db.triples.len(), initial_count - 1);
+        assert_eq!(default_triples(&db).len(), initial_count - 1);
     }
 
     #[test]
@@ -261,7 +265,7 @@ mod tests {
         
         // Test custom filter - collect numeric objects first
         let dict = db.dictionary.read().unwrap();
-        let numeric_objects: Vec<_> = db.triples.iter()
+        let numeric_objects: Vec<_> = default_triples(&db).iter()
             .filter(|t| dict.decode(t.object).unwrap_or("").parse::<i32>().is_ok())
             .cloned()
             .collect();
@@ -365,7 +369,7 @@ mod tests {
         let mut db = setup_test_db();
         
         // Test distinct
-        let orig_count = db.triples.len();
+        let orig_count = default_triples(&db).len();
         assert_eq!(orig_count, 11);
         
         // Add a second email for Person1
@@ -375,7 +379,7 @@ mod tests {
         let new_email = dict.encode("john.smith@example.com");
         drop(dict);
         
-        db.triples.insert(Triple { subject: subject1, predicate: pred_email, object: new_email });
+        db.add_triple(Triple { subject: subject1, predicate: pred_email, object: new_email });
         
         // Test all emails for person1
         let emails = db.query()
@@ -416,13 +420,14 @@ mod tests {
         
         // Filter young employees - collect subject IDs first
         let dict = db.dictionary.read().unwrap();
+        let triples = default_triples(&db);
         let young_subject_ids: Vec<u32> = employees.iter()
             .filter_map(|t| {
                 // let subj_str = dict.decode(t.subject).unwrap_or("");
                 let age_pred = dict.string_to_id.get("ex:age")?;
                 
                 // Find age triple for this subject
-                let age_triple = db.triples.iter()
+                let age_triple = triples.iter()
                     .find(|triple| triple.subject == t.subject && triple.predicate == *age_pred)?;
                 
                 let age_str = dict.decode(age_triple.object)?;
@@ -441,3 +446,4 @@ mod tests {
         drop(dict);
     }
 }
+

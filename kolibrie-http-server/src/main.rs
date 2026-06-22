@@ -168,7 +168,8 @@ fn term_to_ntriples_token(term: &str) -> String {
 fn db_to_ntriples(db: &SparqlDatabase) -> String {
     let dict = db.dictionary.read().unwrap();
     let mut out = String::new();
-    for triple in &db.triples {
+    let triples = db.query_default_triples(None, None, None);
+    for triple in &triples {
         if let (Some(s), Some(p), Some(o)) = (
             dict.decode(triple.subject),
             dict.decode(triple.predicate),
@@ -984,8 +985,8 @@ fn execute_sparql_with_context(body: &str) -> String {
             let decoded_triples: Vec<(String, String, String)> = {
                 let dict_guard = kg.dictionary.read().unwrap();
                 database
-                    .triples
-                    .iter()
+                    .query_default_triples(None, None, None)
+                    .into_iter()
                     .map(|triple| {
                         (
                             dict_guard.decode(triple.subject).unwrap_or("").to_string(),
@@ -1030,13 +1031,13 @@ fn execute_sparql_with_context(body: &str) -> String {
 
                     // Push inferred triples into the database triple store
                     for triple in inferred {
-                        database.triples.insert(triple);
+                        database.add_triple(triple);
                     }
 
                     // Sync the enriched dictionary back so SPARQL can decode the new terms
                     database.dictionary = kg.dictionary.clone();
 
-                    if !database.triples.is_empty() {
+                    if database.dataset_index.len_default() > 0 {
                         database.invalidate_stats_cache();
                         database.get_or_build_stats();
                         database.build_all_indexes();

@@ -49,7 +49,7 @@ fn create_nodes(kg: &Reasoner, out: &mut String) {
 
     // These ids represent nodes in the knowledge graph (one id for each subject or object)
     let mut all_subject_object_ids: Vec<u32> = kg
-        .index_manager
+        .dataset_index
         .query(None, None, None)
         .iter()
         .flat_map(|t| get_subject_object_iterator(&t))
@@ -81,7 +81,7 @@ fn create_edges(kg: &Reasoner, out: &mut String) {
 
     let dict = kg.dictionary.read().unwrap();
 
-    let all_facts = kg.index_manager.query(None, None, None);
+    let all_facts = kg.dataset_index.query(None, None, None);
     for triple in all_facts {
         let label = dict.id_to_string.get(&triple.predicate).unwrap();
         out.push_str(&format!(
@@ -112,3 +112,4 @@ impl ToDot for Reasoner {
         out
     }
 }
+

@@ -14,8 +14,8 @@ use crate::sparql_database::SparqlDatabase;
 use ml::MLPredictionResult;
 use rayon::prelude::*;
 
-use shared::terms::{Term, TriplePattern};
 use shared::quoted_triple_store::is_quoted_triple_id;
+use shared::terms::{Term, TriplePattern};
 
 use std::collections::{HashMap, HashSet};
 
@@ -32,22 +32,23 @@ impl ExecutionEngine {
 
         // Convert ID results to string results only at the final step
         id_results
-        .into_par_iter()
-        .map(|id_result| {
-            let dict = database.dictionary.read().unwrap();
-            let qt_store = database.quoted_triple_store.read().unwrap();
-            let result: HashMap<String, String> = id_result
-            .into_iter()
-            .map(|(var, id)| {
-                let decoded = dict.decode_term(id, &qt_store)
-                    .unwrap_or_else(|| "unknown".to_string());
-                (var, decoded)
+            .into_par_iter()
+            .map(|id_result| {
+                let dict = database.dictionary.read().unwrap();
+                let qt_store = database.quoted_triple_store.read().unwrap();
+                let result: HashMap<String, String> = id_result
+                    .into_iter()
+                    .map(|(var, id)| {
+                        let decoded = dict
+                            .decode_term(id, &qt_store)
+                            .unwrap_or_else(|| "unknown".to_string());
+                        (var, decoded)
+                    })
+                    .collect();
+                drop(dict);
+                result
             })
-            .collect();
-            drop(dict);
-            result
-        })
-        .collect()
+            .collect()
     }
 
     /// Executes a physical operator and returns ID-based results for performance
@@ -74,14 +75,14 @@ impl ExecutionEngine {
                 let input_results = Self::execute_with_ids(input, database);
                 // Use parallel filtering
                 input_results
-                .into_par_iter()
-                .filter(|result| {
-                    let dict = database.dictionary.read().unwrap();
-                    let result = condition.evaluate_with_ids(result, &*dict);
-                    drop(dict);
-                    result
-                })
-                .collect()
+                    .into_par_iter()
+                    .filter(|result| {
+                        let dict = database.dictionary.read().unwrap();
+                        let result = condition.evaluate_with_ids(result, &*dict);
+                        drop(dict);
+                        result
+                    })
+                    .collect()
             }
             PhysicalOperator::Projection { input, variables } => {
                 let input_results = Self::execute_with_ids(input, database);
@@ -128,10 +129,13 @@ impl ExecutionEngine {
             PhysicalOperator::InMemoryBuffer { content, origin: _ } => {
                 content.clone() // TODO: make sure we dont have to clone here
             }
-            PhysicalOperator:: Subquery { inner, projected_vars } => {
+            PhysicalOperator::Subquery {
+                inner,
+                projected_vars,
+            } => {
                 // Execute the inner query with IDs
                 let inner_results = Self::execute_with_ids(inner, database);
-                
+
                 // Project only the requested variables
                 inner_results
                     .into_iter()
@@ -141,7 +145,12 @@ impl ExecutionEngine {
                     })
                     .collect()
             }
-            PhysicalOperator::Bind { input, function_name, arguments, output_variable } => {
+            PhysicalOperator::Bind {
+                input,
+                function_name,
+                arguments,
+                output_variable,
+            } => {
                 let mut input_results = Self::execute_with_ids(input, database);
                 let output_var = output_variable.strip_prefix('?').unwrap_or(output_variable);
 
@@ -169,7 +178,7 @@ impl ExecutionEngine {
                         })
                         .collect();
                     drop(dict);
-                    
+
                     // Now encode the concatenated results
                     let mut dict_write = database.dictionary.write().unwrap();
                     for (row, decoded_row) in input_results.iter_mut().zip(decoded_values.iter()) {
@@ -178,7 +187,7 @@ impl ExecutionEngine {
                         row.insert(output_var.to_string(), result_id);
                     }
                     drop(dict_write);
-                    
+
                     input_results
                 } else if let Some(func) = database.udfs.get(function_name.as_str()) {
                     // Similar fix for UDF
@@ -204,18 +213,22 @@ impl ExecutionEngine {
                         })
                         .collect();
                     drop(dict);
-                    
+
                     let mut dict_write = database.dictionary.write().unwrap();
                     for (row, decoded_row) in input_results.iter_mut().zip(decoded_args.iter()) {
-                        let resolved_args: Vec<&str> = decoded_row.iter().map(|s| s.as_str()).collect();
+                        let resolved_args: Vec<&str> =
+                            decoded_row.iter().map(|s| s.as_str()).collect();
                         let result = func.call(resolved_args);
                         let result_id = dict_write.encode(&result);
                         row.insert(output_var.to_string(), result_id);
                     }
                     drop(dict_write);
-                    
+
                     input_results
-                } else if function_name == "SUBJECT" || function_name == "PREDICATE" || function_name == "OBJECT" {
+                } else if function_name == "SUBJECT"
+                    || function_name == "PREDICATE"
+                    || function_name == "OBJECT"
+                {
                     let qt_store = database.quoted_triple_store.read().unwrap();
                     for row in &mut input_results {
                         if let Some(arg) = arguments.first() {
@@ -240,15 +253,18 @@ impl ExecutionEngine {
                 } else if function_name == "TRIPLE" {
                     if arguments.len() == 3 {
                         for row in &mut input_results {
-                            let args: Vec<Option<u32>> = arguments.iter().map(|arg| {
-                                let arg_stripped = arg.strip_prefix('?').unwrap_or(arg);
-                                if arg.starts_with('?') {
-                                    row.get(arg_stripped).copied()
-                                } else {
-                                    let mut dict = database.dictionary.write().unwrap();
-                                    Some(dict.encode(arg_stripped))
-                                }
-                            }).collect();
+                            let args: Vec<Option<u32>> = arguments
+                                .iter()
+                                .map(|arg| {
+                                    let arg_stripped = arg.strip_prefix('?').unwrap_or(arg);
+                                    if arg.starts_with('?') {
+                                        row.get(arg_stripped).copied()
+                                    } else {
+                                        let mut dict = database.dictionary.write().unwrap();
+                                        Some(dict.encode(arg_stripped))
+                                    }
+                                })
+                                .collect();
                             if let (Some(s), Some(p), Some(o)) = (args[0], args[1], args[2]) {
                                 let mut qt_store = database.quoted_triple_store.write().unwrap();
                                 let qt_id = qt_store.encode(s, p, o);
@@ -263,7 +279,11 @@ impl ExecutionEngine {
                         if let Some(arg) = arguments.first() {
                             let arg_stripped = arg.strip_prefix('?').unwrap_or(arg);
                             if let Some(&id) = row.get(arg_stripped) {
-                                let result_str = if is_quoted_triple_id(id) { "true" } else { "false" };
+                                let result_str = if is_quoted_triple_id(id) {
+                                    "true"
+                                } else {
+                                    "false"
+                                };
                                 let result_id = dict_write.encode(result_str);
                                 row.insert(output_var.to_string(), result_id);
                             }
@@ -284,11 +304,11 @@ impl ExecutionEngine {
 
                 // Convert VALUES data to result rows
                 let mut results = Vec::new();
-    
+
                 let mut dict = database.dictionary.write().unwrap();
                 for value_row in values {
                     let mut row = HashMap::new();
-        
+
                     for (i, var) in stripped_vars.iter().enumerate() {
                         if let Some(Some(value)) = value_row.get(i) {
                             // Encode the value in the dictionary
@@ -296,14 +316,14 @@ impl ExecutionEngine {
                             row.insert(var.clone(), value_id);
                         }
                     }
-        
+
                     // Only add non-empty rows
                     if !row.is_empty() {
                         results.push(row);
                     }
                 }
                 drop(dict);
-    
+
                 results
             }
             PhysicalOperator::MLPredict {
@@ -320,7 +340,10 @@ impl ExecutionEngine {
                     return input_results;
                 }
 
-                println!("[ML.PREDICT] Executing prediction with model: {}", model_name);
+                println!(
+                    "[ML.PREDICT] Executing prediction with model: {}",
+                    model_name
+                );
                 println!("[ML.PREDICT] Model path: {}", model_path);
                 println!("[ML.PREDICT] Input variables: {:?}", input_variables);
                 println!("[ML.PREDICT] Output variable: {}", output_variable);
@@ -353,13 +376,17 @@ impl ExecutionEngine {
                 }
 
                 // Extract input data for ML prediction
-                let input_data = Self::extract_ml_input_data(&input_results, input_variables, database);
+                let input_data =
+                    Self::extract_ml_input_data(&input_results, input_variables, database);
 
                 // Call the existing ML handler infrastructure
                 match Self::invoke_ml_handler(model_path, model_name, input_data) {
-                    Ok(predictions) => {
-                        Self::merge_ml_predictions(input_results, predictions, output_variable, database)
-                    }
+                    Ok(predictions) => Self::merge_ml_predictions(
+                        input_results,
+                        predictions,
+                        output_variable,
+                        database,
+                    ),
                     Err(e) => {
                         eprintln!("[ML.PREDICT] Error executing ML model: {}", e);
                         input_results
@@ -376,20 +403,30 @@ impl ExecutionEngine {
         database: &SparqlDatabase,
     ) -> Vec<Vec<f64>> {
         if let Some(first_row) = input_results.first() {
-            println!("[ML.PREDICT DEBUG] First row keys: {:?}", first_row.keys().collect::<Vec<_>>());
-            println!("[ML.PREDICT DEBUG] Input variables to check: {:?}", input_variables);
-            
+            println!(
+                "[ML.PREDICT DEBUG] First row keys: {:?}",
+                first_row.keys().collect::<Vec<_>>()
+            );
+            println!(
+                "[ML.PREDICT DEBUG] Input variables to check: {:?}",
+                input_variables
+            );
+
             // Show what values decode to
             let dict = database.dictionary.read().unwrap();
             for (key, &id) in first_row {
                 if let Some(value) = dict.decode(id) {
-                    println!("[ML.PREDICT DEBUG]   {} -> {} (parses as f64: {})", 
-                        key, value, value.parse::<f64>().is_ok());
+                    println!(
+                        "[ML.PREDICT DEBUG]   {} -> {} (parses as f64: {})",
+                        key,
+                        value,
+                        value.parse::<f64>().is_ok()
+                    );
                 }
             }
             drop(dict);
         }
-        
+
         // Identify which variables are actually numeric by checking the first row
         let numeric_vars: Vec<String> = if let Some(first_row) = input_results.first() {
             let dict = database.dictionary.read().unwrap();
@@ -414,9 +451,9 @@ impl ExecutionEngine {
         } else {
             return Vec::new();
         };
-        
+
         println!("[ML.PREDICT] Numeric feature variables: {:?}", numeric_vars);
-        
+
         // Now extract only numeric features
         let dict = database.dictionary.read().unwrap();
         let result: Vec<Vec<f64>> = input_results
@@ -426,7 +463,7 @@ impl ExecutionEngine {
                     .iter()
                     .filter_map(|var| {
                         let var_stripped = var.strip_prefix('?').unwrap_or(var);
-                        
+
                         if let Some(&id) = row.get(var_stripped) {
                             if let Some(value_str) = dict.decode(id) {
                                 value_str.parse::<f64>().ok()
@@ -450,8 +487,8 @@ impl ExecutionEngine {
         model_name: &str,
         input_data: Vec<Vec<f64>>,
     ) -> Result<MLPredictionResult, Box<dyn std::error::Error>> {
-        use ml::MLHandler;
         use ml::generate_ml_models;
+        use ml::MLHandler;
 
         println!("[ML.PREDICT] Initializing ML handler...");
         let mut ml_handler = MLHandler::new()?;
@@ -466,10 +503,15 @@ impl ExecutionEngine {
             .filter_map(Result::ok)
             .filter(|entry| {
                 let path = entry.path();
-                path.is_file() && path.extension().map_or(false, |ext| ext == "pkl") &&
-                path.file_stem().and_then(|s| s.to_str()).map_or(false, |stem| stem.ends_with("_predictor"))
+                path.is_file()
+                    && path.extension().map_or(false, |ext| ext == "pkl")
+                    && path
+                        .file_stem()
+                        .and_then(|s| s.to_str())
+                        .map_or(false, |stem| stem.ends_with("_predictor"))
             })
-            .count() >= 1;
+            .count()
+            >= 1;
 
         if !models_exist {
             println!("[ML.PREDICT] Models not found. Generating models...");
@@ -485,27 +527,35 @@ impl ExecutionEngine {
                 generate_ml_models(&model_dir_path, script_path)?;
             }
         }
-        
+
         println!("[ML.PREDICT] Discovering models and analyzing schemas...");
         let model_ids = ml_handler.discover_and_load_models(&model_dir_path, model_name)?;
-        
+
         if model_ids.is_empty() {
             return Err("No valid models found with TTL schemas".into());
         }
-        
+
         let best_model_name = ml_handler.best_model.as_deref().unwrap_or(&model_ids[0]);
         println!("[ML.PREDICT] Using best model: {}", best_model_name);
-        
-        println!("[ML.PREDICT] Running predictions on {} samples...", input_data.len());
+
+        println!(
+            "[ML.PREDICT] Running predictions on {} samples...",
+            input_data.len()
+        );
         let start = std::time::Instant::now();
-        
+
         let result = ml_handler.predict(best_model_name, input_data)?;
-        
+
         let elapsed = start.elapsed();
-        println!("[ML.PREDICT] Prediction completed in {:.3}s", elapsed.as_secs_f64());
-        println!("[ML.PREDICT] Throughput: {:.1} predictions/sec", 
-            result.predictions.len() as f64 / elapsed.as_secs_f64());
-        
+        println!(
+            "[ML.PREDICT] Prediction completed in {:.3}s",
+            elapsed.as_secs_f64()
+        );
+        println!(
+            "[ML.PREDICT] Throughput: {:.1} predictions/sec",
+            result.predictions.len() as f64 / elapsed.as_secs_f64()
+        );
+
         Ok(result)
     }
 
@@ -527,7 +577,10 @@ impl ExecutionEngine {
         }
         drop(dict);
 
-        println!("[ML.PREDICT] Candle: merged {} predictions", predictions.len());
+        println!(
+            "[ML.PREDICT] Candle: merged {} predictions",
+            predictions.len()
+        );
         input_results
     }
 
@@ -539,7 +592,7 @@ impl ExecutionEngine {
         database: &mut SparqlDatabase,
     ) -> Vec<HashMap<String, u32>> {
         let output_var = output_variable.strip_prefix('?').unwrap_or(output_variable);
-        
+
         let mut dict = database.dictionary.write().unwrap();
         for (i, prediction) in predictions.predictions.iter().enumerate() {
             if i < input_results.len() {
@@ -549,8 +602,11 @@ impl ExecutionEngine {
             }
         }
         drop(dict);
-        
-        println!("[ML.PREDICT] Successfully added {} predictions", predictions.predictions.len());
+
+        println!(
+            "[ML.PREDICT] Successfully added {} predictions",
+            predictions.predictions.len()
+        );
         input_results
     }
 
@@ -561,8 +617,8 @@ impl ExecutionEngine {
     ) -> Vec<HashMap<String, u32>> {
         let mut results = Vec::new();
 
-        // Iterate through all triples in the database
-        for triple in &database.triples {
+        let default_triples = database.dataset_index.query_default(None, None, None);
+        for triple in &default_triples {
             let mut bindings = HashMap::new();
             let mut matches = true;
 
@@ -640,18 +696,18 @@ impl ExecutionEngine {
         if patterns.is_empty() {
             return Vec::new();
         }
-        
+
         let join_var_stripped = join_var.strip_prefix('?').unwrap_or(join_var);
 
         // Find the most selective pattern
         let mut pattern_estimates: Vec<(usize, u64)> = patterns
-        .iter()
-        .enumerate()
-        .map(|(idx, pattern)| {
-            let cardinality = Self::estimate_pattern_cardinality(database, pattern);
-            (idx, cardinality)
-        })
-        .collect();
+            .iter()
+            .enumerate()
+            .map(|(idx, pattern)| {
+                let cardinality = Self::estimate_pattern_cardinality(database, pattern);
+                (idx, cardinality)
+            })
+            .collect();
 
         pattern_estimates.sort_by_key(|(_, card)| *card);
 
@@ -676,7 +732,8 @@ impl ExecutionEngine {
                 // Process one-by-one with strict memory control
                 let mut new_results = Vec::new();
 
-                for binding in results.iter().take(100_000) {  // Hard limit on input size
+                for binding in results.iter().take(100_000) {
+                    // Hard limit on input size
                     if let Some(&join_value) = binding.get(join_var_stripped) {
                         let mut bound_bindings = HashMap::new();
                         bound_bindings.insert(join_var_stripped.to_string(), join_value);
@@ -694,7 +751,7 @@ impl ExecutionEngine {
                             // Hard stop if we exceed 500K results
                             if new_results.len() >= 500_000 {
                                 results = new_results;
-                                return results;  // Early exit
+                                return results; // Early exit
                             }
                         }
                     }
@@ -704,30 +761,31 @@ impl ExecutionEngine {
             } else {
                 // Fast path for small result sets
                 results = results
-                .into_par_iter()
-                .flat_map(|binding| {
-                    if let Some(&join_value) = binding.get(join_var_stripped) {
-                        let mut bound_bindings = HashMap::new();
-                        bound_bindings.insert(join_var_stripped.to_string(), join_value);
+                    .into_par_iter()
+                    .flat_map(|binding| {
+                        if let Some(&join_value) = binding.get(join_var_stripped) {
+                            let mut bound_bindings = HashMap::new();
+                            bound_bindings.insert(join_var_stripped.to_string(), join_value);
 
-                        let bound_pattern = Self::bind_pattern(pattern, &bound_bindings);
-                        let matches = Self::execute_index_scan_with_ids(database, &bound_pattern);
+                            let bound_pattern = Self::bind_pattern(pattern, &bound_bindings);
+                            let matches =
+                                Self::execute_index_scan_with_ids(database, &bound_pattern);
 
-                        matches
-                        .into_iter()
-                        .map(|match_binding| {
-                            let mut merged = binding.clone();
-                            for (var, val) in match_binding {
-                                merged.entry(var).or_insert(val);
-                            }
-                            merged
-                        })
-                        .collect::<Vec<_>>()
-                    } else {
-                        Vec::new()
-                    }
-                })
-                .collect();
+                            matches
+                                .into_iter()
+                                .map(|match_binding| {
+                                    let mut merged = binding.clone();
+                                    for (var, val) in match_binding {
+                                        merged.entry(var).or_insert(val);
+                                    }
+                                    merged
+                                })
+                                .collect::<Vec<_>>()
+                        } else {
+                            Vec::new()
+                        }
+                    })
+                    .collect();
             }
 
             if results.is_empty() {
@@ -747,9 +805,9 @@ impl ExecutionEngine {
 
         match bound_count {
             3 => 1,
-            2 => 100,      // Estimate for two-bound patterns
-            1 => 10000,    // Estimate for one-bound patterns
-            0 => 1000000,  // Estimate for fully unbound
+            2 => 100,     // Estimate for two-bound patterns
+            1 => 10000,   // Estimate for one-bound patterns
+            0 => 1000000, // Estimate for fully unbound
             _ => 1000000,
         }
     }
@@ -780,7 +838,8 @@ impl ExecutionEngine {
             (right_results, left_results)
         };
 
-        let mut hash_table: HashMap<Vec<u32>, Vec<HashMap<String, u32>>> = HashMap::with_capacity(build_side.len());
+        let mut hash_table: HashMap<Vec<u32>, Vec<HashMap<String, u32>>> =
+            HashMap::with_capacity(build_side.len());
 
         // Build phase
         for tuple in build_side {
@@ -790,24 +849,24 @@ impl ExecutionEngine {
 
         // Probe phase
         probe_side
-        .par_iter()
-        .flat_map(|probe_tuple| {
-            let key: Vec<u32> = common_vars.iter().map(|var| probe_tuple[var]).collect();
+            .par_iter()
+            .flat_map(|probe_tuple| {
+                let key: Vec<u32> = common_vars.iter().map(|var| probe_tuple[var]).collect();
 
-            if let Some(matching_tuples) = hash_table.get(&key) {
-                matching_tuples
-                .iter()
-                .map(|build_tuple| {
-                    let mut result = (*build_tuple).clone();
-                    result.extend(probe_tuple.iter().map(|(k, v)| (k.clone(), *v)));
-                    result
-                })
-                .collect::<Vec<_>>()
-            } else {
-                Vec::new()
-            }
-        })
-        .collect()
+                if let Some(matching_tuples) = hash_table.get(&key) {
+                    matching_tuples
+                        .iter()
+                        .map(|build_tuple| {
+                            let mut result = (*build_tuple).clone();
+                            result.extend(probe_tuple.iter().map(|(k, v)| (k.clone(), *v)));
+                            result
+                        })
+                        .collect::<Vec<_>>()
+                } else {
+                    Vec::new()
+                }
+            })
+            .collect()
     }
 
     /// Executes a regular hash join with ID-based results
@@ -864,24 +923,24 @@ impl ExecutionEngine {
         right_results: Vec<HashMap<String, u32>>,
     ) -> Vec<HashMap<String, u32>> {
         left_results
-        .into_iter()
-        .flat_map(|left_tuple| {
-            right_results
-            .iter()
-            .filter_map(|right_tuple| {
-                Self::can_join_with_ids(&left_tuple, right_tuple).then(|| {
-                    let mut joined_tuple = left_tuple.clone();
-                    for (var, value) in right_tuple {
-                        if !joined_tuple.contains_key(var) {
-                            joined_tuple.insert(var.clone(), *value);
-                        }
-                    }
-                    joined_tuple
-                })
+            .into_iter()
+            .flat_map(|left_tuple| {
+                right_results
+                    .iter()
+                    .filter_map(|right_tuple| {
+                        Self::can_join_with_ids(&left_tuple, right_tuple).then(|| {
+                            let mut joined_tuple = left_tuple.clone();
+                            for (var, value) in right_tuple {
+                                if !joined_tuple.contains_key(var) {
+                                    joined_tuple.insert(var.clone(), *value);
+                                }
+                            }
+                            joined_tuple
+                        })
+                    })
+                    .collect::<Vec<_>>()
             })
-            .collect::<Vec<_>>()
-        })
-        .collect()
+            .collect()
     }
 
     /// Executes a bind join - uses left results to directly probe right index
@@ -894,55 +953,59 @@ impl ExecutionEngine {
         let total_results = std::sync::atomic::AtomicUsize::new(0);
         let max_total = 1_000_000;
 
-        let chunk_size = (left_results.len() / rayon::current_num_threads()).max(1).max(100);
+        let chunk_size = (left_results.len() / rayon::current_num_threads())
+            .max(1)
+            .max(100);
 
         left_results
-        .par_chunks(chunk_size)
-        .flat_map(|chunk| {
-            chunk.iter().flat_map(|left_tuple| {
-                // Check global limit
-                if total_results.load(std::sync::atomic::Ordering::Relaxed) >= max_total {
-                    return Vec::new();
-                }
+            .par_chunks(chunk_size)
+            .flat_map(|chunk| {
+                chunk
+                    .iter()
+                    .flat_map(|left_tuple| {
+                        // Check global limit
+                        if total_results.load(std::sync::atomic::Ordering::Relaxed) >= max_total {
+                            return Vec::new();
+                        }
 
-                let bound_pattern = Self::bind_pattern(right_pattern, left_tuple);
-                let matches = Self::execute_index_scan_with_ids(database, &bound_pattern);
+                        let bound_pattern = Self::bind_pattern(right_pattern, left_tuple);
+                        let matches = Self::execute_index_scan_with_ids(database, &bound_pattern);
 
-                // Limit matches per binding
-                let match_limit = matches.len().min(10_000);
+                        // Limit matches per binding
+                        let match_limit = matches.len().min(10_000);
 
-                matches.into_iter()
-                .take(match_limit)  // Apply limit
-                .map(|right_tuple| {
-                    let mut result = left_tuple.clone();
-                    for (k, v) in right_tuple {
-                        result.entry(k).or_insert(v);
-                    }
-                    // Track total
-                    total_results.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                    result
-                })
-                .take_while(|_| {
-                    // Stop if limit reached
-                    total_results.load(std::sync::atomic::Ordering::Relaxed) < max_total
-                })
-                .collect::<Vec<_>>()
-            }).collect::<Vec<_>>()
-        })
-        .collect()
+                        matches
+                            .into_iter()
+                            .take(match_limit) // Apply limit
+                            .map(|right_tuple| {
+                                let mut result = left_tuple.clone();
+                                for (k, v) in right_tuple {
+                                    result.entry(k).or_insert(v);
+                                }
+                                // Track total
+                                total_results.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                                result
+                            })
+                            .take_while(|_| {
+                                // Stop if limit reached
+                                total_results.load(std::sync::atomic::Ordering::Relaxed) < max_total
+                            })
+                            .collect::<Vec<_>>()
+                    })
+                    .collect::<Vec<_>>()
+            })
+            .collect()
     }
 
     // Helper: Bind variables from bindings into pattern
-    fn bind_pattern(
-        pattern: &TriplePattern,
-        bindings: &HashMap<String, u32>,
-    ) -> TriplePattern {
+    fn bind_pattern(pattern: &TriplePattern, bindings: &HashMap<String, u32>) -> TriplePattern {
         let subject = match &pattern.0 {
             Term::Variable(var) => {
                 let lookup_var = var.strip_prefix('?').unwrap_or(var);
-                bindings.get(lookup_var)
-                .map(|&id| Term::Constant(id))
-                .unwrap_or_else(|| pattern.0.clone())
+                bindings
+                    .get(lookup_var)
+                    .map(|&id| Term::Constant(id))
+                    .unwrap_or_else(|| pattern.0.clone())
             }
             constant => constant.clone(),
         };
@@ -950,9 +1013,10 @@ impl ExecutionEngine {
         let predicate = match &pattern.1 {
             Term::Variable(var) => {
                 let lookup_var = var.strip_prefix('?').unwrap_or(var);
-                bindings.get(lookup_var)
-                .map(|&id| Term::Constant(id))
-                .unwrap_or_else(|| pattern.1.clone())
+                bindings
+                    .get(lookup_var)
+                    .map(|&id| Term::Constant(id))
+                    .unwrap_or_else(|| pattern.1.clone())
             }
             constant => constant.clone(),
         };
@@ -960,9 +1024,10 @@ impl ExecutionEngine {
         let object = match &pattern.2 {
             Term::Variable(var) => {
                 let lookup_var = var.strip_prefix('?').unwrap_or(var);
-                bindings.get(lookup_var)
-                .map(|&id| Term::Constant(id))
-                .unwrap_or_else(|| pattern.2.clone())
+                bindings
+                    .get(lookup_var)
+                    .map(|&id| Term::Constant(id))
+                    .unwrap_or_else(|| pattern.2.clone())
             }
             constant => constant.clone(),
         };
@@ -1011,7 +1076,7 @@ impl ExecutionEngine {
         let common_vars: Vec<String> = left_vars.intersection(&right_vars).cloned().collect();
 
         // Merge join works well when we have 1-2 common variables
-        ! common_vars.is_empty() && common_vars.len() <= 2
+        !common_vars.is_empty() && common_vars.len() <= 2
     }
 
     /// Executes a merge join on sorted data
@@ -1056,34 +1121,40 @@ impl ExecutionEngine {
         // Build index of right side by join key for parallel lookup
         let mut right_index: HashMap<Vec<u32>, Vec<usize>> = HashMap::new();
         for (idx, tuple) in right_results.iter().enumerate() {
-            let key: Vec<u32> = common_vars.iter().filter_map(|v| tuple.get(v).copied()).collect();
+            let key: Vec<u32> = common_vars
+                .iter()
+                .filter_map(|v| tuple.get(v).copied())
+                .collect();
             right_index.entry(key).or_default().push(idx);
         }
 
         // Parallel merge using index
         left_results
-        .par_iter()
-        .flat_map(|left_tuple| {
-            let key: Vec<u32> = common_vars.iter().filter_map(|v| left_tuple.get(v).copied()).collect();
+            .par_iter()
+            .flat_map(|left_tuple| {
+                let key: Vec<u32> = common_vars
+                    .iter()
+                    .filter_map(|v| left_tuple.get(v).copied())
+                    .collect();
 
-            if let Some(right_indices) = right_index.get(&key) {
-                right_indices
-                .iter()
-                .map(|&idx| {
-                    let mut joined = left_tuple.clone();
-                    for (k, v) in &right_results[idx] {
-                        if ! joined.contains_key(k) {
-                            joined.insert(k.clone(), *v);
-                        }
-                    }
-                    joined
-                })
-                .collect::<Vec<_>>()
-            } else {
-                Vec::new()
-            }
-        })
-        .collect()
+                if let Some(right_indices) = right_index.get(&key) {
+                    right_indices
+                        .iter()
+                        .map(|&idx| {
+                            let mut joined = left_tuple.clone();
+                            for (k, v) in &right_results[idx] {
+                                if !joined.contains_key(k) {
+                                    joined.insert(k.clone(), *v);
+                                }
+                            }
+                            joined
+                        })
+                        .collect::<Vec<_>>()
+                } else {
+                    Vec::new()
+                }
+            })
+            .collect()
     }
 
     /// Checks if two tuples can be joined based on common variables
@@ -1104,18 +1175,18 @@ impl ExecutionEngine {
         right_results: Vec<HashMap<String, u32>>,
     ) -> Vec<HashMap<String, u32>> {
         left_results
-        .into_par_iter()
-        .flat_map(|left_tuple| {
-            right_results
-            .iter()
-            .map(|right_tuple| {
-                let mut joined_tuple = left_tuple.clone();
-                joined_tuple.extend(right_tuple.iter().map(|(k, v)| (k.clone(), *v)));
-                joined_tuple
+            .into_par_iter()
+            .flat_map(|left_tuple| {
+                right_results
+                    .iter()
+                    .map(|right_tuple| {
+                        let mut joined_tuple = left_tuple.clone();
+                        joined_tuple.extend(right_tuple.iter().map(|(k, v)| (k.clone(), *v)));
+                        joined_tuple
+                    })
+                    .collect::<Vec<_>>()
             })
-            .collect::<Vec<_>>()
-        })
-        .collect()
+            .collect()
     }
 
     /// Extracts a pattern from a physical operator if it's a scan
@@ -1171,7 +1242,11 @@ impl ExecutionEngine {
         // Collect all quoted triple entries upfront to avoid holding the lock
         let qt_entries: Vec<(u32, (u32, u32, u32))> = {
             let qt_store = database.quoted_triple_store.read().unwrap();
-            qt_store.id_to_components.iter().map(|(&id, &comp)| (id, comp)).collect()
+            qt_store
+                .id_to_components
+                .iter()
+                .map(|(&id, &comp)| (id, comp))
+                .collect()
         };
 
         let mut all_results = Vec::new();
@@ -1182,18 +1257,30 @@ impl ExecutionEngine {
             // If subject is a QuotedTriple pattern, match its components
             if has_qt_subject {
                 if let Term::QuotedTriple(qt_pattern) = &pattern.0 {
-                    if !Self::match_term(&qt_pattern.0, *s, &mut inner_bindings) { continue; }
-                    if !Self::match_term(&qt_pattern.1, *p, &mut inner_bindings) { continue; }
-                    if !Self::match_term(&qt_pattern.2, *o, &mut inner_bindings) { continue; }
+                    if !Self::match_term(&qt_pattern.0, *s, &mut inner_bindings) {
+                        continue;
+                    }
+                    if !Self::match_term(&qt_pattern.1, *p, &mut inner_bindings) {
+                        continue;
+                    }
+                    if !Self::match_term(&qt_pattern.2, *o, &mut inner_bindings) {
+                        continue;
+                    }
                 }
             }
 
             // If object is a QuotedTriple pattern, match its components
             if has_qt_object {
                 if let Term::QuotedTriple(qt_pattern) = &pattern.2 {
-                    if !Self::match_term(&qt_pattern.0, *s, &mut inner_bindings) { continue; }
-                    if !Self::match_term(&qt_pattern.1, *p, &mut inner_bindings) { continue; }
-                    if !Self::match_term(&qt_pattern.2, *o, &mut inner_bindings) { continue; }
+                    if !Self::match_term(&qt_pattern.0, *s, &mut inner_bindings) {
+                        continue;
+                    }
+                    if !Self::match_term(&qt_pattern.1, *p, &mut inner_bindings) {
+                        continue;
+                    }
+                    if !Self::match_term(&qt_pattern.2, *o, &mut inner_bindings) {
+                        continue;
+                    }
                 }
             }
 
@@ -1241,216 +1328,43 @@ impl ExecutionEngine {
         database: &SparqlDatabase,
         pattern: &TriplePattern,
     ) -> Vec<HashMap<String, u32>> {
-        // Determine which index to use based on bound variables
-        match pattern {
-            // FULLY BOUND (3 constants) - just check if triple exists
-            (Term::Constant(s), Term::Constant(p), Term::Constant(o)) => {
-                // Use SPO index to check existence
-                if let Some(pred_map) = database.index_manager.spo.get(s) {
-                    if let Some(objects) = pred_map.get(p) {
-                        if objects.contains(o) {
-                            // Triple exists - return empty binding (no variables to bind)
-                            return vec![HashMap::new()];
-                        }
-                    }
+        if Self::has_quoted_triple_term(pattern) {
+            return Vec::new();
+        }
+
+        let subject = match &pattern.0 {
+            Term::Constant(value) => Some(*value),
+            Term::Variable(_) => None,
+            Term::QuotedTriple(_) => return Vec::new(),
+        };
+        let predicate = match &pattern.1 {
+            Term::Constant(value) => Some(*value),
+            Term::Variable(_) => None,
+            Term::QuotedTriple(_) => return Vec::new(),
+        };
+        let object = match &pattern.2 {
+            Term::Constant(value) => Some(*value),
+            Term::Variable(_) => None,
+            Term::QuotedTriple(_) => return Vec::new(),
+        };
+
+        database
+            .dataset_index
+            .query_default(subject, predicate, object)
+            .into_iter()
+            .filter_map(|triple| {
+                let mut bindings = HashMap::new();
+                if !Self::match_term(&pattern.0, triple.subject, &mut bindings) {
+                    return None;
                 }
-                // Triple doesn't exist
-                Vec::new()
-            }
-
-            // TWO BOUNDS (2 constants, 1 variable)
-            (Term::Constant(s), Term::Constant(p), Term::Variable(o)) => {
-                Self::scan_sp_index_with_ids(database, *s, *p, o.clone())
-            }
-            (Term::Constant(s), Term::Variable(p), Term::Constant(o)) => {
-                Self::scan_so_index_with_ids(database, *s, *o, p.clone())
-            }
-            (Term::Variable(s), Term::Constant(p), Term::Constant(o)) => {
-                Self::scan_po_index_with_ids(database, *p, *o, s.clone())
-            }
-
-            // ONE BOUND (1 constant, 2 variables)
-            (Term::Constant(s), Term::Variable(p), Term::Variable(o)) => {
-                Self::scan_s_index_with_ids(database, *s, p.clone(), o.clone())
-            }
-            (Term::Variable(s), Term::Constant(p), Term::Variable(o)) => {
-                Self::scan_p_index_with_ids(database, *p, s.clone(), o.clone())
-            }
-            (Term::Variable(s), Term::Variable(p), Term::Constant(o)) => {
-                Self::scan_o_index_with_ids(database, *o, s.clone(), p.clone())
-            }
-
-            // FULLY UNBOUND (0 constants, 3 variables) - table scan is appropriate
-            (Term::Variable(s), Term::Variable(p), Term::Variable(o)) => {
-                println!("INFO: Full table scan for fully unbound pattern (? {}, ?{}, ?{})", s, p, o);
-                Self::execute_table_scan_with_ids(database, pattern)
-            }
-
-            // Patterns containing QuotedTriple terms should be pre-resolved
-            // before reaching this function. If they arrive here, return empty.
-            _ => Vec::new(),
-        }
-    }
-
-    /// Scans SP index (Subject-Predicate -> Object)
-    fn scan_sp_index_with_ids(
-        database: &SparqlDatabase,
-        subject: u32,
-        predicate: u32,
-        object_var: String,
-    ) -> Vec<HashMap<String, u32>> {
-        // Strip '?' prefix from variable name
-        let object_var = object_var.strip_prefix('?').unwrap_or(&object_var).to_string();
-
-        if let Some(pred_map) = database.index_manager.spo.get(&subject) {
-            if let Some(objects) = pred_map.get(&predicate) {
-                // Use pre-compute the key
-                objects.iter().map(|&object| {
-                    let mut result = HashMap::with_capacity(1);  // Pre-size
-                    result.insert(object_var.clone(), object);  // Still need clone in closure
-                    result
-                }).collect()
-            } else {
-                Vec::new()
-            }
-        } else {
-            Vec::new()
-        }
-    }
-
-    /// Scans SO index (Subject-Object -> Predicate)
-    fn scan_so_index_with_ids(
-        database: &SparqlDatabase,
-        subject: u32,
-        object: u32,
-        predicate_var: String,
-    ) -> Vec<HashMap<String, u32>> {
-        // Strip '?' prefix from variable name
-        let predicate_var = predicate_var.strip_prefix('?').unwrap_or(&predicate_var).to_string();
-
-        if let Some(obj_map) = database.index_manager.sop.get(&subject) {
-            if let Some(predicates) = obj_map.get(&object) {
-                // Use iterator with pre-sized HashMap
-                predicates.iter().map(|&predicate| {
-                    let mut result = HashMap::with_capacity(1);
-                    result.insert(predicate_var.clone(), predicate);
-                    result
-                }).collect()
-            } else {
-                Vec::new()
-            }
-        } else {
-            Vec::new()
-        }
-    }
-
-    /// Scans PO index (Predicate-Object -> Subject)
-    fn scan_po_index_with_ids(
-        database: &SparqlDatabase,
-        predicate: u32,
-        object: u32,
-        subject_var: String,
-    ) -> Vec<HashMap<String, u32>> {
-        // Strip '?' prefix from variable name
-        let subject_var = subject_var.strip_prefix('?').unwrap_or(&subject_var).to_string();
-
-        if let Some(obj_map) = database.index_manager.pos.get(&predicate) {
-            if let Some(subjects) = obj_map.get(&object) {
-                // Use iterator with pre-sized HashMap
-                subjects.iter().map(|&subject| {
-                    let mut result = HashMap::with_capacity(1);
-                    result.insert(subject_var.clone(), subject);
-                    result
-                }).collect()
-            } else {
-                Vec::new()
-            }
-        } else {
-            Vec::new()
-        }
-    }
-
-    /// Scans S index (Subject -> (Predicate, Object))
-    fn scan_s_index_with_ids(
-        database: &SparqlDatabase,
-        subject: u32,
-        predicate_var: String,
-        object_var: String,
-    ) -> Vec<HashMap<String, u32>> {
-        // Strip '?' prefix from variable names
-        let predicate_var = predicate_var.strip_prefix('?').unwrap_or(&predicate_var).to_string();
-        let object_var = object_var.strip_prefix('?').unwrap_or(&object_var).to_string();
-
-        if let Some(pred_map) = database.index_manager.spo.get(&subject) {
-            // Clone variable names once before flat_map
-            pred_map.iter().flat_map(|(&predicate, objects)| {
-                let predicate_var = predicate_var.clone();
-                let object_var = object_var.clone();
-                objects.iter().map(move |&object| {
-                    let mut result = HashMap::with_capacity(2);
-                    result.insert(predicate_var.clone(), predicate);
-                    result.insert(object_var.clone(), object);
-                    result
-                })
-            }).collect()
-        } else {
-            Vec::new()
-        }
-    }
-
-    /// Scans P index (Predicate -> (Subject, Object))
-    fn scan_p_index_with_ids(
-        database: &SparqlDatabase,
-        predicate: u32,
-        subject_var: String,
-        object_var: String,
-    ) -> Vec<HashMap<String, u32>> {
-        // Strip '?' prefix from variable names
-        let subject_var = subject_var.strip_prefix('?').unwrap_or(&subject_var).to_string();
-        let object_var = object_var.strip_prefix('?').unwrap_or(&object_var).to_string();
-
-        if let Some(obj_map) = database.index_manager.pos.get(&predicate) {
-            // Clone variable names once before flat_map
-            obj_map.iter().flat_map(|(&object, subjects)| {
-                let subject_var = subject_var.clone();
-                let object_var = object_var.clone();
-                subjects.iter().map(move |&subject| {
-                    let mut result = HashMap::with_capacity(2);
-                    result.insert(subject_var.clone(), subject);
-                    result.insert(object_var.clone(), object);
-                    result
-                })
-            }).collect()
-        } else {
-            Vec::new()
-        }
-    }
-
-    /// Scans O index (Object -> (Subject, Predicate))
-    fn scan_o_index_with_ids(
-        database: &SparqlDatabase,
-        object: u32,
-        subject_var: String,
-        predicate_var: String,
-    ) -> Vec<HashMap<String, u32>> {
-        // Strip '?' prefix from variable names
-        let subject_var = subject_var.strip_prefix('?').unwrap_or(&subject_var).to_string();
-        let predicate_var = predicate_var.strip_prefix('?').unwrap_or(&predicate_var).to_string();
-
-        if let Some(subj_map) = database.index_manager.osp.get(&object) {
-            // Clone variable names once before flat_map
-            subj_map.iter().flat_map(|(&subject, predicates)| {
-                let subject_var = subject_var.clone();
-                let predicate_var = predicate_var.clone();
-                predicates.iter().map(move |&predicate| {
-                    let mut result = HashMap::with_capacity(2);
-                    result.insert(subject_var.clone(), subject);
-                    result.insert(predicate_var.clone(), predicate);
-                    result
-                })
-            }).collect()
-        } else {
-            Vec::new()
-        }
+                if !Self::match_term(&pattern.1, triple.predicate, &mut bindings) {
+                    return None;
+                }
+                if !Self::match_term(&pattern.2, triple.object, &mut bindings) {
+                    return None;
+                }
+                Some(bindings)
+            })
+            .collect()
     }
 }

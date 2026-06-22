@@ -75,6 +75,14 @@
 74. Add first-class top-level `ML.PREDICT` syntax outside `RULE`, with neural-relation-based materialization after training, ambiguity checks for model-to-relation mapping, parser/runtime tests, and updated `predict_after_train` example
 75. Clean Python bindings API by exposing `kolibrie.SparqlDatabase`, `KnowledgeGraph`, and related classes without `Py*` prefixes; add `SparqlDatabase.load_file(path, format=None)` with Turtle, N-Triples, and RDF/XML dispatch; update Python examples
 76. Fix Streamertail star-join planning to avoid object-position star explosions in path queries
+77. Add graph-aware `DatasetIndex` with `GraphId`, `Quad`, `QuadPattern`, graph-scoped indexes, default-graph compatibility methods, and named-graph lookup support
+78. Migrate `SparqlDatabase` canonical storage from `UnifiedIndex`/`BTreeSet<Triple>` to `DatasetIndex`, keeping triples as the default-graph public API
+79. Add default and named graph insert/delete/query paths, N-Quads parsing/serialization, graph clearing, and same-triple-in-multiple-graphs handling
+80. Add SPARQL named graph execution support for `GRAPH <g>`, `GRAPH ?g`, `FROM NAMED`, and mixed default/named graph joins
+81. Update optimizer, Streamertail execution, query builder/engine, RSP code, ML execution, HTTP server, and Datalog reasoning to read/write through `DatasetIndex`
+82. Remove legacy `index_manager` module usage and direct `SparqlDatabase.triples` storage access from runtime code
+83. Add named graph tests for default graph isolation, named graph selection, graph variable binding, `FROM NAMED` filtering, and N-Quads roundtrip
+84. Re-run WatDiv 10M benchmark on the DatasetIndex-backed implementation and record that default graph queries complete without catastrophic regression
 
 0.1.1
 1. Modify whole project by making Cargo workspace

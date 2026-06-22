@@ -8,10 +8,10 @@
  * you can obtain one at https://mozilla.org/MPL/2.0/.
  */
 
-use crate::sparql_database::SparqlDatabase;
 use crate::rsp::r2s::{Relation2StreamOperator, StreamOperator};
 use crate::rsp::s2r::{ContentContainer, ReportStrategy, Tick, WindowTriple};
 use crate::rsp::window_runner::{WindowRunner, WindowSpec};
+use crate::sparql_database::SparqlDatabase;
 use shared::triple::Triple;
 use std::collections::{BTreeMap, BTreeSet, HashSet};
 use std::fmt;
@@ -181,154 +181,155 @@ impl<'a> QueryBuilder<'a> {
         self.subject_filter = Some(TripleFilter::Exact(subject.to_string()));
         self
     }
-    
+
     /// Filter triples by subject containing a substring
     pub fn with_subject_like(mut self, pattern: &str) -> Self {
         self.subject_filter = Some(TripleFilter::Contains(pattern.to_string()));
         self
     }
-    
+
     /// Filter triples by subject starting with a substring
     pub fn with_subject_starting(mut self, prefix: &str) -> Self {
         self.subject_filter = Some(TripleFilter::StartsWith(prefix.to_string()));
         self
     }
-    
+
     /// Filter triples by subject ending with a substring
     pub fn with_subject_ending(mut self, suffix: &str) -> Self {
         self.subject_filter = Some(TripleFilter::EndsWith(suffix.to_string()));
         self
     }
-    
+
     /// Filter triples by exact predicate value
     pub fn with_predicate(mut self, predicate: &str) -> Self {
         self.predicate_filter = Some(TripleFilter::Exact(predicate.to_string()));
         self
     }
-    
+
     /// Filter triples by predicate containing a substring
     pub fn with_predicate_like(mut self, pattern: &str) -> Self {
         self.predicate_filter = Some(TripleFilter::Contains(pattern.to_string()));
         self
     }
-    
+
     /// Filter triples by predicate starting with a substring
     pub fn with_predicate_starting(mut self, prefix: &str) -> Self {
         self.predicate_filter = Some(TripleFilter::StartsWith(prefix.to_string()));
         self
     }
-    
+
     /// Filter triples by predicate ending with a substring
     pub fn with_predicate_ending(mut self, suffix: &str) -> Self {
         self.predicate_filter = Some(TripleFilter::EndsWith(suffix.to_string()));
         self
     }
-    
+
     /// Filter triples by exact object value
     pub fn with_object(mut self, object: &str) -> Self {
         self.object_filter = Some(TripleFilter::Exact(object.to_string()));
         self
     }
-    
+
     /// Filter triples by object containing a substring
     pub fn with_object_like(mut self, pattern: &str) -> Self {
         self.object_filter = Some(TripleFilter::Contains(pattern.to_string()));
         self
     }
-    
+
     /// Filter triples by object starting with a substring
     pub fn with_object_starting(mut self, prefix: &str) -> Self {
         self.object_filter = Some(TripleFilter::StartsWith(prefix.to_string()));
         self
     }
-    
+
     /// Filter triples by object ending with a substring
     pub fn with_object_ending(mut self, suffix: &str) -> Self {
         self.object_filter = Some(TripleFilter::EndsWith(suffix.to_string()));
         self
     }
-    
+
     /// Apply a custom filter function to all triples
-    pub fn filter<F>(mut self, predicate: F) -> Self 
-    where 
-        F: Fn(&Triple) -> bool + 'a
+    pub fn filter<F>(mut self, predicate: F) -> Self
+    where
+        F: Fn(&Triple) -> bool + 'a,
     {
         self.custom_filter = Some(Box::new(predicate));
         self
     }
-    
+
     /// Join with another SparqlDatabase
     pub fn join(mut self, other: &'a SparqlDatabase) -> Self {
         self.join_db = Some(other);
         self
     }
-    
+
     /// Specify join condition on subject
     pub fn join_on_subject(mut self) -> Self {
         self.join_conditions.push(JoinCondition::OnSubject);
         self
     }
-    
+
     /// Specify join condition on predicate
     pub fn join_on_predicate(mut self) -> Self {
         self.join_conditions.push(JoinCondition::OnPredicate);
         self
     }
-    
+
     /// Specify join condition on object
     pub fn join_on_object(mut self) -> Self {
         self.join_conditions.push(JoinCondition::OnObject);
         self
     }
-    
+
     /// Specify a custom join condition
     pub fn join_with<F>(mut self, condition: F) -> Self
     where
-        F: Fn(&Triple, &Triple) -> bool + 'static
+        F: Fn(&Triple, &Triple) -> bool + 'static,
     {
-        self.join_conditions.push(JoinCondition::Custom(Box::new(condition)));
+        self.join_conditions
+            .push(JoinCondition::Custom(Box::new(condition)));
         self
     }
-    
+
     /// Return only distinct results
     pub fn distinct(mut self) -> Self {
         self.distinct_results = true;
         self
     }
-    
+
     /// Order results by a specified key function
     pub fn order_by<F>(mut self, key: F) -> Self
     where
-        F: Fn(&Triple) -> String + 'a
+        F: Fn(&Triple) -> String + 'a,
     {
         self.sort_key = Some(Box::new(key));
         self
     }
-    
+
     /// Set the sort direction to descending (default is ascending)
     pub fn desc(mut self) -> Self {
         self.sort_direction = SortDirection::Descending;
         self
     }
-    
+
     /// Set the sort direction to ascending (this is the default)
     pub fn asc(mut self) -> Self {
         self.sort_direction = SortDirection::Ascending;
         self
     }
-    
+
     /// Limit the number of results
     pub fn limit(mut self, n: usize) -> Self {
         self.limit = Some(n);
         self
     }
-    
+
     /// Skip the first n results
     pub fn offset(mut self, n: usize) -> Self {
         self.offset = Some(n);
         self
     }
-    
+
     /// Get the raw triple results
     pub fn get_triples(self) -> BTreeSet<Triple> {
         if self.is_streaming {
@@ -338,16 +339,16 @@ impl<'a> QueryBuilder<'a> {
             self.apply_filters()
         }
     }
-    
+
     /// Get results as decoded (subject, predicate, object) tuples
     pub fn get_decoded_triples(self) -> Vec<(String, String, String)> {
         // Store a reference to the database
         let db = self.db;
-        
+
         // Now call get_triples which consumes self
         let triples = self.get_triples();
         let mut results = Vec::with_capacity(triples.len());
-        
+
         let dict = db.dictionary.read().unwrap();
         for triple in triples {
             let subject = dict.decode(triple.subject).unwrap_or("").to_string();
@@ -356,20 +357,20 @@ impl<'a> QueryBuilder<'a> {
             results.push((subject, predicate, object));
         }
         drop(dict);
-        
+
         results
     }
-    
+
     /// Get only the subjects from the results
     pub fn get_subjects(self) -> Vec<String> {
         // Store a reference to the database
         let db = self.db;
         let distinct = self.distinct_results;
-        
+
         // Now call get_triples which consumes self
         let triples = self.get_triples();
         let mut results = Vec::with_capacity(triples.len());
-        
+
         let dict = db.dictionary.read().unwrap();
         for triple in triples {
             if let Some(s) = dict.decode(triple.subject) {
@@ -377,25 +378,25 @@ impl<'a> QueryBuilder<'a> {
             }
         }
         drop(dict);
-        
+
         if distinct {
             results.sort();
             results.dedup();
         }
-        
+
         results
     }
-    
+
     /// Get only the predicates from the results
     pub fn get_predicates(self) -> Vec<String> {
         // Store a reference to the database
         let db = self.db;
         let distinct = self.distinct_results;
-        
+
         // Now call get_triples which consumes self
         let triples = self.get_triples();
         let mut results = Vec::with_capacity(triples.len());
-        
+
         let dict = db.dictionary.read().unwrap();
         for triple in triples {
             if let Some(s) = dict.decode(triple.predicate) {
@@ -403,25 +404,25 @@ impl<'a> QueryBuilder<'a> {
             }
         }
         drop(dict);
-        
+
         if distinct {
             results.sort();
             results.dedup();
         }
-        
+
         results
     }
-    
+
     /// Get only the objects from the results
     pub fn get_objects(self) -> Vec<String> {
         // Store a reference to the database
         let db = self.db;
         let distinct = self.distinct_results;
-        
+
         // Now call get_triples which consumes self
         let triples = self.get_triples();
         let mut results = Vec::with_capacity(triples.len());
-        
+
         let dict = db.dictionary.read().unwrap();
         for triple in triples {
             if let Some(s) = dict.decode(triple.object) {
@@ -429,20 +430,20 @@ impl<'a> QueryBuilder<'a> {
             }
         }
         drop(dict);
-        
+
         if distinct {
             results.sort();
             results.dedup();
         }
-        
+
         results
     }
-    
+
     /// Count the number of results without retrieving them
     pub fn count(self) -> usize {
         self.get_triples().len()
     }
-    
+
     /// Group results by a key function
     pub fn group_by<F, K>(self, key_fn: F) -> BTreeMap<K, Vec<Triple>>
     where
@@ -451,24 +452,25 @@ impl<'a> QueryBuilder<'a> {
     {
         let triples = self.get_triples();
         let mut groups = BTreeMap::new();
-        
+
         for triple in triples {
             let key = key_fn(&triple);
             groups.entry(key).or_insert_with(Vec::new).push(triple);
         }
-        
+
         groups
     }
-    
+
     // Applies all the configured filters and returns the matching triples
     fn apply_filters(self) -> BTreeSet<Triple> {
         let mut results = BTreeSet::new();
         let dict = self.db.dictionary.read().unwrap();
-        
+
         // Apply basic filters
-        for triple in &self.db.triples {
+        let default_triples = self.db.query_default_triples(None, None, None);
+        for triple in &default_triples {
             let mut matches = true;
-            
+
             // Check subject filter
             if let Some(filter) = &self.subject_filter {
                 if let Some(subject) = dict.decode(triple.subject) {
@@ -477,7 +479,7 @@ impl<'a> QueryBuilder<'a> {
                     matches = false;
                 }
             }
-            
+
             // Check predicate filter
             if matches {
                 if let Some(filter) = &self.predicate_filter {
@@ -488,7 +490,7 @@ impl<'a> QueryBuilder<'a> {
                     }
                 }
             }
-            
+
             // Check object filter
             if matches {
                 if let Some(filter) = &self.object_filter {
@@ -499,25 +501,25 @@ impl<'a> QueryBuilder<'a> {
                     }
                 }
             }
-            
+
             // Apply custom filter if specified
             if matches && self.custom_filter.is_some() {
                 matches &= self.custom_filter.as_ref().unwrap()(triple);
             }
-            
+
             // Add matching triple
             if matches {
                 results.insert(triple.clone());
             }
         }
-        
+
         // Apply join if specified
         if let Some(other_db) = self.join_db {
             if !self.join_conditions.is_empty() {
                 results = self.apply_join(results, other_db);
             }
         }
-        
+
         // Apply sorting if specified
         if let Some(key_fn) = self.sort_key {
             let mut sorted: Vec<Triple> = results.into_iter().collect();
@@ -527,7 +529,7 @@ impl<'a> QueryBuilder<'a> {
             }
             results = sorted.into_iter().collect();
         }
-        
+
         // Apply limit and offset
         if self.offset.is_some() || self.limit.is_some() {
             let offset = self.offset.unwrap_or(0);
@@ -541,10 +543,10 @@ impl<'a> QueryBuilder<'a> {
             results = sliced.into_iter().collect();
         }
         drop(dict);
-        
+
         results
     }
-    
+
     // Helper method to apply a filter to a string value
     fn apply_filter(filter: &TripleFilter, value: &str) -> bool {
         match filter {
@@ -555,16 +557,21 @@ impl<'a> QueryBuilder<'a> {
             TripleFilter::Custom(f) => f(value),
         }
     }
-    
+
     // Helper method to apply join conditions
-    fn apply_join(&self, left_triples: BTreeSet<Triple>, right_db: &SparqlDatabase) -> BTreeSet<Triple> {
+    fn apply_join(
+        &self,
+        left_triples: BTreeSet<Triple>,
+        right_db: &SparqlDatabase,
+    ) -> BTreeSet<Triple> {
         let mut joined_triples = BTreeSet::new();
-        
+        let right_triples = right_db.query_default_triples(None, None, None);
+
         for condition in &self.join_conditions {
             match condition {
                 JoinCondition::OnSubject => {
                     for left_triple in &left_triples {
-                        for right_triple in &right_db.triples {
+                        for right_triple in &right_triples {
                             if left_triple.subject == right_triple.subject {
                                 joined_triples.insert(Triple {
                                     subject: left_triple.subject,
@@ -574,10 +581,10 @@ impl<'a> QueryBuilder<'a> {
                             }
                         }
                     }
-                },
+                }
                 JoinCondition::OnPredicate => {
                     for left_triple in &left_triples {
-                        for right_triple in &right_db.triples {
+                        for right_triple in &right_triples {
                             if left_triple.predicate == right_triple.predicate {
                                 joined_triples.insert(Triple {
                                     subject: left_triple.subject,
@@ -587,10 +594,10 @@ impl<'a> QueryBuilder<'a> {
                             }
                         }
                     }
-                },
+                }
                 JoinCondition::OnObject => {
                     for left_triple in &left_triples {
-                        for right_triple in &right_db.triples {
+                        for right_triple in &right_triples {
                             if left_triple.object == right_triple.object {
                                 joined_triples.insert(Triple {
                                     subject: left_triple.subject,
@@ -600,10 +607,10 @@ impl<'a> QueryBuilder<'a> {
                             }
                         }
                     }
-                },
+                }
                 JoinCondition::Custom(cond_fn) => {
                     for left_triple in &left_triples {
-                        for right_triple in &right_db.triples {
+                        for right_triple in &right_triples {
                             if cond_fn(left_triple, right_triple) {
                                 joined_triples.insert(Triple {
                                     subject: left_triple.subject,
@@ -613,10 +620,10 @@ impl<'a> QueryBuilder<'a> {
                             }
                         }
                     }
-                },
+                }
             }
         }
-        
+
         joined_triples
     }
 

@@ -113,8 +113,8 @@ impl R2ROperator<Triple, Vec<PhysicalOperator>, Vec<(String, String)>> for Simpl
 
         let mut reasoner = Reasoner::new();
         reasoner.dictionary = Arc::clone(&self.item.dictionary);
-        for triple in self.item.triples.iter() {
-            reasoner.index_manager.insert(triple);
+        for triple in self.item.query_default_triples(None, None, None) {
+            reasoner.dataset_index.insert(&triple);
         }
         reasoner.rules = self.rules.clone();
 
@@ -146,3 +146,4 @@ impl R2ROperator<Triple, Vec<PhysicalOperator>, Vec<(String, String)>> for Simpl
         self.item.parse_and_encode_ntriples(data)
     }
 }
+

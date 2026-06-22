@@ -134,7 +134,7 @@ impl ReasoningHierarchy {
             
             for dep_level in &hierarchical_rule.dependencies {
                 if let Some(kg) = self.levels.get(dep_level) {
-                    let facts = kg.index_manager.query(None, None, None);
+                    let facts = kg.dataset_index.query(None, None, None);
                     println!("      Collected {} facts from {:?} level", facts.len(), dep_level);
                     all_available_facts.extend(facts);
                 }
@@ -147,7 +147,7 @@ impl ReasoningHierarchy {
             // Add to target level immediately
             if let Some(target_kg) = self.levels.get_mut(&target_level) {
                 for fact in &rule_results {
-                    target_kg.index_manager.insert(fact);
+                    target_kg.dataset_index.insert(fact);
                     println!("        Added fact: {:?}", fact);
                 }
             }
@@ -304,3 +304,4 @@ impl ReasoningHierarchy {
         0.0
     }
 }
+

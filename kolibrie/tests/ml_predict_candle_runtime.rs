@@ -139,7 +139,8 @@ fn lookup_object(db: &SparqlDatabase, subject_iri: &str, predicate_iri: &str) ->
     let dict = db.dictionary.read().unwrap();
     let s = *dict.string_to_id.get(subject_iri)?;
     let p = *dict.string_to_id.get(predicate_iri)?;
-    for t in &db.triples {
+    let triples = db.query_default_triples(Some(s), Some(p), None);
+    for t in &triples {
         if t.subject == s && t.predicate == p {
             return dict.decode(t.object).map(str::to_string);
         }
@@ -150,7 +151,7 @@ fn lookup_object(db: &SparqlDatabase, subject_iri: &str, predicate_iri: &str) ->
 fn count_triples_with_predicate(db: &SparqlDatabase, predicate_iri: &str) -> usize {
     let dict = db.dictionary.read().unwrap();
     let Some(&pred_id) = dict.string_to_id.get(predicate_iri) else { return 0; };
-    db.triples.iter().filter(|t| t.predicate == pred_id).count()
+    db.query_default_triples(None, Some(pred_id), None).len()
 }
 
 /// Head-only output variable materializes predictions

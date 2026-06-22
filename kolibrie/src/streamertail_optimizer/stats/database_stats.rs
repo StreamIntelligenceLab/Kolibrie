@@ -10,6 +10,7 @@
 
 use crate::sparql_database::SparqlDatabase;
 use rayon::prelude::*;
+use shared::dataset_index::GraphId;
 use std::collections::HashMap;
 use std::sync::RwLock;
 
@@ -18,6 +19,8 @@ use std::sync::RwLock;
 pub struct DatabaseStats {
     pub total_triples: u64,
     pub quoted_triple_count: u64,
+    pub named_graph_count: u64,
+    pub graph_cardinalities: HashMap<GraphId, u64>,
     pub predicate_cardinalities: HashMap<u32, u64>,
     pub subject_cardinalities: HashMap<u32, u64>,
     pub object_cardinalities: HashMap<u32, u64>,
@@ -31,6 +34,8 @@ impl DatabaseStats {
         Self {
             total_triples: 0,
             quoted_triple_count: 0,
+            named_graph_count: 0,
+            graph_cardinalities: HashMap::new(),
             predicate_cardinalities: HashMap::new(),
             subject_cardinalities: HashMap::new(),
             object_cardinalities: HashMap::new(),
@@ -41,10 +46,8 @@ impl DatabaseStats {
 
     /// Gathers statistics from the database using sampling for performance
     pub fn gather_stats_fast(database: &SparqlDatabase) -> Self {
-        let total_triples = database.triples.len() as u64;
-
-        // Convert BTreeSet to Vec for sampling
-        let triples_vec: Vec<_> = database.triples.iter().collect();
+        let triples_vec = database.query_default_triples(None, None, None);
+        let total_triples = triples_vec.len() as u64;
 
         // Use sampling for large datasets instead of full scan
         let sample_size = (total_triples as usize).min(100_000);
@@ -92,10 +95,21 @@ impl DatabaseStats {
             .for_each(|v| *v *= scale_factor);
 
         let quoted_triple_count = database.quoted_triple_store.read().unwrap().len() as u64;
+        let mut graph_cardinalities = HashMap::new();
+        graph_cardinalities.insert(
+            GraphId::Default,
+            database.dataset_index.len_graph(GraphId::Default) as u64,
+        );
+        for graph in database.dataset_index.named_graphs() {
+            graph_cardinalities.insert(graph, database.dataset_index.len_graph(graph) as u64);
+        }
+        let named_graph_count = database.dataset_index.named_graphs().len() as u64;
 
         Self {
             total_triples,
             quoted_triple_count,
+            named_graph_count,
+            graph_cardinalities,
             predicate_cardinalities,
             subject_cardinalities,
             object_cardinalities,
@@ -125,6 +139,10 @@ impl DatabaseStats {
         self.object_cardinalities.get(&object).copied().unwrap_or(0)
     }
 
+    pub fn get_graph_cardinality(&self, graph: GraphId) -> u64 {
+        self.graph_cardinalities.get(&graph).copied().unwrap_or(0)
+    }
+
     /// Gets or computes join selectivity
     pub fn get_join_selectivity(&self, predicate: u32) -> f64 {
         // First, try to read from cache (shared read lock)
@@ -133,8 +151,8 @@ impl DatabaseStats {
             if let Some(&selectivity) = cache.get(&predicate) {
                 return selectivity;
             }
-        }  // Read lock released here
-        
+        } // Read lock released here
+
         // Compute selectivity
         let cardinality = self.get_predicate_cardinality(predicate);
         let selectivity = if self.total_triples > 0 {
@@ -148,7 +166,7 @@ impl DatabaseStats {
             let mut cache = self.join_selectivity_cache.write().unwrap();
             cache.insert(predicate, selectivity);
         }
-        
+
         selectivity
     }
 

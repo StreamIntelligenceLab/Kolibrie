@@ -9,7 +9,7 @@ impl Reasoner {
     /// New method: Query with inconsistency-tolerant semantics
     pub fn query_with_repairs(&self, query: &TriplePattern) -> Vec<HashMap<String, u32>> {
         let all_facts: HashSet<Triple> = self
-            .index_manager
+            .dataset_index
             .query(None, None, None)
             .into_iter()
             .collect();
