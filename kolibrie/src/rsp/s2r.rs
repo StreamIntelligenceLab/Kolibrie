@@ -12,8 +12,10 @@
 use log::{debug, warn}; // Use log crate when building application
 use std::collections::hash_map::{IntoKeys, Keys};
 use std::collections::HashMap;
+use std::collections::HashSet;
 use std::fmt::Debug;
 use std::hash::Hash;
+use shared::hybrid::{EventKey, SeedId};
 use std::sync::mpsc::Receiver;
 use std::sync::mpsc::{channel, Sender};
 use std::sync::{Arc, Mutex};
@@ -88,11 +90,20 @@ pub struct Window {
 }
 
 #[derive(Eq, PartialEq, Clone, Debug)]
+pub struct ProbabilisticOccurrence<I> {
+    pub item: I,
+    pub event: EventKey,
+    pub seed_id: SeedId,
+}
+
+#[derive(Eq, PartialEq, Clone, Debug)]
 pub struct ContentContainer<I>
 where
     I: Eq + PartialEq + Clone + Debug + Hash + Send,
 {
     elements: HashMap<I, usize>,
+    deterministic_items: HashSet<I>,
+    probabilistic_occurrences: Vec<ProbabilisticOccurrence<I>>,
     last_timestamp_changed: usize,
     origin: String
 }
@@ -104,6 +115,8 @@ where
     fn new() -> ContentContainer<I> {
         ContentContainer {
             elements: HashMap::new(),
+            deterministic_items: HashSet::new(),
+            probabilistic_occurrences: Vec::new(),
             last_timestamp_changed: 0,
             origin: String::default()
         }
@@ -111,6 +124,8 @@ where
     fn new_with_origin(origin : &str) -> ContentContainer<I> {
         ContentContainer {
             elements: HashMap::new(),
+            deterministic_items: HashSet::new(),
+            probabilistic_occurrences: Vec::new(),
             last_timestamp_changed: 0,
             origin: origin.to_string()
         }
@@ -119,11 +134,21 @@ where
         self.elements.len()
     }
     fn add(&mut self, triple: I, ts: usize) {
+        self.deterministic_items.insert(triple.clone());
+        self.add_element(triple, ts);
+    }
+    fn add_element(&mut self, triple: I, ts: usize) {
         self.elements
             .entry(triple)
             .and_modify(|last_ts| *last_ts = (*last_ts).max(ts))
             .or_insert(ts);
         self.last_timestamp_changed = ts;
+    }
+    fn add_probabilistic(&mut self, occurrence: ProbabilisticOccurrence<I>) {
+        self.add_element(occurrence.item.clone(), occurrence.event.event_time);
+        if !self.probabilistic_occurrences.iter().any(|existing| existing.seed_id == occurrence.seed_id) {
+            self.probabilistic_occurrences.push(occurrence);
+        }
     }
     pub fn get_last_timestamp_changed(&self) -> usize {
         self.last_timestamp_changed
@@ -134,6 +159,12 @@ where
     }
     pub fn iter_with_timestamps(&self) -> impl Iterator<Item = (&I, usize)> {
         self.elements.iter().map(|(item, ts)| (item, *ts))
+    }
+    pub fn probabilistic_occurrences(&self) -> &[ProbabilisticOccurrence<I>] {
+        &self.probabilistic_occurrences
+    }
+    pub fn is_deterministic(&self, item: &I) -> bool {
+        self.deterministic_items.contains(item)
     }
     pub fn into_iter(mut self) -> IntoKeys<I, usize> {
         let map = mem::take(&mut self.elements);
@@ -236,6 +267,34 @@ where
 
         self.active_windows = test;
     }
+    pub fn add_probabilistic_to_window(&mut self, occurrence: ProbabilisticOccurrence<I>) {
+        let event_time = occurrence.event.event_time;
+        self.scope(&event_time);
+        let updated = self.active_windows.clone().into_iter().filter_map(|(window, mut content)| {
+            if window.open <= event_time && event_time < window.close {
+                content.add_probabilistic(occurrence.clone());
+                Some((window, content))
+            } else {
+                None
+            }
+        }).collect::<HashMap<Window, ContentContainer<I>>>();
+
+        let max = self.active_windows.iter()
+            .filter(|(window, content)| self.report.report(window, content, event_time))
+            .max_by(|(left, _), (right, _)| left.close.cmp(&right.close));
+        if let Some(max_window) = max {
+            if matches!(self.tick, Tick::TimeDriven) && event_time > self.app_time {
+                self.app_time = event_time;
+                if let Some(sender) = &self.consumer {
+                    let _ = sender.send(max_window.1.clone());
+                }
+                if let Some(callback) = &mut self.call_back {
+                    callback(max_window.1.clone());
+                }
+            }
+        }
+        self.active_windows = updated;
+    }
     fn scope(&mut self, event_time: &usize) {
         // long c_sup = (long) Math.ceil(((double) Math.abs(t_e - t0) / (double) slide)) * slide;
         let _temp = (*event_time as f64 - self.t_0 as f64).abs();
@@ -283,8 +342,13 @@ where
     pub fn flush(&mut self) {
         let mut merged = ContentContainer::new_with_origin(&self.uri);
         for content in self.active_windows.values() {
+            for occurrence in content.probabilistic_occurrences() {
+                merged.add_probabilistic(occurrence.clone());
+            }
             for (item, ts) in content.iter_with_timestamps() {
-                merged.add(item.clone(), ts);
+                if content.is_deterministic(item) {
+                    merged.add(item.clone(), ts);
+                }
             }
         }
 

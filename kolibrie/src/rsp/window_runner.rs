@@ -8,7 +8,7 @@
  * you can obtain one at https://mozilla.org/MPL/2.0/.
  */
 
-use crate::rsp::s2r::{CSPARQLWindow, ContentContainer, Report, ReportStrategy, Tick};
+use crate::rsp::s2r::{CSPARQLWindow, ContentContainer, ProbabilisticOccurrence, Report, ReportStrategy, Tick};
 use std::fmt::Debug;
 use std::hash::Hash;
 use std::sync::mpsc::Receiver;
@@ -79,6 +79,10 @@ where
 
     pub fn add_to_window(&mut self, item: I, ts: usize) {
         self.inner.add_to_window(item, ts);
+    }
+
+    pub fn add_probabilistic_to_window(&mut self, occurrence: ProbabilisticOccurrence<I>) {
+        self.inner.add_probabilistic_to_window(occurrence);
     }
 
     pub fn register(&mut self) -> Receiver<ContentContainer<I>> {

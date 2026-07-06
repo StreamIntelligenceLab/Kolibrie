@@ -11,16 +11,17 @@
 use std::collections::HashMap;
 use std::error::Error;
 
-use datalog::reasoning::materialisation::sdd_seed_materialise::infer_new_facts_with_sdd_seed_specs;
+use datalog::reasoning::materialisation::hybrid_materialisation::materialize_lineage;
 use datalog::reasoning::Reasoner;
 use ml::{MlpNeuralPredicate, OutputType};
 use rand::seq::SliceRandom;
 use shared::diff_sdd::wmc_gradient;
-use shared::provenance::Provenance;
+use shared::hybrid::{HybridConfig, SeedSnapshot};
 use shared::query::LossFn;
 use shared::rule::Rule;
 use shared::seed_spec::{ExclusiveChoice, SeedSpec};
 use shared::triple::Triple;
+use std::time::Duration;
 
 use crate::ml_feature_loader::{build_feature_vec, query_training_rows, rdf_term_to_f64, RdfTerm};
 use crate::sparql_database::SparqlDatabase;
@@ -143,8 +144,8 @@ pub fn execute_ml_training_owned(
                     db,
                     output_dim,
                 )?;
-                let (_facts, tag_store) =
-                    infer_new_facts_with_sdd_seed_specs(&mut local_reasoner, seeds);
+                let snapshot = SeedSnapshot::from_seed_specs(&seeds)?;
+                let lineage = materialize_lineage(&mut local_reasoner, snapshot)?;
 
                 let target = instantiate_triple(
                     (
@@ -164,22 +165,22 @@ pub fn execute_ml_training_owned(
                     )
                     .is_empty();
 
-                let explicit_tag = if has_target && tag_store.has_explicit_tag(&target) {
-                    Some(tag_store.get_tag(&target))
+                let mut exact_config = HybridConfig::default();
+                exact_config.sdd_budget = Duration::from_secs(30);
+                exact_config.sdd_node_budget = 1_000_000;
+                let mut compiled = if has_target {
+                    Some(lineage.compile_exact(&target, &exact_config)
+                        .map_err(|reason| format!("exact training lineage compilation failed: {}", reason.as_str()))?)
                 } else {
                     None
                 };
-                let p_q = match explicit_tag {
-                    Some(tag) => tag_store.provenance().recover_probability(&tag),
-                    None if has_target => 1.0,
-                    None => 0.0,
-                };
+                let p_q = compiled.as_ref()
+                    .map(|compiled| compiled.manager.wmc(compiled.root).clamp(0.0, 1.0))
+                    .unwrap_or(0.0);
 
                 let d_loss_d_pq = loss_gradient(clause.loss, p_q, row, &clause.label_var)?;
-                if let Some(tag) = explicit_tag {
-                    let provenance = tag_store.provenance().clone();
-                    let mut manager = provenance.manager().lock().unwrap();
-                    let grads = wmc_gradient(&mut manager, tag);
+                if let Some(compiled) = compiled.as_mut() {
+                    let grads = wmc_gradient(&mut compiled.manager, compiled.root);
                     let scaled: HashMap<u32, f64> = grads
                         .into_iter()
                         .map(|(var, grad)| (var, grad * d_loss_d_pq))

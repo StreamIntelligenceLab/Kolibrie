@@ -632,4 +632,39 @@ ML.PREDICT(MODEL "digit_model",
         assert_eq!(relation_decl.predicate, "?score");
         assert_eq!(relation_decl.input_patterns.len(), 1);
     }
+
+    #[test]
+    fn hybrid_probability_annotation_parses_explicit_policy() {
+        let input = r#"RULE :Hybrid PROB(
+            provenance=hybrid,
+            threshold=0.7,
+            band_epsilon=0.01,
+            marginal_floor=0.00001,
+            k_initial=4,
+            k_max=32,
+            k_growth=2,
+            topk_budget_ms=10,
+            sdd_budget_ms=100,
+            node_budget=50000
+        ) :- CONSTRUCT { ?x <result> <yes> } WHERE { ?x <input> <yes> } ."#;
+        let (_, rule) = parse_rule(input).expect("hybrid annotation should parse");
+        let annotation = rule.prob_annotation.expect("probability annotation");
+        let config = annotation.hybrid_config.expect("validated hybrid config");
+        assert_eq!(config.threshold, 0.7);
+        assert_eq!(config.k_initial, 4);
+        assert_eq!(config.k_max, 32);
+        assert_eq!(config.topk_budget.as_millis(), 10);
+        assert_eq!(config.sdd_node_budget, 50_000);
+    }
+
+    #[test]
+    fn hybrid_probability_annotation_rejects_missing_threshold_and_unknown_keys() {
+        let missing = r#"RULE :Hybrid PROB(provenance=hybrid) :-
+            CONSTRUCT { ?x <result> <yes> } WHERE { ?x <input> <yes> } ."#;
+        assert!(parse_rule(missing).is_err());
+
+        let unknown = r#"RULE :Hybrid PROB(provenance=hybrid, threshold=0.7, mystery=1) :-
+            CONSTRUCT { ?x <result> <yes> } WHERE { ?x <input> <yes> } ."#;
+        assert!(parse_rule(unknown).is_err());
+    }
 }

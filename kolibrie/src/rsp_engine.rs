@@ -9,7 +9,7 @@
 
 use crate::rsp::r2r::R2ROperator;
 use crate::rsp::r2s::Relation2StreamOperator;
-use crate::rsp::s2r::{ContentContainer, ReportStrategy, Tick};
+use crate::rsp::s2r::{ContentContainer, ProbabilisticOccurrence, ReportStrategy, Tick};
 use crate::rsp::window_runner::{WindowRunner, WindowSpec};
 
 use crossbeam::channel::{unbounded, Receiver, RecvTimeoutError, Sender};
@@ -40,6 +40,9 @@ use datalog::reasoning::materialisation::cross_window_incremental::{
 use datalog::reasoning::materialisation::cross_window_naive::naive_sds_plus;
 use shared::dictionary::Dictionary;
 use shared::triple::Triple;
+use shared::hybrid::{
+    normalize_stream_iri, HybridError, HybridProbabilityResult, SeedId, SeedRegistry,
+};
 use std::sync::RwLock;
 
 // Re-exports to preserve the public API used by kolibrie-http-server and examples.
@@ -102,7 +105,8 @@ pub struct ResultConsumer<I> {
 macro_rules! create_window_processor {
     ($window_iri:expr, $query:expr, $query_execution_mode:expr,
      $r2r_store:expr, $has_joins:expr, $cross_window_enabled:expr,
-     $window_result_sender:expr, $r2s_consumer_func:expr) => {{
+     $window_result_sender:expr, $r2s_consumer_func:expr,
+     $seed_registry:expr, $latest_hybrid_results:expr) => {{
         let mut prev_window_triples: Vec<I> = Vec::new();
         move |content: ContentContainer<I>| {
             debug!(
@@ -111,6 +115,12 @@ macro_rules! create_window_processor {
             );
 
             let ts = content.get_last_timestamp_changed();
+            let live_seed_ids: Vec<SeedId> = content
+                .probabilistic_occurrences()
+                .iter()
+                .filter(|occurrence| !content.is_deterministic(&occurrence.item))
+                .map(|occurrence| occurrence.seed_id)
+                .collect();
             if $cross_window_enabled {
                 let raw_triples: Vec<(Triple, u64)> = content
                     .iter_with_timestamps()
@@ -136,6 +146,13 @@ macro_rules! create_window_processor {
 
             let mut store = $r2r_store.lock().unwrap();
 
+            if let Some(simple_r2r) = store.as_any_mut().downcast_mut::<SimpleR2R>() {
+                match $seed_registry.lock().unwrap().snapshot_for_ids(live_seed_ids) {
+                    Ok(snapshot) => simple_r2r.set_live_seed_snapshot(snapshot),
+                    Err(error) => error!("Unable to build live hybrid seed snapshot: {}", error),
+                }
+            }
+
             // Evict triples from the previous firing of this window
             for t in &prev_window_triples {
                 store.remove(t);
@@ -150,6 +167,13 @@ macro_rules! create_window_processor {
 
             // Run forward-chaining inference to materialise derived facts
             store.materialize();
+
+            if let Some(simple_r2r) = store.as_any_mut().downcast_mut::<SimpleR2R>() {
+                $latest_hybrid_results.lock().unwrap().insert(
+                    $window_iri.clone(),
+                    simple_r2r.last_hybrid_results().clone(),
+                );
+            }
 
             let results = store.execute_query(&$query);
             debug!("Got # results {} for window {}", results.len(), $window_iri);
@@ -244,6 +268,8 @@ where
     cross_window_dictionary: Option<Arc<RwLock<Dictionary>>>,
     cross_window_output_iris: Arc<Vec<String>>,
     cross_window_reasoning_mode: CrossWindowReasoningMode,
+    hybrid_seed_registry: Arc<Mutex<SeedRegistry>>,
+    latest_hybrid_results: Arc<Mutex<HashMap<String, HashMap<Triple, HybridProbabilityResult>>>>,
 }
 
 impl<I, O> RSPEngine<I, O>
@@ -357,16 +383,25 @@ where
                 .map(|s| Arc::clone(&s.item.dictionary))
             {
                 for rule_str in &sparql_rules {
+                    let parsed_hybrid_config = crate::parser::parse_combined_query(rule_str)
+                        .ok()
+                        .and_then(|(_, combined)| combined.rule)
+                        .and_then(|rule| rule.prob_annotation)
+                        .and_then(|annotation| annotation.hybrid_config);
                     let mut temp_db = SparqlDatabase::new();
                     temp_db.dictionary = Arc::clone(&dict);
                     match process_rule_definition(rule_str, &mut temp_db) {
                         Ok((rule, _)) => {
                             if let Some(simple_r2r) = store.as_any_mut().downcast_mut::<SimpleR2R>()
                             {
+                                if let Some(config) = parsed_hybrid_config {
+                                    simple_r2r.set_hybrid_config(config)
+                                        .map_err(|error| error.to_string())?;
+                                }
                                 simple_r2r.rules.push(rule);
                             }
                         }
-                        Err(e) => error!("Failed to parse SPARQL rule: {:?}", e),
+                        Err(e) => return Err(format!("Failed to parse SPARQL rule: {e}")),
                     }
                 }
             }
@@ -390,6 +425,15 @@ where
         let stream_type = query_config.stream_type.clone();
         let r2s_operator = Arc::new(Mutex::new(Relation2StreamOperator::new(stream_type, 0)));
         let cross_window_enabled = !parsed_cross_window_rules.is_empty();
+        if cross_window_enabled
+            && store.as_any_mut().downcast_mut::<SimpleR2R>()
+                .is_some_and(|simple| simple.hybrid_enabled())
+        {
+            return Err(
+                "Hybrid probabilistic materialisation and cross-window SDS+ reasoning cannot be combined in v1"
+                    .to_string(),
+            );
+        }
 
         let mut engine = RSPEngine {
             windows,
@@ -413,6 +457,8 @@ where
             cross_window_dictionary: shared_dict,
             cross_window_output_iris: Arc::new(cross_window_output_iris),
             cross_window_reasoning_mode,
+            hybrid_seed_registry: Arc::new(Mutex::new(SeedRegistry::new())),
+            latest_hybrid_results: Arc::new(Mutex::new(HashMap::new())),
         };
 
         match operation_mode {
@@ -446,6 +492,8 @@ where
             let window_result_sender = self.window_result_sender.clone();
             let r2r_store = self.r2r.clone();
             let cross_window_enabled = self.cross_window_enabled;
+            let seed_registry = Arc::clone(&self.hybrid_seed_registry);
+            let latest_hybrid_results = Arc::clone(&self.latest_hybrid_results);
 
             let r2s_consumer_func: Arc<dyn Fn(Vec<O>, usize) + Send + Sync> = if has_joins {
                 Arc::new(|_, _| {})
@@ -469,7 +517,9 @@ where
                 has_joins,
                 cross_window_enabled,
                 window_result_sender,
-                r2s_consumer_func
+                r2s_consumer_func,
+                seed_registry,
+                latest_hybrid_results
             );
 
             // Register based on mode
@@ -898,6 +948,61 @@ where
             .iter()
             .map(|w| w.stream_iri.clone())
             .collect()
+    }
+}
+
+impl<O> RSPEngine<Triple, O>
+where
+    O: Clone + Hash + Eq + Send + 'static + From<Vec<(String, String)>>,
+{
+    /// Add one independently probabilistic stream occurrence. Identity is
+    /// allocated before fan-out, so overlapping windows share the same seed.
+    pub fn add_probabilistic_to_stream(
+        &mut self,
+        stream_iri: &str,
+        triple: Triple,
+        probability: f64,
+        timestamp: usize,
+    ) -> Result<SeedId, HybridError> {
+        if matches!(self.operation_mode, OperationMode::SingleThread)
+            && (self.cross_window_enabled
+                || self.windows.len() > 1
+                || self.rsp_query_plan.static_data_plan.is_some())
+        {
+            self.process_single_thread_window_results();
+        }
+
+        let (event, seed_id) = {
+            let mut registry = self.hybrid_seed_registry.lock()
+                .map_err(|_| HybridError::PoisonedState)?;
+            let event = registry.next_event_key(stream_iri, timestamp);
+            let seed_id = registry.register_occurrence(
+                event.clone(),
+                triple.clone(),
+                probability,
+            )?;
+            (event, seed_id)
+        };
+        let occurrence = ProbabilisticOccurrence { item: triple, event, seed_id };
+        let input = normalize_stream_iri(stream_iri);
+        for (index, config) in self.window_configs.iter().enumerate() {
+            if config.stream_iri.starts_with('?')
+                || normalize_stream_iri(&config.stream_iri) == input
+            {
+                if let Some(window) = self.windows.get_mut(index) {
+                    window.add_probabilistic_to_window(occurrence.clone());
+                }
+            }
+        }
+        Ok(seed_id)
+    }
+
+    pub fn latest_hybrid_results(
+        &self,
+        window_iri: &str,
+    ) -> Option<HashMap<Triple, HybridProbabilityResult>> {
+        self.latest_hybrid_results.lock().ok()
+            .and_then(|results| results.get(window_iri).cloned())
     }
 }
 

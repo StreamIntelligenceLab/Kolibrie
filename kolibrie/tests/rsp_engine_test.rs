@@ -74,27 +74,32 @@ fn rsp_ql_istream_semantics() {
         *results
     );
     // Firing 1: [-1,1] -> {A}, new since ∅ -> emit A.
-    assert_eq!(results[0].len(),1);
+    assert_eq!(results[0].len(), 1);
     assert!(
-        results[0].iter().any(|(k, v)| k == "s" && v.contains("subjectA")),
+        results[0]
+            .iter()
+            .any(|(k, v)| k == "s" && v.contains("subjectA")),
         "ISTREAM firing 1 must emit subjectA, got: {:?}",
         results[0]
     );
     // Firing 2: [0,2] -> {A,B}, new since {A} -> emit B only.
-    assert_eq!(results[1].len(),1);
+    assert_eq!(results[1].len(), 1);
     assert!(
-        results[1].iter().any(|(k, v)| k == "s" && v.contains("subjectB")),
+        results[1]
+            .iter()
+            .any(|(k, v)| k == "s" && v.contains("subjectB")),
         "ISTREAM firing 2 must emit subjectB, got: {:?}",
         results[1]
     );
     // Firing 3: [1,3] -> {A,B,C}, new since {A,B} -> emit C only.
-    assert_eq!(results[2].len(),1);
+    assert_eq!(results[2].len(), 1);
     assert!(
-        results[2].iter().any(|(k, v)| k == "s" && v.contains("subjectC")),
+        results[2]
+            .iter()
+            .any(|(k, v)| k == "s" && v.contains("subjectC")),
         "ISTREAM firing 3 must emit subjectC, got: {:?}",
         results[2]
     );
-
 }
 
 /// DSTREAM: sliding window (RANGE=3 STEP=1) — 5 window firings, 1 DSTREAM emission.
@@ -177,7 +182,9 @@ fn rsp_ql_dstream_semantics() {
     );
     // The one result must bind ?s to subjectA (deleted from window (1,4) -> (2,5)).
     assert!(
-        results[0].iter().any(|(k, v)| k == "s" && v.contains("subjectA")),
+        results[0]
+            .iter()
+            .any(|(k, v)| k == "s" && v.contains("subjectA")),
         "DSTREAM result must bind ?s to subjectA (deleted), got: {:?}",
         results[0]
     );
@@ -922,14 +929,12 @@ fn cross_window_result_engine(
 fn rsp_cross_window_rule_derives_queryable_fact() {
     let (mut engine, results) = cross_window_result_engine(true);
 
-    for triple in engine.parse_data(
-        "<http://test/sensorA> <http://test/reading> \"25\" .",
-    ) {
+    for triple in engine.parse_data("<http://test/sensorA> <http://test/reading> \"25\" .") {
         engine.add_to_stream("stream1", triple, 1);
     }
-    for triple in engine.parse_data(
-        "<http://test/sensorA> <http://test/location> <http://test/room1> .",
-    ) {
+    for triple in
+        engine.parse_data("<http://test/sensorA> <http://test/location> <http://test/room1> .")
+    {
         engine.add_to_stream("stream2", triple, 2);
     }
 
@@ -951,14 +956,12 @@ fn rsp_cross_window_rule_derives_queryable_fact() {
 fn rsp_cross_window_without_rules_produces_no_derived_result() {
     let (mut engine, results) = cross_window_result_engine(false);
 
-    for triple in engine.parse_data(
-        "<http://test/sensorA> <http://test/reading> \"25\" .",
-    ) {
+    for triple in engine.parse_data("<http://test/sensorA> <http://test/reading> \"25\" .") {
         engine.add_to_stream("stream1", triple, 1);
     }
-    for triple in engine.parse_data(
-        "<http://test/sensorA> <http://test/location> <http://test/room1> .",
-    ) {
+    for triple in
+        engine.parse_data("<http://test/sensorA> <http://test/location> <http://test/room1> .")
+    {
         engine.add_to_stream("stream2", triple, 2);
     }
 
@@ -974,38 +977,32 @@ fn rsp_cross_window_without_rules_produces_no_derived_result() {
 fn rsp_cross_window_expired_support_no_longer_emits() {
     let (mut engine, results) = cross_window_result_engine(true);
 
-    for triple in engine.parse_data(
-        "<http://test/sensorA> <http://test/reading> \"25\" .",
-    ) {
+    for triple in engine.parse_data("<http://test/sensorA> <http://test/reading> \"25\" .") {
         engine.add_to_stream("stream1", triple, 1);
     }
-    for triple in engine.parse_data(
-        "<http://test/sensorA> <http://test/location> <http://test/room1> .",
-    ) {
+    for triple in
+        engine.parse_data("<http://test/sensorA> <http://test/location> <http://test/room1> .")
+    {
         engine.add_to_stream("stream2", triple, 2);
     }
 
-    for triple in engine.parse_data(
-        "<http://test/otherSensor> <http://test/reading> \"10\" .",
-    ) {
+    for triple in engine.parse_data("<http://test/otherSensor> <http://test/reading> \"10\" .") {
         engine.add_to_stream("stream1", triple, 15);
     }
-    for triple in engine.parse_data(
-        "<http://test/otherSensor> <http://test/location> <http://test/room2> .",
-    ) {
+    for triple in
+        engine.parse_data("<http://test/otherSensor> <http://test/location> <http://test/room2> .")
+    {
         engine.add_to_stream("stream2", triple, 15);
     }
     engine.process_single_thread_window_results();
     results.lock().unwrap().clear();
 
-    for triple in engine.parse_data(
-        "<http://test/noReadingJoin> <http://test/reading> \"10\" .",
-    ) {
+    for triple in engine.parse_data("<http://test/noReadingJoin> <http://test/reading> \"10\" .") {
         engine.add_to_stream("stream1", triple, 25);
     }
-    for triple in engine.parse_data(
-        "<http://test/noLocationJoin> <http://test/location> <http://test/room3> .",
-    ) {
+    for triple in engine
+        .parse_data("<http://test/noLocationJoin> <http://test/location> <http://test/room3> .")
+    {
         engine.add_to_stream("stream2", triple, 25);
     }
 
@@ -1051,8 +1048,7 @@ fn test_static_data_not_visible_in_window_query() {
     engine.add_static_ntriples("<http://example.org/static1> a <http://example.org/Type> .");
 
     // Push exactly one stream event
-    let triples =
-        engine.parse_data("<http://example.org/stream1> a <http://example.org/Type> .");
+    let triples = engine.parse_data("<http://example.org/stream1> a <http://example.org/Type> .");
     for triple in triples {
         engine.add(triple, 1);
     }
@@ -1140,36 +1136,48 @@ fn rsp_ql_istream_range3_step1() {
 
     // Firing 1 (triggered at ts=2): window {A}, ISTREAM emits A.
     assert!(
-        results[0].iter().any(|(k, v)| k == "s" && v.contains("subjectA")),
+        results[0]
+            .iter()
+            .any(|(k, v)| k == "s" && v.contains("subjectA")),
         "Firing 1 must emit subjectA, got: {:?}",
         results[0]
     );
 
     // Firing 2 (triggered at ts=3): window {A,B}, ISTREAM emits B only.
     assert!(
-        results[1].iter().any(|(k, v)| k == "s" && v.contains("subjectB")),
+        results[1]
+            .iter()
+            .any(|(k, v)| k == "s" && v.contains("subjectB")),
         "Firing 2 must emit subjectB, got: {:?}",
         results[1]
     );
     assert!(
-        !results[1].iter().any(|(k, v)| k == "s" && v.contains("subjectA")),
+        !results[1]
+            .iter()
+            .any(|(k, v)| k == "s" && v.contains("subjectA")),
         "Firing 2 must NOT re-emit subjectA (already seen), got: {:?}",
         results[1]
     );
 
     // Firing 3 (triggered at ts=4): window {A,B,C}, ISTREAM emits C only.
     assert!(
-        results[2].iter().any(|(k, v)| k == "s" && v.contains("subjectC")),
+        results[2]
+            .iter()
+            .any(|(k, v)| k == "s" && v.contains("subjectC")),
         "Firing 3 must emit subjectC, got: {:?}",
         results[2]
     );
     assert!(
-        !results[2].iter().any(|(k, v)| k == "s" && v.contains("subjectA")),
+        !results[2]
+            .iter()
+            .any(|(k, v)| k == "s" && v.contains("subjectA")),
         "Firing 3 must NOT re-emit subjectA, got: {:?}",
         results[2]
     );
     assert!(
-        !results[2].iter().any(|(k, v)| k == "s" && v.contains("subjectB")),
+        !results[2]
+            .iter()
+            .any(|(k, v)| k == "s" && v.contains("subjectB")),
         "Firing 3 must NOT re-emit subjectB, got: {:?}",
         results[2]
     );
@@ -1307,18 +1315,28 @@ fn rsp_ql_istream_same_sp_diff_object() {
 
     // Each firing must emit exactly one row.
     for (i, row) in results.iter().enumerate() {
-        assert_eq!(row.len(), 2, "Firing {}: row should have 2 bindings, got: {:?}", i + 1, row);
+        assert_eq!(
+            row.len(),
+            2,
+            "Firing {}: row should have 2 bindings, got: {:?}",
+            i + 1,
+            row
+        );
     }
 
     // Firing 1 -> temp=1.
     assert!(
-        results[0].iter().any(|(k, v)| k == "temp" && v.contains('1')),
+        results[0]
+            .iter()
+            .any(|(k, v)| k == "temp" && v.contains('1')),
         "Firing 1 must emit temp=1, got: {:?}",
         results[0]
     );
     // Firing 2 -> temp=2 (not temp=1 again).
     assert!(
-        results[1].iter().any(|(k, v)| k == "temp" && v.contains('2')),
+        results[1]
+            .iter()
+            .any(|(k, v)| k == "temp" && v.contains('2')),
         "Firing 2 must emit temp=2, got: {:?}",
         results[1]
     );
@@ -1329,7 +1347,9 @@ fn rsp_ql_istream_same_sp_diff_object() {
     );
     // Firing 3 -> temp=3 (not temp=1 or temp=2 again).
     assert!(
-        results[2].iter().any(|(k, v)| k == "temp" && v.contains('3')),
+        results[2]
+            .iter()
+            .any(|(k, v)| k == "temp" && v.contains('3')),
         "Firing 3 must emit temp=3, got: {:?}",
         results[2]
     );
@@ -1402,12 +1422,232 @@ fn rsp_ql_reasoning_derives_types() {
     );
 
     // At least one row should bind ?s to sensor1
-    let has_sensor1 = results.iter().any(|row| {
-        row.iter().any(|(k, v)| k == "s" && v.contains("sensor1"))
-    });
+    let has_sensor1 = results
+        .iter()
+        .any(|row| row.iter().any(|(k, v)| k == "s" && v.contains("sensor1")));
     assert!(
         has_sensor1,
         "Reasoning: expected sensor1 to appear via inferred type. Got: {:?}",
         *results
     );
+}
+
+#[test]
+fn rsp_probabilistic_occurrences_keep_stable_distinct_seed_ids() {
+    let result_consumer = ResultConsumer {
+        function: Arc::new(|_row: Vec<(String, String)>| {}),
+    };
+    let query = r#"
+        REGISTER RSTREAM <http://out/stream> AS
+        SELECT *
+        FROM NAMED WINDOW :w ON ?stream [RANGE 2 STEP 1]
+        WHERE { WINDOW :w {
+            ?s <http://test/result> <http://test/yes> .
+        } }
+    "#;
+    let hybrid_rule = r#"
+        RULE :Hybrid PROB(provenance=hybrid, threshold=0.7) :-
+        CONSTRUCT { ?s <http://test/result> <http://test/yes> . }
+        WHERE { ?s <http://test/input> <http://test/yes> . } .
+    "#;
+    let r2r = Box::new(SimpleR2R::with_execution_mode(QueryExecutionMode::Volcano));
+    let mut engine: RSPEngine<Triple, Vec<(String, String)>> = RSPBuilder::new()
+        .add_rsp_ql_query(query)
+        .add_sparql_rules(vec![hybrid_rule.to_string()])
+        .add_consumer(result_consumer)
+        .add_r2r(r2r)
+        .set_operation_mode(OperationMode::SingleThread)
+        .build()
+        .expect("hybrid RSP engine should build");
+
+    let first = engine
+        .parse_data("<http://test/a> <http://test/input> <http://test/yes> .")
+        .remove(0);
+    let second = engine
+        .parse_data("<http://test/b> <http://test/input> <http://test/yes> .")
+        .remove(0);
+    let first_id = engine
+        .add_probabilistic_to_stream("stream", first.clone(), 0.8, 1)
+        .unwrap();
+    engine
+        .add_probabilistic_to_stream("stream", second, 0.6, 2)
+        .unwrap();
+
+    let window_iri = engine.get_window_info()[0].window_iri.clone();
+    let latest = engine
+        .latest_hybrid_results(&window_iri)
+        .expect("window should publish hybrid results");
+    assert!(latest.values().any(|result| matches!(
+        result,
+        shared::hybrid::HybridProbabilityResult::Exact { probability, .. }
+            if (*probability - 0.8).abs() < 1e-9
+    )));
+
+    let repeated_id = engine
+        .add_probabilistic_to_stream("stream", first, 0.8, 3)
+        .unwrap();
+    assert_ne!(
+        first_id, repeated_id,
+        "identical later arrivals need distinct identities"
+    );
+}
+
+fn hybrid_rsp_query() -> &'static str {
+    r#"
+        REGISTER RSTREAM <http://out/stream> AS
+        SELECT *
+        FROM NAMED WINDOW :w ON ?stream [RANGE 2 STEP 1]
+        WHERE { WINDOW :w {
+            ?s <http://test/result> <http://test/yes> .
+        } }
+    "#
+}
+
+fn hybrid_rsp_rule() -> String {
+    r#"
+        RULE :Hybrid PROB(provenance=hybrid, threshold=0.7) :-
+        CONSTRUCT { ?s <http://test/result> <http://test/yes> . }
+        WHERE { ?s <http://test/input> <http://test/yes> . } .
+    "#
+    .to_string()
+}
+
+#[test]
+fn rsp_deterministic_fact_dominates_probabilistic_copy() {
+    let consumer = ResultConsumer {
+        function: Arc::new(|_row: Vec<(String, String)>| {}),
+    };
+    let r2r = Box::new(SimpleR2R::with_execution_mode(QueryExecutionMode::Volcano));
+    let mut engine: RSPEngine<Triple, Vec<(String, String)>> = RSPBuilder::new()
+        .add_rsp_ql_query(hybrid_rsp_query())
+        .add_sparql_rules(vec![hybrid_rsp_rule()])
+        .add_consumer(consumer)
+        .add_r2r(r2r)
+        .set_operation_mode(OperationMode::SingleThread)
+        .build()
+        .unwrap();
+    let certain = engine
+        .parse_data("<http://test/certain> <http://test/input> <http://test/yes> .")
+        .remove(0);
+    engine.add_to_stream("stream", certain.clone(), 1);
+    engine
+        .add_probabilistic_to_stream("stream", certain, 0.2, 1)
+        .unwrap();
+    let trigger = engine
+        .parse_data("<http://test/trigger> <http://test/input> <http://test/yes> .")
+        .remove(0);
+    engine
+        .add_probabilistic_to_stream("stream", trigger, 0.6, 2)
+        .unwrap();
+
+    let window = engine.get_window_info()[0].window_iri.clone();
+    let results = engine.latest_hybrid_results(&window).unwrap();
+    assert!(results.values().any(|result| matches!(
+        result,
+        shared::hybrid::HybridProbabilityResult::Exact { probability, .. }
+            if (*probability - 1.0).abs() < 1e-9
+    )));
+}
+
+#[test]
+fn rsp_multithread_probabilistic_ingestion_publishes_hybrid_result() {
+    let consumer = ResultConsumer {
+        function: Arc::new(|_row: Vec<(String, String)>| {}),
+    };
+    let r2r = Box::new(SimpleR2R::with_execution_mode(QueryExecutionMode::Volcano));
+    let mut engine: RSPEngine<Triple, Vec<(String, String)>> = RSPBuilder::new()
+        .add_rsp_ql_query(hybrid_rsp_query())
+        .add_sparql_rules(vec![hybrid_rsp_rule()])
+        .add_consumer(consumer)
+        .add_r2r(r2r)
+        .set_operation_mode(OperationMode::MultiThread)
+        .build()
+        .unwrap();
+    let first = engine
+        .parse_data("<http://test/multi> <http://test/input> <http://test/yes> .")
+        .remove(0);
+    let trigger = engine
+        .parse_data("<http://test/trigger> <http://test/input> <http://test/yes> .")
+        .remove(0);
+    engine
+        .add_probabilistic_to_stream("stream", first, 0.8, 1)
+        .unwrap();
+    engine
+        .add_probabilistic_to_stream("stream", trigger, 0.6, 2)
+        .unwrap();
+
+    let window = engine.get_window_info()[0].window_iri.clone();
+    let mut observed = None;
+    for _ in 0..100 {
+        if let Some(results) = engine.latest_hybrid_results(&window) {
+            if !results.is_empty() {
+                observed = Some(results);
+                break;
+            }
+        }
+        thread::sleep(Duration::from_millis(10));
+    }
+    engine.stop();
+    let results = observed.expect("multi-thread window should publish within one second");
+    assert!(results.values().any(|result| matches!(
+        result,
+        shared::hybrid::HybridProbabilityResult::Exact { probability, .. }
+            if (*probability - 0.8).abs() < 1e-9
+    )));
+}
+
+#[test]
+fn rsp_overlapping_windows_share_one_occurrence_identity() {
+    let query = r#"
+        REGISTER RSTREAM <http://out/stream> AS
+        SELECT *
+        FROM NAMED WINDOW :short ON :stream [RANGE 2 STEP 1]
+        FROM NAMED WINDOW :long ON :stream [RANGE 3 STEP 1]
+        WHERE {
+            WINDOW :short { ?short <http://test/result> <http://test/yes> . }
+            WINDOW :long { ?long <http://test/result> <http://test/yes> . }
+        }
+    "#;
+    let consumer = ResultConsumer {
+        function: Arc::new(|_row: Vec<(String, String)>| {}),
+    };
+    let r2r = Box::new(SimpleR2R::with_execution_mode(QueryExecutionMode::Volcano));
+    let mut engine: RSPEngine<Triple, Vec<(String, String)>> = RSPBuilder::new()
+        .add_rsp_ql_query(query)
+        .add_sparql_rules(vec![hybrid_rsp_rule()])
+        .add_consumer(consumer)
+        .add_r2r(r2r)
+        .set_operation_mode(OperationMode::SingleThread)
+        .build()
+        .unwrap();
+    let first = engine
+        .parse_data("<http://test/shared> <http://test/input> <http://test/yes> .")
+        .remove(0);
+    let trigger = engine
+        .parse_data("<http://test/trigger> <http://test/input> <http://test/yes> .")
+        .remove(0);
+    let seed = engine
+        .add_probabilistic_to_stream("stream", first, 0.8, 1)
+        .unwrap();
+    engine
+        .add_probabilistic_to_stream("stream", trigger, 0.6, 2)
+        .unwrap();
+
+    for window in engine.get_window_info() {
+        let results = engine
+            .latest_hybrid_results(&window.window_iri)
+            .expect("each overlapping window should publish hybrid results");
+        assert!(results.values().any(|result| matches!(
+            result,
+            shared::hybrid::HybridProbabilityResult::Exact { probability, .. }
+                if (*probability - 0.8).abs() < 1e-9
+        )));
+    }
+    let later = engine
+        .parse_data("<http://test/shared> <http://test/input> <http://test/yes> .")
+        .remove(0);
+    let later_seed = engine
+        .add_probabilistic_to_stream("stream", later, 0.8, 3)
+        .unwrap();
+    assert_ne!(seed, later_seed);
 }

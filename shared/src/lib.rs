@@ -12,6 +12,7 @@ pub mod dataset_index;
 pub mod dictionary;
 pub mod diff_sdd;
 pub mod join_algorithm;
+pub mod hybrid;
 pub mod provenance;
 pub mod query;
 pub mod quoted_triple_store;

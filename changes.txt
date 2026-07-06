@@ -83,6 +83,14 @@
 82. Remove legacy `index_manager` module usage and direct `SparqlDatabase.triples` storage access from runtime code
 83. Add named graph tests for default graph isolation, named graph selection, graph variable binding, `FROM NAMED` filtering, and N-Quads roundtrip
 84. Re-run WatDiv 10M benchmark on the DatasetIndex-backed implementation and record that default graph queries complete without catastrophic regression
+85. Add stable probabilistic stream occurrence identities with `SeedRegistry`, immutable snapshots, overlapping-window identity preservation, and non-recycled seed IDs
+86. Add a hash-consed canonical full-lineage DAG with literal, conjunction, disjunction, and negation nodes for provenance materialisation
+87. Add opt-in `PROB(provenance=hybrid, ...)` configuration, explicit exact/lower-bound/needs-exact result statuses, metrics, and RDF-star result annotations
+88. Add lazy best-first top-k proof enumeration with exact retained-proof WMC, adaptive k tightening, cap-hit detection, and marginal-gain probing
+89. Add selective full-lineage SDD compilation with interruptible deadline/node budgets and exact handling of negation and exclusive groups
+90. Add probabilistic RSP ingestion, occurrence-aware window sidecars, live-window lineage rebuilding, and latest hybrid result access
+91. Move neural training target evaluation to full lineage and selective exact SDD/WMC gradients while preserving first-class neural training syntax
+92. Add brute-force, lineage, top-k, SDD, parser, RSP, expiry/rebuild, and multi-thread ingestion tests plus hybrid Criterion benchmarks
 
 0.1.1
 1. Modify whole project by making Cargo workspace

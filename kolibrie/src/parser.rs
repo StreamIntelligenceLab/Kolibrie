@@ -24,6 +24,11 @@ use nom::{
 };
 use rayon::str;
 use shared::dictionary::Dictionary;
+use shared::hybrid::{
+    encode_hybrid_results_as_rdf_star, HybridConfig, HybridMetrics,
+    HybridProbabilityResult, HybridReason, SeedSnapshot,
+};
+use shared::provenance::Provenance;
 use shared::query::*;
 use shared::rule::FilterCondition;
 use shared::rule::Rule;
@@ -35,6 +40,7 @@ use crate::rsp::s2r::{
     CSPARQLWindow, ContentContainer, Report, ReportStrategy, Tick, WindowTriple,
 };
 use std::collections::HashMap;
+use std::time::Duration;
 
 // Helper function to recognize identifiers
 pub fn identifier(input: &str) -> IResult<&str, &str> {
@@ -2067,6 +2073,9 @@ fn parse_prob_annotation(input: &str) -> IResult<&str, ProbAnnotation<'_>> {
     let mut combination: &str = "independent";
     let mut threshold: Option<f64> = None;
     let mut confidence: Option<f64> = None;
+    let mut raw_values: HashMap<&str, &str> = HashMap::new();
+    let mut unknown_keys = Vec::new();
+    let mut duplicate_key = false;
 
     // Parse key=value pairs separated by commas
     let (input, kv_str) = take_until(")").parse(input)?;
@@ -2077,14 +2086,82 @@ fn parse_prob_annotation(input: &str) -> IResult<&str, ProbAnnotation<'_>> {
         if let Some((key, value)) = pair.split_once('=') {
             let key = key.trim();
             let value = value.trim();
+            if raw_values.insert(key, value).is_some() {
+                duplicate_key = true;
+            }
             match key {
                 "combination" | "provenance" => combination = value,
                 "threshold" => threshold = value.parse::<f64>().ok(),
                 "confidence" => confidence = value.parse::<f64>().ok(),
-                _ => {} // Ignore unknown keys
+                "band_epsilon" | "marginal_floor" | "k_initial" | "k_max"
+                | "k_growth" | "topk_budget_ms" | "sdd_budget_ms" | "node_budget" => {}
+                _ => unknown_keys.push(key),
             }
         }
     }
+
+    let hybrid_config = if combination == "hybrid" {
+        let allowed = [
+            "combination", "provenance", "threshold", "band_epsilon", "marginal_floor",
+            "k_initial", "k_max", "k_growth", "topk_budget_ms", "sdd_budget_ms",
+            "node_budget",
+        ];
+        let has_disallowed = !unknown_keys.is_empty()
+            || raw_values.keys().any(|key| !allowed.contains(key));
+        if duplicate_key || has_disallowed || confidence.is_some() {
+            return Err(nom::Err::Failure(nom::error::Error::new(
+                kv_str,
+                nom::error::ErrorKind::Verify,
+            )));
+        }
+        let Some(threshold) = threshold else {
+            return Err(nom::Err::Failure(nom::error::Error::new(
+                kv_str,
+                nom::error::ErrorKind::Verify,
+            )));
+        };
+        let mut config = HybridConfig { threshold, ..HybridConfig::default() };
+        macro_rules! parse_override {
+            ($key:literal, $target:expr, $ty:ty) => {
+                if let Some(value) = raw_values.get($key) {
+                    match value.parse::<$ty>() {
+                        Ok(parsed) => $target = parsed,
+                        Err(_) => return Err(nom::Err::Failure(nom::error::Error::new(
+                            kv_str,
+                            nom::error::ErrorKind::Verify,
+                        ))),
+                    }
+                }
+            };
+        }
+        parse_override!("band_epsilon", config.band_epsilon, f64);
+        parse_override!("marginal_floor", config.marginal_gain_floor, f64);
+        parse_override!("k_initial", config.k_initial, usize);
+        parse_override!("k_max", config.k_max, usize);
+        parse_override!("k_growth", config.k_growth, usize);
+        parse_override!("node_budget", config.sdd_node_budget, usize);
+        if let Some(value) = raw_values.get("topk_budget_ms") {
+            let Ok(ms) = value.parse::<u64>() else {
+                return Err(nom::Err::Failure(nom::error::Error::new(kv_str, nom::error::ErrorKind::Verify)));
+            };
+            config.topk_budget = Duration::from_millis(ms);
+        }
+        if let Some(value) = raw_values.get("sdd_budget_ms") {
+            let Ok(ms) = value.parse::<u64>() else {
+                return Err(nom::Err::Failure(nom::error::Error::new(kv_str, nom::error::ErrorKind::Verify)));
+            };
+            config.sdd_budget = Duration::from_millis(ms);
+        }
+        if config.validate().is_err() {
+            return Err(nom::Err::Failure(nom::error::Error::new(
+                kv_str,
+                nom::error::ErrorKind::Verify,
+            )));
+        }
+        Some(config)
+    } else {
+        None
+    };
 
     Ok((
         input,
@@ -2092,6 +2169,7 @@ fn parse_prob_annotation(input: &str) -> IResult<&str, ProbAnnotation<'_>> {
             combination,
             threshold,
             confidence,
+            hybrid_config,
         },
     ))
 }
@@ -2827,6 +2905,32 @@ pub fn process_rule_definition(
                     }
                     facts
                 }
+                // Full derivation lineage with certified top-k lower bounds and
+                // selective exact SDD escalation.
+                "hybrid" => {
+                    let config = ann.hybrid_config.as_ref().ok_or_else(|| {
+                        "PROB(provenance=hybrid) requires a valid threshold and hybrid configuration"
+                            .to_string()
+                    })?;
+                    let snapshot = SeedSnapshot::from_probability_seeds(&kg.probability_seeds)
+                        .map_err(|error| error.to_string())?;
+                    let (facts, results, _lineage) = kg
+                        .infer_new_facts_with_hybrid(snapshot, config)
+                        .map_err(|error| error.to_string())?;
+                    let mut dict = kg.dictionary.write().unwrap();
+                    let mut qt_store = database.quoted_triple_store.write().unwrap();
+                    let rdf_star = encode_hybrid_results_as_rdf_star(
+                        &results,
+                        &mut dict,
+                        &mut qt_store,
+                    );
+                    drop(qt_store);
+                    drop(dict);
+                    for triple in rdf_star {
+                        database.add_triple(triple);
+                    }
+                    facts
+                }
                 // Exact proof-formula provenance (WMC via Shannon expansion)
                 "wmc" => {
                     let (facts, tag_store) = kg
@@ -2864,9 +2968,24 @@ pub fn process_rule_definition(
                     let k = ann.threshold.map(|t| t as usize).unwrap_or(5);
                     let (facts, tag_store) =
                         kg.infer_new_facts_with_provenance(shared::provenance::TopKProofs::new(k));
+                    let diagnostics: HashMap<Triple, HybridProbabilityResult> = facts.iter()
+                        .map(|triple| {
+                            let estimate = tag_store.provenance()
+                                .recover_probability(&tag_store.get_tag(triple));
+                            (triple.clone(), HybridProbabilityResult::UnsafeApproximation {
+                                estimate,
+                                reason: HybridReason::DiagnosticOnly,
+                                metrics: HybridMetrics { k_used: k, ..HybridMetrics::default() },
+                            })
+                        })
+                        .collect();
                     let mut dict = kg.dictionary.write().unwrap();
                     let mut qt_store = database.quoted_triple_store.write().unwrap();
-                    let rdf_star = tag_store.encode_as_rdf_star(&mut dict, &mut qt_store);
+                    let rdf_star = encode_hybrid_results_as_rdf_star(
+                        &diagnostics,
+                        &mut dict,
+                        &mut qt_store,
+                    );
                     drop(qt_store);
                     drop(dict);
                     for triple in rdf_star {

@@ -72,6 +72,11 @@ name = "family_tree_cross_window_compare"
 path = "benches/family_tree_cross_window_compare.rs"
 harness = false
 
+[[bench]]
+name = "hybrid_probability"
+path = "benches/hybrid_probability.rs"
+harness = false
+
 [[example]]
 name = "automate_policy"
 path = "examples/policy/automate_policy.rs"

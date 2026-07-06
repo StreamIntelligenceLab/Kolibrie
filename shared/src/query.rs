@@ -258,6 +258,8 @@ pub struct ProbAnnotation<'a> {
     pub combination: &'a str,
     pub threshold: Option<f64>,
     pub confidence: Option<f64>,
+    /// Fully validated policy for `provenance=hybrid`.
+    pub hybrid_config: Option<crate::hybrid::HybridConfig>,
 }
 
 // Modified CombinedRule to include windowing
