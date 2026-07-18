@@ -25,8 +25,8 @@ use nom::{
 use rayon::str;
 use shared::dictionary::Dictionary;
 use shared::hybrid::{
-    encode_hybrid_results_as_rdf_star, HybridConfig, HybridMetrics,
-    HybridProbabilityResult, HybridReason, SeedSnapshot,
+    encode_hybrid_results_as_rdf_star, HybridConfig, HybridMetrics, HybridProbabilityResult,
+    HybridReason, SeedSnapshot, ThresholdPolicyKind,
 };
 use shared::provenance::Provenance;
 use shared::query::*;
@@ -2064,6 +2064,89 @@ pub fn parse_from_named_window(input: &str) -> IResult<&str, WindowClause<'_>> {
 /// Parse a PROB(...) annotation for provenance rules.
 /// Format: PROB(provenance=minmax, threshold=0.3, confidence=0.9)
 /// Legacy alias: PROB(combination=independent, threshold=0.3, confidence=0.9)
+fn take_prob_body(input: &str) -> IResult<&str, &str> {
+    let mut depth = 0usize;
+    for (index, character) in input.char_indices() {
+        match character {
+            '(' => depth = depth.saturating_add(1),
+            ')' if depth == 0 => return Ok((&input[index + 1..], &input[..index])),
+            ')' => depth -= 1,
+            _ => {}
+        }
+    }
+    Err(nom::Err::Failure(nom::error::Error::new(
+        input,
+        nom::error::ErrorKind::TakeUntil,
+    )))
+}
+
+fn split_top_level_commas(input: &str) -> Result<Vec<&str>, ()> {
+    let mut depth = 0usize;
+    let mut start = 0usize;
+    let mut values = Vec::new();
+    for (index, character) in input.char_indices() {
+        match character {
+            '(' => depth = depth.saturating_add(1),
+            ')' if depth == 0 => return Err(()),
+            ')' => depth -= 1,
+            ',' if depth == 0 => {
+                let value = input[start..index].trim();
+                if value.is_empty() {
+                    return Err(());
+                }
+                values.push(value);
+                start = index + 1;
+            }
+            _ => {}
+        }
+    }
+    if depth != 0 {
+        return Err(());
+    }
+    let tail = input[start..].trim();
+    if !tail.is_empty() {
+        values.push(tail);
+    } else if !input.trim().is_empty() {
+        return Err(());
+    }
+    Ok(values)
+}
+
+fn parse_hybrid_threshold(value: &str) -> Result<(f64, ThresholdPolicyKind), ()> {
+    if let Ok(threshold) = value.parse::<f64>() {
+        if threshold.is_finite() && (0.0..=1.0).contains(&threshold) {
+            return Ok((threshold, ThresholdPolicyKind::Explicit));
+        }
+        return Err(());
+    }
+    let Some(costs) = value
+        .strip_prefix("auto:cost(")
+        .and_then(|value| value.strip_suffix(')'))
+    else {
+        return Err(());
+    };
+    let mut fp = None;
+    let mut fn_cost = None;
+    for pair in split_top_level_commas(costs)? {
+        let (key, raw) = pair.split_once('=').ok_or(())?;
+        let parsed = raw.trim().parse::<f64>().map_err(|_| ())?;
+        if !parsed.is_finite() || parsed < 0.0 {
+            return Err(());
+        }
+        match key.trim() {
+            "fp" if fp.replace(parsed).is_none() => {}
+            "fn" if fn_cost.replace(parsed).is_none() => {}
+            _ => return Err(()),
+        }
+    }
+    let (fp, fn_cost) = (fp.ok_or(())?, fn_cost.ok_or(())?);
+    let total = fp + fn_cost;
+    if !total.is_finite() || total <= 0.0 {
+        return Err(());
+    }
+    Ok((fp / total, ThresholdPolicyKind::CostRatio))
+}
+
 fn parse_prob_annotation(input: &str) -> IResult<&str, ProbAnnotation<'_>> {
     let (input, _) = tag("PROB").parse(input)?;
     let (input, _) = multispace0.parse(input)?;
@@ -2072,42 +2155,86 @@ fn parse_prob_annotation(input: &str) -> IResult<&str, ProbAnnotation<'_>> {
 
     let mut combination: &str = "independent";
     let mut threshold: Option<f64> = None;
+    let mut threshold_policy = ThresholdPolicyKind::Explicit;
     let mut confidence: Option<f64> = None;
     let mut raw_values: HashMap<&str, &str> = HashMap::new();
     let mut unknown_keys = Vec::new();
     let mut duplicate_key = false;
 
     // Parse key=value pairs separated by commas
-    let (input, kv_str) = take_until(")").parse(input)?;
-    let (input, _) = char(')').parse(input)?;
+    let (input, kv_str) = take_prob_body(input)?;
 
-    for pair in kv_str.split(',') {
-        let pair = pair.trim();
-        if let Some((key, value)) = pair.split_once('=') {
-            let key = key.trim();
-            let value = value.trim();
-            if raw_values.insert(key, value).is_some() {
-                duplicate_key = true;
+    let pairs = split_top_level_commas(kv_str).map_err(|_| {
+        nom::Err::Failure(nom::error::Error::new(
+            kv_str,
+            nom::error::ErrorKind::Verify,
+        ))
+    })?;
+    for pair in pairs {
+        let Some((key, value)) = pair.split_once('=') else {
+            return Err(nom::Err::Failure(nom::error::Error::new(
+                pair,
+                nom::error::ErrorKind::Verify,
+            )));
+        };
+        let key = key.trim();
+        let value = value.trim();
+        if key.is_empty() || value.is_empty() || raw_values.insert(key, value).is_some() {
+            duplicate_key = true;
+        }
+        match key {
+            "combination" | "provenance" => combination = value,
+            "threshold" => {}
+            "confidence" => confidence = value.parse::<f64>().ok(),
+            "band_epsilon" | "marginal_floor" | "k_initial" | "k_max" | "k_growth"
+            | "topk_budget_ms" | "sdd_budget_ms" | "node_budget" => {}
+            _ => unknown_keys.push(key),
+        }
+    }
+
+    if let Some(value) = raw_values.get("threshold") {
+        if combination == "hybrid" {
+            let parsed = parse_hybrid_threshold(value).map_err(|_| {
+                nom::Err::Failure(nom::error::Error::new(
+                    *value,
+                    nom::error::ErrorKind::Verify,
+                ))
+            })?;
+            threshold = Some(parsed.0);
+            threshold_policy = parsed.1;
+        } else {
+            let parsed = value.parse::<f64>().map_err(|_| {
+                nom::Err::Failure(nom::error::Error::new(
+                    *value,
+                    nom::error::ErrorKind::Verify,
+                ))
+            })?;
+            if !parsed.is_finite() {
+                return Err(nom::Err::Failure(nom::error::Error::new(
+                    *value,
+                    nom::error::ErrorKind::Verify,
+                )));
             }
-            match key {
-                "combination" | "provenance" => combination = value,
-                "threshold" => threshold = value.parse::<f64>().ok(),
-                "confidence" => confidence = value.parse::<f64>().ok(),
-                "band_epsilon" | "marginal_floor" | "k_initial" | "k_max"
-                | "k_growth" | "topk_budget_ms" | "sdd_budget_ms" | "node_budget" => {}
-                _ => unknown_keys.push(key),
-            }
+            threshold = Some(parsed);
         }
     }
 
     let hybrid_config = if combination == "hybrid" {
         let allowed = [
-            "combination", "provenance", "threshold", "band_epsilon", "marginal_floor",
-            "k_initial", "k_max", "k_growth", "topk_budget_ms", "sdd_budget_ms",
+            "combination",
+            "provenance",
+            "threshold",
+            "band_epsilon",
+            "marginal_floor",
+            "k_initial",
+            "k_max",
+            "k_growth",
+            "topk_budget_ms",
+            "sdd_budget_ms",
             "node_budget",
         ];
-        let has_disallowed = !unknown_keys.is_empty()
-            || raw_values.keys().any(|key| !allowed.contains(key));
+        let has_disallowed =
+            !unknown_keys.is_empty() || raw_values.keys().any(|key| !allowed.contains(key));
         if duplicate_key || has_disallowed || confidence.is_some() {
             return Err(nom::Err::Failure(nom::error::Error::new(
                 kv_str,
@@ -2120,16 +2247,22 @@ fn parse_prob_annotation(input: &str) -> IResult<&str, ProbAnnotation<'_>> {
                 nom::error::ErrorKind::Verify,
             )));
         };
-        let mut config = HybridConfig { threshold, ..HybridConfig::default() };
+        let mut config = HybridConfig {
+            threshold,
+            threshold_policy,
+            ..HybridConfig::default()
+        };
         macro_rules! parse_override {
             ($key:literal, $target:expr, $ty:ty) => {
                 if let Some(value) = raw_values.get($key) {
                     match value.parse::<$ty>() {
                         Ok(parsed) => $target = parsed,
-                        Err(_) => return Err(nom::Err::Failure(nom::error::Error::new(
-                            kv_str,
-                            nom::error::ErrorKind::Verify,
-                        ))),
+                        Err(_) => {
+                            return Err(nom::Err::Failure(nom::error::Error::new(
+                                kv_str,
+                                nom::error::ErrorKind::Verify,
+                            )))
+                        }
                     }
                 }
             };
@@ -2142,13 +2275,19 @@ fn parse_prob_annotation(input: &str) -> IResult<&str, ProbAnnotation<'_>> {
         parse_override!("node_budget", config.sdd_node_budget, usize);
         if let Some(value) = raw_values.get("topk_budget_ms") {
             let Ok(ms) = value.parse::<u64>() else {
-                return Err(nom::Err::Failure(nom::error::Error::new(kv_str, nom::error::ErrorKind::Verify)));
+                return Err(nom::Err::Failure(nom::error::Error::new(
+                    kv_str,
+                    nom::error::ErrorKind::Verify,
+                )));
             };
             config.topk_budget = Duration::from_millis(ms);
         }
         if let Some(value) = raw_values.get("sdd_budget_ms") {
             let Ok(ms) = value.parse::<u64>() else {
-                return Err(nom::Err::Failure(nom::error::Error::new(kv_str, nom::error::ErrorKind::Verify)));
+                return Err(nom::Err::Failure(nom::error::Error::new(
+                    kv_str,
+                    nom::error::ErrorKind::Verify,
+                )));
             };
             config.sdd_budget = Duration::from_millis(ms);
         }
@@ -2919,11 +3058,8 @@ pub fn process_rule_definition(
                         .map_err(|error| error.to_string())?;
                     let mut dict = kg.dictionary.write().unwrap();
                     let mut qt_store = database.quoted_triple_store.write().unwrap();
-                    let rdf_star = encode_hybrid_results_as_rdf_star(
-                        &results,
-                        &mut dict,
-                        &mut qt_store,
-                    );
+                    let rdf_star =
+                        encode_hybrid_results_as_rdf_star(&results, &mut dict, &mut qt_store);
                     drop(qt_store);
                     drop(dict);
                     for triple in rdf_star {
@@ -2968,24 +3104,29 @@ pub fn process_rule_definition(
                     let k = ann.threshold.map(|t| t as usize).unwrap_or(5);
                     let (facts, tag_store) =
                         kg.infer_new_facts_with_provenance(shared::provenance::TopKProofs::new(k));
-                    let diagnostics: HashMap<Triple, HybridProbabilityResult> = facts.iter()
+                    let diagnostics: HashMap<Triple, HybridProbabilityResult> = facts
+                        .iter()
                         .map(|triple| {
-                            let estimate = tag_store.provenance()
+                            let estimate = tag_store
+                                .provenance()
                                 .recover_probability(&tag_store.get_tag(triple));
-                            (triple.clone(), HybridProbabilityResult::UnsafeApproximation {
-                                estimate,
-                                reason: HybridReason::DiagnosticOnly,
-                                metrics: HybridMetrics { k_used: k, ..HybridMetrics::default() },
-                            })
+                            (
+                                triple.clone(),
+                                HybridProbabilityResult::UnsafeApproximation {
+                                    estimate,
+                                    reason: HybridReason::DiagnosticOnly,
+                                    metrics: HybridMetrics {
+                                        k_used: k,
+                                        ..HybridMetrics::default()
+                                    },
+                                },
+                            )
                         })
                         .collect();
                     let mut dict = kg.dictionary.write().unwrap();
                     let mut qt_store = database.quoted_triple_store.write().unwrap();
-                    let rdf_star = encode_hybrid_results_as_rdf_star(
-                        &diagnostics,
-                        &mut dict,
-                        &mut qt_store,
-                    );
+                    let rdf_star =
+                        encode_hybrid_results_as_rdf_star(&diagnostics, &mut dict, &mut qt_store);
                     drop(qt_store);
                     drop(dict);
                     for triple in rdf_star {
@@ -3186,4 +3327,3 @@ fn register_rule_predicates(rule: &Rule, database: &mut SparqlDatabase) {
         }
     }
 }
-

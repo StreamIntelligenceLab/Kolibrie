@@ -91,6 +91,13 @@
 90. Add probabilistic RSP ingestion, occurrence-aware window sidecars, live-window lineage rebuilding, and latest hybrid result access
 91. Move neural training target evaluation to full lineage and selective exact SDD/WMC gradients while preserving first-class neural training syntax
 92. Add brute-force, lineage, top-k, SDD, parser, RSP, expiry/rebuild, and multi-thread ingestion tests plus hybrid Criterion benchmarks
+93. Add certified probability intervals for hybrid top-k evaluation, including lower/upper bounds, residual frontier accounting, and bounded Alert/NoAlert decisions
+94. Add automatic interval-driven top-k to SDD switching with adaptive k growth, exact retained-proof WMC, probe accounting, and conservative interruption behavior
+95. Add explicit `threshold=auto:cost(fp=...,fn=...)` parser support with cost-ratio threshold resolution and strict validation of malformed or unsafe policies
+96. Extend hybrid probability results, metrics, RDF-star annotations, and RSP consumers with bounded results, upper bounds, effective thresholds, and threshold policy metadata
+97. Preserve legacy numeric threshold behavior and reject automatic threshold syntax for legacy `combination=topk` threshold-as-k parsing
+98. Add interval oracle, certified alert/no-alert, uncertain escalation, residual/probe accounting, parser, RDF, stream, and RSP regression tests
+99. Extend hybrid Criterion benchmarks with certified decision rates, interval width, SDD node counts, escalation rate, latency percentiles, and survivor recall checks
 
 0.1.1
 1. Modify whole project by making Cargo workspace

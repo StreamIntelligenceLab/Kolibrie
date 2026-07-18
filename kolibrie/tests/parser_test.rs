@@ -14,6 +14,7 @@ mod tests {
     use shared::query::FilterExpression;
     use shared::query::TrainingDataSource;
     use shared::query::{ModelArch, NeuralOutputKind};
+    use shared::hybrid::ThresholdPolicyKind;
     use kolibrie::neural_relations::lower_ml_predict_alias;
     
     #[test]
@@ -651,10 +652,61 @@ ML.PREDICT(MODEL "digit_model",
         let annotation = rule.prob_annotation.expect("probability annotation");
         let config = annotation.hybrid_config.expect("validated hybrid config");
         assert_eq!(config.threshold, 0.7);
+        assert_eq!(config.threshold_policy, ThresholdPolicyKind::Explicit);
         assert_eq!(config.k_initial, 4);
         assert_eq!(config.k_max, 32);
         assert_eq!(config.topk_budget.as_millis(), 10);
         assert_eq!(config.sdd_node_budget, 50_000);
+    }
+
+    #[test]
+    fn hybrid_probability_annotation_parses_cost_ratio_policy() {
+        let input = r#"RULE :Hybrid PROB(
+            provenance=hybrid,
+            threshold=auto:cost(fp=2,fn=8),
+            k_initial=4
+        ) :- CONSTRUCT { ?x <result> <yes> } WHERE { ?x <input> <yes> } ."#;
+        let (_, rule) = parse_rule(input).expect("cost-ratio threshold should parse");
+        let annotation = rule.prob_annotation.expect("probability annotation");
+        let config = annotation.hybrid_config.expect("validated hybrid config");
+        assert!((config.threshold - 0.2).abs() < 1e-12);
+        assert_eq!(config.threshold_policy, ThresholdPolicyKind::CostRatio);
+        assert!((annotation.threshold.unwrap() - 0.2).abs() < 1e-12);
+    }
+
+    #[test]
+    fn hybrid_probability_annotation_rejects_invalid_automatic_policies() {
+        let invalid = [
+            "auto",
+            "auto:quantile(0.9)",
+            "auto:cost(fp=NaN,fn=1)",
+            "auto:cost(fp=inf,fn=1)",
+            "auto:cost(fp=-1,fn=2)",
+            "auto:cost(fp=0,fn=0)",
+            "auto:cost(fp=1)",
+            "auto:cost(fp=1,fn=2,other=3)",
+            "auto:cost(fp=1,fp=2,fn=3)",
+        ];
+        for threshold in invalid {
+            let input = format!(
+                "RULE :Hybrid PROB(provenance=hybrid, threshold={threshold}) :- \
+                 CONSTRUCT {{ ?x <result> <yes> }} WHERE {{ ?x <input> <yes> }} ."
+            );
+            assert!(parse_rule(&input).is_err(), "accepted invalid {threshold}");
+        }
+
+        let duplicate = r#"RULE :Hybrid PROB(
+            provenance=hybrid,
+            threshold=0.4,
+            threshold=auto:cost(fp=1,fn=1)
+        ) :- CONSTRUCT { ?x <result> <yes> } WHERE { ?x <input> <yes> } ."#;
+        assert!(parse_rule(duplicate).is_err());
+
+        let topk_collision = r#"RULE :TopK PROB(
+            combination=topk,
+            threshold=auto:cost(fp=1,fn=1)
+        ) :- CONSTRUCT { ?x <result> <yes> } WHERE { ?x <input> <yes> } ."#;
+        assert!(parse_rule(topk_collision).is_err());
     }
 
     #[test]

@@ -107,6 +107,10 @@ fn print_quality_report(
     let mut exact_survivors = 0usize;
     let mut missed_survivors = 0usize;
     let mut sdd_nodes = 0usize;
+    let mut certified_alerts = 0usize;
+    let mut certified_no_alerts = 0usize;
+    let mut interval_width = 0.0;
+    let mut interval_count = 0usize;
 
     for index in 0..SAMPLES {
         let threshold = if index % 2 == 0 { 0.2 } else { 0.99 };
@@ -122,6 +126,20 @@ fn print_quality_report(
             escalations += 1;
         }
         sdd_nodes += metrics.sdd_nodes;
+        if matches!(
+            &result,
+            shared::hybrid::HybridProbabilityResult::Bounded { .. }
+        ) {
+            match result.decision() {
+                AlertDecision::Alert => certified_alerts += 1,
+                AlertDecision::NoAlert => certified_no_alerts += 1,
+                AlertDecision::Indeterminate => {}
+            }
+        }
+        if let Some(interval) = result.interval() {
+            interval_width += interval.width();
+            interval_count += 1;
+        }
         let is_survivor = exact_probability >= threshold;
         if is_survivor {
             exact_survivors += 1;
@@ -142,12 +160,15 @@ fn print_quality_report(
         "hybrid evaluation must not miss exact survivors"
     );
     println!(
-        "hybrid quality: p50={}ns p95={}ns p99={}ns avg_sdd_nodes={:.1} escalation_rate={:.3} survivor_recall={:.3}",
+        "hybrid quality: p50={}ns p95={}ns p99={}ns avg_sdd_nodes={:.1} escalation_rate={:.3} certified_alert_rate={:.3} certified_no_alert_rate={:.3} avg_interval_width={:.6} survivor_recall={:.3}",
         percentile(&latencies, 0.50),
         percentile(&latencies, 0.95),
         percentile(&latencies, 0.99),
         sdd_nodes as f64 / SAMPLES as f64,
         escalations as f64 / SAMPLES as f64,
+        certified_alerts as f64 / SAMPLES as f64,
+        certified_no_alerts as f64 / SAMPLES as f64,
+        if interval_count == 0 { 0.0 } else { interval_width / interval_count as f64 },
         recall,
     );
 }

@@ -647,6 +647,7 @@ impl Provenance for LineageProvenance {
         match evaluate_hybrid(&self.store, &self.seeds, *tag, &config) {
             HybridProbabilityResult::Exact { probability, .. } => probability,
             HybridProbabilityResult::LowerBound { lower_bound, .. } => lower_bound,
+            HybridProbabilityResult::Bounded { interval, .. } => interval.lower,
             HybridProbabilityResult::NeedsExact { lower_bound, .. } => lower_bound.unwrap_or(0.0),
             HybridProbabilityResult::UnsafeApproximation { estimate, .. } => estimate,
         }
@@ -659,6 +660,7 @@ impl Provenance for LineageProvenance {
 #[derive(Debug, Clone, PartialEq)]
 pub struct HybridConfig {
     pub threshold: f64,
+    pub threshold_policy: ThresholdPolicyKind,
     pub band_epsilon: f64,
     pub marginal_gain_floor: f64,
     pub k_initial: usize,
@@ -673,6 +675,7 @@ impl Default for HybridConfig {
     fn default() -> Self {
         Self {
             threshold: 0.5,
+            threshold_policy: ThresholdPolicyKind::Explicit,
             band_epsilon: 0.02,
             marginal_gain_floor: 1e-4,
             k_initial: 8,
@@ -682,6 +685,52 @@ impl Default for HybridConfig {
             sdd_budget: Duration::from_millis(250),
             sdd_node_budget: 100_000,
         }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum ThresholdPolicyKind {
+    #[default]
+    Explicit,
+    CostRatio,
+}
+
+impl ThresholdPolicyKind {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Explicit => "explicit",
+            Self::CostRatio => "auto:cost",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct ProbabilityInterval {
+    pub lower: f64,
+    pub upper: f64,
+}
+
+impl ProbabilityInterval {
+    pub fn new(lower: f64, upper: f64) -> Result<Self, HybridError> {
+        if !lower.is_finite()
+            || !upper.is_finite()
+            || !(0.0..=1.0).contains(&lower)
+            || !(0.0..=1.0).contains(&upper)
+            || lower > upper
+        {
+            return Err(HybridError::InvalidConfig(
+                "probability interval must satisfy 0 <= lower <= upper <= 1".into(),
+            ));
+        }
+        Ok(Self { lower, upper })
+    }
+
+    pub fn width(self) -> f64 {
+        self.upper - self.lower
+    }
+
+    pub fn contains(self, probability: f64) -> bool {
+        self.lower <= probability && probability <= self.upper
     }
 }
 
@@ -732,6 +781,7 @@ pub enum AlertDecision {
 pub enum HybridReason {
     TopKExhausted,
     LowerBoundCrossedThreshold,
+    UpperBoundBelowThreshold,
     ExactSdd,
     NegationRequiresExact,
     ExclusivityRequiresExact,
@@ -749,6 +799,7 @@ impl HybridReason {
         match self {
             Self::TopKExhausted => "top-k-exhausted",
             Self::LowerBoundCrossedThreshold => "lower-bound-crossed-threshold",
+            Self::UpperBoundBelowThreshold => "upper-bound-below-threshold",
             Self::ExactSdd => "exact-sdd",
             Self::NegationRequiresExact => "negation-requires-exact",
             Self::ExclusivityRequiresExact => "exclusivity-requires-exact",
@@ -773,6 +824,9 @@ pub struct HybridMetrics {
     pub topk_latency: Duration,
     pub sdd_latency: Duration,
     pub sdd_nodes: usize,
+    pub effective_threshold: Option<f64>,
+    pub threshold_policy: Option<ThresholdPolicyKind>,
+    pub interval_width: f64,
 }
 
 impl HybridMetrics {
@@ -795,8 +849,15 @@ pub enum HybridProbabilityResult {
         reason: HybridReason,
         metrics: HybridMetrics,
     },
+    Bounded {
+        interval: ProbabilityInterval,
+        decision: AlertDecision,
+        reason: HybridReason,
+        metrics: HybridMetrics,
+    },
     NeedsExact {
         lower_bound: Option<f64>,
+        upper_bound: Option<f64>,
         reason: HybridReason,
         metrics: HybridMetrics,
     },
@@ -812,13 +873,16 @@ impl HybridProbabilityResult {
         match self {
             Self::Exact { .. } => "Exact",
             Self::LowerBound { .. } => "LowerBound",
+            Self::Bounded { .. } => "Bounded",
             Self::NeedsExact { .. } => "NeedsExact",
             Self::UnsafeApproximation { .. } => "UnsafeApproximation",
         }
     }
     pub fn decision(&self) -> AlertDecision {
         match self {
-            Self::Exact { decision, .. } | Self::LowerBound { decision, .. } => *decision,
+            Self::Exact { decision, .. }
+            | Self::LowerBound { decision, .. }
+            | Self::Bounded { decision, .. } => *decision,
             Self::NeedsExact { .. } | Self::UnsafeApproximation { .. } => {
                 AlertDecision::Indeterminate
             }
@@ -828,6 +892,7 @@ impl HybridProbabilityResult {
         match self {
             Self::Exact { reason, .. }
             | Self::LowerBound { reason, .. }
+            | Self::Bounded { reason, .. }
             | Self::NeedsExact { reason, .. }
             | Self::UnsafeApproximation { reason, .. } => reason,
         }
@@ -836,13 +901,48 @@ impl HybridProbabilityResult {
         match self {
             Self::Exact { metrics, .. }
             | Self::LowerBound { metrics, .. }
+            | Self::Bounded { metrics, .. }
             | Self::NeedsExact { metrics, .. }
             | Self::UnsafeApproximation { metrics, .. } => metrics,
+        }
+    }
+
+    pub fn interval(&self) -> Option<ProbabilityInterval> {
+        match self {
+            Self::Exact { probability, .. } => Some(ProbabilityInterval {
+                lower: *probability,
+                upper: *probability,
+            }),
+            Self::LowerBound { lower_bound, .. } => Some(ProbabilityInterval {
+                lower: *lower_bound,
+                upper: 1.0,
+            }),
+            Self::Bounded { interval, .. } => Some(*interval),
+            Self::NeedsExact {
+                lower_bound,
+                upper_bound,
+                ..
+            } => lower_bound
+                .zip(*upper_bound)
+                .map(|(lower, upper)| ProbabilityInterval { lower, upper }),
+            Self::UnsafeApproximation { .. } => None,
         }
     }
 }
 
 type Proof = BTreeSet<SeedId>;
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+enum ResidualMass {
+    Exhausted,
+    Bounded(f64),
+    Unknown,
+}
+
+struct ProofEnumeration {
+    proofs: Vec<Proof>,
+    residual: ResidualMass,
+}
 
 fn proof_probability(proof: &Proof, seeds: &SeedSnapshot) -> Option<f64> {
     proof.iter().try_fold(1.0, |acc, id| {
@@ -888,9 +988,12 @@ fn enumerate_proofs(
     cap: usize,
     deadline: Instant,
     clock: &dyn HybridClock,
-) -> Result<(Vec<Proof>, bool), HybridReason> {
+) -> Result<ProofEnumeration, HybridReason> {
     if cap == 0 {
-        return Ok((Vec::new(), false));
+        return Ok(ProofEnumeration {
+            proofs: Vec::new(),
+            residual: ResidualMass::Bounded(1.0),
+        });
     }
     let mut frontier = BinaryHeap::new();
     let mut sequence = 0u64;
@@ -904,7 +1007,10 @@ fn enumerate_proofs(
 
     while let Some(mut state) = frontier.pop() {
         if clock.now() >= deadline {
-            return Err(HybridReason::TopKBudget);
+            return Ok(ProofEnumeration {
+                proofs: emitted,
+                residual: ResidualMass::Unknown,
+            });
         }
         let Some(next) = state.pending.pop() else {
             if emitted
@@ -916,7 +1022,15 @@ fn enumerate_proofs(
             emitted.retain(|existing| !state.proof.is_subset(existing));
             emitted.push(state.proof);
             if emitted.len() == cap {
-                return Ok((emitted, false));
+                let residual = frontier
+                    .iter()
+                    .map(|state| state.upper_bound)
+                    .sum::<f64>()
+                    .clamp(0.0, 1.0);
+                return Ok(ProofEnumeration {
+                    proofs: emitted,
+                    residual: ResidualMass::Bounded(residual),
+                });
             }
             continue;
         };
@@ -954,7 +1068,35 @@ fn enumerate_proofs(
             }
         }
     }
-    Ok((emitted, true))
+    Ok(ProofEnumeration {
+        proofs: emitted,
+        residual: ResidualMass::Exhausted,
+    })
+}
+
+fn interval_from_enumeration(
+    lower_bound: f64,
+    proofs: &[Proof],
+    retained_count: usize,
+    residual: ResidualMass,
+    seeds: &SeedSnapshot,
+) -> Result<Option<ProbabilityInterval>, HybridReason> {
+    let frontier_mass = match residual {
+        ResidualMass::Exhausted => 0.0,
+        ResidualMass::Bounded(mass) => mass,
+        ResidualMass::Unknown => return Ok(None),
+    };
+    let probe_mass = proofs[retained_count..]
+        .iter()
+        .try_fold(0.0, |sum, proof| {
+            proof_probability(proof, seeds)
+                .map(|probability| sum + probability)
+                .ok_or(HybridReason::MissingSeed)
+        })?;
+    let upper = (lower_bound + probe_mass + frontier_mass).clamp(lower_bound, 1.0);
+    ProbabilityInterval::new(lower_bound, upper)
+        .map(Some)
+        .map_err(|_| HybridReason::DiagnosticOnly)
 }
 
 #[derive(Debug)]
@@ -1014,6 +1156,7 @@ fn map_hybrid_budget_error(error: SddBudgetError) -> HybridReason {
 #[derive(Debug, Clone)]
 pub struct TopKEvaluation {
     pub lower_bound: f64,
+    pub interval: ProbabilityInterval,
     pub k_used: usize,
     pub frontier_exhausted: bool,
     pub cap_hit: bool,
@@ -1042,8 +1185,11 @@ pub fn evaluate_topk(
     if metadata.has_exclusive_group {
         return Err(HybridReason::ExclusivityRequiresExact);
     }
-    let (proofs, exhaustive) =
-        enumerate_proofs(store, seeds, root, k.saturating_add(1), deadline, &clock)?;
+    let enumeration = enumerate_proofs(store, seeds, root, k.saturating_add(1), deadline, &clock)?;
+    if enumeration.residual == ResidualMass::Unknown {
+        return Err(HybridReason::TopKBudget);
+    }
+    let proofs = enumeration.proofs;
     let retained_count = proofs.len().min(k);
     let retained = &proofs[..retained_count];
     let lower_bound = retained_proof_wmc(retained, seeds, deadline, node_budget, &clock)
@@ -1060,11 +1206,21 @@ pub fn evaluate_topk(
     } else {
         0.0
     };
+    let interval = interval_from_enumeration(
+        lower_bound,
+        &proofs,
+        retained_count,
+        enumeration.residual,
+        seeds,
+    )?
+    .ok_or(HybridReason::TopKBudget)?;
+    let frontier_exhausted = enumeration.residual == ResidualMass::Exhausted && proofs.len() <= k;
     Ok(TopKEvaluation {
         lower_bound,
+        interval,
         k_used: retained_count,
-        frontier_exhausted: exhaustive && proofs.len() <= k,
-        cap_hit: proofs.len() > k || !exhaustive,
+        frontier_exhausted,
+        cap_hit: proofs.len() > k || !frontier_exhausted,
         marginal_gain,
     })
 }
@@ -1266,6 +1422,7 @@ fn evaluate_hybrid_controlled(
     if let Err(_) = config.validate() {
         return HybridProbabilityResult::NeedsExact {
             lower_bound: None,
+            upper_bound: None,
             reason: HybridReason::DiagnosticOnly,
             metrics: HybridMetrics::default(),
         };
@@ -1275,16 +1432,22 @@ fn evaluate_hybrid_controlled(
         Err(_) => {
             return HybridProbabilityResult::NeedsExact {
                 lower_bound: None,
+                upper_bound: None,
                 reason: HybridReason::DiagnosticOnly,
                 metrics: HybridMetrics::default(),
             }
         }
     };
     let metadata = guard.metadata(root, seeds);
-    let mut metrics = HybridMetrics::default();
+    let mut metrics = HybridMetrics {
+        effective_threshold: Some(config.threshold),
+        threshold_policy: Some(config.threshold_policy),
+        ..HybridMetrics::default()
+    };
     let topk_start = clock.now();
     let topk_deadline = topk_start + config.topk_budget;
     let mut lower_bound = None;
+    let mut last_interval = None;
     let supported_topk = metadata.monotone && !metadata.has_exclusive_group && !metadata.has_cycle;
 
     if supported_topk {
@@ -1292,10 +1455,14 @@ fn evaluate_hybrid_controlled(
         loop {
             let cap = k.saturating_add(1);
             let enumeration = enumerate_proofs(&guard, seeds, root, cap, topk_deadline, clock);
-            let (proofs, exhaustive) = match enumeration {
+            let enumeration = match enumeration {
                 Ok(value) => value,
                 Err(_) => break,
             };
+            if enumeration.residual == ResidualMass::Unknown {
+                break;
+            }
+            let proofs = enumeration.proofs;
             let retained_count = proofs.len().min(k);
             let retained = &proofs[..retained_count];
             let wmc = match retained_proof_wmc(
@@ -1310,8 +1477,9 @@ fn evaluate_hybrid_controlled(
             };
             lower_bound = Some(wmc);
             metrics.k_used = retained_count;
-            metrics.cap_hit = proofs.len() > k || !exhaustive;
-            metrics.frontier_exhausted = exhaustive && proofs.len() <= k;
+            metrics.frontier_exhausted =
+                enumeration.residual == ResidualMass::Exhausted && proofs.len() <= k;
+            metrics.cap_hit = proofs.len() > k || !metrics.frontier_exhausted;
             metrics.marginal_gain = if proofs.len() > k {
                 retained_proof_wmc(
                     &proofs[..=k],
@@ -1325,6 +1493,20 @@ fn evaluate_hybrid_controlled(
             } else {
                 0.0
             };
+
+            let Some(interval) = interval_from_enumeration(
+                wmc,
+                &proofs,
+                retained_count,
+                enumeration.residual,
+                seeds,
+            )
+            .ok()
+            .flatten() else {
+                break;
+            };
+            last_interval = Some(interval);
+            metrics.interval_width = interval.width();
 
             if metrics.frontier_exhausted {
                 metrics.topk_latency = clock.now().saturating_duration_since(topk_start);
@@ -1341,10 +1523,19 @@ fn evaluate_hybrid_controlled(
             }
             if wmc >= config.threshold {
                 metrics.topk_latency = clock.now().saturating_duration_since(topk_start);
-                return HybridProbabilityResult::LowerBound {
-                    lower_bound: wmc,
+                return HybridProbabilityResult::Bounded {
+                    interval,
                     decision: AlertDecision::Alert,
                     reason: HybridReason::LowerBoundCrossedThreshold,
+                    metrics,
+                };
+            }
+            if interval.upper < config.threshold {
+                metrics.topk_latency = clock.now().saturating_duration_since(topk_start);
+                return HybridProbabilityResult::Bounded {
+                    interval,
+                    decision: AlertDecision::NoAlert,
+                    reason: HybridReason::UpperBoundBelowThreshold,
                     metrics,
                 };
             }
@@ -1371,6 +1562,7 @@ fn evaluate_hybrid_controlled(
             let probability = compiled.manager.wmc(compiled.root).clamp(0.0, 1.0);
             metrics.exact_used = true;
             metrics.sdd_nodes = compiled.manager.node_count();
+            metrics.interval_width = 0.0;
             metrics.sdd_latency = clock.now().saturating_duration_since(sdd_start);
             HybridProbabilityResult::Exact {
                 probability,
@@ -1387,7 +1579,8 @@ fn evaluate_hybrid_controlled(
             metrics.exact_used = true;
             metrics.sdd_latency = clock.now().saturating_duration_since(sdd_start);
             HybridProbabilityResult::NeedsExact {
-                lower_bound,
+                lower_bound: last_interval.map(|interval| interval.lower).or(lower_bound),
+                upper_bound: last_interval.map(|interval| interval.upper),
                 reason,
                 metrics,
             }
@@ -1407,11 +1600,14 @@ pub fn encode_hybrid_results_as_rdf_star(
     let reason_pred = dict.encode("http://www.w3.org/ns/prob#reason");
     let value_pred = dict.encode("http://www.w3.org/ns/prob#value");
     let lower_pred = dict.encode("http://www.w3.org/ns/prob#lowerBound");
+    let upper_pred = dict.encode("http://www.w3.org/ns/prob#upperBound");
     let estimate_pred = dict.encode("http://www.w3.org/ns/prob#estimate");
     let k_pred = dict.encode("http://www.w3.org/ns/prob#kUsed");
     let exact_pred = dict.encode("http://www.w3.org/ns/prob#exactUsed");
     let latency_pred = dict.encode("http://www.w3.org/ns/prob#latencyMicros");
     let nodes_pred = dict.encode("http://www.w3.org/ns/prob#sddNodes");
+    let threshold_pred = dict.encode("http://www.w3.org/ns/prob#effectiveThreshold");
+    let threshold_policy_pred = dict.encode("http://www.w3.org/ns/prob#thresholdPolicy");
     fn push_string(
         dict: &mut Dictionary,
         subject: u32,
@@ -1421,6 +1617,23 @@ pub fn encode_hybrid_results_as_rdf_star(
     ) {
         let object = dict.encode(&format!(
             "\"{}\"^^<http://www.w3.org/2001/XMLSchema#string>",
+            value
+        ));
+        output.push(Triple {
+            subject,
+            predicate,
+            object,
+        });
+    }
+    fn push_double(
+        dict: &mut Dictionary,
+        subject: u32,
+        predicate: u32,
+        value: f64,
+        output: &mut Vec<Triple>,
+    ) {
+        let object = dict.encode(&format!(
+            "\"{}\"^^<http://www.w3.org/2001/XMLSchema#double>",
             value
         ));
         output.push(Triple {
@@ -1446,32 +1659,52 @@ pub fn encode_hybrid_results_as_rdf_star(
             result.reason().as_str(),
             &mut output,
         );
-        let (numeric_pred, numeric_value) = match result {
+        match result {
             HybridProbabilityResult::Exact { probability, .. } => {
-                (Some(value_pred), Some(*probability))
+                push_double(dict, subject, value_pred, *probability, &mut output);
             }
             HybridProbabilityResult::LowerBound { lower_bound, .. } => {
-                (Some(lower_pred), Some(*lower_bound))
+                push_double(dict, subject, lower_pred, *lower_bound, &mut output);
             }
-            HybridProbabilityResult::NeedsExact { lower_bound, .. } => {
-                (lower_bound.map(|_| lower_pred), *lower_bound)
+            HybridProbabilityResult::Bounded { interval, .. } => {
+                push_double(dict, subject, lower_pred, interval.lower, &mut output);
+                push_double(dict, subject, upper_pred, interval.upper, &mut output);
+            }
+            HybridProbabilityResult::NeedsExact {
+                lower_bound,
+                upper_bound,
+                ..
+            } => {
+                if let Some(lower) = lower_bound {
+                    push_double(dict, subject, lower_pred, *lower, &mut output);
+                }
+                if let Some(upper) = upper_bound {
+                    push_double(dict, subject, upper_pred, *upper, &mut output);
+                }
             }
             HybridProbabilityResult::UnsafeApproximation { estimate, .. } => {
-                (Some(estimate_pred), Some(*estimate))
+                push_double(dict, subject, estimate_pred, *estimate, &mut output);
             }
-        };
-        if let (Some(predicate), Some(value)) = (numeric_pred, numeric_value) {
-            let object = dict.encode(&format!(
-                "\"{}\"^^<http://www.w3.org/2001/XMLSchema#double>",
-                value
-            ));
-            output.push(Triple {
-                subject,
-                predicate,
-                object,
-            });
         }
         let metrics = result.metrics();
+        if let Some(effective_threshold) = metrics.effective_threshold {
+            push_double(
+                dict,
+                subject,
+                threshold_pred,
+                effective_threshold,
+                &mut output,
+            );
+        }
+        if let Some(threshold_policy) = metrics.threshold_policy {
+            push_string(
+                dict,
+                subject,
+                threshold_policy_pred,
+                threshold_policy.as_str(),
+                &mut output,
+            );
+        }
         for (predicate, value) in [
             (k_pred, metrics.k_used as u128),
             (latency_pred, metrics.total_latency().as_micros()),
@@ -1591,7 +1824,7 @@ mod tests {
     }
 
     #[test]
-    fn lower_bound_can_only_certify_alert() {
+    fn certified_lower_bound_alert_avoids_sdd() {
         let (store, seeds, root) = overlap_fixture();
         let config = HybridConfig {
             threshold: 0.3,
@@ -1602,11 +1835,62 @@ mod tests {
         let result = evaluate_hybrid(&store, &seeds, root, &config);
         assert!(matches!(
             result,
-            HybridProbabilityResult::LowerBound {
+            HybridProbabilityResult::Bounded {
                 decision: AlertDecision::Alert,
+                metrics: HybridMetrics {
+                    exact_used: false,
+                    ..
+                },
                 ..
             }
         ));
+    }
+
+    #[test]
+    fn certified_upper_bound_no_alert_avoids_sdd() {
+        let (store, seeds, root) = overlap_fixture();
+        let config = HybridConfig {
+            threshold: 0.9,
+            k_initial: 1,
+            k_max: 1,
+            ..Default::default()
+        };
+        match evaluate_hybrid(&store, &seeds, root, &config) {
+            HybridProbabilityResult::Bounded {
+                interval,
+                decision,
+                metrics,
+                reason,
+            } => {
+                assert_eq!(decision, AlertDecision::NoAlert);
+                assert_eq!(reason, HybridReason::UpperBoundBelowThreshold);
+                assert!(interval.upper < config.threshold);
+                assert!(!metrics.exact_used);
+            }
+            other => panic!("expected certified bounded no-alert, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn uncertain_interval_escalates_to_exact_sdd() {
+        let (store, seeds, root) = overlap_fixture();
+        let config = HybridConfig {
+            threshold: 0.6,
+            k_initial: 1,
+            k_max: 1,
+            ..Default::default()
+        };
+        match evaluate_hybrid(&store, &seeds, root, &config) {
+            HybridProbabilityResult::Exact {
+                probability,
+                metrics,
+                ..
+            } => {
+                assert!((probability - 0.64).abs() < 1e-9);
+                assert!(metrics.exact_used);
+            }
+            other => panic!("expected exact SDD escalation, got {other:?}"),
+        }
     }
 
     #[test]
@@ -1616,7 +1900,9 @@ mod tests {
         let k1 = evaluate_topk(&guard, &seeds, root, 1, Duration::from_secs(1), 10_000).unwrap();
         let k2 = evaluate_topk(&guard, &seeds, root, 2, Duration::from_secs(1), 10_000).unwrap();
         assert!(k1.lower_bound <= k2.lower_bound);
+        assert!(k1.interval.contains(0.64));
         assert!((k2.lower_bound - 0.64).abs() < 1e-9);
+        assert!((k2.interval.upper - 0.64).abs() < 1e-9);
         assert!(k2.frontier_exhausted);
     }
 
@@ -1630,6 +1916,79 @@ mod tests {
         assert!((result.marginal_gain - 0.16).abs() < 1e-9);
         assert!(result.cap_hit);
         assert!(!result.frontier_exhausted);
+        assert!(result.interval.contains(0.64));
+    }
+
+    #[test]
+    fn full_remaining_heap_and_probe_are_in_the_upper_bound() {
+        let probabilities = [0.9, 0.8, 0.1];
+        let seeds = SeedSnapshot::from_probability_seeds(
+            &probabilities
+                .iter()
+                .enumerate()
+                .map(|(index, probability)| (triple(index as u32), *probability))
+                .collect(),
+        )
+        .unwrap();
+        let mut store = LineageStore::new();
+        let literals: Vec<_> = seeds
+            .records()
+            .map(|record| store.literal(record.id))
+            .collect();
+        let root = store.or(literals);
+        let clock = SystemHybridClock;
+        let enumeration = enumerate_proofs(
+            &store,
+            &seeds,
+            root,
+            2,
+            clock.now() + Duration::from_secs(1),
+            &clock,
+        )
+        .unwrap();
+        assert_eq!(enumeration.proofs.len(), 2);
+        match enumeration.residual {
+            ResidualMass::Bounded(mass) => assert!((mass - 0.1).abs() < 1e-9),
+            other => panic!("expected bounded remaining heap, got {other:?}"),
+        }
+        let retained = retained_proof_wmc(
+            &enumeration.proofs[..1],
+            &seeds,
+            clock.now() + Duration::from_secs(1),
+            10_000,
+            &clock,
+        )
+        .unwrap()
+        .0;
+        let interval = interval_from_enumeration(
+            retained,
+            &enumeration.proofs,
+            1,
+            enumeration.residual,
+            &seeds,
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(interval.upper, 1.0);
+    }
+
+    #[test]
+    fn subsumed_proofs_do_not_inflate_an_exhausted_interval() {
+        let seeds = SeedSnapshot::from_probability_seeds(
+            &[(triple(1), 0.8), (triple(2), 0.5)].into_iter().collect(),
+        )
+        .unwrap();
+        let ids: Vec<_> = seeds.records().map(|record| record.id).collect();
+        let mut store = LineageStore::new();
+        let x = store.literal(ids[0]);
+        let y = store.literal(ids[1]);
+        let xy = store.and([x, y]);
+        let root = store.or([x, xy]);
+        let result =
+            evaluate_topk(&store, &seeds, root, 1, Duration::from_secs(1), 10_000).unwrap();
+        assert!(result.frontier_exhausted);
+        assert!((result.interval.lower - 0.8).abs() < 1e-9);
+        assert!((result.interval.upper - 0.8).abs() < 1e-9);
     }
 
     #[test]
@@ -1733,6 +2092,87 @@ mod tests {
     }
 
     #[test]
+    fn random_monotone_dag_intervals_contain_exact_sdd_probability() {
+        let seed_map: HashMap<_, _> = (0..5)
+            .map(|index| (triple(index), 0.15 + index as f64 * 0.13))
+            .collect();
+        let seeds = SeedSnapshot::from_probability_seeds(&seed_map).unwrap();
+        let ids: Vec<_> = seeds.records().map(|record| record.id).collect();
+        let mut state = 0x5eed_u64;
+        for _case in 0..32 {
+            let mut store = LineageStore::new();
+            let literals: Vec<_> = ids.iter().map(|id| store.literal(*id)).collect();
+            let mut proofs = Vec::new();
+            for _ in 0..6 {
+                state = state.wrapping_mul(6364136223846793005).wrapping_add(1);
+                let mut mask = ((state >> 32) as usize) & 0x1f;
+                if mask == 0 {
+                    mask = 1;
+                }
+                proofs.push(store.and(literals.iter().enumerate().filter_map(
+                    |(index, literal)| (mask & (1 << index) != 0).then_some(*literal),
+                )));
+            }
+            let root = store.or(proofs);
+            let topk =
+                evaluate_topk(&store, &seeds, root, 2, Duration::from_secs(1), 100_000).unwrap();
+            let compiled =
+                compile_lineage_to_sdd(&store, &seeds, root, Duration::from_secs(1), 100_000)
+                    .unwrap();
+            let exact = compiled.manager.wmc(compiled.root);
+            assert!(
+                topk.interval.contains(exact),
+                "exact {exact} escaped interval {:?}",
+                topk.interval
+            );
+            if topk.frontier_exhausted {
+                assert!((topk.interval.lower - exact).abs() < 1e-9);
+                assert!((topk.interval.upper - exact).abs() < 1e-9);
+            }
+            let store = Arc::new(Mutex::new(store));
+            let seeds = Arc::new(seeds.clone());
+            let config = HybridConfig {
+                threshold: 0.5,
+                k_initial: 2,
+                k_max: 4,
+                ..HybridConfig::default()
+            };
+            let result = evaluate_hybrid(&store, &seeds, root, &config);
+            assert_eq!(
+                result.decision(),
+                if exact >= config.threshold {
+                    AlertDecision::Alert
+                } else {
+                    AlertDecision::NoAlert
+                }
+            );
+        }
+    }
+
+    #[test]
+    fn failed_retained_wmc_does_not_publish_an_interval() {
+        let (store, seeds, root) = overlap_fixture();
+        let config = HybridConfig {
+            threshold: 0.6,
+            k_initial: 1,
+            k_max: 1,
+            sdd_node_budget: 2,
+            ..HybridConfig::default()
+        };
+        match evaluate_hybrid(&store, &seeds, root, &config) {
+            HybridProbabilityResult::NeedsExact {
+                lower_bound,
+                upper_bound,
+                ..
+            } => {
+                assert!(lower_bound.is_none());
+                assert!(upper_bound.is_none());
+            }
+            other => panic!("expected NeedsExact without an interval, got {other:?}"),
+        }
+    }
+
+    #[test]
     fn node_budget_exhaustion_is_indeterminate() {
         let (store, seeds, root) = overlap_fixture();
         let negated = store.lock().unwrap().not(root);
@@ -1807,5 +2247,69 @@ mod tests {
             }
             other => panic!("expected exact result, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn bounded_rdf_contains_both_bounds_and_threshold_metadata() {
+        let interval = ProbabilityInterval::new(0.1, 0.15).unwrap();
+        let metrics = HybridMetrics {
+            effective_threshold: Some(0.2),
+            threshold_policy: Some(ThresholdPolicyKind::CostRatio),
+            interval_width: interval.width(),
+            ..HybridMetrics::default()
+        };
+        let results = [(
+            triple(42),
+            HybridProbabilityResult::Bounded {
+                interval,
+                decision: AlertDecision::NoAlert,
+                reason: HybridReason::UpperBoundBelowThreshold,
+                metrics,
+            },
+        )]
+        .into_iter()
+        .collect();
+        let mut dictionary = Dictionary::new();
+        let mut quoted = QuotedTripleStore::new();
+        let encoded = encode_hybrid_results_as_rdf_star(&results, &mut dictionary, &mut quoted);
+        let lower = dictionary.encode("http://www.w3.org/ns/prob#lowerBound");
+        let upper = dictionary.encode("http://www.w3.org/ns/prob#upperBound");
+        let value = dictionary.encode("http://www.w3.org/ns/prob#value");
+        let threshold = dictionary.encode("http://www.w3.org/ns/prob#effectiveThreshold");
+        let policy = dictionary.encode("http://www.w3.org/ns/prob#thresholdPolicy");
+        assert_eq!(
+            encoded
+                .iter()
+                .filter(|triple| triple.predicate == lower)
+                .count(),
+            1
+        );
+        assert_eq!(
+            encoded
+                .iter()
+                .filter(|triple| triple.predicate == upper)
+                .count(),
+            1
+        );
+        assert_eq!(
+            encoded
+                .iter()
+                .filter(|triple| triple.predicate == value)
+                .count(),
+            0
+        );
+        assert_eq!(
+            encoded
+                .iter()
+                .filter(|triple| triple.predicate == threshold)
+                .count(),
+            1
+        );
+        let policy_object = encoded
+            .iter()
+            .find(|triple| triple.predicate == policy)
+            .and_then(|triple| dictionary.decode(triple.object))
+            .unwrap();
+        assert!(policy_object.contains("auto:cost"));
     }
 }
