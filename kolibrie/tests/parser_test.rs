@@ -13,7 +13,10 @@ mod tests {
     use kolibrie::parser::*;
     use shared::query::FilterExpression;
     use shared::query::TrainingDataSource;
-    use shared::query::{ModelArch, NeuralOutputKind};
+    use shared::query::{
+        GroupGraphPattern, ModelArch, NeuralOutputKind, SparqlGraphName, SparqlProjection,
+        SparqlTerm, StrictSparqlRequest, StrictUpdateOperation,
+    };
     use shared::hybrid::ThresholdPolicyKind;
     use kolibrie::neural_relations::lower_ml_predict_alias;
     
@@ -718,5 +721,150 @@ ML.PREDICT(MODEL "digit_model",
         let unknown = r#"RULE :Hybrid PROB(provenance=hybrid, threshold=0.7, mystery=1) :-
             CONSTRUCT { ?x <result> <yes> } WHERE { ?x <input> <yes> } ."#;
         assert!(parse_rule(unknown).is_err());
+    }
+
+    #[test]
+    fn strict_select_parses_nested_graph_and_union_case_insensitively() {
+        let input = r#"
+            # GRAPH in this comment is not syntax
+            prefix ex: <http://example.com/>
+            select distinct ?s ?g
+            from named ex:outer
+            FROM NAMED <urn:second>
+            where {
+                graph ?g {
+                    ?s a ex:Thing .
+                    { ?s ex:label "escaped \"GRAPH\""@en }
+                    union
+                    { graph ex:inner { } }
+                }
+            }
+            limit 5 # trailing comment
+        "#;
+        let StrictSparqlRequest::Select(query) =
+            parse_strict_sparql(input).expect("strict SELECT should parse")
+        else {
+            panic!("expected SELECT request");
+        };
+        assert!(query.distinct);
+        assert_eq!(query.limit, Some(5));
+        assert_eq!(query.prefixes["ex"], "http://example.com/");
+        assert_eq!(
+            query.from_named,
+            vec![
+                SparqlGraphName::PrefixedName("ex:outer"),
+                SparqlGraphName::Iri("urn:second")
+            ]
+        );
+        assert_eq!(query.projection, SparqlProjection::Variables(vec!["s", "g"]));
+
+        let GroupGraphPattern::Graph { name, pattern } = query.pattern else {
+            panic!("expected outer GRAPH");
+        };
+        assert_eq!(name, SparqlGraphName::Variable("g"));
+        let GroupGraphPattern::Join(parts) = *pattern else {
+            panic!("expected a BGP joined to a UNION");
+        };
+        assert_eq!(parts.len(), 2);
+        assert!(matches!(parts[1], GroupGraphPattern::Union(ref branches) if branches.len() == 2));
+    }
+
+    #[test]
+    fn strict_parser_supports_requested_update_forms_and_graph_templates() {
+        let insert_data = parse_strict_sparql(
+            r#"INSERT DATA {
+                <urn:s> <urn:p> "line\\nvalue"@en .
+                GRAPH <urn:g> { <urn:s> <urn:q> "7"^^<urn:datatype> }
+            }"#,
+        )
+        .expect("INSERT DATA");
+        let StrictSparqlRequest::Update(update) = insert_data else {
+            panic!("expected update");
+        };
+        let StrictUpdateOperation::InsertData(quads) = update.operation else {
+            panic!("expected INSERT DATA");
+        };
+        assert_eq!(quads.len(), 2);
+        assert_eq!(quads[1].graph, Some(SparqlGraphName::Iri("urn:g")));
+        assert!(matches!(
+            quads[1].triple.object,
+            SparqlTerm::Literal("\"7\"^^<urn:datatype>")
+        ));
+
+        let delete_only = parse_strict_sparql(
+            "DELETE { GRAPH ?g { ?s <urn:p> ?o } } WHERE { GRAPH ?g { ?s <urn:p> ?o } }",
+        )
+        .expect("DELETE WHERE modify");
+        assert!(matches!(
+            delete_only,
+            StrictSparqlRequest::Update(ref request)
+                if matches!(request.operation, StrictUpdateOperation::Modify {
+                    ref delete,
+                    ref insert,
+                    ..
+                } if delete.len() == 1 && insert.is_empty())
+        ));
+
+        let insert_only = parse_strict_sparql(
+            "INSERT { GRAPH <urn:g> { ?s <urn:new> ?o } } WHERE { ?s <urn:old> ?o }",
+        )
+        .expect("INSERT WHERE modify");
+        assert!(matches!(
+            insert_only,
+            StrictSparqlRequest::Update(ref request)
+                if matches!(request.operation, StrictUpdateOperation::Modify {
+                    ref delete,
+                    ref insert,
+                    ..
+                } if delete.is_empty() && insert.len() == 1)
+        ));
+
+        let combined = parse_strict_sparql(
+            "DELETE { ?s <urn:old> ?o } INSERT { ?s <urn:new> ?o } WHERE { ?s <urn:old> ?o }",
+        )
+        .expect("combined DELETE/INSERT");
+        assert!(matches!(
+            combined,
+            StrictSparqlRequest::Update(ref request)
+                if matches!(request.operation, StrictUpdateOperation::Modify {
+                    ref delete,
+                    ref insert,
+                    ..
+                } if delete.len() == 1 && insert.len() == 1)
+        ));
+
+        let delete_where = parse_strict_sparql(
+            "DELETE WHERE { GRAPH ?g { ?s <urn:p> ?o . ?s <urn:q> ?v } }",
+        )
+        .expect("DELETE WHERE shorthand");
+        assert!(matches!(
+            delete_where,
+            StrictSparqlRequest::Update(ref request)
+                if matches!(request.operation, StrictUpdateOperation::DeleteWhere {
+                    ref template,
+                    ref where_pattern,
+                } if template.len() == 2 && matches!(where_pattern, GroupGraphPattern::Join(_)))
+        ));
+    }
+
+    #[test]
+    fn strict_update_validates_data_and_consumes_the_complete_request() {
+        assert!(parse_strict_sparql("INSERT DATA { ?s <urn:p> <urn:o> }").is_err());
+        assert!(parse_strict_sparql("INSERT DATA { GRAPH ?g { <urn:s> <urn:p> <urn:o> } }").is_err());
+        assert!(parse_strict_sparql(
+            r#"INSERT DATA { << <urn:s> <urn:p> "?not-a-variable" >> <urn:source> <urn:o> }"#
+        )
+        .is_ok());
+        assert!(parse_strict_sparql(
+            "INSERT DATA { << ?s <urn:p> <urn:o> >> <urn:source> <urn:o> }"
+        )
+        .is_err());
+        assert!(parse_strict_sparql("DELETE DATA { _:b <urn:p> <urn:o> }").is_err());
+        assert!(parse_strict_sparql("DELETE { _:b <urn:p> ?o } WHERE { ?s <urn:p> ?o }").is_err());
+        assert!(parse_strict_sparql("SELECT * WHERE {} garbage").is_err());
+        assert!(parse_strict_sparql("SELECT * FROM NAMED ?g WHERE {}").is_err());
+        assert!(parse_strict_sparql("SELECT * FROM <urn:g> WHERE {}").is_err());
+        assert!(parse_strict_sparql("SELECT * WHERE {} # only a comment remains").is_ok());
+        assert!(parse_strict_sparql("SELECT * WHERE { GRAPH:x <urn:p> <urn:o> }").is_ok());
     }
 }

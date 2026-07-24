@@ -208,6 +208,53 @@ for row in results {
 }
 ```
 
+#### Grafos con nombre, `GRAPH` y `UNION`
+
+El analizador SPARQL existente de Kolibrie admite patrones `GRAPH` recursivos
+con nombres de grafo fijos o variables, grupos anidados y `UNION` con semántica
+de multiconjunto:
+
+```rust
+let rows = execute_query_rayon_parallel2_volcano(
+    r#"
+    PREFIX ex: <http://example.org/>
+    SELECT DISTINCT ?g ?item WHERE {
+        { GRAPH ?g { ?item ex:status "active" } }
+        UNION
+        { GRAPH ?g { { ?item ex:status "pending" } } }
+    }
+    "#,
+    &mut db,
+);
+```
+
+`GRAPH <nombre>` lee únicamente ese grafo con nombre. `GRAPH ?g` recorre las
+identidades de los grafos con nombre y enlaza `?g`; el grafo predeterminado
+nunca se incluye. Sin `DISTINCT`, se conservan las soluciones duplicadas
+aportadas por `UNION`.
+
+#### Formas de SPARQL Update admitidas
+
+La API de Rust que conserva los errores acepta la familia limitada de
+actualizaciones que aparece a continuación. Las plantillas del grafo
+predeterminado y de los grafos con nombre se pueden combinar en la misma
+operación.
+
+```rust
+db.execute_update(r#"
+    PREFIX ex: <http://example.org/>
+    DELETE { ?s ex:oldValue ?value }
+    INSERT { GRAPH ex:archive { ?s ex:value ?value } }
+    WHERE  { ?s ex:oldValue ?value }
+"#)?;
+```
+
+Las formas admitidas son `INSERT DATA`, `DELETE DATA`, `INSERT ... WHERE`,
+`DELETE ... WHERE`, la forma combinada `DELETE/INSERT ... WHERE` y
+`DELETE WHERE`. El patrón `WHERE` se evalúa una sola vez antes de aplicar los
+cambios, y las eliminaciones se realizan antes que las inserciones. Python
+ofrece el mismo comportamiento mediante `SparqlDatabase.update()`.
+
 #### Consulta con FILTER
 
 ```rust

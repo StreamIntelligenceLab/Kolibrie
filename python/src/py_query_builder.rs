@@ -119,6 +119,19 @@ impl PySparqlDatabase {
         }
     }
 
+    /// Execute INSERT/DELETE DATA or a template-based INSERT/DELETE WHERE.
+    /// Syntax and execution failures are raised instead of being returned as
+    /// an ambiguous result table.
+    fn update(&self, update: &str) -> PyResult<()> {
+        let mut db = self
+            .db
+            .lock()
+            .map_err(|_| PyRuntimeError::new_err("Failed to acquire database lock"))?;
+        db.execute_update(update)
+            .map(|_| ())
+            .map_err(PyValueError::new_err)
+    }
+
     /// Start building a query.
     fn query(&self) -> PyQueryBuilder {
         PyQueryBuilder {

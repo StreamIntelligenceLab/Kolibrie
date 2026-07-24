@@ -1090,6 +1090,888 @@ pub fn parse_limit(input: &str) -> IResult<&str, usize> {
     Ok((input, limit))
 }
 
+// ---------------------------------------------------------------------------
+// Strict, recursive SPARQL parser
+// ---------------------------------------------------------------------------
+
+/// Removes SPARQL whitespace and `#` comments. This is intentionally separate
+/// from `multispace0`: comments are whitespace in SPARQL and must not leak into
+/// keyword or punctuation parsing.
+fn strict_skip_ws(mut input: &str) -> &str {
+    loop {
+        let before = input.len();
+        input = input.trim_start_matches(|character: char| character.is_whitespace());
+        if let Some(comment) = input.strip_prefix('#') {
+            input = comment
+                .find(['\r', '\n'])
+                .map_or("", |newline| &comment[newline..]);
+            continue;
+        }
+        if input.len() == before {
+            return input;
+        }
+    }
+}
+
+fn strict_error<'a, T>(input: &'a str, kind: nom::error::ErrorKind) -> IResult<&'a str, T> {
+    Err(nom::Err::Error(nom::error::Error::new(input, kind)))
+}
+
+fn strict_name_character(character: char) -> bool {
+    character.is_alphanumeric() || matches!(character, '_' | '-' | ':')
+}
+
+/// A case-insensitive keyword parser with a SPARQL token boundary.
+fn strict_keyword<'a>(input: &'a str, keyword: &str) -> IResult<&'a str, &'a str> {
+    let input = strict_skip_ws(input);
+    let (remaining, matched) = nom::bytes::complete::tag_no_case(keyword).parse(input)?;
+    if remaining.chars().next().is_some_and(strict_name_character) {
+        return strict_error(input, nom::error::ErrorKind::Tag);
+    }
+    Ok((remaining, matched))
+}
+
+fn strict_starts_keyword(input: &str, keyword: &str) -> bool {
+    strict_keyword(input, keyword).is_ok()
+}
+
+fn strict_char(input: &str, expected: char) -> IResult<&str, char> {
+    char(expected).parse(strict_skip_ws(input))
+}
+
+fn strict_variable(input: &str) -> IResult<&str, &str> {
+    let input = strict_skip_ws(input);
+    let Some(sigil) = input.chars().next() else {
+        return strict_error(input, nom::error::ErrorKind::Eof);
+    };
+    if !matches!(sigil, '?' | '$') {
+        return strict_error(input, nom::error::ErrorKind::Char);
+    }
+    let name_start = sigil.len_utf8();
+    let mut name_end = name_start;
+    for (offset, character) in input[name_start..].char_indices() {
+        if character.is_alphanumeric() || character == '_' {
+            name_end = name_start + offset + character.len_utf8();
+        } else {
+            break;
+        }
+    }
+    if name_end == name_start {
+        return strict_error(input, nom::error::ErrorKind::TakeWhile1);
+    }
+    Ok((&input[name_end..], &input[name_start..name_end]))
+}
+
+fn strict_iri(input: &str) -> IResult<&str, &str> {
+    let input = strict_skip_ws(input);
+    let Some(body) = input.strip_prefix('<') else {
+        return strict_error(input, nom::error::ErrorKind::Char);
+    };
+    let mut escaped = false;
+    for (offset, character) in body.char_indices() {
+        if character == '>' && !escaped {
+            let remaining_start = 1 + offset + character.len_utf8();
+            return Ok((&input[remaining_start..], &body[..offset]));
+        }
+        escaped = character == '\\' && !escaped;
+        if character != '\\' {
+            escaped = false;
+        }
+    }
+    strict_error(input, nom::error::ErrorKind::TakeUntil)
+}
+
+fn strict_blank_node(input: &str) -> IResult<&str, &str> {
+    let input = strict_skip_ws(input);
+    let Some(body) = input.strip_prefix("_:") else {
+        return strict_error(input, nom::error::ErrorKind::Tag);
+    };
+    let mut end = 0;
+    for (offset, character) in body.char_indices() {
+        if character.is_alphanumeric() || matches!(character, '_' | '-') {
+            end = offset + character.len_utf8();
+        } else {
+            break;
+        }
+    }
+    if end == 0 {
+        return strict_error(input, nom::error::ErrorKind::TakeWhile1);
+    }
+    Ok((&body[end..], &body[..end]))
+}
+
+fn strict_prefixed_name(input: &str) -> IResult<&str, &str> {
+    let input = strict_skip_ws(input);
+    let mut end = 0;
+    for (offset, character) in input.char_indices() {
+        if character.is_whitespace()
+            || matches!(character, '{' | '}' | '(' | ')' | ';' | ',' | '.' | '#')
+        {
+            break;
+        }
+        end = offset + character.len_utf8();
+    }
+    let token = &input[..end];
+    if token.is_empty() || !token.contains(':') || token.starts_with("_:") {
+        return strict_error(input, nom::error::ErrorKind::Verify);
+    }
+    Ok((&input[end..], token))
+}
+
+fn strict_numeric_literal(input: &str) -> IResult<&str, &str> {
+    let input = strict_skip_ws(input);
+    let bytes = input.as_bytes();
+    let mut index = usize::from(matches!(bytes.first(), Some(b'+') | Some(b'-')));
+    let integer_start = index;
+    while bytes.get(index).is_some_and(u8::is_ascii_digit) {
+        index += 1;
+    }
+    let integer_digits = index - integer_start;
+    let mut fractional_digits = 0;
+    if bytes.get(index) == Some(&b'.') && bytes.get(index + 1).is_some_and(u8::is_ascii_digit) {
+        index += 1;
+        let fraction_start = index;
+        while bytes.get(index).is_some_and(u8::is_ascii_digit) {
+            index += 1;
+        }
+        fractional_digits = index - fraction_start;
+    }
+    if integer_digits == 0 && fractional_digits == 0 {
+        return strict_error(input, nom::error::ErrorKind::Digit);
+    }
+    if matches!(bytes.get(index), Some(b'e') | Some(b'E')) {
+        let exponent_marker = index;
+        index += 1;
+        if matches!(bytes.get(index), Some(b'+') | Some(b'-')) {
+            index += 1;
+        }
+        let exponent_start = index;
+        while bytes.get(index).is_some_and(u8::is_ascii_digit) {
+            index += 1;
+        }
+        if exponent_start == index {
+            index = exponent_marker;
+        }
+    }
+    if input[index..]
+        .chars()
+        .next()
+        .is_some_and(|character| character.is_alphabetic() || character == '_')
+    {
+        return strict_error(input, nom::error::ErrorKind::Verify);
+    }
+    Ok((&input[index..], &input[..index]))
+}
+
+fn strict_quoted_literal(input: &str) -> IResult<&str, &str> {
+    let input = strict_skip_ws(input);
+    let Some(quote) = input
+        .chars()
+        .next()
+        .filter(|quote| matches!(quote, '\'' | '"'))
+    else {
+        return strict_error(input, nom::error::ErrorKind::Char);
+    };
+    let triple_quoted = input.starts_with(&quote.to_string().repeat(3));
+    let delimiter_len = if triple_quoted { 3 } else { 1 };
+    let delimiter = if quote == '"' {
+        if triple_quoted {
+            "\"\"\""
+        } else {
+            "\""
+        }
+    } else if triple_quoted {
+        "'''"
+    } else {
+        "'"
+    };
+
+    let mut escaped = false;
+    let mut close_end = None;
+    let mut index = delimiter_len;
+    while index < input.len() {
+        if !escaped && input[index..].starts_with(delimiter) {
+            close_end = Some(index + delimiter_len);
+            break;
+        }
+        let character = input[index..].chars().next().expect("valid UTF-8 boundary");
+        if !triple_quoted && matches!(character, '\r' | '\n') && !escaped {
+            return strict_error(&input[index..], nom::error::ErrorKind::Escaped);
+        }
+        if character == '\\' && !escaped {
+            escaped = true;
+        } else {
+            escaped = false;
+        }
+        index += character.len_utf8();
+    }
+    let Some(mut literal_end) = close_end else {
+        return strict_error(input, nom::error::ErrorKind::Escaped);
+    };
+
+    let suffix = &input[literal_end..];
+    if let Some(language) = suffix.strip_prefix('@') {
+        let mut language_end = 0;
+        for (offset, character) in language.char_indices() {
+            if character.is_ascii_alphanumeric() || character == '-' {
+                language_end = offset + character.len_utf8();
+            } else {
+                break;
+            }
+        }
+        if language_end == 0 {
+            return strict_error(suffix, nom::error::ErrorKind::Verify);
+        }
+        literal_end += 1 + language_end;
+    } else if let Some(datatype) = suffix.strip_prefix("^^") {
+        let datatype = strict_skip_ws(datatype);
+        let (remaining, _) = strict_iri(datatype).or_else(|_| strict_prefixed_name(datatype))?;
+        literal_end = input.len() - remaining.len();
+    }
+
+    Ok((&input[literal_end..], &input[..literal_end]))
+}
+
+/// Scans an RDF-star quoted triple while respecting nested quoted triples,
+/// string escapes, and IRIs. The existing RDF-star parser remains untouched.
+fn strict_quoted_triple(input: &str) -> IResult<&str, &str> {
+    let input = strict_skip_ws(input);
+    if !input.starts_with("<<") {
+        return strict_error(input, nom::error::ErrorKind::Tag);
+    }
+    let mut depth = 0usize;
+    let mut index = 0usize;
+    let mut quote = None;
+    let mut in_iri = false;
+    let mut escaped = false;
+    while index < input.len() {
+        let tail = &input[index..];
+        let character = tail.chars().next().expect("valid UTF-8 boundary");
+        if let Some(active_quote) = quote {
+            if character == active_quote && !escaped {
+                quote = None;
+            }
+            if character == '\\' && !escaped {
+                escaped = true;
+            } else {
+                escaped = false;
+            }
+            index += character.len_utf8();
+            continue;
+        }
+        if in_iri {
+            if character == '>' && !escaped {
+                in_iri = false;
+            }
+            if character == '\\' && !escaped {
+                escaped = true;
+            } else {
+                escaped = false;
+            }
+            index += character.len_utf8();
+            continue;
+        }
+        if matches!(character, '\'' | '"') {
+            quote = Some(character);
+            index += character.len_utf8();
+        } else if character == '<' && !tail.starts_with("<<") {
+            in_iri = true;
+            index += 1;
+        } else if tail.starts_with("<<") {
+            depth += 1;
+            index += 2;
+        } else if tail.starts_with(">>") {
+            if depth == 0 {
+                return strict_error(tail, nom::error::ErrorKind::Verify);
+            }
+            depth -= 1;
+            index += 2;
+            if depth == 0 {
+                return Ok((&input[index..], &input[..index]));
+            }
+        } else {
+            index += character.len_utf8();
+        }
+    }
+    strict_error(input, nom::error::ErrorKind::TakeUntil)
+}
+
+fn strict_subject_term(input: &str) -> IResult<&str, SparqlTerm<'_>> {
+    if let Ok((remaining, value)) = strict_quoted_triple(input) {
+        return Ok((remaining, SparqlTerm::QuotedTriple(value)));
+    }
+    if let Ok((remaining, value)) = strict_variable(input) {
+        return Ok((remaining, SparqlTerm::Variable(value)));
+    }
+    if let Ok((remaining, value)) = strict_iri(input) {
+        return Ok((remaining, SparqlTerm::Iri(value)));
+    }
+    if let Ok((remaining, value)) = strict_blank_node(input) {
+        return Ok((remaining, SparqlTerm::BlankNode(value)));
+    }
+    strict_prefixed_name(input)
+        .map(|(remaining, value)| (remaining, SparqlTerm::PrefixedName(value)))
+}
+
+fn strict_predicate_term(input: &str) -> IResult<&str, SparqlTerm<'_>> {
+    if let Ok((remaining, value)) = strict_variable(input) {
+        return Ok((remaining, SparqlTerm::Variable(value)));
+    }
+    if let Ok((remaining, value)) = strict_iri(input) {
+        return Ok((remaining, SparqlTerm::Iri(value)));
+    }
+    let input_without_ws = strict_skip_ws(input);
+    if let Some(remaining) = input_without_ws.strip_prefix('a') {
+        if !remaining.chars().next().is_some_and(strict_name_character) {
+            return Ok((remaining, SparqlTerm::A));
+        }
+    }
+    strict_prefixed_name(input)
+        .map(|(remaining, value)| (remaining, SparqlTerm::PrefixedName(value)))
+}
+
+fn strict_object_term(input: &str) -> IResult<&str, SparqlTerm<'_>> {
+    if let Ok((remaining, value)) = strict_quoted_triple(input) {
+        return Ok((remaining, SparqlTerm::QuotedTriple(value)));
+    }
+    if let Ok((remaining, value)) = strict_variable(input) {
+        return Ok((remaining, SparqlTerm::Variable(value)));
+    }
+    if let Ok((remaining, value)) = strict_iri(input) {
+        return Ok((remaining, SparqlTerm::Iri(value)));
+    }
+    if let Ok((remaining, value)) = strict_blank_node(input) {
+        return Ok((remaining, SparqlTerm::BlankNode(value)));
+    }
+    if let Ok((remaining, value)) = strict_quoted_literal(input) {
+        return Ok((remaining, SparqlTerm::Literal(value)));
+    }
+    if let Ok((remaining, value)) = strict_numeric_literal(input) {
+        return Ok((remaining, SparqlTerm::Literal(value)));
+    }
+    if let Ok((remaining, value)) = strict_keyword(input, "true") {
+        return Ok((remaining, SparqlTerm::Literal(value)));
+    }
+    if let Ok((remaining, value)) = strict_keyword(input, "false") {
+        return Ok((remaining, SparqlTerm::Literal(value)));
+    }
+    strict_prefixed_name(input)
+        .map(|(remaining, value)| (remaining, SparqlTerm::PrefixedName(value)))
+}
+
+fn strict_graph_name(input: &str) -> IResult<&str, SparqlGraphName<'_>> {
+    if let Ok((remaining, value)) = strict_variable(input) {
+        return Ok((remaining, SparqlGraphName::Variable(value)));
+    }
+    if let Ok((remaining, value)) = strict_iri(input) {
+        return Ok((remaining, SparqlGraphName::Iri(value)));
+    }
+    strict_prefixed_name(input)
+        .map(|(remaining, value)| (remaining, SparqlGraphName::PrefixedName(value)))
+}
+
+/// Parses one triples-same-subject statement and expands `;` and `,`
+/// abbreviations into ordinary triple patterns.
+fn strict_triples_statement(input: &str) -> IResult<&str, Vec<SparqlTriplePattern<'_>>> {
+    let (mut input, subject) = strict_subject_term(input)?;
+    let mut triples = Vec::new();
+    loop {
+        let (after_predicate, predicate) = strict_predicate_term(input)?;
+        input = after_predicate;
+        loop {
+            let (after_object, object) = strict_object_term(input)?;
+            triples.push(SparqlTriplePattern {
+                subject: subject.clone(),
+                predicate: predicate.clone(),
+                object,
+            });
+            input = after_object;
+            let after_ws = strict_skip_ws(input);
+            if let Some(after_comma) = after_ws.strip_prefix(',') {
+                input = after_comma;
+            } else {
+                break;
+            }
+        }
+
+        let after_ws = strict_skip_ws(input);
+        let Some(after_semicolon) = after_ws.strip_prefix(';') else {
+            break;
+        };
+        let after_semicolon = strict_skip_ws(after_semicolon);
+        if after_semicolon.is_empty()
+            || after_semicolon.starts_with(['.', '}'])
+            || strict_starts_keyword(after_semicolon, "GRAPH")
+            || strict_starts_keyword(after_semicolon, "UNION")
+        {
+            input = after_semicolon;
+            break;
+        }
+        input = after_semicolon;
+    }
+    Ok((input, triples))
+}
+
+fn strict_group_primary(input: &str) -> IResult<&str, GroupGraphPattern<'_>> {
+    if let Ok((after_graph, _)) = strict_keyword(input, "GRAPH") {
+        let (after_name, name) = strict_graph_name(after_graph)?;
+        let (remaining, pattern) = parse_group_graph_pattern(after_name)?;
+        return Ok((
+            remaining,
+            GroupGraphPattern::Graph {
+                name,
+                pattern: Box::new(pattern),
+            },
+        ));
+    }
+    if strict_skip_ws(input).starts_with('{') {
+        return parse_group_graph_pattern(input);
+    }
+    strict_triples_statement(input)
+        .map(|(remaining, triples)| (remaining, GroupGraphPattern::Bgp(triples)))
+}
+
+/// Parses a recursive group graph pattern containing BGP, GRAPH, and UNION.
+pub fn parse_group_graph_pattern(input: &str) -> IResult<&str, GroupGraphPattern<'_>> {
+    let (mut input, _) = strict_char(input, '{')?;
+    let mut joined = Vec::new();
+    loop {
+        input = strict_skip_ws(input);
+        if let Some(remaining) = input.strip_prefix('}') {
+            let pattern = match joined.len() {
+                0 => GroupGraphPattern::Empty,
+                1 => joined.pop().expect("one graph pattern"),
+                _ => GroupGraphPattern::Join(joined),
+            };
+            return Ok((remaining, pattern));
+        }
+
+        let (after_first, first) = strict_group_primary(input)?;
+        input = after_first;
+        let mut alternatives = vec![first];
+        while let Ok((after_union, _)) = strict_keyword(input, "UNION") {
+            let (after_alternative, alternative) = strict_group_primary(after_union)?;
+            alternatives.push(alternative);
+            input = after_alternative;
+        }
+        joined.push(if alternatives.len() == 1 {
+            alternatives.pop().expect("one union branch")
+        } else {
+            GroupGraphPattern::Union(alternatives)
+        });
+
+        input = strict_skip_ws(input);
+        if let Some(remaining) = input.strip_prefix('.') {
+            input = remaining;
+        }
+    }
+}
+
+fn strict_quad_block(input: &str) -> IResult<&str, Vec<SparqlQuadPattern<'_>>> {
+    let (mut input, _) = strict_char(input, '{')?;
+    let mut quads = Vec::new();
+    loop {
+        input = strict_skip_ws(input);
+        if let Some(remaining) = input.strip_prefix('}') {
+            return Ok((remaining, quads));
+        }
+
+        if let Ok((after_graph, _)) = strict_keyword(input, "GRAPH") {
+            let (after_name, graph) = strict_graph_name(after_graph)?;
+            let (mut graph_input, _) = strict_char(after_name, '{')?;
+            loop {
+                graph_input = strict_skip_ws(graph_input);
+                if let Some(remaining) = graph_input.strip_prefix('}') {
+                    input = remaining;
+                    break;
+                }
+                let (remaining, triples) = strict_triples_statement(graph_input)?;
+                quads.extend(triples.into_iter().map(|triple| SparqlQuadPattern {
+                    graph: Some(graph.clone()),
+                    triple,
+                }));
+                graph_input = strict_skip_ws(remaining);
+                if let Some(after_dot) = graph_input.strip_prefix('.') {
+                    graph_input = after_dot;
+                }
+            }
+        } else {
+            let (remaining, triples) = strict_triples_statement(input)?;
+            quads.extend(triples.into_iter().map(|triple| SparqlQuadPattern {
+                graph: None,
+                triple,
+            }));
+            input = remaining;
+        }
+        input = strict_skip_ws(input);
+        if let Some(remaining) = input.strip_prefix('.') {
+            input = remaining;
+        }
+    }
+}
+
+#[derive(Clone, Copy)]
+enum StrictQuotedToken {
+    Variable,
+    BlankNode,
+}
+
+/// Finds variables/blank nodes in a quoted triple without treating their
+/// spelling inside a nested IRI or literal as syntax.
+fn strict_quoted_has_token(raw: &str, target: StrictQuotedToken) -> bool {
+    let mut index = 0usize;
+    let mut quote: Option<(char, bool)> = None;
+    let mut in_iri = false;
+    let mut escaped = false;
+    while index < raw.len() {
+        let tail = &raw[index..];
+        let character = tail.chars().next().expect("valid UTF-8 boundary");
+        if let Some((active_quote, triple)) = quote {
+            let delimiter = if active_quote == '"' { "\"\"\"" } else { "'''" };
+            if !escaped
+                && ((!triple && character == active_quote)
+                    || (triple && tail.starts_with(delimiter)))
+            {
+                index += if triple { 3 } else { character.len_utf8() };
+                quote = None;
+                continue;
+            }
+            if character == '\\' && !escaped {
+                escaped = true;
+            } else {
+                escaped = false;
+            }
+            index += character.len_utf8();
+            continue;
+        }
+        if in_iri {
+            if character == '>' && !escaped {
+                in_iri = false;
+            }
+            if character == '\\' && !escaped {
+                escaped = true;
+            } else {
+                escaped = false;
+            }
+            index += character.len_utf8();
+            continue;
+        }
+
+        if matches!(character, '\'' | '"') {
+            let delimiter = if character == '"' { "\"\"\"" } else { "'''" };
+            let triple = tail.starts_with(delimiter);
+            quote = Some((character, triple));
+            index += if triple { 3 } else { character.len_utf8() };
+        } else if tail.starts_with("<<") || tail.starts_with(">>") {
+            index += 2;
+        } else if character == '<' {
+            in_iri = true;
+            index += 1;
+        } else if matches!(target, StrictQuotedToken::Variable)
+            && matches!(character, '?' | '$')
+            && tail[character.len_utf8()..]
+                .chars()
+                .next()
+                .is_some_and(|next| next.is_alphanumeric() || next == '_')
+        {
+            return true;
+        } else if matches!(target, StrictQuotedToken::BlankNode)
+            && tail.starts_with("_:")
+            && tail[2..]
+                .chars()
+                .next()
+                .is_some_and(|next| next.is_alphanumeric() || next == '_')
+        {
+            return true;
+        } else {
+            index += character.len_utf8();
+        }
+    }
+    false
+}
+
+fn strict_term_has_variable(term: &SparqlTerm<'_>) -> bool {
+    matches!(term, SparqlTerm::Variable(_))
+        || matches!(term, SparqlTerm::QuotedTriple(raw) if strict_quoted_has_token(raw, StrictQuotedToken::Variable))
+}
+
+fn strict_term_has_blank_node(term: &SparqlTerm<'_>) -> bool {
+    matches!(term, SparqlTerm::BlankNode(_))
+        || matches!(term, SparqlTerm::QuotedTriple(raw) if strict_quoted_has_token(raw, StrictQuotedToken::BlankNode))
+}
+
+fn strict_quads_have_variable(quads: &[SparqlQuadPattern<'_>]) -> bool {
+    quads.iter().any(|quad| {
+        matches!(quad.graph, Some(SparqlGraphName::Variable(_)))
+            || strict_term_has_variable(&quad.triple.subject)
+            || strict_term_has_variable(&quad.triple.predicate)
+            || strict_term_has_variable(&quad.triple.object)
+    })
+}
+
+fn strict_quads_have_blank_node(quads: &[SparqlQuadPattern<'_>]) -> bool {
+    quads.iter().any(|quad| {
+        strict_term_has_blank_node(&quad.triple.subject)
+            || strict_term_has_blank_node(&quad.triple.predicate)
+            || strict_term_has_blank_node(&quad.triple.object)
+    })
+}
+
+fn strict_quads_to_group<'a>(quads: &[SparqlQuadPattern<'a>]) -> GroupGraphPattern<'a> {
+    let mut patterns = Vec::with_capacity(quads.len());
+    for quad in quads {
+        let bgp = GroupGraphPattern::Bgp(vec![quad.triple.clone()]);
+        patterns.push(match &quad.graph {
+            Some(name) => GroupGraphPattern::Graph {
+                name: name.clone(),
+                pattern: Box::new(bgp),
+            },
+            None => bgp,
+        });
+    }
+    match patterns.len() {
+        0 => GroupGraphPattern::Empty,
+        1 => patterns.pop().expect("one quad pattern"),
+        _ => GroupGraphPattern::Join(patterns),
+    }
+}
+
+fn strict_prefixes(input: &str) -> IResult<&str, HashMap<String, String>> {
+    let mut input = input;
+    let mut prefixes = HashMap::new();
+    while let Ok((after_prefix, _)) = strict_keyword(input, "PREFIX") {
+        let after_prefix = strict_skip_ws(after_prefix);
+        let Some(colon) = after_prefix.find(':') else {
+            return strict_error(after_prefix, nom::error::ErrorKind::Char);
+        };
+        let prefix = &after_prefix[..colon];
+        if !prefix
+            .chars()
+            .all(|character| character.is_alphanumeric() || matches!(character, '_' | '-'))
+        {
+            return strict_error(after_prefix, nom::error::ErrorKind::Verify);
+        }
+        let (remaining, iri) = strict_iri(&after_prefix[colon + 1..])?;
+        prefixes.insert(prefix.to_string(), iri.to_string());
+        input = remaining;
+    }
+    Ok((input, prefixes))
+}
+
+fn strict_select<'a>(
+    input: &'a str,
+    prefixes: HashMap<String, String>,
+) -> IResult<&'a str, StrictSelectQuery<'a>> {
+    let (mut input, _) = strict_keyword(input, "SELECT")?;
+    let distinct = if let Ok((remaining, _)) = strict_keyword(input, "DISTINCT") {
+        input = remaining;
+        true
+    } else {
+        false
+    };
+
+    input = strict_skip_ws(input);
+    let projection = if let Some(remaining) = input.strip_prefix('*') {
+        input = remaining;
+        SparqlProjection::All
+    } else {
+        let mut variables = Vec::new();
+        while let Ok((remaining, variable)) = strict_variable(input) {
+            variables.push(variable);
+            input = remaining;
+        }
+        if variables.is_empty() {
+            return strict_error(input, nom::error::ErrorKind::Many1);
+        }
+        SparqlProjection::Variables(variables)
+    };
+
+    let mut from_named = Vec::new();
+    while let Ok((after_from, _)) = strict_keyword(input, "FROM") {
+        let (after_named, _) = strict_keyword(after_from, "NAMED")?;
+        let (remaining, graph) = strict_graph_name(after_named)?;
+        if matches!(graph, SparqlGraphName::Variable(_)) {
+            return strict_error(after_named, nom::error::ErrorKind::Verify);
+        }
+        from_named.push(graph);
+        input = remaining;
+    }
+
+    if let Ok((remaining, _)) = strict_keyword(input, "WHERE") {
+        input = remaining;
+    }
+    let (mut input, pattern) = parse_group_graph_pattern(input)?;
+    let limit = if let Ok((after_limit, _)) = strict_keyword(input, "LIMIT") {
+        let after_limit = strict_skip_ws(after_limit);
+        let digit_count = after_limit.bytes().take_while(u8::is_ascii_digit).count();
+        if digit_count == 0 {
+            return strict_error(after_limit, nom::error::ErrorKind::Digit);
+        }
+        let value = after_limit[..digit_count].parse::<usize>().map_err(|_| {
+            nom::Err::Error(nom::error::Error::new(
+                after_limit,
+                nom::error::ErrorKind::Digit,
+            ))
+        })?;
+        input = &after_limit[digit_count..];
+        Some(value)
+    } else {
+        None
+    };
+    Ok((
+        input,
+        StrictSelectQuery {
+            prefixes,
+            distinct,
+            projection,
+            from_named,
+            pattern,
+            limit,
+        },
+    ))
+}
+
+fn strict_update<'a>(
+    input: &'a str,
+    prefixes: HashMap<String, String>,
+) -> IResult<&'a str, StrictUpdateRequest<'a>> {
+    if let Ok((after_insert, _)) = strict_keyword(input, "INSERT") {
+        if let Ok((after_data, _)) = strict_keyword(after_insert, "DATA") {
+            let (remaining, quads) = strict_quad_block(after_data)?;
+            if strict_quads_have_variable(&quads) {
+                return strict_error(after_data, nom::error::ErrorKind::Verify);
+            }
+            return Ok((
+                remaining,
+                StrictUpdateRequest {
+                    prefixes,
+                    operation: StrictUpdateOperation::InsertData(quads),
+                },
+            ));
+        }
+
+        let (after_template, insert) = strict_quad_block(after_insert)?;
+        let (after_where, _) = strict_keyword(after_template, "WHERE")?;
+        let (remaining, where_pattern) = parse_group_graph_pattern(after_where)?;
+        return Ok((
+            remaining,
+            StrictUpdateRequest {
+                prefixes,
+                operation: StrictUpdateOperation::Modify {
+                    delete: Vec::new(),
+                    insert,
+                    where_pattern,
+                },
+            },
+        ));
+    }
+
+    let (after_delete, _) = strict_keyword(input, "DELETE")?;
+    if let Ok((after_data, _)) = strict_keyword(after_delete, "DATA") {
+        let (remaining, quads) = strict_quad_block(after_data)?;
+        if strict_quads_have_variable(&quads) || strict_quads_have_blank_node(&quads) {
+            return strict_error(after_data, nom::error::ErrorKind::Verify);
+        }
+        return Ok((
+            remaining,
+            StrictUpdateRequest {
+                prefixes,
+                operation: StrictUpdateOperation::DeleteData(quads),
+            },
+        ));
+    }
+
+    if let Ok((after_where, _)) = strict_keyword(after_delete, "WHERE") {
+        let (remaining, template) = strict_quad_block(after_where)?;
+        if strict_quads_have_blank_node(&template) {
+            return strict_error(after_where, nom::error::ErrorKind::Verify);
+        }
+        let where_pattern = strict_quads_to_group(&template);
+        return Ok((
+            remaining,
+            StrictUpdateRequest {
+                prefixes,
+                operation: StrictUpdateOperation::DeleteWhere {
+                    template,
+                    where_pattern,
+                },
+            },
+        ));
+    }
+
+    let (mut remaining, delete) = strict_quad_block(after_delete)?;
+    if strict_quads_have_blank_node(&delete) {
+        return strict_error(after_delete, nom::error::ErrorKind::Verify);
+    }
+    let insert = if let Ok((after_insert, _)) = strict_keyword(remaining, "INSERT") {
+        let (after_template, insert) = strict_quad_block(after_insert)?;
+        remaining = after_template;
+        insert
+    } else {
+        Vec::new()
+    };
+    let (after_where, _) = strict_keyword(remaining, "WHERE")?;
+    let (remaining, where_pattern) = parse_group_graph_pattern(after_where)?;
+    Ok((
+        remaining,
+        StrictUpdateRequest {
+            prefixes,
+            operation: StrictUpdateOperation::Modify {
+                delete,
+                insert,
+                where_pattern,
+            },
+        },
+    ))
+}
+
+fn strict_request_nom(input: &str) -> IResult<&str, StrictSparqlRequest<'_>> {
+    let (input, prefixes) = strict_prefixes(input)?;
+    if strict_starts_keyword(input, "SELECT") {
+        strict_select(input, prefixes)
+            .map(|(remaining, query)| (remaining, StrictSparqlRequest::Select(query)))
+    } else {
+        strict_update(input, prefixes)
+            .map(|(remaining, update)| (remaining, StrictSparqlRequest::Update(update)))
+    }
+}
+
+/// Strict entry point for Kolibrie's supported SPARQL fragment.
+///
+/// Unlike the historical compatibility parsers, this parser is
+/// case-insensitive for keywords, understands comments, and rejects any
+/// unconsumed non-comment input.
+pub fn parse_strict_sparql(input: &str) -> Result<StrictSparqlRequest<'_>, StrictSparqlParseError> {
+    match strict_request_nom(input) {
+        Ok((remaining, request)) => {
+            let remaining = strict_skip_ws(remaining);
+            if remaining.is_empty() {
+                Ok(request)
+            } else {
+                Err(StrictSparqlParseError {
+                    offset: input.len() - remaining.len(),
+                    message: format!(
+                        "unexpected trailing input `{}`",
+                        remaining.chars().take(24).collect::<String>()
+                    ),
+                })
+            }
+        }
+        Err(nom::Err::Error(error) | nom::Err::Failure(error)) => Err(StrictSparqlParseError {
+            offset: input.len() - error.input.len(),
+            message: format!(
+                "unexpected input `{}` ({:?})",
+                error.input.chars().take(24).collect::<String>(),
+                error.code
+            ),
+        }),
+        Err(nom::Err::Incomplete(_)) => Err(StrictSparqlParseError {
+            offset: input.len(),
+            message: "incomplete input".to_string(),
+        }),
+    }
+}
+
 pub fn parse_sparql_query(
     input: &str,
 ) -> IResult<

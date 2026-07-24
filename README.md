@@ -272,6 +272,49 @@ for row in results {
 }
 ```
 
+#### Named graphs, `GRAPH`, and `UNION`
+
+Kolibrie's existing SPARQL parser supports recursive `GRAPH` patterns with
+fixed or variable graph names, nested groups, and multiset `UNION`:
+
+```rust
+let rows = execute_query_rayon_parallel2_volcano(
+    r#"
+    PREFIX ex: <http://example.org/>
+    SELECT DISTINCT ?g ?item WHERE {
+        { GRAPH ?g { ?item ex:status "active" } }
+        UNION
+        { GRAPH ?g { { ?item ex:status "pending" } } }
+    }
+    "#,
+    &mut db,
+);
+```
+
+`GRAPH <name>` reads only that named graph. `GRAPH ?g` iterates named graph
+identities and binds `?g`; the default graph is never included. Without
+`DISTINCT`, duplicate solutions contributed by `UNION` are retained.
+
+#### Supported SPARQL Update forms
+
+The error-preserving Rust API accepts the scoped update family below. Default
+and named-graph templates can be mixed in the same operation.
+
+```rust
+db.execute_update(r#"
+    PREFIX ex: <http://example.org/>
+    DELETE { ?s ex:oldValue ?value }
+    INSERT { GRAPH ex:archive { ?s ex:value ?value } }
+    WHERE  { ?s ex:oldValue ?value }
+"#)?;
+```
+
+Supported forms are `INSERT DATA`, `DELETE DATA`, `INSERT ... WHERE`,
+`DELETE ... WHERE`, combined `DELETE/INSERT ... WHERE`, and `DELETE WHERE`.
+The `WHERE` pattern is evaluated once before changes are applied, with deletes
+performed before inserts. Python exposes the same behavior as
+`SparqlDatabase.update()`.
+
 #### Query with FILTER
 
 ```rust

@@ -160,6 +160,10 @@ pub fn execute_query(sparql: &str, database: &mut SparqlDatabase) -> Vec<Vec<Str
 
     let sparql = normalize_query(sparql);
 
+    if let Some(results) = execute_recursive_sparql_if_supported(sparql, database) {
+        return results;
+    }
+
     // Prepare variables to hold the query processing state.
     let mut final_results: Vec<BTreeMap<&str, String>>;
     let mut selected_variables: Vec<(String, String)> = Vec::new();
@@ -364,7 +368,7 @@ pub fn execute_query_rayon_parallel2_volcano(
     // Register prefixes from the query string first
     database.register_prefixes_from_query(&sparql);
 
-    if let Some(results) = execute_dataset_graph_update_or_query(&sparql, database) {
+    if let Some(results) = execute_recursive_sparql_if_supported(&sparql, database) {
         return results;
     }
 
@@ -679,455 +683,723 @@ fn format_results(
         .collect()
 }
 
-#[derive(Debug)]
-struct ParsedGraphQuery<'a> {
-    select_vars: Vec<&'a str>,
-    default_patterns: Vec<(&'a str, &'a str, &'a str)>,
-    graph_blocks: Vec<ParsedGraphBlock<'a>>,
-    from_named: HashSet<GraphId>,
+fn execute_recursive_sparql_if_supported(
+    sparql: &str,
+    database: &mut SparqlDatabase,
+) -> Option<Vec<Vec<String>>> {
+    match parse_strict_sparql(sparql) {
+        Ok(StrictSparqlRequest::Select(query))
+            if !query.from_named.is_empty() || pattern_uses_graph_or_union(&query.pattern) =>
+        {
+            Some(execute_recursive_select(&query, database).unwrap_or_else(|error| {
+                eprintln!("SPARQL evaluation failed: {error}");
+                Vec::new()
+            }))
+        }
+        Ok(StrictSparqlRequest::Select(_)) => None,
+        Ok(StrictSparqlRequest::Update(update)) => {
+            if let Err(error) = execute_recursive_update(&update, database) {
+                eprintln!("SPARQL update failed: {error}");
+            }
+            Some(Vec::new())
+        }
+        Err(error) if is_recursive_sparql_request(sparql) => {
+            eprintln!("Failed to parse SPARQL: {error}");
+            Some(Vec::new())
+        }
+        Err(_) => None,
+    }
 }
 
-#[derive(Debug)]
-struct ParsedGraphBlock<'a> {
-    graph_term: &'a str,
-    patterns: Vec<(&'a str, &'a str, &'a str)>,
+fn pattern_uses_graph_or_union(pattern: &GroupGraphPattern<'_>) -> bool {
+    match pattern {
+        GroupGraphPattern::Graph { .. } | GroupGraphPattern::Union(_) => true,
+        GroupGraphPattern::Join(patterns) => patterns.iter().any(pattern_uses_graph_or_union),
+        GroupGraphPattern::Empty | GroupGraphPattern::Bgp(_) => false,
+    }
 }
 
-#[derive(Clone)]
-enum GraphScope {
-    Default,
-    Named(GraphId),
-    NamedVariable {
-        variable: String,
-        visible_graphs: Option<HashSet<GraphId>>,
+type StrictBinding = HashMap<String, u32>;
+
+/// Summary returned by the error-preserving update entry point.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct UpdateSummary {
+    pub inserted_quads: usize,
+    pub deleted_quads: usize,
+}
+
+/// Execute one of the deliberately supported SPARQL Update forms using the
+/// existing Kolibrie parser. Unlike the legacy adapter, this API preserves
+/// syntax and execution errors.
+pub fn execute_sparql_update(
+    sparql: &str,
+    database: &mut SparqlDatabase,
+) -> Result<UpdateSummary, String> {
+    match parse_strict_sparql(sparql).map_err(|error| error.to_string())? {
+        StrictSparqlRequest::Update(update) => execute_recursive_update(&update, database),
+        StrictSparqlRequest::Select(_) => Err("expected a SPARQL Update operation".to_string()),
+    }
+}
+
+fn execute_recursive_select(
+    query: &StrictSelectQuery<'_>,
+    database: &SparqlDatabase,
+) -> Result<Vec<Vec<String>>, String> {
+    let visible_named_graphs = if query.from_named.is_empty() {
+        None
+    } else {
+        Some(
+            query
+                .from_named
+                .iter()
+                .filter_map(|name| lookup_graph_name(name, database, &query.prefixes))
+                .collect::<HashSet<_>>(),
+        )
+    };
+    let input = vec![StrictBinding::new()];
+    let mut bindings = evaluate_group_graph_pattern(
+        &query.pattern,
+        database,
+        &query.prefixes,
+        GraphId::Default,
+        visible_named_graphs.as_ref(),
+        input,
+    )?;
+
+    let variables: Vec<String> = match &query.projection {
+        SparqlProjection::Variables(variables) => {
+            variables.iter().map(|variable| (*variable).to_string()).collect()
+        }
+        SparqlProjection::All => {
+            let mut variables = Vec::new();
+            collect_pattern_variables(&query.pattern, &mut variables);
+            variables
+        }
+    };
+
+    let mut rows: Vec<Vec<String>> = bindings
+        .drain(..)
+        .map(|binding| {
+            variables
+                .iter()
+                .map(|variable| {
+                    binding
+                        .get(variable)
+                        .and_then(|id| database.decode_any(*id))
+                        .unwrap_or_default()
+                })
+                .collect()
+        })
+        .collect();
+
+    if query.distinct {
+        let mut seen = HashSet::new();
+        rows.retain(|row| seen.insert(row.clone()));
+    }
+    if let Some(limit) = query.limit {
+        rows.truncate(limit);
+    }
+    Ok(rows)
+}
+
+fn evaluate_group_graph_pattern(
+    pattern: &GroupGraphPattern<'_>,
+    database: &SparqlDatabase,
+    prefixes: &HashMap<String, String>,
+    active_graph: GraphId,
+    visible_named_graphs: Option<&HashSet<GraphId>>,
+    input: Vec<StrictBinding>,
+) -> Result<Vec<StrictBinding>, String> {
+    match pattern {
+        GroupGraphPattern::Empty => Ok(input),
+        GroupGraphPattern::Bgp(patterns) => {
+            let mut rows = input;
+            for pattern in patterns {
+                rows = evaluate_triple_pattern(pattern, database, prefixes, active_graph, rows)?;
+                if rows.is_empty() {
+                    break;
+                }
+            }
+            Ok(rows)
+        }
+        GroupGraphPattern::Join(patterns) => {
+            let mut rows = input;
+            for pattern in patterns {
+                rows = evaluate_group_graph_pattern(
+                    pattern,
+                    database,
+                    prefixes,
+                    active_graph,
+                    visible_named_graphs,
+                    rows,
+                )?;
+                if rows.is_empty() {
+                    break;
+                }
+            }
+            Ok(rows)
+        }
+        GroupGraphPattern::Union(branches) => {
+            let mut rows = Vec::new();
+            for branch in branches {
+                rows.extend(evaluate_group_graph_pattern(
+                    branch,
+                    database,
+                    prefixes,
+                    active_graph,
+                    visible_named_graphs,
+                    input.clone(),
+                )?);
+            }
+            Ok(rows)
+        }
+        GroupGraphPattern::Graph { name, pattern } => match name {
+            SparqlGraphName::Variable(variable) => {
+                let mut rows = Vec::new();
+                for binding in input {
+                    if let Some(graph_id) = binding.get(*variable).copied() {
+                        let graph = GraphId::Named(graph_id);
+                        if database.dataset_index.graph_exists(graph)
+                            && visible_named_graphs
+                                .is_none_or(|visible| visible.contains(&graph))
+                        {
+                            rows.extend(evaluate_group_graph_pattern(
+                                pattern,
+                                database,
+                                prefixes,
+                                graph,
+                                visible_named_graphs,
+                                vec![binding],
+                            )?);
+                        }
+                    } else {
+                        for graph in database.dataset_index.named_graphs() {
+                            if visible_named_graphs
+                                .is_some_and(|visible| !visible.contains(&graph))
+                            {
+                                continue;
+                            }
+                            let GraphId::Named(graph_id) = graph else {
+                                continue;
+                            };
+                            let mut graph_binding = binding.clone();
+                            graph_binding.insert((*variable).to_string(), graph_id);
+                            rows.extend(evaluate_group_graph_pattern(
+                                pattern,
+                                database,
+                                prefixes,
+                                graph,
+                                visible_named_graphs,
+                                vec![graph_binding],
+                            )?);
+                        }
+                    }
+                }
+                Ok(rows)
+            }
+            _ => {
+                let Some(graph) = lookup_graph_name(name, database, prefixes) else {
+                    return Ok(Vec::new());
+                };
+                if !database.dataset_index.graph_exists(graph) {
+                    return Ok(Vec::new());
+                }
+                if visible_named_graphs.is_some_and(|visible| !visible.contains(&graph)) {
+                    return Ok(Vec::new());
+                }
+                evaluate_group_graph_pattern(
+                    pattern,
+                    database,
+                    prefixes,
+                    graph,
+                    visible_named_graphs,
+                    input,
+                )
+            }
+        },
+    }
+}
+
+fn evaluate_triple_pattern(
+    pattern: &SparqlTriplePattern<'_>,
+    database: &SparqlDatabase,
+    prefixes: &HashMap<String, String>,
+    active_graph: GraphId,
+    input: Vec<StrictBinding>,
+) -> Result<Vec<StrictBinding>, String> {
+    let mut output = Vec::new();
+    for binding in input {
+        let subject = match pattern_term_constraint(&pattern.subject, &binding, database, prefixes)
+        {
+            Ok(value) => value,
+            Err(()) => continue,
+        };
+        let predicate =
+            match pattern_term_constraint(&pattern.predicate, &binding, database, prefixes) {
+                Ok(value) => value,
+                Err(()) => continue,
+            };
+        let object = match pattern_term_constraint(&pattern.object, &binding, database, prefixes) {
+            Ok(value) => value,
+            Err(()) => continue,
+        };
+
+        for quad in database
+            .dataset_index
+            .query_graph(active_graph, subject, predicate, object)
+        {
+            let mut candidate = binding.clone();
+            if bind_pattern_term(&pattern.subject, quad.subject, &mut candidate)
+                && bind_pattern_term(&pattern.predicate, quad.predicate, &mut candidate)
+                && bind_pattern_term(&pattern.object, quad.object, &mut candidate)
+            {
+                output.push(candidate);
+            }
+        }
+    }
+    Ok(output)
+}
+
+fn pattern_term_constraint(
+    term: &SparqlTerm<'_>,
+    binding: &StrictBinding,
+    database: &SparqlDatabase,
+    prefixes: &HashMap<String, String>,
+) -> Result<Option<u32>, ()> {
+    if let SparqlTerm::Variable(variable) = term {
+        return Ok(binding.get(*variable).copied());
+    }
+    let lexical = term_storage_value(term, database, prefixes).ok_or(())?;
+    if matches!(term, SparqlTerm::QuotedTriple(_)) {
+        return Ok(Some(database.encode_term_star(&lexical)));
+    }
+    database
+        .dictionary
+        .read()
+        .ok()
+        .and_then(|dictionary| dictionary.string_to_id.get(&lexical).copied())
+        .map(Some)
+        .ok_or(())
+}
+
+fn bind_pattern_term(
+    term: &SparqlTerm<'_>,
+    value: u32,
+    binding: &mut StrictBinding,
+) -> bool {
+    let SparqlTerm::Variable(variable) = term else {
+        return true;
+    };
+    match binding.get(*variable) {
+        Some(existing) => *existing == value,
+        None => {
+            binding.insert((*variable).to_string(), value);
+            true
+        }
+    }
+}
+
+fn collect_pattern_variables(pattern: &GroupGraphPattern<'_>, variables: &mut Vec<String>) {
+    match pattern {
+        GroupGraphPattern::Empty => {}
+        GroupGraphPattern::Bgp(patterns) => {
+            for pattern in patterns {
+                for term in [&pattern.subject, &pattern.predicate, &pattern.object] {
+                    if let SparqlTerm::Variable(variable) = term {
+                        push_variable_once(variables, variable);
+                    }
+                }
+            }
+        }
+        GroupGraphPattern::Join(patterns) | GroupGraphPattern::Union(patterns) => {
+            for pattern in patterns {
+                collect_pattern_variables(pattern, variables);
+            }
+        }
+        GroupGraphPattern::Graph { name, pattern } => {
+            if let SparqlGraphName::Variable(variable) = name {
+                push_variable_once(variables, variable);
+            }
+            collect_pattern_variables(pattern, variables);
+        }
+    }
+}
+
+fn push_variable_once(variables: &mut Vec<String>, variable: &str) {
+    if !variables.iter().any(|existing| existing == variable) {
+        variables.push(variable.to_string());
+    }
+}
+
+fn execute_recursive_update(
+    request: &StrictUpdateRequest<'_>,
+    database: &mut SparqlDatabase,
+) -> Result<UpdateSummary, String> {
+    let mut summary = UpdateSummary::default();
+    match &request.operation {
+        StrictUpdateOperation::InsertData(template) => {
+            let mut blank_nodes = HashMap::new();
+            let mut nonce = 0_u64;
+            let quads = instantiate_quad_template(
+                template,
+                &StrictBinding::new(),
+                database,
+                &request.prefixes,
+                TemplateMode::Insert {
+                    blank_nodes: &mut blank_nodes,
+                    nonce: &mut nonce,
+                },
+            )?;
+            apply_insertions(database, quads, &mut summary);
+        }
+        StrictUpdateOperation::DeleteData(template) => {
+            let quads = instantiate_quad_template(
+                template,
+                &StrictBinding::new(),
+                database,
+                &request.prefixes,
+                TemplateMode::Delete,
+            )?;
+            apply_deletions(database, quads, &mut summary);
+        }
+        StrictUpdateOperation::Modify {
+            delete,
+            insert,
+            where_pattern,
+        } => {
+            execute_modify(
+                delete,
+                insert,
+                where_pattern,
+                database,
+                &request.prefixes,
+                &mut summary,
+            )?;
+        }
+        StrictUpdateOperation::DeleteWhere {
+            template,
+            where_pattern,
+        } => {
+            execute_modify(
+                template,
+                &[],
+                where_pattern,
+                database,
+                &request.prefixes,
+                &mut summary,
+            )?;
+        }
+    }
+    if summary.inserted_quads != 0 || summary.deleted_quads != 0 {
+        database.invalidate_stats_cache();
+    }
+    Ok(summary)
+}
+
+fn execute_modify(
+    delete: &[SparqlQuadPattern<'_>],
+    insert: &[SparqlQuadPattern<'_>],
+    where_pattern: &GroupGraphPattern<'_>,
+    database: &mut SparqlDatabase,
+    prefixes: &HashMap<String, String>,
+    summary: &mut UpdateSummary,
+) -> Result<(), String> {
+    // Evaluate once before either template changes the dataset.
+    let bindings = evaluate_group_graph_pattern(
+        where_pattern,
+        database,
+        prefixes,
+        GraphId::Default,
+        None,
+        vec![StrictBinding::new()],
+    )?;
+    let mut deletions = Vec::new();
+    let mut insertions = Vec::new();
+    let mut nonce = 0_u64;
+    for binding in &bindings {
+        deletions.extend(instantiate_quad_template(
+            delete,
+            binding,
+            database,
+            prefixes,
+            TemplateMode::Delete,
+        )?);
+        let mut blank_nodes = HashMap::new();
+        insertions.extend(instantiate_quad_template(
+            insert,
+            binding,
+            database,
+            prefixes,
+            TemplateMode::Insert {
+                blank_nodes: &mut blank_nodes,
+                nonce: &mut nonce,
+            },
+        )?);
+    }
+    apply_deletions(database, deletions, summary);
+    apply_insertions(database, insertions, summary);
+    Ok(())
+}
+
+enum TemplateMode<'a> {
+    Delete,
+    Insert {
+        blank_nodes: &'a mut HashMap<String, u32>,
+        nonce: &'a mut u64,
     },
 }
 
-fn execute_dataset_graph_update_or_query(
-    sparql: &str,
-    database: &mut SparqlDatabase,
-) -> Option<Vec<Vec<String>>> {
-    let upper = sparql.to_ascii_uppercase();
-    if !upper.contains("GRAPH") && !upper.contains("FROM NAMED") {
-        return None;
-    }
-
-    let prefixes = collect_prefixes(sparql, database);
-
-    if upper.trim_start().starts_with("INSERT") || upper.trim_start().starts_with("DELETE") {
-        return execute_dataset_graph_update(sparql, database, &prefixes);
-    }
-
-    if upper.contains("SELECT") {
-        return execute_dataset_graph_select(sparql, database, &prefixes);
-    }
-
-    None
-}
-
-fn execute_dataset_graph_update(
-    sparql: &str,
-    database: &mut SparqlDatabase,
-    prefixes: &HashMap<String, String>,
-) -> Option<Vec<Vec<String>>> {
-    let is_insert = sparql
-        .trim_start()
-        .to_ascii_uppercase()
-        .starts_with("INSERT");
-    let keyword = if is_insert { "INSERT" } else { "DELETE" };
-    let (_, graph_blocks) =
-        split_default_and_graph_blocks(extract_braced_body_after_keyword(sparql, keyword)?);
-    if graph_blocks.is_empty() {
-        return None;
-    }
-
-    for block in graph_blocks {
-        let graph_id = graph_id_from_term(block.graph_term, database, prefixes)?;
-        for (s, p, o) in block.patterns {
-            let (subject, predicate, object) = resolve_triple_pattern(s, p, o, database, prefixes);
-            let quad = Quad {
-                subject: database.encode_term_star(&subject),
-                predicate: database.encode_term_star(&predicate),
-                object: database.encode_term_star(&object),
-                graph: graph_id,
-            };
-            if is_insert {
-                database.add_quad(quad);
-            } else {
-                database.delete_quad(&quad);
-            }
-        }
-    }
-
-    database.invalidate_stats_cache();
-    Some(Vec::new())
-}
-
-fn execute_dataset_graph_select(
-    sparql: &str,
-    database: &mut SparqlDatabase,
-    prefixes: &HashMap<String, String>,
-) -> Option<Vec<Vec<String>>> {
-    let parsed = parse_dataset_graph_select(sparql, database, prefixes)?;
-    let mut rows: Vec<HashMap<String, u32>> = vec![HashMap::new()];
-
-    for (s, p, o) in parsed.default_patterns {
-        let matches = query_dataset_pattern(database, prefixes, s, p, o, GraphScope::Default);
-        rows = join_binding_rows(rows, matches);
-    }
-
-    for block in parsed.graph_blocks {
-        let scope = if block.graph_term.starts_with('?') {
-            GraphScope::NamedVariable {
-                variable: normalize_var(block.graph_term),
-                visible_graphs: if parsed.from_named.is_empty() {
-                    None
-                } else {
-                    Some(parsed.from_named.clone())
-                },
-            }
-        } else {
-            let graph = graph_id_from_term(block.graph_term, database, prefixes)?;
-            if !parsed.from_named.is_empty() && !parsed.from_named.contains(&graph) {
-                return Some(Vec::new());
-            }
-            GraphScope::Named(graph)
-        };
-
-        for (s, p, o) in block.patterns {
-            let matches = query_dataset_pattern(database, prefixes, s, p, o, scope.clone());
-            rows = join_binding_rows(rows, matches);
-        }
-    }
-
-    let select_vars: Vec<String> = if parsed.select_vars == vec!["*"] {
-        let mut vars = BTreeSet::new();
-        for row in &rows {
-            vars.extend(row.keys().cloned());
-        }
-        vars.into_iter().collect()
-    } else {
-        parsed
-            .select_vars
-            .iter()
-            .map(|var| normalize_var(var))
-            .collect()
-    };
-
-    let dict = database.dictionary.read().unwrap();
-    Some(
-        rows.into_iter()
-            .map(|row| {
-                select_vars
-                    .iter()
-                    .map(|var| {
-                        row.get(var)
-                            .and_then(|id| dict.decode(*id))
-                            .unwrap_or("")
-                            .to_string()
-                    })
-                    .collect()
-            })
-            .collect(),
-    )
-}
-
-fn query_dataset_pattern(
+fn instantiate_quad_template(
+    template: &[SparqlQuadPattern<'_>],
+    binding: &StrictBinding,
     database: &SparqlDatabase,
     prefixes: &HashMap<String, String>,
-    subject: &str,
-    predicate: &str,
-    object: &str,
-    scope: GraphScope,
-) -> Vec<HashMap<String, u32>> {
-    let (subject, predicate, object) =
-        resolve_triple_pattern(subject, predicate, object, database, prefixes);
-    let s = bound_id(&subject, database);
-    let p = bound_id(&predicate, database);
-    let o = bound_id(&object, database);
-
-    match scope {
-        GraphScope::Default => database
-            .dataset_index
-            .query_default(s, p, o)
-            .into_iter()
-            .filter_map(|triple| bind_triple_pattern(&subject, &predicate, &object, &triple))
-            .collect(),
-        GraphScope::Named(graph) => database
-            .dataset_index
-            .query_graph(graph, s, p, o)
-            .into_iter()
-            .filter_map(|quad| bind_triple_pattern(&subject, &predicate, &object, &quad.triple()))
-            .collect(),
-        GraphScope::NamedVariable {
-            variable,
-            visible_graphs,
-        } => database
-            .dataset_index
-            .query_named_graphs(s, p, o, visible_graphs.as_ref())
-            .into_iter()
-            .filter_map(|quad| {
-                let mut row = bind_triple_pattern(&subject, &predicate, &object, &quad.triple())?;
-                if let GraphId::Named(graph_id) = quad.graph {
-                    row.insert(variable.clone(), graph_id);
-                }
-                Some(row)
-            })
-            .collect(),
-    }
-}
-
-fn bind_triple_pattern(
-    subject: &str,
-    predicate: &str,
-    object: &str,
-    triple: &Triple,
-) -> Option<HashMap<String, u32>> {
-    let mut row = HashMap::new();
-    bind_term(subject, triple.subject, &mut row)?;
-    bind_term(predicate, triple.predicate, &mut row)?;
-    bind_term(object, triple.object, &mut row)?;
-    Some(row)
-}
-
-fn bind_term(term: &str, value: u32, row: &mut HashMap<String, u32>) -> Option<()> {
-    if term.starts_with('?') {
-        let key = normalize_var(term);
-        if let Some(existing) = row.get(&key) {
-            if *existing != value {
-                return None;
-            }
-        } else {
-            row.insert(key, value);
-        }
-    }
-    Some(())
-}
-
-fn join_binding_rows(
-    left: Vec<HashMap<String, u32>>,
-    right: Vec<HashMap<String, u32>>,
-) -> Vec<HashMap<String, u32>> {
-    let mut joined = Vec::new();
-    for left_row in left {
-        for right_row in &right {
-            if rows_compatible(&left_row, right_row) {
-                let mut row = left_row.clone();
-                row.extend(right_row.iter().map(|(k, v)| (k.clone(), *v)));
-                joined.push(row);
-            }
-        }
-    }
-    joined
-}
-
-fn rows_compatible(left: &HashMap<String, u32>, right: &HashMap<String, u32>) -> bool {
-    right
-        .iter()
-        .all(|(key, value)| left.get(key).map_or(true, |left_value| left_value == value))
-}
-
-fn bound_id(term: &str, database: &SparqlDatabase) -> Option<u32> {
-    if term.starts_with('?') {
-        None
-    } else {
-        Some(database.encode_term_star(term))
-    }
-}
-
-fn parse_dataset_graph_select<'a>(
-    sparql: &'a str,
-    database: &SparqlDatabase,
-    prefixes: &HashMap<String, String>,
-) -> Option<ParsedGraphQuery<'a>> {
-    let select_start = find_keyword_ascii(sparql, "SELECT")?;
-    let where_start = find_keyword_ascii(sparql, "WHERE")?;
-    let select_part = sparql[select_start + "SELECT".len()..where_start].trim();
-    let select_without_from = select_part
-        .split("FROM NAMED")
-        .next()
-        .unwrap_or(select_part)
-        .trim();
-    let select_vars = if select_without_from == "*" {
-        vec!["*"]
-    } else {
-        select_without_from
-            .split_whitespace()
-            .filter(|var| var.starts_with('?'))
-            .collect()
-    };
-
-    let from_named =
-        parse_from_named_graphs(&sparql[select_start..where_start], database, prefixes);
-    let where_body = extract_braced_body_after_keyword(sparql, "WHERE")?;
-    let (default_patterns, graph_blocks) = split_default_and_graph_blocks(where_body);
-
-    Some(ParsedGraphQuery {
-        select_vars,
-        default_patterns,
-        graph_blocks,
-        from_named,
-    })
-}
-
-fn collect_prefixes(sparql: &str, database: &SparqlDatabase) -> HashMap<String, String> {
-    let mut prefixes = database.prefixes.clone();
-    let mut input = sparql;
-    while let Ok((rest, (prefix, iri))) = parse_prefix(input) {
-        prefixes.insert(prefix.to_string(), iri.to_string());
-        input = rest;
-    }
-    prefixes
-}
-
-fn parse_from_named_graphs(
-    text: &str,
-    database: &SparqlDatabase,
-    prefixes: &HashMap<String, String>,
-) -> HashSet<GraphId> {
-    let mut graphs = HashSet::new();
-    let mut cursor = 0;
-    let upper = text.to_ascii_uppercase();
-    while let Some(relative) = upper[cursor..].find("FROM NAMED") {
-        let start = cursor + relative + "FROM NAMED".len();
-        let rest = text[start..].trim_start();
-        if rest.to_ascii_uppercase().starts_with("WINDOW") {
-            cursor = start;
+    mut mode: TemplateMode<'_>,
+) -> Result<Vec<Quad>, String> {
+    let mut quads = Vec::new();
+    for pattern in template {
+        let Some(graph) = instantiate_graph_name(
+            pattern.graph.as_ref(),
+            binding,
+            database,
+            prefixes,
+            &mode,
+        )? else {
             continue;
-        }
-        if let Some((graph_term, consumed)) = read_graph_term(rest) {
-            if let Some(graph_id) = graph_id_from_term(graph_term, database, prefixes) {
-                graphs.insert(graph_id);
-            }
-            cursor = start + consumed;
-        } else {
-            cursor = start;
-        }
+        };
+        let Some(subject) = instantiate_template_term(
+            &pattern.triple.subject,
+            binding,
+            database,
+            prefixes,
+            &mut mode,
+        )? else {
+            continue;
+        };
+        let Some(predicate) = instantiate_template_term(
+            &pattern.triple.predicate,
+            binding,
+            database,
+            prefixes,
+            &mut mode,
+        )? else {
+            continue;
+        };
+        let Some(object) = instantiate_template_term(
+            &pattern.triple.object,
+            binding,
+            database,
+            prefixes,
+            &mut mode,
+        )? else {
+            continue;
+        };
+        quads.push(Quad {
+            subject,
+            predicate,
+            object,
+            graph,
+        });
     }
-    graphs
+    Ok(quads)
 }
 
-fn split_default_and_graph_blocks<'a>(
-    body: &'a str,
-) -> (Vec<(&'a str, &'a str, &'a str)>, Vec<ParsedGraphBlock<'a>>) {
-    let mut default_text = String::new();
-    let mut default_ranges = Vec::new();
-    let mut graph_blocks = Vec::new();
-    let mut cursor = 0;
-    let upper = body.to_ascii_uppercase();
-
-    while let Some(relative) = upper[cursor..].find("GRAPH") {
-        let graph_start = cursor + relative;
-        default_ranges.push((cursor, graph_start));
-        let after_graph = graph_start + "GRAPH".len();
-        let rest = body[after_graph..].trim_start();
-        if let Some((graph_term, consumed)) = read_graph_term(rest) {
-            let term_start = after_graph + (body[after_graph..].len() - rest.len());
-            let after_term = term_start + consumed;
-            if let Some((content_start, content_end)) = braced_range(&body[after_term..]) {
-                let absolute_start = after_term + content_start;
-                let absolute_end = after_term + content_end;
-                let content = &body[absolute_start + 1..absolute_end];
-                graph_blocks.push(ParsedGraphBlock {
-                    graph_term,
-                    patterns: parse_pattern_text(content),
-                });
-                cursor = absolute_end + 1;
-                continue;
-            }
-        }
-        cursor = after_graph;
+fn instantiate_graph_name(
+    graph: Option<&SparqlGraphName<'_>>,
+    binding: &StrictBinding,
+    database: &SparqlDatabase,
+    prefixes: &HashMap<String, String>,
+    mode: &TemplateMode<'_>,
+) -> Result<Option<GraphId>, String> {
+    let Some(graph) = graph else {
+        return Ok(Some(GraphId::Default));
+    };
+    if let SparqlGraphName::Variable(variable) = graph {
+        return Ok(binding.get(*variable).copied().map(GraphId::Named));
     }
-    default_ranges.push((cursor, body.len()));
-
-    for (start, end) in default_ranges {
-        default_text.push_str(&body[start..end]);
-        default_text.push(' ');
-    }
-
-    let leaked_default_text: &'static str = Box::leak(default_text.into_boxed_str());
-    (parse_pattern_text(leaked_default_text), graph_blocks)
+    let value = graph_name_value(graph, database, prefixes)
+        .ok_or_else(|| "invalid graph name in update template".to_string())?;
+    let id = match mode {
+        TemplateMode::Delete => database
+            .dictionary
+            .read()
+            .map_err(|_| "dictionary lock is poisoned".to_string())?
+            .string_to_id
+            .get(&value)
+            .copied(),
+        TemplateMode::Insert { .. } => Some(
+            database
+                .dictionary
+                .write()
+                .map_err(|_| "dictionary lock is poisoned".to_string())?
+                .encode(&value),
+        ),
+    };
+    Ok(id.map(GraphId::Named))
 }
 
-fn parse_pattern_text(input: &str) -> Vec<(&str, &str, &str)> {
-    let mut current = input.trim();
-    let mut patterns = Vec::new();
-
-    while !current.is_empty() {
-        match parse_triple_block(current) {
-            Ok((rest, triples)) => {
-                patterns.extend(triples);
-                current = rest.trim_start();
-                if let Some(after_dot) = current.strip_prefix('.') {
-                    current = after_dot.trim_start();
+fn instantiate_template_term(
+    term: &SparqlTerm<'_>,
+    binding: &StrictBinding,
+    database: &SparqlDatabase,
+    prefixes: &HashMap<String, String>,
+    mode: &mut TemplateMode<'_>,
+) -> Result<Option<u32>, String> {
+    match term {
+        SparqlTerm::Variable(variable) => Ok(binding.get(*variable).copied()),
+        SparqlTerm::BlankNode(label) => match mode {
+            TemplateMode::Delete => Ok(None),
+            TemplateMode::Insert {
+                blank_nodes,
+                nonce,
+            } => {
+                if let Some(id) = blank_nodes.get(*label) {
+                    return Ok(Some(*id));
                 }
+                let id = encode_fresh_blank_node(database, label, nonce)?;
+                blank_nodes.insert((*label).to_string(), id);
+                Ok(Some(id))
             }
-            Err(_) => break,
+        },
+        _ => {
+            let Some(value) = term_storage_value(term, database, prefixes) else {
+                return Ok(None);
+            };
+            match mode {
+                TemplateMode::Delete => Ok(database
+                    .dictionary
+                    .read()
+                    .map_err(|_| "dictionary lock is poisoned".to_string())?
+                    .string_to_id
+                    .get(&value)
+                    .copied()),
+                TemplateMode::Insert { .. } => Ok(Some(database.encode_term_star(&value))),
+            }
         }
     }
-
-    patterns
 }
 
-fn extract_braced_body_after_keyword<'a>(text: &'a str, keyword: &str) -> Option<&'a str> {
-    let keyword_start = find_keyword_ascii(text, keyword)?;
-    let after_keyword = &text[keyword_start + keyword.len()..];
-    let (start, end) = braced_range(after_keyword)?;
-    Some(&after_keyword[start + 1..end])
-}
-
-fn braced_range(text: &str) -> Option<(usize, usize)> {
-    let start = text.find('{')?;
-    let mut depth = 0usize;
-    for (idx, ch) in text[start..].char_indices() {
-        match ch {
-            '{' => depth += 1,
-            '}' => {
-                depth -= 1;
-                if depth == 0 {
-                    return Some((start, start + idx));
-                }
-            }
-            _ => {}
+fn encode_fresh_blank_node(
+    database: &SparqlDatabase,
+    label: &str,
+    nonce: &mut u64,
+) -> Result<u32, String> {
+    let mut dictionary = database
+        .dictionary
+        .write()
+        .map_err(|_| "dictionary lock is poisoned".to_string())?;
+    loop {
+        *nonce += 1;
+        let candidate = format!("_:kolibrie-update-{}-{label}", *nonce);
+        if !dictionary.string_to_id.contains_key(&candidate) {
+            return Ok(dictionary.encode(&candidate));
         }
     }
-    None
 }
 
-fn read_graph_term(input: &str) -> Option<(&str, usize)> {
-    let trimmed_len = input.len() - input.trim_start().len();
-    let input = input.trim_start();
-    if input.starts_with('<') {
-        let end = input.find('>')?;
-        Some((&input[..=end], trimmed_len + end + 1))
-    } else {
-        let end = input.find(char::is_whitespace).unwrap_or(input.len());
-        Some((&input[..end], trimmed_len + end))
+fn apply_deletions(
+    database: &mut SparqlDatabase,
+    quads: Vec<Quad>,
+    summary: &mut UpdateSummary,
+) {
+    let mut seen = HashSet::new();
+    for quad in quads {
+        if seen.insert(quad.clone()) && database.delete_quad(&quad) {
+            summary.deleted_quads += 1;
+        }
     }
 }
 
-fn graph_id_from_term(
-    term: &str,
+fn apply_insertions(
+    database: &mut SparqlDatabase,
+    quads: Vec<Quad>,
+    summary: &mut UpdateSummary,
+) {
+    let mut seen = HashSet::new();
+    for quad in quads {
+        if seen.insert(quad.clone()) && database.add_quad(quad) {
+            summary.inserted_quads += 1;
+        }
+    }
+}
+
+fn lookup_graph_name(
+    graph: &SparqlGraphName<'_>,
     database: &SparqlDatabase,
     prefixes: &HashMap<String, String>,
 ) -> Option<GraphId> {
-    if term.starts_with('?') {
-        return None;
+    let value = graph_name_value(graph, database, prefixes)?;
+    database
+        .dictionary
+        .read()
+        .ok()?
+        .string_to_id
+        .get(&value)
+        .copied()
+        .map(GraphId::Named)
+}
+
+fn graph_name_value(
+    graph: &SparqlGraphName<'_>,
+    database: &SparqlDatabase,
+    prefixes: &HashMap<String, String>,
+) -> Option<String> {
+    match graph {
+        SparqlGraphName::Iri(iri) => Some((*iri).to_string()),
+        SparqlGraphName::PrefixedName(name) => {
+            Some(database.resolve_query_term(name, prefixes))
+        }
+        SparqlGraphName::Variable(_) => None,
     }
-    let resolved = database.resolve_query_term(term, prefixes);
-    let graph_id = {
-        let mut dict = database.dictionary.write().unwrap();
-        dict.encode(&resolved)
+}
+
+fn term_storage_value(
+    term: &SparqlTerm<'_>,
+    database: &SparqlDatabase,
+    prefixes: &HashMap<String, String>,
+) -> Option<String> {
+    match term {
+        SparqlTerm::Variable(_) => None,
+        SparqlTerm::Iri(iri) => Some((*iri).to_string()),
+        SparqlTerm::PrefixedName(name) => Some(database.resolve_query_term(name, prefixes)),
+        SparqlTerm::BlankNode(label) => Some(format!("_:{label}")),
+        SparqlTerm::Literal(literal) => Some(legacy_literal_value(literal)),
+        SparqlTerm::QuotedTriple(value) => Some((*value).to_string()),
+        SparqlTerm::A => {
+            Some("http://www.w3.org/1999/02/22-rdf-syntax-ns#type".to_string())
+        }
+    }
+}
+
+fn legacy_literal_value(literal: &str) -> String {
+    let literal = literal.trim();
+    let Some(rest) = literal.strip_prefix('"') else {
+        return literal.to_string();
     };
-    Some(GraphId::Named(graph_id))
+    let mut escaped = false;
+    let mut value = String::new();
+    for character in rest.chars() {
+        if escaped {
+            value.push(character);
+            escaped = false;
+        } else if character == '\\' {
+            escaped = true;
+        } else if character == '"' {
+            break;
+        } else {
+            value.push(character);
+        }
+    }
+    value
 }
 
-fn find_keyword_ascii(text: &str, keyword: &str) -> Option<usize> {
-    text.to_ascii_uppercase().find(keyword)
-}
-
-fn normalize_var(var: &str) -> String {
-    var.trim_start_matches('?').to_string()
+fn is_recursive_sparql_request(sparql: &str) -> bool {
+    let trimmed = sparql.trim_start();
+    let upper = trimmed.to_ascii_uppercase();
+    upper.starts_with("INSERT")
+        || upper.starts_with("DELETE")
+        || upper.contains(" GRAPH ")
+        || upper.contains(" UNION ")
 }
 
 // Helper function to normalize the query by removing any RULE prefix

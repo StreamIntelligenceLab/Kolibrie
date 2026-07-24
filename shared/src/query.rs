@@ -345,3 +345,136 @@ pub struct CombinedQuery<'a> {
     ),
     pub delete_clause: Option<DeleteClause<'a>>,
 }
+
+// ---------------------------------------------------------------------------
+// Strict SPARQL query/update syntax tree
+// ---------------------------------------------------------------------------
+
+/// A term in the strict SPARQL parser.
+///
+/// The variants deliberately retain slices into the source query so parsing
+/// remains allocation-light and callers can report useful source locations.
+/// IRI values do not include `<` and `>`, variable and blank-node values do
+/// not include their `?`/`$` and `_:` prefixes, prefixed names retain their
+/// complete lexical form, and literals retain their complete lexical form
+/// (quotes, escapes, language tag, and datatype suffix included).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SparqlTerm<'a> {
+    Variable(&'a str),
+    Iri(&'a str),
+    PrefixedName(&'a str),
+    BlankNode(&'a str),
+    Literal(&'a str),
+    QuotedTriple(&'a str),
+    /// The predicate abbreviation `a`.
+    A,
+}
+
+/// The name following `GRAPH`.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub enum SparqlGraphName<'a> {
+    /// The IRI value without angle brackets.
+    Iri(&'a str),
+    /// The complete prefixed name, for example `ex:graph`.
+    PrefixedName(&'a str),
+    /// The variable name without its `?` or `$` sigil.
+    Variable(&'a str),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SparqlTriplePattern<'a> {
+    pub subject: SparqlTerm<'a>,
+    pub predicate: SparqlTerm<'a>,
+    pub object: SparqlTerm<'a>,
+}
+
+/// Recursive graph-pattern algebra for Kolibrie's SELECT/WHERE fragment.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum GroupGraphPattern<'a> {
+    /// The empty group pattern. It evaluates to one solution mapping.
+    Empty,
+    Bgp(Vec<SparqlTriplePattern<'a>>),
+    Join(Vec<GroupGraphPattern<'a>>),
+    Union(Vec<GroupGraphPattern<'a>>),
+    Graph {
+        name: SparqlGraphName<'a>,
+        pattern: Box<GroupGraphPattern<'a>>,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SparqlProjection<'a> {
+    All,
+    /// Variable names without their `?` or `$` sigils.
+    Variables(Vec<&'a str>),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StrictSelectQuery<'a> {
+    pub prefixes: HashMap<String, String>,
+    pub distinct: bool,
+    pub projection: SparqlProjection<'a>,
+    /// Named graphs visible to `GRAPH` when explicit `FROM NAMED` clauses are
+    /// present. An empty vector means no dataset replacement was requested.
+    pub from_named: Vec<SparqlGraphName<'a>>,
+    pub pattern: GroupGraphPattern<'a>,
+    pub limit: Option<usize>,
+}
+
+/// A template/data quad. `graph == None` denotes the default graph.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SparqlQuadPattern<'a> {
+    pub graph: Option<SparqlGraphName<'a>>,
+    pub triple: SparqlTriplePattern<'a>,
+}
+
+/// The deliberately scoped SPARQL 1.1 Update operation family supported by
+/// Kolibrie's strict parser.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum StrictUpdateOperation<'a> {
+    InsertData(Vec<SparqlQuadPattern<'a>>),
+    DeleteData(Vec<SparqlQuadPattern<'a>>),
+    Modify {
+        /// Empty for INSERT-only MODIFY.
+        delete: Vec<SparqlQuadPattern<'a>>,
+        /// Empty for DELETE-only MODIFY.
+        insert: Vec<SparqlQuadPattern<'a>>,
+        where_pattern: GroupGraphPattern<'a>,
+    },
+    DeleteWhere {
+        template: Vec<SparqlQuadPattern<'a>>,
+        where_pattern: GroupGraphPattern<'a>,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StrictUpdateRequest<'a> {
+    pub prefixes: HashMap<String, String>,
+    pub operation: StrictUpdateOperation<'a>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum StrictSparqlRequest<'a> {
+    Select(StrictSelectQuery<'a>),
+    Update(StrictUpdateRequest<'a>),
+}
+
+/// A source-positioned error returned by
+/// `kolibrie::parser::parse_strict_sparql`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StrictSparqlParseError {
+    pub offset: usize,
+    pub message: String,
+}
+
+impl std::fmt::Display for StrictSparqlParseError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            formatter,
+            "SPARQL syntax error at byte {}: {}",
+            self.offset, self.message
+        )
+    }
+}
+
+impl std::error::Error for StrictSparqlParseError {}

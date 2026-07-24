@@ -208,6 +208,51 @@ for row in results {
 }
 ```
 
+#### Benannte Graphen, `GRAPH` und `UNION`
+
+Kolibries bestehender SPARQL-Parser unterstützt rekursive `GRAPH`-Muster mit
+festen oder variablen Graphnamen, verschachtelten Gruppen und Multimengen-`UNION`:
+
+```rust
+let rows = execute_query_rayon_parallel2_volcano(
+    r#"
+    PREFIX ex: <http://example.org/>
+    SELECT DISTINCT ?g ?item WHERE {
+        { GRAPH ?g { ?item ex:status "active" } }
+        UNION
+        { GRAPH ?g { { ?item ex:status "pending" } } }
+    }
+    "#,
+    &mut db,
+);
+```
+
+`GRAPH <name>` liest ausschließlich diesen benannten Graphen. `GRAPH ?g`
+durchläuft die Identitäten benannter Graphen und bindet `?g`; der Standardgraph
+ist dabei niemals enthalten. Ohne `DISTINCT` bleiben doppelte Lösungen, die
+durch `UNION` entstehen, erhalten.
+
+#### Unterstützte SPARQL-Update-Formen
+
+Die fehlererhaltende Rust-API akzeptiert die folgenden Update-Formen. Templates
+für den Standardgraphen und benannte Graphen können in derselben Operation
+kombiniert werden.
+
+```rust
+db.execute_update(r#"
+    PREFIX ex: <http://example.org/>
+    DELETE { ?s ex:oldValue ?value }
+    INSERT { GRAPH ex:archive { ?s ex:value ?value } }
+    WHERE  { ?s ex:oldValue ?value }
+"#)?;
+```
+
+Unterstützt werden `INSERT DATA`, `DELETE DATA`, `INSERT ... WHERE`,
+`DELETE ... WHERE`, kombiniertes `DELETE/INSERT ... WHERE` und `DELETE WHERE`.
+Das `WHERE`-Muster wird einmal ausgewertet, bevor Änderungen angewendet werden;
+dabei werden Löschungen vor Einfügungen ausgeführt. Python stellt dasselbe
+Verhalten über `SparqlDatabase.update()` bereit.
+
 #### Abfrage mit FILTER
 
 ```rust

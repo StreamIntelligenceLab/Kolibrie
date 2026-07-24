@@ -65,6 +65,10 @@ pub struct DatasetIndex {
     gosp: GraphNestedIndex,
     // Triple-to-graph index for GRAPH ?g and membership checks.
     spog: SpoGraphIndex,
+    // Graph identity is independent from graph contents. `serde(default)` keeps
+    // indexes written before the catalog was introduced readable.
+    #[serde(default)]
+    named_graphs: HashSet<u32>,
 }
 
 impl DatasetIndex {
@@ -103,6 +107,10 @@ impl DatasetIndex {
     }
 
     pub fn insert_quad(&mut self, quad: &Quad) -> bool {
+        if let GraphId::Named(graph) = quad.graph {
+            self.named_graphs.insert(graph);
+        }
+
         if self.contains_quad(quad) {
             return false;
         }
@@ -152,6 +160,12 @@ impl DatasetIndex {
     pub fn delete_quad(&mut self, quad: &Quad) -> bool {
         if !self.contains_quad(quad) {
             return false;
+        }
+
+        if let GraphId::Named(graph) = quad.graph {
+            // Materialize graph identity before deleting the last quad from an
+            // index deserialized from the pre-catalog representation.
+            self.named_graphs.insert(graph);
         }
 
         let Quad {
@@ -375,15 +389,83 @@ impl DatasetIndex {
     }
 
     pub fn graph_exists(&self, graph: GraphId) -> bool {
-        self.gspo.contains_key(&graph)
+        match graph {
+            GraphId::Default => true,
+            GraphId::Named(graph) => {
+                self.named_graphs.contains(&graph)
+                    // Non-empty graphs in indexes serialized before the graph
+                    // catalog was added remain discoverable.
+                    || self.gspo.contains_key(&GraphId::Named(graph))
+            }
+        }
     }
 
     pub fn named_graphs(&self) -> Vec<GraphId> {
-        self.gspo
-            .keys()
-            .copied()
-            .filter(|graph| *graph != GraphId::Default)
-            .collect()
+        let mut graphs: HashSet<u32> = self.named_graphs.clone();
+        graphs.extend(self.gspo.keys().filter_map(|graph| match graph {
+            GraphId::Default => None,
+            GraphId::Named(graph) => Some(*graph),
+        }));
+
+        let mut graphs: Vec<_> = graphs.into_iter().map(GraphId::Named).collect();
+        graphs.sort_unstable();
+        graphs
+    }
+
+    /// Returns every graph identity, including the always-present default
+    /// graph and named graphs without any quads.
+    pub fn graphs(&self) -> Vec<GraphId> {
+        let mut graphs = vec![GraphId::Default];
+        graphs.extend(self.named_graphs());
+        graphs
+    }
+
+    /// Creates a graph identity without requiring a quad to be inserted.
+    ///
+    /// Returns `true` only when a new named graph was created. The default
+    /// graph always exists and therefore returns `false`.
+    pub fn create_graph(&mut self, graph: GraphId) -> bool {
+        match graph {
+            GraphId::Default => false,
+            GraphId::Named(graph) => {
+                let existed = self.graph_exists(GraphId::Named(graph));
+                self.named_graphs.insert(graph);
+                !existed
+            }
+        }
+    }
+
+    /// Drops a graph identity and all of its quads.
+    ///
+    /// Dropping the default graph clears it but cannot remove its identity.
+    /// A missing named graph returns `false`.
+    pub fn drop_graph(&mut self, graph: GraphId) -> bool {
+        match graph {
+            GraphId::Default => {
+                self.clear_graph(GraphId::Default);
+                true
+            }
+            GraphId::Named(graph_id) => {
+                let graph = GraphId::Named(graph_id);
+                if !self.graph_exists(graph) {
+                    return false;
+                }
+                self.clear_graph(graph);
+                self.named_graphs.remove(&graph_id);
+                true
+            }
+        }
+    }
+
+    /// Returns a complete, deterministic quad snapshot suitable for rebuilding
+    /// all indexes without collapsing named graphs into the default graph.
+    pub fn all_quads(&self) -> Vec<Quad> {
+        let mut quads = Vec::new();
+        for graph in self.graphs() {
+            quads.extend(self.query_graph(graph, None, None, None));
+        }
+        quads.sort_unstable();
+        quads
     }
 
     pub fn graphs_for_triple(&self, triple: &Triple) -> Vec<GraphId> {
@@ -396,6 +478,14 @@ impl DatasetIndex {
     }
 
     pub fn clear_graph(&mut self, graph: GraphId) {
+        // Clearing a named graph retains its identity, including for an old
+        // deserialized index whose catalog is populated lazily.
+        if let GraphId::Named(graph_id) = graph {
+            if self.graph_exists(graph) {
+                self.named_graphs.insert(graph_id);
+            }
+        }
+
         let quads = self.query_graph(graph, None, None, None);
         for quad in quads {
             self.delete_quad(&quad);
@@ -407,6 +497,7 @@ impl DatasetIndex {
         self.gpos.clear();
         self.gosp.clear();
         self.spog.clear();
+        self.named_graphs.clear();
     }
 
     pub fn len_graph(&self, graph: GraphId) -> usize {
@@ -544,5 +635,130 @@ mod tests {
         assert!(index.delete_quad(&q1));
         assert!(!index.contains_quad(&q1));
         assert!(index.contains_quad(&q2));
+    }
+
+    #[test]
+    fn default_graph_always_exists() {
+        let mut index = DatasetIndex::new();
+        assert!(index.graph_exists(GraphId::Default));
+        assert_eq!(index.graphs(), vec![GraphId::Default]);
+        assert!(!index.create_graph(GraphId::Default));
+
+        index.insert_triple(&triple(1, 2, 3));
+        assert!(index.drop_graph(GraphId::Default));
+        assert!(index.graph_exists(GraphId::Default));
+        assert!(index.query_default(None, None, None).is_empty());
+    }
+
+    #[test]
+    fn empty_named_graph_has_an_identity() {
+        let mut index = DatasetIndex::new();
+        let graph = GraphId::Named(42);
+
+        assert!(index.create_graph(graph));
+        assert!(!index.create_graph(graph));
+        assert!(index.graph_exists(graph));
+        assert_eq!(index.named_graphs(), vec![graph]);
+        assert_eq!(index.graphs(), vec![GraphId::Default, graph]);
+        assert!(index.query_graph(graph, None, None, None).is_empty());
+    }
+
+    #[test]
+    fn insert_and_delete_preserve_named_graph_identity() {
+        let mut index = DatasetIndex::new();
+        let quad = Quad {
+            subject: 1,
+            predicate: 2,
+            object: 3,
+            graph: GraphId::Named(10),
+        };
+
+        assert!(index.insert_quad(&quad));
+        assert!(index.graph_exists(quad.graph));
+        assert!(index.delete_quad(&quad));
+        assert!(index.graph_exists(quad.graph));
+        assert_eq!(index.named_graphs(), vec![quad.graph]);
+    }
+
+    #[test]
+    fn deleting_from_legacy_index_materializes_graph_identity() {
+        let mut index = DatasetIndex::new();
+        let quad = Quad {
+            subject: 1,
+            predicate: 2,
+            object: 3,
+            graph: GraphId::Named(10),
+        };
+        index.insert_quad(&quad);
+        // Models deserialization of the representation from before the
+        // explicit catalog was added.
+        index.named_graphs.clear();
+
+        assert!(index.delete_quad(&quad));
+        assert!(index.graph_exists(quad.graph));
+        assert_eq!(index.named_graphs(), vec![quad.graph]);
+    }
+
+    #[test]
+    fn clear_graph_retains_identity_and_drop_removes_it() {
+        let mut index = DatasetIndex::new();
+        let graph = GraphId::Named(10);
+        index.insert_quad(&Quad {
+            subject: 1,
+            predicate: 2,
+            object: 3,
+            graph,
+        });
+
+        index.clear_graph(graph);
+        assert!(index.graph_exists(graph));
+        assert!(index.query_graph(graph, None, None, None).is_empty());
+
+        assert!(index.drop_graph(graph));
+        assert!(!index.graph_exists(graph));
+        assert!(!index.drop_graph(graph));
+    }
+
+    #[test]
+    fn clear_resets_named_graph_catalog() {
+        let mut index = DatasetIndex::new();
+        let graph = GraphId::Named(10);
+        index.insert_quad(&Quad {
+            subject: 1,
+            predicate: 2,
+            object: 3,
+            graph,
+        });
+
+        index.clear();
+        assert!(!index.graph_exists(graph));
+        assert_eq!(index.graphs(), vec![GraphId::Default]);
+        assert!(index.all_quads().is_empty());
+    }
+
+    #[test]
+    fn all_quads_keeps_default_and_named_graph_scope() {
+        let mut index = DatasetIndex::new();
+        let default_quad = Quad {
+            subject: 1,
+            predicate: 2,
+            object: 3,
+            graph: GraphId::Default,
+        };
+        let named_quad = Quad {
+            subject: 1,
+            predicate: 2,
+            object: 3,
+            graph: GraphId::Named(10),
+        };
+        index.insert_quad(&default_quad);
+        index.insert_quad(&named_quad);
+        index.create_graph(GraphId::Named(11));
+
+        assert_eq!(index.all_quads(), vec![default_quad, named_quad]);
+        assert_eq!(
+            index.graphs(),
+            vec![GraphId::Default, GraphId::Named(10), GraphId::Named(11)]
+        );
     }
 }

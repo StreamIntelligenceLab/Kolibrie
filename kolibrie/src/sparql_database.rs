@@ -3326,10 +3326,35 @@ impl SparqlDatabase {
         result
     }
 
+    /// Execute one of Kolibrie's supported standard SPARQL Update forms while
+    /// preserving parse/evaluation errors for Rust callers.
+    pub fn execute_update(
+        &mut self,
+        update: &str,
+    ) -> Result<crate::execute_query::UpdateSummary, String> {
+        crate::execute_query::execute_sparql_update(update, self)
+    }
+
     pub fn handle_update(&mut self, update: &str) -> String {
+        if let Ok(summary) = self.execute_update(update) {
+            return format!(
+                "Update Successful (inserted {}, deleted {})",
+                summary.inserted_quads, summary.deleted_quads
+            );
+        }
+
+        // Compatibility path for the historical non-standard standalone
+        // `INSERT { ... }` and `DELETE { ... }` aliases.
         use crate::parser::{parse_delete, parse_insert};
 
         let trimmed = update.trim();
+        let upper = trimmed.to_ascii_uppercase();
+        if upper.contains("WHERE")
+            || upper.starts_with("INSERT DATA")
+            || upper.starts_with("DELETE DATA")
+        {
+            return "Update Failed".to_string();
+        }
         if trimmed.starts_with("INSERT") {
             if let Ok((_, insert_clause)) = parse_insert(trimmed) {
                 for (subject, predicate, object) in insert_clause.triples {
@@ -3445,13 +3470,19 @@ impl SparqlDatabase {
         self.udfs.insert(name.to_string(), ClonableFn::new(f));
     }
 
-    /// Rebuild all indexes from the current default graph compatibility view.
+    /// Rebuild every graph-scoped index without collapsing named graphs into
+    /// the default graph or losing empty named-graph identities.
     pub fn build_all_indexes(&mut self) {
-        let triples: Vec<Triple> = self.query_default_triples(None, None, None);
-        self.dataset_index.clear();
-        for triple in &triples {
-            self.dataset_index.insert_triple(triple);
+        let quads = self.dataset_index.all_quads();
+        let named_graphs = self.dataset_index.named_graphs();
+        let mut rebuilt = DatasetIndex::new();
+        for graph in named_graphs {
+            rebuilt.create_graph(graph);
         }
+        for quad in quads {
+            rebuilt.insert_quad(&quad);
+        }
+        self.dataset_index = rebuilt;
     }
 
     /// Triple to string

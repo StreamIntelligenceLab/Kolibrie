@@ -204,6 +204,51 @@ for row in results {
 }
 ```
 
+#### Benoemde grafen, `GRAPH` en `UNION`
+
+Kolibries bestaande SPARQL-parser ondersteunt recursieve `GRAPH`-patronen met
+vaste of variabele graafnamen, geneste groepen en multiset-`UNION`:
+
+```rust
+let rows = execute_query_rayon_parallel2_volcano(
+    r#"
+    PREFIX ex: <http://example.org/>
+    SELECT DISTINCT ?g ?item WHERE {
+        { GRAPH ?g { ?item ex:status "active" } }
+        UNION
+        { GRAPH ?g { { ?item ex:status "pending" } } }
+    }
+    "#,
+    &mut db,
+);
+```
+
+`GRAPH <name>` leest uitsluitend die benoemde graaf. `GRAPH ?g` doorloopt de
+identiteiten van benoemde grafen en bindt `?g`; de standaardgraaf wordt nooit
+meegenomen. Zonder `DISTINCT` blijven dubbele oplossingen die door `UNION`
+worden opgeleverd behouden.
+
+#### Ondersteunde SPARQL Update-vormen
+
+De foutbehoudende Rust-API accepteert de onderstaande reeks Update-vormen.
+Templates voor de standaardgraaf en benoemde grafen kunnen in dezelfde
+bewerking worden gecombineerd.
+
+```rust
+db.execute_update(r#"
+    PREFIX ex: <http://example.org/>
+    DELETE { ?s ex:oldValue ?value }
+    INSERT { GRAPH ex:archive { ?s ex:value ?value } }
+    WHERE  { ?s ex:oldValue ?value }
+"#)?;
+```
+
+Ondersteunde vormen zijn `INSERT DATA`, `DELETE DATA`, `INSERT ... WHERE`,
+`DELETE ... WHERE`, gecombineerd `DELETE/INSERT ... WHERE` en `DELETE WHERE`.
+Het `WHERE`-patroon wordt eenmaal geëvalueerd voordat wijzigingen worden
+toegepast, waarbij verwijderingen vóór invoegingen plaatsvinden. Python biedt
+hetzelfde gedrag via `SparqlDatabase.update()`.
+
 #### Query met FILTER
 
 ```rust

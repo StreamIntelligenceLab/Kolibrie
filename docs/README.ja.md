@@ -200,6 +200,41 @@ for row in results {
 }
 ```
 
+#### 名前付きグラフ、`GRAPH`、`UNION`
+
+Kolibrie の既存の SPARQL パーサーは、固定または変数のグラフ名、ネストしたグループ、およびマルチセット（重複を保持する）`UNION` を含む再帰的な `GRAPH` パターンをサポートします。
+
+```rust
+let rows = execute_query_rayon_parallel2_volcano(
+    r#"
+    PREFIX ex: <http://example.org/>
+    SELECT DISTINCT ?g ?item WHERE {
+        { GRAPH ?g { ?item ex:status "active" } }
+        UNION
+        { GRAPH ?g { { ?item ex:status "pending" } } }
+    }
+    "#,
+    &mut db,
+);
+```
+
+`GRAPH <name>` は、指定された名前付きグラフのみを読み込みます。`GRAPH ?g` は名前付きグラフの識別子を反復処理して `?g` にバインドします。デフォルトグラフは対象に含まれません。`DISTINCT` を指定しない場合、`UNION` の各分岐によって生成された重複解は保持されます。
+
+#### サポートされる SPARQL Update 形式
+
+エラー情報を保持する Rust API は、以下の範囲の更新形式を受け付けます。同じ操作内で、デフォルトグラフと名前付きグラフのテンプレートを組み合わせることができます。
+
+```rust
+db.execute_update(r#"
+    PREFIX ex: <http://example.org/>
+    DELETE { ?s ex:oldValue ?value }
+    INSERT { GRAPH ex:archive { ?s ex:value ?value } }
+    WHERE  { ?s ex:oldValue ?value }
+"#)?;
+```
+
+サポートされる形式は、`INSERT DATA`、`DELETE DATA`、`INSERT ... WHERE`、`DELETE ... WHERE`、複合形式の `DELETE/INSERT ... WHERE`、および `DELETE WHERE` です。変更を適用する前に `WHERE` パターンを1回だけ評価し、削除を先に、挿入を後に実行します。Python では `SparqlDatabase.update()` で同じ動作を利用できます。
+
 #### Query with FILTER
 
 ```rust

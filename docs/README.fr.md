@@ -206,6 +206,52 @@ for row in results {
 }
 ```
 
+#### Graphes nommés, `GRAPH` et `UNION`
+
+Le parseur SPARQL existant de Kolibrie prend en charge les motifs `GRAPH`
+récursifs avec des noms de graphe fixes ou variables, des groupes imbriqués et
+`UNION` avec une sémantique de multiensemble :
+
+```rust
+let rows = execute_query_rayon_parallel2_volcano(
+    r#"
+    PREFIX ex: <http://example.org/>
+    SELECT DISTINCT ?g ?item WHERE {
+        { GRAPH ?g { ?item ex:status "active" } }
+        UNION
+        { GRAPH ?g { { ?item ex:status "pending" } } }
+    }
+    "#,
+    &mut db,
+);
+```
+
+`GRAPH <nom>` lit uniquement ce graphe nommé. `GRAPH ?g` parcourt les identités
+des graphes nommés et lie `?g` ; le graphe par défaut n'est jamais inclus. Sans
+`DISTINCT`, les solutions dupliquées produites par `UNION` sont conservées.
+
+#### Formes SPARQL Update prises en charge
+
+L'API Rust qui préserve les erreurs accepte la famille limitée de mises à jour
+ci-dessous. Les modèles du graphe par défaut et des graphes nommés peuvent être
+combinés dans une même opération.
+
+```rust
+db.execute_update(r#"
+    PREFIX ex: <http://example.org/>
+    DELETE { ?s ex:oldValue ?value }
+    INSERT { GRAPH ex:archive { ?s ex:value ?value } }
+    WHERE  { ?s ex:oldValue ?value }
+"#)?;
+```
+
+Les formes prises en charge sont `INSERT DATA`, `DELETE DATA`,
+`INSERT ... WHERE`, `DELETE ... WHERE`, la forme combinée
+`DELETE/INSERT ... WHERE` et `DELETE WHERE`. Le motif `WHERE` est évalué une
+seule fois avant l'application des changements ; les suppressions sont
+effectuées avant les insertions. Python expose le même comportement avec
+`SparqlDatabase.update()`.
+
 #### Requête avec FILTER
 
 ```rust
