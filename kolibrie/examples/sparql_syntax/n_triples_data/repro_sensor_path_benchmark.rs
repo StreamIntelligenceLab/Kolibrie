@@ -66,7 +66,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut db = SparqlDatabase::new();
     db.parse_ntriples_and_add(&data);
     let load_time = load_start.elapsed();
-    println!("Loaded triples: {}", db.triples.len());
+    println!("Loaded triples: {}", db.dataset_index.len_default());
     println!("Load time: {:.3}s", load_time.as_secs_f64());
 
     let stats_start = Instant::now();

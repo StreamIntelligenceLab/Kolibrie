@@ -9,13 +9,14 @@
  */
 
 use super::cost::CostEstimator;
-use super::execution::ExecutionEngine;
+use super::execution::{DatasetView, ExecutionEngine};
 use super::operators::{LogicalOperator, PhysicalOperator};
 use super::stats::DatabaseStats;
+use super::types::{ConditionArithmetic, ConditionExpression};
 
 use crate::sparql_database::SparqlDatabase;
+use shared::dataset_index::{GraphId, GraphTerm, QuadPattern};
 use shared::terms::{Term, TriplePattern};
-use shared::query::FilterExpression;
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::sync::Arc;
 
@@ -24,16 +25,33 @@ pub struct Streamertail {
     pub memo: HashMap<String, PhysicalOperator>,
     pub selected_variables: Vec<String>,
     pub stats: Arc<DatabaseStats>,
+    dataset: Option<DatasetView>,
 }
 
-fn serialize_arith_expr(expr: &shared::query::ArithmeticExpression) -> String {
-    use shared::query::ArithmeticExpression as AE;
+fn serialize_arith_expr(expr: &ConditionArithmetic) -> String {
+    use ConditionArithmetic as AE;
     match expr {
         AE::Operand(s) => s.to_string(),
-        AE::Add(l, r) => format!("({} + {})", serialize_arith_expr(l), serialize_arith_expr(r)),
-        AE::Subtract(l, r) => format!("({} - {})", serialize_arith_expr(l), serialize_arith_expr(r)),
-        AE::Multiply(l, r) => format!("({} * {})", serialize_arith_expr(l), serialize_arith_expr(r)),
-        AE::Divide(l, r) => format!("({} / {})", serialize_arith_expr(l), serialize_arith_expr(r)),
+        AE::Add(l, r) => format!(
+            "({} + {})",
+            serialize_arith_expr(l),
+            serialize_arith_expr(r)
+        ),
+        AE::Subtract(l, r) => format!(
+            "({} - {})",
+            serialize_arith_expr(l),
+            serialize_arith_expr(r)
+        ),
+        AE::Multiply(l, r) => format!(
+            "({} * {})",
+            serialize_arith_expr(l),
+            serialize_arith_expr(r)
+        ),
+        AE::Divide(l, r) => format!(
+            "({} / {})",
+            serialize_arith_expr(l),
+            serialize_arith_expr(r)
+        ),
     }
 }
 
@@ -45,6 +63,7 @@ impl Streamertail {
             memo: HashMap::new(),
             selected_variables: Vec::new(),
             stats,
+            dataset: None,
         }
     }
 
@@ -53,6 +72,25 @@ impl Streamertail {
             memo: HashMap::new(),
             selected_variables: Vec::new(),
             stats,
+            dataset: None,
+        }
+    }
+
+    /// Creates an optimizer whose estimates reflect a replacement SPARQL
+    /// dataset (`FROM`/`FROM NAMED`) rather than the physical dataset.
+    pub fn with_cached_stats_and_dataset(stats: Arc<DatabaseStats>, dataset: DatasetView) -> Self {
+        Self {
+            memo: HashMap::new(),
+            selected_variables: Vec::new(),
+            stats,
+            dataset: Some(dataset),
+        }
+    }
+
+    fn cost_estimator(&self) -> CostEstimator<'_> {
+        match self.dataset.as_ref() {
+            Some(dataset) => CostEstimator::with_dataset(&self.stats, dataset),
+            None => CostEstimator::new(&self.stats),
         }
     }
 
@@ -70,6 +108,27 @@ impl Streamertail {
         ExecutionEngine::execute(plan, database)
     }
 
+    /// Executes an optimized plan against a replacement SPARQL dataset.
+    pub fn execute_plan_with_dataset(
+        &self,
+        plan: &PhysicalOperator,
+        database: &mut SparqlDatabase,
+        dataset: &DatasetView,
+    ) -> Vec<HashMap<String, String>> {
+        ExecutionEngine::execute_with_dataset(plan, database, dataset)
+    }
+
+    /// Executes an optimized plan against a replacement SPARQL dataset and
+    /// retains dictionary IDs for update template instantiation.
+    pub fn execute_plan_with_ids_and_dataset(
+        &self,
+        plan: &PhysicalOperator,
+        database: &mut SparqlDatabase,
+        dataset: &DatasetView,
+    ) -> Vec<HashMap<String, u32>> {
+        ExecutionEngine::execute_with_ids_and_dataset(plan, database, dataset)
+    }
+
     /// Optimizes and executes a logical plan in one step
     pub fn optimize_and_execute(
         &mut self,
@@ -83,7 +142,9 @@ impl Streamertail {
     /// Detects if a join tree is a star query pattern
     fn is_star_query(&self, plan: &LogicalOperator) -> Option<Vec<(String, Vec<TriplePattern>)>> {
         let mut patterns = Vec::new();
-        self.collect_patterns(plan, &mut patterns);
+        if !self.collect_patterns(plan, &mut patterns) {
+            return None;
+        }
 
         if patterns.len() < 3 {
             return None;
@@ -125,10 +186,8 @@ impl Streamertail {
                 .collect();
 
             if available.len() >= 3 {
-                let star_patterns: Vec<TriplePattern> = available
-                    .iter()
-                    .map(|&idx| patterns[idx].clone())
-                    .collect();
+                let star_patterns: Vec<TriplePattern> =
+                    available.iter().map(|&idx| patterns[idx].clone()).collect();
 
                 // Mark these patterns as used
                 for &idx in &available {
@@ -146,34 +205,26 @@ impl Streamertail {
         }
     }
 
-    fn collect_patterns(&self, plan: &LogicalOperator, patterns: &mut Vec<TriplePattern>) {
+    /// Collects only one uninterrupted join group. GRAPH, UNION, filters,
+    /// projections, binds, values and subqueries are deliberate optimizer
+    /// boundaries.
+    fn collect_patterns(&self, plan: &LogicalOperator, patterns: &mut Vec<TriplePattern>) -> bool {
         match plan {
             LogicalOperator::Scan { pattern } => {
-                patterns.push(pattern.clone());
+                if pattern.graph != GraphTerm::Default {
+                    return false;
+                }
+                patterns.push((
+                    pattern.subject.clone(),
+                    pattern.predicate.clone(),
+                    pattern.object.clone(),
+                ));
+                true
             }
             LogicalOperator::Join { left, right } => {
-                self.collect_patterns(left, patterns);
-                self.collect_patterns(right, patterns);
+                self.collect_patterns(left, patterns) && self.collect_patterns(right, patterns)
             }
-            LogicalOperator::Selection { predicate, ..  } => {
-                self.collect_patterns(predicate, patterns);
-            }
-            LogicalOperator::Projection { predicate, .. } => {
-                self.collect_patterns(predicate, patterns);
-            }
-            LogicalOperator::Buffer { content: _, origin: _ } => { }
-            LogicalOperator::Subquery { inner, .. } => {
-                // Subqueries are treated as separate scopes, so we don't collect their patterns
-                // for star query detection in the outer query
-                self.collect_patterns(inner, patterns);
-            }
-            LogicalOperator::Bind { input, .. } => {
-                self.collect_patterns(input, patterns);
-            }
-            LogicalOperator::Values { .. } => { }
-            LogicalOperator::MLPredict { input, .. } => {
-                self.collect_patterns(input, patterns);
-            }
+            _ => false,
         }
     }
 
@@ -185,13 +236,22 @@ impl Streamertail {
             return plan.clone();
         }
 
-        if let LogicalOperator::Projection { predicate: proj_pred, variables } = logical_plan {
-            if let LogicalOperator::Selection { predicate: sel_pred, condition } = proj_pred.as_ref() {
+        if let LogicalOperator::Projection {
+            predicate: proj_pred,
+            variables,
+        } = logical_plan
+        {
+            if let LogicalOperator::Selection {
+                predicate: sel_pred,
+                condition,
+            } = proj_pred.as_ref()
+            {
                 if let Some(stars) = self.is_star_query(sel_pred) {
                     // Build: Projection(Filter(StarJoin))
                     let star_plan = self.build_star_join_from_patterns(stars, sel_pred);
                     let filtered_plan = PhysicalOperator::filter(star_plan, condition.clone());
-                    let projected_plan = PhysicalOperator::projection(filtered_plan, variables.clone());
+                    let projected_plan =
+                        PhysicalOperator::projection(filtered_plan, variables.clone());
                     self.memo.insert(key, projected_plan.clone());
                     return projected_plan;
                 }
@@ -199,7 +259,11 @@ impl Streamertail {
         }
 
         // Handle Selection wrapping star query (no projection)
-        if let LogicalOperator::Selection { predicate, condition } = logical_plan {
+        if let LogicalOperator::Selection {
+            predicate,
+            condition,
+        } = logical_plan
+        {
             if let Some(stars) = self.is_star_query(predicate) {
                 let star_plan = self.build_star_join_from_patterns(stars, predicate);
                 let filtered_plan = PhysicalOperator::filter(star_plan, condition.clone());
@@ -209,7 +273,10 @@ impl Streamertail {
         }
 
         // Handle star query without selection or projection
-        if ! matches!(logical_plan, LogicalOperator::Selection { .. } | LogicalOperator::Projection { ..  }) {
+        if !matches!(
+            logical_plan,
+            LogicalOperator::Selection { .. } | LogicalOperator::Projection { .. }
+        ) {
             if let Some(stars) = self.is_star_query(logical_plan) {
                 let star_plan = self.build_star_join_from_patterns(stars, logical_plan);
                 self.memo.insert(key, star_plan.clone());
@@ -220,10 +287,22 @@ impl Streamertail {
         let mut candidates = Vec::new();
 
         match logical_plan {
+            LogicalOperator::Unit => candidates.push(PhysicalOperator::unit()),
             LogicalOperator::Scan { pattern } => {
                 // Implementation rules: Map logical scan to physical scans
                 let best_scan = self.choose_best_scan(pattern);
                 candidates.push(best_scan);
+            }
+            LogicalOperator::Union { branches } => {
+                let branches = branches
+                    .iter()
+                    .map(|branch| self.find_best_plan_recursive(branch))
+                    .collect();
+                candidates.push(PhysicalOperator::union(branches));
+            }
+            LogicalOperator::Graph { input, graph } => {
+                let input = self.find_best_plan_recursive(input);
+                candidates.push(PhysicalOperator::graph(input, graph.clone()));
             }
             LogicalOperator::Selection {
                 predicate,
@@ -245,14 +324,19 @@ impl Streamertail {
                 ));
             }
             LogicalOperator::Join { left, right } => {
-                // Add join reordering based on cost
-                let left_cost = self.estimate_logical_cost(left);
-                let right_cost = self.estimate_logical_cost(right);
-
-                let (cheaper_side, expensive_side) = if left_cost <= right_cost {
-                    (left, right)
+                // Reorder only one uninterrupted group of scans with exactly
+                // the same graph scope. Every other operator is a semantic
+                // boundary and retains source order.
+                let can_reorder = self
+                    .homogeneous_scan_scope(left)
+                    .zip(self.homogeneous_scan_scope(right))
+                    .is_some_and(|(left_scope, right_scope)| left_scope == right_scope);
+                let (cheaper_side, expensive_side) = if can_reorder
+                    && self.estimate_logical_cost(right) < self.estimate_logical_cost(left)
+                {
+                    (right, left)
                 } else {
-                    (right, left) // Swap for better order
+                    (left, right)
                 };
 
                 let best_left_plan = self.find_best_plan_recursive(cheaper_side);
@@ -287,26 +371,32 @@ impl Streamertail {
                     best_right_plan,
                 ));
             }
-            LogicalOperator::Buffer { content, origin} => {
-                let best_buffer = PhysicalOperator::InMemoryBuffer {content: content.clone(), origin: origin.clone()};
+            LogicalOperator::Buffer { content, origin } => {
+                let best_buffer = PhysicalOperator::InMemoryBuffer {
+                    content: content.clone(),
+                    origin: origin.clone(),
+                };
                 candidates.push(best_buffer);
             }
-            LogicalOperator::Subquery { inner, projected_vars } => {
+            LogicalOperator::Subquery { inner, spec } => {
                 // Recursively optimize the inner query
                 let optimized_inner = self.find_best_plan_recursive(inner);
-                
-                // Wrap it in a subquery operator with projection
-                let subquery_plan = PhysicalOperator::subquery(
-                    optimized_inner,
-                    projected_vars.clone()
-                );
-                
+
+                // Keep every subquery-local SELECT modifier attached until
+                // execution, before the materialized rows join the outer query.
+                let subquery_plan = PhysicalOperator::subquery(optimized_inner, spec.clone());
+
                 candidates.push(subquery_plan);
             }
-            LogicalOperator::Bind { input, function_name, arguments, output_variable } => {
+            LogicalOperator::Bind {
+                input,
+                function_name,
+                arguments,
+                output_variable,
+            } => {
                 // Recursively optimize the input
                 let best_input_plan = self.find_best_plan_recursive(input);
-    
+
                 // Create the physical BIND operator
                 let bind_plan = PhysicalOperator::bind(
                     best_input_plan,
@@ -314,15 +404,12 @@ impl Streamertail {
                     arguments.clone(),
                     output_variable.clone(),
                 );
-    
+
                 candidates.push(bind_plan);
             }
             LogicalOperator::Values { variables, values } => {
                 // VALUES is a leaf operator
-                candidates.push(PhysicalOperator::values(
-                    variables.clone(),
-                    values.clone(),
-                ));
+                candidates.push(PhysicalOperator::values(variables.clone(), values.clone()));
             }
             LogicalOperator::MLPredict {
                 input,
@@ -350,7 +437,7 @@ impl Streamertail {
         }
 
         // Cost-based optimization: Choose the best candidate
-        let cost_estimator = CostEstimator::new(&self.stats);
+        let cost_estimator = self.cost_estimator();
         let best_plan = candidates
             .into_iter()
             .min_by_key(|plan| {
@@ -364,29 +451,41 @@ impl Streamertail {
         best_plan
     }
 
+    fn homogeneous_scan_scope(&self, plan: &LogicalOperator) -> Option<GraphTerm> {
+        match plan {
+            LogicalOperator::Scan { pattern } => Some(pattern.graph.clone()),
+            LogicalOperator::Join { left, right } => {
+                let left = self.homogeneous_scan_scope(left)?;
+                let right = self.homogeneous_scan_scope(right)?;
+                (left == right).then_some(left)
+            }
+            _ => None,
+        }
+    }
+
     /// Discovers the model path from the model name
     fn discover_model_path(&self) -> String {
         let mut path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-        
+
         loop {
             let ml_dir = path.join("ml");
             if ml_dir.exists() && ml_dir.is_dir() {
                 let model_dir = ml_dir.join("examples").join("models");
-                
+
                 // Return just the model directory - the ML handler will discover models
                 if model_dir.exists() {
                     return model_dir.to_string_lossy().to_string();
                 }
-                
+
                 break;
             }
-            
+
             if !path.pop() {
                 eprintln!("Warning: Could not locate 'ml' directory!");
                 break;
             }
         }
-        
+
         // Fallback to relative path
         format!("ml/examples/models")
     }
@@ -413,11 +512,14 @@ impl Streamertail {
             let mut star_operators: Vec<(String, Vec<TriplePattern>)> = stars;
 
             star_operators.sort_by_key(|(_, patterns)| {
-                let bound_count = patterns.iter().filter(|p| {
-                    matches!(p.0, Term::Constant(_)) ||
-                    matches!(p.1, Term::Constant(_)) ||
-                    matches!(p.2, Term::Constant(_))
-                }).count();
+                let bound_count = patterns
+                    .iter()
+                    .filter(|p| {
+                        matches!(p.0, Term::Constant(_))
+                            || matches!(p.1, Term::Constant(_))
+                            || matches!(p.2, Term::Constant(_))
+                    })
+                    .count();
                 std::cmp::Reverse(bound_count)
             });
 
@@ -474,24 +576,29 @@ impl Streamertail {
     }
 
     /// Chooses the best scan method based on pattern selectivity
-    fn choose_best_scan(&self, pattern: &TriplePattern) -> PhysicalOperator {
-        let bound_vars = self.count_bound_variables(pattern);
-        let cost_estimator = CostEstimator::new(&self.stats);
-        let estimated_size = cost_estimator.estimate_cardinality(pattern);
+    fn choose_best_scan(&self, pattern: &QuadPattern) -> PhysicalOperator {
+        let triple = (
+            pattern.subject.clone(),
+            pattern.predicate.clone(),
+            pattern.object.clone(),
+        );
+        let bound_vars = self.count_bound_variables(&triple);
+        let cost_estimator = self.cost_estimator();
+        let estimated_size = cost_estimator.estimate_quad_cardinality(pattern);
 
         match bound_vars {
-            3 => PhysicalOperator::index_scan(pattern.clone()), // Fully bound - always use index
-            2 => PhysicalOperator::index_scan(pattern.clone()), // Two bounds - index is better
+            3 => PhysicalOperator::quad_index_scan(pattern.clone()), // Fully bound - always use index
+            2 => PhysicalOperator::quad_index_scan(pattern.clone()), // Two bounds - index is better
             1 => {
                 // Use index if result set is small enough
                 if estimated_size < 10000 {
-                    PhysicalOperator::index_scan(pattern.clone())
+                    PhysicalOperator::quad_index_scan(pattern.clone())
                 } else {
-                    PhysicalOperator::table_scan(pattern.clone())
+                    PhysicalOperator::quad_table_scan(pattern.clone())
                 }
             }
-            0 => PhysicalOperator::table_scan(pattern.clone()), // Full scan
-            _ => PhysicalOperator::table_scan(pattern.clone()),
+            0 => PhysicalOperator::quad_table_scan(pattern.clone()), // Full scan
+            _ => PhysicalOperator::quad_table_scan(pattern.clone()),
         }
     }
 
@@ -525,8 +632,23 @@ impl Streamertail {
     /// Serializes a logical plan to a string for memoization
     fn serialize_logical_plan(&self, plan: &LogicalOperator) -> String {
         match plan {
+            LogicalOperator::Unit => "Unit".to_string(),
             LogicalOperator::Scan { pattern } => {
-                format!("Scan({:?},{:?},{:?})", pattern.0, pattern.1, pattern.2)
+                format!(
+                    "Scan({:?},{:?},{:?},graph={:?})",
+                    pattern.subject, pattern.predicate, pattern.object, pattern.graph
+                )
+            }
+            LogicalOperator::Union { branches } => {
+                let branches = branches
+                    .iter()
+                    .map(|branch| self.serialize_logical_plan(branch))
+                    .collect::<Vec<_>>()
+                    .join(",");
+                format!("Union({branches})")
+            }
+            LogicalOperator::Graph { input, graph } => {
+                format!("Graph({graph:?},[{}])", self.serialize_logical_plan(input))
             }
             LogicalOperator::Selection {
                 predicate,
@@ -556,20 +678,21 @@ impl Streamertail {
                 )
             }
             LogicalOperator::Buffer { content, origin } => {
-                format!(
-                    "Buffer({:?},{:?})",
-                    origin,
-                    content
-                )
+                format!("Buffer({:?},{:?})", origin, content)
             }
-            LogicalOperator::Subquery { inner, projected_vars } => {
+            LogicalOperator::Subquery { inner, spec } => {
                 format!(
                     "Subquery({:?},[{}])",
-                    projected_vars,
+                    spec,
                     self.serialize_logical_plan(inner)
                 )
             }
-            LogicalOperator::Bind { input, function_name, arguments, output_variable } => {
+            LogicalOperator::Bind {
+                input,
+                function_name,
+                arguments,
+                output_variable,
+            } => {
                 format!(
                     "Bind({}, {}({:?}), {})",
                     self.serialize_logical_plan(input),
@@ -579,11 +702,10 @@ impl Streamertail {
                 )
             }
             LogicalOperator::Values { variables, values } => {
-                format!(
-                    "Values({:?}, {} rows)",
-                    variables,
-                    values.len()
-                )
+                // Values are semantic content, not merely a cardinality hint.
+                // Omitting them aliases equal-sized VALUES nodes in the memo
+                // and can replace one UNION branch with another.
+                format!("Values({variables:?}, {values:?})")
             }
             LogicalOperator::MLPredict {
                 input,
@@ -603,32 +725,40 @@ impl Streamertail {
     }
 
     /// Serializes a filter expression to a string
-    fn serialize_filter_expression(&self, expr: &FilterExpression) -> String {
+    fn serialize_filter_expression(&self, expr: &ConditionExpression) -> String {
         match expr {
-            FilterExpression::Comparison(var, op, value) => {
+            ConditionExpression::Comparison(var, op, value) => {
                 format!("{}{}'{}'", var, op, value)
             }
-            FilterExpression::And(left, right) => {
+            ConditionExpression::ArithmeticComparison(left, op, right) => {
+                format!(
+                    "ARITH({}){}ARITH({})",
+                    serialize_arith_expr(left),
+                    op,
+                    serialize_arith_expr(right)
+                )
+            }
+            ConditionExpression::And(left, right) => {
                 format!(
                     "({} AND {})",
                     self.serialize_filter_expression(left),
                     self.serialize_filter_expression(right)
                 )
             }
-            FilterExpression::Or(left, right) => {
+            ConditionExpression::Or(left, right) => {
                 format!(
                     "({} OR {})",
                     self.serialize_filter_expression(left),
                     self.serialize_filter_expression(right)
                 )
             }
-            FilterExpression::Not(inner) => {
+            ConditionExpression::Not(inner) => {
                 format!("NOT({})", self.serialize_filter_expression(inner))
             }
-            FilterExpression::ArithmeticExpr(expr) => {
+            ConditionExpression::ArithmeticExpr(expr) => {
                 format!("ARITH({})", serialize_arith_expr(expr))
             }
-            FilterExpression::FunctionCall(name, args) => {
+            ConditionExpression::FunctionCall(name, args) => {
                 format!("{}({})", name, args.join(", "))
             }
         }
@@ -636,10 +766,16 @@ impl Streamertail {
 
     /// Estimates the cost of a logical plan
     fn estimate_logical_cost(&self, logical_plan: &LogicalOperator) -> u64 {
-        let cost_estimator = CostEstimator::new(&self.stats);
+        let cost_estimator = self.cost_estimator();
 
         match logical_plan {
-            LogicalOperator::Scan { pattern } => cost_estimator.estimate_cardinality(pattern),
+            LogicalOperator::Unit => 0,
+            LogicalOperator::Scan { pattern } => cost_estimator.estimate_quad_cardinality(pattern),
+            LogicalOperator::Union { branches } => branches
+                .iter()
+                .map(|branch| self.estimate_logical_cost(branch))
+                .sum(),
+            LogicalOperator::Graph { input, .. } => self.estimate_logical_cost(input),
             LogicalOperator::Join { left, right } => {
                 let left_cost = self.estimate_logical_cost(left);
                 let right_cost = self.estimate_logical_cost(right);
@@ -667,7 +803,9 @@ impl Streamertail {
                 // Add materialization overhead (storing results)
                 inner_cost + inner_card
             }
-            LogicalOperator::Bind { input, arguments, .. } => {
+            LogicalOperator::Bind {
+                input, arguments, ..
+            } => {
                 let base_cost = self.estimate_logical_cost(input);
                 let cardinality = self.estimate_output_cardinality_from_logical(input);
                 // Add cost proportional to number of arguments and cardinality
@@ -677,13 +815,17 @@ impl Streamertail {
                 // VALUES has very low cost
                 values.len() as u64
             }
-            LogicalOperator::MLPredict { input, input_variables, .. } => {
+            LogicalOperator::MLPredict {
+                input,
+                input_variables,
+                ..
+            } => {
                 let base_cost = self.estimate_logical_cost(input);
                 let cardinality = self.estimate_output_cardinality_from_logical(input);
-                
+
                 // ML operations are expensive, so we add significant overhead
                 let ml_overhead = 100; // Cost per prediction
-                // ML prediction cost: base cost + (cardinality * input_features * ML_overhead)
+                                       // ML prediction cost: base cost + (cardinality * input_features * ML_overhead)
                 base_cost + (cardinality * input_variables.len() as u64 * ml_overhead)
             }
         }
@@ -706,17 +848,24 @@ impl Streamertail {
     /// Extracts the predicate ID from a logical plan if it's a scan
     fn extract_predicate_from_plan(&self, plan: &LogicalOperator) -> Option<u32> {
         match plan {
+            LogicalOperator::Unit => None,
             LogicalOperator::Scan { pattern } => {
-                if let Term::Constant(pred_id) = pattern.1 {
-                    Some(pred_id)
+                if let Term::Constant(pred_id) = &pattern.predicate {
+                    Some(*pred_id)
                 } else {
                     None
                 }
             }
-            LogicalOperator::Join { left, ..  } => self.extract_predicate_from_plan(left),
-            LogicalOperator::Selection { predicate, .. } => self.extract_predicate_from_plan(predicate),
-            LogicalOperator::Projection { predicate, .. } => self.extract_predicate_from_plan(predicate),
-            LogicalOperator::Buffer {.. } => None,
+            LogicalOperator::Union { .. } => None,
+            LogicalOperator::Graph { input, .. } => self.extract_predicate_from_plan(input),
+            LogicalOperator::Join { left, .. } => self.extract_predicate_from_plan(left),
+            LogicalOperator::Selection { predicate, .. } => {
+                self.extract_predicate_from_plan(predicate)
+            }
+            LogicalOperator::Projection { predicate, .. } => {
+                self.extract_predicate_from_plan(predicate)
+            }
+            LogicalOperator::Buffer { .. } => None,
             LogicalOperator::Subquery { inner, .. } => self.extract_predicate_from_plan(inner),
             LogicalOperator::Bind { input, .. } => self.extract_predicate_from_plan(input),
             LogicalOperator::Values { .. } => None,
@@ -726,40 +875,79 @@ impl Streamertail {
 
     /// Estimates output cardinality from a logical plan
     fn estimate_output_cardinality_from_logical(&self, logical_plan: &LogicalOperator) -> u64 {
-        let cost_estimator = CostEstimator::new(&self.stats);
+        self.estimate_logical_cardinality_in_context(logical_plan, None)
+    }
+
+    fn estimate_logical_cardinality_in_context(
+        &self,
+        logical_plan: &LogicalOperator,
+        active_graph: Option<GraphId>,
+    ) -> u64 {
+        let cost_estimator = self.cost_estimator();
 
         match logical_plan {
-            LogicalOperator::Scan { pattern } => cost_estimator.estimate_cardinality(pattern),
+            LogicalOperator::Unit => 1,
+            LogicalOperator::Scan { pattern } => {
+                if let Some(GraphId::Named(graph)) = active_graph {
+                    let mut scoped = pattern.clone();
+                    if matches!(scoped.graph, GraphTerm::Default | GraphTerm::Variable(_)) {
+                        scoped.graph = GraphTerm::Named(graph);
+                    }
+                    cost_estimator.estimate_quad_cardinality(&scoped)
+                } else {
+                    cost_estimator.estimate_quad_cardinality(pattern)
+                }
+            }
+            LogicalOperator::Union { branches } => branches
+                .iter()
+                .map(|branch| self.estimate_logical_cardinality_in_context(branch, active_graph))
+                .sum(),
+            LogicalOperator::Graph { input, graph } => match graph {
+                GraphTerm::Default => self.estimate_logical_cardinality_in_context(input, None),
+                GraphTerm::Named(graph) if cost_estimator.fixed_graph_is_visible(*graph) => self
+                    .estimate_logical_cardinality_in_context(input, Some(GraphId::Named(*graph))),
+                GraphTerm::Named(_) => 0,
+                GraphTerm::Variable(_) => cost_estimator
+                    .visible_named_graphs()
+                    .into_iter()
+                    .map(|graph| self.estimate_logical_cardinality_in_context(input, Some(graph)))
+                    .sum(),
+            },
             LogicalOperator::Selection {
                 predicate,
                 condition,
             } => {
-                let base_card = self.estimate_output_cardinality_from_logical(predicate);
+                let base_card =
+                    self.estimate_logical_cardinality_in_context(predicate, active_graph);
+                if base_card == 0 {
+                    return 0;
+                }
                 let selectivity = cost_estimator.estimate_selectivity(condition);
                 ((base_card as f64 * selectivity) as u64).max(1)
             }
             LogicalOperator::Projection { predicate, .. } => {
-                self.estimate_output_cardinality_from_logical(predicate)
+                self.estimate_logical_cardinality_in_context(predicate, active_graph)
             }
             LogicalOperator::Join { left, right } => {
-                let left_card = self.estimate_output_cardinality_from_logical(left);
-                let right_card = self.estimate_output_cardinality_from_logical(right);
+                let left_card = self.estimate_logical_cardinality_in_context(left, active_graph);
+                let right_card = self.estimate_logical_cardinality_in_context(right, active_graph);
+                if left_card == 0 || right_card == 0 {
+                    return 0;
+                }
                 let join_selectivity = self.estimate_join_selectivity(left, right);
                 ((left_card.min(right_card) as f64 * join_selectivity) as u64).max(1)
             }
             LogicalOperator::Buffer { .. } => 0,
             LogicalOperator::Subquery { inner, .. } => {
-                self.estimate_output_cardinality_from_logical(inner)
+                self.estimate_logical_cardinality_in_context(inner, active_graph)
             }
             LogicalOperator::Bind { input, .. } => {
-                self.estimate_output_cardinality_from_logical(input)
+                self.estimate_logical_cardinality_in_context(input, active_graph)
             }
-            LogicalOperator::Values { values, .. } => {
-                values.len() as u64
-            }
+            LogicalOperator::Values { values, .. } => values.len() as u64,
             LogicalOperator::MLPredict { input, .. } => {
                 // ML.PREDICT doesn't change cardinality, just adds a column
-                self.estimate_output_cardinality_from_logical(input)
+                self.estimate_logical_cardinality_in_context(input, active_graph)
             }
         }
     }
@@ -869,6 +1057,37 @@ mod tests {
         let stars = optimizer.is_star_query(&plan).unwrap_or_default();
 
         assert!(!stars.iter().any(|(var, _)| var == "?sensor"));
+    }
+
+    #[test]
+    fn named_graph_scans_never_become_a_default_graph_star_join() {
+        let optimizer = create_test_optimizer();
+        let graph = GraphTerm::Named(99);
+        let plan = join_all(vec![
+            LogicalOperator::quad_scan(QuadPattern {
+                subject: var("?s"),
+                predicate: constant(1),
+                object: var("?a"),
+                graph: graph.clone(),
+            }),
+            LogicalOperator::quad_scan(QuadPattern {
+                subject: var("?s"),
+                predicate: constant(2),
+                object: var("?b"),
+                graph: graph.clone(),
+            }),
+            LogicalOperator::quad_scan(QuadPattern {
+                subject: var("?s"),
+                predicate: constant(3),
+                object: var("?c"),
+                graph,
+            }),
+        ]);
+
+        assert!(
+            optimizer.is_star_query(&plan).is_none(),
+            "the TriplePattern-only star operator would discard graph scope"
+        );
     }
 
     #[test]

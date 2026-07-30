@@ -210,9 +210,13 @@ for row in results {
 
 #### Grafos con nombre, `GRAPH` y `UNION`
 
-El analizador SPARQL existente de Kolibrie admite patrones `GRAPH` recursivos
-con nombres de grafo fijos o variables, grupos anidados y `UNION` con semántica
-de multiconjunto:
+Las rutas estándar de SELECT y Update de Kolibrie utilizan una sola
+arquitectura: el analizador `nom` existente crea patrones de grupo recursivos
+que se transforman en el mismo plan lógico, optimizador Streamertail y ejecutor
+físico. No existe un analizador ni un evaluador separado para `GRAPH`, `UNION`
+o los patrones `WHERE` de Update. La ruta unificada admite patrones `GRAPH`
+recursivos con nombres de grafo fijos o variables, grupos anidados y `UNION`
+con semántica de multiconjunto:
 
 ```rust
 let rows = execute_query_rayon_parallel2_volcano(
@@ -233,12 +237,22 @@ identidades de los grafos con nombre y enlaza `?g`; el grafo predeterminado
 nunca se incluye. Sin `DISTINCT`, se conservan las soluciones duplicadas
 aportadas por `UNION`.
 
+Las cláusulas de conjunto de datos reemplazan el conjunto de datos de la
+consulta. Varios grafos `FROM` se combinan como grafo predeterminado de la
+consulta, suprimiendo los triples duplicados. En cuanto aparece cualquier
+cláusula de conjunto de datos, `GRAPH` solo puede ver los grafos enumerados con
+`FROM NAMED`. `FROM NAMED` sin `FROM` produce un grafo predeterminado de
+consulta vacío, mientras que `FROM` sin `FROM NAMED` no expone ningún grafo con
+nombre. Sin cláusulas de conjunto de datos, son visibles el grafo
+predeterminado físico y todos los grafos con nombre catalogados.
+
 #### Formas de SPARQL Update admitidas
 
-La API de Rust que conserva los errores acepta la familia limitada de
-actualizaciones que aparece a continuación. Las plantillas del grafo
-predeterminado y de los grafos con nombre se pueden combinar en la misma
-operación.
+La API de Rust que conserva los errores acepta exactamente las seis formas de
+Update que aparecen a continuación. Las plantillas del grafo predeterminado y
+de los grafos con nombre se pueden combinar en la misma operación, y cada
+`WHERE` utiliza el mismo analizador, planificador lógico, optimizador y ejecutor
+que SELECT.
 
 ```rust
 db.execute_update(r#"
@@ -253,7 +267,9 @@ Las formas admitidas son `INSERT DATA`, `DELETE DATA`, `INSERT ... WHERE`,
 `DELETE ... WHERE`, la forma combinada `DELETE/INSERT ... WHERE` y
 `DELETE WHERE`. El patrón `WHERE` se evalúa una sola vez antes de aplicar los
 cambios, y las eliminaciones se realizan antes que las inserciones. Python
-ofrece el mismo comportamiento mediante `SparqlDatabase.update()`.
+ofrece el mismo comportamiento mediante `SparqlDatabase.update()`. Otras formas
+de SPARQL 1.1 Update, como `WITH`, `USING`, `LOAD` y las operaciones de gestión
+de grafos, no forman parte de esta versión.
 
 #### Consulta con FILTER
 

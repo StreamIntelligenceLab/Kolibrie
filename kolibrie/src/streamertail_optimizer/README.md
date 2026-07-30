@@ -1,6 +1,6 @@
 # Volcano Optimizer
 
-This module implements a Volcano-style query optimizer with cost-based optimization for the Kolibrie SPARQL database engine. The optimizer has been refactored from a monolithic file into a modular architecture for better maintainability and extensibility.
+This module implements a Volcano-style query optimizer with cost-based optimization for the Kolibrie SPARQL database engine. Standard SELECT queries and the `WHERE` clauses of the six supported Update forms follow one path from the existing parser, through recursive logical operators and this optimizer, to physical execution. `GRAPH` and `UNION` do not use a separate evaluator.
 
 ## Architecture
 
@@ -31,14 +31,20 @@ streamertail_optimizer/
 
 ### LogicalOperator
 Represents high-level query operations before optimization:
-- `Scan`: Triple pattern scanning
+- `Unit`: One input solution for an empty group
+- `Scan`: Graph-aware quad-pattern scanning (default scans wrap a triple pattern)
+- `Graph`: Fixed- or variable-named-graph scope
+- `Union`: Multiset branch concatenation
 - `Selection`: Filtering with conditions
 - `Projection`: Variable projection
 - `Join`: Binary join operations
 
 ### PhysicalOperator
 Represents concrete execution plans after optimization:
+- `Unit`: Pass-through execution for an empty group
 - `TableScan` / `IndexScan`: Different scan strategies
+- `Graph`: Graph-scoped child execution with graph-variable binding
+- `Union`: Execution of every branch against the same input
 - `Filter`: Condition filtering
 - `HashJoin` / `NestedLoopJoin` / `ParallelJoin`: Join algorithms
 - `OptimizedHashJoin`: High-performance join variant
@@ -53,6 +59,8 @@ Provides cost and cardinality estimation for optimization:
 ### ExecutionEngine
 Executes physical operators with performance optimizations:
 - ID-based execution for reduced string operations
+- A shared dataset/execution context for default, merged-default, and visible named graphs
+- Input-binding propagation across scans, `GRAPH`, `UNION`, filters, binds, and joins
 - Parallel execution using Rayon
 - Index-aware scanning strategies
 - SIMD-optimized join algorithms

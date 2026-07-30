@@ -12,6 +12,7 @@ use kolibrie::parser::*;
 use kolibrie::sparql_database::*;
 use std::time::Instant;
 use kolibrie::streamertail_optimizer::*;
+use shared::query::SparqlOperation;
 
 
 fn streamertail_optimizer_sparql() {
@@ -52,28 +53,19 @@ fn streamertail_optimizer_sparql() {
     }"#;
 
     // Step 4: Parse the SPARQL query
-    if let Ok((_, (_, variables, patterns, filters, _, prefixes, _, _, _, _, _, _))) =
-        parse_sparql_query(sparql_query)
-    {
+    if let Ok((_, parsed)) = parse_combined_query(sparql_query) {
+        let Some(SparqlOperation::Select(select)) = parsed.sparql else {
+            eprintln!("Expected a SELECT query.");
+            return;
+        };
+        let prefixes = parsed.prefixes;
+
         // Merge prefixes into the database
         database.prefixes.extend(prefixes.clone());
 
-        // Extract variables for the logical plan
-        let variables_for_plan: Vec<(&str, &str)> = variables
-            .iter()
-            .map(|(agg_type, var, _)| (*agg_type, *var))
-            .collect();
-
         // Build the logical plan
-        let logical_plan = build_logical_plan(
-            variables_for_plan,
-            patterns.clone(),
-            filters.clone(),
-            &prefixes.clone(),
-            &mut database,
-            &[],
-            None,
-        );
+        let logical_plan =
+            build_logical_plan_from_group(&select.pattern, &prefixes, &mut database).unwrap();
 
         // Step 5: Initialize the optimizer and find the best physical plan
         let mut optimizer = Streamertail::new(&database);
@@ -88,7 +80,7 @@ fn streamertail_optimizer_sparql() {
         let duration = start.elapsed();
 
         // Step 7: Extract and print the selected variables
-        let selected_vars: Vec<String> = variables
+        let selected_vars: Vec<String> = select.variables
             .iter()
             .filter(|(agg_type, _, _)| *agg_type == "VAR")
             .map(|(_, var, _)| var.to_string())

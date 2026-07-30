@@ -41,10 +41,10 @@ fn extract_financial_data_from_database(
 ) -> Result<Vec<FinancialData>, Box<dyn Error>> {
     // Acquire read lock once at the start
     let dict = database.dictionary.read().unwrap();
-    
+    let default_triples = database.query_default_triples(None, None, None);
+
     // Extract data from database
-    let financial_data: Vec<FinancialData> = database
-        .triples
+    let financial_data: Vec<FinancialData> = default_triples
         .iter()
         .filter(|triple| {
             dict.decode(triple.predicate)
@@ -66,8 +66,7 @@ fn extract_financial_data_from_database(
                 .unwrap_or(0.0);
 
             // Find spending and savings_rate
-            let spending = database
-                .triples
+            let spending = default_triples
                 .iter()
                 .find(|t| {
                     t.subject == triple.subject
@@ -79,8 +78,7 @@ fn extract_financial_data_from_database(
                 .and_then(|v| v.parse().ok())
                 .unwrap_or(0.0);
 
-            let savings_rate = database
-                .triples
+            let savings_rate = default_triples
                 .iter()
                 .find(|t| {
                     t.subject == triple.subject
@@ -337,7 +335,7 @@ RULE :SavingsAlert :-
                                 
                                 drop(dict); // Release lock before inserting
                                 
-                                database.triples.insert(Triple {
+                                database.add_triple(Triple {
                                     subject: subject_id,
                                     predicate: predicate_id,
                                     object: object_id,
@@ -353,7 +351,7 @@ RULE :SavingsAlert :-
                                 
                                 drop(dict);
                                 
-                                database.triples.insert(Triple {
+                                database.add_triple(Triple {
                                     subject: subject_id,
                                     predicate: confidence_predicate_id,
                                     object: confidence_object_id,
@@ -372,7 +370,7 @@ RULE :SavingsAlert :-
                                 
                                 drop(dict);
                                 
-                                database.triples.insert(Triple {
+                                database.add_triple(Triple {
                                     subject: subject_id,
                                     predicate: timestamp_predicate_id,
                                     object: timestamp_object_id,
@@ -393,7 +391,7 @@ RULE :SavingsAlert :-
                             
                             drop(dict);
                             
-                            database.triples.insert(Triple {
+                            database.add_triple(Triple {
                                 subject: metadata_subject_id,
                                 predicate: timestamp_predicate_id,
                                 object: timestamp_value_id,

@@ -40,6 +40,146 @@ const HASHMAP_INITIAL_CAPACITY: usize = 4096;
 const MIN_CHUNK_SIZE1: usize = 1024;
 const HASHMAP_INITIAL_CAPACITY1: usize = 1024;
 
+fn looks_like_absolute_iri(value: &str) -> bool {
+    let Some((scheme, _)) = value.split_once(':') else {
+        return false;
+    };
+    let mut characters = scheme.chars();
+    characters
+        .next()
+        .is_some_and(|first| first.is_ascii_alphabetic())
+        && characters.all(|character| {
+            character.is_ascii_alphanumeric() || matches!(character, '+' | '-' | '.')
+        })
+}
+
+fn escape_ntriples_literal(value: &str) -> String {
+    value
+        .chars()
+        .flat_map(|character| match character {
+            '\\' => "\\\\".chars().collect::<Vec<_>>(),
+            '"' => "\\\"".chars().collect(),
+            '\n' => "\\n".chars().collect(),
+            '\r' => "\\r".chars().collect(),
+            '\t' => "\\t".chars().collect(),
+            other => vec![other],
+        })
+        .collect()
+}
+
+/// Decodes the lexical value of an N-Triples/N-Quads double-quoted literal
+/// and returns the suffix following its escape-aware closing quote.
+fn decode_ntriples_literal(term: &str) -> Option<(String, &str)> {
+    let body = term.strip_prefix('"')?;
+    let mut characters = body.char_indices();
+    let mut value = String::new();
+
+    while let Some((offset, character)) = characters.next() {
+        match character {
+            '"' => return Some((value, &body[offset + character.len_utf8()..])),
+            '\\' => {
+                let (_, escaped) = characters.next()?;
+                match escaped {
+                    't' => value.push('\t'),
+                    'b' => value.push('\u{0008}'),
+                    'n' => value.push('\n'),
+                    'r' => value.push('\r'),
+                    'f' => value.push('\u{000c}'),
+                    '"' => value.push('"'),
+                    '\'' => value.push('\''),
+                    '\\' => value.push('\\'),
+                    'u' | 'U' => {
+                        let digits = if escaped == 'u' { 4 } else { 8 };
+                        let mut scalar = String::with_capacity(digits);
+                        for _ in 0..digits {
+                            let (_, digit) = characters.next()?;
+                            if !digit.is_ascii_hexdigit() {
+                                return None;
+                            }
+                            scalar.push(digit);
+                        }
+                        let scalar = u32::from_str_radix(&scalar, 16).ok()?;
+                        value.push(char::from_u32(scalar)?);
+                    }
+                    _ => return None,
+                }
+            }
+            character => value.push(character),
+        }
+    }
+
+    None
+}
+
+fn decode_form_component(component: &str) -> String {
+    let normalized = component
+        .bytes()
+        .map(|byte| if byte == b'+' { b' ' } else { byte })
+        .collect::<Vec<_>>();
+    percent_decode(&normalized).decode_utf8_lossy().into_owned()
+}
+
+fn parse_form_urlencoded(body: &str) -> HashMap<String, String> {
+    body.split('&')
+        .map(|pair| {
+            let (name, value) = pair.split_once('=').unwrap_or((pair, ""));
+            (decode_form_component(name), decode_form_component(value))
+        })
+        .collect()
+}
+
+fn reencode_term_id(
+    id: u32,
+    source_dictionary: &Dictionary,
+    source_quoted_triples: &QuotedTripleStore,
+    target_dictionary: &mut Dictionary,
+    target_quoted_triples: &mut QuotedTripleStore,
+    translated_ids: &mut HashMap<u32, u32>,
+) -> u32 {
+    if let Some(translated) = translated_ids.get(&id) {
+        return *translated;
+    }
+
+    let translated = if is_quoted_triple_id(id) {
+        let (subject, predicate, object) = source_quoted_triples
+            .decode(id)
+            .unwrap_or_else(|| panic!("quoted triple ID {id} is missing from its source store"));
+        let subject = reencode_term_id(
+            subject,
+            source_dictionary,
+            source_quoted_triples,
+            target_dictionary,
+            target_quoted_triples,
+            translated_ids,
+        );
+        let predicate = reencode_term_id(
+            predicate,
+            source_dictionary,
+            source_quoted_triples,
+            target_dictionary,
+            target_quoted_triples,
+            translated_ids,
+        );
+        let object = reencode_term_id(
+            object,
+            source_dictionary,
+            source_quoted_triples,
+            target_dictionary,
+            target_quoted_triples,
+            translated_ids,
+        );
+        target_quoted_triples.encode(subject, predicate, object)
+    } else {
+        let lexical = source_dictionary
+            .decode(id)
+            .unwrap_or_else(|| panic!("term ID {id} is missing from its source dictionary"));
+        target_dictionary.encode(lexical)
+    };
+
+    translated_ids.insert(id, translated);
+    translated
+}
+
 #[derive(Debug, Clone)]
 pub struct SparqlDatabase {
     pub dataset_index: DatasetIndex,
@@ -93,21 +233,17 @@ impl SparqlDatabase {
             let mut qt = self.quoted_triple_store.write().unwrap();
             qt.encode(s_id, p_id, o_id)
         } else {
-            // Strip angle brackets from URIs
             let cleaned = if trimmed.starts_with('<') && trimmed.ends_with('>') {
-                &trimmed[1..trimmed.len() - 1]
+                trimmed[1..trimmed.len() - 1].to_string()
             } else if trimmed.starts_with('"') {
-                // Handle literal: strip quotes, keep value
-                if let Some(close_pos) = trimmed[1..].find('"') {
-                    &trimmed[1..close_pos + 1]
-                } else {
-                    trimmed.trim_matches('"')
-                }
+                decode_ntriples_literal(trimmed)
+                    .map(|(value, _)| value)
+                    .unwrap_or_else(|| trimmed.trim_matches('"').to_string())
             } else {
-                trimmed
+                trimmed.to_string()
             };
             let mut dict = self.dictionary.write().unwrap();
-            dict.encode(cleaned)
+            dict.encode(&cleaned)
         }
     }
 
@@ -403,34 +539,38 @@ impl SparqlDatabase {
 
     pub fn generate_nquads(&self) -> String {
         let mut output = String::new();
-        for quad in self
-            .dataset_index
-            .query_named_graphs(None, None, None, None)
-        {
+        for quad in self.dataset_index.all_quads() {
             let s = self.decode_any(quad.subject).unwrap_or_default();
             let p = self.decode_any(quad.predicate).unwrap_or_default();
             let o = self.decode_any(quad.object).unwrap_or_default();
-            let g = match quad.graph {
-                GraphId::Default => continue,
-                GraphId::Named(graph_id) => self.decode_any(graph_id).unwrap_or_default(),
-            };
 
-            let s_str = if s.starts_with("<<") {
+            let s_str = if s.starts_with("<<") || s.starts_with("_:") {
                 s
             } else {
                 format!("<{}>", s)
             };
             let p_str = format!("<{}>", p);
-            let o_str = if o.starts_with("<<") {
+            let o_str = if o.starts_with("<<") || o.starts_with("_:") {
                 o
-            } else if o.starts_with("http://") || o.starts_with("https://") {
+            } else if looks_like_absolute_iri(&o) {
                 format!("<{}>", o)
             } else {
-                format!("\"{}\"", o)
+                format!("\"{}\"", escape_ntriples_literal(&o))
             };
-            let g_str = format!("<{}>", g);
-
-            output.push_str(&format!("{} {} {} {} .\n", s_str, p_str, o_str, g_str));
+            match quad.graph {
+                GraphId::Default => {
+                    output.push_str(&format!("{} {} {} .\n", s_str, p_str, o_str));
+                }
+                GraphId::Named(graph_id) => {
+                    let graph = self.decode_any(graph_id).unwrap_or_default();
+                    let graph = if graph.starts_with("_:") {
+                        graph
+                    } else {
+                        format!("<{}>", graph)
+                    };
+                    output.push_str(&format!("{} {} {} {} .\n", s_str, p_str, o_str, graph));
+                }
+            }
         }
         output
     }
@@ -1296,27 +1436,39 @@ impl SparqlDatabase {
             if let Some((subject, predicate, object, graph)) =
                 self.parse_nquads_line(line_without_dot)
             {
-                self.add_quad_parts(&subject, &predicate, &object, &graph);
+                match graph {
+                    Some(graph) => {
+                        self.add_quad_parts(&subject, &predicate, &object, &graph);
+                    }
+                    None => {
+                        let quad = Quad {
+                            subject: self.encode_term_star(&subject),
+                            predicate: self.encode_term_star(&predicate),
+                            object: self.encode_term_star(&object),
+                            graph: GraphId::Default,
+                        };
+                        self.add_quad(quad);
+                    }
+                }
             }
         }
     }
 
-    fn parse_nquads_line(&self, line: &str) -> Option<(String, String, String, String)> {
+    fn parse_nquads_line(&self, line: &str) -> Option<(String, String, String, Option<String>)> {
         let mut parts = self.parse_ntriples_parts(line);
-        if parts.len() == 4 {
-            let subject = self.clean_ntriples_term(&parts.remove(0));
-            let predicate = self.clean_ntriples_term(&parts.remove(0));
-            let object = self.clean_ntriples_term(&parts.remove(0));
-            let graph = self.clean_ntriples_term(&parts.remove(0));
-            Some((subject, predicate, object, graph))
-        } else {
+        if !matches!(parts.len(), 3 | 4) {
             eprintln!(
-                "Invalid N-Quads line (expected 4 parts, got {}): {}",
+                "Invalid N-Quads line (expected 3 or 4 parts, got {}): {}",
                 parts.len(),
                 line
             );
-            None
+            return None;
         }
+        let subject = self.clean_ntriples_term(&parts.remove(0));
+        let predicate = self.clean_ntriples_term(&parts.remove(0));
+        let object = self.clean_ntriples_term(&parts.remove(0));
+        let graph = (!parts.is_empty()).then(|| self.clean_ntriples_term(&parts.remove(0)));
+        Some((subject, predicate, object, graph))
     }
 
     // Helper method to parse a single N-Triples line
@@ -1499,16 +1651,13 @@ impl SparqlDatabase {
 
         // Handle literals (keep quotes and datatype/language info)
         if term.starts_with('"') {
-            if let Some(close_quote_pos) = term[1..].find('"') {
-                let close_quote_pos = close_quote_pos + 1;
-                let literal_value = &term[1..close_quote_pos];
-                let rest = &term[close_quote_pos + 1..];
+            if let Some((literal_value, rest)) = decode_ntriples_literal(term) {
                 if rest.is_empty() {
-                    return literal_value.to_string();
+                    return literal_value;
                 } else if rest.starts_with("^^") {
-                    return literal_value.to_string();
-                } else if rest.starts_with("@") {
-                    return format!("{}{}", literal_value, rest);
+                    return literal_value;
+                } else if rest.starts_with('@') {
+                    return format!("{literal_value}{rest}");
                 }
             }
         }
@@ -2229,37 +2378,143 @@ impl SparqlDatabase {
     }
 
     pub fn union(&mut self, other: &SparqlDatabase) -> Self {
-        // Create a new dictionary by cloning and merging
         let self_dict = self.dictionary.read().unwrap();
         let other_dict = other.dictionary.read().unwrap();
         let mut merged_dictionary = self_dict.clone();
-        drop(self_dict);
+        let self_quoted_triples = self.quoted_triple_store.read().unwrap();
+        let other_quoted_triples = other.quoted_triple_store.read().unwrap();
+        let mut merged_quoted_triples = self_quoted_triples.clone();
+        let mut translated_ids = HashMap::new();
 
-        // Re-encode triples from the other database using the merged dictionary
-        let mut re_encoded_triples = BTreeSet::new();
-        for triple in other.query_default_triples(None, None, None) {
-            let subject = merged_dictionary.encode(other_dict.decode(triple.subject).unwrap());
-            let predicate = merged_dictionary.encode(other_dict.decode(triple.predicate).unwrap());
-            let object = merged_dictionary.encode(other_dict.decode(triple.object).unwrap());
-            re_encoded_triples.insert(Triple {
+        // Preserve the complete lexical dictionary, not only terms currently
+        // referenced by default-graph triples.
+        let mut other_term_ids: Vec<_> = other_dict.id_to_string.keys().copied().collect();
+        other_term_ids.sort_unstable();
+        for id in other_term_ids {
+            reencode_term_id(
+                id,
+                &other_dict,
+                &other_quoted_triples,
+                &mut merged_dictionary,
+                &mut merged_quoted_triples,
+                &mut translated_ids,
+            );
+        }
+
+        // Preserve even currently-unreferenced quoted terms. Quads and metadata
+        // below use the same translation cache, so every occurrence receives
+        // the same target ID.
+        let mut other_quoted_ids: Vec<_> = other_quoted_triples
+            .id_to_components
+            .keys()
+            .copied()
+            .collect();
+        other_quoted_ids.sort_unstable();
+        for id in other_quoted_ids {
+            reencode_term_id(
+                id,
+                &other_dict,
+                &other_quoted_triples,
+                &mut merged_dictionary,
+                &mut merged_quoted_triples,
+                &mut translated_ids,
+            );
+        }
+
+        let mut dataset_index = DatasetIndex::new();
+        for graph in self.dataset_index.named_graphs() {
+            dataset_index.create_graph(graph);
+        }
+        for quad in self.dataset_index.all_quads() {
+            dataset_index.insert_quad(&quad);
+        }
+
+        // Graph names and every term in the other database must be translated:
+        // numeric dictionary IDs are local to their originating database.
+        for graph in other.dataset_index.named_graphs() {
+            let GraphId::Named(graph_id) = graph else {
+                continue;
+            };
+            let graph_id = reencode_term_id(
+                graph_id,
+                &other_dict,
+                &other_quoted_triples,
+                &mut merged_dictionary,
+                &mut merged_quoted_triples,
+                &mut translated_ids,
+            );
+            dataset_index.create_graph(GraphId::Named(graph_id));
+        }
+        for quad in other.dataset_index.all_quads() {
+            let subject = reencode_term_id(
+                quad.subject,
+                &other_dict,
+                &other_quoted_triples,
+                &mut merged_dictionary,
+                &mut merged_quoted_triples,
+                &mut translated_ids,
+            );
+            let predicate = reencode_term_id(
+                quad.predicate,
+                &other_dict,
+                &other_quoted_triples,
+                &mut merged_dictionary,
+                &mut merged_quoted_triples,
+                &mut translated_ids,
+            );
+            let object = reencode_term_id(
+                quad.object,
+                &other_dict,
+                &other_quoted_triples,
+                &mut merged_dictionary,
+                &mut merged_quoted_triples,
+                &mut translated_ids,
+            );
+            let graph = match quad.graph {
+                GraphId::Default => GraphId::Default,
+                GraphId::Named(graph_id) => GraphId::Named(reencode_term_id(
+                    graph_id,
+                    &other_dict,
+                    &other_quoted_triples,
+                    &mut merged_dictionary,
+                    &mut merged_quoted_triples,
+                    &mut translated_ids,
+                )),
+            };
+            dataset_index.insert_quad(&Quad {
                 subject,
                 predicate,
                 object,
+                graph,
             });
         }
 
-        // Merge the triples
-        let self_triples: BTreeSet<Triple> = self
-            .query_default_triples(None, None, None)
-            .into_iter()
-            .collect();
-        let union_triples: BTreeSet<Triple> =
-            self_triples.union(&re_encoded_triples).cloned().collect();
         let mut merged_seeds = self.probability_seeds.clone();
         for (triple, prob) in &other.probability_seeds {
-            let subject = merged_dictionary.encode(other_dict.decode(triple.subject).unwrap());
-            let predicate = merged_dictionary.encode(other_dict.decode(triple.predicate).unwrap());
-            let object = merged_dictionary.encode(other_dict.decode(triple.object).unwrap());
+            let subject = reencode_term_id(
+                triple.subject,
+                &other_dict,
+                &other_quoted_triples,
+                &mut merged_dictionary,
+                &mut merged_quoted_triples,
+                &mut translated_ids,
+            );
+            let predicate = reencode_term_id(
+                triple.predicate,
+                &other_dict,
+                &other_quoted_triples,
+                &mut merged_dictionary,
+                &mut merged_quoted_triples,
+                &mut translated_ids,
+            );
+            let object = reencode_term_id(
+                triple.object,
+                &other_dict,
+                &other_quoted_triples,
+                &mut merged_dictionary,
+                &mut merged_quoted_triples,
+                &mut translated_ids,
+            );
             merged_seeds.insert(
                 Triple {
                     subject,
@@ -2268,10 +2523,6 @@ impl SparqlDatabase {
                 },
                 *prob,
             );
-        }
-        let mut dataset_index = DatasetIndex::new();
-        for triple in &union_triples {
-            dataset_index.insert_triple(triple);
         }
 
         Self {
@@ -2288,7 +2539,7 @@ impl SparqlDatabase {
             ml_predict_materialized_triples: self.ml_predict_materialized_triples.clone(),
             probability_seeds: merged_seeds,
             cached_stats: None,
-            quoted_triple_store: Arc::clone(&self.quoted_triple_store),
+            quoted_triple_store: Arc::new(RwLock::new(merged_quoted_triples)),
         }
     }
 
@@ -3326,6 +3577,17 @@ impl SparqlDatabase {
         result
     }
 
+    fn handle_http_sparql_query(&mut self, query: &str) -> String {
+        match crate::execute_query::execute_sparql_query(query, self) {
+            Ok(rows) => rows
+                .into_iter()
+                .map(|row| row.join("\t"))
+                .collect::<Vec<_>>()
+                .join("\n"),
+            Err(error) => format!("Query Failed: {error}"),
+        }
+    }
+
     /// Execute one of Kolibrie's supported standard SPARQL Update forms while
     /// preserving parse/evaluation errors for Rust callers.
     pub fn execute_update(
@@ -3343,46 +3605,12 @@ impl SparqlDatabase {
             );
         }
 
-        // Compatibility path for the historical non-standard standalone
-        // `INSERT { ... }` and `DELETE { ... }` aliases.
-        use crate::parser::{parse_delete, parse_insert};
-
-        let trimmed = update.trim();
-        let upper = trimmed.to_ascii_uppercase();
-        if upper.contains("WHERE")
-            || upper.starts_with("INSERT DATA")
-            || upper.starts_with("DELETE DATA")
-        {
-            return "Update Failed".to_string();
-        }
-        if trimmed.starts_with("INSERT") {
-            if let Ok((_, insert_clause)) = parse_insert(trimmed) {
-                for (subject, predicate, object) in insert_clause.triples {
-                    let subject_id = self.encode_term_star(subject);
-                    let predicate_id = self.encode_term_star(predicate);
-                    let object_id = self.encode_term_star(object);
-                    self.add_triple(Triple {
-                        subject: subject_id,
-                        predicate: predicate_id,
-                        object: object_id,
-                    });
-                }
-                return "Update Successful".to_string();
-            }
-        } else if trimmed.starts_with("DELETE") {
-            if let Ok((_, delete_clause)) = parse_delete(trimmed) {
-                for (subject, predicate, object) in delete_clause.triples {
-                    let subject_id = self.encode_term_star(subject);
-                    let predicate_id = self.encode_term_star(predicate);
-                    let object_id = self.encode_term_star(object);
-                    self.delete_triple(&Triple {
-                        subject: subject_id,
-                        predicate: predicate_id,
-                        object: object_id,
-                    });
-                }
-                return "Update Successful".to_string();
-            }
+        // Historical standalone INSERT/DELETE aliases are parsed into the
+        // same UpdateOperation and use the same optimized executor. Keeping
+        // the old short success text preserves callers that compare it
+        // exactly.
+        if crate::execute_query::execute_sparql_update_compat(update, self).is_ok() {
+            return "Update Successful".to_string();
         }
         "Update Failed".to_string()
     }
@@ -3397,7 +3625,7 @@ impl SparqlDatabase {
                 let url = Url::parse(&("http://localhost".to_owned() + req.path.unwrap())).unwrap();
                 let query_pairs: HashMap<_, _> = url.query_pairs().into_owned().collect();
                 if let Some(query) = query_pairs.get("query") {
-                    return self.handle_query(query);
+                    return self.handle_http_sparql_query(query);
                 }
             }
             "POST" => {
@@ -3411,26 +3639,15 @@ impl SparqlDatabase {
                     if content_type == b"application/sparql-query" {
                         // Direct POST query
                         if let Some(body) = request.split("\r\n\r\n").nth(1) {
-                            return self.handle_query(body);
+                            return self.handle_http_sparql_query(body);
                         }
                     } else if content_type == b"application/x-www-form-urlencoded" {
                         // URL-encoded POST query or update
                         if let Some(body) = request.split("\r\n\r\n").nth(1) {
-                            let body_decoded =
-                                percent_decode(body.as_bytes()).decode_utf8().unwrap();
-                            let params: HashMap<_, _> = body_decoded
-                                .split('&')
-                                .map(|pair| {
-                                    let mut split = pair.split('=');
-                                    (
-                                        split.next().unwrap().to_string(),
-                                        split.next().unwrap_or("").to_string(),
-                                    )
-                                })
-                                .collect();
+                            let params = parse_form_urlencoded(body);
 
                             if let Some(query) = params.get("query") {
-                                return self.handle_query(query);
+                                return self.handle_http_sparql_query(query);
                             } else if let Some(update) = params.get("update") {
                                 return self.handle_update(update);
                             }

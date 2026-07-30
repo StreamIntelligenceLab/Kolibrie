@@ -40,7 +40,7 @@ fn select() {
     println!("{:?}", results);
 
     let dict = database.dictionary.read().unwrap();
-    for triple in &database.triples {
+    for triple in database.query_default_triples(None, None, None) {
         let subject = dict.decode(triple.subject).unwrap_or_default();
         let predicate = dict.decode(triple.predicate).unwrap_or_default();
         let object = dict.decode(triple.object).unwrap_or_default();

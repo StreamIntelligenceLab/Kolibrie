@@ -186,11 +186,11 @@ fn execute_sdd_rule_batch(db: &mut SparqlDatabase, rule_inputs: &[String]) -> us
     drop(dict);
 
     for triple in rdf_star {
-        db.triples.insert(triple);
+        db.add_triple(triple);
     }
 
     for triple in &derived_facts {
-        db.triples.insert(triple.clone());
+        db.add_triple(triple.clone());
     }
 
     derived_facts.len()
@@ -253,7 +253,7 @@ fn provenance_rows_from_rdf_star(db: &SparqlDatabase) -> Vec<Vec<String>> {
     let mut rows: std::collections::BTreeMap<String, (Option<String>, Option<String>)> =
         std::collections::BTreeMap::new();
 
-    for triple in &db.triples {
+    for triple in db.query_default_triples(None, None, None) {
         let predicate = db.decode_any(triple.predicate).unwrap_or_default();
         if predicate != prob_value && predicate != proof_count {
             continue;

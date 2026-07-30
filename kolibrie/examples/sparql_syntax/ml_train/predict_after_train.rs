@@ -112,10 +112,7 @@ ML.PREDICT(MODEL "digit_model",
         .expect("predictedDigit predicate missing");
 
     println!("Predictions materialized by ML.PREDICT:");
-    for triple in &database.triples {
-        if triple.predicate != pred_id {
-            continue;
-        }
+    for triple in database.query_default_triples(None, Some(pred_id), None) {
         let subject = dict.decode(triple.subject).unwrap_or("<unknown>");
         let object = dict.decode(triple.object).unwrap_or("<unknown>");
         println!("  {subject} -> {object}");

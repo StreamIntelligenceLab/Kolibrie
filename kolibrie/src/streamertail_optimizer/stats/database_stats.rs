@@ -46,8 +46,11 @@ impl DatabaseStats {
 
     /// Gathers statistics from the database using sampling for performance
     pub fn gather_stats_fast(database: &SparqlDatabase) -> Self {
-        let triples_vec = database.query_default_triples(None, None, None);
-        let total_triples = triples_vec.len() as u64;
+        // Term and predicate distributions must cover the complete RDF
+        // dataset. Graph-specific cardinalities below cap these global
+        // distributions for default, fixed named, and variable GRAPH scans.
+        let quads = database.dataset_index.all_quads();
+        let total_triples = quads.len() as u64;
 
         // Use sampling for large datasets instead of full scan
         let sample_size = (total_triples as usize).min(100_000);
@@ -58,10 +61,10 @@ impl DatabaseStats {
         };
 
         // Sample the data by stepping through the vector
-        let sampled_triples: Vec<_> = triples_vec.iter().step_by(step).take(sample_size).collect();
+        let sampled_quads: Vec<_> = quads.iter().step_by(step).take(sample_size).collect();
 
         // Use parallel processing for stats gathering
-        let stats_data: Vec<_> = sampled_triples
+        let stats_data: Vec<_> = sampled_quads
             .par_iter()
             .map(|triple| {
                 let subject = triple.subject;

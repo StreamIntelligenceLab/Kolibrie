@@ -9,7 +9,7 @@
  */
 
 use serde::{Deserialize, Serialize};
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeSet, HashMap, HashSet};
 
 use crate::terms::{Term, TriplePattern};
 use crate::triple::Triple;
@@ -38,14 +38,14 @@ impl Quad {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 pub enum GraphTerm {
     Default,
     Named(u32),
     Variable(String),
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 pub struct QuadPattern {
     pub subject: Term,
     pub predicate: Term,
@@ -194,6 +194,29 @@ impl DatasetIndex {
         self.query_graph(GraphId::Default, s, p, o)
             .into_iter()
             .map(|quad| quad.triple())
+            .collect()
+    }
+
+    /// Queries a logical default graph formed by merging the supplied source
+    /// graphs.
+    ///
+    /// SPARQL dataset clauses define the query default graph as an RDF merge:
+    /// the same triple occurring in more than one source graph is returned
+    /// once. An empty source list therefore represents an empty query default
+    /// graph (for example, `FROM NAMED` without `FROM`).
+    pub fn query_merged_graphs(
+        &self,
+        source_graphs: &[GraphId],
+        s: Option<u32>,
+        p: Option<u32>,
+        o: Option<u32>,
+    ) -> Vec<Triple> {
+        source_graphs
+            .iter()
+            .flat_map(|graph| self.query_graph(*graph, s, p, o))
+            .map(|quad| quad.triple())
+            .collect::<BTreeSet<_>>()
+            .into_iter()
             .collect()
     }
 
@@ -760,5 +783,43 @@ mod tests {
             index.graphs(),
             vec![GraphId::Default, GraphId::Named(10), GraphId::Named(11)]
         );
+    }
+
+    #[test]
+    fn merged_graph_query_deduplicates_triples_across_sources() {
+        let mut index = DatasetIndex::new();
+        let shared = triple(1, 2, 3);
+        let unique = triple(4, 2, 5);
+        let first = GraphId::Named(10);
+        let second = GraphId::Named(11);
+
+        index.insert_quad(&Quad {
+            subject: shared.subject,
+            predicate: shared.predicate,
+            object: shared.object,
+            graph: first,
+        });
+        index.insert_quad(&Quad {
+            subject: shared.subject,
+            predicate: shared.predicate,
+            object: shared.object,
+            graph: second,
+        });
+        index.insert_quad(&Quad {
+            subject: unique.subject,
+            predicate: unique.predicate,
+            object: unique.object,
+            graph: second,
+        });
+
+        assert_eq!(
+            index.query_merged_graphs(&[first, second, first], None, None, None),
+            vec![shared.clone(), unique]
+        );
+        assert_eq!(
+            index.query_merged_graphs(&[first, second], Some(1), Some(2), Some(3)),
+            vec![shared]
+        );
+        assert!(index.query_merged_graphs(&[], None, None, None).is_empty());
     }
 }

@@ -13,14 +13,14 @@ use std::error::Error;
 
 use ml::{MlpNeuralPredicate, OutputType};
 use shared::query::{
-    MLPredictClause, ModelArch, ModelDecl, NeuralOutputKind, NeuralRelationDecl,
+    GroupGraphPattern, MLPredictClause, ModelArch, ModelDecl, NeuralOutputKind, NeuralRelationDecl,
     TrainNeuralRelationDecl, TrainingDataSource,
 };
 use shared::triple::Triple;
 
 use crate::execute_ml_train::{
-    build_ground_reasoner_from_db, execute_ml_training_owned,
-    OwnedNeuralCallSpec, OwnedNeuralChoice, OwnedNeuralGroupType, OwnedNeuralTrainingClause,
+    build_ground_reasoner_from_db, execute_ml_training_owned, OwnedNeuralCallSpec,
+    OwnedNeuralChoice, OwnedNeuralGroupType, OwnedNeuralTrainingClause,
 };
 use crate::ml_feature_loader::{build_feature_vec, query_training_rows};
 use crate::parser::{parse_combined_query, parse_sparql_query};
@@ -36,7 +36,11 @@ pub fn default_model_artifact_path(model_name: &str) -> String {
     format!("{}_model.bin", sanitized)
 }
 
-fn normalize_term(database: &SparqlDatabase, prefixes: &HashMap<String, String>, term: &str) -> String {
+fn normalize_term(
+    database: &SparqlDatabase,
+    prefixes: &HashMap<String, String>,
+    term: &str,
+) -> String {
     if term.starts_with('?') {
         term.to_string()
     } else {
@@ -151,7 +155,12 @@ fn resolve_model_components(
         .model_decls
         .get(&relation.model_name)
         .cloned()
-        .ok_or_else(|| format!("No MODEL declaration registered for {}", relation.model_name))?;
+        .ok_or_else(|| {
+            format!(
+                "No MODEL declaration registered for {}",
+                relation.model_name
+            )
+        })?;
     Ok((relation, model))
 }
 
@@ -363,14 +372,11 @@ pub fn execute_top_level_ml_predict(
     Ok(())
 }
 
-pub fn execute_neural_program(
-    database: &mut SparqlDatabase,
-    program: &str,
-) -> Result<(), String> {
+pub fn execute_neural_program(database: &mut SparqlDatabase, program: &str) -> Result<(), String> {
     database.register_prefixes_from_query(program);
 
-    let (_rest, combined) = parse_combined_query(program)
-        .map_err(|_| "Failed to parse neural program".to_string())?;
+    let (_rest, combined) =
+        parse_combined_query(program).map_err(|_| "Failed to parse neural program".to_string())?;
 
     if combined.rule.is_some() {
         return Err("execute_neural_program only accepts MODEL / NEURAL RELATION / TRAIN NEURAL RELATION declarations and top-level ML.PREDICT".to_string());
@@ -396,7 +402,10 @@ pub fn execute_neural_program(
         .iter()
         .filter_map(|decl| {
             let predicate = database.resolve_query_term(&decl.predicate, &prefixes);
-            database.train_neural_relation_decls.get(&predicate).cloned()
+            database
+                .train_neural_relation_decls
+                .get(&predicate)
+                .cloned()
         })
         .collect();
 
@@ -435,13 +444,21 @@ fn remove_materialized_triples(database: &mut SparqlDatabase, predicate: &str) {
     }
 }
 
-pub fn materialize_neural_relation(database: &mut SparqlDatabase, predicate: &str) -> NeuralResult<()> {
+pub fn materialize_neural_relation(
+    database: &mut SparqlDatabase,
+    predicate: &str,
+) -> NeuralResult<()> {
     let (relation, model_decl) = resolve_model_components(database, predicate)?;
     let artifact_path = database
         .neural_model_artifacts
         .get(&model_decl.name)
         .cloned()
-        .ok_or_else(|| format!("No trained artifact available for MODEL {}", model_decl.name))?;
+        .ok_or_else(|| {
+            format!(
+                "No trained artifact available for MODEL {}",
+                model_decl.name
+            )
+        })?;
 
     let mut vars = Vec::new();
     push_unique(&mut vars, relation.anchor_var.clone());
@@ -533,13 +550,17 @@ pub fn materialize_neural_relations_for_patterns(
     Ok(())
 }
 
-pub fn lower_ml_predict_alias(ml_predict: &MLPredictClause<'_>) -> Result<NeuralRelationDecl, String> {
-    let (_, (_, input_select, input_where, _, _, _, _, _, _, _, _, _)) =
-        parse_sparql_query(ml_predict.input_raw)
-            .map_err(|err| format!("failed to lower ML.PREDICT INPUT query: {err:?}"))?;
+pub fn lower_ml_predict_alias(
+    ml_predict: &MLPredictClause<'_>,
+) -> Result<NeuralRelationDecl, String> {
+    let (_, parsed) = parse_sparql_query(ml_predict.input_raw)
+        .map_err(|err| format!("failed to lower ML.PREDICT INPUT query: {err:?}"))?;
+    let input_select = &parsed.variables;
+    let mut input_where = Vec::new();
+    collect_neural_input_patterns(&parsed.pattern, &mut input_where);
     let anchor_var = input_select
         .iter()
-        .find_map(|(var, kind, _)| {
+        .find_map(|(kind, var, _)| {
             if *kind == "VAR" || var.starts_with('?') {
                 Some((*var).to_string())
             } else {
@@ -554,7 +575,9 @@ pub fn lower_ml_predict_alias(ml_predict: &MLPredictClause<'_>) -> Result<Neural
                     .map(|term| (*term).to_string())
             })
         })
-        .ok_or_else(|| "ML.PREDICT alias lowering requires at least one input variable".to_string())?;
+        .ok_or_else(|| {
+            "ML.PREDICT alias lowering requires at least one input variable".to_string()
+        })?;
     let feature_vars = if input_select.is_empty() {
         input_where
             .iter()
@@ -565,7 +588,7 @@ pub fn lower_ml_predict_alias(ml_predict: &MLPredictClause<'_>) -> Result<Neural
     } else {
         input_select
             .iter()
-            .map(|(var, _, _)| (*var).to_string())
+            .map(|(_, var, _)| (*var).to_string())
             .collect::<Vec<_>>()
     };
     Ok(NeuralRelationDecl {
@@ -573,11 +596,39 @@ pub fn lower_ml_predict_alias(ml_predict: &MLPredictClause<'_>) -> Result<Neural
         model_name: ml_predict.model.to_string(),
         input_patterns: input_where
             .iter()
-            .map(|triple| (triple.0.to_string(), triple.1.to_string(), triple.2.to_string()))
+            .map(|triple| {
+                (
+                    triple.0.to_string(),
+                    triple.1.to_string(),
+                    triple.2.to_string(),
+                )
+            })
             .collect(),
         feature_vars,
         anchor_var,
     })
+}
+
+fn collect_neural_input_patterns<'a>(
+    pattern: &'a GroupGraphPattern<'a>,
+    output: &mut Vec<(&'a str, &'a str, &'a str)>,
+) {
+    match pattern {
+        GroupGraphPattern::Bgp(patterns) => output.extend(patterns.iter().copied()),
+        GroupGraphPattern::Join(patterns) | GroupGraphPattern::Union(patterns) => {
+            for pattern in patterns {
+                collect_neural_input_patterns(pattern, output);
+            }
+        }
+        GroupGraphPattern::Graph { pattern, .. } => collect_neural_input_patterns(pattern, output),
+        GroupGraphPattern::SubQuery(subquery) => {
+            collect_neural_input_patterns(&subquery.query.pattern, output)
+        }
+        GroupGraphPattern::Unit
+        | GroupGraphPattern::Filter(_)
+        | GroupGraphPattern::Bind(_)
+        | GroupGraphPattern::Values(_) => {}
+    }
 }
 
 #[cfg(test)]
@@ -619,7 +670,8 @@ mod tests {
     #[test]
     fn relation_driven_training_query_is_built_from_input_and_data() {
         let mut db = SparqlDatabase::new();
-        db.prefixes.insert("ex".to_string(), "http://example.org/".to_string());
+        db.prefixes
+            .insert("ex".to_string(), "http://example.org/".to_string());
         let prefixes = db.prefixes.clone();
         register_neural_declarations(
             &mut db,
@@ -637,8 +689,16 @@ mod tests {
                 predicate: "ex:pred".to_string(),
                 model_name: "digit_model".to_string(),
                 input_patterns: vec![
-                    ("?sample".to_string(), "ex:x0".to_string(), "?x0".to_string()),
-                    ("?sample".to_string(), "ex:x1".to_string(), "?x1".to_string()),
+                    (
+                        "?sample".to_string(),
+                        "ex:x0".to_string(),
+                        "?x0".to_string(),
+                    ),
+                    (
+                        "?sample".to_string(),
+                        "ex:x1".to_string(),
+                        "?x1".to_string(),
+                    ),
                 ],
                 feature_vars: vec!["?x0".to_string(), "?x1".to_string()],
                 anchor_var: "?sample".to_string(),
@@ -669,11 +729,9 @@ mod tests {
             },
         )
         .unwrap();
-        assert!(
-            owned
-                .training_data_raw
-                .contains("?sample <http://example.org/x0> ?x0")
-        );
+        assert!(owned
+            .training_data_raw
+            .contains("?sample <http://example.org/x0> ?x0"));
         assert!(owned.training_data_raw.contains("?sample ex:gold ?label"));
     }
 
@@ -727,7 +785,8 @@ WHERE {
     fn query_fallback_training_executes_and_materializes_relation() {
         let mut db = SparqlDatabase::new();
         populate_multiclass_db(&mut db);
-        db.prefixes.insert("ex".to_string(), "http://example.org/".to_string());
+        db.prefixes
+            .insert("ex".to_string(), "http://example.org/".to_string());
         let prefixes = db.prefixes.clone();
 
         register_neural_declarations(
@@ -746,9 +805,21 @@ WHERE {
                 predicate: "ex:predictedDigit".to_string(),
                 model_name: "digit_model".to_string(),
                 input_patterns: vec![
-                    ("?sample".to_string(), "ex:x0".to_string(), "?x0".to_string()),
-                    ("?sample".to_string(), "ex:x1".to_string(), "?x1".to_string()),
-                    ("?sample".to_string(), "ex:x2".to_string(), "?x2".to_string()),
+                    (
+                        "?sample".to_string(),
+                        "ex:x0".to_string(),
+                        "?x0".to_string(),
+                    ),
+                    (
+                        "?sample".to_string(),
+                        "ex:x1".to_string(),
+                        "?x1".to_string(),
+                    ),
+                    (
+                        "?sample".to_string(),
+                        "ex:x2".to_string(),
+                        "?x2".to_string(),
+                    ),
                 ],
                 feature_vars: vec!["?x0".to_string(), "?x1".to_string(), "?x2".to_string()],
                 anchor_var: "?sample".to_string(),

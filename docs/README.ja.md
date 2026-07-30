@@ -202,7 +202,7 @@ for row in results {
 
 #### 名前付きグラフ、`GRAPH`、`UNION`
 
-Kolibrie の既存の SPARQL パーサーは、固定または変数のグラフ名、ネストしたグループ、およびマルチセット（重複を保持する）`UNION` を含む再帰的な `GRAPH` パターンをサポートします。
+Kolibrie の標準 SELECT と Update は、単一のアーキテクチャを使用します。既存の `nom` パーサーが再帰的なグループパターンを構築し、同じ論理プラン、Streamertail オプティマイザー、物理実行系へ変換します。`GRAPH`、`UNION`、Update の `WHERE` 用に別のパーサーや評価系はありません。この統一された経路は、固定または変数のグラフ名、ネストしたグループ、およびマルチセット（重複を保持する）`UNION` を含む再帰的な `GRAPH` パターンをサポートします。
 
 ```rust
 let rows = execute_query_rayon_parallel2_volcano(
@@ -220,9 +220,11 @@ let rows = execute_query_rayon_parallel2_volcano(
 
 `GRAPH <name>` は、指定された名前付きグラフのみを読み込みます。`GRAPH ?g` は名前付きグラフの識別子を反復処理して `?g` にバインドします。デフォルトグラフは対象に含まれません。`DISTINCT` を指定しない場合、`UNION` の各分岐によって生成された重複解は保持されます。
 
+データセット句はクエリのデータセットを置き換えます。複数の `FROM` グラフは、重複するトリプルを除いてクエリのデフォルトグラフにマージされます。いずれかのデータセット句がある場合、`GRAPH` から参照できるのは `FROM NAMED` に列挙されたグラフだけです。`FROM` を伴わない `FROM NAMED` は空のクエリデフォルトグラフを作り、`FROM NAMED` を伴わない `FROM` では名前付きグラフは公開されません。データセット句がない場合は、物理デフォルトグラフとカタログに登録されたすべての名前付きグラフが参照できます。
+
 #### サポートされる SPARQL Update 形式
 
-エラー情報を保持する Rust API は、以下の範囲の更新形式を受け付けます。同じ操作内で、デフォルトグラフと名前付きグラフのテンプレートを組み合わせることができます。
+エラー情報を保持する Rust API は、以下の6つの Update 形式だけを受け付けます。同じ操作内で、デフォルトグラフと名前付きグラフのテンプレートを組み合わせることができ、各 `WHERE` は SELECT と同じパーサー、論理プランナー、オプティマイザー、実行系を使用します。
 
 ```rust
 db.execute_update(r#"
@@ -233,7 +235,7 @@ db.execute_update(r#"
 "#)?;
 ```
 
-サポートされる形式は、`INSERT DATA`、`DELETE DATA`、`INSERT ... WHERE`、`DELETE ... WHERE`、複合形式の `DELETE/INSERT ... WHERE`、および `DELETE WHERE` です。変更を適用する前に `WHERE` パターンを1回だけ評価し、削除を先に、挿入を後に実行します。Python では `SparqlDatabase.update()` で同じ動作を利用できます。
+サポートされる形式は、`INSERT DATA`、`DELETE DATA`、`INSERT ... WHERE`、`DELETE ... WHERE`、複合形式の `DELETE/INSERT ... WHERE`、および `DELETE WHERE` です。変更を適用する前に `WHERE` パターンを1回だけ評価し、削除を先に、挿入を後に実行します。Python では `SparqlDatabase.update()` で同じ動作を利用できます。`WITH`、`USING`、`LOAD`、グラフ管理操作など、その他の SPARQL 1.1 Update 形式はこのリリースの対象外です。
 
 #### Query with FILTER
 

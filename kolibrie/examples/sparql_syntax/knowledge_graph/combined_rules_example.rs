@@ -40,7 +40,7 @@ fn main() {
     kg.add_tagged_triple("Diana",   "trusts", "Eve",   0.85);
     kg.add_tagged_triple("Eve",     "trusts", "Frank", 0.65);
 
-    let initial_size = kg.index_manager.query(None, None, None).len();
+    let initial_size = kg.dataset_index.len_default();
     println!("  Certain knowledge (knows): 8 facts");
     println!("  Uncertain knowledge (trusts): 7 facts");
     println!("  Initial database size: {} triples", initial_size);
@@ -128,7 +128,7 @@ fn main() {
     println!("                   connected(X,Z) :- connected(X,Y), connected(Y,Z)");
 
     let facts1 = kg.infer_new_facts_semi_naive();
-    let after_classical1 = kg.index_manager.query(None, None, None).len();
+    let after_classical1 = kg.dataset_index.len_default();
 
     let classical1_count = facts1.len();
     println!("  Inferred {} new facts using classical rules", classical1_count);
@@ -162,7 +162,7 @@ fn main() {
     kg.add_rule(rule5);
 
     let (facts2, tag_store) = kg.infer_new_facts_with_provenance(AddMultProbability);
-    let after_prov = kg.index_manager.query(None, None, None).len();
+    let after_prov = kg.dataset_index.len_default();
 
     println!("  Inferred {} new provenance-tagged facts", facts2.len());
     println!("  Database size: {} triples", after_prov);
@@ -203,7 +203,7 @@ fn main() {
     kg.add_rule(rule3);
 
     let facts3 = kg.infer_new_facts_semi_naive();
-    let after_classical2 = kg.index_manager.query(None, None, None).len();
+    let after_classical2 = kg.dataset_index.len_default();
 
     println!("  Inferred {} new facts", facts3.len());
     println!("  Database size: {} triples", after_classical2);

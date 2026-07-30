@@ -11,7 +11,7 @@
 use std::collections::HashMap;
 use std::time::Duration;
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum FilterExpression<'a> {
     Comparison(&'a str, &'a str, &'a str),
     And(Box<FilterExpression<'a>>, Box<FilterExpression<'a>>),
@@ -21,7 +21,7 @@ pub enum FilterExpression<'a> {
     FunctionCall(&'a str, Vec<&'a str>),
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ArithmeticExpression<'a> {
     Operand(&'a str), // Variable, literal, or number
     Add(Box<ArithmeticExpression<'a>>, Box<ArithmeticExpression<'a>>),
@@ -35,10 +35,11 @@ impl<'a> ArithmeticExpression<'a> {
     pub fn evaluate<F: Fn(&str) -> Option<f64>>(&self, resolve: &F) -> Result<f64, String> {
         match self {
             Self::Operand(s) => {
-                if s.starts_with('?') {
+                if s.starts_with(['?', '$']) {
                     resolve(s).ok_or_else(|| format!("Variable '{}' not found or not numeric", s))
                 } else {
-                    s.parse::<f64>().map_err(|_| format!("Cannot parse '{}' as number", s))
+                    s.parse::<f64>()
+                        .map_err(|_| format!("Cannot parse '{}' as number", s))
                 }
             }
             Self::Add(l, r) => Ok(l.evaluate(resolve)? + r.evaluate(resolve)?),
@@ -57,39 +58,71 @@ impl<'a> ArithmeticExpression<'a> {
 }
 
 // Define the Value enum to represent terms or UNDEF in VALUES clause
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Value {
     Term(String),
     Undef,
 }
 
 // Define the ValuesClause struct to hold variables and their corresponding values
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ValuesClause<'a> {
     pub variables: Vec<&'a str>,
     pub values: Vec<Vec<Value>>,
 }
 
-// Define the InsertClause struct to hold triple patterns for the INSERT clause
-#[derive(Debug, Clone)]
+/// A source-borrowed triple pattern as it appears in SPARQL text.
+///
+/// The three slices retain their lexical spelling, including variable sigils,
+/// IRI brackets, literal quotes/suffixes, blank-node prefixes, and RDF-star
+/// quoted-triple delimiters. Resolution and dictionary encoding happen only
+/// when this syntax tree is lowered into the query plan.
+pub type LexicalTriplePattern<'a> = (&'a str, &'a str, &'a str);
+
+/// A source-borrowed quad used by update data blocks and templates.
+/// `graph == None` denotes the default graph.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LexicalQuadPattern<'a> {
+    pub graph: Option<&'a str>,
+    pub triple: LexicalTriplePattern<'a>,
+}
+
+/// The existing tuple representation used by BIND.
+pub type BindClause<'a> = (&'a str, Vec<&'a str>, &'a str);
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct InsertClause<'a> {
-    pub triples: Vec<(&'a str, &'a str, &'a str)>,
+    pub quads: Vec<LexicalQuadPattern<'a>>,
 }
 
-// Define the DeleteClause struct to hold triple patterns for the DELETE clause
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DeleteClause<'a> {
-    pub triples: Vec<(&'a str, &'a str, &'a str)>,
+    pub quads: Vec<LexicalQuadPattern<'a>>,
 }
 
-#[derive(Debug, Clone)]
+/// Recursive graph-pattern algebra shared by SELECT and update WHERE clauses.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum GroupGraphPattern<'a> {
+    /// The empty group graph pattern. It evaluates to one solution mapping.
+    Unit,
+    Bgp(Vec<LexicalTriplePattern<'a>>),
+    Join(Vec<GroupGraphPattern<'a>>),
+    /// UNION preserves branch multiplicity; DISTINCT is a SELECT modifier.
+    Union(Vec<GroupGraphPattern<'a>>),
+    Graph {
+        /// Raw IRI, prefixed name, or variable lexeme following GRAPH.
+        name: &'a str,
+        pattern: Box<GroupGraphPattern<'a>>,
+    },
+    Filter(FilterExpression<'a>),
+    Bind(BindClause<'a>),
+    Values(ValuesClause<'a>),
+    SubQuery(Box<SubQuery<'a>>),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SubQuery<'a> {
-    pub variables: Vec<(&'a str, &'a str, Option<&'a str>)>, // SELECT variables
-    pub patterns: Vec<(&'a str, &'a str, &'a str)>,          // WHERE patterns
-    pub filters: Vec<FilterExpression<'a>>,           // FILTER conditions
-    pub binds: Vec<(&'a str, Vec<&'a str>, &'a str)>,        // BIND clauses
-    pub _values_clause: Option<ValuesClause<'a>>,            // VALUES clause
-    pub limit: Option<usize>, // Add LIMIT support
+    pub query: SelectQuery<'a>,
 }
 
 #[derive(Debug, Clone)]
@@ -100,10 +133,10 @@ pub struct RuleHead<'a> {
 #[derive(Debug, Clone)]
 pub struct MLPredictClause<'a> {
     pub model: &'a str,
-    pub input_raw: &'a str,                                 // Raw input query string
+    pub input_raw: &'a str, // Raw input query string
     pub input_select: Vec<(&'a str, &'a str, Option<&'a str>)>, // Parsed SELECT variables
-    pub input_where: Vec<(&'a str, &'a str, &'a str)>,      // Parsed WHERE patterns
-    pub input_filters: Vec<FilterExpression<'a>>,    // Parsed FILTER conditions
+    pub input_where: Vec<(&'a str, &'a str, &'a str)>, // Parsed WHERE patterns
+    pub input_filters: Vec<FilterExpression<'a>>, // Parsed FILTER conditions
     pub output: &'a str,
 }
 
@@ -207,7 +240,10 @@ pub enum SyncPolicy {
     /// Wait until all windows have fired in the current cycle (τ=∞)
     Wait,
     /// Wait up to `duration`; on expiry apply `fallback`
-    Timeout { duration: Duration, fallback: Fallback },
+    Timeout {
+        duration: Duration,
+        fallback: Fallback,
+    },
 }
 
 impl Default for SyncPolicy {
@@ -219,7 +255,7 @@ impl Default for SyncPolicy {
 #[derive(Clone, Debug)]
 pub enum StreamType<'a> {
     RStream,
-    IStream, 
+    IStream,
     DStream,
     Custom(&'a str),
 }
@@ -273,7 +309,7 @@ pub struct CombinedRule<'a> {
     pub train_neural_relation_decls: Vec<TrainNeuralRelationDecl>,
     pub body: (
         Vec<(&'a str, &'a str, &'a str)>, // triple patterns from WHERE
-        Vec<FilterExpression<'a>>, // filters
+        Vec<FilterExpression<'a>>,        // filters
         Option<ValuesClause<'a>>,
         Vec<(&'a str, Vec<&'a str>, &'a str)>, // BIND clauses
         Vec<SubQuery<'a>>,                     // subqueries
@@ -307,16 +343,68 @@ pub struct RetrieveClause<'a> {
     pub graph_pattern: Vec<(&'a str, &'a str, &'a str)>,
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SortDirection {
     Asc,
     Desc,
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct OrderCondition<'a> {
     pub variable: &'a str,
     pub direction: SortDirection,
+}
+
+/// A SELECT query in Kolibrie's supported SPARQL fragment.
+///
+/// Projection entries retain the historical `(kind, variable, alias)` shape:
+/// ordinary variables use `"VAR"` and aggregates use their canonical
+/// uppercase function name.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SelectQuery<'a> {
+    pub distinct: bool,
+    pub variables: Vec<(&'a str, &'a str, Option<&'a str>)>,
+    /// Graph IRIs used to form the replacement default graph.
+    pub from: Vec<&'a str>,
+    /// Graph IRIs visible to GRAPH in the replacement dataset.
+    pub from_named: Vec<&'a str>,
+    pub pattern: GroupGraphPattern<'a>,
+    pub group_vars: Vec<&'a str>,
+    pub order_conditions: Vec<OrderCondition<'a>>,
+    pub limit: Option<usize>,
+}
+
+/// The six SPARQL Update forms supported by Kolibrie.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum UpdateOperation<'a> {
+    InsertData(InsertClause<'a>),
+    DeleteData(DeleteClause<'a>),
+    InsertWhere {
+        insert: InsertClause<'a>,
+        where_pattern: GroupGraphPattern<'a>,
+    },
+    /// `DELETE { template } WHERE { pattern }`
+    DeleteWhere {
+        delete: DeleteClause<'a>,
+        where_pattern: GroupGraphPattern<'a>,
+    },
+    DeleteInsertWhere {
+        delete: DeleteClause<'a>,
+        insert: InsertClause<'a>,
+        where_pattern: GroupGraphPattern<'a>,
+    },
+    /// `DELETE WHERE { pattern }`; the parsed quad block is both the template
+    /// and the WHERE graph pattern.
+    DeleteWhereShorthand {
+        delete: DeleteClause<'a>,
+        where_pattern: GroupGraphPattern<'a>,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SparqlOperation<'a> {
+    Select(SelectQuery<'a>),
+    Update(UpdateOperation<'a>),
 }
 
 #[derive(Debug, Clone)]
@@ -329,152 +417,8 @@ pub struct CombinedQuery<'a> {
     pub train_neural_relation_decls: Vec<TrainNeuralRelationDecl>,
     pub rule: Option<CombinedRule<'a>>,
     pub ml_predict: Option<MLPredictClause<'a>>,
-    pub sparql: (
-        Option<InsertClause<'a>>,
-        Vec<(&'a str, &'a str, Option<&'a str>)>,
-        Vec<(&'a str, &'a str, &'a str)>,
-        Vec<FilterExpression<'a>>,
-        Vec<&'a str>,
-        HashMap<String, String>,
-        Option<ValuesClause<'a>>,
-        Vec<(&'a str, Vec<&'a str>, &'a str)>,
-        Vec<SubQuery<'a>>,
-        Option<usize>,
-        Vec<WindowBlock<'a>>,
-        Vec<OrderCondition<'a>>,
-    ),
-    pub delete_clause: Option<DeleteClause<'a>>,
+    /// The single standard-SPARQL syntax tree. Extension-only requests leave
+    /// this as `None`; recognized standard syntax never falls through to an
+    /// extension parser.
+    pub sparql: Option<SparqlOperation<'a>>,
 }
-
-// ---------------------------------------------------------------------------
-// Strict SPARQL query/update syntax tree
-// ---------------------------------------------------------------------------
-
-/// A term in the strict SPARQL parser.
-///
-/// The variants deliberately retain slices into the source query so parsing
-/// remains allocation-light and callers can report useful source locations.
-/// IRI values do not include `<` and `>`, variable and blank-node values do
-/// not include their `?`/`$` and `_:` prefixes, prefixed names retain their
-/// complete lexical form, and literals retain their complete lexical form
-/// (quotes, escapes, language tag, and datatype suffix included).
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum SparqlTerm<'a> {
-    Variable(&'a str),
-    Iri(&'a str),
-    PrefixedName(&'a str),
-    BlankNode(&'a str),
-    Literal(&'a str),
-    QuotedTriple(&'a str),
-    /// The predicate abbreviation `a`.
-    A,
-}
-
-/// The name following `GRAPH`.
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
-pub enum SparqlGraphName<'a> {
-    /// The IRI value without angle brackets.
-    Iri(&'a str),
-    /// The complete prefixed name, for example `ex:graph`.
-    PrefixedName(&'a str),
-    /// The variable name without its `?` or `$` sigil.
-    Variable(&'a str),
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct SparqlTriplePattern<'a> {
-    pub subject: SparqlTerm<'a>,
-    pub predicate: SparqlTerm<'a>,
-    pub object: SparqlTerm<'a>,
-}
-
-/// Recursive graph-pattern algebra for Kolibrie's SELECT/WHERE fragment.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum GroupGraphPattern<'a> {
-    /// The empty group pattern. It evaluates to one solution mapping.
-    Empty,
-    Bgp(Vec<SparqlTriplePattern<'a>>),
-    Join(Vec<GroupGraphPattern<'a>>),
-    Union(Vec<GroupGraphPattern<'a>>),
-    Graph {
-        name: SparqlGraphName<'a>,
-        pattern: Box<GroupGraphPattern<'a>>,
-    },
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum SparqlProjection<'a> {
-    All,
-    /// Variable names without their `?` or `$` sigils.
-    Variables(Vec<&'a str>),
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct StrictSelectQuery<'a> {
-    pub prefixes: HashMap<String, String>,
-    pub distinct: bool,
-    pub projection: SparqlProjection<'a>,
-    /// Named graphs visible to `GRAPH` when explicit `FROM NAMED` clauses are
-    /// present. An empty vector means no dataset replacement was requested.
-    pub from_named: Vec<SparqlGraphName<'a>>,
-    pub pattern: GroupGraphPattern<'a>,
-    pub limit: Option<usize>,
-}
-
-/// A template/data quad. `graph == None` denotes the default graph.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct SparqlQuadPattern<'a> {
-    pub graph: Option<SparqlGraphName<'a>>,
-    pub triple: SparqlTriplePattern<'a>,
-}
-
-/// The deliberately scoped SPARQL 1.1 Update operation family supported by
-/// Kolibrie's strict parser.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum StrictUpdateOperation<'a> {
-    InsertData(Vec<SparqlQuadPattern<'a>>),
-    DeleteData(Vec<SparqlQuadPattern<'a>>),
-    Modify {
-        /// Empty for INSERT-only MODIFY.
-        delete: Vec<SparqlQuadPattern<'a>>,
-        /// Empty for DELETE-only MODIFY.
-        insert: Vec<SparqlQuadPattern<'a>>,
-        where_pattern: GroupGraphPattern<'a>,
-    },
-    DeleteWhere {
-        template: Vec<SparqlQuadPattern<'a>>,
-        where_pattern: GroupGraphPattern<'a>,
-    },
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct StrictUpdateRequest<'a> {
-    pub prefixes: HashMap<String, String>,
-    pub operation: StrictUpdateOperation<'a>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum StrictSparqlRequest<'a> {
-    Select(StrictSelectQuery<'a>),
-    Update(StrictUpdateRequest<'a>),
-}
-
-/// A source-positioned error returned by
-/// `kolibrie::parser::parse_strict_sparql`.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct StrictSparqlParseError {
-    pub offset: usize,
-    pub message: String,
-}
-
-impl std::fmt::Display for StrictSparqlParseError {
-    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(
-            formatter,
-            "SPARQL syntax error at byte {}: {}",
-            self.offset, self.message
-        )
-    }
-}
-
-impl std::error::Error for StrictSparqlParseError {}

@@ -21,7 +21,7 @@ fn main() {
         .expect(&format!("Failed to read {}", taxonomy_path));
     database.parse_turtle(&taxonomy_data);
     let load_time = load_start.elapsed();
-    println!("Loaded {} taxonomy triples in {:?}", database.triples.len(), load_time);
+    println!("Loaded {} taxonomy triples in {:?}", database.dataset_index.len_default(), load_time);
     
     // Step 2: Load the facts (initial instances)
     let facts_path = format!("{}/test-facts.ttl", base_path);
@@ -29,7 +29,7 @@ fn main() {
     let facts_data = fs::read_to_string(&facts_path)
         .expect(&format!("Failed to read {}", facts_path));
     database.parse_turtle(&facts_data);
-    println!("Total triples after facts: {}", database.triples.len());
+    println!("Total triples after facts: {}", database.dataset_index.len_default());
     
     // Step 3: Create KnowledgeGraph and populate it (One-time)
     println!("\n=== Populating KnowledgeGraph (One-time) ===");
@@ -37,8 +37,9 @@ fn main() {
     kg.dictionary = database.dictionary.clone();
     
     let populate_start = Instant::now();
-    for triple in database.triples.iter() {
-        kg.index_manager.insert(triple);
+    let triples = database.query_default_triples(None, None, None);
+    for triple in &triples {
+        kg.insert_ground_triple(triple.clone());
     }
     let populate_time = populate_start. elapsed();
     println!("Populated KnowledgeGraph in {:?}", populate_time);
@@ -48,7 +49,7 @@ fn main() {
     let mut rdfs_subclass_id = None;
     
     let mut predicate_counts = std::collections::HashMap::new();
-    for triple in database.triples.iter() {
+    for triple in &triples {
         *predicate_counts.entry(triple.predicate).or_insert(0) += 1;
     }
     

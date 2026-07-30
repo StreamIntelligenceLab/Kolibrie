@@ -433,11 +433,11 @@ fn main() {
                 
                 // Parse the RDF data into the database
                 database.parse_rdf(&rdf_xml_data);
-                println!("Updated RDF triples: {} triples", database.triples.len());
+                println!("Updated RDF triples: {} triples", database.dataset_index.len_default());
                 
                 // Load data into knowledge graph - FIXED: Proper lock handling
                 // Collect triples first to avoid holding lock during iteration
-                let triples_to_add: Vec<_> = database.triples.iter().cloned().collect();
+                let triples_to_add = database.query_default_triples(None, None, None);
                 
                 for triple in triples_to_add {
                     let dict = database.dictionary.read().unwrap();
@@ -451,7 +451,7 @@ fn main() {
                     }
                 }
                 
-                println!("KnowledgeGraph ABox loaded with {} triples", database.triples.len());
+                println!("KnowledgeGraph ABox loaded with {} triples", database.dataset_index.len_default());
                 
                 // Rule 1: If it's quiet (noise level < 30), use noise for detection
                 let rule1 = r#"PREFIX ex: <http://example.org#>
@@ -598,7 +598,7 @@ WHERE {
                 
                 // Add inferred facts to database
                 for triple in inferred_facts.iter() {
-                    database.triples.insert(triple.clone());
+                    database.add_triple(triple.clone());
                 }
                 
                 // Query for sensors by grid position

@@ -1,6 +1,4 @@
-use kolibrie::execute_query::{
-    execute_query_rayon_parallel2_volcano, execute_sparql_update,
-};
+use kolibrie::execute_query::{execute_query_rayon_parallel2_volcano, execute_sparql_update};
 use kolibrie::sparql_database::SparqlDatabase;
 
 fn query(database: &mut SparqlDatabase, sparql: &str) -> Vec<Vec<String>> {
@@ -119,10 +117,7 @@ fn insert_and_delete_data_work_in_default_and_named_graphs() {
     // Deleting the last quad leaves the named graph identity available to an
     // empty GRAPH pattern.
     assert_eq!(
-        query(
-            &mut database,
-            "SELECT ?g WHERE { GRAPH ?g {} }",
-        ),
+        query(&mut database, "SELECT ?g WHERE { GRAPH ?g {} }",),
         vec![vec!["http://example.org/g".to_string()]]
     );
 }
@@ -203,11 +198,7 @@ fn insert_delete_and_combined_modify_use_where_bindings() {
 #[test]
 fn delete_template_where_and_invalid_data_are_handled() {
     let mut database = SparqlDatabase::new();
-    execute_sparql_update(
-        "INSERT DATA { <urn:s> <urn:p> \"value\" }",
-        &mut database,
-    )
-    .unwrap();
+    execute_sparql_update("INSERT DATA { <urn:s> <urn:p> \"value\" }", &mut database).unwrap();
 
     let summary = execute_sparql_update(
         "DELETE { ?s <urn:p> ?o } WHERE { ?s <urn:p> ?o }",
@@ -216,16 +207,8 @@ fn delete_template_where_and_invalid_data_are_handled() {
     .unwrap();
     assert_eq!(summary.deleted_quads, 1);
 
-    assert!(execute_sparql_update(
-        "INSERT DATA { ?s <urn:p> <urn:o> }",
-        &mut database,
-    )
-    .is_err());
-    assert!(execute_sparql_update(
-        "DELETE DATA { _:b <urn:p> <urn:o> }",
-        &mut database,
-    )
-    .is_err());
+    assert!(execute_sparql_update("INSERT DATA { ?s <urn:p> <urn:o> }", &mut database,).is_err());
+    assert!(execute_sparql_update("DELETE DATA { _:b <urn:p> <urn:o> }", &mut database,).is_err());
 }
 
 #[test]

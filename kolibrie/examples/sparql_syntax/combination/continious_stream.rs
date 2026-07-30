@@ -42,7 +42,7 @@ fn main() {
         database.parse_rdf(&rdf_xml);
         
         println!("Successfully loaded batch {} - Database now contains {} triples", 
-                stream_counter, database.triples.len());
+                stream_counter, database.dataset_index.len_default());
         
         // Display the current batch of sensor readings with their status
         for (room, temp, timestamp) in &sensor_data {
@@ -60,7 +60,7 @@ fn main() {
         // Show current streaming statistics
         println!("Current Stream Statistics:");
         println!("   - Batches processed so far: {}", stream_counter);
-        println!("   - Total data points in database: {}", database.triples.len());
+        println!("   - Total data points in database: {}", database.dataset_index.len_default());
         println!("   - Total alerts generated: {}", total_alerts);
         println!("   - Time remaining in simulation: {}s\n", 
                 (stream_duration.as_secs() as i64 - elapsed.as_secs() as i64).max(0));
@@ -73,7 +73,7 @@ fn main() {
     println!("=== STREAMING SIMULATION COMPLETE ===");
     println!("Final Statistics Summary:");
     println!("   - Total batches processed: {}", stream_counter);
-    println!("   - Total data points stored: {}", database.triples.len());
+    println!("   - Total data points stored: {}", database.dataset_index.len_default());
     println!("   - Total alerts generated: {}", total_alerts);
     if stream_counter > 0 {
         println!("   - Average alerts per batch: {:.2}", total_alerts as f64 / stream_counter as f64);

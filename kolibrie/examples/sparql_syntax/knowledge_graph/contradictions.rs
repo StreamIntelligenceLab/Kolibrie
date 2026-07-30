@@ -144,7 +144,7 @@ fn main() {
 }
 
 fn print_all_facts(kg: &Reasoner) {
-    let facts = kg.index_manager.query(None, None, None);
+    let facts = kg.dataset_index.query_default(None, None, None);
     let dict = kg.dictionary.read().unwrap();
     for fact in facts {
         println!("{} {} {}", 

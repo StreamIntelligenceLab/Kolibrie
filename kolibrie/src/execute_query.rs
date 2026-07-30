@@ -8,718 +8,33 @@
  * you can obtain one at https://mozilla.org/MPL/2.0/.
  */
 
+//! Unified SPARQL query and update execution.
+//!
+//! Standard SELECT and the supported Update forms are parsed into the same
+//! lexical AST, lowered once into Kolibrie's existing logical algebra,
+//! optimized by Streamertail, and evaluated by the physical execution engine.
+
 use crate::error_handler::format_parse_error;
 use crate::neural_relations::{
     execute_train_decl, materialize_neural_relations_for_patterns, register_neural_declarations,
 };
-use crate::parser::*;
+use crate::parser::{parse_combined_query, parse_combined_query_with_options};
 use crate::sparql_database::SparqlDatabase;
-use crate::streamertail_optimizer::*;
-use shared::dataset_index::{GraphId, Quad};
-use shared::query::*;
-use shared::triple::Triple;
+use crate::streamertail_optimizer::{
+    build_logical_plan_from_group, compile_graph_term, compile_term, DatasetView, ExecutionEngine,
+    Streamertail,
+};
+use shared::dataset_index::{GraphId, GraphTerm, Quad};
+use shared::query::{
+    CombinedQuery, DeleteClause, GroupGraphPattern, InsertClause, LexicalQuadPattern,
+    OrderCondition, SelectQuery, SortDirection, SparqlOperation, UpdateOperation,
+};
+use shared::quoted_triple_store::is_quoted_triple_id;
+use shared::terms::{Bindings, Term};
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
+use std::sync::atomic::{AtomicU64, Ordering as AtomicOrdering};
 
-pub fn execute_subquery<'a>(
-    subquery: &SubQuery<'a>,
-    database: &SparqlDatabase,
-    prefixes: &HashMap<String, String>,
-    current_results: Vec<BTreeMap<&'a str, String>>,
-) -> Vec<BTreeMap<&'a str, String>> {
-    // Execute subquery patterns
-    let mut results = current_results;
-
-    for (subject_var, predicate, object_var) in &subquery.patterns {
-        let triples_vec: Vec<Triple> = database.query_default_triples(None, None, None);
-
-        // IMPORTANT: resolve the prefixed name to its full IRI
-        let resolved_predicate = database.resolve_query_term(predicate, prefixes);
-
-        // If object_var is not a variable, also resolve that if needed:
-        let literal_filter = if !object_var.starts_with('?') {
-            Some(database.resolve_query_term(object_var, prefixes))
-        } else {
-            None
-        };
-
-        results = database.perform_join_par_simd_with_strict_filter_1(
-            subject_var,
-            resolved_predicate,
-            object_var,
-            triples_vec,
-            &database.dictionary,
-            results,
-            literal_filter,
-        );
-    }
-
-    // Apply filters
-    results = database.apply_filters_simd(results, subquery.filters.clone());
-
-    // Process BIND clauses
-    for (func_name, args, new_var) in subquery.binds.clone() {
-        if func_name == "CONCAT" {
-            // Process CONCAT function
-            for row in &mut results {
-                let concatenated = args
-                    .iter()
-                    .map(|arg| {
-                        if arg.starts_with('?') {
-                            row.get(arg).map(|s| s.as_str()).unwrap_or("")
-                        } else {
-                            arg // literal
-                        }
-                    })
-                    .collect::<Vec<&str>>()
-                    .join("");
-                row.insert(new_var, concatenated);
-            }
-        } else if let Some(func) = database.udfs.get(func_name) {
-            // Process other UDFs
-            for row in &mut results {
-                let resolved_args: Vec<&str> = args
-                    .iter()
-                    .map(|arg| {
-                        if arg.starts_with('?') {
-                            row.get(arg).map(|s| s.as_str()).unwrap_or("")
-                        } else {
-                            arg
-                        }
-                    })
-                    .collect();
-                let result = func.call(resolved_args);
-                row.insert(new_var, result);
-            }
-        } else {
-            eprintln!("UDF {} not found", func_name);
-        }
-    }
-
-    // Return only the variables specified in the SELECT clause
-    results
-        .into_iter()
-        .map(|mut row| {
-            let mut new_row = BTreeMap::new();
-            for (var_type, var_name, _) in &subquery.variables {
-                if *var_type == "VAR" {
-                    if let Some(value) = row.remove(var_name) {
-                        new_row.insert(*var_name, value);
-                    }
-                }
-            }
-            new_row
-        })
-        .collect()
-}
-
-// Add this function to handle ORDER BY sorting
-fn apply_order_by<'a>(
-    mut results: Vec<BTreeMap<&'a str, String>>,
-    order_conditions: Vec<OrderCondition<'a>>, // Take ownership
-) -> Vec<BTreeMap<&'a str, String>> {
-    if order_conditions.is_empty() {
-        return results;
-    }
-
-    results.sort_by(|a, b| {
-        for condition in &order_conditions {
-            // Borrow from owned vector
-            let var = condition.variable;
-
-            let val_a = a.get(var).map(|s| s.as_str()).unwrap_or("");
-            let val_b = b.get(var).map(|s| s.as_str()).unwrap_or("");
-
-            let comparison = match (val_a.parse::<f64>(), val_b.parse::<f64>()) {
-                (Ok(num_a), Ok(num_b)) => num_a
-                    .partial_cmp(&num_b)
-                    .unwrap_or(std::cmp::Ordering::Equal),
-                _ => val_a.cmp(val_b),
-            };
-
-            let final_comparison = match condition.direction {
-                SortDirection::Asc => comparison,
-                SortDirection::Desc => comparison.reverse(),
-            };
-
-            if final_comparison != std::cmp::Ordering::Equal {
-                return final_comparison;
-            }
-        }
-        std::cmp::Ordering::Equal
-    });
-
-    results
-}
-
-#[deprecated(
-    note = "use execute_query_rayon_parallel2_volcano() so queries go through the optimizer"
-)]
-pub fn execute_query(sparql: &str, database: &mut SparqlDatabase) -> Vec<Vec<String>> {
-    // Register prefixes from the query string first
-    database.register_prefixes_from_query(sparql);
-
-    let sparql = normalize_query(sparql);
-
-    if let Some(results) = execute_recursive_sparql_if_supported(sparql, database) {
-        return results;
-    }
-
-    // Prepare variables to hold the query processing state.
-    let mut final_results: Vec<BTreeMap<&str, String>>;
-    let mut selected_variables: Vec<(String, String)> = Vec::new();
-    let mut aggregation_vars: Vec<(&str, &str, &str)> = Vec::new();
-    let group_by_variables: Vec<&str>;
-    let mut prefixes;
-    let limit_clause: Option<usize>;
-
-    let parse_result = parse_combined_query(sparql);
-
-    if let Ok((_, combined)) = parse_result {
-        let (
-            insert_clause,
-            mut variables,
-            patterns,
-            filters,
-            group_vars,
-            parsed_prefixes,
-            values_clause,
-            binds,
-            subqueries,
-            limit,
-            _,
-            order_conditions,
-        ) = combined.sparql;
-
-        prefixes = combined.prefixes.clone();
-        prefixes.extend(parsed_prefixes);
-        limit_clause = limit;
-
-        register_neural_declarations(
-            database,
-            &prefixes,
-            &combined.model_decls,
-            &combined.neural_relation_decls,
-            &combined.train_neural_relation_decls,
-        );
-        let normalized_trains: Vec<TrainNeuralRelationDecl> = combined
-            .train_neural_relation_decls
-            .iter()
-            .filter_map(|decl| {
-                let normalized_pred = database.resolve_query_term(&decl.predicate, &prefixes);
-                database
-                    .train_neural_relation_decls
-                    .get(&normalized_pred)
-                    .cloned()
-            })
-            .collect();
-        for train_decl in &normalized_trains {
-            if let Err(err) = execute_train_decl(database, train_decl) {
-                eprintln!("Failed to execute TRAIN NEURAL RELATION: {}", err);
-                return Vec::new();
-            }
-        }
-
-        // Ensure prefixes from the database are also available
-        database.share_prefixes_with(&mut prefixes);
-        if let Err(err) = materialize_neural_relations_for_patterns(database, &patterns, &prefixes)
-        {
-            eprintln!("Failed to materialize neural relations: {}", err);
-            return Vec::new();
-        }
-
-        // Process the INSERT clause if present
-        process_insert_clause(insert_clause, database);
-
-        // If SELECT * is used, gather all variables from patterns
-        if variables == vec![("*", "*", None)] {
-            let mut all_vars = BTreeSet::new();
-            for (subject_var, predicate_var, object_var) in &patterns {
-                all_vars.insert(*subject_var);
-                all_vars.insert(*predicate_var);
-                all_vars.insert(*object_var);
-            }
-            variables = all_vars.into_iter().map(|var| ("VAR", var, None)).collect();
-        }
-
-        // Process variables for aggregation
-        process_variables(&mut selected_variables, &mut aggregation_vars, variables);
-
-        group_by_variables = group_vars;
-
-        // Convert BTreeSet to a vector of Triple
-        let triples_vec: Vec<Triple> = database.query_default_triples(None, None, None);
-
-        // Initialize final_results based on the VALUES clause
-        final_results = initialize_results(&values_clause);
-
-        let rule_predicates = database
-            .rule_map
-            .values()
-            .cloned()
-            .collect::<std::collections::HashSet<String>>();
-
-        // Process each pattern in the WHERE clause
-        for (subject_var, predicate, object_var) in patterns {
-            if predicate == "RULECALL" {
-                final_results = process_rule_call(subject_var, object_var, database, &prefixes);
-                continue;
-            }
-
-            // Process direct rule conclusion reference: ?room ex:overheatingAlert true
-            let resolved_predicate = if predicate.contains(':') {
-                let parts: Vec<&str> = predicate.split(':').collect();
-                if parts.len() == 2 && prefixes.contains_key(parts[0]) {
-                    format!("{}{}", prefixes[parts[0]], parts[1])
-                } else {
-                    predicate.to_string()
-                }
-            } else {
-                predicate.to_string()
-            };
-
-            // Check if this is a direct reference to a rule conclusion
-            if rule_predicates.contains(&resolved_predicate) && object_var == "true" {
-                // Extract the rule name from the predicate
-                let rule_name = if let Some(idx) = resolved_predicate.rfind('#') {
-                    &resolved_predicate[idx + 1..]
-                } else if let Some(idx) = resolved_predicate.rfind('/') {
-                    &resolved_predicate[idx + 1..]
-                } else {
-                    &resolved_predicate
-                };
-
-                // Process this as a rule call
-                let var_str = subject_var.to_string();
-                final_results = process_rule_call(rule_name, &var_str, database, &prefixes);
-                continue;
-            }
-
-            // Handle non-RULECALL patterns
-            let (join_subject, join_predicate, join_object) =
-                resolve_triple_pattern(subject_var, predicate, object_var, database, &prefixes);
-
-            // To satisfy lifetime requirements, leak the computed join_subject and join_object
-            let join_subject_static: &'static str = Box::leak(join_subject.into_boxed_str());
-            let join_object_static: &'static str = Box::leak(join_object.into_boxed_str());
-
-            final_results = database.perform_join_par_simd_with_strict_filter_1(
-                join_subject_static,
-                join_predicate,
-                join_object_static,
-                triples_vec.clone(),
-                &database.dictionary,
-                final_results,
-                if !join_object_static.starts_with('?') {
-                    Some(join_object_static.to_string())
-                } else {
-                    None
-                },
-            );
-        }
-
-        // Apply filters
-        final_results = database.apply_filters_simd(final_results, filters);
-
-        // Process subqueries first
-        for subquery in subqueries {
-            let subquery_results =
-                execute_subquery(&subquery, database, &prefixes, final_results.clone());
-            final_results = merge_results(final_results, subquery_results);
-        }
-
-        // Apply BIND (UDF) clauses
-        process_bind_clauses(&mut final_results, binds, database);
-
-        // Apply GROUP BY and aggregations
-        if !group_by_variables.is_empty() {
-            final_results =
-                group_and_aggregate_results(final_results, &group_by_variables, &aggregation_vars);
-        }
-
-        final_results = apply_order_by(final_results, order_conditions);
-
-        if let Some(limit_value) = limit_clause {
-            if limit_value > 0 {
-                final_results.truncate(limit_value);
-            }
-        }
-    } else {
-        // Enhanced error reporting while keeping the same function signature
-        if let Err(err) = parse_result {
-            let error_message = format_parse_error(sparql, err);
-            eprintln!("Failed to parse the query: {}", error_message);
-        } else {
-            eprintln!("Failed to parse the query with an unknown error.");
-        }
-        return Vec::new();
-    }
-
-    // Convert the final BTreeMap results into Vec<Vec<String>>
-    format_results(final_results, &selected_variables)
-}
-
-pub fn execute_query_rayon_parallel2_volcano(
-    sparql: &str,
-    database: &mut SparqlDatabase,
-) -> Vec<Vec<String>> {
-    let sparql = normalize_query(sparql);
-
-    let limit_clause: Option<usize>;
-    // Register prefixes from the query string first
-    database.register_prefixes_from_query(&sparql);
-
-    if let Some(results) = execute_recursive_sparql_if_supported(&sparql, database) {
-        return results;
-    }
-
-    let combined_parse = parse_combined_query(&sparql);
-
-    // Check for DELETE clause before the main SPARQL parse
-    if let Ok((_, combined)) = &combined_parse {
-        register_neural_declarations(
-            database,
-            &combined.prefixes,
-            &combined.model_decls,
-            &combined.neural_relation_decls,
-            &combined.train_neural_relation_decls,
-        );
-        let normalized_trains: Vec<TrainNeuralRelationDecl> = combined
-            .train_neural_relation_decls
-            .iter()
-            .filter_map(|decl| {
-                let normalized_pred =
-                    database.resolve_query_term(&decl.predicate, &combined.prefixes);
-                database
-                    .train_neural_relation_decls
-                    .get(&normalized_pred)
-                    .cloned()
-            })
-            .collect();
-        for train_decl in &normalized_trains {
-            if let Err(err) = execute_train_decl(database, train_decl) {
-                eprintln!("Failed to execute TRAIN NEURAL RELATION: {}", err);
-                return Vec::new();
-            }
-        }
-
-        if combined.delete_clause.is_some() {
-            let delete_clause = combined.delete_clause.clone();
-            let (insert_clause, _, patterns, _, _, _, _, _, _, _, _, _) = combined.sparql.clone();
-            if !patterns.is_empty() {
-                // DELETE { template } WHERE { patterns }
-                // First, execute the WHERE clause as a SELECT query to get bindings
-                let delete_triples = delete_clause.as_ref().unwrap().triples.clone();
-
-                // Build a SELECT * query string from the WHERE patterns
-                let mut select_vars = std::collections::HashSet::new();
-                for (s, p, o) in &delete_triples {
-                    for term in [s, p, o] {
-                        if term.starts_with('?') {
-                            select_vars.insert(*term);
-                        }
-                    }
-                }
-                // Reconstruct as SELECT query and execute it
-                let var_list: String = select_vars.iter().cloned().collect::<Vec<_>>().join(" ");
-                let wrap_term = |t: &str| -> String {
-                    if t.starts_with('?')
-                        || t.starts_with('<')
-                        || t.starts_with('"')
-                        || t.starts_with(':')
-                    {
-                        t.to_string()
-                    } else {
-                        format!("<{}>", t)
-                    }
-                };
-                let pattern_strs: Vec<String> = patterns
-                    .iter()
-                    .map(|(s, p, o)| format!("{} {} {}", wrap_term(s), wrap_term(p), wrap_term(o)))
-                    .collect();
-                let select_query = format!(
-                    "SELECT {} WHERE {{ {} . }}",
-                    var_list,
-                    pattern_strs.join(" . ")
-                );
-                let where_results = execute_query_rayon_parallel2_volcano(&select_query, database);
-
-                // Map variable names to column indices
-                let var_names: Vec<&str> = select_vars.iter().cloned().collect();
-
-                // For each result row, substitute variables in delete template
-                for row in &where_results {
-                    for (s, p, o) in &delete_triples {
-                        let resolve = |term: &str| -> String {
-                            if term.starts_with('?') {
-                                if let Some(idx) = var_names.iter().position(|v| *v == term) {
-                                    if idx < row.len() {
-                                        return row[idx].clone();
-                                    }
-                                }
-                                term.to_string()
-                            } else {
-                                term.to_string()
-                            }
-                        };
-                        let rs = resolve(s);
-                        let rp = resolve(p);
-                        let ro = resolve(o);
-                        let sid = database.encode_term_star(&rs);
-                        let pid = database.encode_term_star(&rp);
-                        let oid = database.encode_term_star(&ro);
-                        database.delete_triple(&Triple {
-                            subject: sid,
-                            predicate: pid,
-                            object: oid,
-                        });
-                    }
-                }
-                // Also process INSERT if present (DELETE/INSERT combo)
-                if let Some(insert_clause) = insert_clause {
-                    process_insert_clause(Some(insert_clause), database);
-                }
-            } else {
-                // Simple DELETE without WHERE — delete specific triples directly
-                process_delete_clause(delete_clause, database);
-                // Also process INSERT if present
-                if let Some(insert_clause) = insert_clause {
-                    process_insert_clause(Some(insert_clause), database);
-                }
-            }
-            database.get_or_build_stats();
-            return Vec::new();
-        }
-    }
-
-    if let Ok((_, combined)) = combined_parse {
-        let (
-            insert_clause,
-            mut variables,
-            patterns,
-            filters,
-            group_vars,
-            parsed_prefixes,
-            values_clause,
-            binds,
-            subqueries,
-            limit,
-            _,
-            order_conditions,
-        ) = combined.sparql;
-
-        let mut prefixes = combined.prefixes.clone();
-        prefixes.extend(parsed_prefixes);
-        database.share_prefixes_with(&mut prefixes);
-        if let Err(err) = materialize_neural_relations_for_patterns(database, &patterns, &prefixes)
-        {
-            eprintln!("Failed to materialize neural relations: {}", err);
-            return Vec::new();
-        }
-
-        limit_clause = limit;
-
-        // Process the INSERT clause if present using the existing helper function
-        if let Some(insert_clause) = insert_clause {
-            process_insert_clause(Some(insert_clause), database);
-            database.get_or_build_stats();
-            return Vec::new();
-        }
-
-        // If SELECT * is used, gather all variables from patterns
-        if variables == vec![("*", "*", None)] {
-            let mut all_vars = BTreeSet::new();
-            for (subject_var, predicate_var, object_var) in &patterns {
-                all_vars.insert(*subject_var);
-                all_vars.insert(*predicate_var);
-                all_vars.insert(*object_var);
-            }
-            variables = all_vars.into_iter().map(|var| ("VAR", var, None)).collect();
-        }
-
-        // Process variables for aggregation using the existing helper function
-        let mut selected_variables: Vec<(String, String)> = Vec::new();
-        let mut aggregation_vars: Vec<(&str, &str, &str)> = Vec::new();
-        process_variables(&mut selected_variables, &mut aggregation_vars, variables);
-
-        let resolved_patterns: Vec<(&str, &str, &str)> = patterns
-            .iter()
-            .map(|(subject_var, predicate, object_var)| {
-                let (resolved_subject, resolved_predicate, resolved_object) =
-                    resolve_triple_pattern(subject_var, predicate, object_var, database, &prefixes);
-
-                // Leak strings to get 'static lifetime
-                let subject_static: &'static str = Box::leak(resolved_subject.into_boxed_str());
-                let predicate_static: &'static str = Box::leak(resolved_predicate.into_boxed_str());
-                let object_static: &'static str = Box::leak(resolved_object.into_boxed_str());
-
-                (subject_static, predicate_static, object_static)
-            })
-            .collect();
-
-        // Build indexes before optimization - this is crucial for performance
-        // database.build_all_indexes();
-
-        // Use Volcano optimizer for CPU execution
-        let mut logical_plan = build_logical_plan(
-            selected_variables
-                .iter()
-                .map(|(t, v)| (t.as_str(), v.as_str()))
-                .collect(),
-            resolved_patterns,
-            filters.clone(),
-            &prefixes,
-            database,
-            &binds,
-            values_clause.as_ref(),
-        );
-
-        // Integrate subqueries into the logical plan
-        for subquery in &subqueries {
-            let subquery_plan = build_logical_plan_from_subquery(subquery, &prefixes, database);
-
-            // Join the subquery with the main query
-            logical_plan = LogicalOperator::join(logical_plan, subquery_plan);
-        }
-
-        if database.cached_stats.is_none() {
-            database.get_or_build_stats();
-        }
-
-        let stats = database
-            .cached_stats
-            .as_ref()
-            .expect("database stats should be available");
-        let mut optimizer = Streamertail::with_cached_stats(stats.clone());
-
-        let optimized_plan = optimizer.find_best_plan(&logical_plan);
-        let results = optimized_plan.execute(database);
-
-        let results_owned: Vec<HashMap<String, String>> = results.into_iter().collect();
-
-        let optimizer_results: Vec<BTreeMap<&str, String>> = results_owned
-            .iter()
-            .map(|result| {
-                result
-                    .iter()
-                    .map(|(k, v)| {
-                        let key_with_prefix = if k.starts_with('?') {
-                            k.as_str()
-                        } else {
-                            Box::leak(format!("?{}", k).into_boxed_str())
-                        };
-                        (key_with_prefix, v.clone())
-                    })
-                    .collect()
-            })
-            .collect();
-
-        let mut final_results = if optimizer_results.is_empty() {
-            if values_clause.is_some() {
-                initialize_results(&values_clause)
-            } else {
-                Vec::new()
-            }
-        } else {
-            optimizer_results
-        };
-
-        for subquery in subqueries {
-            let subquery_results =
-                execute_subquery(&subquery, database, &prefixes, final_results.clone());
-            final_results = merge_results(final_results, subquery_results);
-        }
-
-        if !group_vars.is_empty() {
-            final_results =
-                group_and_aggregate_results(final_results, &group_vars, &aggregation_vars);
-        }
-
-        final_results = apply_order_by(final_results, order_conditions);
-
-        if let Some(limit_value) = limit_clause {
-            if limit_value > 0 {
-                final_results.truncate(limit_value);
-            }
-        }
-
-        return format_results(final_results, &selected_variables);
-    } else if let Err(err) = combined_parse {
-        let error_message = format_parse_error(sparql, err);
-        eprintln!("Failed to parse the query: {}", error_message);
-        return Vec::new();
-    }
-
-    Vec::new()
-}
-
-// Convert the final BTreeMap results into Vec<Vec<String>>
-fn format_results(
-    final_results: Vec<BTreeMap<&str, String>>,
-    selected_variables: &[(String, String)],
-) -> Vec<Vec<String>> {
-    final_results
-        .into_iter()
-        .map(|result| {
-            selected_variables
-                .iter()
-                .map(|(_, var)| {
-                    // Strip '?' prefix from the variable we're looking for
-                    let var_stripped = var.strip_prefix('?').unwrap_or(var);
-
-                    // Try multiple lookup strategies
-                    result
-                        .get(var_stripped) // without prefix
-                        .or_else(|| result.get(var.as_str())) // with prefix
-                        .or_else(|| {
-                            // Try with ? added if not present
-                            let with_prefix = format!("?{}", var_stripped);
-                            result.get(with_prefix.as_str())
-                        })
-                        .cloned()
-                        .unwrap_or_default()
-                })
-                .collect()
-        })
-        .collect()
-}
-
-fn execute_recursive_sparql_if_supported(
-    sparql: &str,
-    database: &mut SparqlDatabase,
-) -> Option<Vec<Vec<String>>> {
-    match parse_strict_sparql(sparql) {
-        Ok(StrictSparqlRequest::Select(query))
-            if !query.from_named.is_empty() || pattern_uses_graph_or_union(&query.pattern) =>
-        {
-            Some(execute_recursive_select(&query, database).unwrap_or_else(|error| {
-                eprintln!("SPARQL evaluation failed: {error}");
-                Vec::new()
-            }))
-        }
-        Ok(StrictSparqlRequest::Select(_)) => None,
-        Ok(StrictSparqlRequest::Update(update)) => {
-            if let Err(error) = execute_recursive_update(&update, database) {
-                eprintln!("SPARQL update failed: {error}");
-            }
-            Some(Vec::new())
-        }
-        Err(error) if is_recursive_sparql_request(sparql) => {
-            eprintln!("Failed to parse SPARQL: {error}");
-            Some(Vec::new())
-        }
-        Err(_) => None,
-    }
-}
-
-fn pattern_uses_graph_or_union(pattern: &GroupGraphPattern<'_>) -> bool {
-    match pattern {
-        GroupGraphPattern::Graph { .. } | GroupGraphPattern::Union(_) => true,
-        GroupGraphPattern::Join(patterns) => patterns.iter().any(pattern_uses_graph_or_union),
-        GroupGraphPattern::Empty | GroupGraphPattern::Bgp(_) => false,
-    }
-}
-
-type StrictBinding = HashMap<String, u32>;
+type StringBinding = HashMap<String, String>;
 
 /// Summary returned by the error-preserving update entry point.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -728,287 +43,315 @@ pub struct UpdateSummary {
     pub deleted_quads: usize,
 }
 
-/// Execute one of the deliberately supported SPARQL Update forms using the
-/// existing Kolibrie parser. Unlike the legacy adapter, this API preserves
-/// syntax and execution errors.
+#[deprecated(
+    note = "use execute_query_rayon_parallel2_volcano() so queries go through the optimizer"
+)]
+pub fn execute_query(sparql: &str, database: &mut SparqlDatabase) -> Vec<Vec<String>> {
+    execute_query_rayon_parallel2_volcano(sparql, database)
+}
+
+/// Execute SELECT or a compatibility Update request through the unified
+/// parser → logical plan → optimizer → physical executor pipeline.
+///
+/// This historical adapter accepts standalone `INSERT { ... }` and
+/// `DELETE { ... }` as DATA aliases. The error-preserving Update API below
+/// intentionally accepts only standard syntax.
+pub fn execute_query_rayon_parallel2_volcano(
+    sparql: &str,
+    database: &mut SparqlDatabase,
+) -> Vec<Vec<String>> {
+    match execute_request(sparql, database, true) {
+        Ok(results) => results,
+        Err(error) => {
+            eprintln!("SPARQL execution failed: {error}");
+            Vec::new()
+        }
+    }
+}
+
+/// Execute a query request without accepting Update syntax.
+///
+/// HTTP query endpoints use this entry point so a request submitted with
+/// `application/sparql-query` (or a `query=` parameter) cannot mutate the
+/// dataset. Kolibrie's explicitly dispatched RULE/RSP/ML extensions remain
+/// available when no standard Update operation is present.
+pub fn execute_sparql_query(
+    sparql: &str,
+    database: &mut SparqlDatabase,
+) -> Result<Vec<Vec<String>>, String> {
+    let combined = parse_request(sparql, false)?;
+    match combined.sparql.as_ref() {
+        Some(SparqlOperation::Update(_)) => {
+            Err("expected a SPARQL query, found an Update operation".to_string())
+        }
+        Some(SparqlOperation::Select(query)) => {
+            let prefixes = prepare_extensions(&combined, database)?;
+            execute_select(query, &prefixes, database)
+        }
+        None => {
+            prepare_extensions(&combined, database)?;
+            Ok(Vec::new())
+        }
+    }
+}
+
+/// Execute one of the six supported standard SPARQL Update forms.
 pub fn execute_sparql_update(
     sparql: &str,
     database: &mut SparqlDatabase,
 ) -> Result<UpdateSummary, String> {
-    match parse_strict_sparql(sparql).map_err(|error| error.to_string())? {
-        StrictSparqlRequest::Update(update) => execute_recursive_update(&update, database),
-        StrictSparqlRequest::Select(_) => Err("expected a SPARQL Update operation".to_string()),
+    execute_update_request(sparql, database, false)
+}
+
+/// Compatibility entry point used by legacy adapters. It differs from
+/// `execute_sparql_update` only by accepting standalone INSERT/DELETE aliases;
+/// both paths produce and execute the same `UpdateOperation`.
+pub(crate) fn execute_sparql_update_compat(
+    sparql: &str,
+    database: &mut SparqlDatabase,
+) -> Result<UpdateSummary, String> {
+    execute_update_request(sparql, database, true)
+}
+
+fn execute_request(
+    sparql: &str,
+    database: &mut SparqlDatabase,
+    allow_data_aliases: bool,
+) -> Result<Vec<Vec<String>>, String> {
+    let combined = parse_request(sparql, allow_data_aliases)?;
+    let prefixes = prepare_extensions(&combined, database)?;
+
+    match combined.sparql.as_ref() {
+        Some(SparqlOperation::Select(query)) => execute_select(query, &prefixes, database),
+        Some(SparqlOperation::Update(update)) => {
+            execute_update_operation(update, &prefixes, database)?;
+            Ok(Vec::new())
+        }
+        None => Ok(Vec::new()),
     }
 }
 
-fn execute_recursive_select(
-    query: &StrictSelectQuery<'_>,
-    database: &SparqlDatabase,
-) -> Result<Vec<Vec<String>>, String> {
-    let visible_named_graphs = if query.from_named.is_empty() {
-        None
+fn execute_update_request(
+    sparql: &str,
+    database: &mut SparqlDatabase,
+    allow_data_aliases: bool,
+) -> Result<UpdateSummary, String> {
+    let combined = parse_request(sparql, allow_data_aliases)?;
+    let prefixes = prepare_extensions(&combined, database)?;
+    match combined.sparql.as_ref() {
+        Some(SparqlOperation::Update(update)) => {
+            execute_update_operation(update, &prefixes, database)
+        }
+        Some(SparqlOperation::Select(_)) => {
+            Err("expected a SPARQL Update operation, found SELECT".to_string())
+        }
+        None => Err("expected a SPARQL Update operation".to_string()),
+    }
+}
+
+fn parse_request(input: &str, allow_data_aliases: bool) -> Result<CombinedQuery<'_>, String> {
+    let parsed = if allow_data_aliases {
+        parse_combined_query_with_options(input, true)
     } else {
-        Some(
-            query
-                .from_named
-                .iter()
-                .filter_map(|name| lookup_graph_name(name, database, &query.prefixes))
-                .collect::<HashSet<_>>(),
-        )
+        parse_combined_query(input)
     };
-    let input = vec![StrictBinding::new()];
-    let mut bindings = evaluate_group_graph_pattern(
-        &query.pattern,
+    match parsed {
+        Ok((remaining, combined)) if remaining.trim().is_empty() => Ok(combined),
+        Ok((remaining, _)) => {
+            let offset = input.len().saturating_sub(remaining.len());
+            Err(format!(
+                "unexpected trailing SPARQL input at byte {offset}: {}",
+                remaining.trim()
+            ))
+        }
+        Err(error) => Err(format_parse_error(input, error)),
+    }
+}
+
+fn prepare_extensions(
+    combined: &CombinedQuery<'_>,
+    database: &mut SparqlDatabase,
+) -> Result<HashMap<String, String>, String> {
+    // Database prefixes remain available, while a query-local declaration
+    // takes precedence for this request.
+    let mut prefixes = database.prefixes.clone();
+    prefixes.extend(combined.prefixes.clone());
+    database.prefixes.extend(combined.prefixes.clone());
+
+    register_neural_declarations(
         database,
-        &query.prefixes,
-        GraphId::Default,
-        visible_named_graphs.as_ref(),
-        input,
-    )?;
+        &prefixes,
+        &combined.model_decls,
+        &combined.neural_relation_decls,
+        &combined.train_neural_relation_decls,
+    );
 
-    let variables: Vec<String> = match &query.projection {
-        SparqlProjection::Variables(variables) => {
-            variables.iter().map(|variable| (*variable).to_string()).collect()
-        }
-        SparqlProjection::All => {
-            let mut variables = Vec::new();
-            collect_pattern_variables(&query.pattern, &mut variables);
-            variables
-        }
-    };
+    let normalized_trains = combined
+        .train_neural_relation_decls
+        .iter()
+        .filter_map(|declaration| {
+            let predicate = database.resolve_query_term(&declaration.predicate, &prefixes);
+            database
+                .train_neural_relation_decls
+                .get(&predicate)
+                .cloned()
+        })
+        .collect::<Vec<_>>();
+    for declaration in &normalized_trains {
+        execute_train_decl(database, declaration)
+            .map_err(|error| format!("failed to execute TRAIN NEURAL RELATION: {error}"))?;
+    }
 
-    let mut rows: Vec<Vec<String>> = bindings
-        .drain(..)
+    Ok(prefixes)
+}
+
+fn execute_select(
+    query: &SelectQuery<'_>,
+    prefixes: &HashMap<String, String>,
+    database: &mut SparqlDatabase,
+) -> Result<Vec<Vec<String>>, String> {
+    let mut lexical_patterns = Vec::new();
+    collect_triple_patterns(&query.pattern, &mut lexical_patterns);
+    materialize_neural_relations_for_patterns(database, &lexical_patterns, prefixes)?;
+
+    let dataset = build_dataset_view(query, prefixes, database)?;
+    let logical_plan = build_logical_plan_from_group(&query.pattern, prefixes, database)?;
+    let bindings = optimize_and_execute(logical_plan, &dataset, database);
+    let rows = decode_bindings(bindings, database);
+    Ok(finalize_select(rows, query))
+}
+
+fn optimize_and_execute(
+    logical_plan: crate::streamertail_optimizer::LogicalOperator,
+    dataset: &DatasetView,
+    database: &mut SparqlDatabase,
+) -> Bindings {
+    let stats = database.get_or_build_stats();
+    let mut optimizer = Streamertail::with_cached_stats_and_dataset(stats, dataset.clone());
+    let physical_plan = optimizer.find_best_plan(&logical_plan);
+    ExecutionEngine::execute_with_ids_and_dataset(&physical_plan, database, dataset)
+}
+
+fn build_dataset_view(
+    query: &SelectQuery<'_>,
+    prefixes: &HashMap<String, String>,
+    database: &mut SparqlDatabase,
+) -> Result<DatasetView, String> {
+    if query.from.is_empty() && query.from_named.is_empty() {
+        return Ok(DatasetView::from_database(database));
+    }
+
+    let mut default_graphs = Vec::new();
+    for graph in &query.from {
+        default_graphs.push(compile_dataset_graph(graph, prefixes, database)?);
+    }
+
+    let mut named_graphs = Vec::new();
+    for graph in &query.from_named {
+        named_graphs.push(compile_dataset_graph(graph, prefixes, database)?);
+    }
+
+    Ok(DatasetView::new(default_graphs, named_graphs))
+}
+
+fn compile_dataset_graph(
+    graph: &str,
+    prefixes: &HashMap<String, String>,
+    database: &mut SparqlDatabase,
+) -> Result<GraphId, String> {
+    match compile_graph_term(graph, prefixes, database)? {
+        GraphTerm::Named(graph) => Ok(GraphId::Named(graph)),
+        GraphTerm::Variable(_) => Err("dataset graph names cannot be variables".to_string()),
+        GraphTerm::Default => Err("dataset graph names must be IRIs".to_string()),
+    }
+}
+
+fn decode_bindings(bindings: Bindings, database: &SparqlDatabase) -> Vec<StringBinding> {
+    bindings
+        .into_iter()
         .map(|binding| {
-            variables
+            binding
+                .into_iter()
+                .map(|(variable, id)| {
+                    (
+                        normalize_variable(&variable).to_string(),
+                        database.decode_any(id).unwrap_or_default(),
+                    )
+                })
+                .collect()
+        })
+        .collect()
+}
+
+fn finalize_select(mut rows: Vec<StringBinding>, query: &SelectQuery<'_>) -> Vec<Vec<String>> {
+    let columns = projection_columns(query);
+    if query
+        .variables
+        .iter()
+        .any(|(kind, _, _)| *kind != "VAR" && *kind != "*")
+    {
+        rows = aggregate_rows(rows, query);
+    }
+
+    apply_order_by(&mut rows, &query.order_conditions);
+
+    if query.distinct {
+        let mut seen = HashSet::new();
+        rows.retain(|row| {
+            let key = columns
                 .iter()
-                .map(|variable| {
-                    binding
-                        .get(variable)
-                        .and_then(|id| database.decode_any(*id))
+                .map(|column| row.get(normalize_variable(column)).cloned())
+                .collect::<Vec<_>>();
+            seen.insert(key)
+        });
+    }
+
+    if let Some(limit) = query.limit {
+        rows.truncate(limit);
+    }
+
+    rows.into_iter()
+        .map(|row| {
+            columns
+                .iter()
+                .map(|column| {
+                    row.get(normalize_variable(column))
+                        .cloned()
                         .unwrap_or_default()
                 })
                 .collect()
         })
-        .collect();
-
-    if query.distinct {
-        let mut seen = HashSet::new();
-        rows.retain(|row| seen.insert(row.clone()));
-    }
-    if let Some(limit) = query.limit {
-        rows.truncate(limit);
-    }
-    Ok(rows)
+        .collect()
 }
 
-fn evaluate_group_graph_pattern(
-    pattern: &GroupGraphPattern<'_>,
-    database: &SparqlDatabase,
-    prefixes: &HashMap<String, String>,
-    active_graph: GraphId,
-    visible_named_graphs: Option<&HashSet<GraphId>>,
-    input: Vec<StrictBinding>,
-) -> Result<Vec<StrictBinding>, String> {
-    match pattern {
-        GroupGraphPattern::Empty => Ok(input),
-        GroupGraphPattern::Bgp(patterns) => {
-            let mut rows = input;
-            for pattern in patterns {
-                rows = evaluate_triple_pattern(pattern, database, prefixes, active_graph, rows)?;
-                if rows.is_empty() {
-                    break;
-                }
-            }
-            Ok(rows)
-        }
-        GroupGraphPattern::Join(patterns) => {
-            let mut rows = input;
-            for pattern in patterns {
-                rows = evaluate_group_graph_pattern(
-                    pattern,
-                    database,
-                    prefixes,
-                    active_graph,
-                    visible_named_graphs,
-                    rows,
-                )?;
-                if rows.is_empty() {
-                    break;
-                }
-            }
-            Ok(rows)
-        }
-        GroupGraphPattern::Union(branches) => {
-            let mut rows = Vec::new();
-            for branch in branches {
-                rows.extend(evaluate_group_graph_pattern(
-                    branch,
-                    database,
-                    prefixes,
-                    active_graph,
-                    visible_named_graphs,
-                    input.clone(),
-                )?);
-            }
-            Ok(rows)
-        }
-        GroupGraphPattern::Graph { name, pattern } => match name {
-            SparqlGraphName::Variable(variable) => {
-                let mut rows = Vec::new();
-                for binding in input {
-                    if let Some(graph_id) = binding.get(*variable).copied() {
-                        let graph = GraphId::Named(graph_id);
-                        if database.dataset_index.graph_exists(graph)
-                            && visible_named_graphs
-                                .is_none_or(|visible| visible.contains(&graph))
-                        {
-                            rows.extend(evaluate_group_graph_pattern(
-                                pattern,
-                                database,
-                                prefixes,
-                                graph,
-                                visible_named_graphs,
-                                vec![binding],
-                            )?);
-                        }
-                    } else {
-                        for graph in database.dataset_index.named_graphs() {
-                            if visible_named_graphs
-                                .is_some_and(|visible| !visible.contains(&graph))
-                            {
-                                continue;
-                            }
-                            let GraphId::Named(graph_id) = graph else {
-                                continue;
-                            };
-                            let mut graph_binding = binding.clone();
-                            graph_binding.insert((*variable).to_string(), graph_id);
-                            rows.extend(evaluate_group_graph_pattern(
-                                pattern,
-                                database,
-                                prefixes,
-                                graph,
-                                visible_named_graphs,
-                                vec![graph_binding],
-                            )?);
-                        }
-                    }
-                }
-                Ok(rows)
-            }
-            _ => {
-                let Some(graph) = lookup_graph_name(name, database, prefixes) else {
-                    return Ok(Vec::new());
-                };
-                if !database.dataset_index.graph_exists(graph) {
-                    return Ok(Vec::new());
-                }
-                if visible_named_graphs.is_some_and(|visible| !visible.contains(&graph)) {
-                    return Ok(Vec::new());
-                }
-                evaluate_group_graph_pattern(
-                    pattern,
-                    database,
-                    prefixes,
-                    graph,
-                    visible_named_graphs,
-                    input,
-                )
-            }
-        },
+fn projection_columns(query: &SelectQuery<'_>) -> Vec<String> {
+    if query.variables == vec![("*", "*", None)] {
+        let mut columns = Vec::new();
+        collect_pattern_variables(&query.pattern, &mut columns);
+        return columns;
     }
-}
 
-fn evaluate_triple_pattern(
-    pattern: &SparqlTriplePattern<'_>,
-    database: &SparqlDatabase,
-    prefixes: &HashMap<String, String>,
-    active_graph: GraphId,
-    input: Vec<StrictBinding>,
-) -> Result<Vec<StrictBinding>, String> {
-    let mut output = Vec::new();
-    for binding in input {
-        let subject = match pattern_term_constraint(&pattern.subject, &binding, database, prefixes)
-        {
-            Ok(value) => value,
-            Err(()) => continue,
-        };
-        let predicate =
-            match pattern_term_constraint(&pattern.predicate, &binding, database, prefixes) {
-                Ok(value) => value,
-                Err(()) => continue,
-            };
-        let object = match pattern_term_constraint(&pattern.object, &binding, database, prefixes) {
-            Ok(value) => value,
-            Err(()) => continue,
-        };
-
-        for quad in database
-            .dataset_index
-            .query_graph(active_graph, subject, predicate, object)
-        {
-            let mut candidate = binding.clone();
-            if bind_pattern_term(&pattern.subject, quad.subject, &mut candidate)
-                && bind_pattern_term(&pattern.predicate, quad.predicate, &mut candidate)
-                && bind_pattern_term(&pattern.object, quad.object, &mut candidate)
-            {
-                output.push(candidate);
+    query
+        .variables
+        .iter()
+        .map(|(kind, variable, alias)| {
+            if *kind == "VAR" {
+                (*variable).to_string()
+            } else {
+                alias.unwrap_or(variable).to_string()
             }
-        }
-    }
-    Ok(output)
-}
-
-fn pattern_term_constraint(
-    term: &SparqlTerm<'_>,
-    binding: &StrictBinding,
-    database: &SparqlDatabase,
-    prefixes: &HashMap<String, String>,
-) -> Result<Option<u32>, ()> {
-    if let SparqlTerm::Variable(variable) = term {
-        return Ok(binding.get(*variable).copied());
-    }
-    let lexical = term_storage_value(term, database, prefixes).ok_or(())?;
-    if matches!(term, SparqlTerm::QuotedTriple(_)) {
-        return Ok(Some(database.encode_term_star(&lexical)));
-    }
-    database
-        .dictionary
-        .read()
-        .ok()
-        .and_then(|dictionary| dictionary.string_to_id.get(&lexical).copied())
-        .map(Some)
-        .ok_or(())
-}
-
-fn bind_pattern_term(
-    term: &SparqlTerm<'_>,
-    value: u32,
-    binding: &mut StrictBinding,
-) -> bool {
-    let SparqlTerm::Variable(variable) = term else {
-        return true;
-    };
-    match binding.get(*variable) {
-        Some(existing) => *existing == value,
-        None => {
-            binding.insert((*variable).to_string(), value);
-            true
-        }
-    }
+        })
+        .collect()
 }
 
 fn collect_pattern_variables(pattern: &GroupGraphPattern<'_>, variables: &mut Vec<String>) {
     match pattern {
-        GroupGraphPattern::Empty => {}
+        GroupGraphPattern::Unit | GroupGraphPattern::Filter(_) => {}
         GroupGraphPattern::Bgp(patterns) => {
-            for pattern in patterns {
-                for term in [&pattern.subject, &pattern.predicate, &pattern.object] {
-                    if let SparqlTerm::Variable(variable) = term {
-                        push_variable_once(variables, variable);
-                    }
-                }
+            for (subject, predicate, object) in patterns {
+                collect_term_variables(subject, variables);
+                collect_term_variables(predicate, variables);
+                collect_term_variables(object, variables);
             }
         }
         GroupGraphPattern::Join(patterns) | GroupGraphPattern::Union(patterns) => {
@@ -1017,900 +360,543 @@ fn collect_pattern_variables(pattern: &GroupGraphPattern<'_>, variables: &mut Ve
             }
         }
         GroupGraphPattern::Graph { name, pattern } => {
-            if let SparqlGraphName::Variable(variable) = name {
-                push_variable_once(variables, variable);
-            }
+            collect_term_variables(name, variables);
             collect_pattern_variables(pattern, variables);
+        }
+        GroupGraphPattern::Bind((_, _, output)) => push_variable(variables, output),
+        GroupGraphPattern::Values(values) => {
+            for variable in &values.variables {
+                push_variable(variables, variable);
+            }
+        }
+        GroupGraphPattern::SubQuery(subquery) => {
+            if subquery.query.variables == vec![("*", "*", None)] {
+                collect_pattern_variables(&subquery.query.pattern, variables);
+            } else {
+                for (kind, variable, alias) in &subquery.query.variables {
+                    if *kind == "VAR" {
+                        push_variable(variables, variable);
+                    } else if let Some(alias) = alias {
+                        push_variable(variables, alias);
+                    }
+                }
+            }
         }
     }
 }
 
-fn push_variable_once(variables: &mut Vec<String>, variable: &str) {
-    if !variables.iter().any(|existing| existing == variable) {
+fn collect_term_variables(term: &str, variables: &mut Vec<String>) {
+    let term = term.trim();
+    if is_variable(term) {
+        push_variable(variables, term);
+    } else if term.starts_with("<<") && term.ends_with(">>") {
+        let (subject, predicate, object) =
+            SparqlDatabase::split_quoted_triple_content(term[2..term.len() - 2].trim());
+        collect_term_variables(&subject, variables);
+        collect_term_variables(&predicate, variables);
+        collect_term_variables(&object, variables);
+    }
+}
+
+fn push_variable(variables: &mut Vec<String>, variable: &str) {
+    let key = normalize_variable(variable);
+    if !variables
+        .iter()
+        .any(|existing| normalize_variable(existing) == key)
+    {
         variables.push(variable.to_string());
     }
 }
 
-fn execute_recursive_update(
-    request: &StrictUpdateRequest<'_>,
-    database: &mut SparqlDatabase,
-) -> Result<UpdateSummary, String> {
-    let mut summary = UpdateSummary::default();
-    match &request.operation {
-        StrictUpdateOperation::InsertData(template) => {
-            let mut blank_nodes = HashMap::new();
-            let mut nonce = 0_u64;
-            let quads = instantiate_quad_template(
-                template,
-                &StrictBinding::new(),
-                database,
-                &request.prefixes,
-                TemplateMode::Insert {
-                    blank_nodes: &mut blank_nodes,
-                    nonce: &mut nonce,
-                },
-            )?;
-            apply_insertions(database, quads, &mut summary);
-        }
-        StrictUpdateOperation::DeleteData(template) => {
-            let quads = instantiate_quad_template(
-                template,
-                &StrictBinding::new(),
-                database,
-                &request.prefixes,
-                TemplateMode::Delete,
-            )?;
-            apply_deletions(database, quads, &mut summary);
-        }
-        StrictUpdateOperation::Modify {
-            delete,
-            insert,
-            where_pattern,
-        } => {
-            execute_modify(
-                delete,
-                insert,
-                where_pattern,
-                database,
-                &request.prefixes,
-                &mut summary,
-            )?;
-        }
-        StrictUpdateOperation::DeleteWhere {
-            template,
-            where_pattern,
-        } => {
-            execute_modify(
-                template,
-                &[],
-                where_pattern,
-                database,
-                &request.prefixes,
-                &mut summary,
-            )?;
-        }
-    }
-    if summary.inserted_quads != 0 || summary.deleted_quads != 0 {
-        database.invalidate_stats_cache();
-    }
-    Ok(summary)
-}
-
-fn execute_modify(
-    delete: &[SparqlQuadPattern<'_>],
-    insert: &[SparqlQuadPattern<'_>],
-    where_pattern: &GroupGraphPattern<'_>,
-    database: &mut SparqlDatabase,
-    prefixes: &HashMap<String, String>,
-    summary: &mut UpdateSummary,
-) -> Result<(), String> {
-    // Evaluate once before either template changes the dataset.
-    let bindings = evaluate_group_graph_pattern(
-        where_pattern,
-        database,
-        prefixes,
-        GraphId::Default,
-        None,
-        vec![StrictBinding::new()],
-    )?;
-    let mut deletions = Vec::new();
-    let mut insertions = Vec::new();
-    let mut nonce = 0_u64;
-    for binding in &bindings {
-        deletions.extend(instantiate_quad_template(
-            delete,
-            binding,
-            database,
-            prefixes,
-            TemplateMode::Delete,
-        )?);
-        let mut blank_nodes = HashMap::new();
-        insertions.extend(instantiate_quad_template(
-            insert,
-            binding,
-            database,
-            prefixes,
-            TemplateMode::Insert {
-                blank_nodes: &mut blank_nodes,
-                nonce: &mut nonce,
-            },
-        )?);
-    }
-    apply_deletions(database, deletions, summary);
-    apply_insertions(database, insertions, summary);
-    Ok(())
-}
-
-enum TemplateMode<'a> {
-    Delete,
-    Insert {
-        blank_nodes: &'a mut HashMap<String, u32>,
-        nonce: &'a mut u64,
-    },
-}
-
-fn instantiate_quad_template(
-    template: &[SparqlQuadPattern<'_>],
-    binding: &StrictBinding,
-    database: &SparqlDatabase,
-    prefixes: &HashMap<String, String>,
-    mut mode: TemplateMode<'_>,
-) -> Result<Vec<Quad>, String> {
-    let mut quads = Vec::new();
-    for pattern in template {
-        let Some(graph) = instantiate_graph_name(
-            pattern.graph.as_ref(),
-            binding,
-            database,
-            prefixes,
-            &mode,
-        )? else {
-            continue;
-        };
-        let Some(subject) = instantiate_template_term(
-            &pattern.triple.subject,
-            binding,
-            database,
-            prefixes,
-            &mut mode,
-        )? else {
-            continue;
-        };
-        let Some(predicate) = instantiate_template_term(
-            &pattern.triple.predicate,
-            binding,
-            database,
-            prefixes,
-            &mut mode,
-        )? else {
-            continue;
-        };
-        let Some(object) = instantiate_template_term(
-            &pattern.triple.object,
-            binding,
-            database,
-            prefixes,
-            &mut mode,
-        )? else {
-            continue;
-        };
-        quads.push(Quad {
-            subject,
-            predicate,
-            object,
-            graph,
-        });
-    }
-    Ok(quads)
-}
-
-fn instantiate_graph_name(
-    graph: Option<&SparqlGraphName<'_>>,
-    binding: &StrictBinding,
-    database: &SparqlDatabase,
-    prefixes: &HashMap<String, String>,
-    mode: &TemplateMode<'_>,
-) -> Result<Option<GraphId>, String> {
-    let Some(graph) = graph else {
-        return Ok(Some(GraphId::Default));
-    };
-    if let SparqlGraphName::Variable(variable) = graph {
-        return Ok(binding.get(*variable).copied().map(GraphId::Named));
-    }
-    let value = graph_name_value(graph, database, prefixes)
-        .ok_or_else(|| "invalid graph name in update template".to_string())?;
-    let id = match mode {
-        TemplateMode::Delete => database
-            .dictionary
-            .read()
-            .map_err(|_| "dictionary lock is poisoned".to_string())?
-            .string_to_id
-            .get(&value)
-            .copied(),
-        TemplateMode::Insert { .. } => Some(
-            database
-                .dictionary
-                .write()
-                .map_err(|_| "dictionary lock is poisoned".to_string())?
-                .encode(&value),
-        ),
-    };
-    Ok(id.map(GraphId::Named))
-}
-
-fn instantiate_template_term(
-    term: &SparqlTerm<'_>,
-    binding: &StrictBinding,
-    database: &SparqlDatabase,
-    prefixes: &HashMap<String, String>,
-    mode: &mut TemplateMode<'_>,
-) -> Result<Option<u32>, String> {
-    match term {
-        SparqlTerm::Variable(variable) => Ok(binding.get(*variable).copied()),
-        SparqlTerm::BlankNode(label) => match mode {
-            TemplateMode::Delete => Ok(None),
-            TemplateMode::Insert {
-                blank_nodes,
-                nonce,
-            } => {
-                if let Some(id) = blank_nodes.get(*label) {
-                    return Ok(Some(*id));
-                }
-                let id = encode_fresh_blank_node(database, label, nonce)?;
-                blank_nodes.insert((*label).to_string(), id);
-                Ok(Some(id))
-            }
-        },
-        _ => {
-            let Some(value) = term_storage_value(term, database, prefixes) else {
-                return Ok(None);
-            };
-            match mode {
-                TemplateMode::Delete => Ok(database
-                    .dictionary
-                    .read()
-                    .map_err(|_| "dictionary lock is poisoned".to_string())?
-                    .string_to_id
-                    .get(&value)
-                    .copied()),
-                TemplateMode::Insert { .. } => Ok(Some(database.encode_term_star(&value))),
-            }
-        }
-    }
-}
-
-fn encode_fresh_blank_node(
-    database: &SparqlDatabase,
-    label: &str,
-    nonce: &mut u64,
-) -> Result<u32, String> {
-    let mut dictionary = database
-        .dictionary
-        .write()
-        .map_err(|_| "dictionary lock is poisoned".to_string())?;
-    loop {
-        *nonce += 1;
-        let candidate = format!("_:kolibrie-update-{}-{label}", *nonce);
-        if !dictionary.string_to_id.contains_key(&candidate) {
-            return Ok(dictionary.encode(&candidate));
-        }
-    }
-}
-
-fn apply_deletions(
-    database: &mut SparqlDatabase,
-    quads: Vec<Quad>,
-    summary: &mut UpdateSummary,
-) {
-    let mut seen = HashSet::new();
-    for quad in quads {
-        if seen.insert(quad.clone()) && database.delete_quad(&quad) {
-            summary.deleted_quads += 1;
-        }
-    }
-}
-
-fn apply_insertions(
-    database: &mut SparqlDatabase,
-    quads: Vec<Quad>,
-    summary: &mut UpdateSummary,
-) {
-    let mut seen = HashSet::new();
-    for quad in quads {
-        if seen.insert(quad.clone()) && database.add_quad(quad) {
-            summary.inserted_quads += 1;
-        }
-    }
-}
-
-fn lookup_graph_name(
-    graph: &SparqlGraphName<'_>,
-    database: &SparqlDatabase,
-    prefixes: &HashMap<String, String>,
-) -> Option<GraphId> {
-    let value = graph_name_value(graph, database, prefixes)?;
-    database
-        .dictionary
-        .read()
-        .ok()?
-        .string_to_id
-        .get(&value)
-        .copied()
-        .map(GraphId::Named)
-}
-
-fn graph_name_value(
-    graph: &SparqlGraphName<'_>,
-    database: &SparqlDatabase,
-    prefixes: &HashMap<String, String>,
-) -> Option<String> {
-    match graph {
-        SparqlGraphName::Iri(iri) => Some((*iri).to_string()),
-        SparqlGraphName::PrefixedName(name) => {
-            Some(database.resolve_query_term(name, prefixes))
-        }
-        SparqlGraphName::Variable(_) => None,
-    }
-}
-
-fn term_storage_value(
-    term: &SparqlTerm<'_>,
-    database: &SparqlDatabase,
-    prefixes: &HashMap<String, String>,
-) -> Option<String> {
-    match term {
-        SparqlTerm::Variable(_) => None,
-        SparqlTerm::Iri(iri) => Some((*iri).to_string()),
-        SparqlTerm::PrefixedName(name) => Some(database.resolve_query_term(name, prefixes)),
-        SparqlTerm::BlankNode(label) => Some(format!("_:{label}")),
-        SparqlTerm::Literal(literal) => Some(legacy_literal_value(literal)),
-        SparqlTerm::QuotedTriple(value) => Some((*value).to_string()),
-        SparqlTerm::A => {
-            Some("http://www.w3.org/1999/02/22-rdf-syntax-ns#type".to_string())
-        }
-    }
-}
-
-fn legacy_literal_value(literal: &str) -> String {
-    let literal = literal.trim();
-    let Some(rest) = literal.strip_prefix('"') else {
-        return literal.to_string();
-    };
-    let mut escaped = false;
-    let mut value = String::new();
-    for character in rest.chars() {
-        if escaped {
-            value.push(character);
-            escaped = false;
-        } else if character == '\\' {
-            escaped = true;
-        } else if character == '"' {
-            break;
-        } else {
-            value.push(character);
-        }
-    }
-    value
-}
-
-fn is_recursive_sparql_request(sparql: &str) -> bool {
-    let trimmed = sparql.trim_start();
-    let upper = trimmed.to_ascii_uppercase();
-    upper.starts_with("INSERT")
-        || upper.starts_with("DELETE")
-        || upper.contains(" GRAPH ")
-        || upper.contains(" UNION ")
-}
-
-// Helper function to normalize the query by removing any RULE prefix
-fn normalize_query(sparql: &str) -> &str {
-    if sparql.contains("RULE") {
-        if let Some(pos) = sparql.find("SELECT") {
-            &sparql[pos..]
-        } else {
-            sparql
-        }
-    } else {
-        sparql
-    }
-}
-
-// Helper function to process INSERT clause
-fn process_insert_clause(insert_clause: Option<InsertClause>, database: &mut SparqlDatabase) {
-    if let Some(insert_clause) = insert_clause {
-        for (subject, predicate, object) in insert_clause.triples {
-            let subject_id = database.encode_term_star(subject);
-            let predicate_id = database.encode_term_star(predicate);
-            let object_id = database.encode_term_star(object);
-
-            let triple = Triple {
-                subject: subject_id,
-                predicate: predicate_id,
-                object: object_id,
-            };
-            database.add_triple(triple);
-        }
-    }
-}
-
-// Helper function to process DELETE clause
-fn process_delete_clause(delete_clause: Option<DeleteClause>, database: &mut SparqlDatabase) {
-    if let Some(delete_clause) = delete_clause {
-        for (subject, predicate, object) in delete_clause.triples {
-            let subject_id = database.encode_term_star(subject);
-            let predicate_id = database.encode_term_star(predicate);
-            let object_id = database.encode_term_star(object);
-
-            let triple = Triple {
-                subject: subject_id,
-                predicate: predicate_id,
-                object: object_id,
-            };
-            database.delete_triple(&triple);
-        }
-    }
-}
-
-// Helper function to process variables for aggregation
-fn process_variables<'a>(
-    selected_variables: &mut Vec<(String, String)>,
-    aggregation_vars: &mut Vec<(&'a str, &'a str, &'a str)>,
-    variables: Vec<(&'a str, &'a str, Option<&'a str>)>,
-) {
-    for (agg_type, var, opt_output_var) in variables {
-        if agg_type == "SUM" || agg_type == "MIN" || agg_type == "MAX" || agg_type == "AVG" {
-            let output_var = if let Some(name) = opt_output_var {
-                name
-            } else {
-                ""
-            };
-            aggregation_vars.push((agg_type, var, output_var));
-            selected_variables.push(("VAR".to_string(), output_var.to_string()));
-        } else {
-            selected_variables.push((agg_type.to_string(), var.to_string()));
-        }
-    }
-}
-
-// Helper function to initialize results based on VALUES clause
-fn initialize_results(values_clause: &Option<ValuesClause>) -> Vec<BTreeMap<&'static str, String>> {
-    if let Some(values_clause) = values_clause {
-        let mut final_results = Vec::new();
-        for value_row in &values_clause.values {
-            let mut result = BTreeMap::new();
-            for (var, value) in values_clause.variables.iter().zip(value_row.iter()) {
-                match value {
-                    Value::Term(term) => {
-                        // Create a static str to avoid lifetime issues - using 'static instead of mut
-                        let var_static: &'static str = Box::leak(var.to_string().into_boxed_str());
-                        result.insert(var_static, term.clone());
-                    }
-                    Value::Undef => {}
-                }
-            }
-            final_results.push(result);
-        }
-        final_results
-    } else {
-        // No VALUES clause, start with a single empty result
-        vec![BTreeMap::new()]
-    }
-}
-
-// Helper function to process rule calls
-fn process_rule_call<'a>(
-    subject_var: &'a str,
-    object_var: &'a str,
-    database: &'a SparqlDatabase,
-    prefixes: &'a HashMap<String, String>,
-) -> Vec<BTreeMap<&'static str, String>> {
-    // Changed return type to use 'static
-    let rule_name = if subject_var.starts_with(':') {
-        &subject_var[1..]
-    } else {
-        subject_var
-    };
-    let rule_key = rule_name.to_lowercase();
-
-    let expanded_rule_predicate = database
-        .rule_map
-        .get(&rule_key)
-        .cloned()
-        .unwrap_or_else(|| {
-            prefixes
-                .get("ex")
-                .map(|prefix| format!("{}{}", prefix, rule_name))
-                .unwrap_or_else(|| rule_name.to_string())
-        });
-
-    // Parse variables from the rule call
-    let vars: Vec<&'static str> = if object_var.contains(',') {
-        // Multiple variables separated by commas
-        object_var
-            .split(',')
-            .map(|s| {
-                let leaked: &'static mut str = Box::leak(s.trim().to_string().into_boxed_str());
-                leaked as &'static str
-            })
-            .collect()
-    } else {
-        // Single variable
-        vec![Box::leak(object_var.trim().to_string().into_boxed_str())]
-    };
-
-    // Find all subjects that match the rule predicate
-    let mut matched_subjects = Vec::new();
-    let dict = database.dictionary.read().unwrap();
-    let default_triples = database.query_default_triples(None, None, None);
-    for triple in default_triples.iter() {
-        if let (Some(subj), Some(pred), Some(obj)) = (
-            dict.decode(triple.subject),
-            dict.decode(triple.predicate),
-            dict.decode(triple.object),
-        ) {
-            if pred == expanded_rule_predicate && obj == "true" {
-                // Convert to 'static string to avoid lifetime issues
-                let static_subj: &'static str = Box::leak(subj.to_string().into_boxed_str());
-                matched_subjects.push(static_subj);
-            }
-        }
-    }
-    drop(dict);
-
-    // Process results for rule-based query
-    let mut final_results = Vec::new();
-    for subject in matched_subjects {
-        let result = process_rule_subject(subject, &vars, database);
-        if let Some(result) = result {
-            final_results.push(result);
-        }
-    }
-
-    final_results
-}
-
-// Helper function to process a single subject for a rule
-fn process_rule_subject(
-    subject: &'static str,
-    vars: &[&'static str],
-    database: &SparqlDatabase,
-) -> Option<BTreeMap<&'static str, String>> {
-    let mut result = BTreeMap::new();
-    let mut found_all_vars = true;
-
-    // Add the first variable (subject/room variable)
-    if !vars.is_empty() {
-        result.insert(vars[0], subject.to_string());
-    }
-
-    // For the second variable (usually value/temperature), find the highest value
-    if vars.len() > 1 {
-        let mut highest_value: Option<(i64, String)> = None;
-
-        // First, find all sensors/readings for this room
-        let dict = database.dictionary.read().unwrap();
-        let default_triples = database.query_default_triples(None, None, None);
-        for triple in default_triples.iter() {
-            if let (Some(rel_subj), Some(rel_pred), Some(rel_obj)) = (
-                dict.decode(triple.subject),
-                dict.decode(triple.predicate),
-                dict.decode(triple.object),
-            ) {
-                // Find sensors that relate to our room
-                if rel_pred.ends_with("room") && rel_obj == subject {
-                    let sensor_id = rel_subj;
-                    highest_value =
-                        find_highest_sensor_value(sensor_id, vars[1], database, highest_value);
-                }
-            }
-        }
-        drop(dict);
-
-        // Add the highest value if found
-        if let Some((_, value)) = highest_value {
-            result.insert(vars[1], value);
-        } else {
-            found_all_vars = false;
-        }
-    }
-
-    // Only return the result if we found all variables
-    if found_all_vars && result.len() == vars.len() {
-        Some(result)
-    } else {
-        None
-    }
-}
-
-// Helper function to find the highest sensor value
-fn find_highest_sensor_value(
-    sensor_id: &str,
-    var_name: &str,
-    database: &SparqlDatabase,
-    mut highest_value: Option<(i64, String)>,
-) -> Option<(i64, String)> {
-    let var_name = if var_name.starts_with('?') {
-        &var_name[1..]
-    } else {
-        var_name
-    };
-
-    let dict = database.dictionary.read().unwrap();
-    let default_triples = database.query_default_triples(None, None, None);
-    for value_triple in default_triples.iter() {
-        if let (Some(val_subj), Some(val_pred), Some(val_obj)) = (
-            dict.decode(value_triple.subject),
-            dict.decode(value_triple.predicate),
-            dict.decode(value_triple.object),
-        ) {
-            if val_subj == sensor_id && val_pred.contains(var_name) {
-                if let Ok(num_val) = val_obj.parse::<i64>() {
-                    match highest_value {
-                        None => highest_value = Some((num_val, val_obj.to_string())),
-                        Some((current, _)) if num_val > current => {
-                            highest_value = Some((num_val, val_obj.to_string()))
-                        }
-                        _ => {}
-                    }
-                }
-            }
-        }
-    }
-    drop(dict);
-
-    highest_value
-}
-
-// Helper function to resolve triple pattern terms
-fn resolve_triple_pattern(
-    subject_var: &str,
-    predicate: &str,
-    object_var: &str,
-    database: &SparqlDatabase,
-    prefixes: &HashMap<String, String>,
-) -> (String, String, String) {
-    if predicate == "RULECALL" {
-        let rule_name = if subject_var.starts_with(':') {
-            &subject_var[1..]
-        } else {
-            subject_var
-        };
-        let rule_key = rule_name.to_lowercase();
-
-        // Look up the expanded predicate in the rule_map
-        let expanded_rule_predicate = if let Some(expanded) = database.rule_map.get(&rule_key) {
-            expanded.clone()
-        } else {
-            // Fallback: if the rule name is not already prefixed, prepend default prefix "ex"
-            if let Some(default_uri) = prefixes.get("ex") {
-                format!("{}{}", default_uri, rule_name)
-            } else {
-                rule_name.to_string()
-            }
-        };
-
-        (
-            object_var.to_string(),
-            expanded_rule_predicate,
-            "true".to_string(),
-        )
-    } else {
-        // Resolve subject if it's not a variable
-        let resolved_subject = if subject_var.starts_with('?') || subject_var.starts_with("<<") {
-            subject_var.to_string()
-        } else {
-            database.resolve_query_term(subject_var, prefixes)
-        };
-
-        // For a normal triple pattern, resolve predicate and object
-        let resolved_predicate = if predicate == "a" {
-            "http://www.w3.org/1999/02/22-rdf-syntax-ns#type".to_string()
-        } else {
-            database.resolve_query_term(predicate, prefixes)
-        };
-
-        // Resolve object if it's not a variable
-        let resolved_object = if object_var.starts_with('?') || object_var.starts_with("<<") {
-            object_var.to_string()
-        } else {
-            database.resolve_query_term(object_var, prefixes)
-        };
-
-        (resolved_subject, resolved_predicate, resolved_object)
-    }
-}
-
-// Helper function to process BIND clauses
-fn process_bind_clauses<'a>(
-    final_results: &mut Vec<BTreeMap<&'a str, String>>,
-    binds: Vec<(&'a str, Vec<&'a str>, &'a str)>,
-    database: &'a SparqlDatabase,
-) {
-    for (func_name, args, new_var) in binds {
-        if func_name == "CONCAT" {
-            // Process CONCAT function
-            for row in final_results.iter_mut() {
-                let concatenated = args
-                    .iter()
-                    .map(|arg| {
-                        if arg.starts_with('?') {
-                            row.get(*arg).map(|s| s.as_str()).unwrap_or("")
-                        } else {
-                            *arg // literal
-                        }
-                    })
-                    .collect::<Vec<&str>>()
-                    .join("");
-                row.insert(new_var, concatenated);
-            }
-        } else if func_name == "SUBJECT" || func_name == "PREDICATE" || func_name == "OBJECT" {
-            for row in final_results.iter_mut() {
-                if let Some(arg) = args.first() {
-                    let val = if arg.starts_with('?') {
-                        row.get(*arg).map(|s| s.to_string()).unwrap_or_default()
-                    } else {
-                        arg.to_string()
-                    };
-                    if val.starts_with("<<") && val.ends_with(">>") {
-                        let inner = val[2..val.len() - 2].trim();
-                        let (s, p, o) = SparqlDatabase::split_quoted_triple_content(inner);
-                        let extracted = match func_name {
-                            "SUBJECT" => s,
-                            "PREDICATE" => p,
-                            "OBJECT" => o,
-                            _ => unreachable!(),
-                        };
-                        row.insert(new_var, extracted);
-                    }
-                }
-            }
-        } else if func_name == "TRIPLE" {
-            if args.len() == 3 {
-                for row in final_results.iter_mut() {
-                    let resolved: Vec<String> = args
-                        .iter()
-                        .map(|arg| {
-                            if arg.starts_with('?') {
-                                row.get(*arg).map(|s| s.to_string()).unwrap_or_default()
-                            } else {
-                                arg.to_string()
-                            }
-                        })
-                        .collect();
-                    let qt_str = format!("<< {} {} {} >>", resolved[0], resolved[1], resolved[2]);
-                    row.insert(new_var, qt_str);
-                }
-            }
-        } else if func_name == "isTRIPLE" {
-            for row in final_results.iter_mut() {
-                if let Some(arg) = args.first() {
-                    let val = if arg.starts_with('?') {
-                        row.get(*arg).map(|s| s.as_str()).unwrap_or("")
-                    } else {
-                        *arg
-                    };
-                    let is_qt = val.starts_with("<<") && val.ends_with(">>");
-                    row.insert(new_var, is_qt.to_string());
-                }
-            }
-        } else if let Some(func) = database.udfs.get(func_name) {
-            for row in final_results.iter_mut() {
-                let resolved_args: Vec<&str> = args
-                    .iter()
-                    .map(|arg| {
-                        if arg.starts_with('?') {
-                            row.get(*arg).map(|s| s.as_str()).unwrap_or("")
-                        } else {
-                            *arg
-                        }
-                    })
-                    .collect();
-                let result = func.call(resolved_args);
-                row.insert(new_var, result);
-            }
-        } else {
-            eprintln!("UDF {} not found", func_name);
-        }
-    }
-}
-
-pub fn group_and_aggregate_results<'a>(
-    results: Vec<BTreeMap<&'a str, String>>,
-    group_by_vars: &'a [&'a str],
-    aggregation_vars: &'a [(&'a str, &'a str, &'a str)],
-) -> Vec<BTreeMap<&'a str, String>> {
-    let mut grouped: HashMap<
-        Vec<String>,
-        (BTreeMap<&'a str, String>, HashMap<&'a str, (f64, usize)>),
-    > = HashMap::new();
-
-    for result in results {
-        // Create the key based on the group by variables
-        let key: Vec<String> = group_by_vars
+fn aggregate_rows(rows: Vec<StringBinding>, query: &SelectQuery<'_>) -> Vec<StringBinding> {
+    let mut groups: BTreeMap<Vec<Option<String>>, Vec<StringBinding>> = BTreeMap::new();
+    for row in rows {
+        let key = query
+            .group_vars
             .iter()
-            .map(|var| result.get(*var).cloned().unwrap_or_default())
+            .map(|variable| row.get(normalize_variable(variable)).cloned())
             .collect();
-
-        // Extract values for aggregation variables
-        let mut agg_values: HashMap<&'a str, f64> = HashMap::new();
-        for (_, var, output_var_name) in aggregation_vars {
-            if let Some(value_str) = result.get(*var) {
-                if let Ok(value) = value_str.parse::<f64>() {
-                    agg_values.insert(*output_var_name, value);
-                }
-            }
-        }
-
-        // Insert or update in grouped collection
-        grouped
-            .entry(key)
-            .and_modify(|(_, agg_map)| {
-                for (agg_type, _, output_var_name) in aggregation_vars {
-                    let value = agg_values.get(*output_var_name).cloned().unwrap_or(0.0);
-                    let entry = agg_map.entry(*output_var_name).or_insert((0.0, 0));
-                    match *agg_type {
-                        "SUM" => entry.0 += value,
-                        "MIN" => entry.0 = entry.0.min(value),
-                        "MAX" => entry.0 = entry.0.max(value),
-                        "AVG" => {
-                            entry.0 += value;
-                            entry.1 += 1; // Track count for AVG
-                        }
-                        _ => {}
-                    }
-                }
-            })
-            .or_insert_with(|| {
-                let mut agg_map = HashMap::new();
-                for (_, _, output_var_name) in aggregation_vars {
-                    let value = agg_values.get(*output_var_name).cloned().unwrap_or(0.0);
-                    agg_map.insert(*output_var_name, (value, 1));
-                }
-                (result.clone(), agg_map)
-            });
+        groups.entry(key).or_default().push(row);
+    }
+    if groups.is_empty() && query.group_vars.is_empty() {
+        groups.insert(Vec::new(), Vec::new());
     }
 
-    // Convert grouped data back to Vec<BTreeMap> with aggregation results
-    grouped
-        .into_iter()
-        .map(|(_, (mut value, agg_map))| {
-            for (output_var_name, (sum, count)) in agg_map {
-                let result_value = if let Some((agg_type, _, _)) = aggregation_vars
+    groups
+        .into_values()
+        .map(|group| {
+            let mut result = group.first().cloned().unwrap_or_default();
+            for (kind, variable, alias) in &query.variables {
+                if *kind == "VAR" || *kind == "*" {
+                    continue;
+                }
+                let output = normalize_variable(alias.unwrap_or(variable)).to_string();
+                let input = normalize_variable(variable);
+                let values = group
                     .iter()
-                    .find(|(_, _, var)| var == &output_var_name)
-                {
-                    match *agg_type {
-                        "AVG" => sum / count as f64,
-                        _ => sum,
+                    .filter_map(|row| row.get(input))
+                    .collect::<Vec<_>>();
+                let value = match kind.to_ascii_uppercase().as_str() {
+                    "COUNT" => Some(values.len().to_string()),
+                    "SUM" => Some(
+                        values
+                            .iter()
+                            .filter_map(|value| value.parse::<f64>().ok())
+                            .sum::<f64>()
+                            .to_string(),
+                    ),
+                    "AVG" => {
+                        let numbers = values
+                            .iter()
+                            .filter_map(|value| value.parse::<f64>().ok())
+                            .collect::<Vec<_>>();
+                        (!numbers.is_empty()).then(|| {
+                            (numbers.iter().sum::<f64>() / numbers.len() as f64).to_string()
+                        })
                     }
-                } else {
-                    sum
+                    "MIN" => values
+                        .iter()
+                        .filter_map(|value| value.parse::<f64>().ok())
+                        .min_by(|left, right| {
+                            left.partial_cmp(right).unwrap_or(std::cmp::Ordering::Equal)
+                        })
+                        .map(|value| value.to_string()),
+                    "MAX" => values
+                        .iter()
+                        .filter_map(|value| value.parse::<f64>().ok())
+                        .max_by(|left, right| {
+                            left.partial_cmp(right).unwrap_or(std::cmp::Ordering::Equal)
+                        })
+                        .map(|value| value.to_string()),
+                    _ => None,
                 };
-                value.insert(output_var_name, result_value.to_string());
+                if let Some(value) = value {
+                    result.insert(output, value);
+                } else {
+                    result.remove(&output);
+                }
             }
-            value
+            result
         })
         .collect()
 }
 
-fn merge_results<'a>(
-    main_results: Vec<BTreeMap<&'a str, String>>,
-    subquery_results: Vec<BTreeMap<&'a str, String>>,
-) -> Vec<BTreeMap<&'a str, String>> {
-    if main_results.is_empty() {
-        return subquery_results;
-    }
-    if subquery_results.is_empty() {
-        return main_results;
-    }
+fn apply_order_by(rows: &mut [StringBinding], conditions: &[OrderCondition<'_>]) {
+    rows.sort_by(|left, right| {
+        for condition in conditions {
+            let variable = normalize_variable(condition.variable);
+            let left_value = left.get(variable).map(String::as_str).unwrap_or("");
+            let right_value = right.get(variable).map(String::as_str).unwrap_or("");
+            let comparison = match (left_value.parse::<f64>(), right_value.parse::<f64>()) {
+                (Ok(left), Ok(right)) => left
+                    .partial_cmp(&right)
+                    .unwrap_or(std::cmp::Ordering::Equal),
+                _ => left_value.cmp(right_value),
+            };
+            let comparison = match condition.direction {
+                SortDirection::Asc => comparison,
+                SortDirection::Desc => comparison.reverse(),
+            };
+            if comparison != std::cmp::Ordering::Equal {
+                return comparison;
+            }
+        }
+        std::cmp::Ordering::Equal
+    });
+}
 
-    let mut merged = Vec::new();
-    for main_row in main_results {
-        for sub_row in &subquery_results {
-            let mut new_row = main_row.clone();
-            new_row.extend(sub_row.iter().map(|(k, v)| (*k, v.clone())));
-            merged.push(new_row);
+fn collect_triple_patterns<'a>(
+    pattern: &'a GroupGraphPattern<'a>,
+    output: &mut Vec<(&'a str, &'a str, &'a str)>,
+) {
+    match pattern {
+        GroupGraphPattern::Bgp(patterns) => output.extend(patterns.iter().copied()),
+        GroupGraphPattern::Join(patterns) | GroupGraphPattern::Union(patterns) => {
+            for pattern in patterns {
+                collect_triple_patterns(pattern, output);
+            }
+        }
+        GroupGraphPattern::Graph { pattern, .. } => collect_triple_patterns(pattern, output),
+        GroupGraphPattern::SubQuery(subquery) => {
+            collect_triple_patterns(&subquery.query.pattern, output)
+        }
+        GroupGraphPattern::Unit
+        | GroupGraphPattern::Filter(_)
+        | GroupGraphPattern::Bind(_)
+        | GroupGraphPattern::Values(_) => {}
+    }
+}
+
+fn execute_update_operation(
+    operation: &UpdateOperation<'_>,
+    prefixes: &HashMap<String, String>,
+    database: &mut SparqlDatabase,
+) -> Result<UpdateSummary, String> {
+    let summary = match operation {
+        UpdateOperation::InsertData(insert) => {
+            let insertions = instantiate_data(&insert.quads, prefixes, database, true)?;
+            apply_mutations(BTreeSet::new(), insertions, database)
+        }
+        UpdateOperation::DeleteData(delete) => {
+            let deletions = instantiate_data(&delete.quads, prefixes, database, false)?;
+            apply_mutations(deletions, BTreeSet::new(), database)
+        }
+        UpdateOperation::InsertWhere {
+            insert,
+            where_pattern,
+        } => execute_modify(None, Some(insert), where_pattern, prefixes, database)?,
+        UpdateOperation::DeleteWhere {
+            delete,
+            where_pattern,
+        }
+        | UpdateOperation::DeleteWhereShorthand {
+            delete,
+            where_pattern,
+        } => execute_modify(Some(delete), None, where_pattern, prefixes, database)?,
+        UpdateOperation::DeleteInsertWhere {
+            delete,
+            insert,
+            where_pattern,
+        } => execute_modify(
+            Some(delete),
+            Some(insert),
+            where_pattern,
+            prefixes,
+            database,
+        )?,
+    };
+    database.invalidate_stats_cache();
+    Ok(summary)
+}
+
+fn execute_modify(
+    delete: Option<&DeleteClause<'_>>,
+    insert: Option<&InsertClause<'_>>,
+    where_pattern: &GroupGraphPattern<'_>,
+    prefixes: &HashMap<String, String>,
+    database: &mut SparqlDatabase,
+) -> Result<UpdateSummary, String> {
+    let mut lexical_patterns = Vec::new();
+    collect_triple_patterns(where_pattern, &mut lexical_patterns);
+    materialize_neural_relations_for_patterns(database, &lexical_patterns, prefixes)?;
+
+    let logical_plan = build_logical_plan_from_group(where_pattern, prefixes, database)?;
+    let dataset = DatasetView::from_database(database);
+
+    // The WHERE is evaluated once. Both templates are instantiated completely
+    // from this same pre-operation solution sequence before any quad mutation.
+    let bindings = optimize_and_execute(logical_plan, &dataset, database);
+    let deletions = match delete {
+        Some(delete) => instantiate_templates(&delete.quads, &bindings, prefixes, database, false)?,
+        None => BTreeSet::new(),
+    };
+    let insertions = match insert {
+        Some(insert) => instantiate_templates(&insert.quads, &bindings, prefixes, database, true)?,
+        None => BTreeSet::new(),
+    };
+
+    Ok(apply_mutations(deletions, insertions, database))
+}
+
+fn instantiate_data(
+    quads: &[LexicalQuadPattern<'_>],
+    prefixes: &HashMap<String, String>,
+    database: &mut SparqlDatabase,
+    insert: bool,
+) -> Result<BTreeSet<Quad>, String> {
+    instantiate_templates(quads, &[HashMap::new()], prefixes, database, insert)
+}
+
+fn instantiate_templates(
+    templates: &[LexicalQuadPattern<'_>],
+    bindings: &[HashMap<String, u32>],
+    prefixes: &HashMap<String, String>,
+    database: &mut SparqlDatabase,
+    insert: bool,
+) -> Result<BTreeSet<Quad>, String> {
+    let mut quads = BTreeSet::new();
+    for binding in bindings {
+        // SPARQL Update gives every solution its own blank-node allocation,
+        // while repeated labels within that solution share the same node.
+        let mut blank_nodes = HashMap::new();
+        for template in templates {
+            if let Some(quad) = instantiate_quad(
+                template,
+                binding,
+                prefixes,
+                database,
+                insert,
+                &mut blank_nodes,
+            )? {
+                quads.insert(quad);
+            }
         }
     }
-    merged
+    Ok(quads)
+}
+
+fn instantiate_quad(
+    template: &LexicalQuadPattern<'_>,
+    binding: &HashMap<String, u32>,
+    prefixes: &HashMap<String, String>,
+    database: &mut SparqlDatabase,
+    insert: bool,
+    blank_nodes: &mut HashMap<String, u32>,
+) -> Result<Option<Quad>, String> {
+    let Some(subject) = instantiate_term(
+        template.triple.0,
+        binding,
+        prefixes,
+        database,
+        insert,
+        blank_nodes,
+    )?
+    else {
+        return Ok(None);
+    };
+    if (is_variable(template.triple.0) || is_quoted_triple_id(subject))
+        && !is_legal_subject(subject, database)
+    {
+        return Ok(None);
+    }
+    let Some(predicate) = instantiate_term(
+        template.triple.1,
+        binding,
+        prefixes,
+        database,
+        insert,
+        blank_nodes,
+    )?
+    else {
+        return Ok(None);
+    };
+    if is_variable(template.triple.1) && !is_legal_predicate(predicate, database) {
+        return Ok(None);
+    }
+    let Some(object) = instantiate_term(
+        template.triple.2,
+        binding,
+        prefixes,
+        database,
+        insert,
+        blank_nodes,
+    )?
+    else {
+        return Ok(None);
+    };
+    if is_quoted_triple_id(object) && !is_legal_object(object, database) {
+        return Ok(None);
+    }
+    let graph = match template.graph {
+        Some(graph_name) => {
+            let Some(graph) = instantiate_graph(graph_name, binding, prefixes, database)? else {
+                return Ok(None);
+            };
+            if is_variable(graph_name) {
+                let GraphId::Named(graph_id) = graph else {
+                    return Ok(None);
+                };
+                if !is_legal_graph_name(graph_id, database) {
+                    return Ok(None);
+                }
+            }
+            graph
+        }
+        None => GraphId::Default,
+    };
+    Ok(Some(Quad {
+        subject,
+        predicate,
+        object,
+        graph,
+    }))
+}
+
+fn instantiate_graph(
+    graph: &str,
+    binding: &HashMap<String, u32>,
+    prefixes: &HashMap<String, String>,
+    database: &mut SparqlDatabase,
+) -> Result<Option<GraphId>, String> {
+    if is_variable(graph) {
+        return Ok(binding
+            .get(normalize_variable(graph))
+            .copied()
+            .map(GraphId::Named));
+    }
+    match compile_graph_term(graph, prefixes, database)? {
+        GraphTerm::Named(graph) => Ok(Some(GraphId::Named(graph))),
+        GraphTerm::Variable(_) => unreachable!("variables handled above"),
+        GraphTerm::Default => Err("update GRAPH name must be an IRI".to_string()),
+    }
+}
+
+fn is_legal_subject(id: u32, database: &SparqlDatabase) -> bool {
+    if is_quoted_triple_id(id) {
+        return is_legal_quoted_triple(id, database);
+    }
+    let Some(value) = database.decode_any(id) else {
+        return false;
+    };
+    value.starts_with("_:")
+        || is_probable_absolute_iri(&value)
+        || database.dataset_index.graph_exists(GraphId::Named(id))
+        || !database
+            .dataset_index
+            .query_quads(Some(id), None, None, None)
+            .is_empty()
+}
+
+fn is_legal_predicate(id: u32, database: &SparqlDatabase) -> bool {
+    if is_quoted_triple_id(id) {
+        return false;
+    }
+    let Some(value) = database.decode_any(id) else {
+        return false;
+    };
+    !value.starts_with("_:")
+        && (is_probable_absolute_iri(&value)
+            || database.dataset_index.graph_exists(GraphId::Named(id))
+            || !database
+                .dataset_index
+                .query_quads(None, Some(id), None, None)
+                .is_empty())
+}
+
+fn is_legal_object(id: u32, database: &SparqlDatabase) -> bool {
+    !is_quoted_triple_id(id) || is_legal_quoted_triple(id, database)
+}
+
+fn is_legal_graph_name(id: u32, database: &SparqlDatabase) -> bool {
+    if is_quoted_triple_id(id) {
+        return false;
+    }
+    let Some(value) = database.decode_any(id) else {
+        return false;
+    };
+    !value.starts_with("_:")
+        && (is_probable_absolute_iri(&value)
+            || database.dataset_index.graph_exists(GraphId::Named(id)))
+}
+
+fn is_legal_quoted_triple(id: u32, database: &SparqlDatabase) -> bool {
+    let components = database.quoted_triple_store.read().unwrap().decode(id);
+    let Some((subject, predicate, object)) = components else {
+        return false;
+    };
+    is_legal_subject(subject, database)
+        && is_legal_predicate(predicate, database)
+        && is_legal_object(object, database)
+}
+
+fn is_probable_absolute_iri(value: &str) -> bool {
+    let Some((scheme, _)) = value.split_once(':') else {
+        return false;
+    };
+    let mut characters = scheme.chars();
+    characters
+        .next()
+        .is_some_and(|first| first.is_ascii_alphabetic())
+        && characters.all(|character| {
+            character.is_ascii_alphanumeric() || matches!(character, '+' | '-' | '.')
+        })
+}
+
+fn instantiate_term(
+    term: &str,
+    binding: &HashMap<String, u32>,
+    prefixes: &HashMap<String, String>,
+    database: &mut SparqlDatabase,
+    insert: bool,
+    blank_nodes: &mut HashMap<String, u32>,
+) -> Result<Option<u32>, String> {
+    let term = term.trim();
+    if is_variable(term) {
+        return Ok(binding.get(normalize_variable(term)).copied());
+    }
+    if term.starts_with("_:") {
+        if !insert {
+            return Err("blank nodes are not allowed in DELETE templates".to_string());
+        }
+        if let Some(id) = blank_nodes.get(term) {
+            return Ok(Some(*id));
+        }
+        let id = allocate_blank_node(term, database);
+        blank_nodes.insert(term.to_string(), id);
+        return Ok(Some(id));
+    }
+    if term.starts_with("<<") && term.ends_with(">>") {
+        let (subject, predicate, object) =
+            SparqlDatabase::split_quoted_triple_content(term[2..term.len() - 2].trim());
+        let Some(subject) =
+            instantiate_term(&subject, binding, prefixes, database, insert, blank_nodes)?
+        else {
+            return Ok(None);
+        };
+        let Some(predicate) =
+            instantiate_term(&predicate, binding, prefixes, database, insert, blank_nodes)?
+        else {
+            return Ok(None);
+        };
+        let Some(object) =
+            instantiate_term(&object, binding, prefixes, database, insert, blank_nodes)?
+        else {
+            return Ok(None);
+        };
+        let id = database
+            .quoted_triple_store
+            .write()
+            .unwrap()
+            .encode(subject, predicate, object);
+        return Ok(Some(id));
+    }
+
+    match compile_term(term, prefixes, database) {
+        Term::Constant(id) => Ok(Some(id)),
+        Term::Variable(_) => Ok(None),
+        Term::QuotedTriple(_) => Err("unresolved variable in quoted update triple".to_string()),
+    }
+}
+
+fn allocate_blank_node(label: &str, database: &mut SparqlDatabase) -> u32 {
+    static NEXT_UPDATE_BLANK: AtomicU64 = AtomicU64::new(1);
+    loop {
+        let allocation = NEXT_UPDATE_BLANK.fetch_add(1, AtomicOrdering::Relaxed);
+        let lexical = format!("_:kolibrie-update-{allocation}-{}", &label[2..]);
+        let mut dictionary = database.dictionary.write().unwrap();
+        if dictionary.string_to_id.contains_key(&lexical) {
+            continue;
+        }
+        return dictionary.encode(&lexical);
+    }
+}
+
+fn apply_mutations(
+    deletions: BTreeSet<Quad>,
+    insertions: BTreeSet<Quad>,
+    database: &mut SparqlDatabase,
+) -> UpdateSummary {
+    let deleted_quads = deletions
+        .iter()
+        .filter(|quad| database.dataset_index.delete_quad(quad))
+        .count();
+    let inserted_quads = insertions
+        .iter()
+        .filter(|quad| database.dataset_index.insert_quad(quad))
+        .count();
+    UpdateSummary {
+        inserted_quads,
+        deleted_quads,
+    }
+}
+
+fn normalize_variable(variable: &str) -> &str {
+    variable
+        .strip_prefix('?')
+        .or_else(|| variable.strip_prefix('$'))
+        .unwrap_or(variable)
+}
+
+fn is_variable(term: &str) -> bool {
+    term.starts_with('?') || term.starts_with('$')
 }

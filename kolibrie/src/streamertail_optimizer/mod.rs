@@ -18,12 +18,15 @@ pub mod utils;
 
 // Re-export main components for convenience
 pub use cost::{CostConstants, CostEstimator};
-pub use execution::ExecutionEngine;
+pub use execution::{DatasetView, ExecutionContext, ExecutionEngine};
 pub use operators::{LogicalOperator, PhysicalOperator};
 pub use optimizer::Streamertail;
 pub use stats::DatabaseStats;
-pub use types::{Condition, IdResult};
+pub use types::{
+    Condition, ConditionArithmetic, ConditionExpression, IdResult, SubqueryProjection, SubquerySpec,
+};
 pub use utils::{
-    build_logical_plan, estimate_operator_selectivity,
-    extract_pattern, pattern_contains_variable, build_logical_plan_from_subquery,
+    build_logical_plan, build_logical_plan_from_group, build_logical_plan_from_subquery,
+    compile_graph_term, compile_term, compile_triple, estimate_operator_selectivity,
+    extract_pattern, pattern_contains_variable,
 };

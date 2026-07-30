@@ -18,7 +18,7 @@ use nom::{
     bytes::complete::{tag, take_until, take_while1},
     character::complete::{char, multispace0, multispace1, space0, space1},
     combinator::{opt, recognize},
-    multi::{many0, many1, separated_list1},
+    multi::{many0, many1},
     sequence::{delimited, preceded, terminated},
     IResult, Parser,
 };
@@ -49,7 +49,7 @@ pub fn identifier(input: &str) -> IResult<&str, &str> {
 
 // Parser for a prefixed identifier like ex:worksAt
 pub fn prefixed_identifier(input: &str) -> IResult<&str, &str> {
-    recognize((identifier, char(':'), identifier)).parse(input)
+    sparql_prefixed_name(input)
 }
 
 // Parser for a predicate (either prefixed or unprefixed)
@@ -64,38 +64,43 @@ pub fn predicate(input: &str) -> IResult<&str, &str> {
     .parse(input)
 }
 
-// Parser for variables (e.g., ?person)
+// Parser for SPARQL variables (e.g., ?person or $person)
 pub fn variable(input: &str) -> IResult<&str, &str> {
-    recognize((char('?'), identifier)).parse(input)
+    sparql_variable(input)
 }
 
 // Parser for a literal value within double quotes
 pub fn parse_literal(input: &str) -> IResult<&str, &str> {
-    delimited(char('"'), take_while1(|c| c != '"'), char('"')).parse(input)
+    let (remaining, literal) = sparql_quoted_literal(input)?;
+    if !literal.starts_with('"') || literal.starts_with("\"\"\"") {
+        return sparql_error(literal, nom::error::ErrorKind::Char);
+    }
+    let mut escaped = false;
+    for (offset, character) in literal[1..].char_indices() {
+        if character == '"' && !escaped {
+            return Ok((remaining, &literal[1..1 + offset]));
+        }
+        escaped = character == '\\' && !escaped;
+        if character != '\\' {
+            escaped = false;
+        }
+    }
+    sparql_error(literal, nom::error::ErrorKind::Escaped)
 }
 
 // Parser for a URI within angle brackets
 pub fn parse_uri(input: &str) -> IResult<&str, &str> {
-    delimited(char('<'), take_while1(|c| c != '>'), char('>')).parse(input)
+    sparql_iri(input).map(|(remaining, iri)| (remaining, &iri[1..iri.len() - 1]))
 }
 
 // Parser for a full URI including angle brackets (e.g., `<http://...>`)
 pub fn parse_full_uri(input: &str) -> IResult<&str, &str> {
-    recognize((char('<'), take_while1(|c: char| c != '>'), char('>'))).parse(input)
+    sparql_iri(input)
 }
 
 // Parser for a full literal including quotes and optional lang/datatype
 pub fn parse_full_literal(input: &str) -> IResult<&str, &str> {
-    recognize((
-        char('"'),
-        take_while1(|c: char| c != '"'),
-        char('"'),
-        opt(alt((
-            recognize((tag("^^"), parse_full_uri)),
-            recognize((char('@'), identifier)),
-        ))),
-    ))
-    .parse(input)
+    sparql_quoted_literal(input)
 }
 
 /// Parse a subject or object that can appear inside a quoted triple.
@@ -117,24 +122,7 @@ pub fn parse_qt_subject_or_object(input: &str) -> IResult<&str, &str> {
 /// Parse a quoted triple: `<< subject predicate object >>`
 /// Returns the entire `<< ... >>` as a single string slice.
 pub fn parse_quoted_triple(input: &str) -> IResult<&str, &str> {
-    recognize((
-        tag("<<"),
-        multispace0,
-        parse_qt_subject_or_object,
-        multispace1,
-        alt((
-            parse_full_uri,
-            variable,
-            recognize((char(':'), identifier)),
-            prefixed_identifier,
-            tag("a"),
-        )),
-        multispace1,
-        parse_qt_subject_or_object,
-        multispace0,
-        tag(">>"),
-    ))
-    .parse(input)
+    sparql_quoted_triple(input)
 }
 
 /// Parse annotation syntax: `{| predicate object ; ... |}`
@@ -214,479 +202,47 @@ pub fn parse_triple_block(input: &str) -> IResult<&str, Vec<(&str, &str, &str)>>
 
 // Parser for values in the VALUES clause
 pub fn parse_value_term(input: &str) -> IResult<&str, Value> {
-    alt((
-        // Parse IRI in <>
-        delimited(char('<'), take_while1(|c| c != '>'), char('>'))
-            .map(|s: &str| Value::Term(s.to_string())),
-        // Parse Literal in ""
-        delimited(char('"'), take_while1(|c| c != '"'), char('"'))
-            .map(|s: &str| Value::Term(s.to_string())),
-        // Parse prefixed name
-        prefixed_identifier.map(|s| Value::Term(s.to_string())),
-        // Parse identifier
-        identifier.map(|s: &str| Value::Term(s.to_string())),
-    ))
-    .parse(input)
+    sparql_value(input)
 }
 
 // Parser for the VALUES clause
 pub fn parse_values(input: &str) -> IResult<&str, ValuesClause<'_>> {
-    let (input, _) = tag("VALUES").parse(input)?;
-    let (input, _) = space1.parse(input)?;
-
-    let (input, vars) = alt((
-        // Single variable
-        variable.map(|var| vec![var]),
-        // Multiple variables in parentheses
-        delimited(char('('), separated_list1(space1, variable), char(')')),
-    ))
-    .parse(input)?;
-
-    let (input, _) = space1.parse(input)?;
-    let (input, _) = char('{').parse(input)?;
-    let (input, _) = multispace0.parse(input)?;
-
-    let (input, values) = many0(preceded(
-        multispace0,
-        alt((
-            // For multiple variables, values are in parentheses
-            delimited(
-                char('('),
-                separated_list1(
-                    space1,
-                    alt((parse_value_term, tag("UNDEF").map(|_| Value::Undef))),
-                ),
-                char(')'),
-            ),
-            // For single variable, values are terms or UNDEF
-            alt((parse_value_term, tag("UNDEF").map(|_| Value::Undef))).map(|v| vec![v]),
-        )),
-    ))
-    .parse(input)?;
-
-    let (input, _) = multispace0.parse(input)?;
-    let (input, _) = char('}').parse(input)?;
-
-    Ok((
-        input,
-        ValuesClause {
-            variables: vars,
-            values,
-        },
-    ))
+    sparql_values_clause(input)
 }
 
 pub fn parse_aggregate(input: &str) -> IResult<&str, (&str, &str, Option<&str>)> {
-    let (input, agg_type) = alt((tag("SUM"), tag("MIN"), tag("MAX"), tag("AVG"))).parse(input)?;
-    let (input, _) = char('(').parse(input)?;
-    let (input, var) = variable(input)?;
-    let (input, _) = char(')').parse(input)?;
-
-    // Optional AS clause to name the aggregated result
-    let (input, opt_as) = opt(preceded(
-        space1,
-        preceded(tag("AS"), preceded(space1, variable)),
-    ))
-    .parse(input)?;
-
-    Ok((input, (agg_type, var, opt_as)))
+    sparql_aggregate(input)
 }
 
 pub fn parse_select(input: &str) -> IResult<&str, Vec<(&str, &str, Option<&str>)>> {
-    let (input, _) = tag("SELECT").parse(input)?;
-    let (input, _) = space1.parse(input)?;
-
-    // Check if the next token is '*'
-    if let Ok((input, _)) = tag::<_, _, nom::error::Error<&str>>("*").parse(input) {
-        return Ok((input, vec![("*", "*", None)]));
+    let (mut input, _) = sparql_keyword(input, "SELECT")?;
+    if let Ok((remaining, _)) = sparql_keyword(input, "DISTINCT") {
+        input = remaining;
     }
-
-    // Parse variables or aggregation functions
-    let (input, variables) = separated_list1(
-        space1,
-        alt((variable.map(|var| ("VAR", var, None)), parse_aggregate)),
-    )
-    .parse(input)?;
-
-    Ok((input, variables))
+    sparql_projection_items(input)
 }
 
-// Parse a basic arithmetic operand (variable, literal, or number)
-fn parse_operand(input: &str) -> IResult<&str, ArithmeticExpression<'_>> {
-    let (input, _) = multispace0.parse(input)?;
-
-    let (input, operand) = alt((
-        variable,
-        parse_literal,
-        take_while1(|c: char| c.is_digit(10) || c == '.'),
-    ))
-    .parse(input)?;
-
-    let (input, _) = multispace0.parse(input)?;
-
-    Ok((input, ArithmeticExpression::Operand(operand)))
-}
-
-// Parse a parenthesized arithmetic expression
-fn parse_arith_parenthesized(input: &str) -> IResult<&str, ArithmeticExpression<'_>> {
-    let (input, _) = multispace0.parse(input)?;
-    let (input, _) = char('(').parse(input)?;
-    let (input, expr) = parse_arithmetic_expression(input)?;
-    let (input, _) = multispace0.parse(input)?;
-    let (input, _) = char(')').parse(input)?;
-    let (input, _) = multispace0.parse(input)?;
-
-    Ok((input, expr))
-}
-
-// Parse a basic arithmetic term (operand or parenthesized expression)
-fn parse_arith_term(input: &str) -> IResult<&str, ArithmeticExpression<'_>> {
-    alt((parse_operand, parse_arith_parenthesized)).parse(input)
-}
-
-// Parse multiplication and division
-fn parse_arith_factor(input: &str) -> IResult<&str, ArithmeticExpression<'_>> {
-    let (mut input, mut left) = parse_arith_term(input)?;
-
-    // Process all multiplication and division operations in sequence
-    loop {
-        let (remaining, _) = multispace0.parse(input)?;
-
-        // Match a multiplication or division operator with explicit error type
-        match alt((
-            char::<_, nom::error::Error<&str>>('*'),
-            char::<_, nom::error::Error<&str>>('/'),
-        ))
-        .parse(remaining)
-        {
-            Ok((after_op, op)) => {
-                // Parse the right-hand term
-                let (after_space, _) = multispace0.parse(after_op)?;
-                let (new_input, right) = parse_arith_term(after_space)?;
-
-                left = match op {
-                    '*' => ArithmeticExpression::Multiply(Box::new(left), Box::new(right)),
-                    '/' => ArithmeticExpression::Divide(Box::new(left), Box::new(right)),
-                    _ => unreachable!(),
-                };
-
-                // Update input
-                input = new_input;
-            }
-            Err(_) => break,
-        }
-    }
-
-    Ok((input, left))
-}
-
-// Parse addition and subtraction
 pub fn parse_arithmetic_expression(input: &str) -> IResult<&str, ArithmeticExpression<'_>> {
-    let (mut input, mut left) = parse_arith_factor(input)?;
-
-    // Process all addition and subtraction operations in sequence
-    loop {
-        let (remaining, _) = multispace0.parse(input)?;
-
-        // Match an addition or subtraction operator with explicit error type
-        match alt((
-            char::<_, nom::error::Error<&str>>('+'),
-            char::<_, nom::error::Error<&str>>('-'),
-        ))
-        .parse(remaining)
-        {
-            Ok((after_op, op)) => {
-                // Parse the right-hand factor
-                let (after_space, _) = multispace0.parse(after_op)?;
-                let (new_input, right) = parse_arith_factor(after_space)?;
-
-                left = match op {
-                    '+' => ArithmeticExpression::Add(Box::new(left), Box::new(right)),
-                    '-' => ArithmeticExpression::Subtract(Box::new(left), Box::new(right)),
-                    _ => unreachable!(),
-                };
-
-                // Update input
-                input = new_input;
-            }
-            Err(_) => break,
-        }
-    }
-
-    Ok((input, left))
-}
-
-fn parse_arithmetic_comparison(input: &str) -> IResult<&str, FilterExpression<'_>> {
-    let (input, _) = multispace0.parse(input)?;
-
-    // Parse left side expression
-    let (input, left_str) = alt((
-        // Recognize an arithmetic expression (variable followed by operators)
-        recognize((
-            alt((
-                variable,                                          // Variable name
-                parse_literal,                                     // String literal
-                take_while1(|c: char| c.is_digit(10) || c == '.'), // Number
-            )),
-            multispace0,
-            alt((char('+'), char('-'), char('*'), char('/'))), // Operator
-        )),
-        // variable/literal/number
-        variable,
-        parse_literal,
-        take_while1(|c: char| c.is_digit(10) || c == '.'),
-        // parenthesized expression
-        recognize(delimited(char('('), take_until(")"), char(')'))),
-    ))
-    .parse(input)?;
-
-    let (input, _) = multispace0.parse(input)?;
-
-    // Parse the comparison operator
-    let (input, operator) = alt((
-        tag("="),
-        tag("!="),
-        tag(">="),
-        tag("<="),
-        tag(">"),
-        tag("<"),
-    ))
-    .parse(input)?;
-
-    let (input, _) = multispace0.parse(input)?;
-
-    // Parse right side expression
-    let (input, right_str) = alt((
-        // Recognize a parenthesized arithmetic expression
-        recognize(delimited(char('('), take_until(")"), char(')'))),
-        // variable/literal/number
-        variable,
-        parse_literal,
-        take_while1(|c: char| c.is_digit(10) || c == '.'),
-        // arithmetic expression
-        recognize((
-            alt((
-                variable,
-                parse_literal,
-                take_while1(|c: char| c.is_digit(10) || c == '.'),
-            )),
-            multispace0,
-            alt((char('+'), char('-'), char('*'), char('/'))),
-        )),
-    ))
-    .parse(input)?;
-
-    let (input, _) = multispace0.parse(input)?;
-
-    let result = FilterExpression::Comparison(left_str, operator, right_str);
-
-    Ok((input, result))
+    sparql_filter_arithmetic(input)
 }
 
 // Parse a single comparison expression like ?var > 10
 pub fn parse_comparison(input: &str) -> IResult<&str, FilterExpression<'_>> {
-    let (input, _) = multispace0.parse(input)?;
-
-    // Parse variable or literal on left side
-    let (input, left) = alt((
-        variable,
-        parse_literal,
-        take_while1(|c: char| c.is_digit(10)),
-    ))
-    .parse(input)?;
-
-    let (input, _) = multispace0.parse(input)?;
-
-    // Parse operator
-    let (input, operator) = alt((
-        tag("="),
-        tag("!="),
-        tag(">="),
-        tag("<="),
-        tag(">"),
-        tag("<"),
-    ))
-    .parse(input)?;
-
-    let (input, _) = multispace0.parse(input)?;
-
-    // Parse variable or literal on right side
-    let (input, right) = alt((
-        variable,
-        parse_literal,
-        take_while1(|c: char| c.is_digit(10)),
-    ))
-    .parse(input)?;
-
-    let (input, _) = multispace0.parse(input)?;
-
-    Ok((input, FilterExpression::Comparison(left, operator, right)))
-}
-
-// Parse an expression in parentheses
-fn parse_parenthesized(input: &str) -> IResult<&str, FilterExpression<'_>> {
-    let (input, _) = multispace0.parse(input)?;
-    let (input, _) = char('(').parse(input)?;
-    let (input, expr) = parse_filter_expression(input)?;
-    let (input, _) = multispace0.parse(input)?;
-    let (input, _) = char(')').parse(input)?;
-    let (input, _) = multispace0.parse(input)?;
-
-    Ok((input, expr))
-}
-
-// Parse a negation (NOT)
-fn parse_not(input: &str) -> IResult<&str, FilterExpression<'_>> {
-    let (input, _) = multispace0.parse(input)?;
-    let (input, _) = char('!').parse(input)?;
-    let (input, _) = multispace0.parse(input)?;
-
-    let (input, expr) = parse_term(input)?;
-    Ok((input, FilterExpression::Not(Box::new(expr))))
-}
-
-// Parse a SPARQL-star function call: isTRIPLE(?x), SUBJECT(?t), PREDICATE(?t), OBJECT(?t), TRIPLE(?s, ?p, ?o)
-fn parse_function_call(input: &str) -> IResult<&str, FilterExpression<'_>> {
-    let (input, _) = multispace0.parse(input)?;
-    let (input, func_name) = alt((
-        tag("isTRIPLE"),
-        tag("TRIPLE"),
-        tag("SUBJECT"),
-        tag("PREDICATE"),
-        tag("OBJECT"),
-    ))
-    .parse(input)?;
-    let (input, _) = multispace0.parse(input)?;
-    let (input, _) = char('(').parse(input)?;
-    let (input, _) = multispace0.parse(input)?;
-    let (input, args) = separated_list1(
-        (multispace0, char(','), multispace0),
-        alt((variable, parse_literal)),
-    )
-    .parse(input)?;
-    let (input, _) = multispace0.parse(input)?;
-    let (input, _) = char(')').parse(input)?;
-    Ok((input, FilterExpression::FunctionCall(func_name, args)))
-}
-
-fn parse_standalone_arith(input: &str) -> IResult<&str, FilterExpression<'_>> {
-    let (input, _) = multispace0.parse(input)?;
-    let (input, expr) = parse_arithmetic_expression(input)?;
-    Ok((input, FilterExpression::ArithmeticExpr(Box::new(expr))))
-}
-
-// Parse a basic term (comparison, parenthesized expression, or negation)
-fn parse_term(input: &str) -> IResult<&str, FilterExpression<'_>> {
-    alt((
-        parse_function_call,
-        parse_comparison,
-        parse_arithmetic_comparison,
-        parse_parenthesized,
-        parse_not,
-        parse_standalone_arith,
-    ))
-    .parse(input)
-}
-
-// Parse AND expressions
-fn parse_and(input: &str) -> IResult<&str, FilterExpression<'_>> {
-    let (input, left) = parse_term(input)?;
-    let (input, _) = multispace0.parse(input)?;
-
-    if let Ok((input, _)) = tag::<_, _, nom::error::Error<&str>>("&&").parse(input) {
-        let (input, _) = multispace0.parse(input)?;
-        let (input, right) = parse_and(input)?;
-        Ok((
-            input,
-            FilterExpression::And(Box::new(left), Box::new(right)),
-        ))
-    } else {
-        Ok((input, left))
-    }
-}
-
-// Parse OR expressions
-fn parse_or(input: &str) -> IResult<&str, FilterExpression<'_>> {
-    let (input, left) = parse_and(input)?;
-    let (input, _) = multispace0.parse(input)?;
-
-    if let Ok((input, _)) = tag::<_, _, nom::error::Error<&str>>("||").parse(input) {
-        let (input, _) = multispace0.parse(input)?;
-        let (input, right) = parse_or(input)?;
-        Ok((input, FilterExpression::Or(Box::new(left), Box::new(right))))
-    } else {
-        Ok((input, left))
-    }
-}
-
-// Main entry point for parsing filter expressions
-fn parse_filter_expression(input: &str) -> IResult<&str, FilterExpression<'_>> {
-    parse_or(input)
+    sparql_filter_comparison(input)
 }
 
 // Parse a complete FILTER clause
 pub fn parse_filter(input: &str) -> IResult<&str, FilterExpression<'_>> {
-    let (input, _) = tag("FILTER").parse(input)?;
-    let (input, _) = multispace0.parse(input)?;
-    let (input, _) = char('(').parse(input)?;
-    let (input, expr) = parse_filter_expression(input)?;
-    let (input, _) = char(')').parse(input)?;
-
-    Ok((input, expr))
+    sparql_filter_clause(input)
 }
 
 // Parser for BIND clauses: BIND(funcName(?var, "literal") AS ?newVar)
 pub fn parse_bind(input: &str) -> IResult<&str, (&str, Vec<&str>, &str)> {
-    let (input, _) = tag("BIND").parse(input)?;
-    let (input, _) = multispace0.parse(input)?;
-    let (input, _) = char('(').parse(input)?;
-    let (input, func_name) = identifier(input)?;
-    let (input, _) = char('(').parse(input)?;
-
-    // Allow multiple arguments for CONCAT
-    let (input, args) = separated_list1(
-        (multispace0, char(','), multispace0),
-        alt((variable, parse_literal)),
-    )
-    .parse(input)?;
-
-    let (input, _) = char(')').parse(input)?;
-    let (input, _) = multispace1.parse(input)?;
-    let (input, _) = tag("AS").parse(input)?;
-    let (input, _) = multispace1.parse(input)?;
-    let (input, new_var) = variable(input)?;
-    let (input, _) = char(')').parse(input)?;
-
-    Ok((input, (func_name, args, new_var)))
+    sparql_bind_clause(input)
 }
 
 pub fn parse_subquery<'a>(input: &'a str) -> IResult<&'a str, SubQuery<'a>> {
-    let (input, _) = multispace0.parse(input)?;
-    let (input, _) = char('{').parse(input)?;
-    let (input, _) = multispace0.parse(input)?;
-
-    // Parse SELECT clause
-    let (input, variables) = parse_select(input)?;
-
-    // Parse WHERE clause (recursive)
-    let (input, (patterns, filters, values_clause, binds, _, _, _)) = parse_where(input)?;
-
-    let (input, limit) = opt(preceded(multispace0, parse_limit)).parse(input)?;
-
-    let (input, _) = multispace0.parse(input)?;
-    let (input, _) = char('}').parse(input)?;
-
-    Ok((
-        input,
-        SubQuery {
-            variables,
-            patterns,
-            filters,
-            binds,
-            _values_clause: values_clause,
-            limit,
-        },
-    ))
+    sparql_subquery(input)
 }
 
 // Parser for WINDOW block inside WHERE clause
@@ -876,187 +432,69 @@ pub fn parse_register_clause(input: &str) -> IResult<&str, RegisterClause<'_>> {
 }
 
 pub fn parse_group_by(input: &str) -> IResult<&str, Vec<&str>> {
-    let (input, _) = tag("GROUPBY").parse(input)?;
-    let (input, _) = space1.parse(input)?;
-
-    // Parse the variables to group by
-    let (input, group_vars) = separated_list1(space1, variable).parse(input)?;
-    Ok((input, group_vars))
+    sparql_group_by_clause(input)
 }
 
 // Parser for sort direction (ASC/DESC)
 pub fn parse_sort_direction(input: &str) -> IResult<&str, SortDirection> {
-    let (input, _) = multispace0.parse(input)?;
-    let (input, direction) = opt(alt((
-        tag("ASC").map(|_| SortDirection::Asc),
-        tag("DESC").map(|_| SortDirection::Desc),
-    )))
-    .parse(input)?;
-    Ok((input, direction.unwrap_or(SortDirection::Asc))) // Default to ASC if not specified
+    if let Ok((remaining, _)) = sparql_keyword(input, "ASC") {
+        Ok((remaining, SortDirection::Asc))
+    } else if let Ok((remaining, _)) = sparql_keyword(input, "DESC") {
+        Ok((remaining, SortDirection::Desc))
+    } else {
+        Ok((sparql_skip_ws(input), SortDirection::Asc))
+    }
 }
 
 // Parser for a single ORDER BY condition
 pub fn parse_order_condition(input: &str) -> IResult<&str, OrderCondition<'_>> {
-    let (input, _) = multispace0.parse(input)?;
-
-    // Try to parse direction first (optional)
-    let (input, direction) = opt(alt((
-        tag("ASC").map(|_| SortDirection::Asc),
-        tag("DESC").map(|_| SortDirection::Desc),
-    )))
-    .parse(input)?;
-
-    let (input, _) = multispace0.parse(input)?;
-
-    // Parse opening parenthesis if direction was specified
-    let (input, has_parens) = if direction.is_some() {
-        let (input, _) = char('(').parse(input)?;
-        (input, true)
-    } else {
-        (input, false)
-    };
-
-    let (input, _) = multispace0.parse(input)?;
-
-    // Parse the variable
-    let (input, var) = variable(input)?;
-
-    let (input, _) = multispace0.parse(input)?;
-
-    // Parse closing parenthesis if we had opening one
-    let input = if has_parens {
-        let (input, _) = char(')').parse(input)?;
-        input
-    } else {
-        input
-    };
-
-    // If no direction was parsed before variable, try to parse it after
-    let (input, final_direction) = if direction.is_none() {
-        let (input, post_direction) = opt(preceded(
-            multispace1,
-            alt((
-                tag("ASC").map(|_| SortDirection::Asc),
-                tag("DESC").map(|_| SortDirection::Desc),
-            )),
-        ))
-        .parse(input)?;
-        (input, post_direction.unwrap_or(SortDirection::Asc))
-    } else {
-        (input, direction.unwrap())
-    };
-
-    Ok((
-        input,
-        OrderCondition {
-            variable: var,
-            direction: final_direction,
-        },
-    ))
+    sparql_order_condition(input)
 }
 
 // Alternative simpler parser for ORDER BY condition (variable with optional direction)
 pub fn parse_simple_order_condition(input: &str) -> IResult<&str, OrderCondition<'_>> {
-    let (input, _) = multispace0.parse(input)?;
-
-    // Parse variable first
-    let (input, var) = variable(input)?;
-
-    let (input, _) = multispace0.parse(input)?;
-
-    // Parse optional direction after variable
-    let (input, direction) = opt(alt((
-        tag("ASC").map(|_| SortDirection::Asc),
-        tag("DESC").map(|_| SortDirection::Desc),
-    )))
-    .parse(input)?;
-
-    Ok((
-        input,
-        OrderCondition {
-            variable: var,
-            direction: direction.unwrap_or(SortDirection::Asc),
-        },
-    ))
+    sparql_order_condition(input)
 }
 
 // Main ORDER BY parser
 pub fn parse_order_by(input: &str) -> IResult<&str, Vec<OrderCondition<'_>>> {
-    let (input, _) = multispace0.parse(input)?;
-    let (input, _) = tag("ORDER").parse(input)?;
-    let (input, _) = space1.parse(input)?;
-    let (input, _) = tag("BY").parse(input)?;
-    let (input, _) = space1.parse(input)?;
-
-    // Parse one or more order conditions separated by commas
-    let (input, conditions) = separated_list1(
-        (multispace0, char(','), multispace0),
-        alt((
-            parse_order_condition,        // Try complex form first
-            parse_simple_order_condition, // Fall back to simple form
-        )),
-    )
-    .parse(input)?;
-
-    Ok((input, conditions))
+    sparql_order_by_clause(input)
 }
 
-// Add a new parser for PREFIX declarations
+// Public PREFIX primitive backed by the same token-aware parser as requests.
 pub fn parse_prefix(input: &str) -> IResult<&str, (&str, &str)> {
-    let (input, _) = multispace0.parse(input)?;
-    let (input, _) = tag("PREFIX").parse(input)?;
-    let (input, _) = space1.parse(input)?;
-    let (input, prefix) = identifier(input)?;
-    let (input, _) = char(':').parse(input)?;
-    let (input, _) = space0.parse(input)?;
-    let (input, uri) = delimited(char('<'), take_while1(|c| c != '>'), char('>')).parse(input)?;
-    let (input, _) = multispace0.parse(input)?;
-    Ok((input, (prefix, uri)))
+    sparql_prefix_declaration(input)
 }
 
-// Modified parse_insert to handle literals and debug output
+/// Compatibility parser for standalone `INSERT { ... }` data aliases.
+///
+/// It produces the same `InsertClause` used by the standard update AST; no
+/// legacy triple-only representation or executor is retained.
 pub fn parse_insert(input: &str) -> IResult<&str, InsertClause<'_>> {
-    let (input, _) = tag("INSERT").parse(input)?;
-    let (input, _) = multispace0.parse(input)?;
-    let (input, _) = char('{').parse(input)?;
-    let (input, _) = multispace0.parse(input)?;
-
-    // Parse one or more triple blocks separated by dots.
-    // Each triple block can contain multiple predicate-object pairs separated by semicolons.
-    let (input, triple_blocks) =
-        separated_list1((space0, char('.'), space0), parse_triple_block).parse(input)?;
-
-    let (input, _) = multispace0.parse(input)?;
-    // Allow optional trailing dot
-    let (input, _) = opt((char('.'), multispace0)).parse(input)?;
-    let (input, _) = multispace0.parse(input)?;
-    let (input, _) = char('}').parse(input)?;
-
-    // Flatten all the triple blocks into a single Vec
-    let triples = triple_blocks.into_iter().flatten().collect();
-
-    Ok((input, InsertClause { triples }))
+    let (input, _) = sparql_keyword(input, "INSERT")?;
+    let input = sparql_keyword(input, "DATA")
+        .map(|(remaining, _)| remaining)
+        .unwrap_or(input);
+    let (remaining, quads) = sparql_quad_block(input)?;
+    if let Some(offending) = sparql_quads_first_variable(&quads) {
+        return sparql_error(offending, nom::error::ErrorKind::Verify);
+    }
+    Ok((remaining, InsertClause { quads }))
 }
 
-// Parse DELETE { triple_patterns } clause
+/// Compatibility parser for standalone `DELETE { ... }` data aliases.
 pub fn parse_delete(input: &str) -> IResult<&str, DeleteClause<'_>> {
-    let (input, _) = tag("DELETE").parse(input)?;
-    let (input, _) = multispace0.parse(input)?;
-    let (input, _) = char('{').parse(input)?;
-    let (input, _) = multispace0.parse(input)?;
-
-    let (input, triple_blocks) =
-        separated_list1((space0, char('.'), space0), parse_triple_block).parse(input)?;
-
-    let (input, _) = multispace0.parse(input)?;
-    // Allow optional trailing dot
-    let (input, _) = opt((char('.'), multispace0)).parse(input)?;
-    let (input, _) = multispace0.parse(input)?;
-    let (input, _) = char('}').parse(input)?;
-
-    let triples = triple_blocks.into_iter().flatten().collect();
-
-    Ok((input, DeleteClause { triples }))
+    let (input, _) = sparql_keyword(input, "DELETE")?;
+    let input = sparql_keyword(input, "DATA")
+        .map(|(remaining, _)| remaining)
+        .unwrap_or(input);
+    let (remaining, quads) = sparql_quad_block(input)?;
+    if let Some(offending) =
+        sparql_quads_first_variable(&quads).or_else(|| sparql_quads_first_blank_node(&quads))
+    {
+        return sparql_error(offending, nom::error::ErrorKind::Verify);
+    }
+    Ok((remaining, DeleteClause { quads }))
 }
 
 pub fn parse_construct_clause(input: &str) -> IResult<&str, Vec<(&str, &str, &str)>> {
@@ -1078,26 +516,19 @@ pub fn parse_construct_clause(input: &str) -> IResult<&str, Vec<(&str, &str, &st
     Ok((input, conclusions))
 }
 
-// Add LIMIT parser
+// Public LIMIT primitive backed by the same parser as SELECT.
 pub fn parse_limit(input: &str) -> IResult<&str, usize> {
-    let (input, _) = multispace0.parse(input)?;
-    let (input, _) = tag("LIMIT").parse(input)?;
-    let (input, _) = space1.parse(input)?;
-    let (input, limit_str) = take_while1(|c: char| c.is_digit(10)).parse(input)?;
-    let (input, _) = multispace0.parse(input)?;
-
-    let limit = limit_str.parse::<usize>().unwrap_or(0);
-    Ok((input, limit))
+    sparql_limit_clause(input)
 }
 
 // ---------------------------------------------------------------------------
-// Strict, recursive SPARQL parser
+// Unified recursive SPARQL parser
 // ---------------------------------------------------------------------------
 
 /// Removes SPARQL whitespace and `#` comments. This is intentionally separate
 /// from `multispace0`: comments are whitespace in SPARQL and must not leak into
 /// keyword or punctuation parsing.
-fn strict_skip_ws(mut input: &str) -> &str {
+fn sparql_skip_ws(mut input: &str) -> &str {
     loop {
         let before = input.len();
         input = input.trim_start_matches(|character: char| character.is_whitespace());
@@ -1113,39 +544,39 @@ fn strict_skip_ws(mut input: &str) -> &str {
     }
 }
 
-fn strict_error<'a, T>(input: &'a str, kind: nom::error::ErrorKind) -> IResult<&'a str, T> {
+fn sparql_error<'a, T>(input: &'a str, kind: nom::error::ErrorKind) -> IResult<&'a str, T> {
     Err(nom::Err::Error(nom::error::Error::new(input, kind)))
 }
 
-fn strict_name_character(character: char) -> bool {
+fn sparql_name_character(character: char) -> bool {
     character.is_alphanumeric() || matches!(character, '_' | '-' | ':')
 }
 
 /// A case-insensitive keyword parser with a SPARQL token boundary.
-fn strict_keyword<'a>(input: &'a str, keyword: &str) -> IResult<&'a str, &'a str> {
-    let input = strict_skip_ws(input);
+fn sparql_keyword<'a>(input: &'a str, keyword: &str) -> IResult<&'a str, &'a str> {
+    let input = sparql_skip_ws(input);
     let (remaining, matched) = nom::bytes::complete::tag_no_case(keyword).parse(input)?;
-    if remaining.chars().next().is_some_and(strict_name_character) {
-        return strict_error(input, nom::error::ErrorKind::Tag);
+    if remaining.chars().next().is_some_and(sparql_name_character) {
+        return sparql_error(input, nom::error::ErrorKind::Tag);
     }
     Ok((remaining, matched))
 }
 
-fn strict_starts_keyword(input: &str, keyword: &str) -> bool {
-    strict_keyword(input, keyword).is_ok()
+fn sparql_starts_keyword(input: &str, keyword: &str) -> bool {
+    sparql_keyword(input, keyword).is_ok()
 }
 
-fn strict_char(input: &str, expected: char) -> IResult<&str, char> {
-    char(expected).parse(strict_skip_ws(input))
+fn sparql_char(input: &str, expected: char) -> IResult<&str, char> {
+    char(expected).parse(sparql_skip_ws(input))
 }
 
-fn strict_variable(input: &str) -> IResult<&str, &str> {
-    let input = strict_skip_ws(input);
+fn sparql_variable(input: &str) -> IResult<&str, &str> {
+    let input = sparql_skip_ws(input);
     let Some(sigil) = input.chars().next() else {
-        return strict_error(input, nom::error::ErrorKind::Eof);
+        return sparql_error(input, nom::error::ErrorKind::Eof);
     };
     if !matches!(sigil, '?' | '$') {
-        return strict_error(input, nom::error::ErrorKind::Char);
+        return sparql_error(input, nom::error::ErrorKind::Char);
     }
     let name_start = sigil.len_utf8();
     let mut name_end = name_start;
@@ -1157,69 +588,238 @@ fn strict_variable(input: &str) -> IResult<&str, &str> {
         }
     }
     if name_end == name_start {
-        return strict_error(input, nom::error::ErrorKind::TakeWhile1);
+        return sparql_error(input, nom::error::ErrorKind::TakeWhile1);
     }
-    Ok((&input[name_end..], &input[name_start..name_end]))
+    Ok((&input[name_end..], &input[..name_end]))
 }
 
-fn strict_iri(input: &str) -> IResult<&str, &str> {
-    let input = strict_skip_ws(input);
-    let Some(body) = input.strip_prefix('<') else {
-        return strict_error(input, nom::error::ErrorKind::Char);
+fn sparql_unicode_escape_len(input: &str) -> Option<usize> {
+    let bytes = input.as_bytes();
+    let digits = match bytes.get(1) {
+        Some(b'u') => 4,
+        Some(b'U') => 8,
+        _ => return None,
     };
-    let mut escaped = false;
-    for (offset, character) in body.char_indices() {
-        if character == '>' && !escaped {
-            let remaining_start = 1 + offset + character.len_utf8();
-            return Ok((&input[remaining_start..], &body[..offset]));
-        }
-        escaped = character == '\\' && !escaped;
-        if character != '\\' {
-            escaped = false;
-        }
+    let end = 2 + digits;
+    let hexadecimal = bytes.get(2..end)?;
+    if !hexadecimal.iter().all(u8::is_ascii_hexdigit) {
+        return None;
     }
-    strict_error(input, nom::error::ErrorKind::TakeUntil)
+    let value = u32::from_str_radix(&input[2..end], 16).ok()?;
+    char::from_u32(value)?;
+    Some(end)
 }
 
-fn strict_blank_node(input: &str) -> IResult<&str, &str> {
-    let input = strict_skip_ws(input);
+fn sparql_pn_chars_base(character: char) -> bool {
+    character.is_ascii_alphabetic()
+        || character.is_alphabetic()
+        || matches!(
+            character,
+            '\u{00C0}'..='\u{00D6}'
+                | '\u{00D8}'..='\u{00F6}'
+                | '\u{00F8}'..='\u{02FF}'
+                | '\u{0370}'..='\u{037D}'
+                | '\u{037F}'..='\u{1FFF}'
+                | '\u{200C}'..='\u{200D}'
+                | '\u{2070}'..='\u{218F}'
+                | '\u{2C00}'..='\u{2FEF}'
+                | '\u{3001}'..='\u{D7FF}'
+                | '\u{F900}'..='\u{FDCF}'
+                | '\u{FDF0}'..='\u{FFFD}'
+                | '\u{10000}'..='\u{EFFFF}'
+        )
+}
+
+fn sparql_pn_chars_u(character: char) -> bool {
+    character == '_' || sparql_pn_chars_base(character)
+}
+
+fn sparql_pn_chars(character: char) -> bool {
+    sparql_pn_chars_u(character)
+        || character.is_ascii_digit()
+        || matches!(
+            character,
+            '-' | '\u{00B7}' | '\u{0300}'..='\u{036F}' | '\u{203F}'..='\u{2040}'
+        )
+}
+
+fn sparql_invalid_pn_prefix(prefix: &str) -> Option<&str> {
+    let Some(first) = prefix.chars().next() else {
+        return None;
+    };
+    if !sparql_pn_chars_base(first) {
+        return Some(prefix);
+    }
+
+    let mut previous_was_dot = false;
+    for (offset, character) in prefix[first.len_utf8()..].char_indices() {
+        if character == '.' {
+            previous_was_dot = true;
+        } else if sparql_pn_chars(character) {
+            previous_was_dot = false;
+        } else {
+            return Some(&prefix[first.len_utf8() + offset..]);
+        }
+    }
+    previous_was_dot.then(|| &prefix[prefix.len() - 1..])
+}
+
+fn sparql_iri(input: &str) -> IResult<&str, &str> {
+    let input = sparql_skip_ws(input);
+    if !input.starts_with('<') {
+        return sparql_error(input, nom::error::ErrorKind::Char);
+    }
+
+    let mut index = 1;
+    while index < input.len() {
+        let tail = &input[index..];
+        if tail.starts_with('>') {
+            let end = index + 1;
+            return Ok((&input[end..], &input[..end]));
+        }
+        if tail.starts_with('\\') {
+            let Some(escape_len) = sparql_unicode_escape_len(tail) else {
+                return sparql_error(tail, nom::error::ErrorKind::Escaped);
+            };
+            index += escape_len;
+            continue;
+        }
+
+        let character = tail.chars().next().expect("valid UTF-8 boundary");
+        if character <= '\u{20}' || matches!(character, '<' | '"' | '{' | '}' | '|' | '^' | '`') {
+            return sparql_error(tail, nom::error::ErrorKind::Verify);
+        }
+        index += character.len_utf8();
+    }
+
+    sparql_error(input, nom::error::ErrorKind::TakeUntil)
+}
+
+fn sparql_blank_node(input: &str) -> IResult<&str, &str> {
+    let input = sparql_skip_ws(input);
     let Some(body) = input.strip_prefix("_:") else {
-        return strict_error(input, nom::error::ErrorKind::Tag);
+        return sparql_error(input, nom::error::ErrorKind::Tag);
     };
-    let mut end = 0;
-    for (offset, character) in body.char_indices() {
-        if character.is_alphanumeric() || matches!(character, '_' | '-') {
-            end = offset + character.len_utf8();
+    let Some(first) = body.chars().next() else {
+        return sparql_error(input, nom::error::ErrorKind::TakeWhile1);
+    };
+    if !(sparql_pn_chars_u(first) || first.is_ascii_digit()) {
+        return sparql_error(body, nom::error::ErrorKind::Verify);
+    }
+
+    let mut index = first.len_utf8();
+    let mut token_end = index;
+    while index < body.len() {
+        let character = body[index..].chars().next().expect("valid UTF-8 boundary");
+        if sparql_pn_chars(character) {
+            index += character.len_utf8();
+            token_end = index;
+        } else if character == '.' {
+            index += 1;
         } else {
             break;
         }
     }
-    if end == 0 {
-        return strict_error(input, nom::error::ErrorKind::TakeWhile1);
-    }
-    Ok((&body[end..], &body[..end]))
+
+    Ok((&body[token_end..], &input[..2 + token_end]))
 }
 
-fn strict_prefixed_name(input: &str) -> IResult<&str, &str> {
-    let input = strict_skip_ws(input);
-    let mut end = 0;
-    for (offset, character) in input.char_indices() {
-        if character.is_whitespace()
-            || matches!(character, '{' | '}' | '(' | ')' | ';' | ',' | '.' | '#')
-        {
-            break;
+fn sparql_prefixed_name(input: &str) -> IResult<&str, &str> {
+    let input = sparql_skip_ws(input);
+    let Some(colon) = input.find(':') else {
+        return sparql_error(input, nom::error::ErrorKind::Verify);
+    };
+    let prefix = &input[..colon];
+    if let Some(offending) = sparql_invalid_pn_prefix(prefix) {
+        return sparql_error(offending, nom::error::ErrorKind::Verify);
+    }
+
+    let local = &input[colon + 1..];
+    let mut index = 0usize;
+    let mut token_end = 0usize;
+    let mut first = true;
+    while index < local.len() {
+        let tail = &local[index..];
+        let character = tail.chars().next().expect("valid UTF-8 boundary");
+        let ordinary = if first {
+            sparql_pn_chars_u(character) || character.is_ascii_digit() || character == ':'
+        } else {
+            sparql_pn_chars(character) || character == ':'
+        };
+        if ordinary {
+            index += character.len_utf8();
+            token_end = index;
+            first = false;
+            continue;
         }
-        end = offset + character.len_utf8();
+        if character == '.' {
+            if first {
+                break;
+            }
+            index += 1;
+            continue;
+        }
+        if character == '%' {
+            let escape = tail.as_bytes();
+            if escape.len() < 3 || !escape[1].is_ascii_hexdigit() || !escape[2].is_ascii_hexdigit()
+            {
+                return sparql_error(tail, nom::error::ErrorKind::Escaped);
+            }
+            index += 3;
+            token_end = index;
+            first = false;
+            continue;
+        }
+        if character == '\\' {
+            let Some(escaped) = tail[1..].chars().next() else {
+                return sparql_error(tail, nom::error::ErrorKind::Escaped);
+            };
+            if !matches!(
+                escaped,
+                '_' | '~'
+                    | '.'
+                    | '-'
+                    | '!'
+                    | '$'
+                    | '&'
+                    | '\''
+                    | '('
+                    | ')'
+                    | '*'
+                    | '+'
+                    | ','
+                    | ';'
+                    | '='
+                    | '/'
+                    | '?'
+                    | '#'
+                    | '@'
+                    | '%'
+            ) {
+                return sparql_error(tail, nom::error::ErrorKind::Escaped);
+            }
+            index += 1 + escaped.len_utf8();
+            token_end = index;
+            first = false;
+            continue;
+        }
+        break;
     }
-    let token = &input[..end];
-    if token.is_empty() || !token.contains(':') || token.starts_with("_:") {
-        return strict_error(input, nom::error::ErrorKind::Verify);
-    }
-    Ok((&input[end..], token))
+
+    let token_end = colon + 1 + token_end;
+    Ok((&input[token_end..], &input[..token_end]))
 }
 
-fn strict_numeric_literal(input: &str) -> IResult<&str, &str> {
-    let input = strict_skip_ws(input);
+// Kolibrie's established SELECT/ML fragment also accepts bare symbolic RDF
+// values (for example a neural class label such as `A`). Keep that lexical
+// compatibility in the unified parser without treating reserved keywords as
+// part of a longer token.
+fn sparql_bare_identifier(input: &str) -> IResult<&str, &str> {
+    identifier(sparql_skip_ws(input))
+}
+
+fn sparql_numeric_literal(input: &str) -> IResult<&str, &str> {
+    let input = sparql_skip_ws(input);
     let bytes = input.as_bytes();
     let mut index = usize::from(matches!(bytes.first(), Some(b'+') | Some(b'-')));
     let integer_start = index;
@@ -1237,7 +837,7 @@ fn strict_numeric_literal(input: &str) -> IResult<&str, &str> {
         fractional_digits = index - fraction_start;
     }
     if integer_digits == 0 && fractional_digits == 0 {
-        return strict_error(input, nom::error::ErrorKind::Digit);
+        return sparql_error(input, nom::error::ErrorKind::Digit);
     }
     if matches!(bytes.get(index), Some(b'e') | Some(b'E')) {
         let exponent_marker = index;
@@ -1258,19 +858,19 @@ fn strict_numeric_literal(input: &str) -> IResult<&str, &str> {
         .next()
         .is_some_and(|character| character.is_alphabetic() || character == '_')
     {
-        return strict_error(input, nom::error::ErrorKind::Verify);
+        return sparql_error(input, nom::error::ErrorKind::Verify);
     }
     Ok((&input[index..], &input[..index]))
 }
 
-fn strict_quoted_literal(input: &str) -> IResult<&str, &str> {
-    let input = strict_skip_ws(input);
+fn sparql_quoted_literal(input: &str) -> IResult<&str, &str> {
+    let input = sparql_skip_ws(input);
     let Some(quote) = input
         .chars()
         .next()
         .filter(|quote| matches!(quote, '\'' | '"'))
     else {
-        return strict_error(input, nom::error::ErrorKind::Char);
+        return sparql_error(input, nom::error::ErrorKind::Char);
     };
     let triple_quoted = input.starts_with(&quote.to_string().repeat(3));
     let delimiter_len = if triple_quoted { 3 } else { 1 };
@@ -1286,207 +886,174 @@ fn strict_quoted_literal(input: &str) -> IResult<&str, &str> {
         "'"
     };
 
-    let mut escaped = false;
     let mut close_end = None;
     let mut index = delimiter_len;
     while index < input.len() {
-        if !escaped && input[index..].starts_with(delimiter) {
+        if input[index..].starts_with(delimiter) {
             close_end = Some(index + delimiter_len);
             break;
         }
         let character = input[index..].chars().next().expect("valid UTF-8 boundary");
-        if !triple_quoted && matches!(character, '\r' | '\n') && !escaped {
-            return strict_error(&input[index..], nom::error::ErrorKind::Escaped);
+        if !triple_quoted && matches!(character, '\r' | '\n') {
+            return sparql_error(&input[index..], nom::error::ErrorKind::Escaped);
         }
-        if character == '\\' && !escaped {
-            escaped = true;
-        } else {
-            escaped = false;
+        if character == '\\' {
+            let escape = &input[index + 1..];
+            let Some(escaped) = escape.chars().next() else {
+                return sparql_error(&input[index..], nom::error::ErrorKind::Escaped);
+            };
+            let escape_len = match escaped {
+                't' | 'b' | 'n' | 'r' | 'f' | '"' | '\'' | '\\' => escaped.len_utf8(),
+                'u' | 'U' => {
+                    let digits = if escaped == 'u' { 4 } else { 8 };
+                    let hexadecimal = &escape[escaped.len_utf8()..];
+                    if hexadecimal.len() < digits
+                        || !hexadecimal.as_bytes()[..digits]
+                            .iter()
+                            .all(u8::is_ascii_hexdigit)
+                    {
+                        return sparql_error(&input[index..], nom::error::ErrorKind::Escaped);
+                    }
+                    let value = u32::from_str_radix(&hexadecimal[..digits], 16)
+                        .expect("validated hexadecimal escape");
+                    if char::from_u32(value).is_none() {
+                        return sparql_error(&input[index..], nom::error::ErrorKind::Escaped);
+                    }
+                    escaped.len_utf8() + digits
+                }
+                _ => return sparql_error(&input[index..], nom::error::ErrorKind::Escaped),
+            };
+            index += 1 + escape_len;
+            continue;
         }
         index += character.len_utf8();
     }
     let Some(mut literal_end) = close_end else {
-        return strict_error(input, nom::error::ErrorKind::Escaped);
+        return sparql_error(input, nom::error::ErrorKind::Escaped);
     };
 
     let suffix = &input[literal_end..];
     if let Some(language) = suffix.strip_prefix('@') {
-        let mut language_end = 0;
-        for (offset, character) in language.char_indices() {
-            if character.is_ascii_alphanumeric() || character == '-' {
-                language_end = offset + character.len_utf8();
-            } else {
-                break;
-            }
+        let primary_end = language.bytes().take_while(u8::is_ascii_alphabetic).count();
+        if primary_end == 0 {
+            return sparql_error(suffix, nom::error::ErrorKind::Verify);
         }
-        if language_end == 0 {
-            return strict_error(suffix, nom::error::ErrorKind::Verify);
+        let mut language_end = primary_end;
+        while language.as_bytes().get(language_end) == Some(&b'-') {
+            let subtag_start = language_end + 1;
+            let subtag_len = language[subtag_start..]
+                .bytes()
+                .take_while(u8::is_ascii_alphanumeric)
+                .count();
+            if subtag_len == 0 {
+                return sparql_error(suffix, nom::error::ErrorKind::Verify);
+            }
+            language_end = subtag_start + subtag_len;
+        }
+        if language[language_end..]
+            .chars()
+            .next()
+            .is_some_and(|character| {
+                character.is_ascii_alphanumeric() || matches!(character, '-' | '_')
+            })
+        {
+            return sparql_error(suffix, nom::error::ErrorKind::Verify);
         }
         literal_end += 1 + language_end;
     } else if let Some(datatype) = suffix.strip_prefix("^^") {
-        let datatype = strict_skip_ws(datatype);
-        let (remaining, _) = strict_iri(datatype).or_else(|_| strict_prefixed_name(datatype))?;
+        let datatype = sparql_skip_ws(datatype);
+        let (remaining, _) = sparql_iri(datatype).or_else(|_| sparql_prefixed_name(datatype))?;
         literal_end = input.len() - remaining.len();
     }
 
     Ok((&input[literal_end..], &input[..literal_end]))
 }
 
-/// Scans an RDF-star quoted triple while respecting nested quoted triples,
-/// string escapes, and IRIs. The existing RDF-star parser remains untouched.
-fn strict_quoted_triple(input: &str) -> IResult<&str, &str> {
-    let input = strict_skip_ws(input);
-    if !input.starts_with("<<") {
-        return strict_error(input, nom::error::ErrorKind::Tag);
-    }
-    let mut depth = 0usize;
-    let mut index = 0usize;
-    let mut quote = None;
-    let mut in_iri = false;
-    let mut escaped = false;
-    while index < input.len() {
-        let tail = &input[index..];
-        let character = tail.chars().next().expect("valid UTF-8 boundary");
-        if let Some(active_quote) = quote {
-            if character == active_quote && !escaped {
-                quote = None;
-            }
-            if character == '\\' && !escaped {
-                escaped = true;
-            } else {
-                escaped = false;
-            }
-            index += character.len_utf8();
-            continue;
-        }
-        if in_iri {
-            if character == '>' && !escaped {
-                in_iri = false;
-            }
-            if character == '\\' && !escaped {
-                escaped = true;
-            } else {
-                escaped = false;
-            }
-            index += character.len_utf8();
-            continue;
-        }
-        if matches!(character, '\'' | '"') {
-            quote = Some(character);
-            index += character.len_utf8();
-        } else if character == '<' && !tail.starts_with("<<") {
-            in_iri = true;
-            index += 1;
-        } else if tail.starts_with("<<") {
-            depth += 1;
-            index += 2;
-        } else if tail.starts_with(">>") {
-            if depth == 0 {
-                return strict_error(tail, nom::error::ErrorKind::Verify);
-            }
-            depth -= 1;
-            index += 2;
-            if depth == 0 {
-                return Ok((&input[index..], &input[..index]));
-            }
-        } else {
-            index += character.len_utf8();
-        }
-    }
-    strict_error(input, nom::error::ErrorKind::TakeUntil)
+fn sparql_quoted_triple_parts(input: &str) -> IResult<&str, LexicalTriplePattern<'_>> {
+    let input = sparql_skip_ws(input);
+    let Some(input) = input.strip_prefix("<<") else {
+        return sparql_error(input, nom::error::ErrorKind::Tag);
+    };
+    let (input, subject) = sparql_subject_term(input)?;
+    let (input, predicate) = sparql_predicate_term(input)?;
+    let (input, object) = sparql_object_term(input)?;
+    let input = sparql_skip_ws(input);
+    let Some(remaining) = input.strip_prefix(">>") else {
+        return sparql_error(input, nom::error::ErrorKind::Tag);
+    };
+    Ok((remaining, (subject, predicate, object)))
 }
 
-fn strict_subject_term(input: &str) -> IResult<&str, SparqlTerm<'_>> {
-    if let Ok((remaining, value)) = strict_quoted_triple(input) {
-        return Ok((remaining, SparqlTerm::QuotedTriple(value)));
-    }
-    if let Ok((remaining, value)) = strict_variable(input) {
-        return Ok((remaining, SparqlTerm::Variable(value)));
-    }
-    if let Ok((remaining, value)) = strict_iri(input) {
-        return Ok((remaining, SparqlTerm::Iri(value)));
-    }
-    if let Ok((remaining, value)) = strict_blank_node(input) {
-        return Ok((remaining, SparqlTerm::BlankNode(value)));
-    }
-    strict_prefixed_name(input)
-        .map(|(remaining, value)| (remaining, SparqlTerm::PrefixedName(value)))
+/// Parses an RDF-star quoted triple recursively and returns its complete raw
+/// source slice. Each nested triple is validated with the same term parsers.
+fn sparql_quoted_triple(input: &str) -> IResult<&str, &str> {
+    let input = sparql_skip_ws(input);
+    let (remaining, _) = sparql_quoted_triple_parts(input)?;
+    let consumed = input.len() - remaining.len();
+    Ok((remaining, &input[..consumed]))
 }
 
-fn strict_predicate_term(input: &str) -> IResult<&str, SparqlTerm<'_>> {
-    if let Ok((remaining, value)) = strict_variable(input) {
-        return Ok((remaining, SparqlTerm::Variable(value)));
+fn sparql_subject_term(input: &str) -> IResult<&str, &str> {
+    alt((
+        sparql_quoted_triple,
+        sparql_variable,
+        sparql_iri,
+        sparql_blank_node,
+        sparql_prefixed_name,
+        sparql_bare_identifier,
+    ))
+    .parse(input)
+}
+
+fn sparql_predicate_term(input: &str) -> IResult<&str, &str> {
+    if let Ok(parsed) = sparql_variable(input) {
+        return Ok(parsed);
     }
-    if let Ok((remaining, value)) = strict_iri(input) {
-        return Ok((remaining, SparqlTerm::Iri(value)));
+    if let Ok(parsed) = sparql_iri(input) {
+        return Ok(parsed);
     }
-    let input_without_ws = strict_skip_ws(input);
+    let input_without_ws = sparql_skip_ws(input);
     if let Some(remaining) = input_without_ws.strip_prefix('a') {
-        if !remaining.chars().next().is_some_and(strict_name_character) {
-            return Ok((remaining, SparqlTerm::A));
+        if !remaining.chars().next().is_some_and(sparql_name_character) {
+            return Ok((remaining, &input_without_ws[..1]));
         }
     }
-    strict_prefixed_name(input)
-        .map(|(remaining, value)| (remaining, SparqlTerm::PrefixedName(value)))
+    sparql_prefixed_name(input)
 }
 
-fn strict_object_term(input: &str) -> IResult<&str, SparqlTerm<'_>> {
-    if let Ok((remaining, value)) = strict_quoted_triple(input) {
-        return Ok((remaining, SparqlTerm::QuotedTriple(value)));
-    }
-    if let Ok((remaining, value)) = strict_variable(input) {
-        return Ok((remaining, SparqlTerm::Variable(value)));
-    }
-    if let Ok((remaining, value)) = strict_iri(input) {
-        return Ok((remaining, SparqlTerm::Iri(value)));
-    }
-    if let Ok((remaining, value)) = strict_blank_node(input) {
-        return Ok((remaining, SparqlTerm::BlankNode(value)));
-    }
-    if let Ok((remaining, value)) = strict_quoted_literal(input) {
-        return Ok((remaining, SparqlTerm::Literal(value)));
-    }
-    if let Ok((remaining, value)) = strict_numeric_literal(input) {
-        return Ok((remaining, SparqlTerm::Literal(value)));
-    }
-    if let Ok((remaining, value)) = strict_keyword(input, "true") {
-        return Ok((remaining, SparqlTerm::Literal(value)));
-    }
-    if let Ok((remaining, value)) = strict_keyword(input, "false") {
-        return Ok((remaining, SparqlTerm::Literal(value)));
-    }
-    strict_prefixed_name(input)
-        .map(|(remaining, value)| (remaining, SparqlTerm::PrefixedName(value)))
+fn sparql_object_term(input: &str) -> IResult<&str, &str> {
+    alt((
+        sparql_quoted_triple,
+        sparql_variable,
+        sparql_iri,
+        sparql_blank_node,
+        sparql_quoted_literal,
+        sparql_numeric_literal,
+        |input| sparql_keyword(input, "true"),
+        |input| sparql_keyword(input, "false"),
+        sparql_prefixed_name,
+        sparql_bare_identifier,
+    ))
+    .parse(input)
 }
 
-fn strict_graph_name(input: &str) -> IResult<&str, SparqlGraphName<'_>> {
-    if let Ok((remaining, value)) = strict_variable(input) {
-        return Ok((remaining, SparqlGraphName::Variable(value)));
-    }
-    if let Ok((remaining, value)) = strict_iri(input) {
-        return Ok((remaining, SparqlGraphName::Iri(value)));
-    }
-    strict_prefixed_name(input)
-        .map(|(remaining, value)| (remaining, SparqlGraphName::PrefixedName(value)))
+fn sparql_graph_name(input: &str) -> IResult<&str, &str> {
+    alt((sparql_variable, sparql_iri, sparql_prefixed_name)).parse(input)
 }
 
 /// Parses one triples-same-subject statement and expands `;` and `,`
 /// abbreviations into ordinary triple patterns.
-fn strict_triples_statement(input: &str) -> IResult<&str, Vec<SparqlTriplePattern<'_>>> {
-    let (mut input, subject) = strict_subject_term(input)?;
+fn sparql_triples_statement(input: &str) -> IResult<&str, Vec<LexicalTriplePattern<'_>>> {
+    let (mut input, subject) = sparql_subject_term(input)?;
     let mut triples = Vec::new();
     loop {
-        let (after_predicate, predicate) = strict_predicate_term(input)?;
+        let (after_predicate, predicate) = sparql_predicate_term(input)?;
         input = after_predicate;
         loop {
-            let (after_object, object) = strict_object_term(input)?;
-            triples.push(SparqlTriplePattern {
-                subject: subject.clone(),
-                predicate: predicate.clone(),
-                object,
-            });
+            let (after_object, object) = sparql_object_term(input)?;
+            triples.push((subject, predicate, object));
             input = after_object;
-            let after_ws = strict_skip_ws(input);
+            let after_ws = sparql_skip_ws(input);
             if let Some(after_comma) = after_ws.strip_prefix(',') {
                 input = after_comma;
             } else {
@@ -1494,15 +1061,15 @@ fn strict_triples_statement(input: &str) -> IResult<&str, Vec<SparqlTriplePatter
             }
         }
 
-        let after_ws = strict_skip_ws(input);
+        let after_ws = sparql_skip_ws(input);
         let Some(after_semicolon) = after_ws.strip_prefix(';') else {
             break;
         };
-        let after_semicolon = strict_skip_ws(after_semicolon);
+        let after_semicolon = sparql_skip_ws(after_semicolon);
         if after_semicolon.is_empty()
             || after_semicolon.starts_with(['.', '}'])
-            || strict_starts_keyword(after_semicolon, "GRAPH")
-            || strict_starts_keyword(after_semicolon, "UNION")
+            || sparql_starts_keyword(after_semicolon, "GRAPH")
+            || sparql_starts_keyword(after_semicolon, "UNION")
         {
             input = after_semicolon;
             break;
@@ -1512,9 +1079,333 @@ fn strict_triples_statement(input: &str) -> IResult<&str, Vec<SparqlTriplePatter
     Ok((input, triples))
 }
 
-fn strict_group_primary(input: &str) -> IResult<&str, GroupGraphPattern<'_>> {
-    if let Ok((after_graph, _)) = strict_keyword(input, "GRAPH") {
-        let (after_name, name) = strict_graph_name(after_graph)?;
+fn sparql_filter_operand(input: &str) -> IResult<&str, ArithmeticExpression<'_>> {
+    let input = sparql_skip_ws(input);
+    if let Some(after_open) = input.strip_prefix('(') {
+        let (after_expression, expression) = sparql_filter_arithmetic(after_open)?;
+        let (remaining, _) = sparql_char(after_expression, ')')?;
+        return Ok((remaining, expression));
+    }
+
+    alt((
+        sparql_variable,
+        sparql_quoted_literal,
+        sparql_numeric_literal,
+        sparql_iri,
+        |input| sparql_keyword(input, "true"),
+        |input| sparql_keyword(input, "false"),
+        sparql_prefixed_name,
+    ))
+    .parse(input)
+    .map(|(remaining, operand)| (remaining, ArithmeticExpression::Operand(operand)))
+}
+
+fn sparql_filter_product(input: &str) -> IResult<&str, ArithmeticExpression<'_>> {
+    let (mut input, mut expression) = sparql_filter_operand(input)?;
+    loop {
+        let operator_input = sparql_skip_ws(input);
+        let Some(operator) = operator_input
+            .chars()
+            .next()
+            .filter(|operator| matches!(operator, '*' | '/'))
+        else {
+            break;
+        };
+        let (remaining, right) = sparql_filter_operand(&operator_input[operator.len_utf8()..])?;
+        expression = if operator == '*' {
+            ArithmeticExpression::Multiply(Box::new(expression), Box::new(right))
+        } else {
+            ArithmeticExpression::Divide(Box::new(expression), Box::new(right))
+        };
+        input = remaining;
+    }
+    Ok((input, expression))
+}
+
+fn sparql_filter_arithmetic(input: &str) -> IResult<&str, ArithmeticExpression<'_>> {
+    let (mut input, mut expression) = sparql_filter_product(input)?;
+    loop {
+        let operator_input = sparql_skip_ws(input);
+        let Some(operator) = operator_input
+            .chars()
+            .next()
+            .filter(|operator| matches!(operator, '+' | '-'))
+        else {
+            break;
+        };
+        let (remaining, right) = sparql_filter_product(&operator_input[operator.len_utf8()..])?;
+        expression = if operator == '+' {
+            ArithmeticExpression::Add(Box::new(expression), Box::new(right))
+        } else {
+            ArithmeticExpression::Subtract(Box::new(expression), Box::new(right))
+        };
+        input = remaining;
+    }
+    Ok((input, expression))
+}
+
+fn sparql_filter_operator(input: &str) -> IResult<&str, &str> {
+    let input = sparql_skip_ws(input);
+    for operator in ["!=", ">=", "<=", "=", ">", "<"] {
+        if let Some(remaining) = input.strip_prefix(operator) {
+            return Ok((remaining, &input[..operator.len()]));
+        }
+    }
+    sparql_error(input, nom::error::ErrorKind::Tag)
+}
+
+fn sparql_filter_comparison(input: &str) -> IResult<&str, FilterExpression<'_>> {
+    let left_start = sparql_skip_ws(input);
+    let (after_left, _) = sparql_filter_arithmetic(left_start)?;
+    let left_end = left_start.len() - after_left.len();
+    let left = left_start[..left_end].trim();
+    let (after_operator, operator) = sparql_filter_operator(after_left)?;
+    let right_start = sparql_skip_ws(after_operator);
+    let (remaining, _) = sparql_filter_arithmetic(right_start)?;
+    let right_end = right_start.len() - remaining.len();
+    let right = right_start[..right_end].trim();
+    Ok((
+        remaining,
+        FilterExpression::Comparison(left, operator, right),
+    ))
+}
+
+fn sparql_filter_function(input: &str) -> IResult<&str, FilterExpression<'_>> {
+    let input = sparql_skip_ws(input);
+    let (input, function_name) = if let Ok((remaining, _)) = sparql_keyword(input, "isTRIPLE") {
+        (remaining, "isTRIPLE")
+    } else if let Ok((remaining, _)) = sparql_keyword(input, "TRIPLE") {
+        (remaining, "TRIPLE")
+    } else if let Ok((remaining, _)) = sparql_keyword(input, "SUBJECT") {
+        (remaining, "SUBJECT")
+    } else if let Ok((remaining, _)) = sparql_keyword(input, "PREDICATE") {
+        (remaining, "PREDICATE")
+    } else if let Ok((remaining, _)) = sparql_keyword(input, "OBJECT") {
+        (remaining, "OBJECT")
+    } else {
+        return sparql_error(input, nom::error::ErrorKind::Alt);
+    };
+    let (mut input, _) = sparql_char(input, '(')?;
+    let mut arguments = Vec::new();
+    loop {
+        let (remaining, argument) = alt((
+            sparql_quoted_triple,
+            sparql_variable,
+            sparql_quoted_literal,
+            sparql_numeric_literal,
+            sparql_iri,
+            sparql_prefixed_name,
+        ))
+        .parse(input)?;
+        arguments.push(argument);
+        input = sparql_skip_ws(remaining);
+        if let Some(remaining) = input.strip_prefix(',') {
+            input = remaining;
+        } else {
+            break;
+        }
+    }
+    let (input, _) = sparql_char(input, ')')?;
+    Ok((
+        input,
+        FilterExpression::FunctionCall(function_name, arguments),
+    ))
+}
+
+fn sparql_filter_atom(input: &str) -> IResult<&str, FilterExpression<'_>> {
+    let input = sparql_skip_ws(input);
+    if let Some(after_not) = input.strip_prefix('!') {
+        if !after_not.starts_with('=') {
+            let (remaining, expression) = sparql_filter_atom(after_not)?;
+            return Ok((remaining, FilterExpression::Not(Box::new(expression))));
+        }
+    }
+    if let Ok(parsed) = sparql_filter_function(input) {
+        return Ok(parsed);
+    }
+    if let Ok(parsed) = sparql_filter_comparison(input) {
+        return Ok(parsed);
+    }
+    if let Some(after_open) = input.strip_prefix('(') {
+        let (after_expression, expression) = sparql_filter_or(after_open)?;
+        let (remaining, _) = sparql_char(after_expression, ')')?;
+        return Ok((remaining, expression));
+    }
+    sparql_filter_arithmetic(input).map(|(remaining, expression)| {
+        (
+            remaining,
+            FilterExpression::ArithmeticExpr(Box::new(expression)),
+        )
+    })
+}
+
+fn sparql_filter_and(input: &str) -> IResult<&str, FilterExpression<'_>> {
+    let (mut input, mut expression) = sparql_filter_atom(input)?;
+    loop {
+        let operator_input = sparql_skip_ws(input);
+        let Some(remaining) = operator_input.strip_prefix("&&") else {
+            break;
+        };
+        let (after_right, right) = sparql_filter_atom(remaining)?;
+        expression = FilterExpression::And(Box::new(expression), Box::new(right));
+        input = after_right;
+    }
+    Ok((input, expression))
+}
+
+fn sparql_filter_or(input: &str) -> IResult<&str, FilterExpression<'_>> {
+    let (mut input, mut expression) = sparql_filter_and(input)?;
+    loop {
+        let operator_input = sparql_skip_ws(input);
+        let Some(remaining) = operator_input.strip_prefix("||") else {
+            break;
+        };
+        let (after_right, right) = sparql_filter_and(remaining)?;
+        expression = FilterExpression::Or(Box::new(expression), Box::new(right));
+        input = after_right;
+    }
+    Ok((input, expression))
+}
+
+fn sparql_filter_clause(input: &str) -> IResult<&str, FilterExpression<'_>> {
+    let (input, _) = sparql_keyword(input, "FILTER")?;
+    let (input, _) = sparql_char(input, '(')?;
+    let (input, expression) = sparql_filter_or(input)?;
+    let (input, _) = sparql_char(input, ')')?;
+    Ok((input, expression))
+}
+
+fn sparql_bind_argument(input: &str) -> IResult<&str, &str> {
+    if let Ok(parsed) = sparql_variable(input) {
+        return Ok(parsed);
+    }
+    if let Ok((remaining, literal)) = sparql_quoted_literal(input) {
+        // Preserve the historical BIND representation: simple quoted
+        // arguments omit their surrounding quotes.
+        if (literal.starts_with('"') && literal.ends_with('"'))
+            || (literal.starts_with('\'') && literal.ends_with('\''))
+        {
+            return Ok((remaining, &literal[1..literal.len() - 1]));
+        }
+        return Ok((remaining, literal));
+    }
+    sparql_numeric_literal(input)
+}
+
+fn sparql_bind_clause(input: &str) -> IResult<&str, BindClause<'_>> {
+    let (input, _) = sparql_keyword(input, "BIND")?;
+    let (input, _) = sparql_char(input, '(')?;
+    let input = sparql_skip_ws(input);
+    let (input, function_name) = identifier(input)?;
+    let function_name = if function_name.eq_ignore_ascii_case("concat") {
+        "CONCAT"
+    } else {
+        function_name
+    };
+    let (mut input, _) = sparql_char(input, '(')?;
+    let mut arguments = Vec::new();
+    loop {
+        let (remaining, argument) = sparql_bind_argument(input)?;
+        arguments.push(argument);
+        input = sparql_skip_ws(remaining);
+        if let Some(remaining) = input.strip_prefix(',') {
+            input = remaining;
+        } else {
+            break;
+        }
+    }
+    let (input, _) = sparql_char(input, ')')?;
+    let (input, _) = sparql_keyword(input, "AS")?;
+    let (input, variable) = sparql_variable(input)?;
+    let (input, _) = sparql_char(input, ')')?;
+    Ok((input, (function_name, arguments, variable)))
+}
+
+fn sparql_value(input: &str) -> IResult<&str, Value> {
+    if let Ok((remaining, _)) = sparql_keyword(input, "UNDEF") {
+        return Ok((remaining, Value::Undef));
+    }
+    alt((
+        sparql_iri,
+        sparql_quoted_literal,
+        sparql_numeric_literal,
+        |input| sparql_keyword(input, "true"),
+        |input| sparql_keyword(input, "false"),
+        sparql_prefixed_name,
+    ))
+    .parse(input)
+    .map(|(remaining, value)| (remaining, Value::Term(value.to_string())))
+}
+
+fn sparql_values_clause(input: &str) -> IResult<&str, ValuesClause<'_>> {
+    let (mut input, _) = sparql_keyword(input, "VALUES")?;
+    let mut variables = Vec::new();
+    if let Ok((after_open, _)) = sparql_char(input, '(') {
+        input = after_open;
+        loop {
+            input = sparql_skip_ws(input);
+            if let Some(remaining) = input.strip_prefix(')') {
+                input = remaining;
+                break;
+            }
+            let (remaining, variable) = sparql_variable(input)?;
+            variables.push(variable);
+            input = remaining;
+        }
+    } else {
+        let (remaining, variable) = sparql_variable(input)?;
+        variables.push(variable);
+        input = remaining;
+    }
+    if variables.is_empty() {
+        return sparql_error(input, nom::error::ErrorKind::Many1);
+    }
+
+    let (mut input, _) = sparql_char(input, '{')?;
+    let mut values = Vec::new();
+    loop {
+        input = sparql_skip_ws(input);
+        if let Some(remaining) = input.strip_prefix('}') {
+            input = remaining;
+            break;
+        }
+        let mut row = Vec::new();
+        if variables.len() == 1 {
+            let (remaining, value) = sparql_value(input)?;
+            row.push(value);
+            input = remaining;
+        } else {
+            let (mut row_input, _) = sparql_char(input, '(')?;
+            loop {
+                row_input = sparql_skip_ws(row_input);
+                if let Some(remaining) = row_input.strip_prefix(')') {
+                    row_input = remaining;
+                    break;
+                }
+                let (remaining, value) = sparql_value(row_input)?;
+                row.push(value);
+                row_input = remaining;
+            }
+            input = row_input;
+        }
+        if row.len() != variables.len() {
+            return sparql_error(input, nom::error::ErrorKind::Verify);
+        }
+        values.push(row);
+    }
+    Ok((input, ValuesClause { variables, values }))
+}
+
+fn sparql_subquery(input: &str) -> IResult<&str, SubQuery<'_>> {
+    let (input, _) = sparql_char(input, '{')?;
+    let (input, query) = sparql_select_core(input, false)?;
+    let (input, _) = sparql_char(input, '}')?;
+    Ok((input, SubQuery { query }))
+}
+
+fn sparql_group_primary(input: &str) -> IResult<&str, GroupGraphPattern<'_>> {
+    if let Ok((after_graph, _)) = sparql_keyword(input, "GRAPH") {
+        let (after_name, name) = sparql_graph_name(after_graph)?;
         let (remaining, pattern) = parse_group_graph_pattern(after_name)?;
         return Ok((
             remaining,
@@ -1524,33 +1415,62 @@ fn strict_group_primary(input: &str) -> IResult<&str, GroupGraphPattern<'_>> {
             },
         ));
     }
-    if strict_skip_ws(input).starts_with('{') {
+    if sparql_skip_ws(input).starts_with('{') {
+        let after_open = sparql_skip_ws(&sparql_skip_ws(input)[1..]);
+        if sparql_starts_keyword(after_open, "SELECT") {
+            return sparql_subquery(input).map(|(remaining, subquery)| {
+                (remaining, GroupGraphPattern::SubQuery(Box::new(subquery)))
+            });
+        }
         return parse_group_graph_pattern(input);
     }
-    strict_triples_statement(input)
+    sparql_triples_statement(input)
         .map(|(remaining, triples)| (remaining, GroupGraphPattern::Bgp(triples)))
 }
 
 /// Parses a recursive group graph pattern containing BGP, GRAPH, and UNION.
 pub fn parse_group_graph_pattern(input: &str) -> IResult<&str, GroupGraphPattern<'_>> {
-    let (mut input, _) = strict_char(input, '{')?;
+    let (mut input, _) = sparql_char(input, '{')?;
     let mut joined = Vec::new();
     loop {
-        input = strict_skip_ws(input);
+        input = sparql_skip_ws(input);
         if let Some(remaining) = input.strip_prefix('}') {
             let pattern = match joined.len() {
-                0 => GroupGraphPattern::Empty,
+                0 => GroupGraphPattern::Unit,
                 1 => joined.pop().expect("one graph pattern"),
                 _ => GroupGraphPattern::Join(joined),
             };
             return Ok((remaining, pattern));
         }
 
-        let (after_first, first) = strict_group_primary(input)?;
+        if sparql_starts_keyword(input, "FILTER") {
+            let (remaining, filter) = sparql_filter_clause(input)?;
+            joined.push(GroupGraphPattern::Filter(filter));
+            input = remaining;
+            continue;
+        }
+        if sparql_starts_keyword(input, "BIND") {
+            let (remaining, bind) = sparql_bind_clause(input)?;
+            joined.push(GroupGraphPattern::Bind(bind));
+            input = remaining;
+            continue;
+        }
+        if sparql_starts_keyword(input, "VALUES") {
+            let (remaining, values) = sparql_values_clause(input)?;
+            joined.push(GroupGraphPattern::Values(values));
+            input = remaining;
+            continue;
+        }
+
+        let first_is_braced = sparql_skip_ws(input).starts_with('{');
+        let (after_first, first) = sparql_group_primary(input)?;
         input = after_first;
         let mut alternatives = vec![first];
-        while let Ok((after_union, _)) = strict_keyword(input, "UNION") {
-            let (after_alternative, alternative) = strict_group_primary(after_union)?;
+        while let Ok((after_union, _)) = sparql_keyword(input, "UNION") {
+            if !first_is_braced || !sparql_skip_ws(after_union).starts_with('{') {
+                return sparql_error(after_union, nom::error::ErrorKind::Verify);
+            }
+            let (after_alternative, alternative) = sparql_group_primary(after_union)?;
             alternatives.push(alternative);
             input = after_alternative;
         }
@@ -1560,503 +1480,482 @@ pub fn parse_group_graph_pattern(input: &str) -> IResult<&str, GroupGraphPattern
             GroupGraphPattern::Union(alternatives)
         });
 
-        input = strict_skip_ws(input);
+        input = sparql_skip_ws(input);
         if let Some(remaining) = input.strip_prefix('.') {
             input = remaining;
         }
     }
 }
 
-fn strict_quad_block(input: &str) -> IResult<&str, Vec<SparqlQuadPattern<'_>>> {
-    let (mut input, _) = strict_char(input, '{')?;
+fn sparql_quad_block(input: &str) -> IResult<&str, Vec<LexicalQuadPattern<'_>>> {
+    let (mut input, _) = sparql_char(input, '{')?;
     let mut quads = Vec::new();
     loop {
-        input = strict_skip_ws(input);
+        input = sparql_skip_ws(input);
         if let Some(remaining) = input.strip_prefix('}') {
             return Ok((remaining, quads));
         }
 
-        if let Ok((after_graph, _)) = strict_keyword(input, "GRAPH") {
-            let (after_name, graph) = strict_graph_name(after_graph)?;
-            let (mut graph_input, _) = strict_char(after_name, '{')?;
+        if let Ok((after_graph, _)) = sparql_keyword(input, "GRAPH") {
+            let (after_name, graph) = sparql_graph_name(after_graph)?;
+            let (mut graph_input, _) = sparql_char(after_name, '{')?;
             loop {
-                graph_input = strict_skip_ws(graph_input);
+                graph_input = sparql_skip_ws(graph_input);
                 if let Some(remaining) = graph_input.strip_prefix('}') {
                     input = remaining;
                     break;
                 }
-                let (remaining, triples) = strict_triples_statement(graph_input)?;
-                quads.extend(triples.into_iter().map(|triple| SparqlQuadPattern {
-                    graph: Some(graph.clone()),
+                let (remaining, triples) = sparql_triples_statement(graph_input)?;
+                quads.extend(triples.into_iter().map(|triple| LexicalQuadPattern {
+                    graph: Some(graph),
                     triple,
                 }));
-                graph_input = strict_skip_ws(remaining);
+                graph_input = sparql_skip_ws(remaining);
                 if let Some(after_dot) = graph_input.strip_prefix('.') {
                     graph_input = after_dot;
                 }
             }
         } else {
-            let (remaining, triples) = strict_triples_statement(input)?;
-            quads.extend(triples.into_iter().map(|triple| SparqlQuadPattern {
+            let (remaining, triples) = sparql_triples_statement(input)?;
+            quads.extend(triples.into_iter().map(|triple| LexicalQuadPattern {
                 graph: None,
                 triple,
             }));
             input = remaining;
         }
-        input = strict_skip_ws(input);
+        input = sparql_skip_ws(input);
         if let Some(remaining) = input.strip_prefix('.') {
             input = remaining;
         }
     }
 }
 
-#[derive(Clone, Copy)]
-enum StrictQuotedToken {
-    Variable,
-    BlankNode,
-}
-
-/// Finds variables/blank nodes in a quoted triple without treating their
-/// spelling inside a nested IRI or literal as syntax.
-fn strict_quoted_has_token(raw: &str, target: StrictQuotedToken) -> bool {
-    let mut index = 0usize;
-    let mut quote: Option<(char, bool)> = None;
-    let mut in_iri = false;
-    let mut escaped = false;
-    while index < raw.len() {
-        let tail = &raw[index..];
-        let character = tail.chars().next().expect("valid UTF-8 boundary");
-        if let Some((active_quote, triple)) = quote {
-            let delimiter = if active_quote == '"' { "\"\"\"" } else { "'''" };
-            if !escaped
-                && ((!triple && character == active_quote)
-                    || (triple && tail.starts_with(delimiter)))
-            {
-                index += if triple { 3 } else { character.len_utf8() };
-                quote = None;
-                continue;
-            }
-            if character == '\\' && !escaped {
-                escaped = true;
-            } else {
-                escaped = false;
-            }
-            index += character.len_utf8();
-            continue;
-        }
-        if in_iri {
-            if character == '>' && !escaped {
-                in_iri = false;
-            }
-            if character == '\\' && !escaped {
-                escaped = true;
-            } else {
-                escaped = false;
-            }
-            index += character.len_utf8();
-            continue;
-        }
-
-        if matches!(character, '\'' | '"') {
-            let delimiter = if character == '"' { "\"\"\"" } else { "'''" };
-            let triple = tail.starts_with(delimiter);
-            quote = Some((character, triple));
-            index += if triple { 3 } else { character.len_utf8() };
-        } else if tail.starts_with("<<") || tail.starts_with(">>") {
-            index += 2;
-        } else if character == '<' {
-            in_iri = true;
-            index += 1;
-        } else if matches!(target, StrictQuotedToken::Variable)
-            && matches!(character, '?' | '$')
-            && tail[character.len_utf8()..]
-                .chars()
-                .next()
-                .is_some_and(|next| next.is_alphanumeric() || next == '_')
-        {
-            return true;
-        } else if matches!(target, StrictQuotedToken::BlankNode)
-            && tail.starts_with("_:")
-            && tail[2..]
-                .chars()
-                .next()
-                .is_some_and(|next| next.is_alphanumeric() || next == '_')
-        {
-            return true;
-        } else {
-            index += character.len_utf8();
-        }
+fn sparql_term_first_variable(term: &str) -> Option<&str> {
+    if term.starts_with(['?', '$']) {
+        return Some(term);
     }
-    false
+    if !term.starts_with("<<") {
+        return None;
+    }
+    sparql_quoted_triple_parts(term)
+        .ok()
+        .filter(|(remaining, _)| sparql_skip_ws(remaining).is_empty())
+        .and_then(|(_, (subject, predicate, object))| {
+            sparql_term_first_variable(subject)
+                .or_else(|| sparql_term_first_variable(predicate))
+                .or_else(|| sparql_term_first_variable(object))
+        })
 }
 
-fn strict_term_has_variable(term: &SparqlTerm<'_>) -> bool {
-    matches!(term, SparqlTerm::Variable(_))
-        || matches!(term, SparqlTerm::QuotedTriple(raw) if strict_quoted_has_token(raw, StrictQuotedToken::Variable))
+fn sparql_term_first_blank_node(term: &str) -> Option<&str> {
+    if term.starts_with("_:") {
+        return Some(term);
+    }
+    if !term.starts_with("<<") {
+        return None;
+    }
+    sparql_quoted_triple_parts(term)
+        .ok()
+        .filter(|(remaining, _)| sparql_skip_ws(remaining).is_empty())
+        .and_then(|(_, (subject, predicate, object))| {
+            sparql_term_first_blank_node(subject)
+                .or_else(|| sparql_term_first_blank_node(predicate))
+                .or_else(|| sparql_term_first_blank_node(object))
+        })
 }
 
-fn strict_term_has_blank_node(term: &SparqlTerm<'_>) -> bool {
-    matches!(term, SparqlTerm::BlankNode(_))
-        || matches!(term, SparqlTerm::QuotedTriple(raw) if strict_quoted_has_token(raw, StrictQuotedToken::BlankNode))
-}
-
-fn strict_quads_have_variable(quads: &[SparqlQuadPattern<'_>]) -> bool {
-    quads.iter().any(|quad| {
-        matches!(quad.graph, Some(SparqlGraphName::Variable(_)))
-            || strict_term_has_variable(&quad.triple.subject)
-            || strict_term_has_variable(&quad.triple.predicate)
-            || strict_term_has_variable(&quad.triple.object)
+fn sparql_quads_first_variable<'a>(quads: &[LexicalQuadPattern<'a>]) -> Option<&'a str> {
+    quads.iter().find_map(|quad| {
+        quad.graph
+            .and_then(sparql_term_first_variable)
+            .or_else(|| sparql_term_first_variable(quad.triple.0))
+            .or_else(|| sparql_term_first_variable(quad.triple.1))
+            .or_else(|| sparql_term_first_variable(quad.triple.2))
     })
 }
 
-fn strict_quads_have_blank_node(quads: &[SparqlQuadPattern<'_>]) -> bool {
-    quads.iter().any(|quad| {
-        strict_term_has_blank_node(&quad.triple.subject)
-            || strict_term_has_blank_node(&quad.triple.predicate)
-            || strict_term_has_blank_node(&quad.triple.object)
+fn sparql_quads_first_blank_node<'a>(quads: &[LexicalQuadPattern<'a>]) -> Option<&'a str> {
+    quads.iter().find_map(|quad| {
+        sparql_term_first_blank_node(quad.triple.0)
+            .or_else(|| sparql_term_first_blank_node(quad.triple.1))
+            .or_else(|| sparql_term_first_blank_node(quad.triple.2))
     })
 }
 
-fn strict_quads_to_group<'a>(quads: &[SparqlQuadPattern<'a>]) -> GroupGraphPattern<'a> {
+fn sparql_quads_to_group<'a>(quads: &[LexicalQuadPattern<'a>]) -> GroupGraphPattern<'a> {
     let mut patterns = Vec::with_capacity(quads.len());
     for quad in quads {
-        let bgp = GroupGraphPattern::Bgp(vec![quad.triple.clone()]);
-        patterns.push(match &quad.graph {
+        let bgp = GroupGraphPattern::Bgp(vec![quad.triple]);
+        patterns.push(match quad.graph {
             Some(name) => GroupGraphPattern::Graph {
-                name: name.clone(),
+                name,
                 pattern: Box::new(bgp),
             },
             None => bgp,
         });
     }
     match patterns.len() {
-        0 => GroupGraphPattern::Empty,
+        0 => GroupGraphPattern::Unit,
         1 => patterns.pop().expect("one quad pattern"),
         _ => GroupGraphPattern::Join(patterns),
     }
 }
 
-fn strict_prefixes(input: &str) -> IResult<&str, HashMap<String, String>> {
+fn sparql_prefix_declaration(input: &str) -> IResult<&str, (&str, &str)> {
+    let (input, _) = sparql_keyword(input, "PREFIX")?;
+    let input = sparql_skip_ws(input);
+    let Some(colon) = input.find(':') else {
+        return sparql_error(input, nom::error::ErrorKind::Char);
+    };
+    let prefix = &input[..colon];
+    if let Some(offending) = sparql_invalid_pn_prefix(prefix) {
+        return sparql_error(offending, nom::error::ErrorKind::Verify);
+    }
+    let (remaining, iri) = sparql_iri(&input[colon + 1..])?;
+    Ok((remaining, (prefix, &iri[1..iri.len() - 1])))
+}
+
+fn sparql_prefixes(input: &str) -> IResult<&str, HashMap<String, String>> {
     let mut input = input;
     let mut prefixes = HashMap::new();
-    while let Ok((after_prefix, _)) = strict_keyword(input, "PREFIX") {
-        let after_prefix = strict_skip_ws(after_prefix);
-        let Some(colon) = after_prefix.find(':') else {
-            return strict_error(after_prefix, nom::error::ErrorKind::Char);
-        };
-        let prefix = &after_prefix[..colon];
-        if !prefix
-            .chars()
-            .all(|character| character.is_alphanumeric() || matches!(character, '_' | '-'))
-        {
-            return strict_error(after_prefix, nom::error::ErrorKind::Verify);
-        }
-        let (remaining, iri) = strict_iri(&after_prefix[colon + 1..])?;
+    while sparql_starts_keyword(input, "PREFIX") {
+        let (remaining, (prefix, iri)) = sparql_prefix_declaration(input)?;
         prefixes.insert(prefix.to_string(), iri.to_string());
         input = remaining;
     }
     Ok((input, prefixes))
 }
 
-fn strict_select<'a>(
-    input: &'a str,
-    prefixes: HashMap<String, String>,
-) -> IResult<&'a str, StrictSelectQuery<'a>> {
-    let (mut input, _) = strict_keyword(input, "SELECT")?;
-    let distinct = if let Ok((remaining, _)) = strict_keyword(input, "DISTINCT") {
+fn sparql_aggregate(input: &str) -> IResult<&str, (&str, &str, Option<&str>)> {
+    let input = sparql_skip_ws(input);
+    let (input, wrapped) = if let Some(remaining) = input.strip_prefix('(') {
+        (remaining, true)
+    } else {
+        (input, false)
+    };
+    let (input, aggregate) = if let Ok((remaining, _)) = sparql_keyword(input, "SUM") {
+        (remaining, "SUM")
+    } else if let Ok((remaining, _)) = sparql_keyword(input, "MIN") {
+        (remaining, "MIN")
+    } else if let Ok((remaining, _)) = sparql_keyword(input, "MAX") {
+        (remaining, "MAX")
+    } else if let Ok((remaining, _)) = sparql_keyword(input, "AVG") {
+        (remaining, "AVG")
+    } else {
+        return sparql_error(input, nom::error::ErrorKind::Alt);
+    };
+    let (input, _) = sparql_char(input, '(')?;
+    let (input, variable) = sparql_variable(input)?;
+    let (mut input, _) = sparql_char(input, ')')?;
+    let alias = if let Ok((remaining, _)) = sparql_keyword(input, "AS") {
+        let (remaining, alias) = sparql_variable(remaining)?;
+        input = remaining;
+        Some(alias)
+    } else {
+        None
+    };
+    if wrapped {
+        let (remaining, _) = sparql_char(input, ')')?;
+        input = remaining;
+    }
+    Ok((input, (aggregate, variable, alias)))
+}
+
+fn sparql_projection_items(input: &str) -> IResult<&str, Vec<(&str, &str, Option<&str>)>> {
+    let mut input = sparql_skip_ws(input);
+    if let Some(remaining) = input.strip_prefix('*') {
+        return Ok((remaining, vec![("*", "*", None)]));
+    }
+
+    let mut variables = Vec::new();
+    loop {
+        if let Ok((remaining, variable)) = sparql_variable(input) {
+            variables.push(("VAR", variable, None));
+            input = remaining;
+        } else if let Ok((remaining, aggregate)) = sparql_aggregate(input) {
+            variables.push(aggregate);
+            input = remaining;
+        } else {
+            break;
+        }
+    }
+    if variables.is_empty() {
+        return sparql_error(input, nom::error::ErrorKind::Many1);
+    }
+    Ok((input, variables))
+}
+
+fn sparql_group_by_clause(input: &str) -> IResult<&str, Vec<&str>> {
+    let (mut input, _) = sparql_keyword(input, "GROUP")?;
+    let (remaining, _) = sparql_keyword(input, "BY")?;
+    input = remaining;
+    let mut variables = Vec::new();
+    while let Ok((remaining, variable)) = sparql_variable(input) {
+        variables.push(variable);
+        input = remaining;
+    }
+    if variables.is_empty() {
+        return sparql_error(input, nom::error::ErrorKind::Many1);
+    }
+    Ok((input, variables))
+}
+
+fn sparql_order_condition(input: &str) -> IResult<&str, OrderCondition<'_>> {
+    let input = sparql_skip_ws(input);
+    let (remaining, direction, variable) =
+        if let Ok((after_direction, _)) = sparql_keyword(input, "ASC") {
+            let (after_open, _) = sparql_char(after_direction, '(')?;
+            let (after_variable, variable) = sparql_variable(after_open)?;
+            let (remaining, _) = sparql_char(after_variable, ')')?;
+            (remaining, SortDirection::Asc, variable)
+        } else if let Ok((after_direction, _)) = sparql_keyword(input, "DESC") {
+            let (after_open, _) = sparql_char(after_direction, '(')?;
+            let (after_variable, variable) = sparql_variable(after_open)?;
+            let (remaining, _) = sparql_char(after_variable, ')')?;
+            (remaining, SortDirection::Desc, variable)
+        } else {
+            let (remaining, variable) = sparql_variable(input)?;
+            (remaining, SortDirection::Asc, variable)
+        };
+    Ok((
+        remaining,
+        OrderCondition {
+            variable,
+            direction,
+        },
+    ))
+}
+
+fn sparql_order_by_clause(input: &str) -> IResult<&str, Vec<OrderCondition<'_>>> {
+    let (mut input, _) = sparql_keyword(input, "ORDER")?;
+    let (remaining, _) = sparql_keyword(input, "BY")?;
+    input = remaining;
+    let mut conditions = Vec::new();
+    loop {
+        input = sparql_skip_ws(input);
+        if let Some(remaining) = input.strip_prefix(',') {
+            input = remaining;
+            continue;
+        }
+        if input.is_empty()
+            || input.starts_with('}')
+            || sparql_starts_keyword(input, "LIMIT")
+            || sparql_starts_keyword(input, "GROUP")
+        {
+            break;
+        }
+        let (remaining, condition) = sparql_order_condition(input)?;
+        conditions.push(condition);
+        input = remaining;
+    }
+    if conditions.is_empty() {
+        return sparql_error(input, nom::error::ErrorKind::Many1);
+    }
+    Ok((input, conditions))
+}
+
+fn sparql_limit_clause(input: &str) -> IResult<&str, usize> {
+    let (input, _) = sparql_keyword(input, "LIMIT")?;
+    let input = sparql_skip_ws(input);
+    let digit_count = input.bytes().take_while(u8::is_ascii_digit).count();
+    if digit_count == 0 {
+        return sparql_error(input, nom::error::ErrorKind::Digit);
+    }
+    let value = input[..digit_count].parse::<usize>().map_err(|_| {
+        nom::Err::Error(nom::error::Error::new(input, nom::error::ErrorKind::Digit))
+    })?;
+    Ok((&input[digit_count..], value))
+}
+
+fn sparql_select_core(input: &str, allow_dataset: bool) -> IResult<&str, SelectQuery<'_>> {
+    let (mut input, _) = sparql_keyword(input, "SELECT")?;
+    let distinct = if let Ok((remaining, _)) = sparql_keyword(input, "DISTINCT") {
         input = remaining;
         true
     } else {
         false
     };
 
-    input = strict_skip_ws(input);
-    let projection = if let Some(remaining) = input.strip_prefix('*') {
-        input = remaining;
-        SparqlProjection::All
-    } else {
-        let mut variables = Vec::new();
-        while let Ok((remaining, variable)) = strict_variable(input) {
-            variables.push(variable);
-            input = remaining;
-        }
-        if variables.is_empty() {
-            return strict_error(input, nom::error::ErrorKind::Many1);
-        }
-        SparqlProjection::Variables(variables)
-    };
+    let (remaining, variables) = sparql_projection_items(input)?;
+    input = remaining;
 
+    let mut from = Vec::new();
     let mut from_named = Vec::new();
-    while let Ok((after_from, _)) = strict_keyword(input, "FROM") {
-        let (after_named, _) = strict_keyword(after_from, "NAMED")?;
-        let (remaining, graph) = strict_graph_name(after_named)?;
-        if matches!(graph, SparqlGraphName::Variable(_)) {
-            return strict_error(after_named, nom::error::ErrorKind::Verify);
+    if allow_dataset {
+        while let Ok((after_from, _)) = sparql_keyword(input, "FROM") {
+            if let Ok((after_named, _)) = sparql_keyword(after_from, "NAMED") {
+                let (remaining, graph) =
+                    alt((sparql_iri, sparql_prefixed_name)).parse(after_named)?;
+                from_named.push(graph);
+                input = remaining;
+            } else {
+                let (remaining, graph) =
+                    alt((sparql_iri, sparql_prefixed_name)).parse(after_from)?;
+                from.push(graph);
+                input = remaining;
+            }
         }
-        from_named.push(graph);
-        input = remaining;
     }
 
-    if let Ok((remaining, _)) = strict_keyword(input, "WHERE") {
+    if let Ok((remaining, _)) = sparql_keyword(input, "WHERE") {
         input = remaining;
     }
     let (mut input, pattern) = parse_group_graph_pattern(input)?;
-    let limit = if let Ok((after_limit, _)) = strict_keyword(input, "LIMIT") {
-        let after_limit = strict_skip_ws(after_limit);
-        let digit_count = after_limit.bytes().take_while(u8::is_ascii_digit).count();
-        if digit_count == 0 {
-            return strict_error(after_limit, nom::error::ErrorKind::Digit);
-        }
-        let value = after_limit[..digit_count].parse::<usize>().map_err(|_| {
-            nom::Err::Error(nom::error::Error::new(
-                after_limit,
-                nom::error::ErrorKind::Digit,
-            ))
-        })?;
-        input = &after_limit[digit_count..];
-        Some(value)
+    let group_vars = if sparql_starts_keyword(input, "GROUP") {
+        let (remaining, variables) = sparql_group_by_clause(input)?;
+        input = remaining;
+        variables
+    } else {
+        Vec::new()
+    };
+    let order_conditions = if sparql_starts_keyword(input, "ORDER") {
+        let (remaining, conditions) = sparql_order_by_clause(input)?;
+        input = remaining;
+        conditions
+    } else {
+        Vec::new()
+    };
+    let limit = if sparql_starts_keyword(input, "LIMIT") {
+        let (remaining, limit) = sparql_limit_clause(input)?;
+        input = remaining;
+        Some(limit)
     } else {
         None
     };
     Ok((
         input,
-        StrictSelectQuery {
-            prefixes,
+        SelectQuery {
             distinct,
-            projection,
+            variables,
+            from,
             from_named,
             pattern,
+            group_vars,
+            order_conditions,
             limit,
         },
     ))
 }
 
-fn strict_update<'a>(
-    input: &'a str,
-    prefixes: HashMap<String, String>,
-) -> IResult<&'a str, StrictUpdateRequest<'a>> {
-    if let Ok((after_insert, _)) = strict_keyword(input, "INSERT") {
-        if let Ok((after_data, _)) = strict_keyword(after_insert, "DATA") {
-            let (remaining, quads) = strict_quad_block(after_data)?;
-            if strict_quads_have_variable(&quads) {
-                return strict_error(after_data, nom::error::ErrorKind::Verify);
+fn sparql_update_core(input: &str, allow_data_aliases: bool) -> IResult<&str, UpdateOperation<'_>> {
+    if let Ok((after_insert, _)) = sparql_keyword(input, "INSERT") {
+        if let Ok((after_data, _)) = sparql_keyword(after_insert, "DATA") {
+            let (remaining, quads) = sparql_quad_block(after_data)?;
+            if let Some(offending) = sparql_quads_first_variable(&quads) {
+                return sparql_error(offending, nom::error::ErrorKind::Verify);
             }
             return Ok((
                 remaining,
-                StrictUpdateRequest {
-                    prefixes,
-                    operation: StrictUpdateOperation::InsertData(quads),
-                },
+                UpdateOperation::InsertData(InsertClause { quads }),
             ));
         }
 
-        let (after_template, insert) = strict_quad_block(after_insert)?;
-        let (after_where, _) = strict_keyword(after_template, "WHERE")?;
-        let (remaining, where_pattern) = parse_group_graph_pattern(after_where)?;
-        return Ok((
-            remaining,
-            StrictUpdateRequest {
-                prefixes,
-                operation: StrictUpdateOperation::Modify {
-                    delete: Vec::new(),
-                    insert,
+        let (after_template, insert) = sparql_quad_block(after_insert)?;
+        if let Ok((after_where, _)) = sparql_keyword(after_template, "WHERE") {
+            let (remaining, where_pattern) = parse_group_graph_pattern(after_where)?;
+            return Ok((
+                remaining,
+                UpdateOperation::InsertWhere {
+                    insert: InsertClause { quads: insert },
                     where_pattern,
                 },
-            },
-        ));
+            ));
+        }
+        if allow_data_aliases && sparql_skip_ws(after_template).is_empty() {
+            if let Some(offending) = sparql_quads_first_variable(&insert) {
+                return sparql_error(offending, nom::error::ErrorKind::Verify);
+            }
+            return Ok((
+                after_template,
+                UpdateOperation::InsertData(InsertClause { quads: insert }),
+            ));
+        }
+        return sparql_error(after_template, nom::error::ErrorKind::Tag);
     }
 
-    let (after_delete, _) = strict_keyword(input, "DELETE")?;
-    if let Ok((after_data, _)) = strict_keyword(after_delete, "DATA") {
-        let (remaining, quads) = strict_quad_block(after_data)?;
-        if strict_quads_have_variable(&quads) || strict_quads_have_blank_node(&quads) {
-            return strict_error(after_data, nom::error::ErrorKind::Verify);
+    let (after_delete, _) = sparql_keyword(input, "DELETE")?;
+    if let Ok((after_data, _)) = sparql_keyword(after_delete, "DATA") {
+        let (remaining, quads) = sparql_quad_block(after_data)?;
+        if let Some(offending) =
+            sparql_quads_first_variable(&quads).or_else(|| sparql_quads_first_blank_node(&quads))
+        {
+            return sparql_error(offending, nom::error::ErrorKind::Verify);
         }
         return Ok((
             remaining,
-            StrictUpdateRequest {
-                prefixes,
-                operation: StrictUpdateOperation::DeleteData(quads),
-            },
+            UpdateOperation::DeleteData(DeleteClause { quads }),
         ));
     }
 
-    if let Ok((after_where, _)) = strict_keyword(after_delete, "WHERE") {
-        let (remaining, template) = strict_quad_block(after_where)?;
-        if strict_quads_have_blank_node(&template) {
-            return strict_error(after_where, nom::error::ErrorKind::Verify);
+    if let Ok((after_where, _)) = sparql_keyword(after_delete, "WHERE") {
+        let (remaining, template) = sparql_quad_block(after_where)?;
+        if let Some(offending) = sparql_quads_first_blank_node(&template) {
+            return sparql_error(offending, nom::error::ErrorKind::Verify);
         }
-        let where_pattern = strict_quads_to_group(&template);
+        let where_pattern = sparql_quads_to_group(&template);
         return Ok((
             remaining,
-            StrictUpdateRequest {
-                prefixes,
-                operation: StrictUpdateOperation::DeleteWhere {
-                    template,
-                    where_pattern,
-                },
-            },
-        ));
-    }
-
-    let (mut remaining, delete) = strict_quad_block(after_delete)?;
-    if strict_quads_have_blank_node(&delete) {
-        return strict_error(after_delete, nom::error::ErrorKind::Verify);
-    }
-    let insert = if let Ok((after_insert, _)) = strict_keyword(remaining, "INSERT") {
-        let (after_template, insert) = strict_quad_block(after_insert)?;
-        remaining = after_template;
-        insert
-    } else {
-        Vec::new()
-    };
-    let (after_where, _) = strict_keyword(remaining, "WHERE")?;
-    let (remaining, where_pattern) = parse_group_graph_pattern(after_where)?;
-    Ok((
-        remaining,
-        StrictUpdateRequest {
-            prefixes,
-            operation: StrictUpdateOperation::Modify {
-                delete,
-                insert,
+            UpdateOperation::DeleteWhereShorthand {
+                delete: DeleteClause { quads: template },
                 where_pattern,
             },
-        },
-    ))
-}
+        ));
+    }
 
-fn strict_request_nom(input: &str) -> IResult<&str, StrictSparqlRequest<'_>> {
-    let (input, prefixes) = strict_prefixes(input)?;
-    if strict_starts_keyword(input, "SELECT") {
-        strict_select(input, prefixes)
-            .map(|(remaining, query)| (remaining, StrictSparqlRequest::Select(query)))
+    let (mut remaining, delete) = sparql_quad_block(after_delete)?;
+    if let Some(offending) = sparql_quads_first_blank_node(&delete) {
+        return sparql_error(offending, nom::error::ErrorKind::Verify);
+    }
+    if allow_data_aliases && sparql_skip_ws(remaining).is_empty() {
+        if let Some(offending) = sparql_quads_first_variable(&delete) {
+            return sparql_error(offending, nom::error::ErrorKind::Verify);
+        }
+        return Ok((
+            remaining,
+            UpdateOperation::DeleteData(DeleteClause { quads: delete }),
+        ));
+    }
+
+    let insert = if let Ok((after_insert, _)) = sparql_keyword(remaining, "INSERT") {
+        let (after_template, insert) = sparql_quad_block(after_insert)?;
+        remaining = after_template;
+        Some(insert)
     } else {
-        strict_update(input, prefixes)
-            .map(|(remaining, update)| (remaining, StrictSparqlRequest::Update(update)))
-    }
-}
-
-/// Strict entry point for Kolibrie's supported SPARQL fragment.
-///
-/// Unlike the historical compatibility parsers, this parser is
-/// case-insensitive for keywords, understands comments, and rejects any
-/// unconsumed non-comment input.
-pub fn parse_strict_sparql(input: &str) -> Result<StrictSparqlRequest<'_>, StrictSparqlParseError> {
-    match strict_request_nom(input) {
-        Ok((remaining, request)) => {
-            let remaining = strict_skip_ws(remaining);
-            if remaining.is_empty() {
-                Ok(request)
-            } else {
-                Err(StrictSparqlParseError {
-                    offset: input.len() - remaining.len(),
-                    message: format!(
-                        "unexpected trailing input `{}`",
-                        remaining.chars().take(24).collect::<String>()
-                    ),
-                })
-            }
-        }
-        Err(nom::Err::Error(error) | nom::Err::Failure(error)) => Err(StrictSparqlParseError {
-            offset: input.len() - error.input.len(),
-            message: format!(
-                "unexpected input `{}` ({:?})",
-                error.input.chars().take(24).collect::<String>(),
-                error.code
-            ),
-        }),
-        Err(nom::Err::Incomplete(_)) => Err(StrictSparqlParseError {
-            offset: input.len(),
-            message: "incomplete input".to_string(),
-        }),
-    }
-}
-
-pub fn parse_sparql_query(
-    input: &str,
-) -> IResult<
-    &str,
-    (
-        Option<InsertClause<'_>>,
-        Vec<(&str, &str, Option<&str>)>, // variables
-        Vec<(&str, &str, &str)>,         // patterns
-        Vec<FilterExpression<'_>>,       // filters
-        Vec<&str>,                       // group_vars
-        HashMap<String, String>,         // prefixes
-        Option<ValuesClause<'_>>,
-        Vec<(&str, Vec<&str>, &str)>, // BIND clauses
-        Vec<SubQuery<'_>>,
-        Option<usize>,           // limit
-        Vec<WindowBlock<'_>>,    // Add window blocks
-        Vec<OrderCondition<'_>>, // ORDER BY conditions
-    ),
-> {
-    let mut input = input;
-    let mut prefixes = HashMap::new();
-
-    // Parse zero or more PREFIX declarations
-    loop {
-        let original_input = input;
-        if let Ok((new_input, (prefix, uri))) = parse_prefix(input) {
-            prefixes.insert(prefix.to_string(), uri.to_string());
-            input = new_input;
-        } else {
-            input = original_input;
-            break;
-        }
-    }
-
-    // Optionally parse the INSERT clause
-    let (input, insert_clause) = opt(parse_insert).parse(input)?;
-    let (mut input, _) = multispace0.parse(input)?;
-
-    let mut variables = Vec::new();
-    if insert_clause.is_none() && !input.trim_start().starts_with("WHERE") {
-        // Parse SELECT clause only if there is no INSERT clause and input doesn't start with WHERE
-        let (new_input, vars) = parse_select(input)?;
-        variables = vars;
-        input = new_input;
-        let (_input, _) = multispace1.parse(input)?;
-    }
-
-    // Ensure any spaces are consumed before parsing WHERE clause
-    let (input, _) = multispace0.parse(input)?;
-
-    // Parse WHERE clause
-    let (input, (patterns, filters, values_clause, binds, subqueries, window_block, _)) =
-        parse_where(input)?;
-
-    // Optionally parse the GROUP BY clause
-    let (input, group_vars) =
-        if let Ok((input, group_vars)) = preceded(multispace0, parse_group_by).parse(input) {
-            (input, group_vars)
-        } else {
-            (input, vec![])
-        };
-
-    // Parse optional ORDER BY clause
-    let (input, order_conditions) = opt(preceded(multispace0, parse_order_by)).parse(input)?;
-    let order_conditions = order_conditions.unwrap_or_else(Vec::new);
-
-    let (input, limit) = opt(preceded(multispace0, parse_limit)).parse(input)?;
-
-    Ok((
-        input,
-        (
-            insert_clause,
-            variables,
-            patterns,
-            filters,
-            group_vars,
-            prefixes,
-            values_clause,
-            binds,
-            subqueries,
-            limit,
-            window_block,
-            order_conditions,
+        None
+    };
+    let (after_where, _) = sparql_keyword(remaining, "WHERE")?;
+    let (remaining, where_pattern) = parse_group_graph_pattern(after_where)?;
+    let delete = DeleteClause { quads: delete };
+    Ok(match insert {
+        Some(insert) => (
+            remaining,
+            UpdateOperation::DeleteInsertWhere {
+                delete,
+                insert: InsertClause { quads: insert },
+                where_pattern,
+            },
         ),
-    ))
+        None => (
+            remaining,
+            UpdateOperation::DeleteWhere {
+                delete,
+                where_pattern,
+            },
+        ),
+    })
+}
+
+/// Parse a standalone SELECT with the same grammar used by `CombinedQuery`.
+/// Prefixes are accepted as a request prologue; callers that need the prefix
+/// map should use `parse_combined_query`.
+pub fn parse_sparql_query(input: &str) -> IResult<&str, SelectQuery<'_>> {
+    let (input, _) = sparql_prefixes(input)?;
+    let (remaining, query) = sparql_select_core(input, true)?;
+    let remaining = sparql_skip_ws(remaining);
+    if !remaining.is_empty() {
+        return sparql_error(remaining, nom::error::ErrorKind::Eof);
+    }
+    Ok((remaining, query))
 }
 
 pub fn parse_standalone_rule<'a>(
@@ -2297,7 +2196,7 @@ fn parse_output_values(input: &str) -> Vec<String> {
 
 fn infer_anchor_var(patterns: &[(String, String, String)]) -> Result<String, String> {
     if let Some(subject_var) = patterns.iter().find_map(|(s, _, _)| {
-        if s.starts_with('?') {
+        if s.starts_with(['?', '$']) {
             Some(s.clone())
         } else {
             None
@@ -2308,7 +2207,7 @@ fn infer_anchor_var(patterns: &[(String, String, String)]) -> Result<String, Str
 
     for (s, p, o) in patterns {
         for term in [s, p, o] {
-            if term.starts_with('?') {
+            if term.starts_with(['?', '$']) {
                 return Ok(term.clone());
             }
         }
@@ -2634,7 +2533,7 @@ pub fn parse_ml_predict(input: &str) -> IResult<&str, MLPredictClause<'_>> {
             // Parse SELECT variables (simplified version - in real code you would use your actual SELECT parser)
             let vars: Vec<&str> = select_clause.split_whitespace().collect();
             for var in vars {
-                if var.starts_with('?') {
+                if var.starts_with(['?', '$']) {
                     select_vars.push((var, "", None)); // Add proper variable type extraction if needed
                 }
             }
@@ -3361,102 +3260,108 @@ pub fn parse_retrieve_clause(input: &str) -> IResult<&str, RetrieveClause<'_>> {
     ))
 }
 
-/// The combined query parser parses SPARQL + LP
+/// The combined query parser parses SPARQL + explicit Kolibrie extensions.
 pub fn parse_combined_query(input: &str) -> IResult<&str, CombinedQuery<'_>> {
-    let (input, prefix_list) = many0(|i| {
-        let (i, _) = multispace0.parse(i)?;
-        let (i, _) = tag("PREFIX").parse(i)?;
-        let (i, _) = space1.parse(i)?;
-        let (i, p) = identifier(i)?;
-        let (i, _) = char(':').parse(i)?;
-        let (i, _) = space0.parse(i)?;
-        let (i, uri) = delimited(char('<'), take_while1(|c| c != '>'), char('>')).parse(i)?;
-        Ok((i, (p, uri)))
-    })
-    .parse(input)?;
+    parse_combined_query_with_options(input, false)
+}
 
-    let mut prefixes = HashMap::new();
-    for (p, uri) in prefix_list {
-        prefixes.insert(p.to_string(), uri.to_string());
+/// Parse through the single combined AST, optionally enabling the historical
+/// standalone INSERT/DELETE DATA aliases. Standard APIs pass `false`;
+/// compatibility adapters pass `true`.
+pub fn parse_combined_query_with_options(
+    input: &str,
+    allow_data_aliases: bool,
+) -> IResult<&str, CombinedQuery<'_>> {
+    let (after_prologue, prefixes) = sparql_prefixes(input)?;
+    let after_prologue = sparql_skip_ws(after_prologue);
+    if after_prologue.is_empty() {
+        return sparql_error(after_prologue, nom::error::ErrorKind::Eof);
     }
 
-    let (input, _) = multispace0.parse(input)?;
+    if sparql_starts_keyword(after_prologue, "SELECT") {
+        let (remaining, query) = sparql_select_core(after_prologue, true)?;
+        let remaining = sparql_skip_ws(remaining);
+        if !remaining.is_empty() {
+            return sparql_error(remaining, nom::error::ErrorKind::Eof);
+        }
+        return Ok((
+            remaining,
+            CombinedQuery {
+                prefixes,
+                retrieve_clause: None,
+                register_clause: None,
+                model_decls: Vec::new(),
+                neural_relation_decls: Vec::new(),
+                train_neural_relation_decls: Vec::new(),
+                rule: None,
+                ml_predict: None,
+                sparql: Some(SparqlOperation::Select(query)),
+            },
+        ));
+    }
+    if sparql_starts_keyword(after_prologue, "INSERT")
+        || sparql_starts_keyword(after_prologue, "DELETE")
+    {
+        let (remaining, update) = sparql_update_core(after_prologue, allow_data_aliases)?;
+        let remaining = sparql_skip_ws(remaining);
+        if !remaining.is_empty() {
+            return sparql_error(remaining, nom::error::ErrorKind::Eof);
+        }
+        return Ok((
+            remaining,
+            CombinedQuery {
+                prefixes,
+                retrieve_clause: None,
+                register_clause: None,
+                model_decls: Vec::new(),
+                neural_relation_decls: Vec::new(),
+                train_neural_relation_decls: Vec::new(),
+                rule: None,
+                ml_predict: None,
+                sparql: Some(SparqlOperation::Update(update)),
+            },
+        ));
+    }
 
-    // Parse optional RETRIEVE clause
-    let (input, retrieve_clause) = opt(parse_retrieve_clause).parse(input)?;
-    let (input, _) = multispace0.parse(input)?;
-
-    // Parse optional REGISTER clause
-    let (input, register_clause) = opt(parse_register_clause).parse(input)?;
-    let (input, _) = multispace0.parse(input)?;
-
-    let (input, (model_decls, neural_relation_decls, train_neural_relation_decls)) =
-        parse_top_level_neural_decls(input)?;
-    let (input, _) = multispace0.parse(input)?;
-
-    // Parse the rule with ML.PREDICT if present
-    let (input, mut rule_opt) = opt(parse_rule).parse(input)?;
-    let (input, _) = multispace0.parse(input)?;
-    if let Some(rule) = rule_opt.as_mut() {
+    // Explicit extension path. A recognized standard keyword above never
+    // falls through to these restricted grammars after a syntax error.
+    let (extension_input, retrieve_clause) = opt(parse_retrieve_clause).parse(after_prologue)?;
+    let (extension_input, _) = multispace0.parse(extension_input)?;
+    let (extension_input, register_clause) = opt(parse_register_clause).parse(extension_input)?;
+    let (extension_input, _) = multispace0.parse(extension_input)?;
+    let (extension_input, (model_decls, neural_relation_decls, train_neural_relation_decls)) =
+        parse_top_level_neural_decls(extension_input)?;
+    let (extension_input, _) = multispace0.parse(extension_input)?;
+    let (extension_input, mut rule) = opt(parse_rule).parse(extension_input)?;
+    let (extension_input, _) = multispace0.parse(extension_input)?;
+    if let Some(rule) = rule.as_mut() {
         rule.model_decls = model_decls.clone();
         rule.neural_relation_decls = neural_relation_decls.clone();
         rule.train_neural_relation_decls = train_neural_relation_decls.clone();
     }
+    let (extension_input, ml_predict) = opt(parse_ml_predict).parse(extension_input)?;
+    let extension_input = sparql_skip_ws(extension_input);
 
-    // Parse top-level ML.PREDICT independently of RULE syntax.
-    let (input, ml_predict) = opt(parse_ml_predict).parse(input)?;
-    let (input, _) = multispace0.parse(input)?;
-
-    // Optionally parse DELETE clause (before SPARQL query, per SPARQL Update spec)
-    let (input, delete_clause) = opt(parse_delete).parse(input)?;
-    let (input, _) = multispace0.parse(input)?;
-
-    // Parse the SPARQL query part
-    let (input, sparql_parse) = if input.trim().is_empty() && delete_clause.is_none() {
-        // No remaining input - create empty SPARQL parse result
-        (
-            input,
-            (
-                None,
-                vec![],
-                vec![],
-                vec![],
-                vec![],
-                HashMap::new(),
-                None,
-                vec![],
-                vec![],
-                None,
-                vec![],
-                vec![],
-            ),
-        )
-    } else if delete_clause.is_some() && input.trim().is_empty() {
-        // DELETE with no WHERE clause — just the delete template
-        (
-            input,
-            (
-                None,
-                vec![],
-                vec![],
-                vec![],
-                vec![],
-                HashMap::new(),
-                None,
-                vec![],
-                vec![],
-                None,
-                vec![],
-                vec![],
-            ),
-        )
+    let (remaining, sparql) = if extension_input.is_empty() {
+        (extension_input, None)
+    } else if sparql_starts_keyword(extension_input, "SELECT") {
+        let (remaining, query) = sparql_select_core(extension_input, true)?;
+        (remaining, Some(SparqlOperation::Select(query)))
+    } else if sparql_starts_keyword(extension_input, "INSERT")
+        || sparql_starts_keyword(extension_input, "DELETE")
+    {
+        let (remaining, update) = sparql_update_core(extension_input, allow_data_aliases)?;
+        (remaining, Some(SparqlOperation::Update(update)))
     } else {
-        // There's remaining input - try to parse it as SPARQL
-        parse_sparql_query(input)?
+        return sparql_error(extension_input, nom::error::ErrorKind::Alt);
     };
+    let remaining = sparql_skip_ws(remaining);
+    if !remaining.is_empty() {
+        return sparql_error(remaining, nom::error::ErrorKind::Eof);
+    }
 
     Ok((
-        input,
+        remaining,
         CombinedQuery {
             prefixes,
             retrieve_clause,
@@ -3464,10 +3369,9 @@ pub fn parse_combined_query(input: &str) -> IResult<&str, CombinedQuery<'_>> {
             model_decls,
             neural_relation_decls,
             train_neural_relation_decls,
-            rule: rule_opt,
+            rule,
             ml_predict,
-            sparql: sparql_parse,
-            delete_clause,
+            sparql,
         },
     ))
 }
@@ -3484,8 +3388,8 @@ fn resolve_term_with_prefix(term: &str, prefixes: &HashMap<String, String>) -> S
 }
 
 fn convert_term(term: &str, dict: &mut Dictionary, prefixes: &HashMap<String, String>) -> Term {
-    if term.starts_with('?') {
-        Term::Variable(term.trim_start_matches('?').to_string())
+    if term.starts_with(['?', '$']) {
+        Term::Variable(term.trim_start_matches(['?', '$']).to_string())
     } else {
         let expanded = resolve_term_with_prefix(term, prefixes);
         Term::Constant(dict.encode(&expanded))
@@ -3532,7 +3436,7 @@ pub fn convert_combined_rule<'a>(
             match filter_expr {
                 FilterExpression::Comparison(var, op, value) => {
                     vec![FilterCondition {
-                        variable: var.trim_start_matches('?').to_string(),
+                        variable: var.trim_start_matches(['?', '$']).to_string(),
                         operator: op.to_string(),
                         value: value.to_string(),
                     }]
@@ -3543,7 +3447,7 @@ pub fn convert_combined_rule<'a>(
 
                     if let FilterExpression::Comparison(var, op, value) = *left {
                         conditions.push(FilterCondition {
-                            variable: var.trim_start_matches('?').to_string(),
+                            variable: var.trim_start_matches(['?', '$']).to_string(),
                             operator: format!("OR:{}", op.to_string()),
                             value: value.to_string(),
                         });
@@ -3551,7 +3455,7 @@ pub fn convert_combined_rule<'a>(
 
                     if let FilterExpression::Comparison(var, op, value) = *right {
                         conditions.push(FilterCondition {
-                            variable: var.trim_start_matches('?').to_string(),
+                            variable: var.trim_start_matches(['?', '$']).to_string(),
                             operator: format!("OR:{}", op.to_string()),
                             value: value.to_string(),
                         });
@@ -3559,7 +3463,7 @@ pub fn convert_combined_rule<'a>(
                         // Handle nested OR expressions (common with multiple OR conditions)
                         if let FilterExpression::Comparison(var, op, value) = *nested_left {
                             conditions.push(FilterCondition {
-                                variable: var.trim_start_matches('?').to_string(),
+                                variable: var.trim_start_matches(['?', '$']).to_string(),
                                 operator: format!("OR:{}", op.to_string()),
                                 value: value.to_string(),
                             });
@@ -3567,7 +3471,7 @@ pub fn convert_combined_rule<'a>(
 
                         if let FilterExpression::Comparison(var, op, value) = *nested_right {
                             conditions.push(FilterCondition {
-                                variable: var.trim_start_matches('?').to_string(),
+                                variable: var.trim_start_matches(['?', '$']).to_string(),
                                 operator: format!("OR:{}", op.to_string()),
                                 value: value.to_string(),
                             });
@@ -3582,7 +3486,7 @@ pub fn convert_combined_rule<'a>(
 
                     if let FilterExpression::Comparison(var, op, value) = *left {
                         conditions.push(FilterCondition {
-                            variable: var.trim_start_matches('?').to_string(),
+                            variable: var.trim_start_matches(['?', '$']).to_string(),
                             operator: op.to_string(),
                             value: value.to_string(),
                         });
@@ -3590,7 +3494,7 @@ pub fn convert_combined_rule<'a>(
 
                     if let FilterExpression::Comparison(var, op, value) = *right {
                         conditions.push(FilterCondition {
-                            variable: var.trim_start_matches('?').to_string(),
+                            variable: var.trim_start_matches(['?', '$']).to_string(),
                             operator: op.to_string(),
                             value: value.to_string(),
                         });
@@ -3646,7 +3550,7 @@ pub fn convert_combined_rule<'a>(
     if let Some(ml_predict) = &cr.ml_predict {
         println!("Processing rule with ML.PREDICT");
 
-        let ml_output_var = ml_predict.output.trim_start_matches('?');
+        let ml_output_var = ml_predict.output.trim_start_matches(['?', '$']);
         println!("ML output variable: ?{}", ml_output_var);
 
         // Check if the conclusion triples contain the ML output variable

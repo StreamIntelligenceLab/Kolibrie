@@ -172,7 +172,7 @@ fn test() {
             // Add parsed rule to KnowledgeGraph
             graph.add_rule(rule);
 
-            let old_facts = graph.index_manager.query(None, None, None);
+            let old_facts = graph.dataset_index.query(None, None, None);
 
             let inferred_facts = graph.infer_new_facts();
 
@@ -211,7 +211,7 @@ fn test2() {
             // Add parsed rule to KnowledgeGraph
             kg.add_rule(rule);
 
-            let old_facts = kg.index_manager.query(None, None, None);
+            let old_facts = kg.dataset_index.query(None, None, None);
 
             let inferred_facts = kg.infer_new_facts();
 

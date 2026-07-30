@@ -208,9 +208,14 @@ for row in results {
 
 #### Graphes nommés, `GRAPH` et `UNION`
 
-Le parseur SPARQL existant de Kolibrie prend en charge les motifs `GRAPH`
-récursifs avec des noms de graphe fixes ou variables, des groupes imbriqués et
-`UNION` avec une sémantique de multiensemble :
+Les chemins standard SELECT et Update de Kolibrie utilisent une architecture
+unique : le parseur `nom` existant produit des motifs de groupe récursifs,
+ensuite convertis vers le même plan logique, l'optimiseur Streamertail et
+l'exécuteur physique. Aucun parseur ni évaluateur séparé n'est utilisé pour
+`GRAPH`, `UNION` ou les motifs `WHERE` d'une mise à jour. Ce chemin unifié prend
+en charge les motifs `GRAPH` récursifs avec des noms de graphe fixes ou
+variables, des groupes imbriqués et `UNION` avec une sémantique de
+multiensemble :
 
 ```rust
 let rows = execute_query_rayon_parallel2_volcano(
@@ -230,11 +235,21 @@ let rows = execute_query_rayon_parallel2_volcano(
 des graphes nommés et lie `?g` ; le graphe par défaut n'est jamais inclus. Sans
 `DISTINCT`, les solutions dupliquées produites par `UNION` sont conservées.
 
+Les clauses de jeu de données remplacent le jeu de données de la requête.
+Plusieurs graphes `FROM` sont fusionnés dans le graphe par défaut de la requête,
+en supprimant les triplets dupliqués. Dès qu'une clause de jeu de données est
+présente, seuls les graphes énumérés avec `FROM NAMED` sont visibles par
+`GRAPH`. `FROM NAMED` sans `FROM` donne un graphe par défaut de requête vide,
+tandis que `FROM` sans `FROM NAMED` ne rend aucun graphe nommé visible. Sans
+clause de jeu de données, le graphe par défaut physique et tous les graphes
+nommés catalogués sont visibles.
+
 #### Formes SPARQL Update prises en charge
 
-L'API Rust qui préserve les erreurs accepte la famille limitée de mises à jour
-ci-dessous. Les modèles du graphe par défaut et des graphes nommés peuvent être
-combinés dans une même opération.
+L'API Rust qui préserve les erreurs accepte exactement les six formes de mise à
+jour ci-dessous. Les modèles du graphe par défaut et des graphes nommés peuvent
+être combinés dans une même opération, et chaque `WHERE` utilise le même
+parseur, planificateur logique, optimiseur et exécuteur que SELECT.
 
 ```rust
 db.execute_update(r#"
@@ -250,7 +265,9 @@ Les formes prises en charge sont `INSERT DATA`, `DELETE DATA`,
 `DELETE/INSERT ... WHERE` et `DELETE WHERE`. Le motif `WHERE` est évalué une
 seule fois avant l'application des changements ; les suppressions sont
 effectuées avant les insertions. Python expose le même comportement avec
-`SparqlDatabase.update()`.
+`SparqlDatabase.update()`. Les autres formes SPARQL 1.1 Update, telles que
+`WITH`, `USING`, `LOAD` et les opérations de gestion des graphes, ne font pas
+partie de cette version.
 
 #### Requête avec FILTER
 

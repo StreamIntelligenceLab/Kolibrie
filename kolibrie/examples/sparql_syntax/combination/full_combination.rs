@@ -196,7 +196,9 @@ fn run_combined_workflow(
             // Decode all triples FIRST with proper scoping
             let decoded_triples: Vec<(String, String, String)> = {
                 let dict = database.dictionary.read().unwrap();
-                database.triples.iter()
+                database
+                    .query_default_triples(None, None, None)
+                    .iter()
                     .filter_map(|triple| {
                         let s = dict.decode(triple.subject)?.to_string();
                         let p = dict.decode(triple.predicate)?.to_string();
@@ -273,8 +275,9 @@ fn query_comfort_level(database: &SparqlDatabase, sensor_uri: &str) -> String {
     };
     
     if let (Some(comfort_pred_id), Some(sensor_id)) = (comfort_pred_id, sensor_id) {
-        if let Some(triple) = database.triples.iter()
-            .find(|t| t.subject == sensor_id && t.predicate == comfort_pred_id)
+        if let Some(triple) = database
+            .query_default_triples(Some(sensor_id), Some(comfort_pred_id), None)
+            .first()
         {
             let dict = database.dictionary.read().unwrap();
             if let Some(value) = dict.decode(triple.object) {

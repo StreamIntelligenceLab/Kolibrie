@@ -46,7 +46,7 @@ fn main() {
 
   let mut database = SparqlDatabase::new();
   database.parse_rdf(rdf_xml_data);
-  println!("Database RDF triples: {:#?}", database.triples);
+  println!("Database RDF triples: {:#?}", database.query_default_triples(None, None, None));
 
   // Process the rule definition separately
   let rule_definition = r#"PREFIX ex: <http://example.org#>

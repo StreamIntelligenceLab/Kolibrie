@@ -98,13 +98,13 @@
 97. Preserve legacy numeric threshold behavior and reject automatic threshold syntax for legacy `combination=topk` threshold-as-k parsing
 98. Add interval oracle, certified alert/no-alert, uncertain escalation, residual/probe accounting, parser, RDF, stream, and RSP regression tests
 99. Extend hybrid Criterion benchmarks with certified decision rates, interval width, SDD node counts, escalation rate, latency percentiles, and survivor recall checks
-100. Extend the existing `nom` SPARQL parser with recursive fixed/variable/nested `GRAPH` patterns, empty group patterns, `UNION`, strict trailing-input validation, comments, case-insensitive keywords, and escaped literals
-101. Replace the ad-hoc `GRAPH` string scanner with graph-aware recursive execution, including graph-variable joins, empty named graphs, multiset `UNION`, `DISTINCT`, `LIMIT`, and existing `FROM NAMED` visibility
-102. Add SPARQL Update execution for `INSERT DATA`, `DELETE DATA`, `INSERT ... WHERE`, `DELETE ... WHERE`, combined `DELETE/INSERT ... WHERE`, and `DELETE WHERE` on default and named graphs
-103. Evaluate MODIFY `WHERE` patterns once before mutation, instantiate DELETE and INSERT from the same bindings, apply deletions before insertions, and allocate INSERT template blank nodes per solution
-104. Add an explicit named-graph identity catalog so named graphs survive deletion of their final quad and index rebuilding preserves named quads and empty graph identities
-105. Add the error-preserving Rust `SparqlDatabase::execute_update()` API, route legacy query and HTTP update adapters through the same implementation, and add Python `SparqlDatabase.update()`
-106. Add parser, GRAPH, UNION, update, graph-variable template, empty-graph, index-rebuild, integration, and RDF-star regression coverage without adding parser libraries or runtime dependencies
+100. Unify standard SELECT and Update handling in the existing `nom` parser -> recursive group algebra -> logical plan -> Streamertail optimizer -> physical execution architecture; remove the parallel strict parser and recursive evaluator
+101. Extend the existing parser and plans with fixed, variable, nested, missing, and empty `GRAPH` patterns plus multiset `UNION`, while preserving FILTER, arithmetic, BIND, VALUES, subqueries, aggregation, ordering, limits, and RDF-star
+102. Add SPARQL dataset replacement for `FROM` and `FROM NAMED`: merged duplicate-free query defaults, restricted named-graph visibility, and the required empty default graph for `FROM NAMED` without `FROM`
+103. Support exactly six SPARQL Update forms on default and named graphs: `INSERT DATA`, `DELETE DATA`, `INSERT ... WHERE`, `DELETE ... WHERE`, combined `DELETE/INSERT ... WHERE`, and `DELETE WHERE`
+104. Evaluate each Update `WHERE` once through the same optimized query plan, instantiate DELETE and INSERT from one binding snapshot, delete before inserting, and allocate INSERT template blank nodes per solution
+105. Preserve named quads and empty graph identities through index rebuilding and database unions; graph-variable execution includes catalogued empty named graphs for empty patterns
+106. Route Rust, legacy query/update adapters, Python `update()`, and HTTP updates through the unified implementation, with parser, GRAPH, UNION, dataset, Update, optimizer, RDF-star, and integration regression coverage and no new dependency
 
 0.1.1
 1. Modify whole project by making Cargo workspace

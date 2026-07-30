@@ -34,9 +34,9 @@ fn extract_traffic_data_from_database(
     database: &SparqlDatabase,
 ) -> Result<Vec<TrafficData>, Box<dyn Error>> {
     let dict = database.dictionary.read().unwrap();
-    
-    let traffic_data: Vec<TrafficData> = database
-        .triples
+    let default_triples = database.query_default_triples(None, None, None);
+
+    let traffic_data: Vec<TrafficData> = default_triples
         .iter()
         .filter(|triple| {
             // Use dict instead of database.dictionary
@@ -59,8 +59,7 @@ fn extract_traffic_data_from_database(
                 .parse()
                 .unwrap_or(0.0);
 
-            let vehicle_count = database
-                .triples
+            let vehicle_count = default_triples
                 .iter()
                 .find(|t| {
                     t.subject == triple.subject
@@ -373,7 +372,7 @@ impl DynamicRuleManager {
         let mut results = Vec::new();
         let dict = self.database.dictionary.read().unwrap();
         
-        for triple in &self.database.triples {
+        for triple in self.database.query_default_triples(None, None, None) {
             if let Some(pred) = dict.decode(triple.predicate) {
                 if pred.contains("emergencyVehicles") {
                     if let (Some(subject_str), Some(object_str)) = (
@@ -395,7 +394,7 @@ impl DynamicRuleManager {
         let mut results = Vec::new();
         let dict = self.database.dictionary.read().unwrap();
         
-        for triple in &self.database.triples {
+        for triple in self.database.query_default_triples(None, None, None) {
             if let Some(pred) = dict.decode(triple.predicate) {
                 if pred.contains("weatherCondition") {
                     if let (Some(subject_str), Some(object_str)) = (
@@ -417,7 +416,7 @@ impl DynamicRuleManager {
         let mut results = HashMap::new();
         let dict = self.database.dictionary.read().unwrap();
         
-        for triple in &self.database.triples {
+        for triple in self.database.query_default_triples(None, None, None) {
             if let Some(pred) = dict.decode(triple.predicate) {
                 if pred.contains("congestionLevel") && !pred.starts_with("ex:") {
                     if let (Some(subject_str), Some(object_str)) = (
@@ -487,7 +486,7 @@ impl DynamicRuleManager {
                     object: object_id,
                 };
 
-                if self.database.triples.insert(enhanced_triple.clone()) {
+                if self.database.dataset_index.insert_triple(&enhanced_triple) {
                     facts.push(enhanced_triple.clone());
 
                     // Acquire read lock for printing
@@ -610,8 +609,8 @@ impl DynamicRuleManager {
         let dict = self.database.dictionary.read().unwrap();
         
         self.database
-            .triples
-            .iter()
+            .query_default_triples(Some(road_subject_id), None, None)
+            .into_iter()
             .find(|triple| {
                 triple.subject == road_subject_id
                     && dict
@@ -653,7 +652,7 @@ impl DynamicRuleManager {
         let object_id = dict.encode(object);
         drop(dict);
 
-        self.database.triples.insert(Triple {
+        self.database.add_triple(Triple {
             subject: subject_id,
             predicate: predicate_id,
             object: object_id,

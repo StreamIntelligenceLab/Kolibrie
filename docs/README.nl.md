@@ -206,8 +206,13 @@ for row in results {
 
 #### Benoemde grafen, `GRAPH` en `UNION`
 
-Kolibries bestaande SPARQL-parser ondersteunt recursieve `GRAPH`-patronen met
-vaste of variabele graafnamen, geneste groepen en multiset-`UNION`:
+Kolibries standaard SELECT- en Update-paden gebruiken één architectuur: de
+bestaande `nom`-parser bouwt recursieve groepspatronen die naar hetzelfde
+logische plan, dezelfde Streamertail-optimizer en dezelfde fysieke executor
+worden vertaald. Er is geen afzonderlijke parser of evaluator voor `GRAPH`,
+`UNION` of Update-`WHERE`-patronen. Het uniforme pad ondersteunt recursieve
+`GRAPH`-patronen met vaste of variabele graafnamen, geneste groepen en
+multiset-`UNION`:
 
 ```rust
 let rows = execute_query_rayon_parallel2_volcano(
@@ -228,11 +233,20 @@ identiteiten van benoemde grafen en bindt `?g`; de standaardgraaf wordt nooit
 meegenomen. Zonder `DISTINCT` blijven dubbele oplossingen die door `UNION`
 worden opgeleverd behouden.
 
+Datasetclausules vervangen de querydataset. Meerdere `FROM`-grafen worden tot
+de standaardgraaf van de query samengevoegd, waarbij dubbele triples worden
+onderdrukt. Zodra een datasetclausule aanwezig is, zijn voor `GRAPH` alleen de
+met `FROM NAMED` vermelde grafen zichtbaar. `FROM NAMED` zonder `FROM` levert
+een lege standaardgraaf voor de query op; `FROM` zonder `FROM NAMED` stelt geen
+benoemde grafen beschikbaar. Zonder datasetclausules zijn de fysieke
+standaardgraaf en alle gecatalogiseerde benoemde grafen zichtbaar.
+
 #### Ondersteunde SPARQL Update-vormen
 
-De foutbehoudende Rust-API accepteert de onderstaande reeks Update-vormen.
+De foutbehoudende Rust-API accepteert precies de zes onderstaande Update-vormen.
 Templates voor de standaardgraaf en benoemde grafen kunnen in dezelfde
-bewerking worden gecombineerd.
+bewerking worden gecombineerd; elke `WHERE` gebruikt dezelfde parser, logische
+planner, optimizer en executor als SELECT.
 
 ```rust
 db.execute_update(r#"
@@ -247,7 +261,9 @@ Ondersteunde vormen zijn `INSERT DATA`, `DELETE DATA`, `INSERT ... WHERE`,
 `DELETE ... WHERE`, gecombineerd `DELETE/INSERT ... WHERE` en `DELETE WHERE`.
 Het `WHERE`-patroon wordt eenmaal geëvalueerd voordat wijzigingen worden
 toegepast, waarbij verwijderingen vóór invoegingen plaatsvinden. Python biedt
-hetzelfde gedrag via `SparqlDatabase.update()`.
+hetzelfde gedrag via `SparqlDatabase.update()`. Andere SPARQL 1.1
+Update-vormen, zoals `WITH`, `USING`, `LOAD` en graafbeheerbewerkingen, maken
+geen deel uit van deze release.
 
 #### Query met FILTER
 

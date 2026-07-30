@@ -49,7 +49,7 @@ fn main() {
         "142",
     );
 
-    let size_after_rdf = database.triples.len();
+    let size_after_rdf = database.dataset_index.len_default();
     println!("  Loaded {} RDF triples.", size_after_rdf);
     println!("  Sensors: S1 (temp=92, press=135), S2 (temp=71, press=118), S3 (temp=88, press=142)");
 
@@ -60,7 +60,7 @@ fn main() {
 
     database.parse_turtle(rdf_star_data);
 
-    let size_after_rdf_star = database.triples.len();
+    let size_after_rdf_star = database.dataset_index.len_default();
     let rdf_star_count = size_after_rdf_star - size_after_rdf;
     println!("  Loaded {} RDF-star triples (reliability annotations).", rdf_star_count);
     println!("  Initial database size: {} triples.", size_after_rdf_star);
@@ -106,11 +106,11 @@ WHERE {
     FILTER(?t > 80)
 }"#;
 
-    let size_before_classical = database.triples.len();
+    let size_before_classical = database.dataset_index.len_default();
 
     match process_rule_definition(classical_rule, &mut database) {
         Ok((_, inferred)) => {
-            let size_after_classical = database.triples.len();
+            let size_after_classical = database.dataset_index.len_default();
             println!(
                 "  Inferred {} new overheat-alert facts  (+{} triples).  Database: {} triples.",
                 inferred.len(),
@@ -155,11 +155,11 @@ WHERE {
     FILTER(?p > 130)
 }"#;
 
-    let size_before_prob = database.triples.len();
+    let size_before_prob = database.dataset_index.len_default();
 
     match process_rule_definition(prob_rule, &mut database) {
         Ok((_, inferred)) => {
-            let size_after_prob = database.triples.len();
+            let size_after_prob = database.dataset_index.len_default();
             println!(
                 "  Inferred {} new critical-risk facts  (+{} triples).  Database: {} triples.",
                 inferred.len(),
@@ -202,7 +202,7 @@ SELECT ?sensor WHERE {
         }
     }
 
-    let final_size  = database.triples.len();
+    let final_size  = database.dataset_index.len_default();
     let growth      = final_size as isize - size_after_rdf_star as isize;
     let growth_pct  = growth as f64 / size_after_rdf_star as f64 * 100.0;
 

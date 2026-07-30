@@ -280,13 +280,16 @@ fn main() {
     // Create and populate the database
     let mut database = SparqlDatabase::new();
     database.parse_rdf(&rdf_xml_data);
-    println!("Database RDF triples: {:#?}", database.triples);
+    println!(
+        "Database RDF triples: {:#?}",
+        database.query_default_triples(None, None, None)
+    );
 
     // FIXED: Load data into knowledge graph with proper lock handling
     let mut kg = Reasoner::new();
     
     // Collect triples first to avoid holding lock during iteration
-    let triples_to_add: Vec<_> = database.triples.iter().cloned().collect();
+    let triples_to_add = database.query_default_triples(None, None, None);
     
     for triple in triples_to_add {
         // Acquire read lock, decode to owned strings, release lock
@@ -453,7 +456,7 @@ WHERE {
     
     // Add inferred facts to database
     for triple in inferred_facts.iter() {
-        database.triples.insert(triple.clone());
+        database.add_triple(triple.clone());
     }
 
     // Query for sensors by grid position
