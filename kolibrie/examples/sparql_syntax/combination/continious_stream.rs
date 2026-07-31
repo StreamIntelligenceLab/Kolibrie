@@ -271,7 +271,7 @@ WHERE {
   ?room ex:hasAlert ?alert . 
 }"#;
     
-    let all_alerts = execute_query(all_alerts_query, database);
+    let all_alerts = execute_query_rayon_parallel2_volcano(all_alerts_query, database);
     if !all_alerts.is_empty() {
         println!("Total high temperature alerts in database: {}", all_alerts.len());
     }
@@ -283,7 +283,7 @@ WHERE {
   ?room ex:newHighReading ?temp . 
 }"#;
     
-    let all_readings = execute_query(all_readings_query, database);
+    let all_readings = execute_query_rayon_parallel2_volcano(all_readings_query, database);
     if !all_readings.is_empty() {
         println!("Total flagged high readings in database: {}", all_readings.len());
     }
@@ -295,7 +295,7 @@ WHERE {
   ?room ex:extremeLevel ?temp . 
 }"#;
     
-    let extreme_results = execute_query(extreme_query, database);
+    let extreme_results = execute_query_rayon_parallel2_volcano(extreme_query, database);
     if !extreme_results.is_empty() {
         println!("Total extreme temperature conditions in database: {}", extreme_results.len());
     }
@@ -308,7 +308,7 @@ WHERE {
   ?reading ex:temperature ?temp .
 }"#;
     
-    let batch_results = execute_query(batch_query, database);
+    let batch_results = execute_query_rayon_parallel2_volcano(batch_query, database);
     println!("Total raw sensor readings in database: {}", batch_results.len());
     
     alert_count
@@ -340,7 +340,7 @@ WHERE {
     ];
     
     for (name, query) in queries {
-        let results = execute_query(query, database);
+        let results = execute_query_rayon_parallel2_volcano(query, database);
         println!("{}: {} results found", name, results.len());
         
         // Show a few sample results to give insight into the data
@@ -354,10 +354,10 @@ WHERE {
     }
     
     // Calculate and display final performance statistics
-    let total_sensor_data = execute_query(r#"PREFIX ex: <http://example.org#>
+    let total_sensor_data = execute_query_rayon_parallel2_volcano(r#"PREFIX ex: <http://example.org#>
 SELECT ?reading WHERE { ?reading ex:room ?room . }"#, database).len();
     
-    let total_alerts = execute_query(r#"PREFIX ex: <http://example.org#>
+    let total_alerts = execute_query_rayon_parallel2_volcano(r#"PREFIX ex: <http://example.org#>
 SELECT ?room WHERE { ?room ex:hasAlert ?alert . }"#, database).len();
     
     println!("Final Performance Summary:");

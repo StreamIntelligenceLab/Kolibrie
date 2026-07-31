@@ -43,13 +43,6 @@ pub struct UpdateSummary {
     pub deleted_quads: usize,
 }
 
-#[deprecated(
-    note = "use execute_query_rayon_parallel2_volcano() so queries go through the optimizer"
-)]
-pub fn execute_query(sparql: &str, database: &mut SparqlDatabase) -> Vec<Vec<String>> {
-    execute_query_rayon_parallel2_volcano(sparql, database)
-}
-
 /// Execute SELECT or a compatibility Update request through the unified
 /// parser → logical plan → optimizer → physical executor pipeline.
 ///

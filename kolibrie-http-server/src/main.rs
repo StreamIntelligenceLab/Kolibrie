@@ -10,7 +10,7 @@
 
 use datalog::parser_n3_logic::parse_n3_rule;
 use datalog::reasoning::Reasoner;
-use kolibrie::execute_query::{execute_query, execute_query_rayon_parallel2_volcano};
+use kolibrie::execute_query::execute_query_rayon_parallel2_volcano;
 use kolibrie::parser::process_rule_definition;
 use kolibrie::rsp_engine::{
     OperationMode, QueryExecutionMode, RSPBuilder, ResultConsumer, SimpleR2R,
@@ -1086,7 +1086,7 @@ fn execute_sparql_with_context(body: &str) -> String {
         let results = if use_optimizer {
             execute_query_rayon_parallel2_volcano(&executable_query, &mut database)
         } else {
-            execute_query(&executable_query, &mut database)
+            execute_query_rayon_parallel2_volcano(&executable_query, &mut database)
         };
 
         let execution_time = start_time.elapsed().as_secs_f64() * 1000.0;

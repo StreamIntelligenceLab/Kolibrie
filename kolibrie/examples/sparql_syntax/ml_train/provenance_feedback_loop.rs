@@ -6,7 +6,7 @@
  *   -> SPARQL-star feature query -> train a neural relation -> feed predictions back into RULE syntax
  */
 
-use kolibrie::execute_query::execute_query;
+use kolibrie::execute_query::execute_query_rayon_parallel2_volcano;
 use kolibrie::execute_ml_train::build_ground_reasoner_from_db;
 use kolibrie::neural_relations::execute_neural_program;
 use kolibrie::parser::{convert_combined_rule, parse_combined_query, process_rule_definition};
@@ -413,7 +413,7 @@ fn main() {
     let provenance_inferred = execute_sdd_rule_batch(&mut db, &[temp_rule, hr_rule]);
     println!("\n  Shared SDD inference produced {} new provenance-tagged facts", provenance_inferred);
 
-    let risk_rows = execute_query(&risk_signal_query(), &mut db);
+    let risk_rows = execute_query_rayon_parallel2_volcano(&risk_signal_query(), &mut db);
     println!("\n  Derived {} riskSignal facts", risk_rows.len());
 
     println!("\n[3/5] Inspecting provenance with SPARQL-star and building neural features");
@@ -431,7 +431,7 @@ fn main() {
 
     let prediction_query = prediction_query();
     print_block("  Prediction query", &prediction_query);
-    let prediction_rows = execute_query(&prediction_query, &mut db);
+    let prediction_rows = execute_query_rayon_parallel2_volcano(&prediction_query, &mut db);
     print_rows("  Predicted responses", &prediction_rows);
 
     println!("\n[5/5] Feeding predictions back into RULE syntax");
@@ -443,7 +443,7 @@ fn main() {
 
     let case_query = dispatch_case_query();
     print_block("  Final SELECT query", &case_query);
-    let case_rows = execute_query(&case_query, &mut db);
+    let case_rows = execute_query_rayon_parallel2_volcano(&case_query, &mut db);
     print_rows("  Dispatch cases opened by the rule", &case_rows);
 
     println!("\nModel saved to {MODEL_PATH}");

@@ -129,7 +129,7 @@ SELECT ?sensor WHERE {
     ?sensor ex:overheatAlert true .
 }"#;
 
-    let alert_results = execute_query(sparql_alert, &mut database);
+    let alert_results = execute_query_rayon_parallel2_volcano(sparql_alert, &mut database);
     println!("  Overheating sensors ({} found):", alert_results.len());
     for row in &alert_results {
         for val in row {
@@ -178,7 +178,7 @@ SELECT ?sensor WHERE {
     ?sensor ex:criticalRisk true .
 }"#;
 
-    let critical_results = execute_query(sparql_critical, &mut database);
+    let critical_results = execute_query_rayon_parallel2_volcano(sparql_critical, &mut database);
     println!("  Critical-risk sensors ({} found):", critical_results.len());
     for row in &critical_results {
         for val in row {

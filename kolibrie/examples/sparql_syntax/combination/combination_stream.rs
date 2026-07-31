@@ -364,7 +364,7 @@ WHERE {
 }"#;
 
     println!("Querying for temperature alerts...");
-    let query_results = execute_query(alert_query, &mut database);
+    let query_results = execute_query_rayon_parallel2_volcano(alert_query, &mut database);
     println!("Alert query results: {:?}", query_results);
 
     // DEBUG: Validate windowing results
@@ -387,7 +387,7 @@ WHERE {
 }"#;
 
     println!("Querying for new high readings...");
-    let reading_results = execute_query(new_reading_query, &mut database);
+    let reading_results = execute_query_rayon_parallel2_volcano(new_reading_query, &mut database);
     println!("New reading query results: {:?}", reading_results);
 
     // DEBUG: Validate ISTREAM results
@@ -407,7 +407,7 @@ WHERE {
 }"#;
 
     println!("Querying for predicted levels...");
-    let prediction_results = execute_query(prediction_query, &mut database);
+    let prediction_results = execute_query_rayon_parallel2_volcano(prediction_query, &mut database);
     println!("Prediction query results: {:?}", prediction_results);
 
     // DEBUG: Validate DSTREAM results

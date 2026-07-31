@@ -38,7 +38,7 @@ fn advanced_join() {
 
     let sparql = r#"PREFIX ex: <http://example.org/> SELECT ?person ?location ?city ?zipcode WHERE {?person ex:worksAt ?location . ?location ex:located ?city . ?location ex:zipcode ?zipcode}"#;
 
-    let results = execute_query(sparql, &mut database);
+    let results = execute_query_rayon_parallel2_volcano(sparql, &mut database);
 
     // Now the main function is responsible for printing the results
     println!("Results:");

@@ -54,7 +54,7 @@ fn min_aggregate() {
 
     let sparql = r#"PREFIX ds: <https://data.cityofchicago.org/resource/xzkq-xp2w/> SELECT MIN(?salary) AS ?minimum_salary WHERE {?employee ds:annual_salary ?salary} GROUPBY ?minimum_salary"#;
 
-    let results = execute_query(sparql, &mut database);
+    let results = execute_query_rayon_parallel2_volcano(sparql, &mut database);
 
     // Now the main function is responsible for printing the results
     println!("Results:");

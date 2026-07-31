@@ -86,6 +86,6 @@ WHERE {
 }"#;
   
   // Execute the SELECT query that uses the rule
-  let query_results = execute_query(select_query, &mut database);
+  let query_results = execute_query_rayon_parallel2_volcano(select_query, &mut database);
   println!("Query results: {:?}", query_results);
 }

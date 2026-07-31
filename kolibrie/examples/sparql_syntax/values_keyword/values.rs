@@ -40,7 +40,7 @@ fn values() {
     let sparql_query = r#"PREFIX ex: <http://example.org/> SELECT ?person ?company WHERE {?person ex:worksAt ?company} VALUES ?company { ex:companyA ex:companyB }"#;
 
     // Execute the query on the database
-    let results = execute_query(sparql_query, &mut database);
+    let results = execute_query_rayon_parallel2_volcano(sparql_query, &mut database);
 
     // Display the results
     println!("Query Results:");

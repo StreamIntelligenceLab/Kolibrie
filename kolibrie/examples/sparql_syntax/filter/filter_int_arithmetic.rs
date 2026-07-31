@@ -60,7 +60,7 @@ fn filter_query() {
         FILTER(?salary > (75000 + 1000))
     }"#;
 
-    let results = execute_query(sparql, &mut database);
+    let results = execute_query_rayon_parallel2_volcano(sparql, &mut database);
 
     // Now the main function is responsible for printing the results
     println!("Results:");
@@ -79,7 +79,7 @@ fn filter_query() {
         FILTER((?salary * 1.1) > 75000)
     }"#;
 
-    let results2 = execute_query(sparql2, &mut database);
+    let results2 = execute_query_rayon_parallel2_volcano(sparql2, &mut database);
 
     // Now the main function is responsible for printing the results
     println!("Results:");

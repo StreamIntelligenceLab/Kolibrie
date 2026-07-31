@@ -8,7 +8,7 @@
  * you can obtain one at https://mozilla.org/MPL/2.0/.
  */
 
-use kolibrie::execute_query::execute_query;
+use kolibrie::execute_query::execute_query_rayon_parallel2_volcano;
 use kolibrie::parser::*;
 use kolibrie::sparql_database::SparqlDatabase;
 use datalog::reasoning::Reasoner;
@@ -468,7 +468,7 @@ WHERE {
                 ex:gridY ?y .
     }"#;
 
-    let grid_sensor_results = execute_query(query_grid_sensors, &mut database);
+    let grid_sensor_results = execute_query_rayon_parallel2_volcano(query_grid_sensors, &mut database);
     println!("\n==> Sensors in grid coordinates:");
     for row in grid_sensor_results {
         println!("{:?}", row);
@@ -482,7 +482,7 @@ WHERE {
                 ex:timeOfDetection ?time .
     }"#;
 
-    let unauthorized_results = execute_query(query_unauthorized, &mut database);
+    let unauthorized_results = execute_query_rayon_parallel2_volcano(query_unauthorized, &mut database);
     println!("\n==> Unauthorized detection events:");
     for row in unauthorized_results {
         println!("{:?}", row);

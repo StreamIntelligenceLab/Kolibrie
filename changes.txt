@@ -105,6 +105,10 @@
 104. Evaluate each Update `WHERE` once through the same optimized query plan, instantiate DELETE and INSERT from one binding snapshot, delete before inserting, and allocate INSERT template blank nodes per solution
 105. Preserve named quads and empty graph identities through index rebuilding and database unions; graph-variable execution includes catalogued empty named graphs for empty patterns
 106. Route Rust, legacy query/update adapters, Python `update()`, and HTTP updates through the unified implementation, with parser, GRAPH, UNION, dataset, Update, optimizer, RDF-star, and integration regression coverage and no new dependency
+107. Remove the deprecated `execute_query` adapter and migrate CLI, HTTP server, benchmarks, and examples to `execute_query_rayon_parallel2_volcano`
+108. Remove the superseded pre-Streamertail join methods (`par_join`, `perform_join`, `perform_join_par_simd_with_strict_filter_1..4`, `perform_join_sequential`, `perform_join_sequential_simd`) and their SIMD helpers from `SparqlDatabase`
+109. Remove the unused `apply_filters_simd` filter-evaluation path from `SparqlDatabase` in favor of Streamertail `Condition` evaluation
+110. Remove the unused streaming join and merge-join helper chain from `shared::join_algorithm`, keeping `perform_hash_join_for_rules` for Datalog rule evaluation
 
 0.1.1
 1. Modify whole project by making Cargo workspace

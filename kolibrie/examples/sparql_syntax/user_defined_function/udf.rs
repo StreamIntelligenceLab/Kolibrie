@@ -39,7 +39,7 @@ fn udf() {
       BIND(concatValues(?object, "suffix") AS ?result)
     }"#;
 
-    let results = execute_query(sparql, &mut database);
+    let results = execute_query_rayon_parallel2_volcano(sparql, &mut database);
 
     // Now the main function is responsible for printing the results
     println!("Results:{:?}", results);

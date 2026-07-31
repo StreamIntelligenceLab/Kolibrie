@@ -10,7 +10,7 @@
 
 use chrono::{Local, Timelike};
 use datalog::reasoning::Reasoner;
-use kolibrie::execute_query::execute_query;
+use kolibrie::execute_query::execute_query_rayon_parallel2_volcano;
 use kolibrie::parser::*;
 use kolibrie::sparql_database::SparqlDatabase;
 use rumqttc::{Client, MqttOptions, QoS, RecvTimeoutError};
@@ -1085,7 +1085,7 @@ WHERE {
                             ex:objectType ?type .
                 }"#;
 
-                let authorized_results = execute_query(query_authorized, &mut database);
+                let authorized_results = execute_query_rayon_parallel2_volcano(query_authorized, &mut database);
                 if !authorized_results.is_empty() && security_state.lock().unwrap().can_send_alarm()
                 {
                     println!("\n==> AUTHORIZED DETECTIONS FROM SPARQL:");

@@ -81,7 +81,7 @@ fn main() {
     }
     ORDER BY ?attendees"#;
 
-    let results = execute_query(sparql, &mut database);
+    let results = execute_query_rayon_parallel2_volcano(sparql, &mut database);
     for result in results {
         if let [name, type_, attendees] = &result[..] {
             println!("Name: {}, Type: {}, Attendees: {}", name, type_, attendees);
