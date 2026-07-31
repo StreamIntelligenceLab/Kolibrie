@@ -26,7 +26,10 @@ import tempfile
 HERE = os.path.dirname(os.path.abspath(__file__))
 COMP = os.path.dirname(HERE)                       # comparison/
 REPO_ROOT = os.path.abspath(os.path.join(COMP, "..", ".."))
-PROGRAM = os.path.join(HERE, "programs", "lubm_past.txt")
+PROGRAMS = {
+    "past": os.path.join(HERE, "programs", "lubm_past.txt"),  # 4 rules
+    "deep": os.path.join(HERE, "programs", "lubm_deep.txt"),  # 8 rules, deeper chain + joins
+}
 METEOR_HOME = os.environ.get("METEOR_HOME", "/Users/u0164257/Documents/Github/MeTeoR")
 DYLD = os.environ.get(
     "DYLD_LIBRARY_PATH",
@@ -37,29 +40,31 @@ RUST_BIN_DEBUG = os.path.join(REPO_ROOT, "target", "debug", "examples", "meteor_
 RUST_BIN = RUST_BIN_RELEASE if os.path.exists(RUST_BIN_RELEASE) else RUST_BIN_DEBUG
 
 
-def gen_data(scale, horizon, intervals, seed, out):
-    subprocess.run(
-        [sys.executable, os.path.join(HERE, "gen_lubm.py"),
-         "--scale", str(scale), "--horizon", str(horizon),
-         "--intervals", str(intervals), "--seed", str(seed), "--out", out],
-        check=True, capture_output=True, text=True,
-    )
+def gen_data(scale, horizon, intervals, seed, out, max_width=None, rich=False):
+    cmd = [sys.executable, os.path.join(HERE, "gen_lubm.py"),
+           "--scale", str(scale), "--horizon", str(horizon),
+           "--intervals", str(intervals), "--seed", str(seed), "--out", out]
+    if max_width is not None:
+        cmd += ["--max-width", str(max_width)]
+    if rich:
+        cmd += ["--rich"]
+    subprocess.run(cmd, check=True, capture_output=True, text=True)
 
 
-def run_rust(data, store):
+def run_rust(program, data, store, strategy="tick"):
     env = dict(os.environ, DYLD_LIBRARY_PATH=DYLD)
-    cmd = [RUST_BIN, "--program", PROGRAM, "--data", data,
-           "--store", store, "--timing"]
+    cmd = [RUST_BIN, "--program", program, "--data", data,
+           "--store", store, "--strategy", strategy, "--timing"]
     proc = subprocess.run(cmd, cwd=REPO_ROOT, env=env, capture_output=True, text=True)
     if proc.returncode != 0:
         raise RuntimeError("rust engine failed:\n" + proc.stderr)
     return json.loads(proc.stdout.strip().splitlines()[-1])
 
 
-def run_meteor(data):
+def run_meteor(program, data, mode="seminaive"):
     env = dict(os.environ, PYTHONPATH=METEOR_HOME)
     cmd = [sys.executable, os.path.join(HERE, "run_meteor_perf.py"),
-           "--program", PROGRAM, "--data", data]
+           "--program", program, "--data", data, "--mode", mode]
     proc = subprocess.run(cmd, env=env, capture_output=True, text=True)
     if proc.returncode != 0:
         raise RuntimeError("meteor reasoner failed:\n" + proc.stderr)
@@ -70,18 +75,19 @@ def best_of(fn, repeats):
     return min(fn()["reason_ms"] for _ in range(repeats))
 
 
-def verify(scale, horizon, intervals, seed, store):
+def verify(program, scale, horizon, intervals, seed, store, strategy="tick",
+           max_width=None, rich=False, meteor_mode="seminaive"):
     """Confirm both engines still agree on a generated dataset via compare.py."""
     with tempfile.TemporaryDirectory() as tmp:
         cases = os.path.join(tmp, "cases")
         case = os.path.join(cases, "gen")
         os.makedirs(case)
-        subprocess.run(["cp", PROGRAM, os.path.join(case, "program.txt")], check=True)
-        gen_data(scale, horizon, intervals, seed, os.path.join(case, "data.txt"))
+        subprocess.run(["cp", program, os.path.join(case, "program.txt")], check=True)
+        gen_data(scale, horizon, intervals, seed, os.path.join(case, "data.txt"), max_width, rich)
         env = dict(os.environ, DYLD_LIBRARY_PATH=DYLD, METEOR_HOME=METEOR_HOME)
         proc = subprocess.run(
             [sys.executable, os.path.join(COMP, "compare.py"), cases,
-             "--store", store],
+             "--store", store, "--strategy", strategy, "--meteor-mode", meteor_mode],
             env=env, capture_output=True, text=True,
         )
         print(proc.stdout.strip())
@@ -91,11 +97,19 @@ def verify(scale, horizon, intervals, seed, store):
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--scales", default="100,500,1000,2000")
+    ap.add_argument("--program", default="past", choices=list(PROGRAMS),
+                    help="workload: past (4 rules) or deep (8 rules, deeper chain+joins)")
     ap.add_argument("--horizon", type=int, default=20)
     ap.add_argument("--intervals", type=int, default=3)
     ap.add_argument("--seed", type=int, default=42)
     ap.add_argument("--store", default="snapshot", choices=["snapshot", "interval"])
+    ap.add_argument("--strategy", default="tick", choices=["tick", "interval"])
+    ap.add_argument("--max-width", type=int, default=None)
     ap.add_argument("--repeats", type=int, default=1, help="take best of N runs")
+    ap.add_argument("--meteor-cap", type=int, default=None,
+                    help="skip MeTeoR above this scale (it is the slow baseline)")
+    ap.add_argument("--meteor-mode", default="seminaive", choices=["seminaive", "naive"],
+                    help="MeTeoR materialization mode (naive = ground truth for Since-over-derived)")
     ap.add_argument("--verify", action="store_true")
     args = ap.parse_args()
 
@@ -104,32 +118,38 @@ def main():
               file=sys.stderr)
         return 1
 
+    program = PROGRAMS[args.program]
+    rich = args.program == "deep"
     scales = [int(s) for s in args.scales.split(",") if s.strip()]
+    per_entity = 6 if rich else 3  # base atoms emitted per entity
 
     if args.verify:
         print("== parity check on generated data (scale={}) ==".format(scales[0]))
-        ok = verify(scales[0], args.horizon, args.intervals, args.seed, args.store)
+        ok = verify(program, scales[0], args.horizon, args.intervals, args.seed,
+                    args.store, args.strategy, args.max_width, rich, args.meteor_mode)
         print("parity: {}\n".format("OK" if ok else "MISMATCH"))
 
-    print("horizon={}  intervals/atom={}  store={}  repeats={}".format(
-        args.horizon, args.intervals, args.store, args.repeats))
-    print("{:>8} {:>10} {:>13} {:>13} {:>9}".format(
+    print("program={}  horizon={}  intervals/atom={}  store={}  strategy={}  repeats={}".format(
+        args.program, args.horizon, args.intervals, args.store, args.strategy, args.repeats))
+    print("{:>8} {:>11} {:>13} {:>13} {:>9}".format(
         "scale", "facts", "meteor_ms", "rust_ms", "rust/mtr"))
     print("-" * 58)
 
     with tempfile.TemporaryDirectory() as tmp:
         for n in scales:
             data = os.path.join(tmp, "lubm_{}.txt".format(n))
-            gen_data(n, args.horizon, args.intervals, args.seed, data)
-            facts = 3 * n * args.intervals
+            gen_data(n, args.horizon, args.intervals, args.seed, data, args.max_width, rich)
+            facts = per_entity * n * args.intervals
 
-            m_ms = best_of(lambda: run_meteor(data), args.repeats)
-            r = run_rust(data, args.store)
-            r_ms = min([r["reason_ms"]] +
-                       [run_rust(data, args.store)["reason_ms"] for _ in range(args.repeats - 1)])
-            ratio = r_ms / m_ms if m_ms else float("nan")
-            print("{:>8} {:>10} {:>13.2f} {:>13.2f} {:>9.2f}".format(
-                n, facts, m_ms, r_ms, ratio))
+            skip_meteor = args.meteor_cap is not None and n > args.meteor_cap
+            m_ms = None if skip_meteor else best_of(lambda: run_meteor(program, data, args.meteor_mode), args.repeats)
+            r_ms = min(run_rust(program, data, args.store, args.strategy)["reason_ms"]
+                       for _ in range(args.repeats))
+            ratio = (r_ms / m_ms) if m_ms else float("nan")
+            m_str = "-" if m_ms is None else "{:.2f}".format(m_ms)
+            ratio_str = "-" if m_ms is None else "{:.3f}".format(ratio)
+            print("{:>8} {:>11} {:>13} {:>13.2f} {:>9}".format(
+                n, facts, m_str, r_ms, ratio_str))
 
     return 0
 

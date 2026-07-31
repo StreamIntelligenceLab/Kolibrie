@@ -57,7 +57,84 @@ The original engine was `O(facts²)` per tick and ~20–160× slower (e.g. scale
    already-bound variables into the pattern before querying, so `Diamond`/`Box`
    inner lookups are constrained/indexed too.
 
-### Horizon-dependence: idle-tick skipping
+## Deeper evaluation: two workloads, larger scale, more dimensions
+
+Two programs (select with `perf.py --program`):
+- **`past`** (`programs/lubm_past.txt`, 4 rules) — `Boxminus`/`Diamondminus` + a binary join.
+- **`deep`** (`programs/lubm_deep.txt`, 8 rules) — a longer derivation chain
+  (`UndergraduateStudent → RAC → RA → ExperiencedRA → Eligible`), multi-way temporal
+  joins (`advisor` ⋈ `Diamondminus takesCourse`), and a guarded `Since`. `gen_lubm.py
+  --rich` emits the extra base predicates (`teachingAssistant`/`takesCourse`/`advisor`).
+
+**MeTeoR baseline mode matters.** MeTeoR's default **seminaive** mode is *incorrect*
+for the `deep` program: a `Since` whose trigger (`RAC`) is a *derived* predicate is
+missed (e.g. `DedicatedTA` is never derived), whereas MeTeoR **naive** derives it and
+**matches our interval engine**. So the correct baseline for `deep` is `--meteor-mode
+naive`; `perf.py`/`compare.py` expose `--meteor-mode`. This is a MeTeoR limitation, not
+ours — our naive interval fixpoint is correct (parity OK vs MeTeoR naive).
+
+### Scale (release, horizon=20, intervals/atom=3)
+
+`deep` — interval vs MeTeoR **naive** (correct baseline, capped, it is slow):
+
+| scale | facts   | meteor_ms | interval_ms | interval/mtr |
+|------:|--------:|----------:|------------:|-------------:|
+|   500 |   9,000 |     723   |     13.5    |    0.019     |
+| 2,000 |  36,000 |   2,941   |     55.4    |    0.019     |
+| 20,000| 360,000 |     —     |    673.6    |      —       |
+| 50,000| 900,000 |     —     |  2,161.7    |      —       |
+
+`past` — interval vs MeTeoR **seminaive** (correct & fast here):
+
+| scale | facts   | meteor_ms | interval_ms | interval/mtr |
+|------:|--------:|----------:|------------:|-------------:|
+| 1,000 |   9,000 |     188   |      7.9    |    0.042     |
+|10,000 |  90,000 |   1,951   |     76.5    |    0.039     |
+|50,000 | 450,000 |     —     |    501.6    |      —       |
+
+Interval is **linear** in dataset size (~2–3 µs/fact) to ~1M facts in a couple of
+seconds, and **~25× (past) / ~50× (deep) faster than MeTeoR**.
+
+### Fact density and horizon (`deep`, scale=2,000)
+
+| intervals/atom | facts   | meteor_ms | interval_ms |     | horizon | interval_ms |
+|---------------:|--------:|----------:|------------:|-----|--------:|------------:|
+|              1 |  12,000 |   1,960   |    37.7     |     |      20 |    55.0     |
+|              3 |  36,000 |   2,941   |    55.0     |     |     100 |    62.4     |
+|              6 |  72,000 |   3,194   |    59.8     |     |     500 |    63.6     |
+|             10 | 120,000 |   3,186   |    59.6     |     |   2,000 |    74.4     |
+
+- **Near-flat in fact density**: coalescing bounds the number of *distinct* intervals,
+  so 10× the raw intervals barely moves interval time (37→60 ms) while facts grow 10×.
+- **Near-flat in horizon** (55→74 ms over 100× horizon) — event-complexity confirmed.
+
+## Interval-native "automata" strategy — `--strategy interval` (recommended)
+
+A second evaluation strategy (`datalogmtl/src/automata/`) replaces the per-tick loop
+with **interval-arithmetic transducers** (a Rust port of MeTeoR's operator arithmetic)
+over a **semi-naive interval fixpoint**. Facts stay as intervals (no densification);
+temporal operators are endpoint transforms (`Diamond`=dilate, `Box`=erode, `Since`=
+anchor-intersect+shift). Cost scales with interval **endpoints**, not horizon or width.
+
+Because it uses MeTeoR's real-line interval semantics, it is an **exact** MeTeoR match —
+`perf.py --strategy interval --verify` reports **parity OK** on the LUBM workload (the
+ℤ-vs-ℝ artifact is gone), and it is **horizon-independent**:
+
+Horizon sweep @ scale=400 (`reason_ms`):
+
+| horizon | meteor | tick engine | interval (automata) |
+|--------:|-------:|------------:|--------------------:|
+|      20 |   77   |     60      |        **3.3**      |
+|     100 |   86   |    315      |        **3.6**      |
+|     500 |   88   |   1650      |        **3.7**      |
+|    2000 |   89   |   6839      |        **3.8**      |
+
+Scale sweep @ horizon=20: interval is **~0.04–0.09× MeTeoR** (11–25× faster) and
+~20× faster than the tick engine, with near-flat scaling. Milestone-1 limits: finite
+(non-periodic) programs only (iteration cap `K=1000`); `Prev` and future operators are
+out of the ported fragment. Unbounded/periodic programs are the ω-automaton phase 2.
+
+## Tick engine (historical) — horizon-dependence + idle-tick skipping
 
 The engine advances tick-by-tick, so a naive loop over `0..=H` pays `O(H)` even
 when the data occupies a tiny slice of the timeline. The driver now **skips

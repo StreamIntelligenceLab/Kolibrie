@@ -75,9 +75,9 @@ def rust_binary():
     return path if os.path.exists(path) else None
 
 
-def run_rust(program, data, horizon, store):
+def run_rust(program, data, horizon, store, strategy="tick"):
     args = ["--program", program, "--data", data,
-            "--horizon", str(horizon), "--store", store]
+            "--horizon", str(horizon), "--store", store, "--strategy", strategy]
     env = dict(os.environ, DYLD_LIBRARY_PATH=DYLD)
     binary = rust_binary()
     if binary:
@@ -92,25 +92,25 @@ def run_rust(program, data, horizon, store):
     return proc.stdout
 
 
-def run_meteor(program, data, horizon):
+def run_meteor(program, data, horizon, mode="seminaive"):
     env = dict(os.environ, PYTHONPATH=METEOR_HOME)
     cmd = [sys.executable, os.path.join(HERE, "run_meteor.py"),
-           "--program", program, "--data", data, "--horizon", str(horizon)]
+           "--program", program, "--data", data, "--horizon", str(horizon), "--mode", mode]
     proc = subprocess.run(cmd, env=env, capture_output=True, text=True)
     if proc.returncode != 0:
         raise RuntimeError("meteor reasoner failed:\n" + proc.stderr)
     return proc.stdout
 
 
-def run_case(case_dir, store, verbose):
+def run_case(case_dir, store, verbose, strategy="tick", meteor_mode="seminaive"):
     program = os.path.join(case_dir, "program.txt")
     data = os.path.join(case_dir, "data.txt")
     program_text = open(program).read()
     data_text = open(data).read()
     horizon = horizon_for(program_text, data_text)
 
-    meteor = normalize(run_meteor(program, data, horizon))
-    rust = normalize(run_rust(program, data, horizon, store))
+    meteor = normalize(run_meteor(program, data, horizon, meteor_mode))
+    rust = normalize(run_rust(program, data, horizon, store, strategy))
 
     ok = meteor == rust
     name = os.path.basename(case_dir)
@@ -128,6 +128,8 @@ def main():
     ap.add_argument("cases_dir", nargs="?", default=os.path.join(HERE, "cases"))
     ap.add_argument("--case", help="run only this case name")
     ap.add_argument("--store", default="snapshot", choices=["snapshot", "interval"])
+    ap.add_argument("--strategy", default="tick", choices=["tick", "interval"])
+    ap.add_argument("--meteor-mode", default="seminaive", choices=["seminaive", "naive"])
     ap.add_argument("-v", "--verbose", action="store_true")
     args = ap.parse_args()
 
@@ -143,7 +145,7 @@ def main():
     failures = 0
     for name in cases:
         try:
-            if not run_case(os.path.join(args.cases_dir, name), args.store, args.verbose):
+            if not run_case(os.path.join(args.cases_dir, name), args.store, args.verbose, args.strategy, args.meteor_mode):
                 failures += 1
         except Exception as e:  # noqa: BLE001
             print("[ERROR] {}: {}".format(name, e))

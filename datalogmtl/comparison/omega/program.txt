@@ -1,0 +1,2 @@
+Alarm(X):-Trigger(X)
+Alarm(X):-Diamondminus[0,1]Alarm(X)

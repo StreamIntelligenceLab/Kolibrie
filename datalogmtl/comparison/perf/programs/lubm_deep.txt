@@ -1,0 +1,8 @@
+ResearchAssistantCandidate(X):-Boxminus[0,5]UndergraduateStudent(X)
+ResearchAssistantCandidate(X):-Diamondminus[0,2]GraduateStudent(X)
+ResearchAssistant(X):-Boxminus[0,5]ResearchAssistantCandidate(X)
+ResearchAssistant(X):-publicationAuthor(Y,X),Boxminus[0,1]ResearchAssistantCandidate(X)
+ExperiencedRA(X):-Boxminus[0,3]ResearchAssistant(X)
+Mentored(X):-advisor(X,Y),Diamondminus[0,4]takesCourse(X,Z)
+DedicatedTA(X):-teachingAssistant(X),teachingAssistant(X)Since[1,6]ResearchAssistantCandidate(X)
+Eligible(X):-ExperiencedRA(X),Mentored(X)

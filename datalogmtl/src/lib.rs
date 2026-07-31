@@ -16,6 +16,7 @@ pub mod evaluator;
 pub mod stream;
 pub mod parser;
 pub mod meteor_fmt;
+pub mod automata;
 
 #[cfg(test)]
 mod tests;

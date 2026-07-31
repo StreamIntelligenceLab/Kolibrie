@@ -32,6 +32,7 @@ use datalogmtl::meteor_fmt::format_tick_sets;
 use datalogmtl::parser::{parse_data, parse_program, TemporalFact, RDF_TYPE};
 use datalogmtl::store::{IntervalFactStore, TemporalSnapshotStore, TemporalStore};
 use datalogmtl::syntax::{DatalogMTLRule, TemporalAtom};
+use datalogmtl::automata::{self, interval::TInterval};
 
 fn main() {
     let args: Vec<String> = std::env::args().collect();
@@ -39,8 +40,10 @@ fn main() {
     let mut data_path = None;
     let mut horizon_override: Option<u64> = None;
     let mut store_kind = "snapshot".to_string();
+    let mut strategy = "tick".to_string();
     let mut timing = false;
     let mut skip_empty = true;
+    let mut entail_file: Option<String> = None;
     let mut i = 1;
     while i < args.len() {
         match args[i].as_str() {
@@ -51,11 +54,15 @@ fn main() {
                 i += 2;
             }
             "--store" => { store_kind = args.get(i + 1).cloned().unwrap_or_default(); i += 2; }
+            // Evaluation strategy: tick (per-tick engine) or interval (automata).
+            "--strategy" => { strategy = args.get(i + 1).cloned().unwrap_or_default(); i += 2; }
             // Print timing + fact/derivation counts as JSON instead of the full
             // materialization (for the performance harness).
             "--timing" => { timing = true; i += 1; }
             // Disable skipping provably-empty ticks (for A/B comparison).
             "--no-skip" => { skip_empty = false; i += 1; }
+            // Answer entailment for the query facts in <file> (with --strategy omega).
+            "--entail" => { entail_file = args.get(i + 1).cloned(); i += 2; }
             other => { eprintln!("unknown argument: {}", other); std::process::exit(2); }
         }
     }
@@ -76,10 +83,19 @@ fn main() {
     let max_fact_end = facts.iter().map(|f| f.end).max().unwrap_or(0);
     let horizon = horizon_override.unwrap_or(max_fact_end + w_max);
 
-    let out = match store_kind.as_str() {
-        "snapshot" => run(TemporalSnapshotStore::new(horizon + 1), rules, &facts, &dict, horizon, skip_empty),
-        "interval" => run(IntervalFactStore::new(horizon + 1), rules, &facts, &dict, horizon, skip_empty),
-        other => fail(&format!("unknown --store '{}' (use snapshot|interval)", other)),
+    if strategy == "omega" {
+        run_omega(rules, &facts, &dict, horizon, entail_file, timing);
+        return;
+    }
+
+    let out = if strategy == "interval" {
+        run_interval(rules, &facts, &dict, horizon)
+    } else {
+        match store_kind.as_str() {
+            "snapshot" => run(TemporalSnapshotStore::new(horizon + 1), rules, &facts, &dict, horizon, skip_empty),
+            "interval" => run(IntervalFactStore::new(horizon + 1), rules, &facts, &dict, horizon, skip_empty),
+            other => fail(&format!("unknown --store '{}' (use snapshot|interval)", other)),
+        }
     };
 
     if timing {
@@ -165,6 +181,99 @@ fn run<S: TemporalStore>(
         interval_lines: format_tick_sets(&holds, &dict_guard),
         reason_micros,
         atom_count,
+    }
+}
+
+/// Interval-native ("automata") strategy: materialize with interval transducers
+/// (no densification, no per-tick loop), then expand to integer points clipped to
+/// `[0, horizon]` and reuse the same coalesced output path as the tick strategy.
+fn run_interval(
+    rules: Vec<DatalogMTLRule>,
+    facts: &[TemporalFact],
+    dict: &Arc<RwLock<Dictionary>>,
+    horizon: u64,
+) -> RunOutput {
+    let iv_facts: Vec<(Triple, TInterval)> = facts.iter()
+        .map(|f| (f.triple.clone(), TInterval::closed(f.start as i64, f.end as i64)))
+        .collect();
+
+    let start = Instant::now();
+    let db = automata::materialize(&rules, iv_facts, 1000);
+    let reason_micros = start.elapsed().as_micros();
+
+    let mut holds: HashMap<Triple, BTreeSet<u64>> = HashMap::new();
+    for (t, ivs) in &db.facts {
+        let set = holds.entry(t.clone()).or_default();
+        for iv in ivs {
+            for p in iv.integer_points_upto(horizon) {
+                set.insert(p);
+            }
+        }
+    }
+    holds.retain(|_, set| !set.is_empty());
+    let atom_count = holds.len();
+
+    let dict_guard = dict.read().unwrap();
+    RunOutput {
+        interval_lines: format_tick_sets(&holds, &dict_guard),
+        reason_micros,
+        atom_count,
+    }
+}
+
+/// ω-strategy: unbounded-time materialization (`materialize_omega`). With
+/// `--entail <file>` it answers entailment for each query fact `Pred(args)@[l,r]`
+/// (works for arbitrarily far-future times); otherwise it prints the model
+/// clipped to `[0, horizon]` like `--strategy interval`.
+fn run_omega(
+    rules: Vec<DatalogMTLRule>,
+    facts: &[TemporalFact],
+    dict: &Arc<RwLock<Dictionary>>,
+    horizon: u64,
+    entail_file: Option<String>,
+    timing: bool,
+) {
+    let iv_facts: Vec<(Triple, TInterval)> = facts.iter()
+        .map(|f| (f.triple.clone(), TInterval::closed(f.start as i64, f.end as i64)))
+        .collect();
+
+    let start = Instant::now();
+    let model = match automata::materialize_omega(&rules, iv_facts) {
+        Ok(m) => m,
+        Err(e) => { eprintln!("omega: {}", e); std::process::exit(3); }
+    };
+    let reason_micros = start.elapsed().as_micros();
+
+    if let Some(path) = entail_file {
+        let text = std::fs::read_to_string(&path)
+            .unwrap_or_else(|e| fail(&format!("cannot read {}: {}", path, e)));
+        let queries = parse_data(&text, dict).unwrap_or_else(|e| fail(&e));
+        let g = dict.read().unwrap();
+        for q in queries {
+            let holds = automata::entails(&model, &q.triple,
+                TInterval::closed(q.start as i64, q.end as i64));
+            println!("{}@[{},{}]\t{}",
+                datalogmtl::meteor_fmt::atom_string(&q.triple, &g), q.start, q.end, holds);
+        }
+        return;
+    }
+
+    let mut holds: HashMap<Triple, BTreeSet<u64>> = HashMap::new();
+    for (t, ivs) in &model.db.facts {
+        let set = holds.entry(t.clone()).or_default();
+        for iv in ivs {
+            for p in iv.integer_points_upto(horizon) { set.insert(p); }
+        }
+    }
+    holds.retain(|_, set| !set.is_empty());
+    let g = dict.read().unwrap();
+    if timing {
+        println!("{{\"reason_ms\": {:.3}, \"atoms\": {}}}",
+            reason_micros as f64 / 1000.0, holds.len());
+    } else {
+        for line in format_tick_sets(&holds, &g) {
+            println!("{}", line);
+        }
     }
 }
 

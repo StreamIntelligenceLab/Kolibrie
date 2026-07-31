@@ -38,6 +38,7 @@ def main():
     ap.add_argument("--program", required=True)
     ap.add_argument("--data", required=True)
     ap.add_argument("--K", type=int, default=1000)
+    ap.add_argument("--mode", default="seminaive", choices=["seminaive", "naive"])
     args = ap.parse_args()
 
     with open(os.devnull, "w") as devnull, contextlib.redirect_stdout(devnull):
@@ -45,7 +46,7 @@ def main():
         D = load_dataset(args.data)
 
         start = time.perf_counter()
-        materialize(D, rules, mode="seminaive", K=args.K)
+        materialize(D, rules, mode=args.mode, K=args.K)
         coalescing_d(D)
         elapsed_ms = (time.perf_counter() - start) * 1000.0
 

@@ -57,6 +57,8 @@ def main():
     ap.add_argument("--intervals", type=int, default=3, help="intervals per atom")
     ap.add_argument("--max-width", type=int, default=None,
                     help="cap each interval's width (default: up to horizon)")
+    ap.add_argument("--rich", action="store_true",
+                    help="also emit teachingAssistant/takesCourse/advisor (for lubm_deep)")
     ap.add_argument("--seed", type=int, default=42)
     ap.add_argument("--out", default="-", help="output file ('-' for stdout)")
     args = ap.parse_args()
@@ -73,6 +75,11 @@ def main():
         emit("UndergraduateStudent(u{})".format(i))
         emit("GraduateStudent(g{})".format(i))
         emit("publicationAuthor(pub{},u{})".format(i, i))
+        if args.rich:
+            emit("takesCourse(u{},c{})".format(i, i))
+            emit("advisor(u{},p{})".format(i, i))
+            if i % 2 == 0:
+                emit("teachingAssistant(u{})".format(i))
 
     text = "\n".join(lines) + "\n"
     if args.out == "-":
