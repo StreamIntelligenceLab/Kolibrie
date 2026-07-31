@@ -1,0 +1,1 @@
+Near(X,Y):-Loc(X,L),Diamondminus[1,5]Loc(Y,L)

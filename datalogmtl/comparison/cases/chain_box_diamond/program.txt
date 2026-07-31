@@ -1,0 +1,2 @@
+Cand(X):-Boxminus[1,3]Raw(X)
+Flag(X):-Diamondminus[0,2]Cand(X)

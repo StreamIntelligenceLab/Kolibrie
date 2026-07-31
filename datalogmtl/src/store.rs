@@ -47,8 +47,10 @@ impl TemporalStore for TemporalSnapshotStore {
     }
 
     fn query_at(&self, pattern: &TriplePattern, t: u64) -> Vec<HashMap<String, u32>> {
+        // Use the index to fetch only triples whose constant positions match the
+        // pattern, instead of scanning every fact at t.
         let facts = self.snapshots.get(&t)
-            .map(|idx| idx.query(None, None, None))
+            .map(|idx| idx.get_matching_triples(pattern))
             .unwrap_or_default();
         let mut results = Vec::new();
         for fact in &facts {

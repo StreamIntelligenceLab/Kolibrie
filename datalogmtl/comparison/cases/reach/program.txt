@@ -1,0 +1,2 @@
+Reach(X,Y):-Edge(X,Y)
+Reach(X,Z):-Edge(X,Y),Reach(Y,Z)

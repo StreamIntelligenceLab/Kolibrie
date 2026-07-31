@@ -1,0 +1,2 @@
+Path(X,Y):-Link(X,Y)
+Path(X,Z):-Link(X,Y),Diamondminus[0,2]Path(Y,Z)

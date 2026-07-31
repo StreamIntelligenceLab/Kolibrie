@@ -43,8 +43,8 @@ pub enum TemporalAtom {
     /// Diamond[a,b] phi: phi holds at SOME t' in [t-b, t-a].
     Diamond { interval: Interval, inner: Box<TemporalAtom> },
 
-    /// Box[a,b] phi: phi holds at EVERY active t' in [t-b, t-a].
-    /// Vacuously true if no facts exist in the range.
+    /// Box[a,b] phi: phi holds at EVERY integer point t' in [t-b, t-a]
+    /// (dense semantics — an integer point with no supporting fact fails Box).
     Box_ { interval: Interval, inner: Box<TemporalAtom> },
 
     /// Prev[a,b] phi: phi holds at the MOST RECENT t' in [t-b, t-a].

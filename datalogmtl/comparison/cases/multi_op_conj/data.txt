@@ -1,0 +1,2 @@
+Sensor(a)@[0,10]
+Trigger(a)@[3,3]

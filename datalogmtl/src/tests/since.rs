@@ -39,25 +39,25 @@ fn test_since_basic() {
         ],
     };
 
-    let store = TemporalSnapshotStore::new(70_000);
+    let store = TemporalSnapshotStore::new(1_000);
     let mut eval = DatalogMTLEvaluator::new(vec![rule], store, dict.clone()).unwrap();
 
-    // t=0: W started
+    // t=0: W started (the reset/trigger psi).
     eval.advance(0, vec![triple(w, started, true_val)]);
 
-    // t=1000..30000: W active every 1000ms
+    // t=1..=6: W active at every integer tick (dense continuation phi).
     let mut last_metrics = None;
-    for t in (1000..=30_000u64).step_by(1000) {
+    for t in 1..=6u64 {
         let (_, m) = eval.advance(t, vec![triple(w, active, true_val)]);
         last_metrics = Some(m);
     }
 
-    // At t=30000, continuously active should hold.
-    let (derived30, metrics30) = eval.advance(30_000, vec![triple(w, active, true_val)]);
+    // At t=6, :started held at 0 and :active held continuously on (0,6].
+    let (derived6, metrics6) = eval.advance(6, vec![triple(w, active, true_val)]);
     let expected = triple(w, cont_active, true_val);
 
-    let all30: Vec<_> = eval.store
-        .query_at(&(v("x"), v("p"), v("o")), 30_000)
+    let all6: Vec<_> = eval.store
+        .query_at(&(v("x"), v("p"), v("o")), 6)
         .into_iter()
         .map(|b| triple(
             *b.get("x").unwrap_or(&0),
@@ -66,15 +66,15 @@ fn test_since_basic() {
         ))
         .collect();
 
-    assert!(all30.contains(&expected) || derived30.contains(&expected),
-        "(W :continuouslyActive) should be derived at t=30000");
-    assert!(metrics30.since_scan_depth > 0 || last_metrics.map(|m| m.since_scan_depth).unwrap_or(0) > 0,
+    assert!(all6.contains(&expected) || derived6.contains(&expected),
+        "(W :continuouslyActive) should be derived at t=6");
+    assert!(metrics6.since_scan_depth > 0 || last_metrics.map(|m| m.since_scan_depth).unwrap_or(0) > 0,
         "since_scan_depth should be > 0");
 
-    // Stop feeding :active. Advance to t=32000 with no new triples.
-    let (derived32, _) = eval.advance(32_000, vec![]);
-    let all32: Vec<_> = eval.store
-        .query_at(&(v("x"), v("p"), v("o")), 32_000)
+    // Stop feeding :active. Advance to t=8 with no new triples.
+    let (derived8, _) = eval.advance(8, vec![]);
+    let all8: Vec<_> = eval.store
+        .query_at(&(v("x"), v("p"), v("o")), 8)
         .into_iter()
         .map(|b| triple(
             *b.get("x").unwrap_or(&0),
@@ -83,7 +83,7 @@ fn test_since_basic() {
         ))
         .collect();
 
-    // Without :active at t=32000, phi fails in (30000, 32000], so Since fails.
-    assert!(!all32.contains(&expected) && !derived32.contains(&expected),
-        "(W :continuouslyActive) should NOT hold at t=32000 without :active");
+    // Without :active at t=7,8, phi fails in (0, 8], so Since fails.
+    assert!(!all8.contains(&expected) && !derived8.contains(&expected),
+        "(W :continuouslyActive) should NOT hold at t=8 without :active");
 }

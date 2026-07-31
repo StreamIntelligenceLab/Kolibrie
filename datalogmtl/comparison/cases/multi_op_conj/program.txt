@@ -1,0 +1,1 @@
+Alert(X):-Boxminus[1,2]Sensor(X),Diamondminus[0,5]Trigger(X)

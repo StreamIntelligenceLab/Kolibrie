@@ -13,8 +13,9 @@ use crate::store::{TemporalSnapshotStore, TemporalStore};
 use crate::evaluator::DatalogMTLEvaluator;
 use super::{make_dict, enc, triple, c, v};
 
-/// Test 4a: Box positive — holds at every timestamp.
-/// Rule: (?x :stableReading ?v) :- Box[0, 10000] (?x :sensor ?v)
+/// Test 4a: Box positive — inner holds at every integer point in the window.
+/// Rule: (?x :stableReading ?v) :- Box[0, 5] (?x :sensor ?v)
+/// Dense semantics: the sensor must fire at every integer tick 0..=5.
 #[test]
 fn test_box_positive() {
     let dict = make_dict();
@@ -28,43 +29,29 @@ fn test_box_positive() {
         head: (v("x"), c(stable), v("val")),
         body: vec![
             TemporalAtom::Box_ {
-                interval: Interval { start: 0, end: 10000 },
+                interval: Interval { start: 0, end: 5 },
                 inner: Box::new(TemporalAtom::Base((v("x"), c(sensor_p), v("val")))),
             },
         ],
     };
 
-    let store = TemporalSnapshotStore::new(15_000);
+    let store = TemporalSnapshotStore::new(100);
     let mut eval = DatalogMTLEvaluator::new(vec![rule], store, dict.clone()).unwrap();
 
-    // Feed (S :sensor :v42) at every 1000ms tick from 0 to 10000.
+    // Feed (S :sensor :v42) at every integer tick from 0 to 5.
     let mut last_derived = Vec::new();
-    for t in (0..=10000u64).step_by(1000) {
+    for t in 0..=5u64 {
         let (d, _) = eval.advance(t, vec![triple(sensor_s, sensor_p, val42)]);
         last_derived = d;
     }
 
     let expected = triple(sensor_s, stable, val42);
-
-    let all_facts: Vec<_> = eval.store
-        .query_at(&(v("x"), v("p"), v("o")), 10000)
-        .into_iter()
-        .map(|b| triple(
-            *b.get("x").unwrap_or(&0),
-            *b.get("p").unwrap_or(&0),
-            *b.get("o").unwrap_or(&0),
-        ))
-        .collect();
-
-    assert!(all_facts.contains(&expected) || last_derived.contains(&expected),
-        "(S :stableReading :v42) should be derived at t=10000; \
-         all_facts={:?}", all_facts);
+    assert!(last_derived.contains(&expected),
+        "(S :stableReading :v42) should be derived at t=5; derived={:?}", last_derived);
 }
 
-/// Test 4b: Box gap — a different value at one timestamp breaks the invariant.
-/// Under data-timestamp semantics, Box only checks ACTIVE timestamps.
-/// A "gap" (missing event) is NOT an active timestamp, so Box still vacuously holds
-/// over it. To make Box fail, we insert a DIFFERENT value at the gap timestamp.
+/// Test 4b: Box negative — a different value at one integer point breaks it.
+/// Dense semantics: any point where the exact fact is absent fails Box.
 #[test]
 fn test_box_value_inconsistency() {
     let dict = make_dict();
@@ -79,31 +66,29 @@ fn test_box_value_inconsistency() {
         head: (v("x"), c(stable), v("val")),
         body: vec![
             TemporalAtom::Box_ {
-                interval: Interval { start: 0, end: 10000 },
+                interval: Interval { start: 0, end: 5 },
                 inner: Box::new(TemporalAtom::Base((v("x"), c(sensor_p), v("val")))),
             },
         ],
     };
 
-    let store = TemporalSnapshotStore::new(15_000);
+    let store = TemporalSnapshotStore::new(100);
     let mut eval = DatalogMTLEvaluator::new(vec![rule], store, dict.clone()).unwrap();
 
-    // Feed val42 at every tick, but insert a DIFFERENT value at t=5000.
-    // This means (S :sensor :v42) does NOT hold at t=5000 (only :v99 does).
-    for t in (0..=10000u64).step_by(1000) {
-        let val = if t == 5000 { val99 } else { val42 };
+    // Feed val42 at every tick 0..=5, but a DIFFERENT value at t=3.
+    for t in 0..=5u64 {
+        let val = if t == 3 { val99 } else { val42 };
         eval.advance(t, vec![triple(sensor_s, sensor_p, val)]);
     }
 
-    // At t=10000, Box[0,10000](?x :sensor ?v) for val=:v42 should fail
-    // because (S :sensor :v42) doesn't hold at t=5000.
-    let (derived, _) = eval.advance(10000, vec![]);
+    // At t=5, Box[0,5](?x :sensor :v42) fails because :v42 is absent at t=3.
+    let (derived, _) = eval.advance(5, vec![]);
     let expected42 = triple(sensor_s, stable, val42);
 
     let derived_set: std::collections::HashSet<_> = derived.iter().cloned().collect();
     assert!(!derived_set.contains(&expected42),
-        "(S :stableReading :v42) should NOT be derived at t=10000 \
-         when val99 was present at t=5000; derived={:?}", derived);
+        "(S :stableReading :v42) should NOT be derived at t=5 \
+         when :v99 was present at t=3; derived={:?}", derived);
 }
 
 /// Test 4c: Box fails when window is empty (no timestamps in range).

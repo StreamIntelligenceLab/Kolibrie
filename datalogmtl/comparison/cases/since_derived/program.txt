@@ -1,0 +1,2 @@
+Warn(X):-Hot(X)
+Alarm(X):-Warn(X),Warn(X)Since[1,8]Spike(X)

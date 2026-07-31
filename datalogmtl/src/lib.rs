@@ -14,6 +14,8 @@ pub mod metrics;
 pub mod store;
 pub mod evaluator;
 pub mod stream;
+pub mod parser;
+pub mod meteor_fmt;
 
 #[cfg(test)]
 mod tests;

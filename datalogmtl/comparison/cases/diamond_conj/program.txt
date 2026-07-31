@@ -1,0 +1,1 @@
+R(X):-Diamondminus[0,2]P(X),Diamondminus[1,4]Q(X)

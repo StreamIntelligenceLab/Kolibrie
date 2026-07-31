@@ -29,6 +29,7 @@ pub fn c(id: u32) -> Term { Term::Constant(id) }
 pub fn v(name: &str) -> Term { Term::Variable(name.to_string()) }
 
 pub mod base;
+pub mod parser;
 pub mod diamond;
 pub mod box_;
 pub mod since;

@@ -14,7 +14,7 @@ use std::time::Instant;
 use shared::dictionary::Dictionary;
 use shared::triple::Triple;
 use shared::terms::{Term, TriplePattern};
-use datalog::reasoning::{matches_rule_pattern, construct_triple};
+use datalog::reasoning::construct_triple;
 use crate::syntax::{DatalogMTLRule, TemporalAtom, Interval};
 use crate::store::TemporalStore;
 use crate::metrics::TickMetrics;
@@ -95,44 +95,13 @@ impl<S: TemporalStore> DatalogMTLEvaluator<S> {
         t: u64,
         metrics: &mut TickMetrics,
     ) -> Vec<HashMap<String, u32>> {
-        // Step 1: seed bindings from all Base atoms at current snapshot.
-        let base_atoms: Vec<_> = rule.body.iter()
+        // Step 1: seed bindings from all Base atoms at the current snapshot,
+        // using indexed store lookups and indexed joins (no full-fact scan).
+        let base_atoms: Vec<&TriplePattern> = rule.body.iter()
             .filter_map(|a| if let TemporalAtom::Base(p) = a { Some(p) } else { None })
             .collect();
 
-        let wildcard: TriplePattern = (
-            Term::Variable("_s".into()),
-            Term::Variable("_p".into()),
-            Term::Variable("_o".into()),
-        );
-        let current_facts: HashSet<Triple> = self.store
-            .query_at(&wildcard, t)
-            .into_iter()
-            .filter_map(|b| {
-                let s = b.get("_s").copied()?;
-                let p = b.get("_p").copied()?;
-                let o = b.get("_o").copied()?;
-                Some(Triple { subject: s, predicate: p, object: o })
-            })
-            .collect();
-
-        let mut bindings: Vec<HashMap<String, u32>> = if base_atoms.is_empty() {
-            vec![HashMap::new()]
-        } else {
-            let mut results = Vec::new();
-            for fact in &current_facts {
-                let mut b = HashMap::new();
-                if matches_rule_pattern(base_atoms[0], fact, &mut b) {
-                    if base_atoms.len() == 1 {
-                        results.push(b);
-                    } else {
-                        let joined = join_base_atoms(&base_atoms[1..], &current_facts, b);
-                        results.extend(joined);
-                    }
-                }
-            }
-            results
-        };
+        let mut bindings = self.seed_base_atoms(&base_atoms, t);
 
         // Step 2: for each temporal atom, filter/extend bindings.
         for atom in &rule.body {
@@ -162,6 +131,42 @@ impl<S: TemporalStore> DatalogMTLEvaluator<S> {
         bindings
     }
 
+    /// Seed bindings by joining the rule's Base atoms at time `t` using indexed
+    /// store lookups. Each subsequent atom is queried with the running binding
+    /// substituted in, turning the join into indexed probes rather than an
+    /// O(facts^k) nested-loop scan.
+    fn seed_base_atoms(
+        &self,
+        base_atoms: &[&TriplePattern],
+        t: u64,
+    ) -> Vec<HashMap<String, u32>> {
+        let Some((first, rest)) = base_atoms.split_first() else {
+            return vec![HashMap::new()];
+        };
+        let mut bindings = self.store.query_at(first, t);
+        for pattern in rest {
+            if bindings.is_empty() { break; }
+            let mut next = Vec::with_capacity(bindings.len());
+            for binding in &bindings {
+                let spec = substitute_pattern(pattern, binding);
+                for candidate in self.store.query_at(&spec, t) {
+                    let mut merged = binding.clone();
+                    let mut consistent = true;
+                    for (var, val) in &candidate {
+                        if let Some(&existing) = merged.get(var) {
+                            if existing != *val { consistent = false; break; }
+                        } else {
+                            merged.insert(var.clone(), *val);
+                        }
+                    }
+                    if consistent { next.push(merged); }
+                }
+            }
+            bindings = next;
+        }
+        bindings
+    }
+
     // --- Temporal operator implementations ---
 
     /// Diamond[a,b]: phi must hold at SOME t' in [t-b, t-a].
@@ -186,11 +191,12 @@ impl<S: TemporalStore> DatalogMTLEvaluator<S> {
         results
     }
 
-    /// Box[a,b]: phi must hold at EVERY t' in [t-b, t-a].
-    /// Vacuously true if no timestamps exist in the range.
-    /// Collects candidate bindings from the first timestamp, then filters
-    /// them against every subsequent timestamp — so variables introduced
-    /// solely inside Box (e.g. Box[0,10000](?x :sensor ?v)) are still grounded.
+    /// Box[a,b]: phi must hold at EVERY integer point t' in [t-b, t-a]
+    /// (dense semantics, matching the DatalogMTL/MeTeoR reference: an integer in
+    /// the window with no supporting fact makes Box fail — it is not skipped).
+    /// Collects candidate bindings from the first point, then filters them
+    /// against every subsequent point — so variables introduced solely inside
+    /// Box (e.g. Box[0,5](?x :sensor ?v)) are still grounded.
     fn eval_box(
         &self,
         interval: &Interval,
@@ -198,21 +204,22 @@ impl<S: TemporalStore> DatalogMTLEvaluator<S> {
         t: u64,
         bindings: &[HashMap<String, u32>],
     ) -> Vec<HashMap<String, u32>> {
-        if t < interval.start { return vec![]; }
-        let (lo, hi) = interval.absolute_range(t);
-        let timestamps = self.store.timestamps_in(lo, hi);
-        if timestamps.is_empty() {
-            return vec![];
-        }
+        // Universal operator: the whole window [t-end, t-start] must lie within
+        // observable time [0, t]. If t < end the window extends before time 0,
+        // where nothing holds, so Box fails. (Guarding on interval.start would
+        // let absolute_range's saturating_sub clamp the lower bound to 0 and
+        // spuriously satisfy Box at the leading boundary.)
+        if t < interval.end { return vec![]; }
+        let (lo, hi) = interval.absolute_range(t); // lo <= hi since end >= start
         let mut results = Vec::new();
         'outer: for binding in bindings {
-            // Seed candidates from the first timestamp.
+            // Seed candidates from the first integer point.
             let mut candidates =
-                self.eval_atom_at(inner, timestamps[0], &[binding.clone()]);
+                self.eval_atom_at(inner, lo, &[binding.clone()]);
             if candidates.is_empty() { continue 'outer; }
 
-            // Filter candidates against every subsequent timestamp.
-            for &t_prime in &timestamps[1..] {
+            // Require every subsequent integer point in the window to satisfy inner.
+            for t_prime in (lo + 1)..=hi {
                 let mut surviving = Vec::new();
                 for candidate in candidates {
                     let check = self.eval_atom_at(inner, t_prime, &[candidate.clone()]);
@@ -262,13 +269,9 @@ impl<S: TemporalStore> DatalogMTLEvaluator<S> {
         bindings: &[HashMap<String, u32>],
     ) -> (Vec<HashMap<String, u32>>, usize) {
         let (lo, hi) = interval.absolute_range(t);
+        // Reset candidates: fact-bearing points in the window where psi may hold
+        // (psi only holds where a fact exists, so scanning timestamps is complete).
         let since_timestamps = self.store.timestamps_in(lo, hi);
-        // Guard: if hi >= t, there are no timestamps strictly between hi and t.
-        let cont_timestamps = if hi < t {
-            self.store.timestamps_in(hi + 1, t)
-        } else {
-            Vec::new()
-        };
         let mut results = Vec::new();
         let mut scan_depth = 0;
 
@@ -279,20 +282,9 @@ impl<S: TemporalStore> DatalogMTLEvaluator<S> {
                     self.eval_atom_at(psi, t_prime, &[binding.clone()]);
                 if psi_results.is_empty() { continue; }
 
-                // FORALL t'' in (t', t]: use active timestamps PLUS the current
-                // evaluation time t itself (closed-world: no event at t means phi
-                // must explicitly hold there, or it fails).
-                let mut after_set: std::collections::HashSet<u64> = cont_timestamps.iter()
-                    .chain(since_timestamps.iter())
-                    .filter(|&&ts| ts > t_prime && ts <= t)
-                    .copied()
-                    .collect();
-                // Always include t in the continuation check.
-                if t > t_prime { after_set.insert(t); }
-                let mut after_ts: Vec<u64> = after_set.into_iter().collect();
-                after_ts.sort();
-
-                for &t_pp in &after_ts {
+                // FORALL integer t'' in (t', t]: phi must hold (dense semantics —
+                // an uncovered integer point makes the continuation fail).
+                for t_pp in (t_prime + 1)..=t {
                     scan_depth += 1;
                     let phi_results =
                         self.eval_atom_at(phi, t_pp, &[binding.clone()]);
@@ -317,8 +309,10 @@ impl<S: TemporalStore> DatalogMTLEvaluator<S> {
             TemporalAtom::Base(pattern) => {
                 let mut results = Vec::new();
                 for binding in bindings {
-                    let candidates = self.store.query_at(pattern, t_prime);
-                    for candidate in candidates {
+                    // Specialize the pattern with already-bound variables so the
+                    // store query is as constrained (and indexed) as possible.
+                    let spec = substitute_pattern(pattern, binding);
+                    for candidate in self.store.query_at(&spec, t_prime) {
                         let mut merged = binding.clone();
                         let mut consistent = true;
                         for (var, val) in &candidate {
@@ -347,27 +341,19 @@ impl<S: TemporalStore> DatalogMTLEvaluator<S> {
     }
 }
 
-/// Join a list of TriplePatterns against a HashSet<Triple> starting from a seed binding.
-fn join_base_atoms(
-    patterns: &[&TriplePattern],
-    facts: &HashSet<Triple>,
-    seed: HashMap<String, u32>,
-) -> Vec<HashMap<String, u32>> {
-    let mut results = vec![seed];
-    for pattern in patterns {
-        let mut new_results = Vec::new();
-        for binding in results {
-            for fact in facts {
-                let mut b = binding.clone();
-                if matches_rule_pattern(pattern, fact, &mut b) {
-                    new_results.push(b);
-                }
-            }
+/// Substitute a pattern's variables that are already bound in `binding` with
+/// their constant values, so the resulting query is maximally constrained.
+fn substitute_pattern(pattern: &TriplePattern, binding: &HashMap<String, u32>) -> TriplePattern {
+    let resolve = |term: &Term| -> Term {
+        match term {
+            Term::Variable(v) => match binding.get(v) {
+                Some(&id) => Term::Constant(id),
+                None => term.clone(),
+            },
+            other => other.clone(),
         }
-        results = new_results;
-        if results.is_empty() { break; }
-    }
-    results
+    };
+    (resolve(&pattern.0), resolve(&pattern.1), resolve(&pattern.2))
 }
 
 /// Compute the maximum interval width across all rules.
