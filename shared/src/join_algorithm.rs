@@ -14,8 +14,8 @@ use crate::triple::Triple;
 use rayon::prelude::*;
 use std::collections::{BTreeMap, HashMap};
 
-fn extract_join_parameters(premise: &TriplePattern, dict: &Dictionary) -> (String, String, String) {
-    let (subject_term, predicate_term, object_term) = premise;
+fn extract_join_parameters(premise: &TriplePattern) -> (String, String) {
+    let (subject_term, _, object_term) = premise;
 
     let subject_var = match subject_term {
         Term::Variable(v) => v.clone(),
@@ -35,15 +35,31 @@ fn extract_join_parameters(premise: &TriplePattern, dict: &Dictionary) -> (Strin
         Term::QuotedTriple(_) => "__quoted_obj".to_string(),
     };
 
-    let predicate_str = match predicate_term {
-        Term::Constant(c) => dict.decode(*c).unwrap_or("unknown").to_string(),
-        Term::Variable(v) => {
-            format!("__var_pred_{}", v)
-        }
-        Term::QuotedTriple(_) => "__quoted_pred".to_string(),
-    };
+    (subject_var, object_var)
+}
 
-    (subject_var, predicate_str, object_var)
+/// Check a candidate result row against the triple's predicate: a bound
+/// predicate variable must match it, an unbound one gets bound to it.
+/// Returns false if the row conflicts with this triple.
+fn bind_predicate(
+    result: &mut BTreeMap<String, String>,
+    pred_var: Option<&str>,
+    pred_id: u32,
+    dict: &Dictionary,
+) -> bool {
+    match pred_var {
+        None => true,
+        Some(v) => match result.get(v) {
+            Some(existing) => dict.string_to_id.get(existing) == Some(&pred_id),
+            None => match dict.decode(pred_id) {
+                Some(s) => {
+                    result.insert(v.to_string(), s.to_string());
+                    true
+                }
+                None => false,
+            },
+        },
+    }
 }
 
 /// Ultra-fast hash join optimized for performance
@@ -52,35 +68,50 @@ pub fn perform_hash_join_for_rules(
     triples: &[Triple],
     dict: &Dictionary,
     final_results: Vec<BTreeMap<String, String>>,
-    literal_filter: Option<String>,
 ) -> Vec<BTreeMap<String, String>> {
 
-    // Extract variable names and predicate from the premise
-    let (subject, predicate, object) = extract_join_parameters(premise, dict);
+    // Extract variable names from the premise
+    let (subject, object) = extract_join_parameters(premise);
 
     if final_results.is_empty() {
         return Vec::new();
     }
 
-    // Fast predicate filtering
-    let predicate_id = match dict
-        .string_to_id
-        .get(&predicate)
-    {
-        Some(&id) => id,
-        None => return Vec::new(),
+    // A constant predicate is a pre-filter; a variable predicate is checked
+    // and bound per result row in process_triple_fast.
+    let (predicate_filter, predicate_var) = match &premise.1 {
+        Term::Constant(c) => (Some(*c), None),
+        Term::Variable(v) => (None, Some(v.as_str())),
+        Term::QuotedTriple(_) => return Vec::new(),
     };
 
-    let literal_filter_id = literal_filter
-        .as_ref()
-        .and_then(|s| dict.string_to_id.get(s).copied());
+    // Constant subject/object terms in the premise must match the triple
+    // exactly; term IDs are already dictionary-encoded, so compare directly.
+    let subject_filter = match &premise.0 {
+        Term::Constant(c) => Some(*c),
+        _ => None,
+    };
+    let object_filter = match &premise.2 {
+        Term::Constant(c) => Some(*c),
+        _ => None,
+    };
+
+    // A premise like (?v, p, ?v) only matches triples whose subject equals
+    // their object; the hash table below keys subject and object separately,
+    // so the equality must be enforced here.
+    let same_subject_object_var = matches!(
+        (&premise.0, &premise.2),
+        (Term::Variable(a), Term::Variable(b)) if a == b
+    );
 
     // Pre-filter triples (this is very fast)
     let filtered_triples: Vec<&Triple> = triples
         .iter()
         .filter(|triple| {
-            triple.predicate == predicate_id
-                && literal_filter_id.map_or(true, |filter_id| triple.object == filter_id)
+            predicate_filter.map_or(true, |id| triple.predicate == id)
+                && subject_filter.map_or(true, |id| triple.subject == id)
+                && object_filter.map_or(true, |id| triple.object == id)
+                && (!same_subject_object_var || triple.subject == triple.object)
         })
         .collect();
 
@@ -109,6 +140,7 @@ pub fn perform_hash_join_for_rules(
                     triple,
                     &subject,
                     &object,
+                    predicate_var,
                     &hash_table,
                     dict,
                     &mut local_results,
@@ -177,17 +209,22 @@ fn process_triple_fast(
     triple: &Triple,
     subject_var: &str,
     object_var: &str,
+    predicate_var: Option<&str>,
     hash_table: &SimpleHashTable,
     dictionary: &Dictionary,
     local_results: &mut Vec<BTreeMap<String, String>>,
 ) {
     let subject_id = triple.subject;
     let object_id = triple.object;
+    let predicate_id = triple.predicate;
 
     // Fast path: both variables bound
     if let Some(indices) = hash_table.both_bound.get(&(subject_id, object_id)) {
         for &idx in indices {
-            local_results.push(hash_table.results[idx].clone());
+            let mut result = hash_table.results[idx].clone();
+            if bind_predicate(&mut result, predicate_var, predicate_id, dictionary) {
+                local_results.push(result);
+            }
         }
         return;
     }
@@ -198,7 +235,9 @@ fn process_triple_fast(
             let mut result = hash_table.results[idx].clone();
             if let Some(object_str) = dictionary.decode(object_id) {
                 result.insert(object_var.to_string(), object_str.to_string());
-                local_results.push(result);
+                if bind_predicate(&mut result, predicate_var, predicate_id, dictionary) {
+                    local_results.push(result);
+                }
             }
         }
     }
@@ -209,7 +248,9 @@ fn process_triple_fast(
             let mut result = hash_table.results[idx].clone();
             if let Some(subject_str) = dictionary.decode(subject_id) {
                 result.insert(subject_var.to_string(), subject_str.to_string());
-                local_results.push(result);
+                if bind_predicate(&mut result, predicate_var, predicate_id, dictionary) {
+                    local_results.push(result);
+                }
             }
         }
     }
@@ -217,12 +258,14 @@ fn process_triple_fast(
     // Neither bound path
     for &idx in &hash_table.neither_bound {
         let mut result = hash_table.results[idx].clone();
-        
-        if let (Some(subject_str), Some(object_str)) = 
+
+        if let (Some(subject_str), Some(object_str)) =
             (dictionary.decode(subject_id), dictionary.decode(object_id)) {
             result.insert(subject_var.to_string(), subject_str.to_string());
             result.insert(object_var.to_string(), object_str.to_string());
-            local_results.push(result);
+            if bind_predicate(&mut result, predicate_var, predicate_id, dictionary) {
+                local_results.push(result);
+            }
         }
     }
 }
