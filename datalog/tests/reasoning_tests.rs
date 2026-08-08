@@ -422,6 +422,192 @@ fn fc_uncle_derived() {
     assert!(!inferred(&mut r, "A", "uncle", "C"), "A (parent) should not also be uncle of C");
 }
 
+#[test]
+fn fc_constant_object_premise_filters() {
+    // A constant-object premise must not match every triple with the predicate
+    let mut r = Reasoner::new();
+    r.add_abox_triple("v1", "inZone", "RestrictedZone");
+    r.add_abox_triple("v2", "inZone", "SafeZone");
+    r.add_abox_triple("v3", "inZone", "AnotherZone");
+
+    let in_zone = enc(&r, "inZone");
+    let restricted = enc(&r, "RestrictedZone");
+    let alert = enc(&r, "alert");
+    let flagged = enc(&r, "Flagged");
+
+    // alert(V, Flagged) :- inZone(V, RestrictedZone)
+    r.add_rule(rule(
+        vec![(Term::Variable("V".into()), Term::Constant(in_zone), Term::Constant(restricted))],
+        vec![(Term::Variable("V".into()), Term::Constant(alert), Term::Constant(flagged))],
+    ));
+
+    r.infer_new_facts_semi_naive();
+
+    assert!(inferred(&mut r, "v1", "alert", "Flagged"), "v1 is in the restricted zone");
+    assert!(!inferred(&mut r, "v2", "alert", "Flagged"), "v2 is in a different zone");
+    assert!(!inferred(&mut r, "v3", "alert", "Flagged"), "v3 is in a different zone");
+}
+
+#[test]
+fn fc_constant_subject_premise_filters() {
+    // A constant-subject premise must only match that subject
+    let mut r = Reasoner::new();
+    r.add_abox_triple("v1", "inZone", "RestrictedZone");
+    r.add_abox_triple("v2", "inZone", "SafeZone");
+
+    let v1 = enc(&r, "v1");
+    let in_zone = enc(&r, "inZone");
+    let observed = enc(&r, "observedZone");
+    let sensor = enc(&r, "sensor");
+
+    // observedZone(sensor, Z) :- inZone(v1, Z)
+    r.add_rule(rule(
+        vec![(Term::Constant(v1), Term::Constant(in_zone), Term::Variable("Z".into()))],
+        vec![(Term::Constant(sensor), Term::Constant(observed), Term::Variable("Z".into()))],
+    ));
+
+    r.infer_new_facts_semi_naive();
+
+    assert!(inferred(&mut r, "sensor", "observedZone", "RestrictedZone"), "v1's zone should be observed");
+    assert!(!inferred(&mut r, "sensor", "observedZone", "SafeZone"), "v2's zone must not match a premise on v1");
+}
+
+#[test]
+fn fc_constant_object_premise_in_join() {
+    // Constant-object filtering must also hold when joining across premises
+    let mut r = Reasoner::new();
+    r.add_abox_triple("v1", "inZone", "RestrictedZone");
+    r.add_abox_triple("v2", "inZone", "SafeZone");
+    r.add_abox_triple("v1", "type", "Vehicle");
+    r.add_abox_triple("v2", "type", "Vehicle");
+
+    let in_zone = enc(&r, "inZone");
+    let restricted = enc(&r, "RestrictedZone");
+    let ty = enc(&r, "type");
+    let vehicle = enc(&r, "Vehicle");
+    let alert = enc(&r, "alert");
+    let flagged = enc(&r, "Flagged");
+
+    // alert(V, Flagged) :- type(V, Vehicle), inZone(V, RestrictedZone)
+    r.add_rule(rule(
+        vec![
+            (Term::Variable("V".into()), Term::Constant(ty), Term::Constant(vehicle)),
+            (Term::Variable("V".into()), Term::Constant(in_zone), Term::Constant(restricted)),
+        ],
+        vec![(Term::Variable("V".into()), Term::Constant(alert), Term::Constant(flagged))],
+    ));
+
+    r.infer_new_facts_semi_naive();
+
+    assert!(inferred(&mut r, "v1", "alert", "Flagged"), "v1 is a vehicle in the restricted zone");
+    assert!(!inferred(&mut r, "v2", "alert", "Flagged"), "v2 is a vehicle but not in the restricted zone");
+}
+
+#[test]
+fn fc_variable_predicate_premise() {
+    // A variable-predicate premise must match all triples and bind ?p
+    let mut r = Reasoner::new();
+    r.add_abox_triple("A", "likes", "B");
+    r.add_abox_triple("A", "knows", "C");
+
+    let linked_from = enc(&r, "linkedFrom");
+
+    // linkedFrom(O, S) :- any(S, P, O)
+    r.add_rule(rule(
+        vec![(Term::Variable("S".into()), Term::Variable("P".into()), Term::Variable("O".into()))],
+        vec![(Term::Variable("O".into()), Term::Constant(linked_from), Term::Variable("S".into()))],
+    ));
+
+    r.infer_new_facts_semi_naive();
+
+    assert!(inferred(&mut r, "B", "linkedFrom", "A"), "B is reached from A via likes");
+    assert!(inferred(&mut r, "C", "linkedFrom", "A"), "C is reached from A via knows");
+    assert!(!inferred(&mut r, "B", "linkedFrom", "C"), "B and C are not connected");
+}
+
+#[test]
+fn fc_variable_predicate_join() {
+    // RDFS-subproperty style: ?p bound in one premise, reused in join and conclusion
+    let mut r = Reasoner::new();
+    r.add_abox_triple("A", "worksFor", "B");
+    r.add_abox_triple("worksFor", "subPropertyOf", "affiliatedWith");
+
+    let sub_property_of = enc(&r, "subPropertyOf");
+
+    // Q(X, Y) :- P(X, Y), subPropertyOf(P, Q)
+    r.add_rule(rule(
+        vec![
+            (Term::Variable("X".into()), Term::Variable("P".into()), Term::Variable("Y".into())),
+            (Term::Variable("P".into()), Term::Constant(sub_property_of), Term::Variable("Q".into())),
+        ],
+        vec![(Term::Variable("X".into()), Term::Variable("Q".into()), Term::Variable("Y".into()))],
+    ));
+
+    r.infer_new_facts_semi_naive();
+
+    assert!(inferred(&mut r, "A", "affiliatedWith", "B"), "worksFor is a subproperty of affiliatedWith");
+    assert!(!inferred(&mut r, "A", "subPropertyOf", "B"), "A worksFor B must not become A subPropertyOf B");
+}
+
+#[test]
+fn fc_shared_predicate_variable() {
+    // A bound predicate variable must filter later premises, not rebind
+    let mut r = Reasoner::new();
+    r.add_abox_triple("A", "rel1", "X");
+    r.add_abox_triple("C", "rel2", "Z");
+    r.add_abox_triple("D", "rel1", "W");
+
+    let a = enc(&r, "A");
+    let c = enc(&r, "C");
+    let d = enc(&r, "D");
+    let shares = enc(&r, "sharesRelWith");
+
+    // sharesRelWith(A, C) :- P(A, _), P(C, _)  -- A and C share no predicate
+    r.add_rule(rule(
+        vec![
+            (Term::Constant(a), Term::Variable("P".into()), Term::Variable("X1".into())),
+            (Term::Constant(c), Term::Variable("P".into()), Term::Variable("X2".into())),
+        ],
+        vec![(Term::Constant(a), Term::Constant(shares), Term::Constant(c))],
+    ));
+    // sharesRelWith(A, D) :- P(A, _), P(D, _)  -- A and D both use rel1
+    r.add_rule(rule(
+        vec![
+            (Term::Constant(a), Term::Variable("P".into()), Term::Variable("X1".into())),
+            (Term::Constant(d), Term::Variable("P".into()), Term::Variable("X2".into())),
+        ],
+        vec![(Term::Constant(a), Term::Constant(shares), Term::Constant(d))],
+    ));
+
+    r.infer_new_facts_semi_naive();
+
+    assert!(inferred(&mut r, "A", "sharesRelWith", "D"), "A and D both use rel1");
+    assert!(!inferred(&mut r, "A", "sharesRelWith", "C"), "A and C use different predicates");
+}
+
+#[test]
+fn fc_repeated_variable_premise() {
+    // rel(V, V) must only match triples with subject == object
+    let mut r = Reasoner::new();
+    r.add_abox_triple("a", "rel", "a");
+    r.add_abox_triple("a", "rel", "b");
+
+    let rel = enc(&r, "rel");
+    let self_linked = enc(&r, "selfLinked");
+    let true_c = enc(&r, "True");
+
+    // selfLinked(V, True) :- rel(V, V)
+    r.add_rule(rule(
+        vec![(Term::Variable("V".into()), Term::Constant(rel), Term::Variable("V".into()))],
+        vec![(Term::Variable("V".into()), Term::Constant(self_linked), Term::Constant(true_c))],
+    ));
+
+    r.infer_new_facts_semi_naive();
+
+    assert!(inferred(&mut r, "a", "selfLinked", "True"), "a links to itself");
+    assert!(!inferred(&mut r, "b", "selfLinked", "True"), "b does not link to itself");
+}
+
 // Backward chaining
 
 #[test]
