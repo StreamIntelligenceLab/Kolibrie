@@ -38,9 +38,7 @@ fn extract_join_parameters(premise: &TriplePattern) -> (String, String) {
     (subject_var, object_var)
 }
 
-/// Check a candidate result row against the triple's predicate: a bound
-/// predicate variable must match it, an unbound one gets bound to it.
-/// Returns false if the row conflicts with this triple.
+/// Match or bind the premise's predicate variable; false on conflict.
 fn bind_predicate(
     result: &mut BTreeMap<String, String>,
     pred_var: Option<&str>,
@@ -77,16 +75,14 @@ pub fn perform_hash_join_for_rules(
         return Vec::new();
     }
 
-    // A constant predicate is a pre-filter; a variable predicate is checked
-    // and bound per result row in process_triple_fast.
+    // Constant predicate filters here; a variable one is bound per row.
     let (predicate_filter, predicate_var) = match &premise.1 {
         Term::Constant(c) => (Some(*c), None),
         Term::Variable(v) => (None, Some(v.as_str())),
         Term::QuotedTriple(_) => return Vec::new(),
     };
 
-    // Constant subject/object terms in the premise must match the triple
-    // exactly; term IDs are already dictionary-encoded, so compare directly.
+    // Constant subject/object IDs are compared directly against the triple.
     let subject_filter = match &premise.0 {
         Term::Constant(c) => Some(*c),
         _ => None,
@@ -96,9 +92,7 @@ pub fn perform_hash_join_for_rules(
         _ => None,
     };
 
-    // A premise like (?v, p, ?v) only matches triples whose subject equals
-    // their object; the hash table below keys subject and object separately,
-    // so the equality must be enforced here.
+    // A premise like (?v, p, ?v) requires subject == object.
     let same_subject_object_var = matches!(
         (&premise.0, &premise.2),
         (Term::Variable(a), Term::Variable(b)) if a == b

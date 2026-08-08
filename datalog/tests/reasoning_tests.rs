@@ -424,8 +424,7 @@ fn fc_uncle_derived() {
 
 #[test]
 fn fc_constant_object_premise_filters() {
-    // Regression: a premise with a constant object must only match triples
-    // whose object equals that constant, not every triple with the predicate
+    // A constant-object premise must not match every triple with the predicate
     let mut r = Reasoner::new();
     r.add_abox_triple("v1", "inZone", "RestrictedZone");
     r.add_abox_triple("v2", "inZone", "SafeZone");
@@ -451,8 +450,7 @@ fn fc_constant_object_premise_filters() {
 
 #[test]
 fn fc_constant_subject_premise_filters() {
-    // Regression: a premise with a constant subject must only match triples
-    // whose subject equals that constant
+    // A constant-subject premise must only match that subject
     let mut r = Reasoner::new();
     r.add_abox_triple("v1", "inZone", "RestrictedZone");
     r.add_abox_triple("v2", "inZone", "SafeZone");
@@ -476,8 +474,7 @@ fn fc_constant_subject_premise_filters() {
 
 #[test]
 fn fc_constant_object_premise_in_join() {
-    // Regression: constant-object filtering must also hold when the premise
-    // joins against bindings from another premise
+    // Constant-object filtering must also hold when joining across premises
     let mut r = Reasoner::new();
     r.add_abox_triple("v1", "inZone", "RestrictedZone");
     r.add_abox_triple("v2", "inZone", "SafeZone");
@@ -508,8 +505,7 @@ fn fc_constant_object_premise_in_join() {
 
 #[test]
 fn fc_variable_predicate_premise() {
-    // Regression: a premise with a variable predicate used to silently match
-    // nothing; it must match every triple and bind the predicate variable
+    // A variable-predicate premise must match all triples and bind ?p
     let mut r = Reasoner::new();
     r.add_abox_triple("A", "likes", "B");
     r.add_abox_triple("A", "knows", "C");
@@ -531,8 +527,7 @@ fn fc_variable_predicate_premise() {
 
 #[test]
 fn fc_variable_predicate_join() {
-    // RDFS-subproperty style: a predicate variable bound in one premise is
-    // joined as the subject of the next and used as the conclusion predicate
+    // RDFS-subproperty style: ?p bound in one premise, reused in join and conclusion
     let mut r = Reasoner::new();
     r.add_abox_triple("A", "worksFor", "B");
     r.add_abox_triple("worksFor", "subPropertyOf", "affiliatedWith");
@@ -556,8 +551,7 @@ fn fc_variable_predicate_join() {
 
 #[test]
 fn fc_shared_predicate_variable() {
-    // A predicate variable already bound by an earlier premise must act as a
-    // filter in later premises, not just rebind
+    // A bound predicate variable must filter later premises, not rebind
     let mut r = Reasoner::new();
     r.add_abox_triple("A", "rel1", "X");
     r.add_abox_triple("C", "rel2", "Z");
@@ -593,8 +587,7 @@ fn fc_shared_predicate_variable() {
 
 #[test]
 fn fc_repeated_variable_premise() {
-    // Regression: a premise repeating a variable, like rel(V, V), must only
-    // match triples whose subject equals their object
+    // rel(V, V) must only match triples with subject == object
     let mut r = Reasoner::new();
     r.add_abox_triple("a", "rel", "a");
     r.add_abox_triple("a", "rel", "b");
