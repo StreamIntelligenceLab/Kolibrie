@@ -109,6 +109,9 @@
 108. Remove the superseded pre-Streamertail join methods (`par_join`, `perform_join`, `perform_join_par_simd_with_strict_filter_1..4`, `perform_join_sequential`, `perform_join_sequential_simd`) and their SIMD helpers from `SparqlDatabase`
 109. Remove the unused `apply_filters_simd` filter-evaluation path from `SparqlDatabase` in favor of Streamertail `Condition` evaluation
 110. Remove the unused streaming join and merge-join helper chain from `shared::join_algorithm`, keeping `perform_hash_join_for_rules` for Datalog rule evaluation
+111. Fix rule premises with constant subject/object matching every triple with the same predicate
+112. Fix rule premises with a variable predicate silently deriving nothing
+113. Fix repeated-variable premises like `rel(V, V)` matching triples where subject != object
 
 0.1.1
 1. Modify whole project by making Cargo workspace
