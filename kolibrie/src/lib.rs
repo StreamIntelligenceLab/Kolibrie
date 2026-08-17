@@ -18,6 +18,7 @@ pub mod ml_predict_runtime;
 pub mod neural_relations;
 pub mod parser;
 pub mod query_builder;
+pub mod rdf_messages;
 pub mod rsp_engine;
 pub mod sparql_database;
 pub mod utils;
