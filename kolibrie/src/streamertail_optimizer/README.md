@@ -46,8 +46,7 @@ Represents concrete execution plans after optimization:
 - `Graph`: Graph-scoped child execution with graph-variable binding
 - `Union`: Execution of every branch against the same input
 - `Filter`: Condition filtering
-- `HashJoin` / `NestedLoopJoin` / `ParallelJoin`: Join algorithms
-- `OptimizedHashJoin`: High-performance join variant
+- `BindJoin` / `HashJoin` / `NestedLoopJoin`: Join algorithms
 - `Projection`: Variable projection
 
 ### CostEstimator
@@ -132,17 +131,37 @@ let results = optimizer.execute_plan(&physical_plan, &mut database);
 
 ## Join Algorithms
 
-The optimizer supports multiple join algorithms:
+Three algorithms with genuinely different execution, chosen by cost:
 
-1. **OptimizedHashJoin**: High-performance hash join with optimizations
-2. **HashJoin**: Standard hash join implementation
-3. **NestedLoopJoin**: Simple nested loop (for small datasets)
-4. **ParallelJoin**: SIMD-optimized parallel join algorithm
+1. **BindJoin**: the left side executes first and its solutions are fed into
+   the right side as incoming bindings, so right-side scans probe indexes with
+   values that are already bound. Cheapest when the left side is small or
+   selective, because the right side is never scanned standalone. Left rows are
+   processed in parallel chunks.
+2. **HashJoin**: both sides execute independently, a hash table is built on the
+   shared-variable key, and the other side probes it in parallel. Wins when both
+   sides are large, where one scan of the right side beats one probe per left
+   row.
+3. **NestedLoopJoin**: both sides are materialized and joined pairwise. Suits
+   tiny inputs, and is the only algorithm that applies to a Cartesian product,
+   where there is no shared variable to hash on.
 
-Join selection is based on:
-- Input cardinality estimates
-- Available memory
-- Data distribution characteristics
+Selection is by estimated cost, which combines each side's cost, its
+cardinality, and the estimated join output. Because the algorithms differ in
+which of those terms they pay, no single one wins unconditionally.
+
+## Join Ordering
+
+Before physical planning, each uninterrupted group of scans sharing one graph
+scope is reordered: the most selective pattern runs first, and every later
+pattern must share a variable with those already placed. A disconnected pattern
+is only chosen when nothing connected remains, since that step is a Cartesian
+product. Source order breaks ties, and GRAPH, UNION, FILTER, BIND, VALUES and
+subquery boundaries are never crossed.
+
+Candidate patterns are costed as bound scans: a position already bound by the
+prefix divides the estimate by that position's domain size, which is what makes
+an anchored path step cheap and an unanchored one expensive.
 
 ## Index Strategies
 

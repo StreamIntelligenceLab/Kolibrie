@@ -37,19 +37,18 @@ pub enum PhysicalOperator {
         input: Box<PhysicalOperator>,
         condition: Condition,
     },
+    /// Pipelined dependent join whose left solutions feed the right side, so its scans probe indexes with bound values
+    BindJoin {
+        left: Box<PhysicalOperator>,
+        right: Box<PhysicalOperator>,
+    },
+    /// Build/probe join over the shared-variable key of two independently executed sides
     HashJoin {
         left: Box<PhysicalOperator>,
         right: Box<PhysicalOperator>,
     },
+    /// Materialized pairwise join over both sides, and the algorithm for Cartesian products
     NestedLoopJoin {
-        left: Box<PhysicalOperator>,
-        right: Box<PhysicalOperator>,
-    },
-    ParallelJoin {
-        left: Box<PhysicalOperator>,
-        right: Box<PhysicalOperator>,
-    },
-    OptimizedHashJoin {
         left: Box<PhysicalOperator>,
         right: Box<PhysicalOperator>,
     },
@@ -145,6 +144,14 @@ impl PhysicalOperator {
         }
     }
 
+    /// Creates a new bind join physical operator
+    pub fn bind_join(left: PhysicalOperator, right: PhysicalOperator) -> Self {
+        Self::BindJoin {
+            left: Box::new(left),
+            right: Box::new(right),
+        }
+    }
+
     /// Creates a new hash join physical operator
     pub fn hash_join(left: PhysicalOperator, right: PhysicalOperator) -> Self {
         Self::HashJoin {
@@ -156,22 +163,6 @@ impl PhysicalOperator {
     /// Creates a new nested loop join physical operator
     pub fn nested_loop_join(left: PhysicalOperator, right: PhysicalOperator) -> Self {
         Self::NestedLoopJoin {
-            left: Box::new(left),
-            right: Box::new(right),
-        }
-    }
-
-    /// Creates a new parallel join physical operator
-    pub fn parallel_join(left: PhysicalOperator, right: PhysicalOperator) -> Self {
-        Self::ParallelJoin {
-            left: Box::new(left),
-            right: Box::new(right),
-        }
-    }
-
-    /// Creates a new optimized hash join physical operator
-    pub fn optimized_hash_join(left: PhysicalOperator, right: PhysicalOperator) -> Self {
-        Self::OptimizedHashJoin {
             left: Box::new(left),
             right: Box::new(right),
         }

@@ -9,6 +9,7 @@
  */
 
 use super::super::operators::PhysicalOperator;
+use super::exec_stats::exec_count;
 use super::super::types::{SubqueryProjection, SubquerySpec};
 
 use crate::sparql_database::SparqlDatabase;
@@ -21,6 +22,9 @@ use shared::quoted_triple_store::is_quoted_triple_id;
 use shared::terms::{Bindings, Term};
 
 use std::collections::{BTreeMap, HashMap, HashSet};
+
+/// Below this many rows a bind join runs on one thread, since splitting costs more in plan re-entry than it saves
+const BIND_JOIN_MIN_CHUNK: usize = 64;
 
 /// The RDF dataset visible to one query execution.
 ///
@@ -42,6 +46,68 @@ mod tests {
 
     fn encode(database: &SparqlDatabase, value: &str) -> u32 {
         database.dictionary.write().unwrap().encode(value)
+    }
+
+    fn row(pairs: &[(&str, u32)]) -> HashMap<String, u32> {
+        pairs
+            .iter()
+            .map(|(variable, value)| ((*variable).to_string(), *value))
+            .collect()
+    }
+
+    fn sorted(bindings: Bindings) -> Vec<Vec<(String, u32)>> {
+        let mut rows: Vec<Vec<(String, u32)>> = bindings
+            .into_iter()
+            .map(|row| {
+                let mut pairs: Vec<(String, u32)> = row.into_iter().collect();
+                pairs.sort();
+                pairs
+            })
+            .collect();
+        rows.sort();
+        rows
+    }
+
+    #[test]
+    fn hash_join_agrees_with_the_nested_loop_on_every_row_shape() {
+        let cases: Vec<(Bindings, Bindings)> = vec![
+            // Shared variable, several matches and one dangling value
+            (
+                vec![row(&[("x", 1), ("a", 10)]), row(&[("x", 2), ("a", 20)])],
+                vec![
+                    row(&[("x", 1), ("b", 11)]),
+                    row(&[("x", 1), ("b", 12)]),
+                    row(&[("x", 3), ("b", 13)]),
+                ],
+            ),
+            // Right side leaves the key variable unbound
+            (
+                vec![row(&[("x", 1), ("a", 10)])],
+                vec![row(&[("b", 11)]), row(&[("x", 1), ("b", 12)])],
+            ),
+            // Left side leaves the key variable unbound
+            (
+                vec![row(&[("a", 10)]), row(&[("x", 1), ("a", 11)])],
+                vec![row(&[("x", 1), ("b", 12)]), row(&[("x", 2), ("b", 13)])],
+            ),
+            // Conflicting values on the shared variable
+            (
+                vec![row(&[("x", 1)])],
+                vec![row(&[("x", 2)])],
+            ),
+            // No shared variable at all: a Cartesian product
+            (
+                vec![row(&[("a", 1)]), row(&[("a", 2)])],
+                vec![row(&[("b", 3)]), row(&[("b", 4)])],
+            ),
+        ];
+
+        for (index, (left, right)) in cases.into_iter().enumerate() {
+            let expected =
+                sorted(ExecutionEngine::join_solution_sequences(left.clone(), right.clone()));
+            let actual = sorted(ExecutionEngine::hash_join_solution_sequences(left, right));
+            assert_eq!(actual, expected, "case {} disagreed with the nested loop", index);
+        }
     }
 
     #[test]
@@ -115,6 +181,37 @@ mod tests {
         let results = ExecutionEngine::execute_with_ids(&plan, &mut database);
         assert_eq!(results.len(), 1);
         assert_eq!(results[0].get("value"), Some(&subject));
+    }
+
+    #[test]
+    fn scan_matches_a_variable_repeated_within_one_pattern() {
+        let mut database = SparqlDatabase::new();
+        let predicate = encode(&database, "http://example.com/self");
+        let looping = encode(&database, "http://example.com/looping");
+        let other = encode(&database, "http://example.com/other");
+        database.add_quad(Quad {
+            subject: looping,
+            predicate,
+            object: looping,
+            graph: GraphId::Default,
+        });
+        database.add_quad(Quad {
+            subject: looping,
+            predicate,
+            object: other,
+            graph: GraphId::Default,
+        });
+
+        let plan = PhysicalOperator::quad_index_scan(QuadPattern {
+            subject: Term::Variable("?x".to_string()),
+            predicate: Term::Constant(predicate),
+            object: Term::Variable("?x".to_string()),
+            graph: GraphTerm::Default,
+        });
+
+        let results = ExecutionEngine::execute_with_ids(&plan, &mut database);
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].get("x"), Some(&looping));
     }
 
     #[test]
@@ -297,7 +394,7 @@ impl ExecutionEngine {
     /// Executes a plan with an explicit recursive execution context.
     pub fn execute_with_ids_and_context(
         operator: &PhysicalOperator,
-        database: &mut SparqlDatabase,
+        database: &SparqlDatabase,
         context: &ExecutionContext,
     ) -> Bindings {
         Self::execute_with_ids_and_input(operator, database, context, vec![HashMap::new()])
@@ -309,7 +406,7 @@ impl ExecutionEngine {
     /// VALUES and update WHERE evaluation.
     pub fn execute_with_ids_and_input(
         operator: &PhysicalOperator,
-        database: &mut SparqlDatabase,
+        database: &SparqlDatabase,
         context: &ExecutionContext,
         incoming: Bindings,
     ) -> Bindings {
@@ -343,7 +440,7 @@ impl ExecutionEngine {
             PhysicalOperator::Filter { input, condition } => {
                 let input_results =
                     Self::execute_with_ids_and_input(input, database, context, incoming);
-                // Use parallel filtering
+                // Taken per row on purpose: holding a read guard across the parallel section can deadlock a work-stolen writer
                 input_results
                     .into_par_iter()
                     .filter(|result| {
@@ -373,25 +470,28 @@ impl ExecutionEngine {
                     .collect();
                 projected
             }
-            PhysicalOperator::OptimizedHashJoin { left, right } => {
+            PhysicalOperator::BindJoin { left, right } => {
                 let left_results =
                     Self::execute_with_ids_and_input(left, database, context, incoming);
-                Self::execute_with_ids_and_input(right, database, context, left_results)
+                Self::execute_bind_join(right, database, context, left_results)
             }
             PhysicalOperator::HashJoin { left, right } => {
                 let left_results =
                     Self::execute_with_ids_and_input(left, database, context, incoming);
-                Self::execute_with_ids_and_input(right, database, context, left_results)
+                if left_results.is_empty() {
+                    return Vec::new();
+                }
+                let right_results = Self::execute_with_ids_and_context(right, database, context);
+                Self::hash_join_solution_sequences(left_results, right_results)
             }
             PhysicalOperator::NestedLoopJoin { left, right } => {
                 let left_results =
                     Self::execute_with_ids_and_input(left, database, context, incoming);
-                Self::execute_with_ids_and_input(right, database, context, left_results)
-            }
-            PhysicalOperator::ParallelJoin { left, right } => {
-                let left_results =
-                    Self::execute_with_ids_and_input(left, database, context, incoming);
-                Self::execute_with_ids_and_input(right, database, context, left_results)
+                if left_results.is_empty() {
+                    return Vec::new();
+                }
+                let right_results = Self::execute_with_ids_and_context(right, database, context);
+                Self::join_solution_sequences(left_results, right_results)
             }
             PhysicalOperator::StarJoin { join_var, patterns } => {
                 let _ = join_var;
@@ -685,7 +785,7 @@ impl ExecutionEngine {
     fn finalize_subquery(
         rows: Bindings,
         spec: &SubquerySpec,
-        database: &mut SparqlDatabase,
+        database: &SparqlDatabase,
     ) -> Bindings {
         let mut rows = Self::aggregate_subquery_rows(rows, spec, database);
         Self::apply_subquery_order(&mut rows, &spec.order_conditions, database);
@@ -721,7 +821,7 @@ impl ExecutionEngine {
     fn aggregate_subquery_rows(
         rows: Bindings,
         spec: &SubquerySpec,
-        database: &mut SparqlDatabase,
+        database: &SparqlDatabase,
     ) -> Bindings {
         let aggregates: Vec<&SubqueryProjection> = spec
             .projection
@@ -844,7 +944,7 @@ impl ExecutionEngine {
     }
 
     fn execute_graph_with_ids(
-        database: &mut SparqlDatabase,
+        database: &SparqlDatabase,
         input: &PhysicalOperator,
         graph: &GraphTerm,
         context: &ExecutionContext,
@@ -1002,10 +1102,12 @@ impl ExecutionEngine {
         let mut seen = HashSet::new();
 
         for graph in &context.dataset.default_graphs {
+            exec_count!(SCAN_PROBES);
             for quad in database
                 .dataset_index
                 .query_graph(*graph, subject, predicate, object)
             {
+                exec_count!(QUADS_EXAMINED);
                 if !seen.insert((quad.subject, quad.predicate, quad.object)) {
                     continue;
                 }
@@ -1031,10 +1133,12 @@ impl ExecutionEngine {
         results: &mut Bindings,
     ) {
         let (subject, predicate, object) = Self::bound_scan_keys(pattern, row);
+        exec_count!(SCAN_PROBES);
         for quad in database
             .dataset_index
             .query_graph(graph, subject, predicate, object)
         {
+            exec_count!(QUADS_EXAMINED);
             let mut seed = row.clone();
             if let Some((variable, graph_id)) = graph_binding {
                 if let Some(&existing) = seed.get(variable) {
@@ -1085,17 +1189,64 @@ impl ExecutionEngine {
         seed: &HashMap<String, u32>,
         results: &mut Bindings,
     ) {
-        let mut bindings = seed.clone();
         let values = [
             (&pattern.subject, subject),
             (&pattern.predicate, predicate),
             (&pattern.object, object),
         ];
+
+        // Quoted triples bind a variable number of nested variables; every other pattern binds at most three and fits a stack buffer
+        if values
+            .iter()
+            .any(|(term, _)| matches!(term, Term::QuotedTriple(_)))
+        {
+            let mut bindings = seed.clone();
+            for (term, value) in values {
+                if !Self::match_term_with_store(database, term, value, &mut bindings) {
+                    return;
+                }
+            }
+            exec_count!(ROWS_EMITTED);
+            results.push(bindings);
+            return;
+        }
+
+        let mut fresh: [(&str, u32); 3] = [("", 0); 3];
+        let mut fresh_len = 0;
         for (term, value) in values {
-            if !Self::match_term_with_store(database, term, value, &mut bindings) {
-                return;
+            match term {
+                Term::Constant(constant) => {
+                    if *constant != value {
+                        return;
+                    }
+                }
+                Term::Variable(variable) => {
+                    let variable = Self::normalize_variable(variable);
+                    let existing = seed.get(variable).copied().or_else(|| {
+                        fresh[..fresh_len]
+                            .iter()
+                            .find(|(name, _)| *name == variable)
+                            .map(|(_, bound)| *bound)
+                    });
+                    match existing {
+                        Some(bound) if bound != value => return,
+                        Some(_) => {}
+                        None => {
+                            fresh[fresh_len] = (variable, value);
+                            fresh_len += 1;
+                        }
+                    }
+                }
+                Term::QuotedTriple(_) => unreachable!("quoted triples take the general path"),
             }
         }
+
+        let mut bindings = seed.clone();
+        bindings.reserve(fresh_len);
+        for (variable, value) in &fresh[..fresh_len] {
+            bindings.insert((*variable).to_string(), *value);
+        }
+        exec_count!(ROWS_EMITTED);
         results.push(bindings);
     }
 
@@ -1134,29 +1285,121 @@ impl ExecutionEngine {
         }
     }
 
+    /// Feeds a solution sequence into a dependent plan in parallel chunks, concatenated in chunk order to match a sequential pass
+    fn execute_bind_join(
+        right: &PhysicalOperator,
+        database: &SparqlDatabase,
+        context: &ExecutionContext,
+        left_results: Bindings,
+    ) -> Bindings {
+        if left_results.is_empty() {
+            return Vec::new();
+        }
+
+        let threads = rayon::current_num_threads();
+        let chunk_size = (left_results.len() / threads.max(1)).max(BIND_JOIN_MIN_CHUNK);
+        if chunk_size >= left_results.len() {
+            return Self::execute_with_ids_and_input(right, database, context, left_results);
+        }
+
+        let chunks: Vec<Bindings> = left_results
+            .par_chunks(chunk_size)
+            .map(|chunk| {
+                Self::execute_with_ids_and_input(right, database, context, chunk.to_vec())
+            })
+            .collect();
+        chunks.into_iter().flatten().collect()
+    }
+
+    /// Merges two solution mappings if they agree on every shared variable
+    fn merge_rows(
+        left_row: &HashMap<String, u32>,
+        right_row: &HashMap<String, u32>,
+    ) -> Option<HashMap<String, u32>> {
+        for (variable, left_value) in left_row {
+            if let Some(right_value) = right_row.get(variable) {
+                if right_value != left_value {
+                    return None;
+                }
+            }
+        }
+        let mut joined = left_row.clone();
+        for (variable, value) in right_row {
+            joined.entry(variable.clone()).or_insert(*value);
+        }
+        Some(joined)
+    }
+
+    /// Variables bound by some row on both sides, in deterministic order
+    fn shared_variables(left: &Bindings, right: &Bindings) -> Vec<String> {
+        let left_variables: HashSet<&str> =
+            left.iter().flat_map(|row| row.keys().map(String::as_str)).collect();
+        let mut shared: Vec<&str> = right
+            .iter()
+            .flat_map(|row| row.keys().map(String::as_str))
+            .filter(|variable| left_variables.contains(variable))
+            .collect();
+        shared.sort_unstable();
+        shared.dedup();
+        shared.into_iter().map(str::to_string).collect()
+    }
+
+    /// The join key of a row, or `None` when it leaves a key variable unbound
+    fn join_key(row: &HashMap<String, u32>, variables: &[String]) -> Option<Vec<u32>> {
+        variables.iter().map(|variable| row.get(variable).copied()).collect()
+    }
+
     fn join_solution_sequences(left: Bindings, right: Bindings) -> Bindings {
         if left.is_empty() || right.is_empty() {
             return Vec::new();
         }
 
-        let mut results = Vec::new();
-        for left_row in left {
-            for right_row in &right {
-                if !left_row.iter().all(|(variable, left_value)| {
-                    right_row
-                        .get(variable)
-                        .map_or(true, |right_value| right_value == left_value)
-                }) {
-                    continue;
-                }
-                let mut joined = left_row.clone();
-                for (variable, value) in right_row {
-                    joined.entry(variable.clone()).or_insert(*value);
-                }
-                results.push(joined);
+        left.par_iter()
+            .flat_map_iter(|left_row| {
+                right
+                    .iter()
+                    .filter_map(move |right_row| Self::merge_rows(left_row, right_row))
+            })
+            .collect()
+    }
+
+    /// Build/probe join that builds on the right side and probes in parallel with the left, so emitted order matches the nested loop
+    fn hash_join_solution_sequences(left: Bindings, right: Bindings) -> Bindings {
+        if left.is_empty() || right.is_empty() {
+            return Vec::new();
+        }
+
+        let key_variables = Self::shared_variables(&left, &right);
+        if key_variables.is_empty() {
+            return Self::join_solution_sequences(left, right);
+        }
+
+        let all_right: Vec<&HashMap<String, u32>> = right.iter().collect();
+        let mut table: HashMap<Vec<u32>, Vec<&HashMap<String, u32>>> = HashMap::new();
+        let mut unkeyed: Vec<&HashMap<String, u32>> = Vec::new();
+        for right_row in &right {
+            match Self::join_key(right_row, &key_variables) {
+                Some(key) => table.entry(key).or_default().push(right_row),
+                None => unkeyed.push(right_row),
             }
         }
-        results
+
+        left.par_iter()
+            .flat_map_iter(|left_row| {
+                // A fully bound left row probes the table plus the unhashable rows; a partially bound one can match anything
+                let (probed, residual) = match Self::join_key(left_row, &key_variables) {
+                    Some(key) => (
+                        table.get(&key).map(Vec::as_slice).unwrap_or(&[]),
+                        unkeyed.as_slice(),
+                    ),
+                    None => (all_right.as_slice(), &[][..]),
+                };
+                probed
+                    .iter()
+                    .chain(residual.iter())
+                    .filter_map(move |right_row| Self::merge_rows(left_row, right_row))
+            })
+            .collect()
     }
 
     /// Extracts input data for ML prediction from query results
@@ -1327,7 +1570,7 @@ impl ExecutionEngine {
         mut input_results: Vec<HashMap<String, u32>>,
         predictions: Vec<String>,
         output_variable: &str,
-        database: &mut SparqlDatabase,
+        database: &SparqlDatabase,
     ) -> Vec<HashMap<String, u32>> {
         let output_var = output_variable.strip_prefix('?').unwrap_or(output_variable);
 
@@ -1352,7 +1595,7 @@ impl ExecutionEngine {
         mut input_results: Vec<HashMap<String, u32>>,
         predictions: MLPredictionResult,
         output_variable: &str,
-        database: &mut SparqlDatabase,
+        database: &SparqlDatabase,
     ) -> Vec<HashMap<String, u32>> {
         let output_var = output_variable.strip_prefix('?').unwrap_or(output_variable);
 

@@ -41,6 +41,9 @@ libc = "0.2.161"
 [target.'cfg(windows)'.dependencies]
 winapi = { version = "0.3.9", features = ["processthreadsapi", "psapi", "sysinfoapi"] }
 
+[features]
+exec-stats = []
+
 [dev-dependencies]
 criterion = "0.5.1"
 

@@ -8,6 +8,7 @@
  * you can obtain one at https://mozilla.org/MPL/2.0/.
  */
 
+pub mod exec_stats;
 pub mod engine;
 
 pub use engine::{DatasetView, ExecutionContext, ExecutionEngine};

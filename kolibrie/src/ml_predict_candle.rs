@@ -30,7 +30,7 @@ pub struct CandleDispatch {
 
 /// Try Candle for an `ML.PREDICT` clause and resolve the target predicate
 pub fn try_candle_predict(
-    database: &mut SparqlDatabase,
+    database: &SparqlDatabase,
     ml_predict: &MLPredictClause<'_>,
     conclusion: &[(&str, &str, &str)],
     rule_prefixes: &HashMap<String, String>,
@@ -120,7 +120,7 @@ pub fn try_candle_predict(
 ///
 /// Requires exactly one relation for the model, otherwise callers fall back to Python
 pub fn try_candle_predict_by_model_name(
-    database: &mut SparqlDatabase,
+    database: &SparqlDatabase,
     model_name: &str,
     input_rows: &[HashMap<String, u32>],
 ) -> CandleResult<Option<CandleDispatch>> {

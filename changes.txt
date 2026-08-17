@@ -112,6 +112,15 @@
 111. Fix rule premises with constant subject/object matching every triple with the same predicate
 112. Fix rule premises with a variable predicate silently deriving nothing
 113. Fix repeated-variable premises like `rel(V, V)` matching triples where subject != object
+114. Replace the four join operators that all ran the same dependent join with three real algorithms: `BindJoin`, `HashJoin`, and `NestedLoopJoin`, each parallelized with rayon
+115. Cost each join algorithm by its actual work so the optimizer picks bind join for selective left sides, hash join for wide ones, and nested loop for Cartesian products
+116. Collect per-predicate distinct subject and object counts in `DatabaseStats`
+117. Estimate join cardinality from shared variables and distinct counts instead of `min(left, right) * selectivity`
+118. Order joins by greedy connected selection over scan groups, replacing the pairwise cost swap that pushed unbound scans ahead of selective anchors
+119. Estimate scan cardinality from the variables a plan prefix already binds
+120. Validate quad terms before cloning the binding in `match_quad`
+121. Add optional `exec-stats` feature with scan probe, candidate quad, and emitted row counters
+122. Add cross-shape tests asserting identical result bags regardless of pattern order
 
 0.1.1
 1. Modify whole project by making Cargo workspace

@@ -14,6 +14,39 @@ use super::super::types::{Condition, ConditionExpression};
 use super::super::DatasetView;
 use shared::dataset_index::{GraphId, GraphTerm, QuadPattern};
 use shared::terms::{Term, TriplePattern};
+use std::collections::HashSet;
+
+/// Strips the SPARQL sigil so planner and executor agree on variable identity
+pub fn normalize_variable(variable: &str) -> &str {
+    variable
+        .strip_prefix('?')
+        .or_else(|| variable.strip_prefix('$'))
+        .unwrap_or(variable)
+}
+
+/// Adds every variable a pattern can bind, including inside quoted triples
+pub fn collect_pattern_variables(pattern: &QuadPattern, out: &mut HashSet<String>) {
+    fn collect_term(term: &Term, out: &mut HashSet<String>) {
+        match term {
+            Term::Variable(name) => {
+                out.insert(normalize_variable(name).to_string());
+            }
+            Term::QuotedTriple(inner) => {
+                collect_term(&inner.0, out);
+                collect_term(&inner.1, out);
+                collect_term(&inner.2, out);
+            }
+            Term::Constant(_) => {}
+        }
+    }
+
+    collect_term(&pattern.subject, out);
+    collect_term(&pattern.predicate, out);
+    collect_term(&pattern.object, out);
+    if let GraphTerm::Variable(graph) = &pattern.graph {
+        out.insert(normalize_variable(graph).to_string());
+    }
+}
 
 /// Cost estimation constants for different operators
 pub struct CostConstants;
@@ -25,7 +58,8 @@ impl CostConstants {
     pub const COST_PER_ROW_JOIN: u64 = 2;
     pub const COST_PER_ROW_NESTED_LOOP: u64 = 10;
     pub const COST_PER_PROJECTION: u64 = 1;
-    pub const COST_PER_ROW_OPTIMIZED_JOIN: u64 = 1;
+    /// One index probe of a dependent plan's right side
+    pub const COST_PER_PROBE: u64 = 2;
     pub const TUPLE_COST: u64 = 1;
 }
 
@@ -87,26 +121,27 @@ impl<'a> CostEstimator<'a> {
                 let selectivity = self.estimate_selectivity(condition);
                 (input_cost as f64 * selectivity) as u64 + CostConstants::COST_PER_FILTER
             }
-            PhysicalOperator::OptimizedHashJoin { left, right } => {
+            PhysicalOperator::BindJoin { left, .. } => {
+                // The right side is probed per left row, never executed standalone
                 let left_cost = self.estimate_cost(left);
-                let right_cost = self.estimate_cost(right);
                 let left_cardinality = self.estimate_output_cardinality(left);
-                let right_cardinality = self.estimate_output_cardinality(right);
+                let output = self.estimate_output_cardinality(plan);
 
                 left_cost
-                    + right_cost
-                    + (left_cardinality + right_cardinality)
-                        * CostConstants::COST_PER_ROW_OPTIMIZED_JOIN
+                    + left_cardinality * CostConstants::COST_PER_PROBE
+                    + output * CostConstants::COST_PER_ROW_JOIN
             }
             PhysicalOperator::HashJoin { left, right } => {
                 let left_cost = self.estimate_cost(left);
                 let right_cost = self.estimate_cost(right);
                 let left_cardinality = self.estimate_output_cardinality(left);
                 let right_cardinality = self.estimate_output_cardinality(right);
+                let output = self.estimate_output_cardinality(plan);
 
                 left_cost
                     + right_cost
                     + (left_cardinality + right_cardinality) * CostConstants::COST_PER_ROW_JOIN
+                    + output * CostConstants::COST_PER_ROW_JOIN
             }
             PhysicalOperator::NestedLoopJoin { left, right } => {
                 let left_cost = self.estimate_cost(left);
@@ -116,27 +151,9 @@ impl<'a> CostEstimator<'a> {
 
                 left_cost
                     + right_cost
-                    + (left_cardinality * right_cardinality)
-                        * CostConstants::COST_PER_ROW_NESTED_LOOP
-            }
-            PhysicalOperator::ParallelJoin { left, right } => {
-                // Check if we can use efficient join optimization
-                if self.can_use_efficient_join(right) {
-                    let left_cost = self.estimate_cost(left);
-                    let left_cardinality = self.estimate_output_cardinality(left);
-                    // Massive discount for efficient join
-                    left_cost + (left_cardinality * CostConstants::COST_PER_ROW_JOIN / 20)
-                } else {
-                    let left_cost = self.estimate_cost(left);
-                    let right_cost = self.estimate_cost(right);
-                    let left_cardinality = self.estimate_output_cardinality(left);
-                    let right_cardinality = self.estimate_output_cardinality(right);
-
-                    left_cost
-                        + right_cost
-                        + (left_cardinality + right_cardinality) * CostConstants::COST_PER_ROW_JOIN
-                            / 2
-                }
+                    + left_cardinality
+                        .saturating_mul(right_cardinality)
+                        .saturating_mul(CostConstants::COST_PER_ROW_NESTED_LOOP)
             }
             PhysicalOperator::Projection { input, .. } => {
                 self.estimate_cost(input) + CostConstants::COST_PER_PROJECTION
@@ -147,6 +164,10 @@ impl<'a> CostEstimator<'a> {
                     .iter()
                     .map(|p| self.estimate_cardinality(p))
                     .collect();
+
+                if costs.is_empty() {
+                    return 0;
+                }
 
                 costs.sort();
 
@@ -289,6 +310,45 @@ impl<'a> CostEstimator<'a> {
         }
     }
 
+    /// Estimates a scan of `pattern` where every position `bound` pins down divides it by that position's domain size
+    pub fn estimate_bound_scan_cardinality(
+        &self,
+        pattern: &QuadPattern,
+        bound: &HashSet<String>,
+    ) -> u64 {
+        let base = self.estimate_quad_cardinality(pattern);
+        if base == 0 {
+            return 0;
+        }
+
+        let predicate = match &pattern.predicate {
+            Term::Constant(predicate) => Some(*predicate),
+            _ => None,
+        };
+        let is_bound = |term: &Term| {
+            matches!(term, Term::Variable(name) if bound.contains(normalize_variable(name)))
+        };
+
+        let mut divisor: u64 = 1;
+        if is_bound(&pattern.subject) {
+            divisor = divisor.saturating_mul(match predicate {
+                Some(predicate) => self.stats.get_predicate_distinct_subjects(predicate).max(1),
+                None => self.stats.distinct_subjects.max(1),
+            });
+        }
+        if is_bound(&pattern.object) {
+            divisor = divisor.saturating_mul(match predicate {
+                Some(predicate) => self.stats.get_predicate_distinct_objects(predicate).max(1),
+                None => self.stats.distinct_objects.max(1),
+            });
+        }
+        if is_bound(&pattern.predicate) {
+            divisor = divisor.saturating_mul(self.stats.distinct_predicates().max(1));
+        }
+
+        (base / divisor.max(1)).max(1)
+    }
+
     /// Estimates a graph-scoped scan. Fixed graphs are capped by their direct
     /// graph cardinality; variable graphs range across all named graphs.
     pub fn estimate_quad_cardinality(&self, pattern: &QuadPattern) -> u64 {
@@ -425,35 +485,125 @@ impl<'a> CostEstimator<'a> {
         }
     }
 
-    /// Extracts the predicate ID from a physical operator if it's a scan
-    fn extract_predicate_from_physical(&self, plan: &PhysicalOperator) -> Option<u32> {
+    /// Collects the scan patterns a subtree reads
+    pub fn collect_scan_patterns(plan: &PhysicalOperator, out: &mut Vec<QuadPattern>) {
         match plan {
             PhysicalOperator::TableScan { pattern } | PhysicalOperator::IndexScan { pattern } => {
-                if let Term::Constant(pred_id) = &pattern.predicate {
-                    Some(*pred_id)
-                } else {
-                    None
+                out.push(pattern.clone())
+            }
+            PhysicalOperator::Filter { input, .. }
+            | PhysicalOperator::Projection { input, .. }
+            | PhysicalOperator::Graph { input, .. } => Self::collect_scan_patterns(input, out),
+            PhysicalOperator::BindJoin { left, right }
+            | PhysicalOperator::HashJoin { left, right }
+            | PhysicalOperator::NestedLoopJoin { left, right } => {
+                Self::collect_scan_patterns(left, out);
+                Self::collect_scan_patterns(right, out);
+            }
+            PhysicalOperator::StarJoin { patterns, .. } => out.extend(patterns.iter().map(|p| {
+                QuadPattern {
+                    subject: p.0.clone(),
+                    predicate: p.1.clone(),
+                    object: p.2.clone(),
+                    graph: GraphTerm::Default,
                 }
-            }
-            PhysicalOperator::Filter { input, .. } => self.extract_predicate_from_physical(input),
-            PhysicalOperator::Projection { input, .. } => {
-                self.extract_predicate_from_physical(input)
-            }
-            PhysicalOperator::Graph { input, .. } => self.extract_predicate_from_physical(input),
-            _ => None,
+            })),
+            _ => {}
         }
     }
 
-    /// Computes join selectivity based on actual statistics
-    fn compute_join_selectivity(&self, left: &PhysicalOperator, right: &PhysicalOperator) -> f64 {
-        let left_predicate = self.extract_predicate_from_physical(left);
-        let right_predicate = self.extract_predicate_from_physical(right);
-
-        match (left_predicate, right_predicate) {
-            (Some(pred), _) => self.stats.get_join_selectivity(pred),
-            (None, Some(pred)) => self.stats.get_join_selectivity(pred),
-            (None, None) => 0.1, // Fallback
+    /// Estimates surviving rows as the cross product divided by the domain size of each shared variable
+    pub fn estimate_join_cardinality_from_patterns(
+        &self,
+        left_cardinality: u64,
+        right_cardinality: u64,
+        left_patterns: &[QuadPattern],
+        right_patterns: &[QuadPattern],
+    ) -> u64 {
+        if left_cardinality == 0 || right_cardinality == 0 {
+            return 0;
         }
+
+        let left_variables = Self::pattern_set_variables(left_patterns);
+        let right_variables = Self::pattern_set_variables(right_patterns);
+        let mut shared: Vec<&String> = left_variables.intersection(&right_variables).collect();
+        shared.sort_unstable();
+
+        let cross = left_cardinality.saturating_mul(right_cardinality);
+        if shared.is_empty() {
+            return cross.max(1);
+        }
+
+        let mut divisor: u64 = 1;
+        for variable in shared {
+            let left_domain = self.domain_size(left_patterns, variable, left_cardinality);
+            let right_domain = self.domain_size(right_patterns, variable, right_cardinality);
+            if let Some(domain) = match (left_domain, right_domain) {
+                (Some(left), Some(right)) => Some(left.max(right)),
+                (Some(only), None) | (None, Some(only)) => Some(only),
+                (None, None) => None,
+            } {
+                divisor = divisor.saturating_mul(domain.max(1));
+            }
+        }
+
+        if divisor <= 1 {
+            // No statistic for the join variable: assume one match per row on the larger side
+            return left_cardinality.max(right_cardinality);
+        }
+
+        (cross / divisor).max(1)
+    }
+
+    /// Distinct values a variable takes across patterns, capped by the side's row count
+    fn domain_size(&self, patterns: &[QuadPattern], variable: &str, cardinality: u64) -> Option<u64> {
+        patterns
+            .iter()
+            .filter_map(|pattern| self.distinct_estimate_for_var(pattern, variable))
+            .min()
+            .map(|domain| domain.clamp(1, cardinality.max(1)))
+    }
+
+    /// Distinct values a variable takes at its position in one pattern
+    fn distinct_estimate_for_var(&self, pattern: &QuadPattern, variable: &str) -> Option<u64> {
+        let predicate = match &pattern.predicate {
+            Term::Constant(predicate) => Some(*predicate),
+            _ => None,
+        };
+
+        if Self::term_is_variable(&pattern.subject, variable) {
+            return Some(match predicate {
+                Some(predicate) => self.stats.get_predicate_distinct_subjects(predicate),
+                None => self.stats.distinct_subjects,
+            });
+        }
+        if Self::term_is_variable(&pattern.object, variable) {
+            return Some(match predicate {
+                Some(predicate) => self.stats.get_predicate_distinct_objects(predicate),
+                None => self.stats.distinct_objects,
+            });
+        }
+        if Self::term_is_variable(&pattern.predicate, variable) {
+            return Some(self.stats.distinct_predicates());
+        }
+        if let GraphTerm::Variable(graph) = &pattern.graph {
+            if normalize_variable(graph) == variable {
+                return Some(self.stats.named_graph_count);
+            }
+        }
+        None
+    }
+
+    fn term_is_variable(term: &Term, variable: &str) -> bool {
+        matches!(term, Term::Variable(name) if normalize_variable(name) == variable)
+    }
+
+    fn pattern_set_variables(patterns: &[QuadPattern]) -> HashSet<String> {
+        let mut variables = HashSet::new();
+        for pattern in patterns {
+            collect_pattern_variables(pattern, &mut variables);
+        }
+        variables
     }
 
     /// Estimates the output cardinality of a physical operator
@@ -504,48 +654,24 @@ impl<'a> CostEstimator<'a> {
                 let selectivity = self.estimate_selectivity(condition);
                 ((input_cardinality as f64 * selectivity) as u64).max(1)
             }
-            PhysicalOperator::OptimizedHashJoin { left, right } => {
+            PhysicalOperator::BindJoin { left, right }
+            | PhysicalOperator::HashJoin { left, right }
+            | PhysicalOperator::NestedLoopJoin { left, right } => {
+                // The join algorithm does not change how many rows survive
                 let left_cardinality =
                     self.estimate_output_cardinality_in_context(left, active_graph);
                 let right_cardinality =
                     self.estimate_output_cardinality_in_context(right, active_graph);
-                if left_cardinality == 0 || right_cardinality == 0 {
-                    return 0;
-                }
-                let join_selectivity = self.compute_join_selectivity(left, right);
-                ((left_cardinality.min(right_cardinality) as f64 * join_selectivity) as u64).max(1)
-            }
-            PhysicalOperator::HashJoin { left, right } => {
-                let left_cardinality =
-                    self.estimate_output_cardinality_in_context(left, active_graph);
-                let right_cardinality =
-                    self.estimate_output_cardinality_in_context(right, active_graph);
-                if left_cardinality == 0 || right_cardinality == 0 {
-                    return 0;
-                }
-                let join_selectivity = self.compute_join_selectivity(left, right);
-                ((left_cardinality.min(right_cardinality) as f64 * join_selectivity) as u64).max(1)
-            }
-            PhysicalOperator::NestedLoopJoin { left, right } => {
-                let left_cardinality =
-                    self.estimate_output_cardinality_in_context(left, active_graph);
-                let right_cardinality =
-                    self.estimate_output_cardinality_in_context(right, active_graph);
-                if left_cardinality == 0 || right_cardinality == 0 {
-                    return 0;
-                }
-                (left_cardinality * right_cardinality / 1000).max(1)
-            }
-            PhysicalOperator::ParallelJoin { left, right } => {
-                let left_cardinality =
-                    self.estimate_output_cardinality_in_context(left, active_graph);
-                let right_cardinality =
-                    self.estimate_output_cardinality_in_context(right, active_graph);
-                if left_cardinality == 0 || right_cardinality == 0 {
-                    return 0;
-                }
-                let join_selectivity = self.compute_join_selectivity(left, right);
-                ((left_cardinality.min(right_cardinality) as f64 * join_selectivity) as u64).max(1)
+                let mut left_patterns = Vec::new();
+                let mut right_patterns = Vec::new();
+                Self::collect_scan_patterns(left, &mut left_patterns);
+                Self::collect_scan_patterns(right, &mut right_patterns);
+                self.estimate_join_cardinality_from_patterns(
+                    left_cardinality,
+                    right_cardinality,
+                    &left_patterns,
+                    &right_patterns,
+                )
             }
             PhysicalOperator::Projection { input, .. } => {
                 self.estimate_output_cardinality_in_context(input, active_graph)
@@ -615,13 +741,6 @@ impl<'a> CostEstimator<'a> {
         count
     }
 
-    /// Checks if efficient join optimization can be used
-    fn can_use_efficient_join(&self, operator: &PhysicalOperator) -> bool {
-        matches!(
-            operator,
-            PhysicalOperator::TableScan { .. } | PhysicalOperator::IndexScan { .. }
-        )
-    }
 }
 
 #[cfg(test)]
@@ -674,6 +793,159 @@ mod tests {
             object: Term::Variable("?o".to_string()),
             graph,
         })
+    }
+
+    const EDGE: u32 = 1;
+    const TAG: u32 = 2;
+
+    fn join_stats() -> DatabaseStats {
+        let mut stats = DatabaseStats::new();
+        stats.total_triples = 10_000;
+        stats.distinct_subjects = 5_000;
+        stats.distinct_objects = 5_000;
+        stats.predicate_cardinalities.insert(EDGE, 8_000);
+        stats.predicate_cardinalities.insert(TAG, 20);
+        stats.predicate_distinct_subjects.insert(EDGE, 4_000);
+        stats.predicate_distinct_objects.insert(EDGE, 4_000);
+        stats.predicate_distinct_subjects.insert(TAG, 20);
+        stats.predicate_distinct_objects.insert(TAG, 1);
+        stats.graph_cardinalities.insert(GraphId::Default, 10_000);
+        stats
+    }
+
+    fn pattern(subject: Term, predicate: Term, object: Term) -> QuadPattern {
+        QuadPattern {
+            subject,
+            predicate,
+            object,
+            graph: GraphTerm::Default,
+        }
+    }
+
+    fn variable(name: &str) -> Term {
+        Term::Variable(name.to_string())
+    }
+
+    #[test]
+    fn distinct_counts_are_gathered_per_predicate() {
+        use crate::sparql_database::SparqlDatabase;
+        use shared::dataset_index::{GraphId, Quad};
+
+        let mut database = SparqlDatabase::new();
+        let predicate = database.dictionary.write().unwrap().encode("urn:p");
+        // Three subjects share one object, so subjects and objects differ
+        for subject_name in ["urn:a", "urn:b", "urn:c"] {
+            let subject = database.dictionary.write().unwrap().encode(subject_name);
+            let object = database.dictionary.write().unwrap().encode("urn:shared");
+            database.add_quad(Quad {
+                subject,
+                predicate,
+                object,
+                graph: GraphId::Default,
+            });
+        }
+
+        let stats = DatabaseStats::gather_stats_fast(&database);
+
+        assert_eq!(stats.get_predicate_distinct_subjects(predicate), 3);
+        assert_eq!(stats.get_predicate_distinct_objects(predicate), 1);
+        assert_eq!(stats.distinct_objects, 1);
+    }
+
+    #[test]
+    fn join_cardinality_divides_by_the_shared_variable_domain() {
+        let stats = join_stats();
+        let estimator = CostEstimator::new(&stats);
+        // ?a EDGE ?b joined with ?b EDGE ?c through ?b
+        let left = [pattern(variable("?a"), Term::Constant(EDGE), variable("?b"))];
+        let right = [pattern(variable("?b"), Term::Constant(EDGE), variable("?c"))];
+
+        let estimate =
+            estimator.estimate_join_cardinality_from_patterns(8_000, 8_000, &left, &right);
+
+        assert_eq!(estimate, 8_000 * 8_000 / 4_000);
+    }
+
+    #[test]
+    fn join_cardinality_without_a_shared_variable_is_the_cross_product() {
+        let stats = join_stats();
+        let estimator = CostEstimator::new(&stats);
+        let left = [pattern(variable("?a"), Term::Constant(EDGE), variable("?b"))];
+        let right = [pattern(variable("?c"), Term::Constant(TAG), variable("?d"))];
+
+        assert_eq!(
+            estimator.estimate_join_cardinality_from_patterns(100, 20, &left, &right),
+            2_000
+        );
+    }
+
+    #[test]
+    fn bound_positions_make_a_scan_cheaper_than_an_unbound_one() {
+        let stats = join_stats();
+        let estimator = CostEstimator::new(&stats);
+        let step = pattern(variable("?a"), Term::Constant(EDGE), variable("?b"));
+
+        let unbound = estimator.estimate_bound_scan_cardinality(&step, &HashSet::new());
+        let bound = estimator
+            .estimate_bound_scan_cardinality(&step, &HashSet::from(["a".to_string()]));
+
+        assert_eq!(unbound, 8_000);
+        assert_eq!(bound, 2);
+    }
+
+    #[test]
+    fn cost_model_prefers_bind_join_for_a_selective_left_side() {
+        let stats = join_stats();
+        let estimator = CostEstimator::new(&stats);
+        let selective =
+            PhysicalOperator::quad_index_scan(pattern(variable("?x"), Term::Constant(TAG), Term::Constant(7)));
+        let wide =
+            PhysicalOperator::quad_index_scan(pattern(variable("?x"), Term::Constant(EDGE), variable("?y")));
+
+        let bind = estimator.estimate_cost(&PhysicalOperator::bind_join(
+            selective.clone(),
+            wide.clone(),
+        ));
+        let hash =
+            estimator.estimate_cost(&PhysicalOperator::hash_join(selective.clone(), wide.clone()));
+        let nested =
+            estimator.estimate_cost(&PhysicalOperator::nested_loop_join(selective, wide));
+
+        assert!(
+            bind < hash && bind < nested,
+            "probing a wide right side once per selective left row should win: bind={} hash={} nested={}",
+            bind,
+            hash,
+            nested
+        );
+    }
+
+    #[test]
+    fn cost_model_prefers_hash_join_when_both_sides_are_wide() {
+        let stats = join_stats();
+        let estimator = CostEstimator::new(&stats);
+        let wide_left = PhysicalOperator::quad_table_scan(pattern(
+            variable("?x"),
+            Term::Constant(EDGE),
+            variable("?y"),
+        ));
+        let wide_right = PhysicalOperator::quad_table_scan(pattern(
+            variable("?y"),
+            Term::Constant(EDGE),
+            variable("?z"),
+        ));
+
+        let hash =
+            estimator.estimate_cost(&PhysicalOperator::hash_join(wide_left.clone(), wide_right.clone()));
+        let nested = estimator
+            .estimate_cost(&PhysicalOperator::nested_loop_join(wide_left, wide_right));
+
+        assert!(
+            hash < nested,
+            "a build/probe pass should beat a pairwise scan of both sides: hash={} nested={}",
+            hash,
+            nested
+        );
     }
 
     #[test]
