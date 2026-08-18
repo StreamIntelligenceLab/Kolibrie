@@ -79,6 +79,23 @@ pub struct RSPWindow {
     pub query: LogicalOperator, // The SPARQL query to execute on this window
 }
 
+/// How each message of a registered stream gets its timestamp
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum TimestampAssignment {
+    /// Arrival time of the message
+    SysTime,
+    /// A fully resolved property IRI whose object carries the timestamp
+    Property(String),
+}
+
+/// Stream source declared by `REGISTER STREAM <iri> FROM <src> WITH TIMESTAMP ...`
+#[derive(Debug, Clone)]
+pub struct StreamSource {
+    pub stream_iri: String,
+    pub source: String,
+    pub timestamp: TimestampAssignment,
+}
+
 /// RSP-QL Query Plan using Volcano optimizer
 #[derive(Debug, Clone)]
 pub struct RSPQueryPlan {
@@ -244,6 +261,8 @@ where
     r2r: Arc<Mutex<Box<dyn R2ROperator<I, Vec<PhysicalOperator>, O>>>>,
     r2s_consumer: ResultConsumer<O>,
     window_configs: Vec<RSPWindow>,
+    /// Stream sources declared with REGISTER STREAM, empty when none were given
+    stream_sources: Vec<StreamSource>,
     query_execution_mode: QueryExecutionMode,
     operation_mode: OperationMode,
     // Channel for collecting window results for cross-window joins
@@ -440,6 +459,7 @@ where
             r2r: Arc::new(Mutex::new(store)),
             r2s_consumer: result_consumer,
             window_configs: query_config.windows.clone(),
+            stream_sources: query_config.stream_sources.clone(),
             query_execution_mode,
             operation_mode,
             window_result_sender: result_sender,
@@ -779,15 +799,6 @@ where
             self.process_single_thread_window_results();
         }
 
-        fn normalize_stream_iri(s: &str) -> String {
-            let s = s.trim();
-            // Some callers might pass a full IRI in `<...>` form.
-            let s = s.trim_start_matches('<').trim_end_matches('>');
-            // Accept prefixed notation with an optional leading colon, e.g. `:stream1`.
-            let s = s.strip_prefix(':').unwrap_or(s);
-            s.to_string()
-        }
-
         let input_norm = normalize_stream_iri(stream_iri);
 
         // Find windows that match this stream IRI
@@ -948,6 +959,20 @@ where
             .iter()
             .map(|w| w.stream_iri.clone())
             .collect()
+    }
+
+    /// Stream sources declared with REGISTER STREAM
+    pub fn stream_sources(&self) -> &[StreamSource] {
+        &self.stream_sources
+    }
+
+    /// Timestamp policy declared for a stream, if one was registered
+    pub fn timestamp_policy_for(&self, stream_iri: &str) -> Option<&TimestampAssignment> {
+        let wanted = shared::hybrid::normalize_stream_iri(stream_iri);
+        self.stream_sources
+            .iter()
+            .find(|s| shared::hybrid::normalize_stream_iri(&s.stream_iri) == wanted)
+            .map(|s| &s.timestamp)
     }
 }
 

@@ -331,3 +331,7 @@ path = "examples/real_scenario/fraud_detection_system.rs"
 [[example]]
 name = "combined_rules_example"
 path = "examples/sparql_syntax/knowledge_graph/combined_rules_example.rs"
+
+[[example]]
+name = "rdf_message_stream"
+path = "examples/rdf_messages/rdf_message_stream.rs"

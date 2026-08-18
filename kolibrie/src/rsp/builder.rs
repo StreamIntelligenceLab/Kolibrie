@@ -7,24 +7,29 @@
 * you can obtain one at https://mozilla.org/MPL/2.0/.
 */
 
-use crate::parser::parse_combined_query;
+use crate::parser::{parse_combined_query, resolve_term_with_prefix};
 use crate::rsp::r2r::R2ROperator;
 use crate::rsp::r2s::StreamOperator;
 use crate::rsp::s2r::{ReportStrategy, Tick};
 use crate::rsp::simple_r2r::SimpleR2R;
 use crate::rsp_engine::{
     CrossWindowReasoningMode, OperationMode, QueryExecutionMode, RSPEngine, RSPQueryPlan,
-    RSPWindow, ResultConsumer,
+    RSPWindow, ResultConsumer, StreamSource, TimestampAssignment,
 };
 use crate::sparql_database::SparqlDatabase;
 use crate::streamertail_optimizer::{
     build_logical_plan, LogicalOperator, PhysicalOperator, Streamertail,
 };
-use shared::query::{StreamType, SyncPolicy, WindowBlock, WindowClause};
+use log::warn;
+use shared::hybrid::normalize_stream_iri;
+use shared::query::{
+    StreamRegistration, StreamType, SyncPolicy, TimestampPolicy, WindowBlock, WindowClause,
+};
 use shared::rule::Rule;
 use shared::terms::Term;
 use shared::triple::Triple;
 use std::any::TypeId;
+use std::collections::HashMap;
 use std::fmt::Debug;
 use std::hash::Hash;
 use std::sync::Arc;
@@ -39,6 +44,8 @@ pub struct RSPQueryConfig<'a> {
     pub database: SparqlDatabase,                           // used prefixes
     /// Effective synchronization policy for multi-window coordination.
     pub sync_policy: SyncPolicy,
+    /// Stream sources declared with REGISTER STREAM, empty when none were given
+    pub stream_sources: Vec<StreamSource>,
 }
 
 pub struct RSPBuilder<'a, I, O> {
@@ -192,6 +199,11 @@ where
                         .find_map(|wc| wc.policy.clone())
                         .unwrap_or_else(|| self.sync_policy.clone());
 
+                    let stream_sources = resolve_stream_sources(
+                        &parsed_query.stream_registrations,
+                        &parsed_query.prefixes,
+                    );
+
                     Ok(RSPQueryConfig {
                         windows,
                         output_stream: register_clause.output_stream_iri.to_string(),
@@ -199,6 +211,7 @@ where
                         static_patterns,
                         database,
                         sync_policy,
+                        stream_sources,
                     })
                 } else {
                     Err("No REGISTER clause found in RSP-QL query".to_string())
@@ -378,4 +391,52 @@ where
             self.cross_window_reasoning_mode,
         )
     }
+}
+
+/// Resolve parsed stream registrations into runtime sources, expanding
+/// prefixed timestamp properties against the query prologue
+fn resolve_stream_sources(
+    registrations: &[StreamRegistration],
+    prefixes: &HashMap<String, String>,
+) -> Vec<StreamSource> {
+    let mut sources: Vec<StreamSource> = Vec::new();
+
+    for registration in registrations {
+        let timestamp = match &registration.timestamp {
+            TimestampPolicy::SysTime => TimestampAssignment::SysTime,
+            TimestampPolicy::Property(term) => {
+                let resolved = resolve_term_with_prefix(term, prefixes);
+                if resolved == *term && term.contains(':') && !term.contains("://") {
+                    warn!(
+                        "REGISTER STREAM {}: unknown prefix in timestamp property {}, using it verbatim",
+                        registration.stream_iri, term
+                    );
+                }
+                TimestampAssignment::Property(resolved)
+            }
+        };
+
+        let source = StreamSource {
+            stream_iri: registration.stream_iri.to_string(),
+            source: registration.source.to_string(),
+            timestamp,
+        };
+
+        // A repeated registration for the same stream replaces the earlier one
+        let normalized = normalize_stream_iri(&source.stream_iri);
+        if let Some(existing) = sources
+            .iter_mut()
+            .find(|s| normalize_stream_iri(&s.stream_iri) == normalized)
+        {
+            warn!(
+                "REGISTER STREAM {} declared more than once, keeping the last declaration",
+                source.stream_iri
+            );
+            *existing = source;
+        } else {
+            sources.push(source);
+        }
+    }
+
+    sources
 }

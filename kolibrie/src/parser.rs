@@ -431,6 +431,64 @@ pub fn parse_register_clause(input: &str) -> IResult<&str, RegisterClause<'_>> {
     ))
 }
 
+// Parser for REGISTER STREAM <iri> FROM <src> [WITH TIMESTAMP ...]
+pub fn parse_register_stream_clause(input: &str) -> IResult<&str, StreamRegistration<'_>> {
+    let (input, _) = multispace0.parse(input)?;
+    let (input, _) = tag("REGISTER").parse(input)?;
+    let (input, _) = multispace1.parse(input)?;
+    let (input, _) = tag("STREAM").parse(input)?;
+    let (input, _) = multispace1.parse(input)?;
+
+    // Stream identifier, same alternation as the ON position of FROM NAMED WINDOW
+    let (input, stream_iri) = alt((
+        delimited(char('<'), take_while1(|c| c != '>'), char('>')),
+        recognize((char(':'), identifier)),
+        prefixed_identifier,
+        identifier,
+    ))
+    .parse(input)?;
+
+    let (input, _) = multispace1.parse(input)?;
+    let (input, _) = tag("FROM").parse(input)?;
+    let (input, _) = multispace1.parse(input)?;
+
+    // Source reference, kept verbatim so any transport can interpret it
+    let (input, source) = parse_uri(input)?;
+
+    // Optional WITH TIMESTAMP, defaulting to arrival time
+    let (input, timestamp) = opt(parse_with_timestamp).parse(input)?;
+
+    Ok((
+        input,
+        StreamRegistration {
+            stream_iri,
+            source,
+            timestamp: timestamp.unwrap_or(TimestampPolicy::SysTime),
+        },
+    ))
+}
+
+// Parser for the WITH TIMESTAMP suffix of a stream registration
+fn parse_with_timestamp(input: &str) -> IResult<&str, TimestampPolicy<'_>> {
+    let (input, _) = multispace1.parse(input)?;
+    let (input, _) = tag("WITH").parse(input)?;
+    let (input, _) = multispace1.parse(input)?;
+    let (input, _) = tag("TIMESTAMP").parse(input)?;
+    let (input, _) = multispace1.parse(input)?;
+    parse_timestamp_policy(input)
+}
+
+// SYSTIME is tried last so a prefixed name such as SYSTIME:x still parses as a property
+fn parse_timestamp_policy(input: &str) -> IResult<&str, TimestampPolicy<'_>> {
+    alt((
+        parse_uri.map(TimestampPolicy::Property),
+        prefixed_identifier.map(TimestampPolicy::Property),
+        recognize((char(':'), identifier)).map(TimestampPolicy::Property),
+        tag("SYSTIME").map(|_| TimestampPolicy::SysTime),
+    ))
+    .parse(input)
+}
+
 pub fn parse_group_by(input: &str) -> IResult<&str, Vec<&str>> {
     sparql_group_by_clause(input)
 }
@@ -3290,6 +3348,7 @@ pub fn parse_combined_query_with_options(
                 prefixes,
                 retrieve_clause: None,
                 register_clause: None,
+                stream_registrations: Vec::new(),
                 model_decls: Vec::new(),
                 neural_relation_decls: Vec::new(),
                 train_neural_relation_decls: Vec::new(),
@@ -3313,6 +3372,7 @@ pub fn parse_combined_query_with_options(
                 prefixes,
                 retrieve_clause: None,
                 register_clause: None,
+                stream_registrations: Vec::new(),
                 model_decls: Vec::new(),
                 neural_relation_decls: Vec::new(),
                 train_neural_relation_decls: Vec::new(),
@@ -3326,6 +3386,12 @@ pub fn parse_combined_query_with_options(
     // Explicit extension path. A recognized standard keyword above never
     // falls through to these restricted grammars after a syntax error.
     let (extension_input, retrieve_clause) = opt(parse_retrieve_clause).parse(after_prologue)?;
+    let (extension_input, _) = multispace0.parse(extension_input)?;
+    // Stream registrations are consumed before the REGISTER query so that the
+    // STREAM keyword never reaches parse_stream_type, whose catch-all arm would
+    // otherwise read it as StreamType::Custom("STREAM")
+    let (extension_input, stream_registrations) =
+        many0(preceded(multispace0, parse_register_stream_clause)).parse(extension_input)?;
     let (extension_input, _) = multispace0.parse(extension_input)?;
     let (extension_input, register_clause) = opt(parse_register_clause).parse(extension_input)?;
     let (extension_input, _) = multispace0.parse(extension_input)?;
@@ -3366,6 +3432,7 @@ pub fn parse_combined_query_with_options(
             prefixes,
             retrieve_clause,
             register_clause,
+            stream_registrations,
             model_decls,
             neural_relation_decls,
             train_neural_relation_decls,
@@ -3376,7 +3443,7 @@ pub fn parse_combined_query_with_options(
     ))
 }
 
-fn resolve_term_with_prefix(term: &str, prefixes: &HashMap<String, String>) -> String {
+pub(crate) fn resolve_term_with_prefix(term: &str, prefixes: &HashMap<String, String>) -> String {
     if let Some(idx) = term.find(':') {
         let prefix = &term[..idx];
         let local = &term[idx + 1..];

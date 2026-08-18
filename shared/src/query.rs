@@ -267,6 +267,24 @@ pub struct RegisterClause<'a> {
     pub query: RSPQLSelectQuery<'a>,
 }
 
+/// How each message of a registered stream gets its timestamp
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum TimestampPolicy<'a> {
+    /// Arrival time of the message
+    SysTime,
+    /// A property whose object carries the timestamp, still unresolved
+    /// so it may be a full IRI or a prefixed name
+    Property(&'a str),
+}
+
+/// A `REGISTER STREAM <iri> FROM <src> WITH TIMESTAMP ...` declaration
+#[derive(Debug, Clone)]
+pub struct StreamRegistration<'a> {
+    pub stream_iri: &'a str,
+    pub source: &'a str,
+    pub timestamp: TimestampPolicy<'a>,
+}
+
 #[derive(Debug, Clone)]
 pub struct RSPQLSelectQuery<'a> {
     pub variables: Vec<(&'a str, &'a str, Option<&'a str>)>,
@@ -412,6 +430,8 @@ pub struct CombinedQuery<'a> {
     pub prefixes: HashMap<String, String>,
     pub retrieve_clause: Option<RetrieveClause<'a>>,
     pub register_clause: Option<RegisterClause<'a>>,
+    /// Stream source declarations, empty when the query registers no sources
+    pub stream_registrations: Vec<StreamRegistration<'a>>,
     pub model_decls: Vec<ModelDecl>,
     pub neural_relation_decls: Vec<NeuralRelationDecl>,
     pub train_neural_relation_decls: Vec<TrainNeuralRelationDecl>,

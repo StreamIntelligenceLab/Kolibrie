@@ -13,7 +13,10 @@ mod error;
 mod format;
 mod model;
 mod parser;
+mod replay;
 mod scanner;
+mod serialize;
+mod timestamp;
 mod version;
 
 #[cfg(test)]
@@ -23,6 +26,9 @@ pub use error::RdfMessageError;
 pub use format::MessageBaseFormat;
 pub use model::{MessageQuad, RdfMessage, RdfMessageLog};
 pub use parser::RdfMessageLogParser;
+pub use replay::{replay_file, replay_log, replay_registered_sources, ReplayStats};
+pub use serialize::quads_to_ntriples;
+pub use timestamp::{extract_timestamp, parse_timestamp_value, TimestampSource};
 pub use version::VersionLabel;
 
 /// Parse an RDF Message Log in the given serialization
