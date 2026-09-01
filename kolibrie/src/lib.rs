@@ -20,6 +20,7 @@ pub mod parser;
 pub mod query_builder;
 pub mod rsp_engine;
 pub mod sparql_database;
+pub mod term_order;
 pub mod utils;
 pub mod streamertail_optimizer;
 pub mod rsp;

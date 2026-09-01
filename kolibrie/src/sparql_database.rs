@@ -57,7 +57,6 @@ fn escape_ntriples_literal(value: &str) -> String {
 }
 
 /// Decodes the lexical value of an N-Triples/N-Quads double-quoted literal
-/// and returns the suffix following its escape-aware closing quote.
 fn decode_ntriples_literal(term: &str) -> Option<(String, &str)> {
     let body = term.strip_prefix('"')?;
     let mut characters = body.char_indices();
@@ -208,9 +207,7 @@ impl SparqlDatabase {
         }
     }
 
-    /// Encode a term that may be a quoted triple `<< s p o >>` (recursive).
-    /// Returns the u32 ID for the term.
-    /// Handles stripping `<>` from URIs and `""` from literals.
+    /// Encode a term that may be a quoted triple `<< s p o >>` (recursive)
     pub fn encode_term_star(&self, term: &str) -> u32 {
         let trimmed = term.trim();
         if trimmed.starts_with("<<") && trimmed.ends_with(">>") {
@@ -236,7 +233,7 @@ impl SparqlDatabase {
         }
     }
 
-    /// Decode a u32 ID that may be a regular dictionary ID or a quoted triple ID.
+    /// Decode a u32 ID that may be a regular dictionary ID or a quoted triple ID
     pub fn decode_any(&self, id: u32) -> Option<String> {
         if is_quoted_triple_id(id) {
             let qt = self.quoted_triple_store.read().unwrap();
@@ -248,8 +245,7 @@ impl SparqlDatabase {
         }
     }
 
-    /// Split quoted triple content `s p o` into three parts, respecting nested `<< >>`.
-    /// This is used both internally and by the query optimizer for pattern parsing.
+    /// Split quoted triple content `s p o` into three parts, respecting nested `<< >>`
     pub fn split_quoted_triple_content(content: &str) -> (String, String, String) {
         let mut parts: Vec<String> = Vec::new();
         let mut current = String::new();
@@ -340,21 +336,34 @@ impl SparqlDatabase {
         QueryBuilder::new(self)
     }
 
+    // Every mutation path funnels through the four methods below, so they invalidate the stats cache
+
     pub fn add_triple(&mut self, triple: Triple) {
         self.dataset_index.insert_triple(&triple);
+        self.invalidate_stats_cache();
     }
 
     pub fn delete_triple(&mut self, triple: &Triple) -> bool {
-        self.dataset_index.delete_triple(triple)
+        let deleted = self.dataset_index.delete_triple(triple);
+        if deleted {
+            self.invalidate_stats_cache();
+        }
+        deleted
     }
 
     pub fn add_quad(&mut self, quad: Quad) -> bool {
         let inserted = self.dataset_index.insert_quad(&quad);
+        if inserted {
+            self.invalidate_stats_cache();
+        }
         inserted
     }
 
     pub fn delete_quad(&mut self, quad: &Quad) -> bool {
         let deleted = self.dataset_index.delete_quad(quad);
+        if deleted {
+            self.invalidate_stats_cache();
+        }
         deleted
     }
 
@@ -400,7 +409,7 @@ impl SparqlDatabase {
         self.dataset_index.query_graph(graph, s, p, o)
     }
 
-    /// Helper function that accepts parts of a triple, constructs a Triple, and adds it
+    /// Encodes three lexical terms and adds the resulting triple
     pub fn add_triple_parts(&mut self, subject: &str, predicate: &str, object: &str) {
         let mut dict = self.dictionary.write().unwrap();
         let subject_id = dict.encode(subject);
@@ -438,7 +447,7 @@ impl SparqlDatabase {
         self.probability_seeds.insert(triple, probability);
     }
 
-    /// Helper function that accepts parts of a triple, constructs a Triple, and deletes it
+    /// Encodes three lexical terms and deletes the resulting triple
     pub fn delete_triple_parts(&mut self, subject: &str, predicate: &str, object: &str) -> bool {
         let mut dict = self.dictionary.write().unwrap();
         let subject_id = dict.encode(subject);
@@ -486,7 +495,7 @@ impl SparqlDatabase {
         }
         drop(dict);
 
-        // For each subject, create an <rdf:Description> element.
+        // For each subject, create an <rdf:Description> element
         for (subject, po_pairs) in subjects {
             xml.push_str(&format!("  <rdf:Description rdf:about=\"{}\">\n", subject));
             for (predicate, object) in po_pairs {
@@ -993,7 +1002,7 @@ impl SparqlDatabase {
                 continue;
             }
 
-            // Tokenize, but keep ; , . as delimiters only when outside URIs, literals, and quoted triples.
+            // Tokenize, but keep ; , . as delimiters only when outside URIs, literals, and quoted triples
             let tokens = Self::tokenize_turtle_star_line(line);
 
             let mut subject_raw: Option<String> = None;
@@ -1140,7 +1149,7 @@ impl SparqlDatabase {
         }
     }
 
-    /// Tokenize a Turtle-star line, keeping `<< ... >>` and punctuation structure intact.
+    /// Tokenize a Turtle-star line, keeping `<< ... >>` and punctuation structure intact
     fn tokenize_turtle_star_line(line: &str) -> Vec<String> {
         let mut tokens = Vec::new();
         let mut current = String::new();
@@ -1465,7 +1474,7 @@ impl SparqlDatabase {
         let parts = self.parse_ntriples_parts(line);
         if parts.len() == 3 {
             let subject = self.clean_ntriples_term(&parts[0]);
-            // Expand the Turtle `a` shorthand for rdf:type in predicate position.
+            // Expand the Turtle `a` shorthand for rdf:type in predicate position
             let predicate = if parts[1] == "a" {
                 "http://www.w3.org/1999/02/22-rdf-syntax-ns#type".to_string()
             } else {
@@ -1826,7 +1835,6 @@ impl SparqlDatabase {
         let mut translated_ids = HashMap::new();
 
         // Preserve the complete lexical dictionary, not only terms currently
-        // referenced by default-graph triples.
         let mut other_term_ids: Vec<_> = other_dict.id_to_string.keys().copied().collect();
         other_term_ids.sort_unstable();
         for id in other_term_ids {
@@ -1841,8 +1849,6 @@ impl SparqlDatabase {
         }
 
         // Preserve even currently-unreferenced quoted terms. Quads and metadata
-        // below use the same translation cache, so every occurrence receives
-        // the same target ID.
         let mut other_quoted_ids: Vec<_> = other_quoted_triples
             .id_to_components
             .keys()
@@ -1868,8 +1874,7 @@ impl SparqlDatabase {
             dataset_index.insert_quad(&quad);
         }
 
-        // Graph names and every term in the other database must be translated:
-        // numeric dictionary IDs are local to their originating database.
+        // Graph names and every term in the other database must be translated
         for graph in other.dataset_index.named_graphs() {
             let GraphId::Named(graph_id) = graph else {
                 continue;
@@ -2035,8 +2040,7 @@ impl SparqlDatabase {
         }
     }
 
-    /// Execute one of Kolibrie's supported standard SPARQL Update forms while
-    /// preserving parse/evaluation errors for Rust callers.
+    /// Executes one supported standard SPARQL Update form and reports what changed
     pub fn execute_update(
         &mut self,
         update: &str,
@@ -2052,10 +2056,7 @@ impl SparqlDatabase {
             );
         }
 
-        // Historical standalone INSERT/DELETE aliases are parsed into the
-        // same UpdateOperation and use the same optimized executor. Keeping
-        // the old short success text preserves callers that compare it
-        // exactly.
+        // Historical standalone INSERT/DELETE aliases parse into the same update operation
         if crate::execute_query::execute_sparql_update_compat(update, self).is_ok() {
             return "Update Successful".to_string();
         }
@@ -2134,8 +2135,7 @@ impl SparqlDatabase {
         self.udfs.insert(name.to_string(), ClonableFn::new(f));
     }
 
-    /// Rebuild every graph-scoped index without collapsing named graphs into
-    /// the default graph or losing empty named-graph identities.
+    /// Rebuilds every graph-scoped index, keeping named graphs distinct from the default
     pub fn build_all_indexes(&mut self) {
         let quads = self.dataset_index.all_quads();
         let named_graphs = self.dataset_index.named_graphs();

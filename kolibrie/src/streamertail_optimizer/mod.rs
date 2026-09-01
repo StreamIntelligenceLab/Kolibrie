@@ -27,6 +27,8 @@ pub use types::{
 };
 pub use utils::{
     build_logical_plan, build_logical_plan_from_group, build_logical_plan_from_subquery,
-    compile_graph_term, compile_term, compile_triple, estimate_operator_selectivity,
-    extract_pattern, pattern_contains_variable,
+    compile_graph_term, compile_term, compile_triple, extract_pattern, pattern_contains_variable,
 };
+// Re-exported so existing paths keep resolving, though the function is deprecated
+#[allow(deprecated)]
+pub use utils::estimate_operator_selectivity;

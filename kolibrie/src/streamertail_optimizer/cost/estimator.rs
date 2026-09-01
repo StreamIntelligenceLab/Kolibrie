@@ -52,8 +52,11 @@ pub fn collect_pattern_variables(pattern: &QuadPattern, out: &mut HashSet<String
 pub struct CostConstants;
 
 impl CostConstants {
+    /// Retained for source compatibility
     pub const COST_PER_ROW_SCAN: u64 = 100;
     pub const COST_PER_ROW_INDEX_SCAN: u64 = 1;
+    /// Fixed overhead of opening one index scan, so a ground pattern is never free
+    pub const COST_PER_SCAN_PROBE: u64 = 1;
     pub const COST_PER_FILTER: u64 = 1;
     pub const COST_PER_ROW_JOIN: u64 = 2;
     pub const COST_PER_ROW_NESTED_LOOP: u64 = 10;
@@ -78,10 +81,7 @@ impl<'a> CostEstimator<'a> {
         }
     }
 
-    /// Creates an estimator for a replacement SPARQL dataset.
-    ///
-    /// The dataset changes both the merged query default graph and the set of
-    /// named graphs visible to GRAPH, so it must participate in scan estimates.
+    /// Creates an estimator for a replacement SPARQL dataset
     pub fn with_dataset(stats: &'a DatabaseStats, dataset: &'a DatasetView) -> Self {
         Self {
             stats,
@@ -93,43 +93,54 @@ impl<'a> CostEstimator<'a> {
     pub fn estimate_cost(&self, plan: &PhysicalOperator) -> u64 {
         match plan {
             PhysicalOperator::Unit => 0,
-            PhysicalOperator::TableScan { pattern } => {
-                self.estimate_quad_cardinality(pattern) * CostConstants::COST_PER_ROW_SCAN
-            }
-            PhysicalOperator::IndexScan { pattern } => {
-                let cardinality = self.estimate_quad_cardinality(pattern);
-                let triple = Self::quad_triple(pattern);
-                let bound_count = self.count_bound_variables(&triple);
-
-                let discount = match bound_count {
-                    0 => 1,    // No discount for unbounded scan
-                    1 => 10,   // 10x better for one bound field
-                    2 => 100,  // 100x better for two bound fields
-                    3 => 1000, // 1000x better for fully bound
-                    _ => 1,
-                };
-
-                (cardinality * CostConstants::COST_PER_ROW_INDEX_SCAN) / discount
+            // `TableScan` and `IndexScan` dispatch to the same executor function
+            PhysicalOperator::TableScan { pattern } | PhysicalOperator::IndexScan { pattern } => {
+                CostConstants::COST_PER_SCAN_PROBE.saturating_add(
+                    self.estimate_quad_cardinality(pattern)
+                        .saturating_mul(CostConstants::COST_PER_ROW_INDEX_SCAN),
+                )
             }
             PhysicalOperator::Union { branches } => branches
                 .iter()
                 .map(|branch| self.estimate_cost(branch))
-                .sum(),
-            PhysicalOperator::Graph { input, .. } => self.estimate_cost(input),
+                .fold(0u64, u64::saturating_add),
+            // Mirrors `estimate_output_cardinality_in_context`: an invisible
+            PhysicalOperator::Graph { input, graph } => match graph {
+                GraphTerm::Default => self.estimate_cost(input),
+                GraphTerm::Named(graph) if self.fixed_graph_is_visible(*graph) => {
+                    self.estimate_cost(input)
+                }
+                GraphTerm::Named(_) => 0,
+                GraphTerm::Variable(_) => self
+                    .estimate_cost(input)
+                    .saturating_mul(self.visible_named_graphs().len() as u64),
+            },
             PhysicalOperator::Filter { input, condition } => {
+                // Selectivity decides how many rows survive, not how much work
+                let _ = condition;
                 let input_cost = self.estimate_cost(input);
-                let selectivity = self.estimate_selectivity(condition);
-                (input_cost as f64 * selectivity) as u64 + CostConstants::COST_PER_FILTER
+                let input_cardinality = self.estimate_output_cardinality(input);
+
+                input_cost.saturating_add(
+                    input_cardinality.saturating_mul(CostConstants::COST_PER_FILTER),
+                )
             }
-            PhysicalOperator::BindJoin { left, .. } => {
-                // The right side is probed per left row, never executed standalone
+            PhysicalOperator::BindJoin { left, right } => {
                 let left_cost = self.estimate_cost(left);
                 let left_cardinality = self.estimate_output_cardinality(left);
                 let output = self.estimate_output_cardinality(plan);
 
+                // The right side is re-entered once per left solution, so a shared variable makes it a probe
+                let per_left_row = if self.shares_a_variable(left, right) {
+                    CostConstants::COST_PER_PROBE
+                        .saturating_mul(Self::probe_width(right).max(1))
+                } else {
+                    self.estimate_cost(right).max(CostConstants::COST_PER_PROBE)
+                };
+
                 left_cost
-                    + left_cardinality * CostConstants::COST_PER_PROBE
-                    + output * CostConstants::COST_PER_ROW_JOIN
+                    .saturating_add(left_cardinality.saturating_mul(per_left_row))
+                    .saturating_add(output.saturating_mul(CostConstants::COST_PER_ROW_JOIN))
             }
             PhysicalOperator::HashJoin { left, right } => {
                 let left_cost = self.estimate_cost(left);
@@ -139,9 +150,13 @@ impl<'a> CostEstimator<'a> {
                 let output = self.estimate_output_cardinality(plan);
 
                 left_cost
-                    + right_cost
-                    + (left_cardinality + right_cardinality) * CostConstants::COST_PER_ROW_JOIN
-                    + output * CostConstants::COST_PER_ROW_JOIN
+                    .saturating_add(right_cost)
+                    .saturating_add(
+                        left_cardinality
+                            .saturating_add(right_cardinality)
+                            .saturating_mul(CostConstants::COST_PER_ROW_JOIN),
+                    )
+                    .saturating_add(output.saturating_mul(CostConstants::COST_PER_ROW_JOIN))
             }
             PhysicalOperator::NestedLoopJoin { left, right } => {
                 let left_cost = self.estimate_cost(left);
@@ -149,11 +164,11 @@ impl<'a> CostEstimator<'a> {
                 let left_cardinality = self.estimate_output_cardinality(left);
                 let right_cardinality = self.estimate_output_cardinality(right);
 
-                left_cost
-                    + right_cost
-                    + left_cardinality
+                left_cost.saturating_add(right_cost).saturating_add(
+                    left_cardinality
                         .saturating_mul(right_cardinality)
-                        .saturating_mul(CostConstants::COST_PER_ROW_NESTED_LOOP)
+                        .saturating_mul(CostConstants::COST_PER_ROW_NESTED_LOOP),
+                )
             }
             PhysicalOperator::Projection { input, .. } => {
                 self.estimate_cost(input) + CostConstants::COST_PER_PROJECTION
@@ -162,7 +177,7 @@ impl<'a> CostEstimator<'a> {
                 // Cost = scan most selective + filter rest
                 let mut costs: Vec<u64> = patterns
                     .iter()
-                    .map(|p| self.estimate_cardinality(p))
+                    .map(|pattern| self.estimate_star_pattern_cardinality(pattern))
                     .collect();
 
                 if costs.is_empty() {
@@ -178,15 +193,15 @@ impl<'a> CostEstimator<'a> {
 
                 base_cost + filter_cost
             }
-            PhysicalOperator::InMemoryBuffer { .. } => 0,
+            // The buffer's rows still have to be joined against the incoming
+            PhysicalOperator::InMemoryBuffer { content, .. } => {
+                (content.len() as u64).saturating_mul(CostConstants::TUPLE_COST)
+            }
             PhysicalOperator::Subquery { inner, spec } => {
                 let inner_cost = self.estimate_cost(inner);
                 let inner_card = self.estimate_output_cardinality(inner);
 
-                // Materialization cost:
-                // - Cost to execute inner query
-                // - Cost to store results (proportional to cardinality)
-                // - Small overhead for projection
+                // Executing the inner plan, storing its rows, then projecting them
                 let materialization_cost = inner_card * CostConstants::TUPLE_COST;
                 let projection_width =
                     spec.projection
@@ -222,7 +237,6 @@ impl<'a> CostEstimator<'a> {
             }
             PhysicalOperator::Values { values, .. } => {
                 // VALUES has minimal cost - just the number of rows
-                // No I/O or computation, just materializing the constant values
                 (values.len() as u64) * CostConstants::TUPLE_COST
             }
             PhysicalOperator::MLPredict {
@@ -233,9 +247,7 @@ impl<'a> CostEstimator<'a> {
                 let input_cost = self.estimate_cost(input);
                 let cardinality = self.estimate_output_cardinality(input);
 
-                // ML prediction is expensive:
-                // - Python interop overhead: 1000 per call
-                // - Per-row prediction cost: 100 * number of features
+                // Python interop dominates, plus a per-row cost scaled by feature count
                 let python_overhead = 1000;
                 let per_row_cost = 100 * input_variables.len() as u64;
 
@@ -350,7 +362,6 @@ impl<'a> CostEstimator<'a> {
     }
 
     /// Estimates a graph-scoped scan. Fixed graphs are capped by their direct
-    /// graph cardinality; variable graphs range across all named graphs.
     pub fn estimate_quad_cardinality(&self, pattern: &QuadPattern) -> u64 {
         let graph_cardinality = self.graph_term_cardinality(&pattern.graph);
 
@@ -415,12 +426,12 @@ impl<'a> CostEstimator<'a> {
         }
     }
 
-    /// Returns the catalogued, visible named-graph count. Empty graphs count.
+    /// Returns the catalogued, visible named-graph count. Empty graphs count
     pub fn visible_named_graph_count(&self) -> u64 {
         self.visible_named_graphs().len() as u64
     }
 
-    /// Whether a fixed named graph exists and is visible in this query dataset.
+    /// Whether a fixed named graph exists and is visible in this query dataset
     pub fn fixed_graph_is_visible(&self, graph: u32) -> bool {
         self.graph_is_visible_and_exists(GraphId::Named(graph))
     }
@@ -677,8 +688,7 @@ impl<'a> CostEstimator<'a> {
                 self.estimate_output_cardinality_in_context(input, active_graph)
             }
             PhysicalOperator::StarJoin { patterns, .. } => {
-                // Estimate cardinality of star join:
-                // Start with most selective pattern, then apply filtering
+                // The most selective pattern anchors the star, the rest filter it
                 let mut cardinalities: Vec<u64> = patterns
                     .iter()
                     .map(|p| self.estimate_cardinality(p))
@@ -694,12 +704,11 @@ impl<'a> CostEstimator<'a> {
                 let base = cardinalities[0];
 
                 // Each additional pattern acts as a filter
-                // Conservative estimate
                 let filter_factor = 0.5_f64.powi((patterns.len() - 1) as i32);
 
                 ((base as f64 * filter_factor) as u64).max(1)
             }
-            PhysicalOperator::InMemoryBuffer { .. } => 0,
+            PhysicalOperator::InMemoryBuffer { content, .. } => content.len() as u64,
             PhysicalOperator::Subquery { inner, .. } => {
                 // Subquery cardinality is the same as inner query
                 self.estimate_output_cardinality_in_context(inner, active_graph)
@@ -719,7 +728,59 @@ impl<'a> CostEstimator<'a> {
         }
     }
 
+    /// Cardinality of one arm of a star join
+    fn estimate_star_pattern_cardinality(&self, pattern: &TriplePattern) -> u64 {
+        self.estimate_quad_cardinality(&QuadPattern {
+            subject: pattern.0.clone(),
+            predicate: pattern.1.clone(),
+            object: pattern.2.clone(),
+            graph: GraphTerm::Default,
+        })
+    }
+
+    /// Number of index scans one pass through a plan performs
+    fn probe_width(plan: &PhysicalOperator) -> u64 {
+        match plan {
+            PhysicalOperator::TableScan { .. } | PhysicalOperator::IndexScan { .. } => 1,
+            PhysicalOperator::StarJoin { patterns, .. } => patterns.len() as u64,
+            PhysicalOperator::Union { branches } => branches
+                .iter()
+                .map(Self::probe_width)
+                .fold(0u64, u64::saturating_add),
+            PhysicalOperator::Graph { input, .. }
+            | PhysicalOperator::Filter { input, .. }
+            | PhysicalOperator::Projection { input, .. }
+            | PhysicalOperator::Subquery { inner: input, .. }
+            | PhysicalOperator::Bind { input, .. }
+            | PhysicalOperator::MLPredict { input, .. } => Self::probe_width(input),
+            PhysicalOperator::BindJoin { left, right }
+            | PhysicalOperator::HashJoin { left, right }
+            | PhysicalOperator::NestedLoopJoin { left, right } => {
+                Self::probe_width(left).saturating_add(Self::probe_width(right))
+            }
+            PhysicalOperator::Unit
+            | PhysicalOperator::InMemoryBuffer { .. }
+            | PhysicalOperator::Values { .. } => 0,
+        }
+    }
+
+    /// Whether two plans can join on anything, or only form a cross product
+    fn shares_a_variable(&self, left: &PhysicalOperator, right: &PhysicalOperator) -> bool {
+        fn variables_of(plan: &PhysicalOperator) -> HashSet<String> {
+            let mut patterns = Vec::new();
+            CostEstimator::collect_scan_patterns(plan, &mut patterns);
+            let mut variables = HashSet::new();
+            for pattern in &patterns {
+                collect_pattern_variables(pattern, &mut variables);
+            }
+            variables
+        }
+
+        !variables_of(left).is_disjoint(&variables_of(right))
+    }
+
     /// Counts the number of bound variables in a triple pattern
+    #[allow(dead_code)]
     fn count_bound_variables(&self, pattern: &TriplePattern) -> usize {
         let mut count = 0;
 
@@ -746,7 +807,8 @@ impl<'a> CostEstimator<'a> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use shared::terms::Term;
+    use shared::terms::{Bindings, Term};
+    use std::collections::HashMap;
 
     fn create_test_stats() -> DatabaseStats {
         let mut stats = DatabaseStats::new();
@@ -935,6 +997,8 @@ mod tests {
             variable("?z"),
         ));
 
+        let bind =
+            estimator.estimate_cost(&PhysicalOperator::bind_join(wide_left.clone(), wide_right.clone()));
         let hash =
             estimator.estimate_cost(&PhysicalOperator::hash_join(wide_left.clone(), wide_right.clone()));
         let nested = estimator
@@ -946,6 +1010,127 @@ mod tests {
             hash,
             nested
         );
+        // Both sides share ?y, so each bind-join re-entry is an indexed probe
+        assert!(
+            bind < hash,
+            "an indexed probe should beat a build/probe pass here: bind={} hash={}",
+            bind,
+            hash
+        );
+    }
+
+    #[test]
+    fn cost_model_prefers_hash_join_for_a_cross_product() {
+        let stats = join_stats();
+        let estimator = CostEstimator::new(&stats);
+        // No shared variable: every bind-join re-entry repeats the *whole*
+        let left = PhysicalOperator::quad_index_scan(pattern(
+            variable("?a"),
+            Term::Constant(EDGE),
+            variable("?b"),
+        ));
+        let right = PhysicalOperator::quad_index_scan(pattern(
+            variable("?c"),
+            Term::Constant(EDGE),
+            variable("?d"),
+        ));
+
+        let bind = estimator.estimate_cost(&PhysicalOperator::bind_join(left.clone(), right.clone()));
+        let hash = estimator.estimate_cost(&PhysicalOperator::hash_join(left, right));
+
+        // `HashJoin - BindJoin` used to be non-negative for every input, so the bind join always won
+        assert!(
+            hash < bind,
+            "a cross product must not re-read the right side per row: hash={} bind={}",
+            hash,
+            bind
+        );
+    }
+
+    #[test]
+    fn scan_variants_that_execute_identically_cost_the_same() {
+        let stats = join_stats();
+        let estimator = CostEstimator::new(&stats);
+        let scanned = pattern(variable("?x"), Term::Constant(EDGE), variable("?y"));
+
+        // `TableScan` and `IndexScan` dispatch to the same executor function
+        assert_eq!(
+            estimator.estimate_cost(&PhysicalOperator::quad_table_scan(scanned.clone())),
+            estimator.estimate_cost(&PhysicalOperator::quad_index_scan(scanned)),
+        );
+    }
+
+    #[test]
+    fn a_fully_bound_scan_still_costs_something() {
+        let stats = join_stats();
+        let estimator = CostEstimator::new(&stats);
+        let ground = pattern(
+            Term::Constant(1),
+            Term::Constant(EDGE),
+            Term::Constant(2),
+        );
+
+        // Cardinality already accounts for boundness; discounting a second time
+        assert!(
+            estimator.estimate_cost(&PhysicalOperator::quad_index_scan(ground)) > 0,
+            "a ground scan still has to probe the index"
+        );
+    }
+
+    #[test]
+    fn filtering_never_costs_less_than_producing_its_input() {
+        let stats = join_stats();
+        let estimator = CostEstimator::new(&stats);
+        let input = PhysicalOperator::quad_index_scan(pattern(
+            variable("?x"),
+            Term::Constant(EDGE),
+            variable("?y"),
+        ));
+        let condition = Condition {
+            expression: ConditionExpression::Comparison(
+                "?y".to_string(),
+                "=".to_string(),
+                "7".to_string(),
+            ),
+        };
+
+        let input_cost = estimator.estimate_cost(&input);
+        let filtered =
+            estimator.estimate_cost(&PhysicalOperator::filter(input, condition));
+
+        // Selectivity reduces how many rows survive, not how much work was done
+        assert!(
+            filtered >= input_cost,
+            "filtering added work: input={} filtered={}",
+            input_cost,
+            filtered
+        );
+    }
+
+    #[test]
+    fn buffer_cardinality_reflects_its_content() {
+        let stats = join_stats();
+        let estimator = CostEstimator::new(&stats);
+        let content: Bindings = vec![HashMap::new(), HashMap::new(), HashMap::new()];
+        let buffer = PhysicalOperator::buffer(content, "test".to_string());
+
+        // A buffer reporting zero rows makes every join above it estimate an empty result
+        assert_eq!(estimator.estimate_output_cardinality(&buffer), 3);
+    }
+
+    #[test]
+    fn an_invisible_named_graph_costs_nothing_to_scan() {
+        let mut stats = DatabaseStats::new();
+        stats.total_triples = 100;
+        stats.graph_cardinalities.insert(GraphId::Default, 100);
+        let estimator = CostEstimator::new(&stats);
+
+        let inner = unbound_scan(GraphTerm::Default);
+        // Graph 42 does not exist, so nothing under it can be read. The cost
+        let scoped = PhysicalOperator::graph(inner, GraphTerm::Named(42));
+
+        assert_eq!(estimator.estimate_output_cardinality(&scoped), 0);
+        assert_eq!(estimator.estimate_cost(&scoped), 0);
     }
 
     #[test]
@@ -958,7 +1143,6 @@ mod tests {
         stats.graph_cardinalities.insert(GraphId::Named(20), 0);
 
         // FROM <10> creates a seven-row query default. FROM NAMED <20>
-        // hides graph 10 from GRAPH but retains empty graph 20's identity.
         let dataset = DatasetView::new([GraphId::Named(10)], [GraphId::Named(20)]);
         let estimator = CostEstimator::with_dataset(&stats, &dataset);
 

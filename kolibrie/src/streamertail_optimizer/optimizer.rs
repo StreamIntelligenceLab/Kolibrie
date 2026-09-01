@@ -77,7 +77,6 @@ impl Streamertail {
     }
 
     /// Creates an optimizer whose estimates reflect a replacement SPARQL
-    /// dataset (`FROM`/`FROM NAMED`) rather than the physical dataset.
     pub fn with_cached_stats_and_dataset(stats: Arc<DatabaseStats>, dataset: DatasetView) -> Self {
         Self {
             memo: HashMap::new(),
@@ -258,7 +257,7 @@ impl Streamertail {
         ExecutionEngine::execute(plan, database)
     }
 
-    /// Executes an optimized plan against a replacement SPARQL dataset.
+    /// Executes an optimized plan against a replacement SPARQL dataset
     pub fn execute_plan_with_dataset(
         &self,
         plan: &PhysicalOperator,
@@ -268,8 +267,7 @@ impl Streamertail {
         ExecutionEngine::execute_with_dataset(plan, database, dataset)
     }
 
-    /// Executes an optimized plan against a replacement SPARQL dataset and
-    /// retains dictionary IDs for update template instantiation.
+    /// Executes an optimized plan against a replacement SPARQL dataset, returning id bindings
     pub fn execute_plan_with_ids_and_dataset(
         &self,
         plan: &PhysicalOperator,
@@ -301,7 +299,6 @@ impl Streamertail {
         }
 
         // Count subject-centered stars only. Object-position "stars" can explode
-        // path queries by enumerating unrelated combinations before path joins run.
         let mut var_counts: std::collections::BTreeMap<String, Vec<usize>> = BTreeMap::new();
 
         for (idx, pattern) in patterns.iter().enumerate() {
@@ -310,7 +307,7 @@ impl Streamertail {
             }
         }
 
-        // Find variables that appear as the subject in at least 3 patterns.
+        // Find variables that appear as the subject in at least 3 patterns
         let mut star_vars: Vec<(&String, &Vec<usize>)> = var_counts
             .iter()
             .filter(|(_, indices)| indices.len() >= 3)
@@ -355,9 +352,7 @@ impl Streamertail {
         }
     }
 
-    /// Collects only one uninterrupted join group. GRAPH, UNION, filters,
-    /// projections, binds, values and subqueries are deliberate optimizer
-    /// boundaries.
+    /// Collects only one uninterrupted join group, stopping at any other operator
     fn collect_patterns(&self, plan: &LogicalOperator, patterns: &mut Vec<TriplePattern>) -> bool {
         match plan {
             LogicalOperator::Scan { pattern } => {
@@ -382,8 +377,10 @@ impl Streamertail {
     fn find_best_plan_recursive(&mut self, logical_plan: &LogicalOperator) -> PhysicalOperator {
         let key = self.create_memo_key(logical_plan);
 
-        if let Some(plan) = self.memo.get(&key) {
-            return plan.clone();
+        if let Some(key) = &key {
+            if let Some(plan) = self.memo.get(key) {
+                return plan.clone();
+            }
         }
 
         if let LogicalOperator::Projection {
@@ -402,8 +399,7 @@ impl Streamertail {
                     let filtered_plan = PhysicalOperator::filter(star_plan, condition.clone());
                     let projected_plan =
                         PhysicalOperator::projection(filtered_plan, variables.clone());
-                    self.memo.insert(key, projected_plan.clone());
-                    return projected_plan;
+                    return self.memoize(key, projected_plan);
                 }
             }
         }
@@ -417,8 +413,7 @@ impl Streamertail {
             if let Some(stars) = self.is_star_query(predicate) {
                 let star_plan = self.build_star_join_from_patterns(stars, predicate);
                 let filtered_plan = PhysicalOperator::filter(star_plan, condition.clone());
-                self.memo.insert(key, filtered_plan.clone());
-                return filtered_plan;
+                return self.memoize(key, filtered_plan);
             }
         }
 
@@ -429,8 +424,7 @@ impl Streamertail {
         ) {
             if let Some(stars) = self.is_star_query(logical_plan) {
                 let star_plan = self.build_star_join_from_patterns(stars, logical_plan);
-                self.memo.insert(key, star_plan.clone());
-                return star_plan;
+                return self.memoize(key, star_plan);
             }
         }
 
@@ -505,8 +499,7 @@ impl Streamertail {
                 // Recursively optimize the inner query
                 let optimized_inner = self.find_best_plan_recursive(inner);
 
-                // Keep every subquery-local SELECT modifier attached until
-                // execution, before the materialized rows join the outer query.
+                // Keep every subquery-local SELECT modifier attached until execution
                 let subquery_plan = PhysicalOperator::subquery(optimized_inner, spec.clone());
 
                 candidates.push(subquery_plan);
@@ -570,8 +563,7 @@ impl Streamertail {
             .unwrap();
 
         // Memoize the best plan
-        self.memo.insert(key, best_plan.clone());
-        best_plan
+        self.memoize(key, best_plan)
     }
 
     fn homogeneous_scan_scope(&self, plan: &LogicalOperator) -> Option<GraphTerm> {
@@ -747,9 +739,44 @@ impl Streamertail {
         count
     }
 
-    /// Creates a memo key for caching optimized plans
-    fn create_memo_key(&self, logical_plan: &LogicalOperator) -> String {
-        self.serialize_logical_plan(logical_plan)
+    /// Creates a memo key for caching optimized plans, when one is worth having
+    fn create_memo_key(&self, logical_plan: &LogicalOperator) -> Option<String> {
+        if Self::carries_inline_data(logical_plan) {
+            return None;
+        }
+        Some(self.serialize_logical_plan(logical_plan))
+    }
+
+    /// Whether a plan embeds inline data that a memo key would have to copy
+    fn carries_inline_data(plan: &LogicalOperator) -> bool {
+        match plan {
+            LogicalOperator::Buffer { .. } | LogicalOperator::Values { .. } => true,
+            LogicalOperator::Unit | LogicalOperator::Scan { .. } => false,
+            LogicalOperator::Union { branches } => {
+                branches.iter().any(Self::carries_inline_data)
+            }
+            LogicalOperator::Graph { input, .. }
+            | LogicalOperator::Selection {
+                predicate: input, ..
+            }
+            | LogicalOperator::Projection {
+                predicate: input, ..
+            }
+            | LogicalOperator::Subquery { inner: input, .. }
+            | LogicalOperator::Bind { input, .. }
+            | LogicalOperator::MLPredict { input, .. } => Self::carries_inline_data(input),
+            LogicalOperator::Join { left, right } => {
+                Self::carries_inline_data(left) || Self::carries_inline_data(right)
+            }
+        }
+    }
+
+    /// Records a plan under its key, when the plan was memoizable at all
+    fn memoize(&mut self, key: Option<String>, plan: PhysicalOperator) -> PhysicalOperator {
+        if let Some(key) = key {
+            self.memo.insert(key, plan.clone());
+        }
+        plan
     }
 
     /// Serializes a logical plan to a string for memoization
@@ -825,9 +852,7 @@ impl Streamertail {
                 )
             }
             LogicalOperator::Values { variables, values } => {
-                // Values are semantic content, not merely a cardinality hint.
-                // Omitting them aliases equal-sized VALUES nodes in the memo
-                // and can replace one UNION branch with another.
+                // Values are semantic content, not merely a cardinality hint
                 format!("Values({variables:?}, {values:?})")
             }
             LogicalOperator::MLPredict {

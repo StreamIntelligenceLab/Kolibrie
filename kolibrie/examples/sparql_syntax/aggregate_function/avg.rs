@@ -58,7 +58,7 @@ fn avg() {
     WHERE {
         ?employee ds:annual_salary ?salary
     } 
-    GROUPBY ?average_salary"#;
+    GROUP BY ?average_salary"#;
 
     let results = execute_query_rayon_parallel2_volcano(sparql, &mut database);
 

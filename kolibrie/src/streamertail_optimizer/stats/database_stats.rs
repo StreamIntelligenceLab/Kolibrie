@@ -13,6 +13,44 @@ use rayon::prelude::*;
 use shared::dataset_index::GraphId;
 use std::collections::{HashMap, HashSet};
 
+/// Above this many quads the statistics are estimated from a sample rather
+const EXACT_SAMPLING_THRESHOLD: u64 = 100_000;
+
+/// How [`DatabaseStats::gather_stats_fast`] reduces a dataset before counting
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct SamplingPlan {
+    step: usize,
+    scale: f64,
+}
+
+impl SamplingPlan {
+    fn for_total(total: u64) -> Self {
+        if total <= EXACT_SAMPLING_THRESHOLD {
+            return SamplingPlan {
+                step: 1,
+                scale: 1.0,
+            };
+        }
+
+        let step = total.div_ceil(EXACT_SAMPLING_THRESHOLD);
+        // `step_by` yields this many elements out of `total`
+        let sampled = total.div_ceil(step);
+        SamplingPlan {
+            step: step as usize,
+            scale: total as f64 / sampled as f64,
+        }
+    }
+
+    /// Scales one observed count back up to the whole dataset
+    fn scale_up(&self, observed: u64) -> u64 {
+        if self.step == 1 {
+            observed
+        } else {
+            (observed as f64 * self.scale).round() as u64
+        }
+    }
+}
+
 /// Database statistics for cost-based optimization
 #[derive(Debug)]
 pub struct DatabaseStats {
@@ -52,21 +90,12 @@ impl DatabaseStats {
     /// Gathers statistics from the database using sampling for performance
     pub fn gather_stats_fast(database: &SparqlDatabase) -> Self {
         // Term and predicate distributions must cover the complete RDF
-        // dataset. Graph-specific cardinalities below cap these global
-        // distributions for default, fixed named, and variable GRAPH scans.
         let quads = database.dataset_index.all_quads();
         let total_triples = quads.len() as u64;
 
-        // Use sampling for large datasets instead of full scan
-        let sample_size = (total_triples as usize).min(100_000);
-        let step = if total_triples > sample_size as u64 {
-            total_triples as usize / sample_size
-        } else {
-            1
-        };
-
-        // Sample the data by stepping through the vector
-        let sampled_quads: Vec<_> = quads.iter().step_by(step).take(sample_size).collect();
+        // Sample large datasets instead of counting every quad
+        let plan = SamplingPlan::for_total(total_triples);
+        let sampled_quads: Vec<_> = quads.iter().step_by(plan.step).collect();
 
         // Use parallel processing for stats gathering
         let stats_data: Vec<_> = sampled_quads
@@ -98,22 +127,20 @@ impl DatabaseStats {
             all_objects.insert(object);
         }
 
-        // Scale up sampled statistics
-        let scale_factor = if step > 1 { step as u64 } else { 1 };
+        // Scale sampled counts back up to the whole dataset
         predicate_cardinalities
             .values_mut()
-            .for_each(|v| *v *= scale_factor);
+            .for_each(|v| *v = plan.scale_up(*v));
         subject_cardinalities
             .values_mut()
-            .for_each(|v| *v *= scale_factor);
+            .for_each(|v| *v = plan.scale_up(*v));
         object_cardinalities
             .values_mut()
-            .for_each(|v| *v *= scale_factor);
+            .for_each(|v| *v = plan.scale_up(*v));
 
-        // Distinct counts do not grow linearly with the sample, so each is capped at the matching cardinality to keep fan-out at or above one
-        let scale_distinct = |observed: u64, cardinality: u64| {
-            observed.saturating_mul(scale_factor).min(cardinality).max(1)
-        };
+        // Distinct counts do not grow linearly with the sample, so each is capped at its cardinality
+        let scale_distinct =
+            |observed: u64, cardinality: u64| plan.scale_up(observed).min(cardinality).max(1);
         let predicate_distinct_subjects = predicate_subjects
             .into_iter()
             .map(|(predicate, subjects)| {
@@ -240,5 +267,69 @@ impl DatabaseStats {
 impl Default for DatabaseStats {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn datasets_at_or_below_the_threshold_are_counted_exactly() {
+        for total in [0, 1, 99_999, EXACT_SAMPLING_THRESHOLD] {
+            let plan = SamplingPlan::for_total(total);
+            assert_eq!(plan.step, 1, "total {}", total);
+            assert_eq!(plan.scale, 1.0, "total {}", total);
+            assert_eq!(plan.scale_up(42), 42, "total {}", total);
+        }
+    }
+
+    #[test]
+    fn just_past_the_threshold_the_step_is_two_not_one() {
+        // An integer `total / budget` truncated to 1 here, sampling the first
+        let plan = SamplingPlan::for_total(EXACT_SAMPLING_THRESHOLD + 1);
+        assert_eq!(plan.step, 2);
+        assert!(plan.scale > 1.0);
+    }
+
+    #[test]
+    fn the_whole_old_bias_window_now_samples_with_a_step() {
+        for total in [100_001, 150_000, 199_999] {
+            let plan = SamplingPlan::for_total(total);
+            assert_eq!(plan.step, 2, "total {}", total);
+        }
+    }
+
+    #[test]
+    fn the_step_grows_with_the_dataset() {
+        assert_eq!(SamplingPlan::for_total(200_000).step, 2);
+        assert_eq!(SamplingPlan::for_total(200_001).step, 3);
+        assert_eq!(SamplingPlan::for_total(1_000_000).step, 10);
+    }
+
+    /// The point of the scale factor: counting a sample and scaling it back up
+    #[test]
+    fn scaling_a_sample_back_up_recovers_the_dataset_size() {
+        for total in [100_001, 150_000, 200_000, 999_999, 10_000_000] {
+            let plan = SamplingPlan::for_total(total);
+            let sampled = total.div_ceil(plan.step as u64);
+            let recovered = plan.scale_up(sampled);
+            let error = recovered.abs_diff(total);
+            assert!(
+                error <= 1,
+                "total {} recovered as {} (step {})",
+                total,
+                recovered,
+                plan.step
+            );
+        }
+    }
+
+    #[test]
+    fn the_plan_is_reproducible() {
+        assert_eq!(
+            SamplingPlan::for_total(1_234_567),
+            SamplingPlan::for_total(1_234_567)
+        );
     }
 }

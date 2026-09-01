@@ -80,6 +80,11 @@ name = "hybrid_probability"
 path = "benches/hybrid_probability.rs"
 harness = false
 
+[[bench]]
+name = "optimizer_hotpath"
+path = "benches/optimizer_hotpath.rs"
+harness = false
+
 [[example]]
 name = "automate_policy"
 path = "examples/policy/automate_policy.rs"

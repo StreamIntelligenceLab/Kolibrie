@@ -16,7 +16,7 @@ use shared::query::{FilterExpression, GroupGraphPattern, SubQuery, ValuesClause}
 use shared::terms::{Term, TriplePattern};
 use std::collections::HashMap;
 
-/// Extracts a quad pattern from a physical operator if it's a scan operation.
+/// Extracts a quad pattern from a physical operator if it's a scan operation
 pub fn extract_pattern(op: &PhysicalOperator) -> Option<&QuadPattern> {
     match op {
         PhysicalOperator::TableScan { pattern } | PhysicalOperator::IndexScan { pattern } => {
@@ -36,6 +36,10 @@ pub fn pattern_contains_variable(pattern: &TriplePattern, var: &str) -> bool {
 }
 
 /// Estimates the selectivity of an operator for optimization purposes
+#[deprecated(
+    since = "0.1.1",
+    note = "use CostEstimator::estimate_cost; this returns fictional constants"
+)]
 pub fn estimate_operator_selectivity(op: &LogicalOperator, _database: &SparqlDatabase) -> u64 {
     match op {
         LogicalOperator::Unit => 0,
@@ -132,7 +136,7 @@ pub fn build_logical_plan(
 
         LogicalOperator::values(variables, values)
     } else {
-        // The empty group pattern is the SPARQL unit table.
+        // The empty group pattern is the SPARQL unit table
         let first_pattern = if patterns.is_empty() {
             LogicalOperator::unit()
         } else {
@@ -150,7 +154,6 @@ pub fn build_logical_plan(
     };
 
     // If we have VALUES, join it with all patterns
-    // Otherwise, join patterns together as before
     let start_idx = if values_clause.is_some() { 0 } else { 1 };
 
     for (subject_str, predicate_str, object_str) in patterns.iter().skip(start_idx) {
@@ -184,11 +187,7 @@ pub fn build_logical_plan(
     result
 }
 
-/// Compiles one lexical SPARQL term into Kolibrie's existing execution term.
-///
-/// This is the single lowering entry point used by ordinary triple patterns,
-/// GRAPH patterns and update templates. It preserves the historical prefix,
-/// dictionary and RDF-star behavior without introducing a parallel term AST.
+/// Compiles one lexical SPARQL term into Kolibrie's existing execution term
 pub fn compile_term(
     term_str: &str,
     prefixes: &HashMap<String, String>,
@@ -240,14 +239,12 @@ fn resolve_sparql_lexical_value(
         unescape_sparql_iri(&trimmed[1..trimmed.len() - 1])
     } else if trimmed.starts_with(['"', '\'']) {
         // Literal lexical values are never prefix names, even when their
-        // content contains a colon.
         literal_lexical_value(trimmed)
     } else if trimmed.starts_with("_:") {
         trimmed.to_string()
     } else {
         let expanded = database.resolve_query_term(trimmed, prefixes);
-        // PN_LOCAL_ESC contributes the escaped character itself to the
-        // expanded IRI. Percent escapes intentionally remain percent encoded.
+        // PN_LOCAL_ESC contributes the escaped character itself to the local name
         unescape_sparql_iri(&expanded)
     }
 }
@@ -289,9 +286,7 @@ fn unescape_sparql_iri(value: &str) -> String {
     result
 }
 
-/// Returns the lexical content of a quoted literal, honoring escaped quote and
-/// backslash boundaries. Language/datatype suffixes retain Kolibrie's
-/// historical string-dictionary behavior and are not part of the stored value.
+/// Returns the lexical content of a quoted literal, honoring escape sequences
 fn literal_lexical_value(literal: &str) -> String {
     let Some(quote) = literal
         .chars()
@@ -361,8 +356,7 @@ fn literal_lexical_value(literal: &str) -> String {
     value
 }
 
-/// Compiles a lexical triple through the same lowering path as SELECT and
-/// update execution.
+/// Compiles a lexical triple through the same lowering path SELECT uses
 pub fn compile_triple(
     pattern: (&str, &str, &str),
     prefixes: &HashMap<String, String>,
@@ -383,8 +377,7 @@ pub fn compile_triple(
     )
 }
 
-/// Compiles a graph selector using the same prefix and dictionary lowering as
-/// triple terms.
+/// Compiles a graph selector using the same prefix and dictionary lowering as a term
 pub fn compile_graph_term(
     graph: &str,
     prefixes: &HashMap<String, String>,
@@ -398,7 +391,6 @@ pub fn compile_graph_term(
 }
 
 /// Lowers the unified recursive graph-pattern AST into the existing logical
-/// optimizer algebra.
 pub fn build_logical_plan_from_group(
     pattern: &GroupGraphPattern<'_>,
     prefixes: &HashMap<String, String>,
@@ -407,12 +399,7 @@ pub fn build_logical_plan_from_group(
     build_logical_plan_from_group_in_scope(pattern, prefixes, database, &GraphTerm::Default)
 }
 
-/// Lowers a graph pattern while retaining the graph scope on every scan.
-///
-/// The enclosing `Graph` operator is still required for unit/empty patterns
-/// and to bind a graph variable before FILTER, BIND, VALUES, and subqueries.
-/// Carrying the scope on scans additionally lets the optimizer estimate and
-/// group scans without accidentally treating named-graph data as default data.
+/// Lowers a graph pattern while retaining the graph scope on every scan
 fn build_logical_plan_from_group_in_scope(
     pattern: &GroupGraphPattern<'_>,
     prefixes: &HashMap<String, String>,
@@ -442,13 +429,6 @@ fn build_logical_plan_from_group_in_scope(
                 match pattern {
                     GroupGraphPattern::Filter(filter) => {
                         // SPARQL FILTER scope is the containing group graph
-                        // pattern, not the portion of the group that precedes
-                        // the FILTER lexically. Defer direct filters until the
-                        // rest of this group has been lowered so they can see
-                        // variables introduced by later triples and BINDs.
-                        //
-                        // Recursive groups collect their own filters, keeping
-                        // nested GRAPH and UNION branch scopes intact.
                         filters.push(filter);
                     }
                     GroupGraphPattern::Bind((function, arguments, output)) => {
@@ -564,7 +544,7 @@ fn compile_values_rows(
     Ok(rows)
 }
 
-// Compatibility helper for existing callers in this module.
+// Compatibility helper for existing callers in this module
 fn convert_pattern_to_triple(
     subject_str: &str,
     predicate_str: &str,
