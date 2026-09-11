@@ -27,8 +27,9 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 COMP = os.path.dirname(HERE)                       # comparison/
 REPO_ROOT = os.path.abspath(os.path.join(COMP, "..", ".."))
 PROGRAMS = {
-    "past": os.path.join(HERE, "programs", "lubm_past.txt"),  # 4 rules
-    "deep": os.path.join(HERE, "programs", "lubm_deep.txt"),  # 8 rules, deeper chain + joins
+    "past": os.path.join(HERE, "programs", "lubm_past.txt"),      # 4 rules, past ops
+    "deep": os.path.join(HERE, "programs", "lubm_deep.txt"),      # 8 rules, deeper chain + joins
+    "future": os.path.join(HERE, "programs", "lubm_future.txt"),  # 4 rules, future ops (static)
 }
 METEOR_HOME = os.environ.get("METEOR_HOME", "/Users/u0164257/Documents/Github/MeTeoR")
 DYLD = os.environ.get(
@@ -51,10 +52,10 @@ def gen_data(scale, horizon, intervals, seed, out, max_width=None, rich=False):
     subprocess.run(cmd, check=True, capture_output=True, text=True)
 
 
-def run_rust(program, data, store, strategy="tick"):
+def run_rust(program, data, store, strategy="tick", mode="streaming"):
     env = dict(os.environ, DYLD_LIBRARY_PATH=DYLD)
     cmd = [RUST_BIN, "--program", program, "--data", data,
-           "--store", store, "--strategy", strategy, "--timing"]
+           "--store", store, "--strategy", strategy, "--mode", mode, "--timing"]
     proc = subprocess.run(cmd, cwd=REPO_ROOT, env=env, capture_output=True, text=True)
     if proc.returncode != 0:
         raise RuntimeError("rust engine failed:\n" + proc.stderr)
@@ -76,7 +77,7 @@ def best_of(fn, repeats):
 
 
 def verify(program, scale, horizon, intervals, seed, store, strategy="tick",
-           max_width=None, rich=False, meteor_mode="seminaive"):
+           max_width=None, rich=False, meteor_mode="seminaive", mode="streaming"):
     """Confirm both engines still agree on a generated dataset via compare.py."""
     with tempfile.TemporaryDirectory() as tmp:
         cases = os.path.join(tmp, "cases")
@@ -87,7 +88,8 @@ def verify(program, scale, horizon, intervals, seed, store, strategy="tick",
         env = dict(os.environ, DYLD_LIBRARY_PATH=DYLD, METEOR_HOME=METEOR_HOME)
         proc = subprocess.run(
             [sys.executable, os.path.join(COMP, "compare.py"), cases,
-             "--store", store, "--strategy", strategy, "--meteor-mode", meteor_mode],
+             "--store", store, "--strategy", strategy, "--meteor-mode", meteor_mode,
+             "--mode", mode],
             env=env, capture_output=True, text=True,
         )
         print(proc.stdout.strip())
@@ -123,14 +125,20 @@ def main():
     scales = [int(s) for s in args.scales.split(",") if s.strip()]
     per_entity = 6 if rich else 3  # base atoms emitted per entity
 
+    # Future operators need static data + the interval engine.
+    mode = "static" if args.program == "future" else "streaming"
+    strategy = args.strategy
+    if mode == "static" and strategy == "tick":
+        strategy = "interval"
+
     if args.verify:
         print("== parity check on generated data (scale={}) ==".format(scales[0]))
         ok = verify(program, scales[0], args.horizon, args.intervals, args.seed,
-                    args.store, args.strategy, args.max_width, rich, args.meteor_mode)
+                    args.store, strategy, args.max_width, rich, args.meteor_mode, mode)
         print("parity: {}\n".format("OK" if ok else "MISMATCH"))
 
-    print("program={}  horizon={}  intervals/atom={}  store={}  strategy={}  repeats={}".format(
-        args.program, args.horizon, args.intervals, args.store, args.strategy, args.repeats))
+    print("program={}  mode={}  horizon={}  intervals/atom={}  store={}  strategy={}  repeats={}".format(
+        args.program, mode, args.horizon, args.intervals, args.store, strategy, args.repeats))
     print("{:>8} {:>11} {:>13} {:>13} {:>9}".format(
         "scale", "facts", "meteor_ms", "rust_ms", "rust/mtr"))
     print("-" * 58)
@@ -143,7 +151,7 @@ def main():
 
             skip_meteor = args.meteor_cap is not None and n > args.meteor_cap
             m_ms = None if skip_meteor else best_of(lambda: run_meteor(program, data, args.meteor_mode), args.repeats)
-            r_ms = min(run_rust(program, data, args.store, args.strategy)["reason_ms"]
+            r_ms = min(run_rust(program, data, args.store, strategy, mode)["reason_ms"]
                        for _ in range(args.repeats))
             ratio = (r_ms / m_ms) if m_ms else float("nan")
             m_str = "-" if m_ms is None else "{:.2f}".format(m_ms)

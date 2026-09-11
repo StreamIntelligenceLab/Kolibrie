@@ -125,6 +125,14 @@ impl<S: TemporalStore> DatalogMTLEvaluator<S> {
                     bindings = new_bindings;
                     metrics.since_scan_depth += depth;
                 }
+                // Future operators require static data; the streaming tick engine
+                // cannot evaluate them. Unreachable — the parser blocks future ops
+                // in Streaming mode, and Static mode uses the interval engine.
+                TemporalAtom::DiamondPlus { .. }
+                | TemporalAtom::BoxPlus { .. }
+                | TemporalAtom::Until { .. } => {
+                    bindings = Vec::new();
+                }
             }
             if bindings.is_empty() { break; }
         }
@@ -337,6 +345,11 @@ impl<S: TemporalStore> DatalogMTLEvaluator<S> {
                 let (b, _) = self.eval_since(interval, phi, psi, t_prime, bindings);
                 b
             }
+            // Future operators are unsupported by the streaming tick engine
+            // (blocked upstream by the parser/mode); yield no bindings.
+            TemporalAtom::DiamondPlus { .. }
+            | TemporalAtom::BoxPlus { .. }
+            | TemporalAtom::Until { .. } => Vec::new(),
         }
     }
 }
@@ -361,13 +374,14 @@ pub fn compute_w_max(rules: &[DatalogMTLRule]) -> u64 {
     fn atom_max(atom: &TemporalAtom) -> u64 {
         match atom {
             TemporalAtom::Base(_) => 0,
-            TemporalAtom::Diamond { interval, inner } =>
+            TemporalAtom::Diamond { interval, inner }
+            | TemporalAtom::Box_ { interval, inner }
+            | TemporalAtom::Prev { interval, inner }
+            | TemporalAtom::DiamondPlus { interval, inner }
+            | TemporalAtom::BoxPlus { interval, inner } =>
                 interval.end.max(atom_max(inner)),
-            TemporalAtom::Box_ { interval, inner } =>
-                interval.end.max(atom_max(inner)),
-            TemporalAtom::Prev { interval, inner } =>
-                interval.end.max(atom_max(inner)),
-            TemporalAtom::Since { interval, phi, psi } =>
+            TemporalAtom::Since { interval, phi, psi }
+            | TemporalAtom::Until { interval, phi, psi } =>
                 interval.end.max(atom_max(phi)).max(atom_max(psi)),
         }
     }

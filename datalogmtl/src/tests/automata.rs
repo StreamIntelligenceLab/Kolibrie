@@ -30,6 +30,40 @@ fn test_box_transducer() {
     assert_eq!(transducer::box_(&[iv(20, 22)], &op(0, 5)), Vec::<TInterval>::new());
 }
 
+/// Future ops: Diamondplus shifts earlier; Boxplus erodes from the right.
+#[test]
+fn test_future_transducers() {
+    // Diamondplus[0,1]: [5,10] -> [5-1, 10-0] = [4,10].
+    assert_eq!(transducer::diamond_plus(&[iv(5, 10)], &op(0, 1)), vec![iv(4, 10)]);
+    // Boxplus[0,2]: [5,10] -> [5-0, 10-2] = [5,8]; a too-short interval drops.
+    assert_eq!(transducer::box_plus(&[iv(5, 10)], &op(0, 2)), vec![iv(5, 8)]);
+    assert_eq!(transducer::box_plus(&[iv(5, 6)], &op(0, 2)), Vec::<TInterval>::new());
+    // A(a)@[0,20] Until[1,2] B(a)@[5,5]  ->  [3,4].
+    assert_eq!(transducer::until(&[iv(0, 20)], &[iv(5, 5)], &op(1, 2)), vec![iv(3, 4)]);
+}
+
+/// End-to-end future op in the interval evaluator (static).
+#[test]
+fn test_future_materialize() {
+    let dict = make_dict();
+    let rdf_type = enc(&dict, "http://www.w3.org/1999/02/22-rdf-syntax-ns#type");
+    let a_pred = enc(&dict, "A");
+    let b_pred = enc(&dict, "B");
+    let a = enc(&dict, "a");
+    let rule = DatalogMTLRule {
+        id: "b".into(),
+        head: (v("X"), c(rdf_type), c(b_pred)),
+        body: vec![TemporalAtom::DiamondPlus {
+            interval: op(0, 1),
+            inner: Box::new(TemporalAtom::Base((v("X"), c(rdf_type), c(a_pred)))),
+        }],
+    };
+    let facts = vec![(Triple { subject: a, predicate: rdf_type, object: a_pred }, iv(5, 10))];
+    let db = materialize(&[rule], facts, 100);
+    let b_a = Triple { subject: a, predicate: rdf_type, object: b_pred };
+    assert_eq!(db.facts.get(&b_a), Some(&vec![iv(4, 10)]));
+}
+
 /// Real-line coalescing: touching closed intervals merge; integer-adjacent
 /// (real-separated) ones do NOT — the ℤ-vs-ℝ fix.
 #[test]
@@ -182,7 +216,7 @@ fn test_omega_periodic_extracted() {
 
     let facts = vec![(Triple { subject: a, predicate: rdf_type, object: seed_pred }, iv(0, 0))];
     let model = materialize_omega(&[seed, step2], facts).expect("periodic extraction");
-    assert!(model.periodic && model.period == 2);
+    assert!(model.right_periodic && model.period == 2);
 
     let p_a = Triple { subject: a, predicate: rdf_type, object: p };
     // Holds at even ticks forever, not odd ones, and never over a 2-wide span.
@@ -191,6 +225,75 @@ fn test_omega_periodic_extracted() {
     assert!(!entails(&model, &p_a, iv(1001, 1001)));
     assert!(!entails(&model, &p_a, iv(999, 999)));
     assert!(!entails(&model, &p_a, iv(1000, 1001)), "no continuous coverage across the gap");
+}
+
+/// ω + future: backward recursion gives a LEFT (past) period.
+/// P(X) :- Seed(X);  P(X) :- Diamondplus[2,2] P(X)   (holds at even ticks toward −∞)
+#[test]
+fn test_omega_left_periodic() {
+    let dict = make_dict();
+    let rdf_type = enc(&dict, "http://www.w3.org/1999/02/22-rdf-syntax-ns#type");
+    let p = enc(&dict, "P");
+    let seed_pred = enc(&dict, "Seed");
+    let a = enc(&dict, "a");
+
+    let seed = DatalogMTLRule {
+        id: "seed".into(),
+        head: (v("X"), c(rdf_type), c(p)),
+        body: vec![TemporalAtom::Base((v("X"), c(rdf_type), c(seed_pred)))],
+    };
+    let back2 = DatalogMTLRule {
+        id: "back2".into(),
+        head: (v("X"), c(rdf_type), c(p)),
+        body: vec![TemporalAtom::DiamondPlus {
+            interval: op(2, 2),
+            inner: Box::new(TemporalAtom::Base((v("X"), c(rdf_type), c(p)))),
+        }],
+    };
+
+    let facts = vec![(Triple { subject: a, predicate: rdf_type, object: seed_pred }, iv(0, 0))];
+    let model = materialize_omega(&[seed, back2], facts).expect("left periodic extraction");
+    assert!(model.left_periodic && model.period == 2);
+
+    let p_a = Triple { subject: a, predicate: rdf_type, object: p };
+    assert!(entails(&model, &p_a, iv(-1000, -1000)));      // even → holds forever into the past
+    assert!(entails(&model, &p_a, iv(-1_000_000, -1_000_000)));
+    assert!(!entails(&model, &p_a, iv(-1001, -1001)));      // odd → never
+    assert!(!entails(&model, &p_a, iv(-1000, -999)), "no continuous coverage across the gap");
+}
+
+/// ω + future: overlapping backward recursion saturates to `(−∞, e]`.
+/// Q(X) :- Seed(X);  Q(X) :- Diamondplus[0,1] Q(X)
+#[test]
+fn test_omega_past_always() {
+    let dict = make_dict();
+    let rdf_type = enc(&dict, "http://www.w3.org/1999/02/22-rdf-syntax-ns#type");
+    let q = enc(&dict, "Q");
+    let seed_pred = enc(&dict, "Seed");
+    let a = enc(&dict, "a");
+
+    let seed = DatalogMTLRule {
+        id: "seed".into(),
+        head: (v("X"), c(rdf_type), c(q)),
+        body: vec![TemporalAtom::Base((v("X"), c(rdf_type), c(seed_pred)))],
+    };
+    let back = DatalogMTLRule {
+        id: "back".into(),
+        head: (v("X"), c(rdf_type), c(q)),
+        body: vec![TemporalAtom::DiamondPlus {
+            interval: op(0, 1),
+            inner: Box::new(TemporalAtom::Base((v("X"), c(rdf_type), c(q)))),
+        }],
+    };
+
+    let facts = vec![(Triple { subject: a, predicate: rdf_type, object: seed_pred }, iv(0, 0))];
+    let model = materialize_omega(&[seed, back], facts).expect("past-always");
+    let q_a = Triple { subject: a, predicate: rdf_type, object: q };
+    assert_eq!(model.db.facts.get(&q_a), Some(&vec![TInterval::from_neg_inf(0, false)]),
+        "Q must saturate to (−∞, 0]");
+    assert!(entails(&model, &q_a, iv(-1_000_000, 0)));   // whole past span
+    assert!(entails(&model, &q_a, iv(-1_000_000, -1_000_000)));
+    assert!(!entails(&model, &q_a, iv(1, 1)));            // nothing in the future
 }
 
 /// ω over a finite program agrees with the finite evaluator (generalization check).

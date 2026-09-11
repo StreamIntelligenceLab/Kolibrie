@@ -58,6 +58,37 @@ pub enum TemporalAtom {
         phi: Box<TemporalAtom>,   // continuation condition (holds after reset)
         psi: Box<TemporalAtom>,   // reset/trigger condition
     },
+
+    // ── Future operators (static data only — see `Mode`) ──
+
+    /// DiamondPlus[a,b] phi: phi holds at SOME t' in [t+a, t+b].
+    DiamondPlus { interval: Interval, inner: Box<TemporalAtom> },
+
+    /// BoxPlus[a,b] phi: phi holds at EVERY integer point t' in [t+a, t+b].
+    BoxPlus { interval: Interval, inner: Box<TemporalAtom> },
+
+    /// phi Until[a,b] psi:
+    ///   EXISTS t' in [t+a, t+b]: psi holds at t'
+    ///   AND FORALL t'' in [t, t'): phi holds at t''
+    Until {
+        interval: Interval,
+        phi: Box<TemporalAtom>,   // continuation condition (holds until reset)
+        psi: Box<TemporalAtom>,   // reset/trigger condition
+    },
+}
+
+/// Evaluation mode. Future operators look into not-yet-arrived time, so they are
+/// only valid on complete (static) data, never on a stream.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Mode {
+    /// Incremental data; only past/present operators allowed.
+    Streaming,
+    /// Whole timeline known; past and future operators allowed.
+    Static,
+}
+
+impl Default for Mode {
+    fn default() -> Self { Mode::Streaming }
 }
 
 /// A DatalogMTL^RDF rule. Head is always a plain triple pattern.

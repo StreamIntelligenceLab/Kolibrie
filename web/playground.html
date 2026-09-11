@@ -1075,6 +1075,20 @@
       flex-direction: column;
     }
 
+    /* DatalogMTL streaming/static sub-mode toggle */
+    .dmtl-submode-btn {
+      background: rgba(255, 255, 255, 0.04);
+      color: #b0b0b0;
+      border: 1px solid rgba(255, 255, 255, 0.12);
+      transition: all 0.15s ease;
+    }
+    .dmtl-submode-btn:hover { background: rgba(255, 255, 255, 0.09); color: #e0e0e0; }
+    .dmtl-submode-btn.active {
+      background: rgba(219, 88, 156, 0.18);
+      color: #fff;
+      border-color: rgba(219, 88, 156, 0.6);
+    }
+
     /* RSP stream input controls */
     .rsp-stream-controls {
       padding: 10px 12px;
@@ -1568,6 +1582,23 @@ WHERE {
 
         <!-- DatalogMTL^RDF Mode -->
         <div id="datalogmtl-mode" class="mode-content">
+          <!-- Streaming vs Static data toggle -->
+          <div style="display:flex;align-items:center;gap:8px;padding:8px 12px 4px;">
+            <span style="font-size:11px;color:#808080;text-transform:uppercase;letter-spacing:.5px;">Data</span>
+            <button class="dmtl-submode-btn active" id="dmtl-submode-streaming" data-submode="streaming"
+              style="height:26px;font-size:12px;padding:0 12px;border-radius:4px;cursor:pointer;">
+              <i class="fas fa-stream"></i> Streaming
+            </button>
+            <button class="dmtl-submode-btn" id="dmtl-submode-static" data-submode="static"
+              style="height:26px;font-size:12px;padding:0 12px;border-radius:4px;cursor:pointer;">
+              <i class="fas fa-layer-group"></i> Static
+            </button>
+            <span id="dmtl-submode-hint" style="font-size:11px;color:#808080;margin-left:6px;">
+              incremental events (past-only operators)
+            </span>
+          </div>
+
+          <div id="dmtl-streaming-view">
           <div class="editor-container">
             <div class="rsp-split-container">
 
@@ -1667,6 +1698,69 @@ WHERE {
               <div class="results-content" id="results-content-dmtl"></div>
             </div>
           </div>
+          </div><!-- /#dmtl-streaming-view -->
+
+          <!-- Static (batch) view -->
+          <div id="dmtl-static-view" style="display:none">
+            <div class="editor-container">
+              <div class="rsp-split-container">
+
+                <!-- Left: Program (rules) + Materialize -->
+                <div class="rsp-editor-half">
+                  <div class="rsp-half-header" style="display:flex;align-items:center;justify-content:space-between;">
+                    <span style="display:flex;align-items:center;gap:4px;"><i class="fas fa-code-branch"></i> Program (rules)</span>
+                    <span style="display:flex;align-items:center;gap:8px;">
+                      <select class="rsp-select" id="dmtl-static-syntax" style="height:24px;font-size:11px;" title="Input syntax">
+                        <option value="rdf">RDF triples</option>
+                        <option value="meteor">MeTeoR atoms</option>
+                      </select>
+                      <select class="rsp-select" id="dmtl-static-strategy" style="height:24px;font-size:11px;">
+                        <option value="interval">Materialize (finite)</option>
+                        <option value="omega">Unbounded (ω)</option>
+                      </select>
+                      <button class="btn rsp-push-btn" id="dmtl-materialize-btn" style="height:24px;line-height:24px;font-size:11px;padding:0 10px;margin:0;">
+                        <i class="fas fa-play"></i> Materialize
+                      </button>
+                    </span>
+                  </div>
+                  <div class="rsp-editor-wrapper">
+                    <textarea id="dmtl-static-program"># RDF triple syntax; static data allows PAST and FUTURE operators.
+# Past: Diamond / Box / Prev / Since   Future (static only): Diamondplus / Boxplus / Until
+(?x, :wasNear, ?y) :- (?x, :location, ?loc), Diamond[1,5](?y, :location, ?loc).
+(?x, :willVisit, ?l) :- Diamondplus[0,3](?x, :plans, ?l).</textarea>
+                  </div>
+                </div>
+
+                <!-- Right: interval-valued data + optional entailment queries -->
+                <div class="rsp-input-half">
+                  <div class="rsp-half-header"><i class="fas fa-database"></i> Data — interval facts</div>
+                  <div class="rsp-stream-controls" style="flex:1;display:flex;flex-direction:column;">
+                    <div class="rsp-content-label" id="dmtl-static-data-label">Facts (&lt;s&gt; &lt;p&gt; &lt;o&gt; @[l,r] per line)</div>
+                    <div class="rsp-content-editor-wrapper" style="flex:1;">
+                      <textarea id="dmtl-static-data"><:a> <:location> <:room1> @[3,3] .
+<:b> <:location> <:room1> @[0,0] .
+<:a> <:plans> <:room2> @[2,2] .</textarea>
+                    </div>
+                    <div id="dmtl-static-queries-row" style="display:none;margin-top:8px;">
+                      <div class="rsp-content-label" id="dmtl-static-queries-label">Entailment queries (one fact per line; answered over the full model)</div>
+                      <div class="rsp-content-editor-wrapper">
+                        <textarea id="dmtl-static-queries"><:a> <:wasNear> <:b> @[3,3] .
+<:a> <:wasNear> <:b> @[9,9] .</textarea>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+
+              </div><!-- /.rsp-split-container -->
+
+              <div class="results-panel" id="results-panel-dmtl-static" style="min-height:200px">
+                <div class="results-header"><i class="fas fa-terminal"></i> Materialized Facts</div>
+                <div class="results-content" id="results-content-dmtl-static">
+                  <div class="rsp-empty-events" style="padding:16px;">Enter a program + interval facts, then click Materialize.</div>
+                </div>
+              </div>
+            </div>
+          </div><!-- /#dmtl-static-view -->
         </div>
 
       </div>
@@ -2382,6 +2476,15 @@ WHERE {
       document.getElementById('dmtl-register-btn').addEventListener('click', registerDmtlSession);
       document.getElementById('dmtl-push-btn').addEventListener('click', pushDmtlEvent);
       document.getElementById('dmtl-clear-events').addEventListener('click', clearDmtlEvents);
+      // Streaming vs Static sub-mode.
+      document.getElementById('dmtl-submode-streaming').addEventListener('click', () => switchDmtlSubmode('streaming'));
+      document.getElementById('dmtl-submode-static').addEventListener('click', () => switchDmtlSubmode('static'));
+      document.getElementById('dmtl-materialize-btn').addEventListener('click', runDmtlStatic);
+      document.getElementById('dmtl-static-strategy').addEventListener('change', (e) => {
+        document.getElementById('dmtl-static-queries-row').style.display =
+          e.target.value === 'omega' ? 'block' : 'none';
+      });
+      document.getElementById('dmtl-static-syntax').addEventListener('change', (e) => setDmtlStaticSyntax(e.target.value));
     }
 
     // Resizer functionality for SPARQL mode
@@ -3306,6 +3409,125 @@ Click "Help" for more information.
       if (tab === 'rules' && dmtlRulesEditor)  dmtlRulesEditor.refresh();
       if (tab === 'bg'    && dmtlBgEditor)     dmtlBgEditor.refresh();
       if (tab === 'shape' && dmtlShapeEditor)  dmtlShapeEditor.refresh();
+    }
+
+    // ── Static (batch) DatalogMTL over interval-valued data ──
+    // Example programs/data per input syntax. Swapped in when the user toggles
+    // the syntax select (only replacing editors the user hasn't edited).
+    const DMTL_STATIC_TEMPLATES = {
+      rdf: {
+        program: `# RDF triple syntax; static data allows PAST and FUTURE operators.
+# Past: Diamond / Box / Prev / Since   Future (static only): Diamondplus / Boxplus / Until
+(?x, :wasNear, ?y) :- (?x, :location, ?loc), Diamond[1,5](?y, :location, ?loc).
+(?x, :willVisit, ?l) :- Diamondplus[0,3](?x, :plans, ?l).`,
+        data: `<:a> <:location> <:room1> @[3,3] .
+<:b> <:location> <:room1> @[0,0] .
+<:a> <:plans> <:room2> @[2,2] .`,
+        queries: `<:a> <:wasNear> <:b> @[3,3] .
+<:a> <:wasNear> <:b> @[9,9] .`,
+        dataLabel: 'Facts (&lt;s&gt; &lt;p&gt; &lt;o&gt; @[l,r] per line)',
+      },
+      meteor: {
+        program: `# MeTeoR atom syntax; static data allows PAST and FUTURE operators.
+# Past: Boxminus / Diamondminus / Since   Future: Boxplus / Diamondplus / Until
+B(X):-Boxminus[1,2]A(X)
+C(X):-Diamondplus[0,3]A(X)`,
+        data: `A(a)@[0,10]`,
+        queries: `B(a)@[5,5]
+B(a)@[1000000,1000000]`,
+        dataLabel: 'Facts (Pred(args)@[l,r] per line)',
+      },
+    };
+    let dmtlStaticSyntax = 'rdf';
+    // Tracks the last template loaded per field, so we only overwrite unedited editors.
+    let dmtlStaticLoaded = {
+      program: DMTL_STATIC_TEMPLATES.rdf.program,
+      data: DMTL_STATIC_TEMPLATES.rdf.data,
+      queries: DMTL_STATIC_TEMPLATES.rdf.queries,
+    };
+
+    function setDmtlStaticSyntax(syntax) {
+      const tpl = DMTL_STATIC_TEMPLATES[syntax] || DMTL_STATIC_TEMPLATES.rdf;
+      for (const field of ['program', 'data', 'queries']) {
+        const el = document.getElementById('dmtl-static-' + field);
+        if (el && el.value === dmtlStaticLoaded[field]) {
+          el.value = tpl[field];              // untouched → swap to new syntax example
+          dmtlStaticLoaded[field] = tpl[field];
+        }
+      }
+      document.getElementById('dmtl-static-data-label').innerHTML = tpl.dataLabel;
+      dmtlStaticSyntax = syntax;
+    }
+
+    function switchDmtlSubmode(sub) {
+      const streaming = sub === 'streaming';
+      document.getElementById('dmtl-streaming-view').style.display = streaming ? '' : 'none';
+      document.getElementById('dmtl-static-view').style.display = streaming ? 'none' : '';
+      document.getElementById('dmtl-submode-streaming').classList.toggle('active', streaming);
+      document.getElementById('dmtl-submode-static').classList.toggle('active', !streaming);
+      document.getElementById('dmtl-submode-hint').textContent = streaming
+        ? 'incremental events (past-only operators)'
+        : 'whole timeline (past AND future operators)';
+    }
+
+    async function runDmtlStatic() {
+      const program = document.getElementById('dmtl-static-program').value.trim();
+      const data = document.getElementById('dmtl-static-data').value.trim();
+      const strategy = document.getElementById('dmtl-static-strategy').value;
+      const syntax = document.getElementById('dmtl-static-syntax').value;
+      const queries = strategy === 'omega'
+        ? document.getElementById('dmtl-static-queries').value.trim() : '';
+      const out = document.getElementById('results-content-dmtl-static');
+      if (!program || !data) { out.innerHTML = errHtml('Enter a program and interval facts.'); return; }
+      out.innerHTML = '<div style="padding:16px;color:#808080;">Materializing…</div>';
+      try {
+        const res = await fetch('/datalogmtl/static', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ program, data, strategy, queries, syntax }),
+        });
+        const body = await res.json();
+        if (!res.ok || body.error) { out.innerHTML = errHtml(body.error || 'Materialization failed'); return; }
+        renderDmtlStaticResults(body);
+      } catch (e) {
+        out.innerHTML = errHtml('Request failed: ' + e.message);
+      }
+    }
+
+    function errHtml(msg) {
+      return `<div style="padding:16px;color:#f48771;"><i class="fas fa-exclamation-triangle"></i> ${escapeHtmlSafe(msg)}</div>`;
+    }
+    function escapeHtmlSafe(s) {
+      return String(s).replace(/[&<>]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;' }[c]));
+    }
+
+    function renderDmtlStaticResults(body) {
+      const out = document.getElementById('results-content-dmtl-static');
+      let html = '';
+      if (body.note) {
+        html += `<div style="padding:8px 12px;color:#6a9955;font-size:11px;border-bottom:1px solid #333;">${escapeHtmlSafe(body.note)}</div>`;
+      }
+      if (body.entailment && body.entailment.length) {
+        html += `<div style="padding:8px 12px 4px;color:#808080;font-size:11px;text-transform:uppercase;letter-spacing:.5px;">Entailment</div>`;
+        html += '<div style="padding:0 12px 8px;">';
+        for (const a of body.entailment) {
+          const badge = a.holds
+            ? '<span style="color:#6a9955;">&#10003; true</span>'
+            : '<span style="color:#f48771;">&#10007; false</span>';
+          html += `<div style="font-family:monospace;font-size:12px;padding:2px 0;display:flex;justify-content:space-between;gap:16px;"><span>${escapeHtmlSafe(a.query)}</span>${badge}</div>`;
+        }
+        html += '</div>';
+      }
+      const facts = body.facts || [];
+      html += `<div style="padding:8px 12px 4px;color:#808080;font-size:11px;text-transform:uppercase;letter-spacing:.5px;">Facts (${facts.length})</div>`;
+      if (facts.length === 0) {
+        html += '<div style="padding:0 12px 12px;color:#808080;">No facts derived.</div>';
+      } else {
+        html += '<div style="padding:0 12px 12px;font-family:monospace;font-size:12px;line-height:1.6;">';
+        for (const f of facts) html += `<div>${escapeHtmlSafe(f)}</div>`;
+        html += '</div>';
+      }
+      out.innerHTML = html;
     }
 
     async function registerDmtlSession() {

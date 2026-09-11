@@ -22,8 +22,11 @@ use shared::terms::{Term, TriplePattern};
 use shared::triple::Triple;
 use datalogmtl::evaluator::DatalogMTLEvaluator;
 use datalogmtl::store::IntervalFactStore;
-use datalogmtl::syntax::{DatalogMTLRule, TemporalAtom, Interval};
+use datalogmtl::syntax::{DatalogMTLRule, TemporalAtom, Interval, Mode};
 use datalogmtl::stream::{StreamShape, StalenessPolicy, ShapeIngester, RdfEvent};
+use datalogmtl::parser::{parse_program, parse_data};
+use datalogmtl::automata::{self, interval::{TInterval, NEG_INF, POS_INF}};
+use datalogmtl::meteor_fmt;
 use std::collections::HashMap;
 use std::io::{self, Read, Write};
 use std::net::{TcpListener, TcpStream};
@@ -200,6 +203,39 @@ struct DmtlTickResult {
     timestamp: u64,
     derived: Vec<[String; 3]>,
     metrics: serde_json::Value,
+}
+
+// ── Static (batch) materialization over interval-valued data ─────────────────
+
+#[derive(Debug, Deserialize)]
+struct DmtlStaticRequest {
+    /// Rules — RDF triple-pattern (`(?x,:p,?o):-...`) or MeTeoR (`B(X):-Boxminus[0,5]A(X)`).
+    program: String,
+    /// Facts with validity intervals — `<s> <p> <o> @[l,r] .` (rdf) or `A(a)@[0,10]` (meteor).
+    data: String,
+    /// "interval" (finite materialization) or "omega" (unbounded, periodic).
+    #[serde(default)]
+    strategy: Option<String>,
+    /// Optional entailment queries (one fact per line), for omega.
+    #[serde(default)]
+    queries: Option<String>,
+    /// Input syntax: "rdf" (default) or "meteor".
+    #[serde(default)]
+    syntax: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+struct DmtlEntailAnswer {
+    query: String,
+    holds: bool,
+}
+
+#[derive(Debug, Serialize)]
+struct DmtlStaticResponse {
+    /// Derived (and base) facts as `Pred(args)@[l,r]` lines, sorted.
+    facts: Vec<String>,
+    entailment: Vec<DmtlEntailAnswer>,
+    note: Option<String>,
 }
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
@@ -695,6 +731,13 @@ fn handle_request(request: &HttpRequest, sessions: &Sessions, dmtl_sessions: &Dm
     if method == "POST" && path == "/datalogmtl/push" {
         return match request_body(&request.body) {
             Some(body) => handle_dmtl_push(body, dmtl_sessions),
+            None => json_error_response("Request body is not valid UTF-8"),
+        };
+    }
+
+    if method == "POST" && path == "/datalogmtl/static" {
+        return match request_body(&request.body) {
+            Some(body) => handle_dmtl_static(body),
             None => json_error_response("Request body is not valid UTF-8"),
         };
     }
@@ -1374,6 +1417,22 @@ fn json_ok() -> String {
     )
 }
 
+/// A 200 response carrying an arbitrary JSON body.
+fn json_response(json: &str) -> String {
+    format!(
+        "HTTP/1.1 200 OK\r\n\
+         Content-Type: application/json\r\n\
+         Content-Length: {}\r\n\
+         Access-Control-Allow-Origin: *\r\n\
+         Access-Control-Allow-Methods: POST, OPTIONS\r\n\
+         Access-Control-Allow-Headers: Content-Type\r\n\
+         \r\n\
+         {}",
+        json.len(),
+        json
+    )
+}
+
 fn json_error_response(message: &str) -> String {
     let error = ErrorResponse {
         error: message.to_string(),
@@ -1424,7 +1483,7 @@ fn handle_dmtl_register(body: &str, dmtl_sessions: &DmtlSessions) -> String {
     };
 
     let mut dict = Dictionary::new();
-    let rules = match parse_dmtl_rules(&req.rules, &mut dict) {
+    let rules = match parse_dmtl_rules(&req.rules, &mut dict, Mode::Streaming) {
         Ok(r) => r,
         Err(e) => {
             eprintln!("DMTL rule parse error: {}", e);
@@ -1723,7 +1782,142 @@ fn tokenize_ntriples_line(line: &str) -> Option<[String; 3]> {
 // Terms: ?var = Variable, <iri> = Constant (brackets stripped),
 //        :name = Constant (stored as ":name"), "lit" = Constant (stored with quotes).
 
-fn parse_dmtl_rules(text: &str, dict: &mut Dictionary) -> Result<Vec<DatalogMTLRule>, String> {
+/// Static (batch) materialization over interval-valued data, using the
+/// interval-native engine (MeTeoR-syntax rules + facts, past AND future operators).
+fn handle_dmtl_static(body: &str) -> String {
+    let req: DmtlStaticRequest = match serde_json::from_str(body) {
+        Ok(r) => r,
+        Err(e) => return json_error_response(&format!("Invalid JSON: {}", e)),
+    };
+    let strategy = req.strategy.as_deref().unwrap_or("interval");
+    // Syntax: "rdf" (triple patterns + N-Triples intervals) or "meteor" (Pred(args)@[l,r]).
+    let rdf = req.syntax.as_deref().unwrap_or("rdf") != "meteor";
+    let dict: Arc<RwLock<Dictionary>> = Arc::new(RwLock::new(Dictionary::new()));
+
+    let parsed = if rdf { parse_static_rdf(&req, &dict) } else { parse_static_meteor(&req, &dict) };
+    let (rules, iv_facts, queries) = match parsed {
+        Ok(v) => v,
+        Err(e) => return json_error_response(&e),
+    };
+
+    let mut note = None;
+    let mut entailment = Vec::new();
+
+    let fact_map = if strategy == "omega" {
+        let model = match automata::materialize_omega(&rules, iv_facts) {
+            Ok(m) => m,
+            Err(e) => return json_error_response(&format!("ω-materialization: {}", e)),
+        };
+        let g = dict.read().unwrap();
+        for (triple, iv) in &queries {
+            entailment.push(DmtlEntailAnswer {
+                query: fmt_fact(triple, iv, &g, rdf),
+                holds: automata::entails(&model, triple, *iv),
+            });
+        }
+        note = Some("ω: 'facts' shows the materialized prefix; entailment queries are answered over the full unbounded model.".to_string());
+        model.db.facts
+    } else {
+        automata::materialize(&rules, iv_facts, 1000).facts
+    };
+
+    let g = dict.read().unwrap();
+    let mut lines: Vec<String> = Vec::new();
+    for (triple, ivs) in &fact_map {
+        for iv in ivs {
+            lines.push(fmt_fact(triple, iv, &g, rdf));
+        }
+    }
+    lines.sort();
+
+    let resp = DmtlStaticResponse { facts: lines, entailment, note };
+    json_response(&serde_json::to_string(&resp).unwrap_or_default())
+}
+
+type StaticInput = (Vec<DatalogMTLRule>, Vec<(Triple, TInterval)>, Vec<(Triple, TInterval)>);
+
+/// Parse the static request in RDF-style: triple-pattern rules + `<s> <p> <o> @[l,r]` facts.
+fn parse_static_rdf(req: &DmtlStaticRequest, dict: &Arc<RwLock<Dictionary>>) -> Result<StaticInput, String> {
+    let rules = {
+        let mut d = dict.write().unwrap();
+        parse_dmtl_rules(&req.program, &mut d, Mode::Static)
+            .map_err(|e| format!("Program parse error: {}", e))?
+    };
+    let facts = parse_dmtl_interval_facts(&req.data, dict)?;
+    let queries = match &req.queries {
+        Some(q) if !q.trim().is_empty() => parse_dmtl_interval_facts(q, dict)?,
+        _ => Vec::new(),
+    };
+    Ok((rules, facts, queries))
+}
+
+/// Parse the static request in MeTeoR-style: `Pred(args)` rules + `Pred(args)@[l,r]` facts.
+fn parse_static_meteor(req: &DmtlStaticRequest, dict: &Arc<RwLock<Dictionary>>) -> Result<StaticInput, String> {
+    let rules = parse_program(&req.program, dict, Mode::Static)
+        .map_err(|e| format!("Program parse error: {}", e))?;
+    let to_iv = |fs: Vec<datalogmtl::parser::TemporalFact>| -> Vec<(Triple, TInterval)> {
+        fs.into_iter().map(|f| (f.triple, TInterval::closed(f.start as i64, f.end as i64))).collect()
+    };
+    let facts = to_iv(parse_data(&req.data, dict).map_err(|e| format!("Data parse error: {}", e))?);
+    let queries = match &req.queries {
+        Some(q) if !q.trim().is_empty() =>
+            to_iv(parse_data(q, dict).map_err(|e| format!("Query parse error: {}", e))?),
+        _ => Vec::new(),
+    };
+    Ok((rules, facts, queries))
+}
+
+/// Parse RDF interval facts: `<s> <p> <o> @[l,r] .` (one per line).
+fn parse_dmtl_interval_facts(text: &str, dict: &Arc<RwLock<Dictionary>>) -> Result<Vec<(Triple, TInterval)>, String> {
+    let mut out = Vec::new();
+    for (i, raw) in text.lines().enumerate() {
+        let line = raw.trim();
+        if line.is_empty() || line.starts_with('#') { continue; }
+        let at = line.find("@[")
+            .ok_or_else(|| format!("data line {}: interval fact needs '@[l,r]': '{}'", i + 1, line))?;
+        let iv_inner = &line[at + 2..];
+        let rb = iv_inner.find(']')
+            .ok_or_else(|| format!("data line {}: missing ']' in interval: '{}'", i + 1, line))?;
+        let interval = parse_dmtl_interval(&iv_inner[..rb])?;
+        let toks = tokenize_ntriples_line(&line[..at])
+            .ok_or_else(|| format!("data line {}: could not parse triple: '{}'", i + 1, line))?;
+        let triple = {
+            let mut d = dict.write().unwrap();
+            Triple { subject: d.encode(&toks[0]), predicate: d.encode(&toks[1]), object: d.encode(&toks[2]) }
+        };
+        out.push((triple, TInterval::closed(interval.start as i64, interval.end as i64)));
+    }
+    Ok(out)
+}
+
+/// Format a materialized fact as `<atom>@[l,r]` in the requested syntax.
+fn fmt_fact(triple: &Triple, iv: &TInterval, dict: &Dictionary, rdf: bool) -> String {
+    let atom = if rdf { fmt_rdf_triple(triple, dict) } else { meteor_fmt::atom_string(triple, dict) };
+    format!("{}@{}", atom, fmt_tinterval(iv))
+}
+
+/// Render a triple in RDF/N-Triples style: `<s> <p> <o>` (literals/blanks as-is).
+fn fmt_rdf_triple(triple: &Triple, dict: &Dictionary) -> String {
+    let d = |id| dict.decode(id).unwrap_or("?");
+    format!("{} {} {}",
+        term_to_ntriples_token(d(triple.subject)),
+        term_to_ntriples_token(d(triple.predicate)),
+        term_to_ntriples_token(d(triple.object)))
+}
+
+/// Render a `TInterval` as `[l,r]` / `(l,r)` with `±inf` for unbounded tails.
+fn fmt_tinterval(iv: &TInterval) -> String {
+    let l = if iv.start == NEG_INF { "-inf".to_string() } else { iv.start.to_string() };
+    let r = if iv.end == POS_INF { "+inf".to_string() } else { iv.end.to_string() };
+    format!("{}{},{}{}",
+        if iv.start_open { "(" } else { "[" }, l, r,
+        if iv.end_open { ")" } else { "]" })
+}
+
+/// Parse RDF-style triple-pattern DatalogMTL rules. In `Static` mode the future
+/// operators `Diamondplus`/`Boxplus`/`Until` are accepted; in `Streaming` mode
+/// they are rejected (they require the whole timeline).
+fn parse_dmtl_rules(text: &str, dict: &mut Dictionary, mode: Mode) -> Result<Vec<DatalogMTLRule>, String> {
     // Strip line comments and join into one string for depth-0 splitting.
     let cleaned: String = text
         .lines()
@@ -1752,7 +1946,7 @@ fn parse_dmtl_rules(text: &str, dict: &mut Dictionary) -> Result<Vec<DatalogMTLR
         for part in &body_parts {
             let part = part.trim();
             if !part.is_empty() {
-                body.push(parse_dmtl_temporal_atom(part, dict)?);
+                body.push(parse_dmtl_temporal_atom(part, dict, mode)?);
             }
         }
 
@@ -1853,71 +2047,91 @@ fn parse_dmtl_triple_pattern(s: &str, dict: &mut Dictionary) -> Result<TriplePat
     ))
 }
 
-fn parse_dmtl_temporal_atom(s: &str, dict: &mut Dictionary) -> Result<TemporalAtom, String> {
+fn parse_dmtl_temporal_atom(s: &str, dict: &mut Dictionary, mode: Mode) -> Result<TemporalAtom, String> {
     let s = s.trim();
     if s.starts_with('(') {
         return Ok(TemporalAtom::Base(parse_dmtl_triple_pattern(s, dict)?));
     }
-    if let Some(rest) = s.strip_prefix("Diamond[") {
-        return parse_dmtl_interval_atom(rest, dict, "Diamond");
-    }
-    if let Some(rest) = s.strip_prefix("Box[") {
-        return parse_dmtl_interval_atom(rest, dict, "Box");
-    }
-    if let Some(rest) = s.strip_prefix("Prev[") {
-        return parse_dmtl_interval_atom(rest, dict, "Prev");
+    // Past operators (`Diamond`≡`Diamondminus`, `Box`≡`Boxminus`).
+    for (kw, kind) in [("Diamondminus[", "Diamond"), ("Diamond[", "Diamond"),
+                       ("Boxminus[", "Box"), ("Box[", "Box"), ("Prev[", "Prev")] {
+        if let Some(rest) = s.strip_prefix(kw) {
+            return parse_dmtl_interval_atom(rest, dict, kind, mode);
+        }
     }
     if let Some(rest) = s.strip_prefix("Since[") {
-        return parse_dmtl_since_atom(rest, dict);
+        return parse_dmtl_binary_atom(rest, dict, mode, "Since");
+    }
+    // Future operators — static data only.
+    for (kw, kind) in [("Diamondplus[", "Diamondplus"), ("Boxplus[", "Boxplus")] {
+        if let Some(rest) = s.strip_prefix(kw) {
+            require_static(mode, kind)?;
+            return parse_dmtl_interval_atom(rest, dict, kind, mode);
+        }
+    }
+    if let Some(rest) = s.strip_prefix("Until[") {
+        require_static(mode, "Until")?;
+        return parse_dmtl_binary_atom(rest, dict, mode, "Until");
     }
     Err(format!("Cannot parse temporal atom: '{}'", s))
+}
+
+fn require_static(mode: Mode, op: &str) -> Result<(), String> {
+    if mode == Mode::Static {
+        Ok(())
+    } else {
+        Err(format!("future operator '{}' requires static data (streaming is past-only)", op))
+    }
 }
 
 fn parse_dmtl_interval_atom(
     rest: &str,
     dict: &mut Dictionary,
     kind: &str,
+    mode: Mode,
 ) -> Result<TemporalAtom, String> {
     let close = rest.find(']')
         .ok_or_else(|| format!("Missing ']' in {} interval", kind))?;
     let interval = parse_dmtl_interval(&rest[..close])?;
     let after = rest[close + 1..].trim();
-    let inner = parse_dmtl_temporal_atom(after, dict)?;
+    let inner = Box::new(parse_dmtl_temporal_atom(after, dict, mode)?);
     match kind {
-        "Diamond" => Ok(TemporalAtom::Diamond { interval, inner: Box::new(inner) }),
-        "Box"     => Ok(TemporalAtom::Box_ { interval, inner: Box::new(inner) }),
-        "Prev"    => Ok(TemporalAtom::Prev { interval, inner: Box::new(inner) }),
-        _         => Err(format!("Unknown operator: {}", kind)),
+        "Diamond"     => Ok(TemporalAtom::Diamond { interval, inner }),
+        "Box"         => Ok(TemporalAtom::Box_ { interval, inner }),
+        "Prev"        => Ok(TemporalAtom::Prev { interval, inner }),
+        "Diamondplus" => Ok(TemporalAtom::DiamondPlus { interval, inner }),
+        "Boxplus"     => Ok(TemporalAtom::BoxPlus { interval, inner }),
+        _             => Err(format!("Unknown operator: {}", kind)),
     }
 }
 
-fn parse_dmtl_since_atom(rest: &str, dict: &mut Dictionary) -> Result<TemporalAtom, String> {
+/// Binary operator `Kind[a,b](phi, psi)` — `Since` (past) or `Until` (future).
+fn parse_dmtl_binary_atom(rest: &str, dict: &mut Dictionary, mode: Mode, kind: &str) -> Result<TemporalAtom, String> {
     let close = rest.find(']')
-        .ok_or_else(|| "Missing ']' in Since interval".to_string())?;
+        .ok_or_else(|| format!("Missing ']' in {} interval", kind))?;
     let interval = parse_dmtl_interval(&rest[..close])?;
     let after = rest[close + 1..].trim();
 
-    // Expect (phi_atom, psi_atom) — strip outer parens then split at depth-0 comma
     if !after.starts_with('(') || !after.ends_with(')') {
-        return Err(format!("Since expects (phi, psi) after interval, got: '{}'", after));
+        return Err(format!("{} expects (phi, psi) after interval, got: '{}'", kind, after));
     }
     let inner = &after[1..after.len() - 1];
     let parts = split_at_depth0(inner, ',');
     if parts.len() < 2 {
-        return Err("Since needs at least 2 atoms in (phi, psi)".to_string());
+        return Err(format!("{} needs 2 atoms in (phi, psi)", kind));
     }
-    let phi = parse_dmtl_temporal_atom(parts[0].trim(), dict)?;
+    let phi = Box::new(parse_dmtl_temporal_atom(parts[0].trim(), dict, mode)?);
     let psi_str = if parts.len() == 2 {
         parts[1].trim().to_string()
     } else {
         parts[1..].iter().map(|s| s.trim()).collect::<Vec<_>>().join(",")
     };
-    let psi = parse_dmtl_temporal_atom(&psi_str, dict)?;
-    Ok(TemporalAtom::Since {
-        interval,
-        phi: Box::new(phi),
-        psi: Box::new(psi),
-    })
+    let psi = Box::new(parse_dmtl_temporal_atom(&psi_str, dict, mode)?);
+    match kind {
+        "Since" => Ok(TemporalAtom::Since { interval, phi, psi }),
+        "Until" => Ok(TemporalAtom::Until { interval, phi, psi }),
+        _       => Err(format!("Unknown binary operator: {}", kind)),
+    }
 }
 
 // ── Stream shape text parser ──────────────────────────────────────────────────

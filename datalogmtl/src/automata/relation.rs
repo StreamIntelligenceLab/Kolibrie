@@ -127,6 +127,19 @@ pub fn eval_atom(atom: &TemporalAtom, db: &Database) -> BindingRelation {
             let b = eval_atom(psi, db);
             join_with(&a, &b, |pints, qints| transducer::since(pints, qints, interval))
         }
+        TemporalAtom::DiamondPlus { interval, inner } => {
+            let r = eval_atom(inner, db);
+            map_transduce(r, |ints| transducer::diamond_plus(ints, interval))
+        }
+        TemporalAtom::BoxPlus { interval, inner } => {
+            let r = eval_atom(inner, db);
+            map_transduce(r, |ints| transducer::box_plus(ints, interval))
+        }
+        TemporalAtom::Until { interval, phi, psi } => {
+            let a = eval_atom(phi, db);
+            let b = eval_atom(psi, db);
+            join_with(&a, &b, |pints, qints| transducer::until(pints, qints, interval))
+        }
     }
 }
 

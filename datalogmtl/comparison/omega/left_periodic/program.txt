@@ -1,0 +1,2 @@
+P(X):-Seed(X)
+P(X):-Diamondplus[2,2]P(X)

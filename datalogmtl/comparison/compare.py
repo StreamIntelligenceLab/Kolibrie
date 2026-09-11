@@ -75,9 +75,10 @@ def rust_binary():
     return path if os.path.exists(path) else None
 
 
-def run_rust(program, data, horizon, store, strategy="tick"):
+def run_rust(program, data, horizon, store, strategy="tick", mode="streaming"):
     args = ["--program", program, "--data", data,
-            "--horizon", str(horizon), "--store", store, "--strategy", strategy]
+            "--horizon", str(horizon), "--store", store, "--strategy", strategy,
+            "--mode", mode]
     env = dict(os.environ, DYLD_LIBRARY_PATH=DYLD)
     binary = rust_binary()
     if binary:
@@ -102,7 +103,7 @@ def run_meteor(program, data, horizon, mode="seminaive"):
     return proc.stdout
 
 
-def run_case(case_dir, store, verbose, strategy="tick", meteor_mode="seminaive"):
+def run_case(case_dir, store, verbose, strategy="tick", meteor_mode="seminaive", mode="streaming"):
     program = os.path.join(case_dir, "program.txt")
     data = os.path.join(case_dir, "data.txt")
     program_text = open(program).read()
@@ -110,7 +111,7 @@ def run_case(case_dir, store, verbose, strategy="tick", meteor_mode="seminaive")
     horizon = horizon_for(program_text, data_text)
 
     meteor = normalize(run_meteor(program, data, horizon, meteor_mode))
-    rust = normalize(run_rust(program, data, horizon, store, strategy))
+    rust = normalize(run_rust(program, data, horizon, store, strategy, mode))
 
     ok = meteor == rust
     name = os.path.basename(case_dir)
@@ -130,8 +131,10 @@ def main():
     ap.add_argument("--store", default="snapshot", choices=["snapshot", "interval"])
     ap.add_argument("--strategy", default="tick", choices=["tick", "interval"])
     ap.add_argument("--meteor-mode", default="seminaive", choices=["seminaive", "naive"])
+    ap.add_argument("--mode", default="streaming", choices=["streaming", "static"])
     ap.add_argument("-v", "--verbose", action="store_true")
     args = ap.parse_args()
+    args.cases_dir = os.path.abspath(args.cases_dir)  # Rust binary runs from repo root
 
     cases = sorted(
         d for d in os.listdir(args.cases_dir)
@@ -145,7 +148,7 @@ def main():
     failures = 0
     for name in cases:
         try:
-            if not run_case(os.path.join(args.cases_dir, name), args.store, args.verbose, args.strategy, args.meteor_mode):
+            if not run_case(os.path.join(args.cases_dir, name), args.store, args.verbose, args.strategy, args.meteor_mode, args.mode):
                 failures += 1
         except Exception as e:  # noqa: BLE001
             print("[ERROR] {}: {}".format(name, e))

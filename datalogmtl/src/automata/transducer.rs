@@ -58,3 +58,42 @@ fn since_deduce(op: &TInterval, phi: TInterval, psi: TInterval) -> Option<TInter
     let t = TInterval::add(s, *op);
     TInterval::intersection(t, closed_phi)
 }
+
+// ── Future operators (static data only) ──
+
+/// Diamondplus[a,b]: `[s,e] -> [s-b, e-a]`.
+pub fn diamond_plus(inner: &[TInterval], op: &OpInterval) -> Vec<TInterval> {
+    let b = bound(op);
+    coalesce(inner.iter().map(|&iv| TInterval::sub(iv, b)).collect())
+}
+
+/// Boxplus[a,b]: `[s,e] -> [s-a, e-b]`, dropping invalid (future erosion).
+pub fn box_plus(inner: &[TInterval], op: &OpInterval) -> Vec<TInterval> {
+    let b = bound(op);
+    coalesce(inner.iter().filter_map(|&iv| TInterval::circle_sub(iv, b)).collect())
+}
+
+/// phi Until[a,b] psi (MeTeoR `until_deduce`), combined over all interval pairs.
+pub fn until(phi: &[TInterval], psi: &[TInterval], op: &OpInterval) -> Vec<TInterval> {
+    let b = bound(op);
+    let mut out = Vec::new();
+    for &p in phi {
+        for &q in psi {
+            if let Some(r) = until_deduce(&b, p, q) {
+                out.push(r);
+            }
+        }
+    }
+    coalesce(out)
+}
+
+/// One (phi_interval, psi_interval) pair of the Until operator (mirror of Since with `sub`).
+fn until_deduce(op: &TInterval, phi: TInterval, psi: TInterval) -> Option<TInterval> {
+    if !op.start_open && op.start == 0 {
+        return Some(TInterval::sub(psi, *op));
+    }
+    let closed_phi = TInterval::closed(phi.start, phi.end);
+    let s = TInterval::intersection(closed_phi, psi)?;
+    let t = TInterval::sub(s, *op);
+    TInterval::intersection(t, closed_phi)
+}

@@ -29,6 +29,19 @@ const TICK_MS: u64 = 1000;
 const TELEMETRY_STREAM: &str = "http://utm.example.org/telemetry";
 const MAX_GAP_MS: u64 = 10_000;
 
+// The evaluator uses DENSE integer semantics: Box/Since require the inner atom
+// to hold at EVERY integer time point in their window. So the reasoner's time
+// unit must be the sampling period — feeding it milliseconds while sampling
+// once a second leaves 999 unsatisfied points between every pair of samples,
+// and no universal operator can ever hold. Wall-clock ms stay in the UI only.
+const MAX_GAP_TICKS: u64 = MAX_GAP_MS / TICK_MS;
+/// Window lengths for the rules below, in ticks (1 tick == TICK_MS).
+const GEOFENCE_WINDOW_TICKS: u64 = 30;
+const LINK_LOSS_WINDOW_TICKS: u64 = 10;
+const OFF_COURSE_WINDOW_TICKS: u64 = 600;
+/// Retain a little more than the widest window.
+const STORE_HORIZON_TICKS: u64 = OFF_COURSE_WINDOW_TICKS + 20;
+
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
 struct LatLng {
     lat: f64,
@@ -214,7 +227,7 @@ fn start_demo_loop(events: EventLog, state: Arc<Mutex<DemoState>>) {
         let mut ingester = ShapeIngester::new(vec![shape], Arc::clone(&dictionary));
         let mut evaluator = DatalogMTLEvaluator::new(
             drone_rules(&vocab),
-            IntervalFactStore::new(620_000),
+            IntervalFactStore::new(STORE_HORIZON_TICKS),
             Arc::clone(&dictionary),
         )
         .expect("DatalogMTL rule setup failed");
@@ -377,9 +390,12 @@ fn build_tick(
     vocab: &Vocab,
 ) -> TickView {
     let now = state.elapsed_ms();
-    let tick = (now / TICK_MS) * TICK_MS;
-    state.drone_a.position = scripted_drone_a(tick);
-    state.drone_a.last_telemetry_ms = tick;
+    // Wall-clock ms drive the flight animation and the UI clock; the logical
+    // tick index `t` is what the reasoner sees (see MAX_GAP_TICKS above).
+    let tick_ms = (now / TICK_MS) * TICK_MS;
+    let t = now / TICK_MS;
+    state.drone_a.position = scripted_drone_a(tick_ms);
+    state.drone_a.last_telemetry_ms = tick_ms;
 
     let zones = zones();
     let mut triples = static_zone_triples(vocab);
@@ -387,33 +403,33 @@ fn build_tick(
 
     let mut drone_a = state.drone_a.clone();
     let mut drone_b = state.drone_b.clone();
-    let a_triples = telemetry_for_drone(&mut drone_a, tick, &zones, vocab, dictionary, ingester);
+    let a_triples = telemetry_for_drone(&mut drone_a, t, &zones, vocab, dictionary, ingester);
     triples.extend(a_triples.0);
     rdf_events.extend(a_triples.1);
 
-    let b_has_fresh_telemetry = tick.saturating_sub(state.drone_b.last_telemetry_ms) <= 2_500;
+    let b_has_fresh_telemetry = tick_ms.saturating_sub(state.drone_b.last_telemetry_ms) <= 2_500;
     if b_has_fresh_telemetry {
-        let b_triples = telemetry_for_drone(&mut drone_b, tick, &zones, vocab, dictionary, ingester);
+        let b_triples = telemetry_for_drone(&mut drone_b, t, &zones, vocab, dictionary, ingester);
         triples.extend(b_triples.0);
         rdf_events.extend(b_triples.1);
-    } else if tick.saturating_sub(state.drone_b.last_telemetry_ms) > MAX_GAP_MS {
+    } else if tick_ms.saturating_sub(state.drone_b.last_telemetry_ms) > MAX_GAP_MS {
         triples.push(triple(vocab.drone_b, vocab.utm_channel_status, vocab.utm_expired));
     }
 
     state.drone_a.previous_zones = drone_a.previous_zones;
     state.drone_b.previous_zones = drone_b.previous_zones;
 
-    let (derived, metrics) = evaluator.advance(tick, triples);
+    let (derived, metrics) = evaluator.advance(t, triples);
     let derived_lines = decode_triples(&derived, dictionary);
     let alerts = alerts_from_derived(&derived, dictionary, vocab);
 
     TickView {
-        time_ms: tick,
+        time_ms: tick_ms,
         drones: vec![
             drone_view(&state.drone_a, "active", &zones),
             drone_view(
                 &state.drone_b,
-                if tick.saturating_sub(state.drone_b.last_telemetry_ms) > MAX_GAP_MS {
+                if tick_ms.saturating_sub(state.drone_b.last_telemetry_ms) > MAX_GAP_MS {
                     "expired"
                 } else {
                     "active"
@@ -436,20 +452,20 @@ fn build_tick(
 
 fn telemetry_for_drone(
     drone: &mut DroneRuntime,
-    tick: u64,
+    t: u64,
     zones: &[Zone],
     vocab: &Vocab,
     dictionary: &Arc<RwLock<Dictionary>>,
     ingester: &mut ShapeIngester,
 ) -> (Vec<Triple>, Vec<String>) {
     let drone_id = if drone.id == "droneA" { vocab.drone_a } else { vocab.drone_b };
-    let obs = encode(dictionary, &format!("http://utm.example.org/obs/{}-{}", drone.id, tick));
-    let tlm = encode(dictionary, &format!("http://utm.example.org/telemetry/{}-{}", drone.id, tick));
+    let obs = encode(dictionary, &format!("http://utm.example.org/obs/{}-{}", drone.id, t));
+    let tlm = encode(dictionary, &format!("http://utm.example.org/telemetry/{}-{}", drone.id, t));
     let position = encode(dictionary, &format!("{:.6},{:.6}", drone.position.lat, drone.position.lng));
     let altitude = encode(dictionary, &drone.altitude_m.to_string());
     let event = RdfEvent {
         stream_iri: TELEMETRY_STREAM.to_string(),
-        timestamp: tick,
+        timestamp: t,
         triples: vec![
             triple(obs, vocab.rdf_type, vocab.sosa_observation),
             triple(obs, vocab.sosa_made_by_sensor, drone_id),
@@ -617,7 +633,8 @@ fn telemetry_shape(vocab: &Vocab) -> StreamShape {
             (var("tlm"), constant(vocab.utm_ais_status), var("status")),
         ],
         channel_key: vec!["drone".to_string()],
-        staleness: StalenessPolicy { max_gap_ms: MAX_GAP_MS },
+        // Same unit as RdfEvent::timestamp, which is now a tick index.
+        staleness: StalenessPolicy { max_gap_ms: MAX_GAP_TICKS },
     }
 }
 
@@ -628,7 +645,7 @@ fn drone_rules(vocab: &Vocab) -> Vec<DatalogMTLRule> {
             head: (var("d"), constant(vocab.utm_violated_zone), var("z")),
             body: vec![
                 TemporalAtom::Box_ {
-                    interval: Interval { start: 0, end: 30_000 },
+                    interval: Interval { start: 0, end: GEOFENCE_WINDOW_TICKS },
                     inner: Box::new(TemporalAtom::Base((
                         var("d"),
                         constant(vocab.dront_in_zone),
@@ -646,7 +663,7 @@ fn drone_rules(vocab: &Vocab) -> Vec<DatalogMTLRule> {
             id: "controlLinkLoss".to_string(),
             head: (var("d"), constant(vocab.utm_status), constant(vocab.utm_link_lost)),
             body: vec![TemporalAtom::Box_ {
-                interval: Interval { start: 0, end: 10_000 },
+                interval: Interval { start: 0, end: LINK_LOSS_WINDOW_TICKS },
                 inner: Box::new(TemporalAtom::Base((
                     var("d"),
                     constant(vocab.utm_channel_status),
@@ -669,7 +686,7 @@ fn drone_rules(vocab: &Vocab) -> Vec<DatalogMTLRule> {
                     constant(vocab.dront_restricted),
                 )),
                 TemporalAtom::Since {
-                    interval: Interval { start: 0, end: 600_000 },
+                    interval: Interval { start: 0, end: OFF_COURSE_WINDOW_TICKS },
                     phi: Box::new(TemporalAtom::Base((
                         var("d"),
                         constant(vocab.dront_on_flight_plan),

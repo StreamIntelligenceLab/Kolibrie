@@ -1,0 +1,4 @@
+ProspectiveRA(X):-Diamondplus[0,5]UndergraduateStudent(X)
+ProspectiveRA(X):-Boxplus[0,2]GraduateStudent(X)
+FutureLead(X):-Diamondplus[0,3]ProspectiveRA(X)
+FutureLead(X):-publicationAuthor(Y,X),Boxplus[0,1]ProspectiveRA(X)

@@ -30,7 +30,7 @@ use std::sync::{Arc, RwLock};
 use shared::dictionary::Dictionary;
 use shared::triple::Triple;
 use shared::terms::{Term, TriplePattern};
-use crate::syntax::{DatalogMTLRule, TemporalAtom, Interval};
+use crate::syntax::{DatalogMTLRule, TemporalAtom, Interval, Mode};
 
 /// Full IRI for the `rdf:type` predicate used to encode unary atoms.
 pub const RDF_TYPE: &str = "http://www.w3.org/1999/02/22-rdf-syntax-ns#type";
@@ -47,16 +47,19 @@ pub struct TemporalFact {
 // Public entry points
 // ────────────────────────────────────────────────────────────────
 
-/// Parse a whole program (one rule per non-empty, non-comment line).
+/// Parse a whole program (one rule per non-empty, non-comment line). In `Static`
+/// mode future operators (`Boxplus`/`Diamondplus`/`Until`) are accepted; in
+/// `Streaming` mode they are rejected (they require the whole timeline).
 pub fn parse_program(
     text: &str,
     dict: &Arc<RwLock<Dictionary>>,
+    mode: Mode,
 ) -> Result<Vec<DatalogMTLRule>, String> {
     let mut rules = Vec::new();
     for (i, raw) in text.lines().enumerate() {
         let line = strip_line(raw);
         if line.is_empty() { continue; }
-        let rule = parse_rule(&line, i + 1, dict)
+        let rule = parse_rule(&line, i + 1, dict, mode)
             .map_err(|e| format!("program line {}: {}: {}", i + 1, raw.trim(), e))?;
         rules.push(rule);
     }
@@ -87,6 +90,7 @@ fn parse_rule(
     line: &str,
     _lineno: usize,
     dict: &Arc<RwLock<Dictionary>>,
+    mode: Mode,
 ) -> Result<DatalogMTLRule, String> {
     let Some((head_str, body_str)) = line.split_once(":-") else {
         return Err("rule missing ':-'".into());
@@ -95,9 +99,8 @@ fn parse_rule(
         return Err("negation ('||') is outside the supported fragment".into());
     }
 
-    // Head must be a plain atom (no temporal operator).
-    if leading_operator(head_str).is_some()
-        || future_operator(head_str).is_some()
+    // Head must be a plain atom (no temporal operator), in either mode.
+    if any_operator_prefix(head_str)
         || find_kw_depth0(head_str, "Since").is_some()
         || find_kw_depth0(head_str, "Until").is_some()
     {
@@ -108,7 +111,7 @@ fn parse_rule(
     let mut body = Vec::new();
     for lit in split_top_commas(body_str) {
         if lit.is_empty() { continue; }
-        body.push(parse_literal(&lit, dict)?);
+        body.push(parse_literal(&lit, dict, mode)?);
     }
     if body.is_empty() {
         return Err("rule has empty body".into());
@@ -118,31 +121,29 @@ fn parse_rule(
 }
 
 /// Parse a single body literal into a (possibly nested) `TemporalAtom`.
-fn parse_literal(s: &str, dict: &Arc<RwLock<Dictionary>>) -> Result<TemporalAtom, String> {
-    // Binary Since: `L Since[a,b] R` (whitespace already stripped).
+fn parse_literal(s: &str, dict: &Arc<RwLock<Dictionary>>, mode: Mode) -> Result<TemporalAtom, String> {
+    // Binary Since (past): `L Since[a,b] R` (whitespace already stripped).
     if let Some(idx) = find_kw_depth0(s, "Since") {
-        let left = &s[..idx];
-        let after = &s[idx + "Since".len()..];
-        let (interval, rest) = read_operator_interval(after)?;
-        if left.is_empty() || rest.is_empty() {
-            return Err("Since must have a literal on each side".into());
-        }
-        let phi = Box::new(parse_literal(left, dict)?);   // continuation (holds since)
-        let psi = Box::new(parse_literal(rest, dict)?);   // trigger / reset
+        let (interval, phi, psi) = parse_binary(s, idx, "Since", dict, mode)?;
         return Ok(TemporalAtom::Since { interval, phi, psi });
     }
-    if find_kw_depth0(s, "Until").is_some() {
-        return Err("Until (future operator) is outside the supported fragment".into());
+    // Binary Until (future, static only).
+    if let Some(idx) = find_kw_depth0(s, "Until") {
+        if mode != Mode::Static {
+            return Err("Until (future operator) requires static mode".into());
+        }
+        let (interval, phi, psi) = parse_binary(s, idx, "Until", dict, mode)?;
+        return Ok(TemporalAtom::Until { interval, phi, psi });
     }
 
     // Peel stacked unary operators (outermost first).
     let mut ops: Vec<(OpKind, Interval)> = Vec::new();
     let mut rest = s;
     loop {
-        if let Some(fut) = future_operator(rest) {
-            return Err(format!("future operator '{}' is outside the supported fragment", fut));
+        if let Some(bad) = disallowed_operator(rest, mode) {
+            return Err(format!("operator '{}' is not allowed in {:?} mode", bad, mode));
         }
-        let Some(kind) = leading_operator(rest) else { break };
+        let Some(kind) = leading_operator(rest, mode) else { break };
         let after = &rest[kind.name().len()..];
         let (interval, tail) = read_operator_interval(after)?;
         ops.push((kind, interval));
@@ -151,35 +152,76 @@ fn parse_literal(s: &str, dict: &Arc<RwLock<Dictionary>>) -> Result<TemporalAtom
 
     let mut atom = TemporalAtom::Base(atom_to_pattern(rest, dict, true)?);
     for (kind, interval) in ops.into_iter().rev() {
+        let inner = Box::new(atom);
         atom = match kind {
-            OpKind::Box => TemporalAtom::Box_ { interval, inner: Box::new(atom) },
-            OpKind::Diamond => TemporalAtom::Diamond { interval, inner: Box::new(atom) },
+            OpKind::Box => TemporalAtom::Box_ { interval, inner },
+            OpKind::Diamond => TemporalAtom::Diamond { interval, inner },
+            OpKind::BoxPlus => TemporalAtom::BoxPlus { interval, inner },
+            OpKind::DiamondPlus => TemporalAtom::DiamondPlus { interval, inner },
         };
     }
     Ok(atom)
 }
 
+/// Split `L <kw>[a,b] R` at `idx` (start of `kw`) into (interval, phi, psi).
+fn parse_binary(
+    s: &str,
+    idx: usize,
+    kw: &str,
+    dict: &Arc<RwLock<Dictionary>>,
+    mode: Mode,
+) -> Result<(Interval, Box<TemporalAtom>, Box<TemporalAtom>), String> {
+    let left = &s[..idx];
+    let after = &s[idx + kw.len()..];
+    let (interval, rest) = read_operator_interval(after)?;
+    if left.is_empty() || rest.is_empty() {
+        return Err(format!("{} must have a literal on each side", kw));
+    }
+    let phi = Box::new(parse_literal(left, dict, mode)?);
+    let psi = Box::new(parse_literal(rest, dict, mode)?);
+    Ok((interval, phi, psi))
+}
+
 #[derive(Clone, Copy)]
-enum OpKind { Box, Diamond }
+enum OpKind { Box, Diamond, BoxPlus, DiamondPlus }
 impl OpKind {
     fn name(self) -> &'static str {
-        match self { OpKind::Box => "Boxminus", OpKind::Diamond => "Diamondminus" }
+        match self {
+            OpKind::Box => "Boxminus",
+            OpKind::Diamond => "Diamondminus",
+            OpKind::BoxPlus => "Boxplus",
+            OpKind::DiamondPlus => "Diamondplus",
+        }
     }
 }
 
-/// If `s` starts with a supported past operator keyword, return its kind.
-fn leading_operator(s: &str) -> Option<OpKind> {
+/// A supported leading operator keyword (past always; future only in `Static`).
+fn leading_operator(s: &str, mode: Mode) -> Option<OpKind> {
     if s.starts_with("Boxminus") { Some(OpKind::Box) }
     else if s.starts_with("Diamondminus") { Some(OpKind::Diamond) }
+    else if mode == Mode::Static && s.starts_with("Boxplus") { Some(OpKind::BoxPlus) }
+    else if mode == Mode::Static && s.starts_with("Diamondplus") { Some(OpKind::DiamondPlus) }
     else { None }
 }
 
-/// If `s` starts with a future/unsupported temporal operator keyword, return it.
-fn future_operator(s: &str) -> Option<&'static str> {
-    for kw in ["Boxplus", "Diamondplus", "SOMETIME", "ALWAYS"] {
+/// A leading operator that is NOT allowed here: the `SOMETIME`/`ALWAYS` aliases
+/// (unsupported), and future operators when in `Streaming` mode.
+fn disallowed_operator(s: &str, mode: Mode) -> Option<&'static str> {
+    for kw in ["SOMETIME", "ALWAYS"] {
         if s.starts_with(kw) { return Some(kw); }
     }
+    if mode != Mode::Static {
+        for kw in ["Boxplus", "Diamondplus"] {
+            if s.starts_with(kw) { return Some(kw); }
+        }
+    }
     None
+}
+
+/// Whether `s` starts with any temporal operator keyword (mode-agnostic; for head check).
+fn any_operator_prefix(s: &str) -> bool {
+    ["Boxminus", "Diamondminus", "Boxplus", "Diamondplus", "SOMETIME", "ALWAYS"]
+        .iter().any(|kw| s.starts_with(kw))
 }
 
 // ────────────────────────────────────────────────────────────────

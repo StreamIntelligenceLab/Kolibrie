@@ -31,7 +31,7 @@ use datalogmtl::evaluator::{compute_w_max, DatalogMTLEvaluator};
 use datalogmtl::meteor_fmt::format_tick_sets;
 use datalogmtl::parser::{parse_data, parse_program, TemporalFact, RDF_TYPE};
 use datalogmtl::store::{IntervalFactStore, TemporalSnapshotStore, TemporalStore};
-use datalogmtl::syntax::{DatalogMTLRule, TemporalAtom};
+use datalogmtl::syntax::{DatalogMTLRule, Mode, TemporalAtom};
 use datalogmtl::automata::{self, interval::TInterval};
 
 fn main() {
@@ -41,6 +41,8 @@ fn main() {
     let mut horizon_override: Option<u64> = None;
     let mut store_kind = "snapshot".to_string();
     let mut strategy = "tick".to_string();
+    let mut strategy_set = false;
+    let mut mode_str = "streaming".to_string();
     let mut timing = false;
     let mut skip_empty = true;
     let mut entail_file: Option<String> = None;
@@ -55,7 +57,9 @@ fn main() {
             }
             "--store" => { store_kind = args.get(i + 1).cloned().unwrap_or_default(); i += 2; }
             // Evaluation strategy: tick (per-tick engine) or interval (automata).
-            "--strategy" => { strategy = args.get(i + 1).cloned().unwrap_or_default(); i += 2; }
+            "--strategy" => { strategy = args.get(i + 1).cloned().unwrap_or_default(); strategy_set = true; i += 2; }
+            // Data contract: streaming (past-only) or static (past + future operators).
+            "--mode" => { mode_str = args.get(i + 1).cloned().unwrap_or_default(); i += 2; }
             // Print timing + fact/derivation counts as JSON instead of the full
             // materialization (for the performance harness).
             "--timing" => { timing = true; i += 1; }
@@ -70,13 +74,27 @@ fn main() {
     let program_path = program_path.unwrap_or_else(|| fail("missing --program <file>"));
     let data_path = data_path.unwrap_or_else(|| fail("missing --data <file>"));
 
+    let mode = match mode_str.as_str() {
+        "streaming" => Mode::Streaming,
+        "static" => Mode::Static,
+        other => fail(&format!("unknown --mode '{}' (use streaming|static)", other)),
+    };
+    // Future operators require the static (interval) engine; the tick engine
+    // cannot see the future. In static mode default the strategy to interval.
+    if mode == Mode::Static {
+        if strategy_set && strategy == "tick" {
+            fail("--mode static requires the interval engine; drop '--strategy tick'");
+        }
+        if !strategy_set { strategy = "interval".to_string(); }
+    }
+
     let program_text = std::fs::read_to_string(&program_path)
         .unwrap_or_else(|e| fail(&format!("cannot read {}: {}", program_path, e)));
     let data_text = std::fs::read_to_string(&data_path)
         .unwrap_or_else(|e| fail(&format!("cannot read {}: {}", data_path, e)));
 
     let dict = Arc::new(RwLock::new(Dictionary::new()));
-    let rules = parse_program(&program_text, &dict).unwrap_or_else(|e| fail(&e));
+    let rules = parse_program(&program_text, &dict, mode).unwrap_or_else(|e| fail(&e));
     let facts = parse_data(&data_text, &dict).unwrap_or_else(|e| fail(&e));
 
     let w_max = compute_w_max(&rules);
@@ -331,8 +349,11 @@ fn collect_body_preds(atom: &TemporalAtom, rdf_type: u32, out: &mut Vec<u32>) {
         TemporalAtom::Base(p) => { if let Some(id) = atom_pred_id(p, rdf_type) { out.push(id); } }
         TemporalAtom::Diamond { inner, .. }
         | TemporalAtom::Box_ { inner, .. }
-        | TemporalAtom::Prev { inner, .. } => collect_body_preds(inner, rdf_type, out),
-        TemporalAtom::Since { phi, psi, .. } => {
+        | TemporalAtom::Prev { inner, .. }
+        | TemporalAtom::DiamondPlus { inner, .. }
+        | TemporalAtom::BoxPlus { inner, .. } => collect_body_preds(inner, rdf_type, out),
+        TemporalAtom::Since { phi, psi, .. }
+        | TemporalAtom::Until { phi, psi, .. } => {
             collect_body_preds(phi, rdf_type, out);
             collect_body_preds(psi, rdf_type, out);
         }

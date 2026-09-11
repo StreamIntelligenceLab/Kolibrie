@@ -11,11 +11,16 @@
 use std::sync::{Arc, RwLock};
 use shared::dictionary::Dictionary;
 use shared::terms::Term;
-use crate::parser::{parse_data, parse_program, RDF_TYPE};
-use crate::syntax::{Interval, TemporalAtom};
+use crate::parser::{parse_data, parse_program as parse_program_raw, RDF_TYPE};
+use crate::syntax::{DatalogMTLRule, Interval, Mode, TemporalAtom};
 
 fn dict() -> Arc<RwLock<Dictionary>> {
     Arc::new(RwLock::new(Dictionary::new()))
+}
+
+/// Parse in streaming mode (past-only) — the default for these tests.
+fn parse_program(text: &str, d: &Arc<RwLock<Dictionary>>) -> Result<Vec<DatalogMTLRule>, String> {
+    parse_program_raw(text, d, Mode::Streaming)
 }
 
 fn id(d: &Arc<RwLock<Dictionary>>, s: &str) -> u32 {
@@ -119,9 +124,37 @@ fn test_fragment_rejections() {
     let d = dict();
     assert!(parse_program("P:-Q", &d).is_err(), "arity-0 should be rejected");
     assert!(parse_program("R(X,Y,Z):-S(X,Y,Z)", &d).is_err(), "arity-3 should be rejected");
-    assert!(parse_program("B(X):-Boxplus[1,2]A(X)", &d).is_err(), "future op should be rejected");
-    assert!(parse_program("B(X):-A(X)Until[1,2]C(X)", &d).is_err(), "Until should be rejected");
+    assert!(parse_program("B(X):-Boxplus[1,2]A(X)", &d).is_err(), "future op rejected in streaming");
+    assert!(parse_program("B(X):-A(X)Until[1,2]C(X)", &d).is_err(), "Until rejected in streaming");
     assert!(parse_program("B(X):-Boxminus(1,2]A(X)", &d).is_err(), "open interval should be rejected");
     assert!(parse_program("Boxminus[1,2]B(X):-A(X)", &d).is_err(), "head operator should be rejected");
     assert!(parse_data("A(a)@1.5", &d).is_err(), "non-integer time should be rejected");
+}
+
+/// Future operators parse only in Static mode, into the right variants.
+#[test]
+fn test_future_operators_static() {
+    let d = dict();
+    // Streaming rejects; static accepts.
+    assert!(parse_program_raw("B(X):-Boxplus[1,2]A(X)", &d, Mode::Streaming).is_err());
+    assert!(parse_program_raw("B(X):-Boxplus[1,2]A(X)", &d, Mode::Static).is_ok());
+
+    let rules = parse_program_raw("B(X):-Diamondplus[0,3]A(X)", &d, Mode::Static).unwrap();
+    match &rules[0].body[0] {
+        TemporalAtom::DiamondPlus { interval, inner } => {
+            assert_eq!(*interval, Interval { start: 0, end: 3 });
+            assert!(matches!(inner.as_ref(), TemporalAtom::Base(_)));
+        }
+        other => panic!("expected DiamondPlus, got {:?}", other),
+    }
+
+    let rules = parse_program_raw("C(X):-A(X)Until[1,5]B(X)", &d, Mode::Static).unwrap();
+    match &rules[0].body[0] {
+        TemporalAtom::Until { interval, phi, psi } => {
+            assert_eq!(*interval, Interval { start: 1, end: 5 });
+            assert!(matches!(phi.as_ref(), TemporalAtom::Base(_)));
+            assert!(matches!(psi.as_ref(), TemporalAtom::Base(_)));
+        }
+        other => panic!("expected Until, got {:?}", other),
+    }
 }

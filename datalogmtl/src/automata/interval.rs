@@ -46,6 +46,11 @@ impl TInterval {
         TInterval { start, end: POS_INF, start_open, end_open: true }
     }
 
+    /// The unbounded-past interval `(-∞, end]`.
+    pub fn from_neg_inf(end: i64, end_open: bool) -> Self {
+        TInterval { start: NEG_INF, end, start_open: true, end_open }
+    }
+
     pub fn is_finite(&self) -> bool {
         !is_inf(self.start) && !is_inf(self.end)
     }

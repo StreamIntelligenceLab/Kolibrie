@@ -1,0 +1,3 @@
+R(X):-Seed(X)
+R(X):-Diamondminus[2,2]R(X)
+R(X):-Diamondplus[2,2]R(X)

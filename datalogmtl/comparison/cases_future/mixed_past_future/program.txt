@@ -1,0 +1,1 @@
+B(X):-Boxminus[0,2]A(X),Diamondplus[0,3]C(X)

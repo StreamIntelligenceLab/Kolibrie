@@ -56,6 +56,11 @@ fn collect_safe_vars(atom: &TemporalAtom, safe: &mut HashSet<String>) {
         // Box: variables in the inner pattern are safe because the evaluator
         // collects consistent bindings that hold at every timestamp.
         TemporalAtom::Box_ { inner, .. } => collect_safe_vars(inner, safe),
+        // Future operators mirror their past duals: Diamond/Box inner vars are
+        // safe; Until's psi (existential trigger) is safe like Since's.
+        TemporalAtom::DiamondPlus { inner, .. } => collect_safe_vars(inner, safe),
+        TemporalAtom::BoxPlus     { inner, .. } => collect_safe_vars(inner, safe),
+        TemporalAtom::Until       { psi, .. }   => collect_safe_vars(psi, safe),
     }
 }
 
@@ -69,9 +74,11 @@ fn validate_intervals(rule: &DatalogMTLRule) -> Result<(), String> {
 fn validate_atom_interval(atom: &TemporalAtom, rule_id: &str) -> Result<(), String> {
     match atom {
         TemporalAtom::Base(_) => Ok(()),
-        TemporalAtom::Diamond { interval, inner }
-        | TemporalAtom::Box_  { interval, inner }
-        | TemporalAtom::Prev  { interval, inner } => {
+        TemporalAtom::Diamond     { interval, inner }
+        | TemporalAtom::Box_      { interval, inner }
+        | TemporalAtom::Prev      { interval, inner }
+        | TemporalAtom::DiamondPlus { interval, inner }
+        | TemporalAtom::BoxPlus   { interval, inner } => {
             if interval.start > interval.end {
                 return Err(format!(
                     "Rule '{}': interval [{}, {}] has start > end",
@@ -80,10 +87,11 @@ fn validate_atom_interval(atom: &TemporalAtom, rule_id: &str) -> Result<(), Stri
             }
             validate_atom_interval(inner, rule_id)
         }
-        TemporalAtom::Since { interval, phi, psi } => {
+        TemporalAtom::Since { interval, phi, psi }
+        | TemporalAtom::Until { interval, phi, psi } => {
             if interval.start > interval.end {
                 return Err(format!(
-                    "Rule '{}': Since interval [{}, {}] has start > end",
+                    "Rule '{}': binary-operator interval [{}, {}] has start > end",
                     rule_id, interval.start, interval.end
                 ));
             }

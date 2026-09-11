@@ -39,7 +39,7 @@ def run_rust(program, data, queries):
     env = dict(os.environ, DYLD_LIBRARY_PATH=DYLD)
     out = subprocess.run(
         [rust_binary(), "--program", program, "--data", data,
-         "--strategy", "omega", "--entail", queries],
+         "--strategy", "omega", "--mode", "static", "--entail", queries],
         env=env, cwd=REPO_ROOT, capture_output=True, text=True,
     )
     if out.returncode != 0:

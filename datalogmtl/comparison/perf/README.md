@@ -108,6 +108,28 @@ seconds, and **~25× (past) / ~50× (deep) faster than MeTeoR**.
   so 10× the raw intervals barely moves interval time (37→60 ms) while facts grow 10×.
 - **Near-flat in horizon** (55→74 ms over 100× horizon) — event-complexity confirmed.
 
+## Future operators (`--program future`, static mode)
+
+`programs/lubm_future.txt` (4 rules) mirrors `lubm_past` but with **future**
+operators (`Diamondplus`/`Boxplus`) over a derived chain + a binary join. These
+require static data, so `perf.py --program future` runs `--mode static` on the
+interval engine. Parity vs MeTeoR is **OK** (unary future ops over derived are
+seminaive-correct). Same profile as the past ops:
+
+| scale | facts   | meteor_ms | interval_ms | interval/mtr |
+|------:|--------:|----------:|------------:|-------------:|
+|   500 |   4,500 |     104   |      4.5    |    0.043     |
+| 2,000 |  18,000 |     421   |     17.0    |    0.040     |
+| 5,000 |  45,000 |   1,086   |     40.4    |    0.037     |
+|50,000 | 450,000 |     —     |    601.2    |      —       |
+
+- **Linear** to 450k facts (0.6 s); **~25× faster** than MeTeoR.
+- **Density-flat** (1→10 intervals/atom: 13.8→16.5 ms) and **horizon-flat**
+  (H 20→2000: 16.7→17.7 ms) — same event-complexity as the past fragment.
+
+Correctness: `comparison/cases_future/` — 5 cases (diamondplus, boxplus, until,
+mixed past+future, stacked future) all parity-checked vs MeTeoR.
+
 ## Interval-native "automata" strategy — `--strategy interval` (recommended)
 
 A second evaluation strategy (`datalogmtl/src/automata/`) replaces the per-tick loop
