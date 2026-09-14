@@ -90,6 +90,8 @@ struct DroneView {
     link: String,
     current_zone: Option<String>,
     off_plan: bool,
+    /// Consecutive ticks in `current_zone` (or in open air when that is null).
+    dwell_ticks: u64,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -140,6 +142,11 @@ struct DroneRuntime {
     automated: bool,
     last_telemetry_ms: u64,
     previous_zones: HashSet<&'static str>,
+    /// Zone the dwell counter is running for, and how many consecutive ticks it
+    /// has been there. Counted in TICKS, not wall-clock ms, so it is exactly the
+    /// number a `Box[0,n]` window is waiting for.
+    dwell_zone: Option<&'static str>,
+    dwell_ticks: u64,
 }
 
 #[derive(Debug)]
@@ -271,6 +278,8 @@ impl DemoState {
                 automated: true,
                 last_telemetry_ms: 0,
                 previous_zones: HashSet::new(),
+                dwell_zone: None,
+                dwell_ticks: 0,
             },
             drone_b: DroneRuntime {
                 id: "droneB",
@@ -280,6 +289,8 @@ impl DemoState {
                 automated: false,
                 last_telemetry_ms: 0,
                 previous_zones: HashSet::new(),
+                dwell_zone: None,
+                dwell_ticks: 0,
             },
         }
     }
@@ -775,6 +786,10 @@ fn build_tick(
     state.drone_a.previous_zones = drone_a.previous_zones;
     state.drone_b.previous_zones = drone_b.previous_zones;
 
+    // One dwell step per tick, after positions are settled.
+    tick_dwell(&mut state.drone_a, &zones);
+    tick_dwell(&mut state.drone_b, &zones);
+
     let stream_facts = triples.len();
     let (derived, metrics) = evaluator.advance(t, triples);
     let derived_lines = decode_triples(&derived, dictionary);
@@ -881,11 +896,31 @@ fn telemetry_for_drone(
     (facts, lines)
 }
 
-fn drone_view(drone: &DroneRuntime, link: &str, zones: &[Zone]) -> DroneView {
-    let current_zone = zones
+/// The zone containing this position, if any. `drone_view` and the dwell counter
+/// must agree on "current zone", so both go through here.
+fn zone_at(position: LatLng, zones: &[Zone]) -> Option<&Zone> {
+    zones
         .iter()
-        .find(|zone| haversine_m(drone.position, zone.center) <= zone.radius_m)
-        .map(|zone| zone.label.to_string());
+        .find(|zone| haversine_m(position, zone.center) <= zone.radius_m)
+}
+
+/// Advance the drone's dwell counter by one tick.
+///
+/// Counts consecutive ticks in the same zone (or consecutively in open air), and
+/// resets the moment that changes — so it reads as exactly the number a
+/// `Box[0,n]` window is still waiting for.
+fn tick_dwell(drone: &mut DroneRuntime, zones: &[Zone]) {
+    let here = zone_at(drone.position, zones).map(|z| z.id);
+    if here == drone.dwell_zone {
+        drone.dwell_ticks = drone.dwell_ticks.saturating_add(1);
+    } else {
+        drone.dwell_zone = here;
+        drone.dwell_ticks = 1;
+    }
+}
+
+fn drone_view(drone: &DroneRuntime, link: &str, zones: &[Zone]) -> DroneView {
+    let current_zone = zone_at(drone.position, zones).map(|z| z.label.to_string());
     let off_plan = current_zone.is_some();
     DroneView {
         id: drone.id.to_string(),
@@ -896,6 +931,7 @@ fn drone_view(drone: &DroneRuntime, link: &str, zones: &[Zone]) -> DroneView {
         link: link.to_string(),
         current_zone,
         off_plan,
+        dwell_ticks: drone.dwell_ticks,
     }
 }
 

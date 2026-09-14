@@ -45,10 +45,17 @@
   .leaflet-marker-pane{z-index:600}
   .leaflet-tooltip-pane{z-index:650}
   .leaflet-popup-pane{z-index:700}
-  .topbar{position:absolute;z-index:500;top:14px;left:14px;display:flex;gap:8px;align-items:center;flex-wrap:wrap}
+  /* Starts clear of Leaflet's zoom control (left:10px + 30px wide), which
+     otherwise sits on top of the clock chip. */
+  .topbar{position:absolute;z-index:500;top:14px;left:56px;display:flex;gap:8px;align-items:center;flex-wrap:wrap}
   .chip,.button{border:1px solid #c7d2df;background:#fff;border-radius:8px;padding:8px 10px;font-size:12px;font-weight:700;box-shadow:0 2px 8px rgba(15,23,42,.12)}
   .button{cursor:pointer;color:#17212f}
   .button.paused{border-color:#b91c1c;color:#b91c1c;background:#fff7f7}
+  /* Dwell counter: ticks the drone has been in its current zone. Turns teal
+     once a stay is long enough to satisfy the 5- and 10-tick rule windows. */
+  .chip.dwell{font-variant-numeric:tabular-nums;min-width:150px;text-align:center}
+  .chip.dwell.in-zone{border-color:#0f766e;color:#0f766e;background:#f0fdfa}
+  .chip.dwell.ready{border-color:#0f766e;color:#fff;background:#0f766e}
   .panel{border-bottom:1px solid #dce3eb;padding:14px 16px}
   .panel h1{font-size:18px;line-height:1.2;margin:0 0 4px}
   .panel h2{font-size:12px;letter-spacing:.06em;text-transform:uppercase;margin:0 0 10px;color:#607086}
@@ -99,6 +106,7 @@
     <div class="topbar">
       <div class="chip" id="clock">T=0s</div>
       <button class="button" id="link-toggle" type="button">Pause Drone B Link</button>
+      <div class="chip dwell" id="dwell-b">B: open air 0s</div>
     </div>
     <div id="map"></div>
   </section>
@@ -270,8 +278,30 @@
         '<div class="status-row">' +
         '<span class="key">Flight plan</span>' +
         '<span class="val">' + (drone.off_plan ? 'off course' : 'nominal') + '</span>' +
+        '</div>' +
+        '<div class="status-row">' +
+        '<span class="key">Held for</span>' +
+        '<span class="val">' + (drone.dwell_ticks || 0) + 's</span>' +
         '</div>';
     }).join('');
+    renderDwell(drones);
+  }
+
+  // Ticks drone B has held its current zone. This is the number the rule
+  // windows count, so it is read straight off the tick rather than timed in the
+  // browser: 6 satisfies a Box[0,5] leg, 11 a Box[0,10] / Box[1,11] one.
+  function renderDwell(drones) {
+    const b = drones.filter(function(d) { return d.id === 'droneB'; })[0];
+    const el = document.getElementById('dwell-b');
+    if (!b || !el) return;
+    const secs = b.dwell_ticks || 0;
+    const where = b.current_zone || 'open air';
+    el.textContent = 'B: ' + where + ' ' + secs + 's';
+    el.classList.toggle('in-zone', !!b.current_zone);
+    el.classList.toggle('ready', !!b.current_zone && secs >= 6);
+    el.title = b.current_zone
+      ? 'Held ' + secs + ' tick(s) — 6 satisfies a 5 s leg, 11 a 10 s leg.'
+      : 'Not inside any zone; the dwell counter restarts on entry.';
   }
 
   function renderAlerts(alerts) {
