@@ -13,7 +13,7 @@ use std::error::Error;
 
 use ml::{MlpNeuralPredicate, OutputType};
 use shared::query::{
-    GroupGraphPattern, MLPredictClause, ModelArch, ModelDecl, NeuralOutputKind, NeuralRelationDecl,
+    MLPredictClause, ModelArch, ModelDecl, NeuralOutputKind, NeuralRelationDecl,
     TrainNeuralRelationDecl, TrainingDataSource,
 };
 use shared::triple::Triple;
@@ -23,7 +23,7 @@ use crate::execute_ml_train::{
     OwnedNeuralChoice, OwnedNeuralGroupType, OwnedNeuralTrainingClause,
 };
 use crate::ml_feature_loader::{build_feature_vec, query_training_rows};
-use crate::parser::{parse_combined_query, parse_sparql_query};
+use crate::parser::parse_combined_query;
 use crate::sparql_database::SparqlDatabase;
 
 type NeuralResult<T> = Result<T, Box<dyn Error>>;
@@ -67,6 +67,50 @@ pub fn register_neural_declarations(
     neural_relation_decls: &[NeuralRelationDecl],
     train_neural_relation_decls: &[TrainNeuralRelationDecl],
 ) {
+    if register_neural_declarations_checked(
+        database,
+        prefixes,
+        model_decls,
+        neural_relation_decls,
+        train_neural_relation_decls,
+    )
+    .is_err()
+    {
+        eprintln!("ML_REGISTRATION_REJECTED");
+    }
+}
+
+pub fn register_neural_declarations_checked(
+    database: &mut SparqlDatabase,
+    prefixes: &HashMap<String, String>,
+    model_decls: &[ModelDecl],
+    neural_relation_decls: &[NeuralRelationDecl],
+    train_neural_relation_decls: &[TrainNeuralRelationDecl],
+) -> Result<(), String> {
+    if !model_decls.is_empty()
+        || !neural_relation_decls.is_empty()
+        || !train_neural_relation_decls.is_empty()
+    {
+        database
+            .ml_context
+            .require_local()
+            .map_err(|e| e.to_string())?;
+    }
+    for name in model_decls
+        .iter()
+        .map(|d| d.name.as_str())
+        .chain(neural_relation_decls.iter().map(|d| d.model_name.as_str()))
+    {
+        crate::ml_policy::validate_model_name(name).map_err(|e| e.to_string())?;
+    }
+    for train in train_neural_relation_decls {
+        if let Some(path) = &train.save_path {
+            database
+                .ml_context
+                .local_artifact(path)
+                .map_err(|e| e.to_string())?;
+        }
+    }
     for decl in model_decls {
         database.model_decls.insert(decl.name.clone(), decl.clone());
     }
@@ -108,6 +152,7 @@ pub fn register_neural_declarations(
             .train_neural_relation_decls
             .insert(normalized.predicate.clone(), normalized);
     }
+    Ok(())
 }
 
 fn push_unique(vars: &mut Vec<String>, value: String) {
@@ -251,6 +296,7 @@ pub fn execute_train_decl(
     database: &mut SparqlDatabase,
     train_decl: &TrainNeuralRelationDecl,
 ) -> NeuralResult<()> {
+    database.ml_context.require_local()?;
     let owned_clause = lower_train_decl_to_owned(database, train_decl)?;
     let base_reasoner = build_ground_reasoner_from_db(database, None);
     execute_ml_training_owned(&owned_clause, &base_reasoner, database)?;
@@ -329,6 +375,8 @@ pub fn execute_top_level_ml_predict(
     ml_predict: &MLPredictClause<'_>,
     prefixes: &HashMap<String, String>,
 ) -> NeuralResult<()> {
+    database.ml_context.require_local()?;
+    crate::ml_policy::validate_model_name(ml_predict.model)?;
     let relation = resolve_unique_relation_for_model(database, ml_predict.model)?;
     let rows = run_ml_predict_input_query(database, ml_predict.input_raw, prefixes)?;
 
@@ -373,6 +421,7 @@ pub fn execute_top_level_ml_predict(
 }
 
 pub fn execute_neural_program(database: &mut SparqlDatabase, program: &str) -> Result<(), String> {
+    crate::execute_query::validate_query_policy(program, database)?;
     database.register_prefixes_from_query(program);
 
     let (_rest, combined) =
@@ -448,6 +497,7 @@ pub fn materialize_neural_relation(
     database: &mut SparqlDatabase,
     predicate: &str,
 ) -> NeuralResult<()> {
+    database.ml_context.require_local()?;
     let (relation, model_decl) = resolve_model_components(database, predicate)?;
     let artifact_path = database
         .neural_model_artifacts
@@ -481,7 +531,11 @@ pub fn materialize_neural_relation(
         relation.feature_vars.len(),
         model_hidden_layers(&model_decl),
         model_output_type(&model_decl),
-        &artifact_path,
+        database
+            .ml_context
+            .local_artifact(&artifact_path)?
+            .to_str()
+            .ok_or("invalid artifact path")?,
     )?;
     let (_tracked, probs) = model.forward_with_grads(&features)?;
 
@@ -550,89 +604,16 @@ pub fn materialize_neural_relations_for_patterns(
     Ok(())
 }
 
-pub fn lower_ml_predict_alias(
-    ml_predict: &MLPredictClause<'_>,
-) -> Result<NeuralRelationDecl, String> {
-    let (_, parsed) = parse_sparql_query(ml_predict.input_raw)
-        .map_err(|err| format!("failed to lower ML.PREDICT INPUT query: {err:?}"))?;
-    let input_select = &parsed.variables;
-    let mut input_where = Vec::new();
-    collect_neural_input_patterns(&parsed.pattern, &mut input_where);
-    let anchor_var = input_select
-        .iter()
-        .find_map(|(kind, var, _)| {
-            if *kind == "VAR" || var.starts_with('?') {
-                Some((*var).to_string())
-            } else {
-                None
-            }
-        })
-        .or_else(|| {
-            input_where.iter().find_map(|(s, p, o)| {
-                [s, p, o]
-                    .into_iter()
-                    .find(|term| term.starts_with('?'))
-                    .map(|term| (*term).to_string())
-            })
-        })
-        .ok_or_else(|| {
-            "ML.PREDICT alias lowering requires at least one input variable".to_string()
-        })?;
-    let feature_vars = if input_select.is_empty() {
-        input_where
-            .iter()
-            .flat_map(|(s, p, o)| [s, p, o])
-            .filter(|term| term.starts_with('?'))
-            .map(|term| (*term).to_string())
-            .collect::<Vec<_>>()
-    } else {
-        input_select
-            .iter()
-            .map(|(_, var, _)| (*var).to_string())
-            .collect::<Vec<_>>()
-    };
-    Ok(NeuralRelationDecl {
-        predicate: ml_predict.output.to_string(),
-        model_name: ml_predict.model.to_string(),
-        input_patterns: input_where
-            .iter()
-            .map(|triple| {
-                (
-                    triple.0.to_string(),
-                    triple.1.to_string(),
-                    triple.2.to_string(),
-                )
-            })
-            .collect(),
-        feature_vars,
-        anchor_var,
-    })
-}
-
-fn collect_neural_input_patterns<'a>(
-    pattern: &'a GroupGraphPattern<'a>,
-    output: &mut Vec<(&'a str, &'a str, &'a str)>,
-) {
-    match pattern {
-        GroupGraphPattern::Bgp(patterns) => output.extend(patterns.iter().copied()),
-        GroupGraphPattern::Join(patterns) | GroupGraphPattern::Union(patterns) => {
-            for pattern in patterns {
-                collect_neural_input_patterns(pattern, output);
-            }
-        }
-        GroupGraphPattern::Graph { pattern, .. } => collect_neural_input_patterns(pattern, output),
-        GroupGraphPattern::SubQuery(subquery) => {
-            collect_neural_input_patterns(&subquery.query.pattern, output)
-        }
-        GroupGraphPattern::Unit
-        | GroupGraphPattern::Filter(_)
-        | GroupGraphPattern::Bind(_)
-        | GroupGraphPattern::Values(_) => {}
-    }
-}
+pub use crate::ml_syntax::lower_ml_predict_alias;
 
 #[cfg(test)]
 mod tests {
+    mod ml_local {
+        include!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/tests/common/ml_local.rs"
+        ));
+    }
     use super::*;
     use crate::execute_query::execute_query_rayon_parallel2_volcano;
     use crate::parser::process_rule_definition;
@@ -669,7 +650,7 @@ mod tests {
 
     #[test]
     fn relation_driven_training_query_is_built_from_input_and_data() {
-        let mut db = SparqlDatabase::new();
+        let mut db = ml_local::database();
         db.prefixes
             .insert("ex".to_string(), "http://example.org/".to_string());
         let prefixes = db.prefixes.clone();
@@ -725,7 +706,7 @@ mod tests {
                 learning_rate: 0.01,
                 epochs: 5,
                 batch_size: 2,
-                save_path: Some("/tmp/kolibrie_first_class_relation_query.bin".to_string()),
+                save_path: Some("kolibrie_first_class_relation_query.bin".to_string()),
             },
         )
         .unwrap();
@@ -737,7 +718,7 @@ mod tests {
 
     #[test]
     fn first_class_neural_relation_executes_in_query_where_clause() {
-        let mut db = SparqlDatabase::new();
+        let mut db = ml_local::database();
         populate_multiclass_db(&mut db);
 
         let query = r#"
@@ -768,7 +749,7 @@ TRAIN NEURAL RELATION ex:predictedDigit {
     LEARNING_RATE 0.1
     EPOCHS 80
     BATCH_SIZE 4
-    SAVE_TO "/tmp/kolibrie_first_class_digit.bin"
+    SAVE_TO "kolibrie_first_class_digit.bin"
 }
 
 SELECT ?sample
@@ -783,7 +764,7 @@ WHERE {
 
     #[test]
     fn query_fallback_training_executes_and_materializes_relation() {
-        let mut db = SparqlDatabase::new();
+        let mut db = ml_local::database();
         populate_multiclass_db(&mut db);
         db.prefixes
             .insert("ex".to_string(), "http://example.org/".to_string());
@@ -844,7 +825,7 @@ WHERE {
             learning_rate: 0.1,
             epochs: 80,
             batch_size: 4,
-            save_path: Some("/tmp/kolibrie_first_class_query_fallback.bin".to_string()),
+            save_path: Some("kolibrie_first_class_query_fallback.bin".to_string()),
         };
 
         execute_train_decl(&mut db, &train_decl).unwrap();
@@ -860,14 +841,15 @@ WHERE {
 
     #[test]
     fn first_class_binary_neural_relation_executes_in_rule_where_clause() {
-        let mut db = SparqlDatabase::new();
+        let mut db = ml_local::database();
         populate_binary_db(&mut db);
 
+        // Use a linear model to avoid random convergence failures
         let rule = r#"
 PREFIX ex: <http://example.org/>
 
 MODEL "fraud_model" {
-    ARCH MLP { HIDDEN [8, 4] }
+    ARCH MLP { HIDDEN [] }
     OUTPUT BINARY { true }
 }
 
@@ -890,7 +872,7 @@ TRAIN NEURAL RELATION ex:isFraud {
     LEARNING_RATE 0.1
     EPOCHS 80
     BATCH_SIZE 2
-    SAVE_TO "/tmp/kolibrie_first_class_binary.bin"
+    SAVE_TO "kolibrie_first_class_binary.bin"
 }
 
 RULE :FlagFraud :-

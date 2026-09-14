@@ -205,7 +205,7 @@ fn neurosymbolic_demo(model: &MlpNeuralPredicate, test_images: &[Vec<f64>], test
         let sample_uri = format!("{}test_{}", NS, demo_idx);
         let pred_uri = format!("{}predicted", NS);
 
-        let mini_db = SparqlDatabase::new();
+        let mini_db = SparqlDatabase::with_ml_context(local_ml::trusted_context());
         let sample_enc = mini_db.encode_term_star(&sample_uri);
         let pred_enc = mini_db.encode_term_star(&pred_uri);
 
@@ -305,7 +305,7 @@ fn main() {
         TRAIN_COUNT * (PIXELS + 1)
     );
     let t1 = Instant::now();
-    let mut db = SparqlDatabase::new();
+    let mut db = SparqlDatabase::with_ml_context(local_ml::trusted_context());
     populate_rdf_store(&mut db, &train_images, &train_labels);
     println!("    Done ({:.1}s)", t1.elapsed().as_secs_f64());
 
@@ -370,3 +370,5 @@ fn main() {
     println!("Model saved to mnist_digit_model.bin");
     println!("The current example saves weights, but automatic resume/loading is still a later step.");
 }
+
+mod local_ml { include!(concat!(env!("CARGO_MANIFEST_DIR"), "/examples/support/ml_context.rs")); }

@@ -130,7 +130,10 @@ impl MlpNeuralPredicate {
             return Ok((tensor, Vec::new()));
         }
 
-        let input_dim = layers.first().map(|layer| layer.weights[0].len()).unwrap_or(0);
+        let input_dim = layers
+            .first()
+            .map(|layer| layer.weights[0].len())
+            .unwrap_or(0);
         for row in rows {
             if row.len() != input_dim {
                 return Err(format!(
@@ -161,8 +164,15 @@ impl MlpNeuralPredicate {
         }
         cache.outputs = activations.clone();
 
-        let flat: Vec<f32> = activations.iter().flat_map(|row| row.iter().map(|v| *v as f32)).collect();
-        let tensor = Tensor::from_vec(flat, (activations.len(), output_dim(self.output_type)), &Device::Cpu)?;
+        let flat: Vec<f32> = activations
+            .iter()
+            .flat_map(|row| row.iter().map(|v| *v as f32))
+            .collect();
+        let tensor = Tensor::from_vec(
+            flat,
+            (activations.len(), output_dim(self.output_type)),
+            &Device::Cpu,
+        )?;
         drop(layers);
         self.forward_queue.borrow_mut().push_back(cache);
         Ok((tensor, activations))
@@ -225,7 +235,8 @@ impl MlpNeuralPredicate {
                 for out_idx in 0..delta.len() {
                     grad_state.bias_grads[layer_idx][out_idx] += delta[out_idx];
                     for in_idx in 0..inputs.len() {
-                        grad_state.weight_grads[layer_idx][out_idx][in_idx] += delta[out_idx] * inputs[in_idx];
+                        grad_state.weight_grads[layer_idx][out_idx][in_idx] +=
+                            delta[out_idx] * inputs[in_idx];
                     }
                 }
 
@@ -233,7 +244,8 @@ impl MlpNeuralPredicate {
                     let mut prev_delta = vec![0.0; layers[layer_idx].weights[0].len()];
                     for out_idx in 0..layers[layer_idx].weights.len() {
                         for in_idx in 0..layers[layer_idx].weights[out_idx].len() {
-                            prev_delta[in_idx] += layers[layer_idx].weights[out_idx][in_idx] * delta[out_idx];
+                            prev_delta[in_idx] +=
+                                layers[layer_idx].weights[out_idx][in_idx] * delta[out_idx];
                         }
                     }
                     let prev_pre = &cache.pre_activations[layer_idx - 1][sample_idx];
@@ -270,10 +282,12 @@ impl MlpNeuralPredicate {
             OptimizerKind::Sgd => {
                 for (layer_idx, layer) in layers.iter_mut().enumerate() {
                     for out_idx in 0..layer.weights.len() {
-                        layer.bias[out_idx] -= learning_rate * grads.bias_grads[layer_idx][out_idx] / denom;
+                        layer.bias[out_idx] -=
+                            learning_rate * grads.bias_grads[layer_idx][out_idx] / denom;
                         for in_idx in 0..layer.weights[out_idx].len() {
-                            layer.weights[out_idx][in_idx] -=
-                                learning_rate * grads.weight_grads[layer_idx][out_idx][in_idx] / denom;
+                            layer.weights[out_idx][in_idx] -= learning_rate
+                                * grads.weight_grads[layer_idx][out_idx][in_idx]
+                                / denom;
                         }
                     }
                 }
@@ -290,21 +304,26 @@ impl MlpNeuralPredicate {
                         let grad_b = grads.bias_grads[layer_idx][out_idx] / denom;
                         adam.bias_m[layer_idx][out_idx] =
                             beta1 * adam.bias_m[layer_idx][out_idx] + (1.0 - beta1) * grad_b;
-                        adam.bias_v[layer_idx][out_idx] =
-                            beta2 * adam.bias_v[layer_idx][out_idx] + (1.0 - beta2) * grad_b * grad_b;
+                        adam.bias_v[layer_idx][out_idx] = beta2 * adam.bias_v[layer_idx][out_idx]
+                            + (1.0 - beta2) * grad_b * grad_b;
                         let m_hat_b = adam.bias_m[layer_idx][out_idx] / (1.0 - beta1.powf(t));
                         let v_hat_b = adam.bias_v[layer_idx][out_idx] / (1.0 - beta2.powf(t));
                         layer.bias[out_idx] -= learning_rate * m_hat_b / (v_hat_b.sqrt() + eps);
 
                         for in_idx in 0..layer.weights[out_idx].len() {
                             let grad_w = grads.weight_grads[layer_idx][out_idx][in_idx] / denom;
-                            adam.weight_m[layer_idx][out_idx][in_idx] =
-                                beta1 * adam.weight_m[layer_idx][out_idx][in_idx] + (1.0 - beta1) * grad_w;
-                            adam.weight_v[layer_idx][out_idx][in_idx] =
-                                beta2 * adam.weight_v[layer_idx][out_idx][in_idx] + (1.0 - beta2) * grad_w * grad_w;
-                            let m_hat = adam.weight_m[layer_idx][out_idx][in_idx] / (1.0 - beta1.powf(t));
-                            let v_hat = adam.weight_v[layer_idx][out_idx][in_idx] / (1.0 - beta2.powf(t));
-                            layer.weights[out_idx][in_idx] -= learning_rate * m_hat / (v_hat.sqrt() + eps);
+                            adam.weight_m[layer_idx][out_idx][in_idx] = beta1
+                                * adam.weight_m[layer_idx][out_idx][in_idx]
+                                + (1.0 - beta1) * grad_w;
+                            adam.weight_v[layer_idx][out_idx][in_idx] = beta2
+                                * adam.weight_v[layer_idx][out_idx][in_idx]
+                                + (1.0 - beta2) * grad_w * grad_w;
+                            let m_hat =
+                                adam.weight_m[layer_idx][out_idx][in_idx] / (1.0 - beta1.powf(t));
+                            let v_hat =
+                                adam.weight_v[layer_idx][out_idx][in_idx] / (1.0 - beta2.powf(t));
+                            layer.weights[out_idx][in_idx] -=
+                                learning_rate * m_hat / (v_hat.sqrt() + eps);
                         }
                     }
                 }
@@ -312,20 +331,24 @@ impl MlpNeuralPredicate {
         }
     }
 
+    /// Save through the trusted-local host API
     pub fn save(&self, path: &str) -> MlResult<()> {
+        let path = portable_model_path(path);
+        if let Some(parent) = path.parent().filter(|p| !p.as_os_str().is_empty()) {
+            fs::create_dir_all(parent)?;
+        }
+        fs::write(path, self.to_bytes()?)?;
+        Ok(())
+    }
+
+    /// Serialize without filesystem side effects
+    pub fn to_bytes(&self) -> MlResult<Vec<u8>> {
         let payload = SavedModel {
             layers: self.layers.borrow().clone(),
             hidden_act: self.hidden_act,
             output_type: self.output_type,
         };
-        let path = portable_model_path(path);
-        if let Some(parent) = path.parent() {
-            if !parent.as_os_str().is_empty() {
-                fs::create_dir_all(parent)?;
-            }
-        }
-        fs::write(path, serde_json::to_vec_pretty(&payload)?)?;
-        Ok(())
+        Ok(serde_json::to_vec_pretty(&payload)?)
     }
 
     pub fn load(
@@ -335,7 +358,38 @@ impl MlpNeuralPredicate {
         path: &str,
     ) -> MlResult<Self> {
         let path = portable_model_path(path);
-        let payload: SavedModel = serde_json::from_slice(&fs::read(path)?)?;
+        Self::from_bytes(input_dim, hidden, output_type, &fs::read(path)?)
+    }
+
+    /// Load caller-verified bytes
+    pub fn from_bytes(
+        input_dim: usize,
+        hidden: &[usize],
+        output_type: OutputType,
+        bytes: &[u8],
+    ) -> MlResult<Self> {
+        let payload: SavedModel = serde_json::from_slice(bytes)?;
+        let mut dims = vec![input_dim];
+        dims.extend_from_slice(hidden);
+        dims.push(match output_type {
+            OutputType::Binary => 1,
+            OutputType::Categorical(n) => n,
+        });
+        if dims.contains(&0) || payload.layers.len() != dims.len() - 1 {
+            return Err("invalid model dimensions".into());
+        }
+        for (layer, dim) in payload.layers.iter().zip(dims.windows(2)) {
+            if layer.bias.len() != dim[1]
+                || layer.weights.len() != dim[1]
+                || layer
+                    .weights
+                    .iter()
+                    .any(|r| r.len() != dim[0] || r.iter().any(|x| !x.is_finite()))
+                || layer.bias.iter().any(|x| !x.is_finite())
+            {
+                return Err("invalid model weights".into());
+            }
+        }
         let mut model = Self::new(input_dim, hidden, output_type)?;
         if payload.output_type != output_type {
             return Err("saved model output type does not match requested output type".into());
@@ -415,16 +469,28 @@ fn softmax(values: &[f64]) -> Vec<f64> {
     let max = values.iter().copied().fold(f64::NEG_INFINITY, f64::max);
     let exp_values: Vec<f64> = values.iter().map(|value| (value - max).exp()).collect();
     let sum: f64 = exp_values.iter().sum();
-    exp_values.into_iter().map(|value| value / sum.max(1e-15)).collect()
+    exp_values
+        .into_iter()
+        .map(|value| value / sum.max(1e-15))
+        .collect()
 }
 
 fn zero_grads_for_layers(layers: &[DenseLayer]) -> GradientState {
     GradientState {
         weight_grads: layers
             .iter()
-            .map(|layer| layer.weights.iter().map(|row| vec![0.0; row.len()]).collect())
+            .map(|layer| {
+                layer
+                    .weights
+                    .iter()
+                    .map(|row| vec![0.0; row.len()])
+                    .collect()
+            })
             .collect(),
-        bias_grads: layers.iter().map(|layer| vec![0.0; layer.bias.len()]).collect(),
+        bias_grads: layers
+            .iter()
+            .map(|layer| vec![0.0; layer.bias.len()])
+            .collect(),
         example_count: 0,
     }
 }
@@ -434,14 +500,32 @@ fn zero_adam_for_layers(layers: &[DenseLayer]) -> AdamState {
         step: 0,
         weight_m: layers
             .iter()
-            .map(|layer| layer.weights.iter().map(|row| vec![0.0; row.len()]).collect())
+            .map(|layer| {
+                layer
+                    .weights
+                    .iter()
+                    .map(|row| vec![0.0; row.len()])
+                    .collect()
+            })
             .collect(),
         weight_v: layers
             .iter()
-            .map(|layer| layer.weights.iter().map(|row| vec![0.0; row.len()]).collect())
+            .map(|layer| {
+                layer
+                    .weights
+                    .iter()
+                    .map(|row| vec![0.0; row.len()])
+                    .collect()
+            })
             .collect(),
-        bias_m: layers.iter().map(|layer| vec![0.0; layer.bias.len()]).collect(),
-        bias_v: layers.iter().map(|layer| vec![0.0; layer.bias.len()]).collect(),
+        bias_m: layers
+            .iter()
+            .map(|layer| vec![0.0; layer.bias.len()])
+            .collect(),
+        bias_v: layers
+            .iter()
+            .map(|layer| vec![0.0; layer.bias.len()])
+            .collect(),
     }
 }
 
@@ -450,9 +534,27 @@ mod tests {
     use super::*;
 
     #[test]
+    fn byte_loading_checks_all_layer_dimensions() {
+        let model = MlpNeuralPredicate::new(2, &[3], OutputType::Binary).unwrap();
+        let bytes = model.to_bytes().unwrap();
+        assert!(MlpNeuralPredicate::from_bytes(1, &[3], OutputType::Binary, &bytes).is_err());
+        assert!(MlpNeuralPredicate::from_bytes(2, &[4], OutputType::Binary, &bytes).is_err());
+        assert!(
+            MlpNeuralPredicate::from_bytes(2, &[3], OutputType::Categorical(2), &bytes).is_err()
+        );
+        let loaded = MlpNeuralPredicate::from_bytes(2, &[3], OutputType::Binary, &bytes).unwrap();
+        assert_eq!(
+            model.forward_with_grads(&[vec![1.0, 2.0]]).unwrap().1,
+            loaded.forward_with_grads(&[vec![1.0, 2.0]]).unwrap().1
+        );
+    }
+
+    #[test]
     fn mlp_categorical_softmax_sums_to_one() {
         let model = MlpNeuralPredicate::new(2, &[4], OutputType::Categorical(3)).unwrap();
-        let (_tracked, probs) = model.forward_with_grads(&[vec![1.0, 2.0], vec![0.5, -1.0]]).unwrap();
+        let (_tracked, probs) = model
+            .forward_with_grads(&[vec![1.0, 2.0], vec![0.5, -1.0]])
+            .unwrap();
         for row in probs {
             let total: f64 = row.iter().sum();
             assert!((total - 1.0).abs() < 1e-9);
@@ -471,7 +573,9 @@ mod tests {
         let prob = probs[0][0];
         let mut grads = HashMap::new();
         grads.insert(0u32, 1.5);
-        model.surrogate_backward(&tracked, &[grads], &HashMap::from([(0u32, 0usize)])).unwrap();
+        model
+            .surrogate_backward(&tracked, &[grads], &HashMap::from([(0u32, 0usize)]))
+            .unwrap();
 
         let grad_state = model.grad_state.borrow();
         let expected = 1.5 * prob * (1.0 - prob) * 2.0;

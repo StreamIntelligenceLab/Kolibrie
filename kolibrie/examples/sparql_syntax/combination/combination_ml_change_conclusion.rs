@@ -195,7 +195,7 @@ impl DynamicRuleManager {
     fn new() -> Self {
         Self {
             current_rules: HashMap::new(),
-            database: SparqlDatabase::new(),
+            database: SparqlDatabase::with_ml_context(local_ml::trusted_context()),
         }
     }
 
@@ -226,7 +226,7 @@ impl DynamicRuleManager {
                     match execute_ml_prediction_from_clause(
                         ml_predict,
                         &self.database,
-                        "traffic_predictor.py",
+                        "traffic_predictor",
                         extract_traffic_data_from_database,
                         predict_congestion,
                     ) {
@@ -957,3 +957,5 @@ RULE :IncidentResponse :-
 
     Ok(())
 }
+
+mod local_ml { include!(concat!(env!("CARGO_MANIFEST_DIR"), "/examples/support/ml_context.rs")); }

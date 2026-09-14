@@ -335,11 +335,37 @@ impl<'a> QueryBuilder<'a> {
             // For streaming queries, return empty set as results come through stream
             BTreeSet::new()
         } else {
+            self.apply_filters().into_iter().collect()
+        }
+    }
+
+    /// Return unique materialized triples after ordering and slicing
+    pub fn get_ordered_triples(self) -> Vec<Triple> {
+        if self.is_streaming {
+            Vec::new()
+        } else {
             self.apply_filters()
         }
     }
 
-    /// Get results as decoded (subject, predicate, object) tuples
+    /// Decode while preserving result order
+    pub fn get_ordered_decoded_triples(self) -> Vec<(String, String, String)> {
+        let db = self.db;
+        let triples = self.get_ordered_triples();
+        let dict = db.dictionary.read().unwrap();
+        triples
+            .into_iter()
+            .map(|triple| {
+                (
+                    dict.decode(triple.subject).unwrap_or("").to_string(),
+                    dict.decode(triple.predicate).unwrap_or("").to_string(),
+                    dict.decode(triple.object).unwrap_or("").to_string(),
+                )
+            })
+            .collect()
+    }
+
+    /// Get decoded triples in legacy set order
     pub fn get_decoded_triples(self) -> Vec<(String, String, String)> {
         // Store a reference to the database
         let db = self.db;
@@ -481,7 +507,7 @@ impl<'a> QueryBuilder<'a> {
     }
 
     // Applies all the configured filters and returns the matching triples
-    fn apply_filters(self) -> BTreeSet<Triple> {
+    fn apply_filters(self) -> Vec<Triple> {
         let mut results = BTreeSet::new();
         let dict = self.db.dictionary.read().unwrap();
 
@@ -539,22 +565,16 @@ impl<'a> QueryBuilder<'a> {
             }
         }
 
-        // Apply sorting, then limit and offset, in one pass over a Vec
-        if self.sort_key.is_some() || self.offset.is_some() || self.limit.is_some() {
-            let mut ordered: Vec<Triple> = results.into_iter().collect();
-            if let Some(key_fn) = &self.sort_key {
-                match self.sort_direction {
-                    SortDirection::Ascending => ordered.sort_by_key(|t| key_fn(t)),
-                    SortDirection::Descending => ordered.sort_by(|a, b| key_fn(b).cmp(&key_fn(a))),
-                }
+        let mut ordered: Vec<Triple> = results.into_iter().collect();
+        if let Some(key_fn) = &self.sort_key {
+            match self.sort_direction {
+                SortDirection::Ascending => ordered.sort_by_key(|t| key_fn(t)),
+                SortDirection::Descending => ordered.sort_by_key(|t| std::cmp::Reverse(key_fn(t))),
             }
-            results = Self::slice_ordered(ordered, self.offset, self.limit)
-                .into_iter()
-                .collect();
         }
         drop(dict);
 
-        results
+        Self::slice_ordered(ordered, self.offset, self.limit)
     }
 
     // Helper method to apply a filter to a string value

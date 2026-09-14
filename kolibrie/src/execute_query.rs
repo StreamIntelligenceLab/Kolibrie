@@ -9,9 +9,7 @@
  */
 
 use crate::error_handler::format_parse_error;
-use crate::neural_relations::{
-    execute_train_decl, materialize_neural_relations_for_patterns, register_neural_declarations,
-};
+use crate::neural_relations::{execute_train_decl, materialize_neural_relations_for_patterns};
 use crate::parser::{parse_combined_query, parse_combined_query_with_options};
 use crate::sparql_database::SparqlDatabase;
 use crate::streamertail_optimizer::{
@@ -31,6 +29,45 @@ use std::sync::atomic::{AtomicU64, Ordering as AtomicOrdering};
 
 type StringBinding = HashMap<String, String>;
 
+/// Validate a request without changing the database
+pub fn validate_query_policy(sparql: &str, database: &SparqlDatabase) -> Result<(), String> {
+    let combined = parse_request(sparql, true).map_err(|_| "SPARQL_PARSE_ERROR".to_string())?;
+    database
+        .ml_context
+        .validate_request(&combined, database)
+        .map_err(|e| e.to_string())
+}
+
+/// Execute with temporary host-selected ML authority
+pub fn execute_sparql_with_ml_context(
+    sparql: &str,
+    database: &mut SparqlDatabase,
+    context: &crate::ml_policy::MlExecutionContext,
+) -> Result<Vec<Vec<String>>, String> {
+    with_ml_context(database, context, |database| {
+        execute_request(sparql, database, true)
+    })
+}
+
+pub(crate) fn with_ml_context<R>(
+    database: &mut SparqlDatabase,
+    context: &crate::ml_policy::MlExecutionContext,
+    execute: impl FnOnce(&mut SparqlDatabase) -> R,
+) -> R {
+    let previous = std::mem::replace(&mut database.ml_context, context.clone());
+    struct ContextScope<'a> {
+        database: &'a mut SparqlDatabase,
+        previous: crate::ml_policy::MlExecutionContext,
+    }
+    impl Drop for ContextScope<'_> {
+        fn drop(&mut self) {
+            self.database.ml_context = std::mem::take(&mut self.previous);
+        }
+    }
+    let scope = ContextScope { database, previous };
+    execute(scope.database)
+}
+
 /// Summary returned by the error-preserving update entry point
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct UpdateSummary {
@@ -46,7 +83,11 @@ pub fn execute_query_rayon_parallel2_volcano(
     match execute_request(sparql, database, true) {
         Ok(results) => results,
         Err(error) => {
-            eprintln!("SPARQL execution failed: {error}");
+            match error.as_str() {
+                "ML_FEATURE_DISABLED" | "ML_FORBIDDEN" | "ML_INVALID_CONFIGURATION"
+                | "ML_INVALID_ARTIFACT" | "ML_EXECUTION_FAILED" => eprintln!("{error}"),
+                _ => eprintln!("SPARQL_EXECUTION_FAILED"),
+            }
             Vec::new()
         }
     }
@@ -58,6 +99,18 @@ pub fn execute_sparql_query(
     database: &mut SparqlDatabase,
 ) -> Result<Vec<Vec<String>>, String> {
     let combined = parse_request(sparql, false)?;
+    database
+        .ml_context
+        .validate_request(&combined, database)
+        .map_err(|e| e.to_string())?;
+    if let Some(predict) = &combined.ml_predict {
+        #[cfg(feature = "ml")]
+        if database.ml_context.require_local().is_ok() {
+            crate::neural_relations::execute_neural_program(database, sparql)?;
+            return Ok(Vec::new());
+        }
+        return execute_approved_prediction(predict, &combined.prefixes, database);
+    }
     match combined.sparql.as_ref() {
         Some(SparqlOperation::Update(_)) => {
             Err("expected a SPARQL query, found an Update operation".to_string())
@@ -95,6 +148,18 @@ fn execute_request(
     allow_data_aliases: bool,
 ) -> Result<Vec<Vec<String>>, String> {
     let combined = parse_request(sparql, allow_data_aliases)?;
+    database
+        .ml_context
+        .validate_request(&combined, database)
+        .map_err(|e| e.to_string())?;
+    if let Some(predict) = &combined.ml_predict {
+        #[cfg(feature = "ml")]
+        if database.ml_context.require_local().is_ok() {
+            crate::neural_relations::execute_neural_program(database, sparql)?;
+            return Ok(Vec::new());
+        }
+        return execute_approved_prediction(predict, &combined.prefixes, database);
+    }
     let prefixes = prepare_extensions(&combined, database)?;
 
     match combined.sparql.as_ref() {
@@ -144,22 +209,66 @@ fn parse_request(input: &str, allow_data_aliases: bool) -> Result<CombinedQuery<
     }
 }
 
+fn execute_approved_prediction(
+    predict: &shared::query::MLPredictClause<'_>,
+    prefixes: &HashMap<String, String>,
+    database: &mut SparqlDatabase,
+) -> Result<Vec<Vec<String>>, String> {
+    database
+        .ml_context
+        .approved_model(predict.model)
+        .map_err(|e| e.to_string())?;
+    let mut input = String::new();
+    for (prefix, iri) in prefixes {
+        input.push_str(&format!("PREFIX {prefix}: <{iri}>\n"));
+    }
+    input.push_str(predict.input_raw);
+    let rows = execute_sparql_query(&input, database)?;
+    let features = rows
+        .iter()
+        .map(|r| {
+            r.iter()
+                .map(|v| {
+                    crate::ml_feature_loader::rdf_term_to_f64(v)
+                        .map_err(|_| "ML_INVALID_INPUT".to_string())
+                })
+                .collect::<Result<Vec<_>, _>>()
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    let predictions = database
+        .ml_context
+        .predict(predict.model, &features)
+        .map_err(|e| e.to_string())?;
+    Ok(rows
+        .into_iter()
+        .zip(predictions)
+        .map(|(mut row, prediction)| {
+            row.push(prediction);
+            row
+        })
+        .collect())
+}
+
 fn prepare_extensions(
     combined: &CombinedQuery<'_>,
     database: &mut SparqlDatabase,
 ) -> Result<HashMap<String, String>, String> {
+    database
+        .ml_context
+        .validate_request(combined, database)
+        .map_err(|e| e.to_string())?;
     // Database prefixes remain available, while a query-local declaration
     let mut prefixes = database.prefixes.clone();
     prefixes.extend(combined.prefixes.clone());
     database.prefixes.extend(combined.prefixes.clone());
 
-    register_neural_declarations(
+    crate::neural_relations::register_neural_declarations_checked(
         database,
         &prefixes,
         &combined.model_decls,
         &combined.neural_relation_decls,
         &combined.train_neural_relation_decls,
-    );
+    )?;
 
     let normalized_trains = combined
         .train_neural_relation_decls
@@ -414,6 +523,12 @@ fn aggregate_rows(rows: Vec<StringBinding>, query: &SelectQuery<'_>) -> Vec<Stri
                 }
                 let output = normalize_variable(alias.unwrap_or(variable)).to_string();
                 let input = normalize_variable(variable);
+                let normalized_kind = kind.to_ascii_uppercase();
+                let descriptor = crate::aggregate::Aggregate::parse(&normalized_kind);
+                if descriptor.kind == "COUNT" && input == "*" {
+                    result.insert(output, descriptor.star_count(&group));
+                    continue;
+                }
                 let values = group
                     .iter()
                     .filter_map(|row| row.get(input).map(String::as_str))
@@ -431,30 +546,7 @@ fn aggregate_rows(rows: Vec<StringBinding>, query: &SelectQuery<'_>) -> Vec<Stri
 
 /// Computes one aggregate over the values a group bound to its input variable
 pub(crate) fn aggregate_value(kind: &str, values: &[&str]) -> Option<String> {
-    let numbers = || {
-        values
-            .iter()
-            .filter_map(|value| value.parse::<f64>().ok())
-            .collect::<Vec<_>>()
-    };
-
-    match kind.to_ascii_uppercase().as_str() {
-        "COUNT" => Some(values.len().to_string()),
-        "SUM" => {
-            // An empty sum is -0.0 in IEEE 754, so normalize it to the zero SPARQL specifies
-            let total = numbers().iter().sum::<f64>();
-            Some(if total == 0.0 { 0.0 } else { total }.to_string())
-        }
-        "AVG" => {
-            let numbers = numbers();
-            (!numbers.is_empty())
-                .then(|| (numbers.iter().sum::<f64>() / numbers.len() as f64).to_string())
-        }
-        // MIN and MAX range over every RDF term, not only the numeric ones
-        "MIN" => term_order::minimum(values.iter().copied()).map(str::to_string),
-        "MAX" => term_order::maximum(values.iter().copied()).map(str::to_string),
-        _ => None,
-    }
+    crate::aggregate::value(kind, values)
 }
 
 fn apply_order_by(rows: &mut [StringBinding], conditions: &[OrderCondition<'_>]) {

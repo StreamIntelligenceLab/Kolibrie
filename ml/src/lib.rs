@@ -8,12 +8,29 @@
  * you can obtain one at https://mozilla.org/MPL/2.0/.
  */
 
+use pyo3::{
+    prelude::*,
+    types::{PyBytes, PyDict, PyList},
+};
+use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
-use std::ffi::CString;
 use std::path::Path;
 use std::time::Instant;
-use serde::{Serialize, Deserialize};
-use pyo3::{prelude::*, types::{PyDict, PyList}};
+
+fn validate_py_module_name(name: &str) -> PyResult<()> {
+    let mut bytes = name.bytes();
+    if name.len() > 64
+        || !bytes
+            .next()
+            .is_some_and(|b| b.is_ascii_alphabetic() || b == b'_')
+        || !bytes.all(|b| b.is_ascii_alphanumeric() || b == b'_')
+    {
+        return Err(pyo3::exceptions::PyValueError::new_err(
+            "invalid model name",
+        ));
+    }
+    Ok(())
+}
 
 pub mod candle_model;
 pub use candle_model::{MlpNeuralPredicate, OutputType};
@@ -62,19 +79,19 @@ impl MLHandler {
 
     fn parse_schema_file(&self, schema_file_path: &str) -> PyResult<ModelPerformanceMetrics> {
         let mut metrics = ModelPerformanceMetrics::default();
-        
+
         Python::with_gil(|py| {
             let rdflib = py.import("rdflib")?;
             let graph = rdflib.call_method0("Graph")?;
-            
+
             // Parse the TTL schema file
             graph.call_method1("parse", (schema_file_path, "turtle"))?;
-            
+
             // Create a SPARQL query to extract performance metrics
             let query = r#"
                 PREFIX mls: <http://www.w3.org/ns/mls#>
                 PREFIX rdfs: <http://www.w3.org/2000/01/rdf-schema#>
-                
+
                 SELECT ?label (xsd:float(?rawValue) as ?value)
                 WHERE {
                     ?eval a mls:ModelEvaluation ;
@@ -83,9 +100,9 @@ impl MLHandler {
                     ?measure rdfs:label ?label .
                 }
             "#;
-            
+
             let results = graph.call_method1("query", (query,))?;
-            
+
             for row in results.try_iter()? {
                 let row = row?;
                 let label: String = row.get_item(0)?.extract()?;
@@ -105,13 +122,13 @@ impl MLHandler {
                     }
                 }
             }
-            
+
             // Extract the CPU time from the run quality
             let cpu_query = r#"
                 PREFIX mls: <http://www.w3.org/ns/mls#>
                 PREFIX rdfs: <http://www.w3.org/2000/01/rdf-schema#>
                 PREFIX xsd: <http://www.w3.org/2001/XMLSchema#>
-                
+
                 SELECT (xsd:float(?rawValue) as ?value)
                 WHERE {
                     ?run a mls:Run ;
@@ -120,9 +137,9 @@ impl MLHandler {
                             mls:hasValue ?rawValue .
                 }
             "#;
-            
+
             let cpu_results = graph.call_method1("query", (cpu_query,))?;
-            
+
             for row in cpu_results.try_iter()? {
                 let row = row?;
                 // Convert the value to a string first and then parse it as f64
@@ -132,40 +149,56 @@ impl MLHandler {
                     metrics.training_time = value; // Use CPU time as training time if not already set
                 }
             }
-            
+
             Ok(metrics)
         })
     }
 
-    pub fn load_model_with_schema(&mut self, model_name: &str, model_path: &str) -> PyResult<ModelPerformanceMetrics> {
+    pub fn load_model_with_schema(
+        &mut self,
+        model_name: &str,
+        model_path: &str,
+    ) -> PyResult<ModelPerformanceMetrics> {
         // Get the TTL file path by replacing .pkl extension with .ttl
         let schema_file_path = model_path.replace(".pkl", ".ttl");
-        
+
         // Parse the schema file to get performance metrics directly from TTL
         let metrics = match self.parse_schema_file(&schema_file_path) {
             Ok(m) => m,
-            Err(e) => {
-                eprintln!("Error parsing schema file {}: {}", schema_file_path, e);
+            Err(_e) => {
+                eprintln!("KOLIBRIE_OPERATION_FAILED");
                 // Create default metrics if TTL parsing fails
                 ModelPerformanceMetrics::default()
             }
         };
-        
+
         // Store metrics in cache without loading the model yet
-        self.schema_cache.insert(model_name.to_string(), metrics.clone());
-        
+        self.schema_cache
+            .insert(model_name.to_string(), metrics.clone());
+
         Ok(metrics)
     }
 
-    pub fn load_model(&mut self, model_name: &str, model_path: &str, module_name: Option<&str>) -> PyResult<()> {
+    pub fn load_model(
+        &mut self,
+        model_name: &str,
+        model_path: &str,
+        module_name: Option<&str>,
+    ) -> PyResult<()> {
+        validate_py_module_name(model_name)?;
+        validate_py_module_name(module_name.unwrap_or("predictor"))?;
         Python::with_gil(|py| {
             let sys = py.import("sys")?;
             let paths = sys.getattr("path")?;
             let model_path = Path::new(model_path);
-            let src_dir = model_path.parent().unwrap().parent().unwrap();
+            let src_dir = model_path.parent().and_then(Path::parent).ok_or_else(|| {
+                pyo3::exceptions::PyValueError::new_err("invalid local artifact location")
+            })?;
             let current_path: Vec<String> = paths.extract()?;
-            let src_dir_str = src_dir.to_str().unwrap();
-            
+            let src_dir_str = src_dir.to_str().ok_or_else(|| {
+                pyo3::exceptions::PyValueError::new_err("invalid local artifact location")
+            })?;
+
             if !current_path.contains(&src_dir_str.to_string()) {
                 paths.call_method1("insert", (0, src_dir_str))?;
             }
@@ -174,52 +207,107 @@ impl MLHandler {
             let pickle = py.import("pickle")?;
             let importlib = py.import("importlib")?;
             let globals = PyDict::new(py);
-            
+
             globals.set_item("__builtins__", builtins.clone())?;
             globals.set_item("pickle", pickle)?;
-            globals.set_item("importlib", importlib)?;
+            globals.set_item("importlib", &importlib)?;
             globals.set_item("__name__", "__main__")?;
-            
+
             let actual_module_name = module_name.unwrap_or("predictor").trim_end_matches(".py");
-            let import_code = format!(
-                r#"
-try:
-    imported_module = importlib.import_module('{}')
-    for attr_name in dir(imported_module):
-        attr = getattr(imported_module, attr_name)
-        if not attr_name.startswith('_'):
-            globals()[attr_name] = attr
-    print("Successfully imported module: {{'{}'}}")
-except ImportError as e:
-    print(f"Error importing module {{'{}'}}")
-    raise
-                "#,
-                actual_module_name, actual_module_name, actual_module_name
-            );
-            
-            let import_cstring = CString::new(import_code).expect("Failed to convert import code to CString");
-            py.run(import_cstring.as_c_str(), Some(&globals), None)?;
-            
-            let model_path_str = model_path.to_str().unwrap().replace('\\', "/");
-            let code = format!(
-                r#"
-import pickle
-with open(r'{}', 'rb') as f:
-    model = pickle.load(f)
-                "#,
-                model_path_str
-            );
-            
-            let code_cstring = CString::new(code).expect("Failed to convert code to CString");
-            py.run(code_cstring.as_c_str(), Some(&globals), None)?;
-            let model_option = globals.get_item("model")?;
-            let model = model_option.ok_or_else(|| {
-                PyErr::new::<pyo3::exceptions::PyRuntimeError, _>("Failed to load model")
-            })?;
-            
-            self.model_cache.insert(model_name.to_string(), model.into());
-            println!("Successfully loaded model '{}' from module '{}'", model_name, actual_module_name);
+            let imported = importlib.call_method1("import_module", (actual_module_name,))?;
+            for name in builtins.call_method1("dir", (&imported,))?.try_iter()? {
+                let name: String = name?.extract()?;
+                if !name.starts_with('_') {
+                    globals.set_item(&name, imported.getattr(name.as_str())?)?;
+                }
+            }
+            let bytes = std::fs::read(model_path)
+                .map_err(|_| pyo3::exceptions::PyIOError::new_err("model read failed"))?;
+            let model = py
+                .import("pickle")?
+                .call_method1("loads", (PyBytes::new(py, &bytes),))?;
+
+            self.model_cache
+                .insert(model_name.to_string(), model.into());
             Ok(())
+        })
+    }
+
+    /// Predict from host-verified module and artifact bytes
+    pub fn predict_approved(
+        module_name: &str,
+        module_path: &str,
+        module_bytes: &[u8],
+        artifact_bytes: &[u8],
+        input: &[Vec<f64>],
+    ) -> PyResult<Vec<f64>> {
+        validate_py_module_name(module_name)?;
+        Python::with_gil(|py| {
+            let sys = py.import("sys")?;
+            let modules = sys.getattr("modules")?.downcast_into::<PyDict>()?;
+            if let Some(existing) = modules.get_item(module_name)? {
+                let origin: String = existing
+                    .getattr("__file__")
+                    .and_then(|v| v.extract())
+                    .map_err(|_| {
+                        pyo3::exceptions::PyPermissionError::new_err("model module conflict")
+                    })?;
+                let source: Vec<u8> = existing
+                    .getattr("__kolibrie_verified_source__")
+                    .and_then(|v| v.extract())
+                    .map_err(|_| {
+                        pyo3::exceptions::PyPermissionError::new_err("model module conflict")
+                    })?;
+                if origin != module_path || source != module_bytes {
+                    return Err(pyo3::exceptions::PyPermissionError::new_err(
+                        "model module conflict",
+                    ));
+                }
+            } else {
+                let module = py
+                    .import("types")?
+                    .call_method1("ModuleType", (module_name,))?;
+                module.setattr("__file__", module_path)?;
+                module.setattr("__package__", "")?;
+                let namespace = module.getattr("__dict__")?;
+                modules.set_item(module_name, &module)?;
+                let result = (|| -> PyResult<()> {
+                    let builtins = py.import("builtins")?;
+                    let code = builtins.call_method1(
+                        "compile",
+                        (PyBytes::new(py, module_bytes), module_path, "exec"),
+                    )?;
+                    builtins.call_method1("exec", (code, &namespace, &namespace))?;
+                    module.setattr(
+                        "__kolibrie_verified_source__",
+                        PyBytes::new(py, module_bytes),
+                    )?;
+                    Ok(())
+                })();
+                if let Err(error) = result {
+                    modules.del_item(module_name)?;
+                    return Err(error);
+                }
+            }
+            let registered = modules.get_item(module_name)?.ok_or_else(|| {
+                pyo3::exceptions::PyPermissionError::new_err("model module conflict")
+            })?;
+            let actual_origin: String = registered
+                .getattr("__file__")
+                .and_then(|v| v.extract())
+                .map_err(|_| {
+                    pyo3::exceptions::PyPermissionError::new_err("model module conflict")
+                })?;
+            if actual_origin != module_path {
+                return Err(pyo3::exceptions::PyPermissionError::new_err(
+                    "model module conflict",
+                ));
+            }
+            let model = py
+                .import("pickle")?
+                .call_method1("loads", (PyBytes::new(py, artifact_bytes),))?;
+            let rows = PyList::new(py, input.iter())?;
+            model.call_method1("predict", (rows,))?.extract()
         })
     }
 
@@ -233,58 +321,53 @@ with open(r'{}', 'rb') as f:
         let mut best_model = model_names[0];
         let mut best_score = std::f64::MAX;
 
-        println!("\nComparing models based on resource usage (lower is better):");
         for &model_name in model_names {
             if let Some(metrics) = self.schema_cache.get(model_name) {
                 // Prioritize CPU and memory usage
                 let cpu_weight = 0.5;
                 let memory_weight = 0.4;
                 let time_weight = 0.1;
-                
-                let resource_score = 
-                    cpu_weight * metrics.cpu_usage_percent + 
-                    memory_weight * metrics.memory_usage_mb +
-                    time_weight * metrics.prediction_time;
-                
-                println!("{} Model:", model_name);
-                println!("  CPU Usage: {:.2}%", metrics.cpu_usage_percent);
-                println!("  Memory Usage: {:.2} MB", metrics.memory_usage_mb);
-                println!("  Prediction Time: {:.4} seconds", metrics.prediction_time);
-                println!("  Combined Resource Score: {:.2}", resource_score);
-                
+
+                let resource_score = cpu_weight * metrics.cpu_usage_percent
+                    + memory_weight * metrics.memory_usage_mb
+                    + time_weight * metrics.prediction_time;
+
                 if resource_score < best_score {
                     best_score = resource_score;
                     best_model = model_name;
                 }
             }
         }
-        
+
         // Store the best model name for future use
         self.best_model = Some(best_model.to_string());
-        println!("\nSelected model with lowest resource usage: {}", best_model);
-        
+
         Some(best_model)
     }
 
-    pub fn predict(&self, model_name: &str, input_data: Vec<Vec<f64>>) -> PyResult<MLPredictionResult> {
+    pub fn predict(
+        &self,
+        model_name: &str,
+        input_data: Vec<Vec<f64>>,
+    ) -> PyResult<MLPredictionResult> {
         let actual_model_name = if let Some(ref best_model) = self.best_model {
             best_model
         } else {
             model_name
         };
-        
+
         if !self.model_cache.contains_key(actual_model_name) {
-            return Err(PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(
-                format!("Model {} not found in cache. Call load_model first.", actual_model_name)
-            ));
+            return Err(PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(format!(
+                "Model {} not found in cache. Call load_model first.",
+                actual_model_name
+            )));
         }
-        
-        println!("\n[PYTHON TIMING] Starting prediction with model '{}'", actual_model_name);
+
         let python_start = Instant::now();
-        
+
         let result = Python::with_gil(|py| {
             let preprocessing_start = Instant::now();
-            
+
             let model = self.model_cache.get(actual_model_name).unwrap();
 
             // Convert input data to Python list
@@ -297,20 +380,18 @@ with open(r'{}', 'rb') as f:
                 .collect();
             let rows = rows?;
             let py_input = PyList::new(py, rows)?;
-            
+
             let preprocessing_time = preprocessing_start.elapsed().as_secs_f64();
-            println!("[PYTHON TIMING] Preprocessing completed: {:.6} seconds", preprocessing_time);
 
             // Actual ML prediction
             let prediction_start = Instant::now();
             let predictions = model.call_method1(py, "predict", (py_input.clone(),))?;
             let predictions: Vec<f64> = predictions.extract(py)?;
             let prediction_time = prediction_start.elapsed().as_secs_f64();
-            println!("[PYTHON TIMING] Actual prediction completed: {:.6} seconds", prediction_time);
 
             // Postprocessing
             let postprocessing_start = Instant::now();
-            
+
             let probabilities = model
                 .call_method1(py, "predict_proba", (py_input,))
                 .and_then(|probs| probs.extract::<Vec<f64>>(py))
@@ -326,12 +407,10 @@ with open(r'{}', 'rb') as f:
                 Some(metrics) => metrics.clone(),
                 None => ModelPerformanceMetrics::default(),
             };
-            
+
             let postprocessing_time = postprocessing_start.elapsed().as_secs_f64();
-            println!("[PYTHON TIMING] Postprocessing completed: {:.6} seconds", postprocessing_time);
-            
-            let total_python_time = python_start.elapsed().as_secs_f64();
-            println!("[PYTHON TIMING] Total Python execution: {:.6} seconds\n", total_python_time);
+
+            let _total_python_time = python_start.elapsed().as_secs_f64();
 
             Ok(MLPredictionResult {
                 predictions,
@@ -345,14 +424,18 @@ with open(r'{}', 'rb') as f:
                 },
             })
         });
-        
+
         result
     }
-    
+
     // Utility function to discover and load all models and their TTL schemas at once
-    pub fn discover_and_load_models(&mut self, model_dir: &Path, model_module: &str) -> PyResult<Vec<String>> {
+    pub fn discover_and_load_models(
+        &mut self,
+        model_dir: &Path,
+        model_module: &str,
+    ) -> PyResult<Vec<String>> {
         let mut model_ids = Vec::new();
-        
+
         if let Ok(entries) = std::fs::read_dir(model_dir) {
             // First pass: Only load schemas from TTL files without loading models
             for entry in entries.filter_map(Result::ok) {
@@ -363,21 +446,20 @@ with open(r'{}', 'rb') as f:
                             // Get model type prefix from filename (rf_, gb_, lr_, etc.)
                             let model_type = file_stem.split('_').next().unwrap_or("unknown");
                             let model_id = format!("{}_model", model_type);
-                            
-                            println!("Loading schema for model: {} from {}", model_id, path.display());
+
                             match self.load_model_with_schema(&model_id, path.to_str().unwrap()) {
                                 Ok(_) => {
                                     model_ids.push(model_id);
-                                },
-                                Err(e) => {
-                                    eprintln!("Error loading schema for {}: {}", model_id, e);
+                                }
+                                Err(_e) => {
+                                    eprintln!("KOLIBRIE_OPERATION_FAILED");
                                 }
                             }
                         }
                     }
                 }
             }
-            
+
             // Compare models to find the one with lowest resource usage
             let model_id_refs: Vec<&str> = model_ids.iter().map(|s| s.as_str()).collect();
             if let Some(best_model) = self.compare_models(&model_id_refs) {
@@ -388,16 +470,19 @@ with open(r'{}', 'rb') as f:
                         if let Some(file_stem) = path.file_stem().and_then(|s| s.to_str()) {
                             let model_type = file_stem.split('_').next().unwrap_or("unknown");
                             let model_id = format!("{}_model", model_type);
-                            
+
                             // Only load the best model
                             if model_id == best_model {
-                                println!("Loading only the best model: {} from {}", model_id, path.display());
-                                match self.load_model(&model_id, path.to_str().unwrap(), Some(model_module)) {
+                                match self.load_model(
+                                    &model_id,
+                                    path.to_str().unwrap(),
+                                    Some(model_module),
+                                ) {
                                     Ok(_) => {
                                         self.best_model = Some(model_id.clone());
-                                    },
-                                    Err(e) => {
-                                        eprintln!("Error loading best model {}: {}", model_id, e);
+                                    }
+                                    Err(_e) => {
+                                        eprintln!("KOLIBRIE_OPERATION_FAILED");
                                     }
                                 }
                                 break;
@@ -407,83 +492,81 @@ with open(r'{}', 'rb') as f:
                 }
             }
         }
-        
+
         Ok(model_ids)
     }
 }
 
-pub fn generate_ml_models(model_dir: &std::path::Path, model: &str) -> Result<(), Box<dyn std::error::Error>> {
-    println!("Generating ML models...");
-    
-    // Get the path to the predictor.py script
-    let src_dir = model_dir.parent().unwrap_or_else(|| std::path::Path::new("."));
-    let predictor_script = src_dir.join(format!("{}.py", model.trim_end_matches(".py")));
-    
-    if !predictor_script.exists() {
-        return Err(format!("Predictor script not found at {}", predictor_script.display()).into());
+/// Generate models only for trusted-local execution
+pub fn generate_ml_models(model_dir: &Path, model: &str) -> Result<(), Box<dyn std::error::Error>> {
+    validate_py_module_name(model)?;
+    let output = model_dir.canonicalize()?;
+    let script = output
+        .parent()
+        .ok_or("missing script directory")?
+        .join(format!("{model}.py"))
+        .canonicalize()?;
+    let status = std::process::Command::new(if cfg!(windows) { "python" } else { "python3" })
+        .arg(script)
+        .current_dir(&output)
+        .env("KOLIBRIE_TRAINING_OUTPUT", &output)
+        .stdin(std::process::Stdio::null())
+        .status()?;
+    if !status.success() {
+        return Err("local model generation failed".into());
     }
-    
-    // Run the Python script using Python's C API through pyo3
-    Python::with_gil(|py| {
-        // Add src_dir to Python path
-        let sys = py.import("sys")?;
-        let path = sys.getattr("path")?;
-        path.call_method1("insert", (0, src_dir.to_str().unwrap()))?;
-        
-        // Get the current working directory
-        let os = py.import("os")?;
-        let cwd = os.call_method0("getcwd")?;
-        println!("Current working directory: {}", cwd);
-
-        // Import and run the predictor module
-        println!("Running predictor.py to generate models...");
-        
-        // Import the module and execute it
-        let result = std::panic::catch_unwind(|| {
-            let module_name = model.trim_end_matches(".py");
-            let _predictor = py.import(module_name)?;
-            println!("Successfully imported predictor module");
-            Ok::<_, PyErr>(())
-        });
-        
-        if result.is_err() {
-            println!("Failed to import predictor module directly, trying alternate method...");
-            
-            // Execute the script directly
-            let subprocess = py.import("subprocess")?;
-            let python_exe = sys.getattr("executable")?;
-            let args = (python_exe.clone(), predictor_script.to_str().unwrap());
-            
-            println!("Executing: {} {}", python_exe, predictor_script.display());
-            let result = subprocess.call_method1("run", args)?;
-            
-            let return_code = result.getattr("returncode")?;
-            if !return_code.is_truthy()? {
-                println!("Successfully generated models using subprocess");
-            } else {
-                return Err(PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(
-                    format!("Failed to generate models, return code: {}", return_code)
-                ));
-            }
-        }
-        
-        Ok(())
-    })?;
-    
-    // Verify that models were created
-    let model_count = std::fs::read_dir(model_dir)?
-        .filter_map(Result::ok)
-        .filter(|entry| {
-            let path = entry.path();
-            path.is_file() && path.extension().map_or(false, |ext| ext == "pkl") &&
-            path.file_stem().and_then(|s| s.to_str()).map_or(false, |stem| stem.ends_with("_predictor"))
-        })
-        .count();
-    
-    if model_count < 1 {
-        return Err(format!("Expected at least 1 model to be generated, but found {}", model_count).into());
-    }
-    
-    println!("Successfully generated {} ML models", model_count);
     Ok(())
+}
+
+#[cfg(test)]
+mod policy_tests {
+    use super::*;
+
+    #[test]
+    fn invalid_module_names_are_rejected_at_the_crate_boundary() {
+        for name in [
+            "",
+            "1model",
+            "m.py",
+            "../m",
+            "m');raise RuntimeError()#",
+            "with space",
+        ] {
+            assert!(validate_py_module_name(name).is_err());
+        }
+        assert!(validate_py_module_name("valid_model_1").is_ok());
+    }
+
+    #[test]
+    fn approved_module_uses_supplied_bytes_and_rejects_origin_conflicts() {
+        let source = b"class Model:\n    def predict(self, rows):\n        return [row[0]+1 for row in rows]\n";
+        let pickle = b"ckolibrie_byte_loading_test\nModel\n)R.";
+        assert_eq!(
+            MLHandler::predict_approved(
+                "kolibrie_byte_loading_test",
+                "/approved/test.py",
+                source,
+                pickle,
+                &[vec![2.0]]
+            )
+            .unwrap(),
+            vec![3.0]
+        );
+        assert!(MLHandler::predict_approved(
+            "kolibrie_byte_loading_test",
+            "/unapproved/test.py",
+            source,
+            pickle,
+            &[vec![2.0]]
+        )
+        .is_err());
+        assert!(MLHandler::predict_approved(
+            "kolibrie_byte_loading_test",
+            "/approved/test.py",
+            b"raise RuntimeError('CANARY')",
+            pickle,
+            &[vec![2.0]]
+        )
+        .is_err());
+    }
 }

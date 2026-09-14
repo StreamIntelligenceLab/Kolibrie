@@ -9,12 +9,25 @@
  */
 
 pub mod error_handler;
+mod aggregate;
+pub mod ml_policy;
+mod ml_syntax;
+#[cfg(test)]
+extern crate self as kolibrie;
+#[cfg(feature = "ml")]
 pub mod execute_ml;
+#[cfg(feature = "ml")]
 pub mod execute_ml_train;
 pub mod execute_query;
 pub mod ml_feature_loader;
+#[cfg(feature = "ml")]
 pub mod ml_predict_candle;
+#[cfg(feature = "ml")]
 pub mod ml_predict_runtime;
+#[cfg(feature = "ml")]
+pub mod neural_relations;
+#[cfg(not(feature = "ml"))]
+#[path = "neural_relations_disabled.rs"]
 pub mod neural_relations;
 pub mod parser;
 pub mod query_builder;

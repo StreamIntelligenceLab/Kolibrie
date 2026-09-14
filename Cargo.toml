@@ -1,5 +1,6 @@
 [workspace]
 resolver = "2"
+default-members = ["kolibrie", "shared", "datalog", "cli", "kolibrie-http-server"]
 members = [
   "kolibrie",
   "shared",

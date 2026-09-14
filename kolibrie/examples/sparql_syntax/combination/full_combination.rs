@@ -2,7 +2,7 @@ use kolibrie::parser::*;
 use kolibrie::sparql_database::SparqlDatabase;
 use kolibrie::rsp_engine::{RSPBuilder, SimpleR2R, ResultConsumer, QueryExecutionMode};
 use ml::MLHandler;
-use ml::generate_ml_models;
+
 use datalog::reasoning::Reasoner;
 use shared::triple::Triple;
 use shared::rule::Rule;
@@ -101,7 +101,7 @@ fn setup_ml_model() -> Result<MLHandler, Box<dyn std::error::Error>> {
         .count() >= 3;
     
     if !models_exist {
-        generate_ml_models(&model_dir, "predictor.py")?;
+        return Err("Generate models explicitly before running this local example".into());
     }
     
     let mut ml_handler = MLHandler::new()?;
@@ -114,7 +114,7 @@ fn setup_ml_model() -> Result<MLHandler, Box<dyn std::error::Error>> {
 }
 
 fn setup_knowledge_base() -> SparqlDatabase {
-    let mut database = SparqlDatabase::new();
+    let mut database = SparqlDatabase::with_ml_context(local_ml::trusted_context());
     
     // Register prefixes
     database.prefixes.insert("ex".to_string(), "http://example.org/".to_string());
@@ -288,3 +288,5 @@ fn query_comfort_level(database: &SparqlDatabase, sensor_uri: &str) -> String {
     
     "comfortable".to_string()
 }
+
+mod local_ml { include!(concat!(env!("CARGO_MANIFEST_DIR"), "/examples/support/ml_context.rs")); }

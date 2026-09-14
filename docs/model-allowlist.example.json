@@ -1,0 +1,23 @@
+{
+  "models": [
+    {
+      "name": "native_classifier",
+      "backend": "native",
+      "artifact": "/srv/kolibrie/approved/native_classifier.bin",
+      "sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+      "input_dim": 2,
+      "hidden": [8, 4],
+      "labels": []
+    },
+    {
+      "name": "python_predictor",
+      "backend": "python",
+      "artifact": "/srv/kolibrie/approved/predictor.pkl",
+      "sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+      "allow_pickle": true,
+      "module_name": "predictor",
+      "module_path": "/srv/kolibrie/approved/code/predictor.py",
+      "module_sha256": "0000000000000000000000000000000000000000000000000000000000000000"
+    }
+  ]
+}

@@ -71,6 +71,10 @@ pub fn execute_ml_training_owned(
     base_reasoner: &Reasoner,
     db: &mut SparqlDatabase,
 ) -> TrainResult<MlpNeuralPredicate> {
+    db.ml_context.require_local()?;
+    if let Some(path) = &clause.save_path {
+        db.ml_context.local_artifact(path)?;
+    }
     let rows = query_training_rows(db, &clause.training_data_raw)?;
     if rows.is_empty() {
         return Err("training data query returned no rows".into());
@@ -105,7 +109,12 @@ pub fn execute_ml_training_owned(
         }
     }
 
-    let model = MlpNeuralPredicate::new(expected_dim, &[64, 32], output_type)?;
+    let hidden = db
+        .model_decls
+        .get(&clause.model_name)
+        .map(crate::neural_relations::model_hidden_layers)
+        .unwrap_or(&[64, 32]);
+    let model = MlpNeuralPredicate::new(expected_dim, hidden, output_type)?;
     let var_to_col = build_var_to_col_maps(clause, output_dim);
 
     for _epoch in 0..clause.epochs {
@@ -169,12 +178,21 @@ pub fn execute_ml_training_owned(
                 exact_config.sdd_budget = Duration::from_secs(30);
                 exact_config.sdd_node_budget = 1_000_000;
                 let mut compiled = if has_target {
-                    Some(lineage.compile_exact(&target, &exact_config)
-                        .map_err(|reason| format!("exact training lineage compilation failed: {}", reason.as_str()))?)
+                    Some(
+                        lineage
+                            .compile_exact(&target, &exact_config)
+                            .map_err(|reason| {
+                                format!(
+                                    "exact training lineage compilation failed: {}",
+                                    reason.as_str()
+                                )
+                            })?,
+                    )
                 } else {
                     None
                 };
-                let p_q = compiled.as_ref()
+                let p_q = compiled
+                    .as_ref()
                     .map(|compiled| compiled.manager.wmc(compiled.root).clamp(0.0, 1.0))
                     .unwrap_or(0.0);
 
@@ -203,7 +221,8 @@ pub fn execute_ml_training_owned(
     }
 
     if let Some(path) = &clause.save_path {
-        model.save(path)?;
+        db.ml_context
+            .save_local_artifact(path, &model.to_bytes()?)?;
     }
 
     Ok(model)
@@ -378,6 +397,12 @@ pub fn build_ground_reasoner_from_db(db: &SparqlDatabase, extra_rule: Option<Rul
 
 #[cfg(test)]
 mod tests {
+    mod ml_local {
+        include!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/tests/common/ml_local.rs"
+        ));
+    }
     use super::*;
     use shared::query::{LossFn, OptimizerKind};
     use shared::rule::FilterCondition;
@@ -410,7 +435,7 @@ mod tests {
 
     #[test]
     fn neural_train_exclusive_3class() {
-        let mut db = SparqlDatabase::new();
+        let mut db = ml_local::database();
         for (idx, label, features) in [
             ("s0", "A", [1.0, 0.0, 0.0]),
             ("s1", "A", [1.0, 0.0, 0.0]),
@@ -486,7 +511,7 @@ mod tests {
 
     #[test]
     fn neural_train_two_group_grad_flow() {
-        let mut db = SparqlDatabase::new();
+        let mut db = ml_local::database();
         for sample in ["g0", "g1", "g2", "g3"] {
             db.add_triple_parts(sample, "http://example.org/lx0", "0");
             db.add_triple_parts(sample, "http://example.org/lx1", "1");
@@ -589,4 +614,3 @@ mod tests {
         );
     }
 }
-

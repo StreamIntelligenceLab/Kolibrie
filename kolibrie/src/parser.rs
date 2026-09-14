@@ -9,7 +9,7 @@
  */
 
 use crate::neural_relations::{
-    execute_train_decl, materialize_neural_relations_for_patterns, register_neural_declarations,
+    execute_train_decl, materialize_neural_relations_for_patterns,
 };
 use crate::sparql_database::SparqlDatabase;
 use datalog::reasoning::Reasoner;
@@ -1641,11 +1641,34 @@ fn sparql_aggregate(input: &str) -> IResult<&str, (&str, &str, Option<&str>)> {
         (remaining, "MAX")
     } else if let Ok((remaining, _)) = sparql_keyword(input, "AVG") {
         (remaining, "AVG")
+    } else if let Ok((remaining, _)) = sparql_keyword(input, "COUNT") {
+        (remaining, "COUNT")
     } else {
         return sparql_error(input, nom::error::ErrorKind::Alt);
     };
     let (input, _) = sparql_char(input, '(')?;
-    let (input, variable) = sparql_variable(input)?;
+    let (input, distinct) = match sparql_keyword(input, "DISTINCT") {
+        Ok((remaining, _)) => (remaining, true),
+        Err(_) => (input, false),
+    };
+    let (input, variable) = if aggregate == "COUNT" && sparql_skip_ws(input).starts_with('*') {
+        (&sparql_skip_ws(input)[1..], "*")
+    } else {
+        sparql_variable(input)?
+    };
+    // Keep the public tuple shape source-compatible
+    let aggregate = if distinct {
+        match aggregate {
+            "COUNT" => "COUNT_DISTINCT",
+            "SUM" => "SUM_DISTINCT",
+            "AVG" => "AVG_DISTINCT",
+            "MIN" => "MIN_DISTINCT",
+            "MAX" => "MAX_DISTINCT",
+            _ => unreachable!(),
+        }
+    } else {
+        aggregate
+    };
     let (mut input, _) = sparql_char(input, ')')?;
     let alias = if let Ok((remaining, _)) = sparql_keyword(input, "AS") {
         let (remaining, alias) = sparql_variable(remaining)?;
@@ -3504,7 +3527,6 @@ pub fn convert_combined_rule<'a>(
                 }
                 _ => {
                     // Return an empty vector instead of panicking
-                    println!("Warning: Unsupported filter expression type - skipping");
                     vec![]
                 }
             }
@@ -3518,81 +3540,25 @@ pub fn convert_combined_rule<'a>(
         .map(|triple| convert_triple_pattern(triple, dict, prefixes))
         .collect();
 
-    // Handle windowing information if present
-    if !cr.window_clause.is_empty() {
-        println!("Processing rule with {} windows:", cr.window_clause.len());
-        for (idx, window_clause) in cr.window_clause.iter().enumerate() {
-            println!("  Window {}: IRI: {}", idx + 1, window_clause.window_iri);
-            println!("    Stream IRI: {}", window_clause.stream_iri);
-            println!(
-                "    Window Type: {:?}",
-                window_clause.window_spec.window_type
-            );
-            println!("    Width: {}", window_clause.window_spec.width);
-            if let Some(slide) = window_clause.window_spec.slide {
-                println!("    Slide: {}", slide);
-            }
-            if let Some(report) = window_clause.window_spec.report_strategy {
-                println!("    Report Strategy: {}", report);
-            }
-            if let Some(tick) = window_clause.window_spec.tick {
-                println!("    Tick: {}", tick);
-            }
-        }
-    }
-
-    // Handle stream type if present
-    if let Some(stream_type) = &cr.stream_type {
-        println!("Stream Type: {:?}", stream_type);
-    }
-
     // Handle ML.PREDICT: wire output variable into conclusion triples
     if let Some(ml_predict) = &cr.ml_predict {
-        println!("Processing rule with ML.PREDICT");
 
         let ml_output_var = ml_predict.output.trim_start_matches(['?', '$']);
-        println!("ML output variable: ?{}", ml_output_var);
 
         // Check if the conclusion triples contain the ML output variable
-        for (i, conclusion) in conclusion_triples.iter_mut().enumerate() {
-            println!("Checking conclusion pattern {}: {:?}", i, conclusion);
+        for conclusion in &mut conclusion_triples {
 
             // Check if the conclusion contains variables that need ML output
             match &mut conclusion.2 {
                 Term::Variable(var) if var == ml_output_var => {
-                    println!(
-                        "Found ML output variable ?{} in conclusion object position",
-                        ml_output_var
-                    );
                 }
                 Term::Variable(var) if var == "level" => {
                     // Replace generic 'level' variable with ML output variable
                     *var = ml_output_var.to_string();
-                    println!("Replaced ?level with ML output variable ?{}", ml_output_var);
                 }
                 _ => {}
             }
 
-            // Also check subject and predicate positions
-            match &mut conclusion.0 {
-                Term::Variable(var) if var == ml_output_var => {
-                    println!(
-                        "Found ML output variable ?{} in conclusion subject position",
-                        ml_output_var
-                    );
-                }
-                _ => {}
-            }
-
-            match &mut conclusion.1 {
-                Term::Variable(var) if var == ml_output_var => {
-                    println!(
-                        "Found ML output variable ?{} in conclusion predicate position",
-                        ml_output_var
-                    );
-                }
-                _ => {}
-            }
         }
     }
 
@@ -3608,6 +3574,7 @@ pub fn process_rule_definition(
     rule_input: &str,
     database: &mut SparqlDatabase,
 ) -> Result<(Rule, Vec<Triple>), String> {
+    crate::execute_query::validate_query_policy(rule_input, database)?;
     // First, register any prefixes from the rule with the database
     database.register_prefixes_from_query(rule_input);
 
@@ -3620,13 +3587,13 @@ pub fn process_rule_definition(
 
         let mut rule_prefixes = combined.prefixes.clone();
         database.share_prefixes_with(&mut rule_prefixes);
-        register_neural_declarations(
+        crate::neural_relations::register_neural_declarations_checked(
             database,
             &rule_prefixes,
             &combined.model_decls,
             &combined.neural_relation_decls,
             &combined.train_neural_relation_decls,
-        );
+        )?;
 
         let normalized_trains: Vec<TrainNeuralRelationDecl> = combined
             .train_neural_relation_decls
@@ -3643,18 +3610,18 @@ pub fn process_rule_definition(
             execute_train_decl(database, train_decl).map_err(|err| err.to_string())?;
         }
 
+        #[allow(unused_mut)] // ML-enabled execution can rewrite this rule.
         let mut rule = combined
             .rule
             .ok_or_else(|| "Failed to parse rule definition".to_string())?;
 
         materialize_neural_relations_for_patterns(database, &rule.body.0, &rule_prefixes)?;
 
-        // Execute ML.PREDICT (if present) before converting the rule: Candle-first
-        // dispatch for registered NEURAL RELATION predicates, Python fallback otherwise.
-        // Materializes conclusion triples that reference the ML output variable and strips
-        // those conclusion templates from the rule so the Datalog pass doesn't try to bind
-        // the output variable itself.
+        // Execute ML.PREDICT before converting the rule for Datalog
         if let Some(ml_predict) = rule.ml_predict.clone() {
+            #[cfg(not(feature = "ml"))]
+            { let _ = ml_predict; return Err("ML_FEATURE_DISABLED".into()); }
+            #[cfg(feature = "ml")]
             crate::ml_predict_runtime::execute_ml_predict_clause(
                 &ml_predict,
                 &mut rule,
@@ -3678,10 +3645,6 @@ pub fn process_rule_definition(
 
         // Check if this rule has windowing - if so, set up RSP processing
         if !rule.window_clause.is_empty() {
-            println!(
-                "Setting up RSP window processing for rule with {} windows",
-                rule.window_clause.len()
-            );
 
             let mut all_stream_results: Vec<Triple> = Vec::new();
             let mut rsp_windows: Vec<CSPARQLWindow<WindowTriple>> = Vec::new();
@@ -3722,7 +3685,6 @@ pub fn process_rule_definition(
 
                 rsp_window.register_callback(Box::new(
                     move |content: ContentContainer<WindowTriple>| {
-                        println!("Processing window content with {} triples", content.len());
 
                         // Convert window content back to Knowledge Graph format
                         let mut window_kg = kg_clone.clone();
@@ -3736,9 +3698,8 @@ pub fn process_rule_definition(
 
                         // Apply the rule to windowed data
                         window_kg.add_rule(rule_clone.clone());
-                        let window_inferred = window_kg.infer_new_facts_semi_naive();
+                        window_kg.infer_new_facts_semi_naive();
 
-                        println!("Window processing inferred {} facts", window_inferred.len());
                     },
                 ));
 
@@ -3761,11 +3722,6 @@ pub fn process_rule_definition(
                 let mut r2s_operator = Relation2StreamOperator::new(stream_operator.clone(), 0);
                 let stream_results = r2s_operator.eval(inferred_facts.clone(), eval_time);
 
-                println!(
-                    "Stream operator ({:?}) produced {} results",
-                    stream_operator.clone(),
-                    stream_results.len()
-                );
 
                 // Add inferred facts to the database
                 for triple in stream_results.iter() {
@@ -3966,21 +3922,11 @@ pub fn process_retrieve_clause(
     retrieve_clause: &RetrieveClause,
     database: &mut SparqlDatabase,
 ) -> Result<Vec<Triple>, String> {
-    println!("Processing RETRIEVE clause:");
-    println!("  Mode: {:?}", retrieve_clause.mode);
-    println!("  State: {:?}", retrieve_clause.state);
-    println!("  Variable: {}", retrieve_clause.variable);
-    println!("  From IRI: {}", retrieve_clause.from_iri);
-    println!(
-        "  Graph patterns: {} triples",
-        retrieve_clause.graph_pattern.len()
-    );
 
     // Convert graph patterns to triple patterns for matching
     let mut retrieved_triples = Vec::new();
 
     for pattern in &retrieve_clause.graph_pattern {
-        println!("  Pattern: {} {} {}", pattern.0, pattern.1, pattern.2);
 
         // Create a temporary knowledge graph to match patterns
         let mut kg = Reasoner::new();
@@ -4010,7 +3956,6 @@ pub fn process_retrieve_clause(
         }
     }
 
-    println!("Retrieved {} matching triples", retrieved_triples.len());
     Ok(retrieved_triples)
 }
 

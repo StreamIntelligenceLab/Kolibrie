@@ -15,7 +15,7 @@ use shared::sdd::SddProvenance;
 
 const EX: &str = "http://example.org/";
 const PROB: &str = "http://www.w3.org/ns/prob#";
-const MODEL_PATH: &str = "/tmp/kolibrie_provenance_feedback_model.bin";
+const MODEL_PATH: &str = "kolibrie_provenance_feedback_model.bin";
 const SENSOR_TYPE: &str = "http://example.org/Sensor";
 const LABEL_MONITOR: &str = "http://example.org/monitor";
 const LABEL_DISPATCH: &str = "http://example.org/dispatch";
@@ -384,7 +384,7 @@ fn main() {
         },
     ];
 
-    let mut db = SparqlDatabase::new();
+    let mut db = SparqlDatabase::with_ml_context(local_ml::trusted_context());
 
     println!("Syntax-first provenance -> neural relation -> reasoning feedback loop");
     println!("Probabilistic base facts are still loaded through a Rust helper; rules, queries, and neural declarations are shown in syntax\n");
@@ -448,3 +448,5 @@ fn main() {
 
     println!("\nModel saved to {MODEL_PATH}");
 }
+
+mod local_ml { include!(concat!(env!("CARGO_MANIFEST_DIR"), "/examples/support/ml_context.rs")); }

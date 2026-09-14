@@ -170,6 +170,8 @@ fn reencode_term_id(
 
 #[derive(Debug, Clone)]
 pub struct SparqlDatabase {
+    /// Host-selected ML authority
+    pub ml_context: crate::ml_policy::MlExecutionContext,
     pub dataset_index: DatasetIndex,
     pub dictionary: Arc<RwLock<Dictionary>>,
     pub prefixes: HashMap<String, String>,
@@ -188,8 +190,15 @@ pub struct SparqlDatabase {
 
 #[allow(dead_code)]
 impl SparqlDatabase {
+    /// Initialize with host-selected ML authority
+    pub fn with_ml_context(context: crate::ml_policy::MlExecutionContext) -> Self {
+        let mut database = Self::new();
+        database.ml_context = context;
+        database
+    }
     pub fn new() -> Self {
         Self {
+            ml_context: crate::ml_policy::MlExecutionContext::disabled(),
             dataset_index: DatasetIndex::new(),
             dictionary: Arc::new(RwLock::new(Dictionary::new())),
             prefixes: HashMap::new(),
@@ -779,8 +788,8 @@ impl SparqlDatabase {
                         }
                     }
                     Ok(Event::Eof) => break,
-                    Err(e) => {
-                        eprintln!("Error reading XML: {:?}", e);
+                    Err(_e) => {
+                        eprintln!("KOLIBRIE_OPERATION_FAILED");
                         break;
                     }
                     _ => {}
@@ -846,11 +855,11 @@ impl SparqlDatabase {
                     }
                 }
                 Ok(Event::Eof) => {
-                    eprintln!("Reached EOF before reading prefixes.");
+                    eprintln!("KOLIBRIE_OPERATION_FAILED");
                     break;
                 }
-                Err(e) => {
-                    eprintln!("Error reading XML: {:?}", e);
+                Err(_e) => {
+                    eprintln!("KOLIBRIE_OPERATION_FAILED");
                     break;
                 }
                 _ => {}
@@ -944,8 +953,8 @@ impl SparqlDatabase {
                     }
                 }
                 Ok(Event::Eof) => break,
-                Err(e) => {
-                    eprintln!("Error reading XML: {:?}", e);
+                Err(_e) => {
+                    eprintln!("KOLIBRIE_OPERATION_FAILED");
                     break;
                 }
                 _ => {}
@@ -997,7 +1006,7 @@ impl SparqlDatabase {
                         .to_string();
                     self.prefixes.insert(prefix, uri);
                 } else {
-                    eprintln!("Invalid prefix declaration: {}", line);
+                    eprintln!("KOLIBRIE_OPERATION_FAILED");
                 }
                 continue;
             }
@@ -1305,7 +1314,7 @@ impl SparqlDatabase {
                                 .to_string();
                             local_db.prefixes.insert(prefix, uri);
                         } else {
-                            eprintln!("Invalid prefix declaration: {}", line);
+                            eprintln!("KOLIBRIE_OPERATION_FAILED");
                         }
                     } else {
                         statement.push_str(line);
@@ -1371,7 +1380,7 @@ impl SparqlDatabase {
 
                     // N-Triples must end with a dot
                     if !line.ends_with('.') {
-                        eprintln!("Invalid N-Triples line (missing dot): {}", line);
+                        eprintln!("KOLIBRIE_OPERATION_FAILED");
                         continue;
                     }
 
@@ -1427,7 +1436,7 @@ impl SparqlDatabase {
             let line_without_dot = if line.ends_with('.') {
                 line[..line.len() - 1].trim()
             } else {
-                eprintln!("Invalid N-Quads line (missing dot): {}", line);
+                eprintln!("KOLIBRIE_OPERATION_FAILED");
                 continue;
             };
 
@@ -1455,11 +1464,7 @@ impl SparqlDatabase {
     fn parse_nquads_line(&self, line: &str) -> Option<(String, String, String, Option<String>)> {
         let mut parts = self.parse_ntriples_parts(line);
         if !matches!(parts.len(), 3 | 4) {
-            eprintln!(
-                "Invalid N-Quads line (expected 3 or 4 parts, got {}): {}",
-                parts.len(),
-                line
-            );
+            eprintln!("KOLIBRIE_OPERATION_FAILED");
             return None;
         }
         let subject = self.clean_ntriples_term(&parts.remove(0));
@@ -1483,11 +1488,7 @@ impl SparqlDatabase {
             let object = self.clean_ntriples_term(&parts[2]);
             Some((subject, predicate, object))
         } else {
-            eprintln!(
-                "Invalid N-Triples line (expected 3 parts, got {}): {}",
-                parts.len(),
-                line
-            );
+            eprintln!("KOLIBRIE_OPERATION_FAILED");
             None
         }
     }
@@ -1761,7 +1762,7 @@ impl SparqlDatabase {
             if let Some(uri) = self.prefixes.get(prefix) {
                 format!("{}{}", uri, local_name)
             } else {
-                eprintln!("Unknown prefix: {}", prefix);
+                eprintln!("KOLIBRIE_OPERATION_FAILED");
                 term.to_string()
             }
         } else {
@@ -1817,7 +1818,7 @@ impl SparqlDatabase {
             else if let Some(uri) = self.prefixes.get(prefix) {
                 format!("{}{}", uri, local_name)
             } else {
-                eprintln!("Unknown prefix in query: {}", prefix);
+                eprintln!("KOLIBRIE_OPERATION_FAILED");
                 term.to_string()
             }
         } else {
@@ -1977,6 +1978,7 @@ impl SparqlDatabase {
             rule_map: HashMap::new(),
             model_decls: self.model_decls.clone(),
             neural_relation_decls: self.neural_relation_decls.clone(),
+            ml_context: self.ml_context.clone(),
             train_neural_relation_decls: self.train_neural_relation_decls.clone(),
             neural_model_artifacts: self.neural_model_artifacts.clone(),
             neural_materialized_triples: self.neural_materialized_triples.clone(),
@@ -2036,7 +2038,15 @@ impl SparqlDatabase {
                 .map(|row| row.join("\t"))
                 .collect::<Vec<_>>()
                 .join("\n"),
-            Err(error) => format!("Query Failed: {error}"),
+            Err(error) => {
+                let (status, code) = match error.as_str() {
+                    "ML_FEATURE_DISABLED" => ("503 Service Unavailable", "ML_FEATURE_DISABLED"),
+                    "ML_FORBIDDEN" => ("403 Forbidden", "ML_FORBIDDEN"),
+                    "ML_INVALID_ARTIFACT" => ("403 Forbidden", "ML_INVALID_ARTIFACT"),
+                    _ => return "Query Failed: QUERY_EXECUTION_FAILED".to_string(),
+                };
+                format!("HTTP/1.1 {status}\r\nContent-Type: text/plain\r\nContent-Length: {}\r\n\r\n{code}", code.len())
+            }
         }
     }
 
@@ -2064,6 +2074,13 @@ impl SparqlDatabase {
     }
 
     pub fn handle_http_request(&mut self, request: &str) -> String {
+        let context = self.ml_context.for_http();
+        crate::execute_query::with_ml_context(self, &context, |db| {
+            db.handle_http_request_inner(request)
+        })
+    }
+
+    fn handle_http_request_inner(&mut self, request: &str) -> String {
         let mut headers = [httparse::EMPTY_HEADER; 16];
         let mut req = httparse::Request::new(&mut headers);
         req.parse(request.as_bytes()).unwrap();
@@ -2114,17 +2131,9 @@ impl SparqlDatabase {
         "Bad Request".to_string()
     }
 
+    /// Return the decoded graph size for diagnostics
     pub fn debug_print_triples(&self) {
-        let dict = self.dictionary.read().unwrap();
-        let default_triples = self.query_default_triples(None, None, None);
-        for triple in &default_triples {
-            println!(
-                "Stored Triple -> Subject: {}, Predicate: {}, Object: {}",
-                dict.decode(triple.subject).unwrap(),
-                dict.decode(triple.predicate).unwrap(),
-                dict.decode(triple.object).unwrap()
-            );
-        }
+        println!("TRIPLE_COUNT {}", self.query_default_triples(None, None, None).len());
     }
 
     // Create user defined function

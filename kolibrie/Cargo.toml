@@ -15,6 +15,7 @@ exclude = ["target/"]
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
+sha2 = { version = "0.10", optional = true }
 quick-xml = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
@@ -26,10 +27,10 @@ url = { workspace = true }
 percent-encoding = { workspace = true }
 httparse = { workspace = true }
 crossbeam = { workspace = true }
-pyo3 = { workspace = true }
+pyo3 = { workspace = true, optional = true }
 shared = { path = "../shared" }
 datalog =  { path = "../datalog" }
-ml = { path = "../ml" }
+ml = { path = "../ml", optional = true }
 chrono = "0.4.40"
 rumqttc = "0.21.0"
 log = "0.4.27"
@@ -42,6 +43,8 @@ libc = "0.2.161"
 winapi = { version = "0.3.9", features = ["processthreadsapi", "psapi", "sysinfoapi"] }
 
 [features]
+default = []
+ml = ["dep:ml", "dep:pyo3", "dep:sha2"]
 exec-stats = []
 
 [dev-dependencies]
@@ -263,6 +266,7 @@ path = "examples/sparql_syntax/combination/combination.rs"
 
 [[example]]
 name = "combination_stream"
+required-features = ["ml"]
 path = "examples/sparql_syntax/combination/combination_stream.rs"
 
 [[example]]
@@ -275,14 +279,17 @@ path = "examples/sparql_syntax/combination/combination_logic_extend.rs"
 
 [[example]]
 name = "combination_ml"
+required-features = ["ml"]
 path = "examples/sparql_syntax/combination/combination_ml.rs"
 
 [[example]]
 name = "combination_ml_savings"
+required-features = ["ml"]
 path = "examples/sparql_syntax/combination/combination_ml_savings.rs"
 
 [[example]]
 name = "combination_ml_change_conclusion"
+required-features = ["ml"]
 path = "examples/sparql_syntax/combination/combination_ml_change_conclusion.rs"
 
 [[example]]
@@ -291,6 +298,7 @@ path = "examples/sparql_syntax/combination/multiple_conclusions.rs"
 
 [[example]]
 name = "full_combination"
+required-features = ["ml"]
 path = "examples/sparql_syntax/combination/full_combination.rs"
 
 [[example]]
@@ -307,14 +315,17 @@ path = "examples/sparql_syntax/rsp_ql_syntax/retrieve_multiple_window.rs"
 
 [[example]]
 name = "mnist_train"
+required-features = ["ml"]
 path = "examples/sparql_syntax/ml_train/mnist_train.rs"
 
 [[example]]
 name = "provenance_feedback_loop"
+required-features = ["ml"]
 path = "examples/sparql_syntax/ml_train/provenance_feedback_loop.rs"
 
 [[example]]
 name = "predict_after_train"
+required-features = ["ml"]
 path = "examples/sparql_syntax/ml_train/predict_after_train.rs"
 
 [[example]]
@@ -331,6 +342,7 @@ path = "examples/real_scenario/mqtt_real_scenario.rs"
 
 [[example]]
 name = "fraud_detection_system"
+required-features = ["ml"]
 path = "examples/real_scenario/fraud_detection_system.rs"
 
 [[example]]

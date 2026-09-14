@@ -14,7 +14,6 @@ use super::super::types::{SubqueryProjection, SubquerySpec};
 
 use crate::sparql_database::SparqlDatabase;
 use crate::term_order;
-use ml::MLPredictionResult;
 use rayon::prelude::*;
 
 use shared::dataset_index::{GraphId, GraphTerm, QuadPattern};
@@ -683,7 +682,7 @@ impl ExecutionEngine {
                     drop(dict_write);
                     input_results
                 } else {
-                    eprintln!("Function {} not found", function_name);
+                    eprintln!("UDF_NOT_FOUND");
                     input_results
                 }
             }
@@ -711,70 +710,23 @@ impl ExecutionEngine {
 
                 Self::join_solution_sequences(incoming, results)
             }
-            PhysicalOperator::MLPredict {
-                input,
-                model_name,
-                model_path,
-                input_variables,
-                output_variable,
-            } => {
-                // Execute the input operator first
-                let input_results =
-                    Self::execute_with_ids_and_input(input, database, context, incoming);
-
-                if input_results.is_empty() {
-                    return input_results;
+            PhysicalOperator::MLPredict { input, model_name, input_variables, output_variable, .. } => {
+                if database.ml_context.approved_model(model_name).is_err() {
+                    eprintln!("ML_EXECUTION_REJECTED");
+                    return Vec::new();
                 }
-
-                println!(
-                    "[ML.PREDICT] Executing prediction with model: {}",
-                    model_name
-                );
-                println!("[ML.PREDICT] Model path: {}", model_path);
-                println!("[ML.PREDICT] Input variables: {:?}", input_variables);
-                println!("[ML.PREDICT] Output variable: {}", output_variable);
-                println!("[ML.PREDICT] Input rows: {}", input_results.len());
-
-                // Try Candle first: when the model name maps to exactly one registered
-                match crate::ml_predict_candle::try_candle_predict_by_model_name(
-                    database,
-                    model_name,
-                    &input_results,
-                ) {
-                    Ok(Some(dispatch)) => {
-                        println!("[ML.PREDICT] Dispatched to Candle (model={})", model_name);
-                        return Self::merge_candle_predictions(
-                            input_results,
-                            dispatch.predictions,
-                            output_variable,
-                            database,
-                        );
-                    }
-                    Ok(None) => {
-                        println!("[ML.PREDICT] No Candle registration for model '{}', falling back to Python", model_name);
-                    }
-                    Err(e) => {
-                        eprintln!("[ML.PREDICT] Candle dispatch error: {}", e);
-                        return input_results;
-                    }
-                }
-
-                // Extract input data for ML prediction
-                let input_data =
-                    Self::extract_ml_input_data(&input_results, input_variables, database);
-
-                // Call the existing ML handler infrastructure
-                match Self::invoke_ml_handler(model_path, model_name, input_data) {
-                    Ok(predictions) => Self::merge_ml_predictions(
-                        input_results,
-                        predictions,
-                        output_variable,
-                        database,
-                    ),
-                    Err(e) => {
-                        eprintln!("[ML.PREDICT] Error executing ML model: {}", e);
-                        input_results
-                    }
+                let rows = Self::execute_with_ids_and_input(input, database, context, incoming);
+                let data = {
+                    let dict = database.dictionary.read().unwrap();
+                    rows.iter().map(|row| input_variables.iter().map(|var| {
+                        row.get(Self::normalize_variable(var)).and_then(|id| dict.decode(*id))
+                            .and_then(|value| value.parse::<f64>().ok())
+                    }).collect::<Option<Vec<_>>>()).collect::<Option<Vec<_>>>()
+                };
+                let Some(data) = data else { return Vec::new(); };
+                match database.ml_context.predict(model_name, &data) {
+                    Ok(predictions) => Self::merge_candle_predictions(rows, predictions, output_variable, database),
+                    Err(_) => { eprintln!("ML_EXECUTION_FAILED"); Vec::new() }
                 }
             }
         }
@@ -868,6 +820,14 @@ impl ExecutionEngine {
 
                 for aggregate in &aggregates {
                     let input = Self::normalize_variable(&aggregate.variable);
+                    let normalized_kind = aggregate.kind.to_ascii_uppercase();
+                    let descriptor = crate::aggregate::Aggregate::parse(&normalized_kind);
+                    if descriptor.kind == "COUNT" && input == "*" {
+                        let count = descriptor.star_count(&group);
+                        let id = database.dictionary.write().unwrap().encode(&count);
+                        result.insert(Self::subquery_output_variable(aggregate), id);
+                        continue;
+                    }
                     let values = group
                         .iter()
                         .filter_map(|row| row.get(input).copied())
@@ -1419,168 +1379,6 @@ impl ExecutionEngine {
             .collect()
     }
 
-    /// Extracts input data for ML prediction from query results
-    fn extract_ml_input_data(
-        input_results: &[HashMap<String, u32>],
-        input_variables: &[String],
-        database: &SparqlDatabase,
-    ) -> Vec<Vec<f64>> {
-        if let Some(first_row) = input_results.first() {
-            println!(
-                "[ML.PREDICT DEBUG] First row keys: {:?}",
-                first_row.keys().collect::<Vec<_>>()
-            );
-            println!(
-                "[ML.PREDICT DEBUG] Input variables to check: {:?}",
-                input_variables
-            );
-
-            // Show what values decode to
-            let dict = database.dictionary.read().unwrap();
-            for (key, &id) in first_row {
-                if let Some(value) = dict.decode(id) {
-                    println!(
-                        "[ML.PREDICT DEBUG]   {} -> {} (parses as f64: {})",
-                        key,
-                        value,
-                        value.parse::<f64>().is_ok()
-                    );
-                }
-            }
-            drop(dict);
-        }
-
-        // Identify which variables are actually numeric by checking the first row
-        let numeric_vars: Vec<String> = if let Some(first_row) = input_results.first() {
-            let dict = database.dictionary.read().unwrap();
-            let vars: Vec<String> = input_variables
-                .iter()
-                .filter(|var| {
-                    let var_stripped = var.strip_prefix('?').unwrap_or(var);
-                    if let Some(&id) = first_row.get(var_stripped) {
-                        if let Some(value_str) = dict.decode(id) {
-                            value_str.parse::<f64>().is_ok()
-                        } else {
-                            false
-                        }
-                    } else {
-                        false
-                    }
-                })
-                .cloned()
-                .collect();
-            drop(dict);
-            vars
-        } else {
-            return Vec::new();
-        };
-
-        println!("[ML.PREDICT] Numeric feature variables: {:?}", numeric_vars);
-
-        // Now extract only numeric features
-        let dict = database.dictionary.read().unwrap();
-        let result: Vec<Vec<f64>> = input_results
-            .iter()
-            .map(|row| {
-                numeric_vars
-                    .iter()
-                    .filter_map(|var| {
-                        let var_stripped = var.strip_prefix('?').unwrap_or(var);
-
-                        if let Some(&id) = row.get(var_stripped) {
-                            if let Some(value_str) = dict.decode(id) {
-                                value_str.parse::<f64>().ok()
-                            } else {
-                                None
-                            }
-                        } else {
-                            None
-                        }
-                    })
-                    .collect()
-            })
-            .collect();
-        drop(dict);
-        result
-    }
-
-    /// Invokes the ML handler to make predictions
-    fn invoke_ml_handler(
-        model_dir: &str,
-        model_name: &str,
-        input_data: Vec<Vec<f64>>,
-    ) -> Result<MLPredictionResult, Box<dyn std::error::Error>> {
-        use ml::generate_ml_models;
-        use ml::MLHandler;
-
-        println!("[ML.PREDICT] Initializing ML handler...");
-        let mut ml_handler = MLHandler::new()?;
-
-        println!("[ML.PREDICT] Looking for models in: {}", model_dir);
-
-        let model_dir_path = std::path::PathBuf::from(model_dir);
-        std::fs::create_dir_all(&model_dir_path)?;
-
-        // Check if a matching .pkl model exists
-        let models_exist = std::fs::read_dir(&model_dir_path)?
-            .filter_map(Result::ok)
-            .filter(|entry| {
-                let path = entry.path();
-                path.is_file()
-                    && path.extension().map_or(false, |ext| ext == "pkl")
-                    && path
-                        .file_stem()
-                        .and_then(|s| s.to_str())
-                        .map_or(false, |stem| stem.ends_with("_predictor"))
-            })
-            .count()
-            >= 1;
-
-        if !models_exist {
-            println!("[ML.PREDICT] Models not found. Generating models...");
-            // Derive script name from model_name: "fraud_predictor" -> "fraud_predictor.py"
-            let script_name = format!("{}.py", model_name);
-            let predictor_script = model_dir_path
-                .parent()
-                .and_then(|p| p.parent())
-                .map(|p| p.join(&script_name))
-                .unwrap_or_else(|| std::path::PathBuf::from(&script_name));
-
-            if let Some(script_path) = predictor_script.to_str() {
-                generate_ml_models(&model_dir_path, script_path)?;
-            }
-        }
-
-        println!("[ML.PREDICT] Discovering models and analyzing schemas...");
-        let model_ids = ml_handler.discover_and_load_models(&model_dir_path, model_name)?;
-
-        if model_ids.is_empty() {
-            return Err("No valid models found with TTL schemas".into());
-        }
-
-        let best_model_name = ml_handler.best_model.as_deref().unwrap_or(&model_ids[0]);
-        println!("[ML.PREDICT] Using best model: {}", best_model_name);
-
-        println!(
-            "[ML.PREDICT] Running predictions on {} samples...",
-            input_data.len()
-        );
-        let start = std::time::Instant::now();
-
-        let result = ml_handler.predict(best_model_name, input_data)?;
-
-        let elapsed = start.elapsed();
-        println!(
-            "[ML.PREDICT] Prediction completed in {:.3}s",
-            elapsed.as_secs_f64()
-        );
-        println!(
-            "[ML.PREDICT] Throughput: {:.1} predictions/sec",
-            result.predictions.len() as f64 / elapsed.as_secs_f64()
-        );
-
-        Ok(result)
-    }
 
     /// Merges string-valued Candle predictions back into id-encoded query rows
     fn merge_candle_predictions(
@@ -1600,36 +1398,7 @@ impl ExecutionEngine {
         }
         drop(dict);
 
-        println!(
-            "[ML.PREDICT] Candle: merged {} predictions",
-            predictions.len()
-        );
         input_results
     }
 
-    /// Merges ML predictions back into query results
-    fn merge_ml_predictions(
-        mut input_results: Vec<HashMap<String, u32>>,
-        predictions: MLPredictionResult,
-        output_variable: &str,
-        database: &SparqlDatabase,
-    ) -> Vec<HashMap<String, u32>> {
-        let output_var = output_variable.strip_prefix('?').unwrap_or(output_variable);
-
-        let mut dict = database.dictionary.write().unwrap();
-        for (i, prediction) in predictions.predictions.iter().enumerate() {
-            if i < input_results.len() {
-                let prediction_str = prediction.to_string();
-                let prediction_id = dict.encode(&prediction_str);
-                input_results[i].insert(output_var.to_string(), prediction_id);
-            }
-        }
-        drop(dict);
-
-        println!(
-            "[ML.PREDICT] Successfully added {} predictions",
-            predictions.predictions.len()
-        );
-        input_results
-    }
 }

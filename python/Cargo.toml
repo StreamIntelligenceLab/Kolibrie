@@ -13,3 +13,7 @@ pyo3 = { workspace = true }
 datalog = { path = "../datalog" }
 shared = { path = "../shared" }
 kolibrie_core = { package = "kolibrie", path = "../kolibrie" }
+
+[features]
+default = []
+ml = ["kolibrie_core/ml"]

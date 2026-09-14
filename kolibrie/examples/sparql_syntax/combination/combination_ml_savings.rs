@@ -254,7 +254,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         </rdf:RDF>
     "#;
 
-    let mut database = SparqlDatabase::new();
+    let mut database = SparqlDatabase::with_ml_context(local_ml::trusted_context());
     database.parse_rdf(rdf_xml_data);
     println!("Database RDF triples loaded.");
 
@@ -310,7 +310,7 @@ RULE :SavingsAlert :-
                     match execute_ml_prediction_from_clause(
                         ml_predict, 
                         &database, 
-                        "saving_predictor.py", 
+                        "saving_predictor",
                         extract_financial_data_from_database, 
                         predict_savings
                     ) {
@@ -446,3 +446,5 @@ WHERE {
 
     Ok(())
 }
+
+mod local_ml { include!(concat!(env!("CARGO_MANIFEST_DIR"), "/examples/support/ml_context.rs")); }

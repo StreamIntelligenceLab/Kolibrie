@@ -83,7 +83,6 @@ fn duplicate_values_still_contribute_to_the_aggregate() {
 }
 
 #[test]
-#[ignore = "the parser accepts SUM, MIN, MAX and AVG but not COUNT"]
 fn count_reports_the_group_size() {
     let mut database = staff();
     assert_eq!(

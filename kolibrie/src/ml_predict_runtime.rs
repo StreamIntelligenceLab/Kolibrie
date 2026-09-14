@@ -112,6 +112,10 @@ pub fn execute_ml_predict_clause<'a>(
     database: &mut SparqlDatabase,
     rule_prefixes: &HashMap<String, String>,
 ) -> MlResult<Vec<Triple>> {
+    let trusted = database.ml_context.require_local().is_ok();
+    if !trusted {
+        database.ml_context.approved_model(ml_predict.model)?;
+    }
     let out_var = ml_predict.output;
     let meta = resolve_ml_conclusion_metadata(rule, out_var, rule_prefixes, database)?;
 
@@ -128,14 +132,18 @@ pub fn execute_ml_predict_clause<'a>(
         return Ok(Vec::new());
     }
 
-    // Try Candle first
-    let candle = try_candle_predict(
-        database,
-        ml_predict,
-        &rule.conclusion,
-        rule_prefixes,
-        &input_rows,
-    )?;
+    // Local execution may use its registered native relation
+    let candle = if trusted {
+        try_candle_predict(
+            database,
+            ml_predict,
+            &rule.conclusion,
+            rule_prefixes,
+            &input_rows,
+        )?
+    } else {
+        None
+    };
 
     let (predictions, probabilities, emit_prob_var) = match candle {
         Some(dispatch) => {
@@ -144,6 +152,34 @@ pub fn execute_ml_predict_clause<'a>(
                 shared::query::NeuralOutputKind::Binary { .. }
             );
             (dispatch.predictions, dispatch.probabilities, emit_prob)
+        }
+        None if !trusted => {
+            let variables: Vec<_> = ml_predict
+                .input_select
+                .iter()
+                .map(|(variable, _, _)| variable.trim_start_matches(['?', '$']))
+                .collect();
+            let features = input_rows
+                .iter()
+                .map(|row| {
+                    variables
+                        .iter()
+                        .map(|var| {
+                            row.get(*var)
+                                .and_then(|id| database.decode_any(*id))
+                                .and_then(|value| {
+                                    crate::ml_feature_loader::rdf_term_to_f64(&value).ok()
+                                })
+                                .ok_or("ML_INVALID_INPUT")
+                        })
+                        .collect::<Result<Vec<_>, _>>()
+                })
+                .collect::<Result<Vec<_>, _>>()?;
+            (
+                database.ml_context.predict(ml_predict.model, &features)?,
+                Vec::new(),
+                false,
+            )
         }
         None => {
             // Fall back to Python
@@ -246,7 +282,8 @@ fn purge_previous_materialization(database: &mut SparqlDatabase, cache_key: &str
 fn strip_ml_conclusions<'a>(rule: &mut CombinedRule<'a>, ml_output_var: &str) {
     let out_stripped = ml_output_var.trim_start_matches('?');
     rule.conclusion.retain(|(s, p, o)| {
-        let matches = |slot: &str| slot.starts_with('?') && slot.trim_start_matches('?') == out_stripped;
+        let matches =
+            |slot: &str| slot.starts_with('?') && slot.trim_start_matches('?') == out_stripped;
         !(matches(s) || matches(p) || matches(o))
     });
 }
@@ -342,7 +379,8 @@ pub fn materialize_ml_conclusions<'a>(
 
     // Strip ML templates from the rule
     conclusion.retain(|(s, p, o)| {
-        let matches = |slot: &str| slot.starts_with('?') && slot.trim_start_matches('?') == out_stripped;
+        let matches =
+            |slot: &str| slot.starts_with('?') && slot.trim_start_matches('?') == out_stripped;
         !(matches(s) || matches(p) || matches(o))
     });
 
@@ -377,7 +415,12 @@ fn substitute_slot(
     }
 }
 
-fn encode_triple(database: &mut SparqlDatabase, subject: &str, predicate: &str, object: &str) -> Triple {
+fn encode_triple(
+    database: &mut SparqlDatabase,
+    subject: &str,
+    predicate: &str,
+    object: &str,
+) -> Triple {
     Triple {
         subject: database.encode_term_star(subject),
         predicate: database.encode_term_star(predicate),
@@ -392,7 +435,6 @@ pub(crate) fn run_python_ml_dispatch(
     input_rows: &[HashMap<String, u32>],
     input_select: &[(&str, &str, Option<&str>)],
 ) -> MlResult<Vec<String>> {
-    use ml::generate_ml_models;
     use ml::MLHandler;
 
     if input_rows.is_empty() {
@@ -419,7 +461,6 @@ pub(crate) fn run_python_ml_dispatch(
             }
         }
     };
-    std::fs::create_dir_all(&model_dir)?;
 
     let models_exist = std::fs::read_dir(&model_dir)?
         .filter_map(Result::ok)
@@ -436,23 +477,17 @@ pub(crate) fn run_python_ml_dispatch(
         >= 1;
 
     if !models_exist {
-        let script_name = format!("{}.py", model);
-        let predictor_script = model_dir
-            .parent()
-            .and_then(|p| p.parent())
-            .map(|p| p.join(&script_name))
-            .unwrap_or_else(|| std::path::PathBuf::from(&script_name));
-        if let Some(script_path) = predictor_script.to_str() {
-            generate_ml_models(&model_dir, script_path)?;
-        }
+        return Err("model is missing; generate it explicitly in a trusted local workflow".into());
     }
-
     let mut ml_handler = MLHandler::new()?;
     let model_ids = ml_handler.discover_and_load_models(&model_dir, model)?;
     if model_ids.is_empty() {
         return Err("No valid models found with TTL schemas".into());
     }
-    let best_model_name = ml_handler.best_model.clone().unwrap_or_else(|| model_ids[0].clone());
+    let best_model_name = ml_handler
+        .best_model
+        .clone()
+        .unwrap_or_else(|| model_ids[0].clone());
 
     let result = ml_handler.predict(&best_model_name, feature_matrix)?;
     Ok(result.predictions.iter().map(f64::to_string).collect())
