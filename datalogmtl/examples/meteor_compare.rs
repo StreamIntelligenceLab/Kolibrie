@@ -347,6 +347,9 @@ fn atom_pred_id(pat: &TriplePattern, rdf_type: u32) -> Option<u32> {
 fn collect_body_preds(atom: &TemporalAtom, rdf_type: u32, out: &mut Vec<u32>) {
     match atom {
         TemporalAtom::Base(p) => { if let Some(id) = atom_pred_id(p, rdf_type) { out.push(id); } }
+        TemporalAtom::Conj(atoms) => {
+            for a in atoms { collect_body_preds(a, rdf_type, out); }
+        }
         TemporalAtom::Diamond { inner, .. }
         | TemporalAtom::Box_ { inner, .. }
         | TemporalAtom::Prev { inner, .. }

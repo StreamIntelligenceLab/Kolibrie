@@ -70,7 +70,23 @@
   .drone-a{background:#0f766e}
   .drone-b{background:#1d4ed8}
   .leaflet-div-icon{background:transparent;border:0}
+  .tabs{display:flex;gap:4px;padding:10px 16px 0;background:#f1f5f9;border-bottom:1px solid #dce3eb;position:sticky;top:0;z-index:30}
+  .tab{border:0;background:transparent;cursor:pointer;font-size:12px;font-weight:700;letter-spacing:.04em;text-transform:uppercase;color:#607086;padding:8px 10px;border-bottom:2px solid transparent}
+  .tab.active{color:#0f766e;border-bottom-color:#0f766e}
+  .tabpane{display:none}
+  .tabpane.active{display:block}
+  /* Rule text needs room; 390px is unusable for multi-line editing. */
+  body.editing .app{grid-template-columns:minmax(0,1fr) 660px}
+  textarea.editor{width:100%;min-height:230px;font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-size:11px;line-height:1.5;border:1px solid #dbe3ec;border-radius:8px;padding:8px;resize:vertical;background:#fff;color:#17212f}
+  textarea.editor:focus{outline:2px solid #0f766e;outline-offset:-1px}
+  .hint{font-size:11px;color:#708095;line-height:1.45;margin:0 0 8px}
+  .controls{display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-top:10px}
+  .controls label{font-size:12px;color:#435167;display:flex;gap:5px;align-items:center}
+  .status-line{font-size:12px;padding:8px 0;color:#435167;min-height:18px;white-space:pre-wrap;word-break:break-word}
+  .status-line.error{color:#b91c1c}
+  .status-line.ok{color:#0f766e}
   @media (max-width:900px){
+    body.editing .app{grid-template-columns:1fr}
     .app{grid-template-columns:1fr;grid-template-rows:62vh 38vh}
     #map{height:62vh}
     .sidebar{height:38vh;border-left:0;border-top:1px solid #cbd5df}
@@ -87,30 +103,75 @@
     <div id="map"></div>
   </section>
   <aside class="sidebar">
-    <section class="panel">
-      <h1>Ghent Drone Safety</h1>
-      <div class="legend">
-        <span>UZ Gent</span>
-        <span>Ghent City Hall</span>
-        <span>Citadelpark</span>
-      </div>
-    </section>
-    <section class="panel">
-      <h2>Drone State</h2>
-      <div id="drone-state"></div>
-    </section>
-    <section class="panel">
-      <h2>Active Alerts</h2>
-      <div id="alerts"><div class="empty">No active alerts.</div></div>
-    </section>
-    <section class="panel">
-      <h2>DatalogMTL Output</h2>
-      <div class="log" id="derived"><div>No derived facts yet.</div></div>
-    </section>
-    <section class="panel">
-      <h2>RDF Telemetry</h2>
-      <div class="log" id="rdf-log"><div>Waiting for stream events.</div></div>
-    </section>
+    <nav class="tabs">
+      <button class="tab active" type="button" data-pane="live">Live</button>
+      <button class="tab" type="button" data-pane="rules">Rules &amp; Shape</button>
+    </nav>
+
+    <div class="tabpane active" id="pane-live">
+      <section class="panel">
+        <h1>Ghent Drone Safety</h1>
+        <div class="legend">
+          <span>UZ Gent</span>
+          <span>Ghent City Hall</span>
+          <span>Citadelpark</span>
+        </div>
+      </section>
+      <section class="panel">
+        <h2>Drone State</h2>
+        <div id="drone-state"></div>
+      </section>
+      <section class="panel">
+        <h2>Active Alerts</h2>
+        <div id="alerts"><div class="empty">No active alerts.</div></div>
+      </section>
+      <section class="panel">
+        <h2>DatalogMTL Output</h2>
+        <div class="log" id="derived"><div>No derived facts yet.</div></div>
+      </section>
+      <section class="panel">
+        <h2>RDF Telemetry</h2>
+        <div class="log" id="rdf-log"><div>Waiting for stream events.</div></div>
+      </section>
+    </div>
+
+    <div class="tabpane" id="pane-rules">
+      <section class="panel">
+        <h2>DatalogMTL Rules</h2>
+        <p class="hint">
+          All windows are in <strong>ticks</strong> (1 tick = 1 second), not milliseconds.
+          Constants are <code>&lt;full-iri&gt;</code> or a <code>PREFIX</code>-ed name, and must
+          match the demo's vocabulary or the rule will match nothing. An optional
+          <code>[label]</code> before the head names the rule in the alert list.
+        </p>
+        <textarea class="editor" id="rules-editor" spellcheck="false"></textarea>
+      </section>
+      <section class="panel">
+        <h2>Stream Shape</h2>
+        <p class="hint">
+          The shape can only ever match <em>less</em> than the telemetry the demo emits —
+          it publishes a fixed set of 8 triples per drone, so a pattern nothing produces
+          makes the whole event stop matching. <code>STALENESS</code> is in ticks.
+        </p>
+        <textarea class="editor" id="shapes-editor" spellcheck="false"></textarea>
+      </section>
+      <section class="panel">
+        <h2>Background Facts (N-Triples)</h2>
+        <p class="hint">
+          Which zones count as restricted. Both geofence rules join against
+          <code>(?z, dront:status, dront:Restricted)</code>, so removing a line here disarms
+          them over that zone — the quickest thing to change mid-demo. Re-asserted every
+          tick, and zone <em>geometry</em> stays fixed; only the classification is reasoned over.
+        </p>
+        <textarea class="editor" id="static-editor" spellcheck="false"></textarea>
+        <div class="controls">
+          <button class="button" id="apply-config" type="button">Apply</button>
+          <button class="button" id="reset-config" type="button">Defaults</button>
+          <label><input type="checkbox" id="reset-store"> Clear fact history</label>
+        </div>
+        <div class="status-line" id="config-status"></div>
+      </section>
+    </div>
   </aside>
 </main>
 
@@ -244,6 +305,99 @@
       .replace(/'/g, '&#039;');
   }
 
+  // ── Rules & Shape tab ──────────────────────────────────────────────────────
+
+  const rulesEditor = document.getElementById('rules-editor');
+  const shapesEditor = document.getElementById('shapes-editor');
+  const staticEditor = document.getElementById('static-editor');
+  const configStatus = document.getElementById('config-status');
+  let defaults = { rules: '', shapes: '', static_data: '' };
+  let configDirty = false;      // don't let the 1 Hz tick clobber typing
+  let pendingVersion = null;
+  let liveVersion = null;
+
+  document.querySelectorAll('.tab').forEach(function(tab) {
+    tab.addEventListener('click', function() {
+      const pane = tab.dataset.pane;
+      document.querySelectorAll('.tab').forEach(function(t) {
+        t.classList.toggle('active', t === tab);
+      });
+      document.querySelectorAll('.tabpane').forEach(function(p) {
+        p.classList.toggle('active', p.id === 'pane-' + pane);
+      });
+      document.body.classList.toggle('editing', pane === 'rules');
+      // The sidebar width changes, so Leaflet must re-measure its container.
+      setTimeout(function() { map.invalidateSize(); }, 0);
+    });
+  });
+
+  [rulesEditor, shapesEditor, staticEditor].forEach(function(el) {
+    el.addEventListener('input', function() { configDirty = true; });
+  });
+
+  function setStatus(text, kind) {
+    configStatus.textContent = text;
+    configStatus.className = 'status-line' + (kind ? ' ' + kind : '');
+  }
+
+  function loadConfig() {
+    fetch('/api/config').then(function(r) { return r.json(); }).then(function(cfg) {
+      defaults = { rules: cfg.default_rules, shapes: cfg.default_shapes,
+                   static_data: cfg.default_static };
+      liveVersion = cfg.version;
+      if (!configDirty) {
+        rulesEditor.value = cfg.rules;
+        shapesEditor.value = cfg.shapes;
+        staticEditor.value = cfg.static_data;
+      }
+      setStatus('Live: v' + cfg.version, 'ok');
+    }).catch(function() {
+      setStatus('Could not load the running configuration.', 'error');
+    });
+  }
+
+  function applyConfig() {
+    setStatus('Applying…');
+    fetch('/api/config', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        rules: rulesEditor.value,
+        shapes: shapesEditor.value,
+        static_data: staticEditor.value,
+        reset_store: document.getElementById('reset-store').checked
+      })
+    }).then(function(r) {
+      return r.json().then(function(body) { return { ok: r.ok, body: body }; });
+    }).then(function(res) {
+      if (!res.ok || !res.body.ok) {
+        const b = res.body || {};
+        setStatus((b.stage || 'error') + ': ' + (b.error || 'unknown error'), 'error');
+        return;
+      }
+      pendingVersion = res.body.version;
+      let msg = 'Submitted v' + res.body.version + ' (' + res.body.rule_ids.length +
+                ' rule(s), widest window ' + res.body.w_max_ticks + ' ticks)…';
+      if (res.body.warmup_ticks) {
+        msg += ' history cleared, needs ~' + res.body.warmup_ticks + ' ticks to warm up.';
+      }
+      setStatus(msg);
+    }).catch(function(err) {
+      setStatus('Request failed: ' + err, 'error');
+    });
+  }
+
+  document.getElementById('apply-config').addEventListener('click', applyConfig);
+  document.getElementById('reset-config').addEventListener('click', function() {
+    rulesEditor.value = defaults.rules;
+    shapesEditor.value = defaults.shapes;
+    staticEditor.value = defaults.static_data;
+    configDirty = true;
+    setStatus('Defaults restored in the editor — press Apply to activate.');
+  });
+
+  loadConfig();
+
   const es = new EventSource('/events');
   es.addEventListener('state', function(event) {
     const data = JSON.parse(event.data);
@@ -253,6 +407,20 @@
     renderAlerts(data.alerts || []);
     renderLog('derived', data.derived || [], 'No derived facts yet.');
     renderLog('rdf-log', data.rdf_events || [], 'Waiting for stream events.');
+
+    // A swap lands up to one tick after the POST returns, so confirm from here.
+    if (data.config_error) {
+      setStatus('could not apply: ' + data.config_error, 'error');
+    } else if (data.config_version !== liveVersion || pendingVersion !== null) {
+      liveVersion = data.config_version;
+      if (pendingVersion !== null && data.config_version === pendingVersion) {
+        pendingVersion = null;
+        configDirty = false;
+      }
+      setStatus('Live: v' + data.config_version + ' · ' +
+                (data.active_rules || []).join(', ') +
+                ' · w_max ' + data.metrics.w_max_ticks + ' ticks', 'ok');
+    }
   });
 </script>
 </body>

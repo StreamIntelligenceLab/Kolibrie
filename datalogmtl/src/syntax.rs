@@ -75,6 +75,19 @@ pub enum TemporalAtom {
         phi: Box<TemporalAtom>,   // continuation condition (holds until reset)
         psi: Box<TemporalAtom>,   // reset/trigger condition
     },
+
+    /// Conjunction of atoms, all evaluated at the SAME time point.
+    ///
+    /// This is what lets an operator scope more than one triple pattern, e.g.
+    /// `Box[0,10]((?d, :inZone, ?z), (?d, :altitude, ?a))` — "?d was in ?z at
+    /// altitude ?a throughout the window". That is strictly more expressive than
+    /// hoisting the second atom out: `Box[0,10]A, B` only requires `B` at the
+    /// current time, whereas `Box[0,10](A, B)` requires it at every point of the
+    /// window. (The two coincide when `B` is time-invariant.)
+    ///
+    /// Variables are shared across the conjuncts, so later atoms can be
+    /// constrained by bindings from earlier ones.
+    Conj(Vec<TemporalAtom>),
 }
 
 /// Evaluation mode. Future operators look into not-yet-arrived time, so they are

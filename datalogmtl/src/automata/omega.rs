@@ -216,6 +216,9 @@ fn op_ends(rules: &[DatalogMTLRule]) -> Vec<i64> {
     fn walk(atom: &TemporalAtom, out: &mut Vec<i64>) {
         match atom {
             TemporalAtom::Base(_) => {}
+            TemporalAtom::Conj(atoms) => {
+                for a in atoms { walk(a, out); }
+            }
             TemporalAtom::Diamond { interval, inner }
             | TemporalAtom::Box_ { interval, inner }
             | TemporalAtom::Prev { interval, inner }

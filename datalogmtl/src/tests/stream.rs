@@ -35,6 +35,7 @@ fn test_stream_single_sensor() {
         ],
         channel_key:  vec!["room".into()],
         staleness:    StalenessPolicy { max_gap_ms: 2000 },
+        on_expiry:    Vec::new(),
     };
 
     let mut ingester = ShapeIngester::new(vec![shape], dict.clone());
@@ -103,6 +104,7 @@ fn test_stream_composite_key() {
         ],
         channel_key: vec!["room".into(), "sensor".into()],
         staleness:   StalenessPolicy { max_gap_ms: 5000 },
+        on_expiry:   Vec::new(),
     };
 
     let mut ingester = ShapeIngester::new(vec![shape], dict.clone());
@@ -156,4 +158,65 @@ fn test_stream_composite_key() {
     assert!(sensor_b_state.is_some(), "sensorB channel should still exist");
     assert_eq!(sensor_b_state.unwrap().1.last_event_time, 0,
         "sensorB last_event_time should still be 0");
+}
+
+/// A channel that goes quiet transmits its shape's EXPIRY facts.
+///
+/// Silence is not an event, so without this a rule has nothing to observe when a
+/// source stops reporting. The facts must REPEAT for as long as the channel
+/// stays stale: a `Box[0,n]` rule needs the fact at every integer point in its
+/// window, so a one-shot expiry edge could never satisfy one.
+#[test]
+fn test_expiry_facts_repeat_while_stale() {
+    use shared::terms::Term;
+
+    let dict = make_dict();
+    let obs = enc(&dict, "obs:1");
+    let sensor = enc(&dict, ":sensorA");
+    let made_by = enc(&dict, "sosa:madeBySensor");
+    let chan_status = enc(&dict, ":channelStatus");
+    let expired = enc(&dict, ":expired");
+
+    let shape = StreamShape {
+        stream_iri:    "http://example.org/s".into(),
+        event_pattern: vec![(
+            Term::Variable("obs".to_string()),
+            Term::Constant(made_by),
+            Term::Variable("sensor".to_string()),
+        )],
+        channel_key:   vec!["sensor".into()],
+        staleness:     StalenessPolicy { max_gap_ms: 10 },
+        on_expiry:     vec![(
+            Term::Variable("sensor".to_string()),
+            Term::Constant(chan_status),
+            Term::Constant(expired),
+        )],
+    };
+
+    let mut ingester = ShapeIngester::new(vec![shape], dict.clone());
+    ingester.process_event(&RdfEvent {
+        stream_iri: "http://example.org/s".into(),
+        timestamp: 0,
+        triples: vec![triple(obs, made_by, sensor)],
+    });
+
+    // Still fresh: expiry_time is 0 + 10, so nothing until t > 10.
+    assert!(ingester.expiry_facts(5).is_empty(), "fresh channel must not expire");
+    assert!(ingester.expiry_facts(10).is_empty(), "boundary is not yet stale");
+
+    // Stale, and it keeps reporting on every later tick.
+    for t in [11u64, 12, 50] {
+        let facts = ingester.expiry_facts(t);
+        assert_eq!(facts.len(), 1, "stale channel should transmit at t={}", t);
+        assert_eq!(facts[0].0, triple(sensor, chan_status, expired));
+        assert_eq!(facts[0].1, t, "fact is stamped at the querying tick");
+    }
+
+    // A fresh event silences it again.
+    ingester.process_event(&RdfEvent {
+        stream_iri: "http://example.org/s".into(),
+        timestamp: 50,
+        triples: vec![triple(obs, made_by, sensor)],
+    });
+    assert!(ingester.expiry_facts(51).is_empty(), "recovered channel must go quiet");
 }

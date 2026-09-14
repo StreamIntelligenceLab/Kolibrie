@@ -56,6 +56,10 @@ fn collect_safe_vars(atom: &TemporalAtom, safe: &mut HashSet<String>) {
         // Box: variables in the inner pattern are safe because the evaluator
         // collects consistent bindings that hold at every timestamp.
         TemporalAtom::Box_ { inner, .. } => collect_safe_vars(inner, safe),
+        // Every conjunct must hold, so each one binds.
+        TemporalAtom::Conj(atoms) => {
+            for a in atoms { collect_safe_vars(a, safe); }
+        }
         // Future operators mirror their past duals: Diamond/Box inner vars are
         // safe; Until's psi (existential trigger) is safe like Since's.
         TemporalAtom::DiamondPlus { inner, .. } => collect_safe_vars(inner, safe),
@@ -74,6 +78,10 @@ fn validate_intervals(rule: &DatalogMTLRule) -> Result<(), String> {
 fn validate_atom_interval(atom: &TemporalAtom, rule_id: &str) -> Result<(), String> {
     match atom {
         TemporalAtom::Base(_) => Ok(()),
+        TemporalAtom::Conj(atoms) => {
+            for a in atoms { validate_atom_interval(a, rule_id)?; }
+            Ok(())
+        }
         TemporalAtom::Diamond     { interval, inner }
         | TemporalAtom::Box_      { interval, inner }
         | TemporalAtom::Prev      { interval, inner }

@@ -43,6 +43,14 @@ pub struct StreamShape {
     pub event_pattern: EventPattern,
     pub channel_key:   ChannelKey,
     pub staleness:     StalenessPolicy,
+    /// Facts transmitted on behalf of a channel that has gone stale, produced by
+    /// [`ShapeIngester::expiry_facts`]. Silence is not itself an event, so
+    /// without this a downstream rule has nothing to observe when a source stops
+    /// reporting.
+    ///
+    /// Only [`ChannelKey`] variables may appear here — the key binding is the
+    /// only thing still known about a channel once its reading has expired.
+    pub on_expiry:     Vec<TriplePattern>,
 }
 
 /// The active state of one logical channel (one distinct key binding).
@@ -135,6 +143,39 @@ impl ShapeIngester {
             .filter(|(_, state)| state.expiry_time < t)
             .map(|(k, _)| k.clone())
             .collect()
+    }
+
+    /// Facts to transmit at `t` for every channel whose reading has expired.
+    ///
+    /// This is a *standing* condition, not an edge: as long as the channel stays
+    /// stale it keeps producing, which is what universal operators need — a
+    /// `Box[0,n]` rule requires the fact at every integer point in its window, so
+    /// a one-shot expiry edge could never satisfy one.
+    ///
+    /// Call it after [`Self::process_event`] for the tick, so a channel that just
+    /// reported is not also reported stale. Channels evicted by
+    /// [`Self::evict_expired`] stop producing.
+    pub fn expiry_facts(&self, t: u64) -> Vec<(Triple, u64)> {
+        let mut out = Vec::new();
+        for ((shape_idx, key), state) in &self.channels {
+            if state.expiry_time >= t { continue; }
+            let Some(shape) = self.shapes.get(*shape_idx) else { continue };
+            for pattern in &shape.on_expiry {
+                let ground = |term: &shared::terms::Term| match term {
+                    shared::terms::Term::Constant(c) => Some(*c),
+                    shared::terms::Term::Variable(v) => {
+                        key.iter().find(|(k, _)| k == v).map(|(_, id)| *id)
+                    }
+                    _ => None,
+                };
+                if let (Some(s), Some(p), Some(o)) =
+                    (ground(&pattern.0), ground(&pattern.1), ground(&pattern.2))
+                {
+                    out.push((Triple { subject: s, predicate: p, object: o }, t));
+                }
+            }
+        }
+        out
     }
 
     /// Remove expired channels at time t.

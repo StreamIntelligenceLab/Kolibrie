@@ -30,6 +30,8 @@ pub fn v(name: &str) -> Term { Term::Variable(name.to_string()) }
 
 pub mod base;
 pub mod parser;
+pub mod rdf_parser;
+pub mod conj;
 pub mod automata;
 pub mod diamond;
 pub mod box_;

@@ -125,6 +125,10 @@ impl<S: TemporalStore> DatalogMTLEvaluator<S> {
                     bindings = new_bindings;
                     metrics.since_scan_depth += depth;
                 }
+                // A top-level conjunction is just its conjuncts at time t.
+                TemporalAtom::Conj(_) => {
+                    bindings = self.eval_atom_at(atom, t, &bindings);
+                }
                 // Future operators require static data; the streaming tick engine
                 // cannot evaluate them. Unreachable — the parser blocks future ops
                 // in Streaming mode, and Static mode uses the interval engine.
@@ -345,6 +349,16 @@ impl<S: TemporalStore> DatalogMTLEvaluator<S> {
                 let (b, _) = self.eval_since(interval, phi, psi, t_prime, bindings);
                 b
             }
+            // All conjuncts hold at the SAME time point: thread bindings through
+            // them left to right, so each is constrained by the previous.
+            TemporalAtom::Conj(atoms) => {
+                let mut current = bindings.to_vec();
+                for a in atoms {
+                    if current.is_empty() { break; }
+                    current = self.eval_atom_at(a, t_prime, &current);
+                }
+                current
+            }
             // Future operators are unsupported by the streaming tick engine
             // (blocked upstream by the parser/mode); yield no bindings.
             TemporalAtom::DiamondPlus { .. }
@@ -369,7 +383,15 @@ fn substitute_pattern(pattern: &TriplePattern, binding: &HashMap<String, u32>) -
     (resolve(&pattern.0), resolve(&pattern.1), resolve(&pattern.2))
 }
 
-/// Compute the maximum interval width across all rules.
+/// How far back in time the rules can read. Drives store eviction.
+///
+/// Nesting is **additive**, not a max: `Diamond[6,20](Box[0,5] X)` evaluates the
+/// Box at some t' in `[t-20, t-6]`, and the Box then reads `[t'-5, t']` — so the
+/// earliest point touched is `t-25`. Taking the max here would evict `t-25..t-21`
+/// while a rule still needed it, and the rule would silently never fire.
+///
+/// A conjunction is the exception: its atoms all sit at the same time point, so
+/// its reach is the widest of them, not their sum.
 pub fn compute_w_max(rules: &[DatalogMTLRule]) -> u64 {
     fn atom_max(atom: &TemporalAtom) -> u64 {
         match atom {
@@ -379,10 +401,12 @@ pub fn compute_w_max(rules: &[DatalogMTLRule]) -> u64 {
             | TemporalAtom::Prev { interval, inner }
             | TemporalAtom::DiamondPlus { interval, inner }
             | TemporalAtom::BoxPlus { interval, inner } =>
-                interval.end.max(atom_max(inner)),
+                interval.end.saturating_add(atom_max(inner)),
+            TemporalAtom::Conj(atoms) =>
+                atoms.iter().map(atom_max).max().unwrap_or(0),
             TemporalAtom::Since { interval, phi, psi }
             | TemporalAtom::Until { interval, phi, psi } =>
-                interval.end.max(atom_max(phi)).max(atom_max(psi)),
+                interval.end.saturating_add(atom_max(phi).max(atom_max(psi))),
         }
     }
     rules.iter()

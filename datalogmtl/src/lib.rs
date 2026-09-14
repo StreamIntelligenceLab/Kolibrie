@@ -15,6 +15,7 @@ pub mod store;
 pub mod evaluator;
 pub mod stream;
 pub mod parser;
+pub mod rdf_parser;
 pub mod meteor_fmt;
 pub mod automata;
 

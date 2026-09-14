@@ -122,6 +122,20 @@ pub fn eval_atom(atom: &TemporalAtom, db: &Database) -> BindingRelation {
         TemporalAtom::Prev { .. } => {
             panic!("Prev has no MeTeoR analogue and is unsupported by the interval strategy");
         }
+        // All conjuncts hold at the same instants, so the result holds exactly
+        // where their validity intervals overlap.
+        TemporalAtom::Conj(atoms) => {
+            let mut iter = atoms.iter();
+            let Some(first) = iter.next() else {
+                return BindingRelation::empty(Vec::new());
+            };
+            let mut acc = eval_atom(first, db);
+            for a in iter {
+                let next = eval_atom(a, db);
+                acc = join_with(&acc, &next, |p, q| intersect_lists(p, q));
+            }
+            acc
+        }
         TemporalAtom::Since { interval, phi, psi } => {
             let a = eval_atom(phi, db);
             let b = eval_atom(psi, db);
