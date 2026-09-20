@@ -21,7 +21,7 @@ pub use cost::{CostConstants, CostEstimator};
 pub use execution::{DatasetView, ExecutionContext, ExecutionEngine};
 pub use operators::{LogicalOperator, PhysicalOperator};
 pub use optimizer::Streamertail;
-pub use stats::DatabaseStats;
+pub use stats::{DatabaseStats, GraphMap, TermMap, TermSet};
 pub use types::{
     Condition, ConditionArithmetic, ConditionExpression, IdResult, SubqueryProjection, SubquerySpec,
 };

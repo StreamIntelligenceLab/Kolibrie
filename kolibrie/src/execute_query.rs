@@ -310,7 +310,11 @@ fn optimize_and_execute(
     dataset: &DatasetView,
     database: &mut SparqlDatabase,
 ) -> Bindings {
-    let stats = database.get_or_build_stats();
+    let stats = if logical_plan.requires_cost_based_join_ordering() {
+        database.get_or_build_planning_stats()
+    } else {
+        std::sync::Arc::new(crate::streamertail_optimizer::DatabaseStats::new())
+    };
     let mut optimizer = Streamertail::with_cached_stats_and_dataset(stats, dataset.clone());
     let physical_plan = optimizer.find_best_plan(&logical_plan);
     ExecutionEngine::execute_with_ids_and_dataset(&physical_plan, database, dataset)
@@ -633,7 +637,6 @@ fn execute_update_operation(
             database,
         )?,
     };
-    database.invalidate_stats_cache();
     Ok(summary)
 }
 

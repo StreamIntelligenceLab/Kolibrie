@@ -89,6 +89,10 @@ path = "benches/optimizer_hotpath.rs"
 harness = false
 
 [[example]]
+name = "replay_profile"
+path = "examples/replay_profile/replay_profile.rs"
+
+[[example]]
 name = "automate_policy"
 path = "examples/policy/automate_policy.rs"
 

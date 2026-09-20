@@ -57,6 +57,8 @@ impl CostConstants {
     pub const COST_PER_ROW_INDEX_SCAN: u64 = 1;
     /// Fixed overhead of opening one index scan, so a ground pattern is never free
     pub const COST_PER_SCAN_PROBE: u64 = 1;
+    /// Cardinality assumed for a graph absent from the statistics
+    pub const UNMEASURED_GRAPH_CARDINALITY: u64 = 1;
     pub const COST_PER_FILTER: u64 = 1;
     pub const COST_PER_ROW_JOIN: u64 = 2;
     pub const COST_PER_ROW_NESTED_LOOP: u64 = 10;
@@ -381,14 +383,14 @@ impl<'a> CostEstimator<'a> {
                     dataset
                         .default_graphs
                         .iter()
-                        .map(|graph| self.stats.get_graph_cardinality(*graph))
+                        .map(|graph| self.graph_cardinality(*graph))
                         .sum()
                 })
-                .unwrap_or_else(|| self.stats.get_graph_cardinality(GraphId::Default)),
+                .unwrap_or_else(|| self.graph_cardinality(GraphId::Default)),
             GraphTerm::Named(graph) => {
                 let graph = GraphId::Named(*graph);
                 if self.graph_is_visible_and_exists(graph) {
-                    self.stats.get_graph_cardinality(graph)
+                    self.graph_cardinality(graph)
                 } else {
                     0
                 }
@@ -396,26 +398,31 @@ impl<'a> CostEstimator<'a> {
             GraphTerm::Variable(_) => self
                 .visible_named_graphs()
                 .into_iter()
-                .map(|graph| self.stats.get_graph_cardinality(graph))
+                .map(|graph| self.graph_cardinality(graph))
                 .sum(),
         }
     }
 
+    /// Graph cardinality from statistics, or `UNMEASURED_GRAPH_CARDINALITY` if absent
+    fn graph_cardinality(&self, graph: GraphId) -> u64 {
+        self.stats
+            .graph_cardinalities
+            .get(&graph)
+            .copied()
+            .unwrap_or(CostConstants::UNMEASURED_GRAPH_CARDINALITY)
+    }
+
     fn graph_is_visible_and_exists(&self, graph: GraphId) -> bool {
-        self.stats.graph_cardinalities.contains_key(&graph)
-            && self
-                .dataset
-                .is_none_or(|dataset| dataset.is_named_visible(graph))
+        match self.dataset {
+            Some(dataset) => dataset.is_named_visible(graph),
+            None => self.stats.graph_cardinalities.contains_key(&graph),
+        }
     }
 
     pub(crate) fn visible_named_graphs(&self) -> Vec<GraphId> {
         match self.dataset {
-            Some(dataset) => dataset
-                .named_graphs
-                .iter()
-                .copied()
-                .filter(|graph| self.stats.graph_cardinalities.contains_key(graph))
-                .collect(),
+            // Use the live dataset view; statistics may be stale
+            Some(dataset) => dataset.named_graphs.iter().copied().collect(),
             None => self
                 .stats
                 .graph_cardinalities
