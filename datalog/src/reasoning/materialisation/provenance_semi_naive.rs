@@ -300,7 +300,7 @@ fn run_negative_stratum_pass<P: Provenance>(
     tag_store: &mut TagStore<P>,
     provenance: &P,
 ) -> Vec<Triple> {
-    let all_facts: Vec<Triple> = reasoner.dataset_index.query(None, None, None);
+    let all_facts: Vec<Triple> = reasoner.index_manager.query(None, None, None);
     let all_facts_set: HashSet<Triple> = all_facts.iter().cloned().collect();
     let mut new_derived: Vec<Triple> = Vec::new();
 
@@ -375,7 +375,7 @@ fn run_negative_stratum_pass<P: Provenance>(
 
                 if !all_facts_set.contains(&inferred) && !new_derived.contains(&inferred) {
                     tag_store.set_tag(&inferred, conclusion_tag.clone());
-                    reasoner.dataset_index.insert(&inferred);
+                    reasoner.index_manager.insert(&inferred);
                     new_derived.push(inferred);
                 } else {
                     tag_store.update_disjunction(&inferred, &conclusion_tag);

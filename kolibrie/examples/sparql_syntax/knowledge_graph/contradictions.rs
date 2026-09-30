@@ -8,6 +8,7 @@
  * you can obtain one at https://mozilla.org/MPL/2.0/.
  */
 
+use shared::index_manager::TripleIndex;
 use shared::terms::Term;
 use shared::rule::Rule;
 use datalog::reasoning::Reasoner;

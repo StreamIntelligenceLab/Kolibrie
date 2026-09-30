@@ -11,6 +11,7 @@
 use shared::terms::Term;
 use shared::rule::Rule;
 use datalog::reasoning::*;
+use shared::index_manager::TripleIndex;
 use datalog::parser_n3_logic::parse_n3_rule;
 use datalog::reasoning::backward_chaining::resolve_term;
 
@@ -289,4 +290,3 @@ fn main() {
     println!("=======================================");
     inconsistency();
 }
-

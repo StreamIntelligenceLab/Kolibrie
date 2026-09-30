@@ -1,108 +1,41 @@
 /*
- * Copyright © 2025 Volodymyr Kadzhaia
- * Copyright © 2025 Pieter Bonte
- * KU Leuven — Stream Intelligence Lab, Belgium
- *
- * This Source Code Form is subject to the terms of the Mozilla Public
- * License, v. 2.0. If a copy of the MPL was not distributed with this file,
- * you can obtain one at https://mozilla.org/MPL/2.0/.
- *
- *
- *
- * NOTE 1: We are using the benchmark dataset from:
- *  Waterloo SPARQL Diversity Test Suite (WatDiv) v0.6
- *  Source: https://dsg.uwaterloo.ca/watdiv/
- *
- * NOTE 2: Before running with the 10M-triple dataset, ensure you have:
- *   1) Downloaded `watdiv.10M.nt` into a `benchmark_dataset` directory
- *      at the project root.
- *   2) Created the `benchmark_dataset` directory next to `kolibrie/`.
- *      (e.g., `mkdir benchmark_dataset && mv watdiv.10M.nt benchmark_dataset/`)
- *
- * NOTE 3: The watdiv.10M.nt file is approximately 1.5 GB in size.
- *
- */
+* Copyright © 2025 Volodymyr Kadzhaia
+* Copyright © 2025 Pieter Bonte
+* KU Leuven — Stream Intelligence Lab, Belgium
+*
+* This Source Code Form is subject to the terms of the Mozilla Public
+* License, v. 2.0. If a copy of the MPL was not distributed with this file,
+* you can obtain one at https://mozilla.org/MPL/2.0/.
+*
+*
+*
+* NOTE 1: We are using the benchmark dataset from:
+*  Waterloo SPARQL Diversity Test Suite (WatDiv) v0.6
+*  Source: https://dsg.uwaterloo.ca/watdiv/
+*
+* NOTE 2: Before running with the 10M-triple dataset, ensure you have:
+*   1) Downloaded `watdiv.10M.nt` into a `benchmark_dataset` directory
+*      at the project root.
+*   2) Created the `benchmark_dataset` directory next to `kolibrie/`.
+*      (e.g., `mkdir benchmark_dataset && mv watdiv.10M.nt benchmark_dataset/`)
+*
+* NOTE 3: The watdiv.10M.nt file is approximately 1.5 GB in size.
+*
+*/
 
 use kolibrie::execute_query::*;
 use kolibrie::sparql_database::*;
-use std::fs::File;
-use std::io::{BufRead, BufReader};
+use shared::index_manager::*;
+use std::collections::{BTreeMap, HashSet};
+use std::fs::{self, File};
+use std::io::{BufRead, BufReader, Write};
+use std::path::Path;
 use std::time::Instant;
 
-fn parse_large_ntriples_file(
-    file_path: &str,
-) -> Result<SparqlDatabase, Box<dyn std::error::Error>> {
-    println!("Starting to parse N-Triples file: {}", file_path);
-    let start_time = Instant::now();
+type QuerySpec = (&'static str, &'static str);
 
-    let mut db = SparqlDatabase::new();
-
-    // Much smaller buffer and more aggressive memory management
-    let file = File::open(file_path)?;
-    let reader = BufReader::with_capacity(64 * 1024, file); // Reduced buffer size
-
-    let mut line_count = 0;
-    let mut batch_lines = Vec::new();
-    const BATCH_SIZE: usize = 10_000; // Much smaller batch size
-
-    for line_result in reader.lines() {
-        let line = line_result?;
-
-        if line.trim().is_empty() || line.starts_with('#') {
-            continue;
-        }
-
-        batch_lines.push(line);
-        line_count += 1;
-
-        if batch_lines.len() >= BATCH_SIZE {
-            // Process batch immediately
-            let batch_data = batch_lines.join("\n");
-            db.parse_ntriples_and_add(&batch_data);
-
-            // Aggressive cleanup
-            batch_lines.clear();
-            batch_lines.shrink_to_fit();
-
-            // Progress info every 100k triples
-            if line_count % 100_000 == 0 {
-                println!("Processed {} triples", line_count);
-                std::hint::black_box(());
-
-                // Optional: small delay to let the system breathe
-                std::thread::sleep(std::time::Duration::from_millis(10));
-            }
-        }
-    }
-
-    // Process remaining batch
-    if !batch_lines.is_empty() {
-        let batch_data = batch_lines.join("\n");
-        db.parse_ntriples_and_add(&batch_data);
-    }
-    db.get_or_build_stats();
-
-    println!(
-        "Finished parsing {} triples in {:.2} seconds",
-        line_count,
-        start_time.elapsed().as_secs_f64()
-    );
-
-    // Build indexes after parsing - this is where the magic happens
-    println!("Building indexes...");
-    let index_start = Instant::now();
-    db.build_all_indexes();
-    println!("Indexes built in {:.2} seconds", index_start.elapsed().as_secs_f64());
-
-    Ok(db)
-}
-
-fn run_all_queries(db: &mut SparqlDatabase) {
-    const ITERATIONS: usize = 20;
-
-    // (name, query)
-    let queries: &[(&str, &str)] = &[
-        // C1
+fn workload_queries() -> Vec<QuerySpec> {
+    vec![
         (
             "C1",
             r#"PREFIX wsdbm: <http://db.uwaterloo.ca/~galuc/wsdbm/>
@@ -567,20 +500,191 @@ fn run_all_queries(db: &mut SparqlDatabase) {
 }
 "#,
         ),
-    ];
+    ]
+}
 
-    for (name, query) in queries.iter() {
+fn queries_for_index_manager(workload: &[QuerySpec]) -> Vec<String> {
+    workload.iter().map(|(_, q)| q.trim().to_string()).collect()
+}
+
+fn make_config_from_env(queries: Vec<String>) -> (String, IndexConfig) {
+    let index_type = std::env::var("INDEX_TYPE")
+        .unwrap_or_else(|_| "hexastore".to_string())
+        .to_lowercase();
+
+    let config = match index_type.as_str() {
+        "hexastore" | "" => IndexConfig::Hexastore,
+        "spo" => IndexConfig::SPO,
+        "pos" => IndexConfig::POS,
+        "osp" => IndexConfig::OSP,
+        "pso" => IndexConfig::PSO,
+        "ops" => IndexConfig::OPS,
+        "sop" => IndexConfig::SOP,
+        "table" => IndexConfig::SingleTable,
+        "partial_hexastore" => IndexConfig::PartialHexastore { queries },
+        "buckets" => IndexConfig::Buckets { queries },
+        other => {
+            eprintln!(
+                "WARNING: Unknown INDEX_TYPE '{}', falling back to hexastore.",
+                other
+            );
+            IndexConfig::Hexastore
+        }
+    };
+
+    (index_type, config)
+}
+
+fn parse_large_ntriples_file(
+    file_path: &str,
+    workload: &[QuerySpec],
+) -> Result<SparqlDatabase, Box<dyn std::error::Error>> {
+    let (index_name, config) = make_config_from_env(queries_for_index_manager(workload));
+    println!("INDEX_TYPE = {}", index_name);
+    println!("Starting to parse N-Triples file: {}", file_path);
+
+    let start_time = Instant::now();
+    let mut db = SparqlDatabase::with_config(config);
+
+    let file = File::open(file_path)?;
+    let reader = BufReader::with_capacity(64 * 1024, file);
+
+    let mut line_count = 0;
+    let mut batch_lines = Vec::new();
+    const BATCH_SIZE: usize = 10_000;
+
+    for line_result in reader.lines() {
+        let line = line_result?;
+
+        if line.trim().is_empty() || line.starts_with('#') {
+            continue;
+        }
+
+        batch_lines.push(line);
+        line_count += 1;
+
+        if batch_lines.len() >= BATCH_SIZE {
+            let batch_data = batch_lines.join("\n");
+            db.parse_ntriples_and_add(&batch_data);
+
+            batch_lines.clear();
+            batch_lines.shrink_to_fit();
+
+            if line_count % 100_000 == 0 {
+                println!("Processed {} triples", line_count);
+                std::thread::sleep(std::time::Duration::from_millis(10));
+            }
+        }
+    }
+
+    if !batch_lines.is_empty() {
+        let batch_data = batch_lines.join("\n");
+        db.parse_ntriples_and_add(&batch_data);
+    }
+
+    db.get_or_build_stats();
+
+    println!(
+        "Finished parsing {} triples in {:.2} seconds",
+        line_count,
+        start_time.elapsed().as_secs_f64()
+    );
+
+    println!("Building indexes...");
+    let index_start = Instant::now();
+    db.build_all_indexes();
+    println!(
+        "Indexes built in {:.2} seconds",
+        index_start.elapsed().as_secs_f64()
+    );
+
+    Ok(db)
+}
+
+/// Helper function to serialize result sets into deterministic, sorted text format
+fn serialize_results(results: &[Vec<String>]) -> Vec<String> {
+    let mut lines = Vec::with_capacity(results.len());
+    for row in results {
+        // Filter out empty rows just in case the engine returns an unpopulated tuple
+        if row.iter().all(|s| s.is_empty()) {
+            continue;
+        }
+        lines.push(row.join("|"));
+    }
+
+    lines.sort_unstable();
+    lines
+}
+
+fn run_all_queries(db: &mut SparqlDatabase, workload: &[QuerySpec]) {
+    const ITERATIONS: usize = 10;
+    let dir_path = Path::new("../benchmark_dataset");
+
+    for (name, query) in workload.iter() {
         println!("==============================================");
-        println!("Running query {} ({} iterations)...", name, ITERATIONS);
+        println!("Running query {}...", name);
 
+        // Run one validation loop to cache/verify results
+        if *name != "C3" {
+            let initial_run_start = Instant::now();
+            let validation_results = execute_query_rayon_parallel2_volcano(query, db);
+            println!(
+                "Validation run completed in {:.4} seconds",
+                initial_run_start.elapsed().as_secs_f64()
+            );
+
+            let ground_truth_file = dir_path.join(format!("ground_truth_{}.txt", name));
+            let serialized_current = serialize_results(&validation_results);
+
+            if ground_truth_file.exists() {
+                println!(
+                    "[VALIDATION] Checking results against ground truth: {:?}",
+                    ground_truth_file
+                );
+                let file = File::open(&ground_truth_file).unwrap();
+                let reader = BufReader::new(file);
+
+                let mut cached_lines = Vec::new();
+                for line in reader.lines() {
+                    if let Ok(l) = line {
+                        if !l.trim().is_empty() {
+                            cached_lines.push(l);
+                        }
+                    }
+                }
+
+                let current_set: HashSet<_> = serialized_current.into_iter().collect();
+                let cached_set: HashSet<_> = cached_lines.into_iter().collect();
+
+                if current_set != cached_set {
+                    let missing: Vec<_> = cached_set.difference(&current_set).collect();
+                    let extra: Vec<_> = current_set.difference(&cached_set).collect();
+                    panic!(
+                    "[FATAL] Query '{}' produced INVALID results!\nMissing {} lines.\nExtra {} lines.\nFirst few missing: {:?}\nFirst few extra: {:?}",
+                    name, missing.len(), extra.len(), missing.iter().take(5).collect::<Vec<_>>(), extra.iter().take(5).collect::<Vec<_>>()
+                );
+                }
+                println!("[✓] Validation passed for {}!", name);
+            } else {
+                println!(
+                    "[VALIDATION] Ground truth does not exist. Caching results to {:?}",
+                    ground_truth_file
+                );
+                let mut file = File::create(&ground_truth_file).unwrap();
+                for line in &serialized_current {
+                    writeln!(file, "{}", line).unwrap();
+                }
+                println!("Results cached. Note: Make sure the first run uses the 'hexastore' INDEX_TYPE!");
+            }
+        }
+
+        // Run the timed benchmark loop
+        println!("Running {} timed iterations...", ITERATIONS);
         let mut total_time = 0.0;
-        // let mut last_result:Vec<Vec<String>> = Vec::new();
-
         for _ in 0..ITERATIONS {
             let start = Instant::now();
             let _ = execute_query_rayon_parallel2_volcano(query, db);
-            let elapsed = start.elapsed().as_secs_f64();
-            total_time += elapsed;
+            total_time += start.elapsed().as_secs_f64();
         }
 
         let avg = total_time / (ITERATIONS as f64);
@@ -589,23 +693,20 @@ fn run_all_queries(db: &mut SparqlDatabase) {
 }
 
 fn main() {
-    // Set current directory to the root of the project
     std::env::set_current_dir(std::path::Path::new(env!("CARGO_MANIFEST_DIR")))
-    .expect("Failed to set project root as current directory");
+        .expect("Failed to set project root as current directory");
 
     let file_path = "../benchmark_dataset/watdiv.10M.nt";
+    let workload = workload_queries();
 
-    match parse_large_ntriples_file(file_path) {
+    match parse_large_ntriples_file(file_path, &workload) {
         Ok(mut db) => {
             println!("Successfully processed N-Triples file");
-            run_all_queries(&mut db);
+            run_all_queries(&mut db, &workload);
         }
         Err(e) => {
             eprintln!("Error processing file '{}': {}", file_path, e);
-            println!(
-                "File not found or error occurred. \
-Make sure ../benchmark_dataset/watdiv.10M.nt exists."
-            );
+            println!("Make sure ../benchmark_dataset/watdiv.10M.nt exists.");
         }
     }
 }

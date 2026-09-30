@@ -310,7 +310,8 @@ fn test_bind_subject_predicate_object() {
     let ntriples = r#"<< <http://example.org/alice> <http://example.org/knows> <http://example.org/bob> >> <http://example.org/source> <http://example.org/doc1> .
 "#;
     db.parse_ntriples_and_add(ntriples);
-    db.build_all_indexes();
+    let triples_vec: Vec<_> = db.triples.iter().cloned().collect();
+    Option::expect(db.index_manager.as_mut(), "index should not be None").build_from_triples(&triples_vec);
     db.get_or_build_stats();
 
     // Query using BIND(SUBJECT(?t) AS ?s)
@@ -334,7 +335,8 @@ fn test_bind_triple_constructor() {
     let ntriples = r#"<http://example.org/alice> <http://example.org/knows> <http://example.org/bob> .
 "#;
     db.parse_ntriples_and_add(ntriples);
-    db.build_all_indexes();
+    let triples_vec: Vec<_> = db.triples.iter().cloned().collect();
+    Option::expect(db.index_manager.as_mut(), "index should not be None").build_from_triples(&triples_vec);
     db.get_or_build_stats();
 
     // Use BIND(TRIPLE(...) AS ?t) to construct a quoted triple
@@ -414,7 +416,8 @@ fn test_delete_where() {
 <http://example.org/alice> <http://example.org/name> "Alice" .
 "#;
     db.parse_ntriples_and_add(ntriples);
-    db.build_all_indexes();
+    let triples_vec: Vec<_> = db.triples.iter().cloned().collect();
+    Option::expect(db.index_manager.as_mut(), "index should not be None").build_from_triples(&triples_vec);
     db.get_or_build_stats();
     assert_eq!(default_len(&db), 3, "Should start with 3 triples");
 

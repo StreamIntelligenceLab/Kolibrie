@@ -10,6 +10,7 @@
 
 use shared::rule::Rule;
 use shared::triple::Triple;
+use shared::index_manager::TripleIndex;
 use crate::reasoning::Reasoner;
 use std::collections::{BTreeMap, HashMap, HashSet};
 use shared::terms::Term;
@@ -134,7 +135,7 @@ impl ReasoningHierarchy {
             
             for dep_level in &hierarchical_rule.dependencies {
                 if let Some(kg) = self.levels.get(dep_level) {
-                    let facts = kg.dataset_index.query(None, None, None);
+                    let facts = kg.index_manager.query(None, None, None);
                     println!("      Collected {} facts from {:?} level", facts.len(), dep_level);
                     all_available_facts.extend(facts);
                 }
@@ -147,7 +148,7 @@ impl ReasoningHierarchy {
             // Add to target level immediately
             if let Some(target_kg) = self.levels.get_mut(&target_level) {
                 for fact in &rule_results {
-                    target_kg.dataset_index.insert(fact);
+                    target_kg.index_manager.insert(&fact);
                     println!("        Added fact: {:?}", fact);
                 }
             }

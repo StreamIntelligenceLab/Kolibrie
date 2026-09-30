@@ -28,7 +28,73 @@ impl QueryEngine {
     pub fn with_config(_config: QueryEngineConfig) -> Result<Self, String> {
         Ok(Self::new())
     }
-
+    
+    /// Create query engine with disk storage enabled
+    pub fn with_disk_storage(data_dir: PathBuf) -> Result<Self, String> {
+        let config = QueryEngineConfig {
+            use_disk_storage: true,
+            lsm_config: Some(LSMConfig {
+                data_dir,
+                ..Default::default()
+            }),
+            default_backend: StorageBackend::Disk,
+        };
+        
+        Self::with_config(config)
+    }
+    
+    /// Switch storage backend
+    /// 
+    /// IMPORTANT: This changes where NEW data will be stored.
+    /// Existing data remains in its current backend.
+    pub fn use_backend(&mut self, backend: StorageBackend) -> Result<(), String> {
+        self.storage_manager.set_backend(backend)
+    }
+    
+    /// Get current backend
+    pub fn current_backend(&self) -> StorageBackend {
+        self.storage_manager.get_backend()
+    }
+    
+    /// Load data from N-Triples into current backend
+    fn load_ntriples(&mut self, data: &str) -> Result<(), String> {
+        let backend = self.current_backend();
+        println!("Loading N-Triples into {:?} backend", backend);
+        
+        match backend {
+            StorageBackend::Memory => {
+                // Parse directly into memory database
+                self.storage_manager.get_memory_database_mut().parse_ntriples_and_add(data);
+                
+                // Build statistics for StreamerTail optimizer
+                self.storage_manager.get_memory_database_mut().get_or_build_stats();
+            }
+            StorageBackend::Disk => {
+                // Parse into memory
+                self.storage_manager.get_memory_database_mut().parse_ntriples_and_add(data);
+                
+                // Extract the encoded triples
+                let triples = self.storage_manager.get_memory_database()
+                    .index_manager.as_ref().expect("Cannot query index before building it")
+                    .query(None, None, None);
+                
+                // Insert into LSM-Tree
+                self.storage_manager.bulk_insert(&triples)?;
+                
+                // Clear memory database
+                self.storage_manager.get_memory_database_mut().triples.clear();
+                self.storage_manager.get_memory_database_mut().index_manager = 
+                    Some(Box::new(shared::index_manager::HexastoreIndex::new()));
+                
+                // Build statistics
+                self.storage_manager.get_memory_database_mut().get_or_build_stats();
+            }
+        }
+        
+        Ok(())
+    }
+    
+    /// Load data from N-Triples into memory specifically
     pub fn load_ntriples_to_memory(&mut self, data: &str) -> Result<(), String> {
         self.database.parse_ntriples_and_add(data);
         self.database.get_or_build_stats();
