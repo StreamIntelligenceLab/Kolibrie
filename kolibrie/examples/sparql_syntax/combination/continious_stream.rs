@@ -42,7 +42,7 @@ fn main() {
         database.parse_rdf(&rdf_xml);
         
         println!("Successfully loaded batch {} - Database now contains {} triples", 
-                stream_counter, database.triples.len());
+                stream_counter, database.dataset_index.len_default());
         
         // Display the current batch of sensor readings with their status
         for (room, temp, timestamp) in &sensor_data {
@@ -60,7 +60,7 @@ fn main() {
         // Show current streaming statistics
         println!("Current Stream Statistics:");
         println!("   - Batches processed so far: {}", stream_counter);
-        println!("   - Total data points in database: {}", database.triples.len());
+        println!("   - Total data points in database: {}", database.dataset_index.len_default());
         println!("   - Total alerts generated: {}", total_alerts);
         println!("   - Time remaining in simulation: {}s\n", 
                 (stream_duration.as_secs() as i64 - elapsed.as_secs() as i64).max(0));
@@ -73,7 +73,7 @@ fn main() {
     println!("=== STREAMING SIMULATION COMPLETE ===");
     println!("Final Statistics Summary:");
     println!("   - Total batches processed: {}", stream_counter);
-    println!("   - Total data points stored: {}", database.triples.len());
+    println!("   - Total data points stored: {}", database.dataset_index.len_default());
     println!("   - Total alerts generated: {}", total_alerts);
     if stream_counter > 0 {
         println!("   - Average alerts per batch: {:.2}", total_alerts as f64 / stream_counter as f64);
@@ -271,7 +271,7 @@ WHERE {
   ?room ex:hasAlert ?alert . 
 }"#;
     
-    let all_alerts = execute_query(all_alerts_query, database);
+    let all_alerts = execute_query_rayon_parallel2_volcano(all_alerts_query, database);
     if !all_alerts.is_empty() {
         println!("Total high temperature alerts in database: {}", all_alerts.len());
     }
@@ -283,7 +283,7 @@ WHERE {
   ?room ex:newHighReading ?temp . 
 }"#;
     
-    let all_readings = execute_query(all_readings_query, database);
+    let all_readings = execute_query_rayon_parallel2_volcano(all_readings_query, database);
     if !all_readings.is_empty() {
         println!("Total flagged high readings in database: {}", all_readings.len());
     }
@@ -295,7 +295,7 @@ WHERE {
   ?room ex:extremeLevel ?temp . 
 }"#;
     
-    let extreme_results = execute_query(extreme_query, database);
+    let extreme_results = execute_query_rayon_parallel2_volcano(extreme_query, database);
     if !extreme_results.is_empty() {
         println!("Total extreme temperature conditions in database: {}", extreme_results.len());
     }
@@ -308,7 +308,7 @@ WHERE {
   ?reading ex:temperature ?temp .
 }"#;
     
-    let batch_results = execute_query(batch_query, database);
+    let batch_results = execute_query_rayon_parallel2_volcano(batch_query, database);
     println!("Total raw sensor readings in database: {}", batch_results.len());
     
     alert_count
@@ -340,7 +340,7 @@ WHERE {
     ];
     
     for (name, query) in queries {
-        let results = execute_query(query, database);
+        let results = execute_query_rayon_parallel2_volcano(query, database);
         println!("{}: {} results found", name, results.len());
         
         // Show a few sample results to give insight into the data
@@ -354,10 +354,10 @@ WHERE {
     }
     
     // Calculate and display final performance statistics
-    let total_sensor_data = execute_query(r#"PREFIX ex: <http://example.org#>
+    let total_sensor_data = execute_query_rayon_parallel2_volcano(r#"PREFIX ex: <http://example.org#>
 SELECT ?reading WHERE { ?reading ex:room ?room . }"#, database).len();
     
-    let total_alerts = execute_query(r#"PREFIX ex: <http://example.org#>
+    let total_alerts = execute_query_rayon_parallel2_volcano(r#"PREFIX ex: <http://example.org#>
 SELECT ?room WHERE { ?room ex:hasAlert ?alert . }"#, database).len();
     
     println!("Final Performance Summary:");

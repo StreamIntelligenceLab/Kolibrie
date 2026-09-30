@@ -515,8 +515,10 @@ fn extract_data_for_ml_fraud(
 
     for (i, (var_name, _)) in feature_predicates.iter().enumerate() {
         if let Some(pred_id) = pred_ids[i] {
-            if let Some(triple) = database.triples.iter()
-                .find(|t| t.subject == tx_id && t.predicate == pred_id)
+            if let Some(triple) = database
+                .query_default_triples(Some(tx_id), Some(pred_id), None)
+                .into_iter()
+                .next()
             {
                 row.insert(var_name.to_string(), triple.object);
             }
@@ -1075,7 +1077,9 @@ fn run_reasoning(
 ) -> Vec<String> {
     let decoded_triples: Vec<(String, String, String)> = {
         let dict = database.dictionary.read().unwrap();
-        database.triples.iter()
+        database
+            .query_default_triples(None, None, None)
+            .iter()
             .filter_map(|t| Some((
                 dict.decode(t.subject)?.to_string(),
                 dict.decode(t.predicate)?.to_string(),
@@ -1121,24 +1125,20 @@ fn run_reasoning(
 
         if let (Some(tx_id), Some(sflag_id)) = (tx_id_opt, sflag_opt) {
             let dict = database.dictionary.read().unwrap();
-            for t in database.triples.iter() {
-                if t.subject == tx_id && t.predicate == sflag_id {
-                    if let Some(val) = dict.decode(t.object) {
-                        let local = val.rsplit('/').next().unwrap_or(val);
-                        flags.push(local.to_string());
-                    }
+            for t in database.query_default_triples(Some(tx_id), Some(sflag_id), None) {
+                if let Some(val) = dict.decode(t.object) {
+                    let local = val.rsplit('/').next().unwrap_or(val);
+                    flags.push(local.to_string());
                 }
             }
         }
 
         if let (Some(tx_id), Some(risk_id)) = (tx_id_opt, risk_opt) {
             let dict = database.dictionary.read().unwrap();
-            for t in database.triples.iter() {
-                if t.subject == tx_id && t.predicate == risk_id {
-                    if let Some(val) = dict.decode(t.object) {
-                        let local = val.rsplit('/').next().unwrap_or(val);
-                        flags.push(format!("risk:{}", local));
-                    }
+            for t in database.query_default_triples(Some(tx_id), Some(risk_id), None) {
+                if let Some(val) = dict.decode(t.object) {
+                    let local = val.rsplit('/').next().unwrap_or(val);
+                    flags.push(format!("risk:{}", local));
                 }
             }
         }

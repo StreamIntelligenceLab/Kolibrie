@@ -26,7 +26,7 @@ impl Reasoner {
     /// Generic function that infers all derivable facts using a given strategy, e.g. SemiNaive, or Naive
     pub fn infer_with_strategy<S: InferenceStrategy>(&mut self, mut strat: S) -> Vec<Triple> {
         // In each iteration, facts are added to this list. Use vector to preserve index for initial facts
-        let mut all_facts: Vec<Triple> = self.index_manager.query(None, None, None);
+        let mut all_facts: Vec<Triple> = self.dataset_index.query(None, None, None);
         let mut known_facts: HashSet<Triple> = all_facts.iter().cloned().collect();
         let idx_before_inference = all_facts.len(); // Used to keep track of which facts are inferred by the algorithm
 
@@ -43,7 +43,7 @@ impl Reasoner {
                 // Insert into known_facts first; if it was not present, also store it.
                 if !known_facts.contains(&fact) {
                     known_facts.insert(fact.clone()); // Necessary clone apparently
-                    self.index_manager.insert(&fact);
+                    self.dataset_index.insert(&fact);
                     all_facts.push(fact);
                 }
             }
@@ -52,3 +52,4 @@ impl Reasoner {
         all_facts.split_off(idx_before_inference)
     }
 }
+

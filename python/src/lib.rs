@@ -14,7 +14,7 @@ mod py_knowledge_graph;
 use pyo3::prelude::*;
 
 #[pymodule]
-fn py_kolibrie(m: &Bound<'_, PyModule>) -> PyResult<()> {
+fn kolibrie(m: &Bound<'_, PyModule>) -> PyResult<()> {
     // Register the Datalog/KG types
     py_knowledge_graph::register(m)?;
     // Register the SPARQL‐QueryBuilder types

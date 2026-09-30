@@ -10,6 +10,7 @@ pub mod semi_naive_parallel;
 pub mod semi_naive_with_repairs;
 pub mod provenance_infer_generic;
 pub mod provenance_semi_naive;
+pub mod hybrid_materialisation;
 pub mod sdd_seed_materialise;
 pub mod cross_window_naive;
 pub mod cross_window_incremental;

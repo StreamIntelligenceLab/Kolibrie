@@ -66,7 +66,7 @@ impl Reasoner {
         P: Provenance,
         S: ProvenanceInferenceStrategy<P>,
     {
-        let mut all_facts: Vec<Triple> = self.index_manager.query(None, None, None);
+        let mut all_facts: Vec<Triple> = self.dataset_index.query(None, None, None);
         let mut known_facts: HashSet<Triple> = all_facts.iter().cloned().collect();
         let idx_before_inference = all_facts.len();
 
@@ -86,7 +86,7 @@ impl Reasoner {
             for fact in result.new_facts {
                 if !known_facts.contains(&fact) {
                     known_facts.insert(fact.clone());
-                    self.index_manager.insert(&fact);
+                    self.dataset_index.insert(&fact);
                     all_facts.push(fact);
                 }
             }
@@ -100,3 +100,4 @@ impl Reasoner {
         all_facts.split_off(idx_before_inference)
     }
 }
+

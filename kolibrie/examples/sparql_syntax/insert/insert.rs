@@ -31,7 +31,7 @@ fn insert() {
     let sparql_query = r#"PREFIX ex: <http://example.org/> PREFIX rdf: <http://www.w3.org/1999/02/22-rdf-syntax-ns#> INSERT {<http://example.org/JohnDoe> ex:occupation "Software Developer"} WHERE {<http://example.org/JohnDoe> ex:age "30"}"#;
 
     // Execute the query on the database
-    let _results = execute_query(sparql_query, &mut database);
+    let _results = execute_query_rayon_parallel2_volcano(sparql_query, &mut database);
 
     database.debug_print_triples();
 }

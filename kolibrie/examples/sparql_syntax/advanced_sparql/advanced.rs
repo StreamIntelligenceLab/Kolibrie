@@ -71,7 +71,7 @@ fn query() {
 
     let sparql = r#"PREFIX ex: <http://example.org/> SELECT ?person ?location ?city WHERE {?person ex:worksAt ?location . ?location ex:located ?city}"#;
 
-    let results = execute_query(sparql, &mut database);
+    let results = execute_query_rayon_parallel2_volcano(sparql, &mut database);
 
     println!("Results:");
     for result in results {

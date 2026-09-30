@@ -1,15 +1,15 @@
 [package]
-name = "python"
+name = "kolibrie-python"
 version = "0.1.1"
 edition = "2021"
 description = "Python Binding"
 
 [lib]
-name = "py_kolibrie"  # Ensure this matches your #[pymodule] function
+name = "kolibrie"
 crate-type = ["cdylib"]
 
 [dependencies]
 pyo3 = { workspace = true }
 datalog = { path = "../datalog" }
 shared = { path = "../shared" }
-kolibrie = { path = "../kolibrie" }
+kolibrie_core = { package = "kolibrie", path = "../kolibrie" }

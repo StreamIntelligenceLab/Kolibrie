@@ -8,12 +8,47 @@
  * you can obtain one at https://mozilla.org/MPL/2.0/.
  */
 
+use pyo3::exceptions::{PyOSError, PyRuntimeError, PyValueError};
 use pyo3::prelude::*;
-use kolibrie::sparql_database::SparqlDatabase;
+use pyo3::types::PyAny;
+use kolibrie_core::execute_query::execute_query_rayon_parallel2_volcano;
+use kolibrie_core::sparql_database::SparqlDatabase;
+use std::path::Path;
 use std::sync::{Arc, Mutex};
 use std::collections::HashMap;
 
-#[pyclass]
+enum LoadFormat {
+    Turtle,
+    NTriples,
+    RdfXml,
+}
+
+fn normalize_load_format(path: &str, format: Option<&str>) -> PyResult<LoadFormat> {
+    let normalized = if let Some(format) = format {
+        format.trim().to_ascii_lowercase()
+    } else {
+        Path::new(path)
+            .extension()
+            .and_then(|extension| extension.to_str())
+            .map(|extension| extension.to_ascii_lowercase())
+            .ok_or_else(|| {
+                PyValueError::new_err(
+                    "Could not infer RDF format from path; pass format='turtle', 'ntriples', or 'rdfxml'",
+                )
+            })?
+    };
+
+    match normalized.as_str() {
+        "ttl" | "turtle" => Ok(LoadFormat::Turtle),
+        "nt" | "ntriples" | "n-triples" => Ok(LoadFormat::NTriples),
+        "rdf" | "xml" | "rdfxml" | "rdf+xml" => Ok(LoadFormat::RdfXml),
+        other => Err(PyValueError::new_err(format!(
+            "Unsupported RDF format '{other}'; expected turtle, ntriples, or rdfxml"
+        ))),
+    }
+}
+
+#[pyclass(name = "SparqlDatabase")]
 pub struct PySparqlDatabase {
     db: Arc<Mutex<SparqlDatabase>>,
 }
@@ -32,6 +67,69 @@ impl PySparqlDatabase {
         if let Ok(mut db) = self.db.lock() {
             db.add_triple_parts(subject, predicate, object);
         }
+    }
+
+    fn parse_turtle(&self, turtle: &str) {
+        if let Ok(mut db) = self.db.lock() {
+            db.parse_turtle(turtle);
+        }
+    }
+
+    #[pyo3(signature = (path, format=None))]
+    fn load_file(&self, py: Python<'_>, path: &Bound<'_, PyAny>, format: Option<&str>) -> PyResult<()> {
+        let os = py.import("os")?;
+        let path_obj = os.getattr("fspath")?.call1((path,))?;
+        let path_str: String = path_obj.extract()?;
+        let load_format = normalize_load_format(&path_str, format)?;
+
+        let mut db = self
+            .db
+            .lock()
+            .map_err(|_| PyRuntimeError::new_err("Failed to acquire database lock"))?;
+
+        match load_format {
+            LoadFormat::Turtle => {
+                let data = std::fs::read_to_string(&path_str).map_err(|err| {
+                    PyOSError::new_err(format!("Failed to read '{path_str}': {err}"))
+                })?;
+                db.parse_turtle(&data);
+            }
+            LoadFormat::NTriples => {
+                let data = std::fs::read_to_string(&path_str).map_err(|err| {
+                    PyOSError::new_err(format!("Failed to read '{path_str}': {err}"))
+                })?;
+                db.parse_ntriples_and_add(&data);
+            }
+            LoadFormat::RdfXml => {
+                std::fs::File::open(&path_str).map_err(|err| {
+                    PyOSError::new_err(format!("Failed to read '{path_str}': {err}"))
+                })?;
+                db.parse_rdf_from_file(&path_str);
+            }
+        }
+
+        Ok(())
+    }
+
+    fn exec_query(&self, query: &str) -> Vec<Vec<String>> {
+        if let Ok(mut db) = self.db.lock() {
+            execute_query_rayon_parallel2_volcano(query, &mut db)
+        } else {
+            Vec::new()
+        }
+    }
+
+    /// Execute INSERT/DELETE DATA or a template-based INSERT/DELETE WHERE.
+    /// Syntax and execution failures are raised instead of being returned as
+    /// an ambiguous result table.
+    fn update(&self, update: &str) -> PyResult<()> {
+        let mut db = self
+            .db
+            .lock()
+            .map_err(|_| PyRuntimeError::new_err("Failed to acquire database lock"))?;
+        db.execute_update(update)
+            .map(|_| ())
+            .map_err(PyValueError::new_err)
     }
 
     /// Start building a query.
@@ -66,14 +164,14 @@ impl PySparqlDatabase {
     }
 }
 
-#[pyclass]
+#[pyclass(name = "SortDirection")]
 #[derive(Clone)]
 pub enum PySortDirection {
     Ascending,
     Descending,
 }
 
-#[pyclass]
+#[pyclass(name = "StreamOperator")]
 #[derive(Clone)]
 pub enum PyStreamOperator {
     RSTREAM,
@@ -82,7 +180,7 @@ pub enum PyStreamOperator {
 }
 
 // Simple enum for report strategies
-#[pyclass]
+#[pyclass(name = "ReportStrategy")]
 #[derive(Clone)]
 pub enum PyReportStrategy {
     NonEmptyContent(),
@@ -91,7 +189,7 @@ pub enum PyReportStrategy {
     Periodic(),
 }
 
-#[pyclass]
+#[pyclass(name = "PeriodicReportStrategy")]
 #[derive(Clone)]
 pub struct PyPeriodicReportStrategy {
     period: usize,
@@ -110,7 +208,7 @@ impl PyPeriodicReportStrategy {
     }
 }
 
-#[pyclass]
+#[pyclass(name = "Tick")]
 #[derive(Clone)]
 pub enum PyTick {
     TimeDriven,
@@ -119,7 +217,7 @@ pub enum PyTick {
 }
 
 // Simplified streaming interface
-#[pyclass]
+#[pyclass(name = "StreamingQuery")]
 pub struct PyStreamingQuery {
     config: StreamingConfig,
     // Store accumulated results
@@ -340,7 +438,7 @@ impl PyStreamingQuery {
     }
 }
 
-#[pyclass]
+#[pyclass(name = "QueryBuilder")]
 pub struct PyQueryBuilder {
     db: Arc<Mutex<SparqlDatabase>>,
     subject: Option<String>,
@@ -675,8 +773,8 @@ impl Clone for PyQueryBuilder {
 
 impl PyQueryBuilder {
     /// Helper method to build the Rust QueryBuilder with all configured filters
-    fn build_rust_query_builder<'a>(&self, db: &'a SparqlDatabase) -> kolibrie::query_builder::QueryBuilder<'a> {
-        use kolibrie::query_builder::QueryBuilder;
+    fn build_rust_query_builder<'a>(&self, db: &'a SparqlDatabase) -> kolibrie_core::query_builder::QueryBuilder<'a> {
+        use kolibrie_core::query_builder::QueryBuilder;
         
         let mut qb = QueryBuilder::new(db);
         

@@ -29,7 +29,7 @@ pub fn naive_sds_plus(
     reasoner.dictionary = Arc::clone(dict);
 
     for (triple, _expiry) in &annotated {
-        reasoner.index_manager.insert(triple);
+        reasoner.dataset_index.insert(triple);
     }
 
     for rule in rules {
@@ -38,6 +38,7 @@ pub fn naive_sds_plus(
 
     reasoner.infer_new_facts_semi_naive();
 
-    let all_facts = reasoner.index_manager.query(None, None, None);
+    let all_facts = reasoner.dataset_index.query(None, None, None);
     translate_datalog_back(&all_facts, dict, sds)
 }
+

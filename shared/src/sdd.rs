@@ -8,9 +8,9 @@
  * you can obtain one at https://mozilla.org/MPL/2.0/.
  */
 
+use crate::provenance::Provenance;
 use std::collections::{BTreeSet, HashMap};
 use std::sync::{Arc, Mutex};
-use crate::provenance::Provenance;
 
 /// Handle to an SDD node in the manager's arena.
 ///
@@ -50,21 +50,75 @@ type Element = (SddId, SddId);
 enum SddNode {
     True,
     False,
-    Literal { var: u32, polarity: bool },
+    Literal {
+        var: u32,
+        polarity: bool,
+    },
     /// Compressed, trimmed X-partition at a vtree node.
-    Decision { vtree: VTreeId, elements: Vec<Element> },
+    Decision {
+        vtree: VTreeId,
+        elements: Vec<Element>,
+    },
 }
 
 /// Key for the unique table — ensures canonical sharing.
 #[derive(Clone, PartialEq, Eq, Hash)]
 enum UniqueKey {
-    Literal { var: u32, polarity: bool },
-    Decision { vtree: VTreeId, elements: Vec<Element> },
+    Literal {
+        var: u32,
+        polarity: bool,
+    },
+    Decision {
+        vtree: VTreeId,
+        elements: Vec<Element>,
+    },
 }
 
 /// Boolean operator for Apply.
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
-pub enum BoolOp { And, Or }
+pub enum BoolOp {
+    And,
+    Or,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SddBudgetError {
+    DeadlineExceeded,
+    NodeBudgetExceeded,
+}
+
+/// Per-operation guard for interruptible SDD construction. The callback must
+/// return `true` while the deadline remains available.
+pub struct SddOperationBudget<'a> {
+    max_nodes: usize,
+    deadline_available: &'a mut dyn FnMut() -> bool,
+}
+
+impl<'a> SddOperationBudget<'a> {
+    pub fn new(max_nodes: usize, deadline_available: &'a mut dyn FnMut() -> bool) -> Self {
+        Self {
+            max_nodes,
+            deadline_available,
+        }
+    }
+
+    fn checkpoint(&mut self) -> Result<(), SddBudgetError> {
+        if (self.deadline_available)() {
+            Ok(())
+        } else {
+            Err(SddBudgetError::DeadlineExceeded)
+        }
+    }
+
+    fn before_allocation(&mut self, current_nodes: usize) -> Result<(), SddBudgetError> {
+        self.checkpoint()?;
+        if current_nodes >= self.max_nodes {
+            Err(SddBudgetError::NodeBudgetExceeded)
+        } else {
+            Ok(())
+        }
+    }
+}
 
 /// Whether a variable was registered as an independent Bernoulli or as a member
 /// of an exclusive (annotated-disjunction) group.
@@ -104,7 +158,7 @@ impl SddManager {
     pub fn new() -> Self {
         let mut nodes = Vec::new();
         nodes.push(SddNode::False); // index 0
-        nodes.push(SddNode::True);  // index 1
+        nodes.push(SddNode::True); // index 1
         Self {
             nodes,
             unique_table: HashMap::new(),
@@ -195,21 +249,29 @@ impl SddManager {
     // --- Public accessors for diff_sdd ---
 
     /// Read access to positive literal weights.
-    pub fn pos_weight(&self) -> &[f64] { &self.pos_weight }
+    pub fn pos_weight(&self) -> &[f64] {
+        &self.pos_weight
+    }
 
     /// Read access to negative literal weights.
-    pub fn neg_weight(&self) -> &[f64] { &self.neg_weight }
+    pub fn neg_weight(&self) -> &[f64] {
+        &self.neg_weight
+    }
 
     /// Set the positive literal weight for variable `var`.
     pub fn set_pos_weight(&mut self, var: u32, w: f64) {
         let id = var as usize;
-        if id < self.pos_weight.len() { self.pos_weight[id] = w; }
+        if id < self.pos_weight.len() {
+            self.pos_weight[id] = w;
+        }
     }
 
     /// Set the negative literal weight for variable `var`.
     pub fn set_neg_weight(&mut self, var: u32, w: f64) {
         let id = var as usize;
-        if id < self.neg_weight.len() { self.neg_weight[id] = w; }
+        if id < self.neg_weight.len() {
+            self.neg_weight[id] = w;
+        }
     }
 
     /// Iterate over all registered variable IDs.
@@ -219,7 +281,10 @@ impl SddManager {
 
     /// Get the kind tag for a variable.
     pub fn var_kind(&self, var: u32) -> VarKind {
-        self.var_kind.get(var as usize).copied().unwrap_or(VarKind::Independent)
+        self.var_kind
+            .get(var as usize)
+            .copied()
+            .unwrap_or(VarKind::Independent)
     }
 
     /// Which vtree node does this SDD node respect?
@@ -249,12 +314,14 @@ impl SddManager {
 
     /// Is `descendant` a node within the subtree rooted at `ancestor`?
     fn is_descendant_of(&self, descendant: VTreeId, ancestor: VTreeId) -> bool {
-        if descendant == ancestor { return true; }
+        if descendant == ancestor {
+            return true;
+        }
         match &self.vtree_nodes[ancestor as usize] {
             VTreeNode::Leaf { .. } => false,
             VTreeNode::Internal { left, right } => {
-                self.is_descendant_of(descendant, *left) ||
-                self.is_descendant_of(descendant, *right)
+                self.is_descendant_of(descendant, *left)
+                    || self.is_descendant_of(descendant, *right)
             }
         }
     }
@@ -324,12 +391,18 @@ impl SddManager {
         // Sort elements for canonical key
         elements.sort();
 
-        let key = UniqueKey::Decision { vtree, elements: elements.clone() };
+        let key = UniqueKey::Decision {
+            vtree,
+            elements: elements.clone(),
+        };
         if let Some(&id) = self.unique_table.get(&key) {
             return id;
         }
         let id = SddId(self.nodes.len() as u32);
-        self.nodes.push(SddNode::Decision { vtree, elements: elements.clone() });
+        self.nodes.push(SddNode::Decision {
+            vtree,
+            elements: elements.clone(),
+        });
         self.unique_table.insert(key, id);
         id
     }
@@ -345,7 +418,10 @@ impl SddManager {
         }
         let mut result = Vec::new();
         for (sub, primes) in by_sub {
-            let merged_prime = primes.into_iter().reduce(|a, b| self.apply(a, b, BoolOp::Or)).unwrap();
+            let merged_prime = primes
+                .into_iter()
+                .reduce(|a, b| self.apply(a, b, BoolOp::Or))
+                .unwrap();
             result.push((merged_prime, sub));
         }
         result
@@ -365,9 +441,11 @@ impl SddManager {
             _ => {
                 let node_vtree = self.vtree_of(id);
                 match &self.nodes[id.0 as usize] {
-                    SddNode::Decision { vtree: dv, elements, .. } if *dv == vtree => {
-                        elements.clone()
-                    }
+                    SddNode::Decision {
+                        vtree: dv,
+                        elements,
+                        ..
+                    } if *dv == vtree => elements.clone(),
                     _ => {
                         // Literal or Decision at a descendant vtree node
                         let left = self.vtree_left(vtree);
@@ -391,22 +469,46 @@ impl SddManager {
         // Terminal cases
         match op {
             BoolOp::And => {
-                if a == SddId::FALSE || b == SddId::FALSE { return SddId::FALSE; }
-                if a == SddId::TRUE { return b; }
-                if b == SddId::TRUE { return a; }
-                if a == b { return a; }
+                if a == SddId::FALSE || b == SddId::FALSE {
+                    return SddId::FALSE;
+                }
+                if a == SddId::TRUE {
+                    return b;
+                }
+                if b == SddId::TRUE {
+                    return a;
+                }
+                if a == b {
+                    return a;
+                }
             }
             BoolOp::Or => {
-                if a == SddId::TRUE || b == SddId::TRUE { return SddId::TRUE; }
-                if a == SddId::FALSE { return b; }
-                if b == SddId::FALSE { return a; }
-                if a == b { return a; }
+                if a == SddId::TRUE || b == SddId::TRUE {
+                    return SddId::TRUE;
+                }
+                if a == SddId::FALSE {
+                    return b;
+                }
+                if b == SddId::FALSE {
+                    return a;
+                }
+                if a == b {
+                    return a;
+                }
             }
         }
 
         // Complementary literals: x AND NOT x = FALSE, x OR NOT x = TRUE
-        if let (SddNode::Literal { var: va, polarity: pa }, SddNode::Literal { var: vb, polarity: pb }) =
-            (&self.nodes[a.0 as usize], &self.nodes[b.0 as usize])
+        if let (
+            SddNode::Literal {
+                var: va,
+                polarity: pa,
+            },
+            SddNode::Literal {
+                var: vb,
+                polarity: pb,
+            },
+        ) = (&self.nodes[a.0 as usize], &self.nodes[b.0 as usize])
         {
             if va == vb && pa != pb {
                 return match op {
@@ -441,15 +543,9 @@ impl SddManager {
                 // Both constants — should have been caught by terminal cases
                 unreachable!("apply_inner with two constants: {:?} {:?} {:?}", a, b, op);
             }
-            (None, Some(vb_id)) => {
-                self.apply_expanded(a, b, op, vb_id)
-            }
-            (Some(va_id), None) => {
-                self.apply_expanded(a, b, op, va_id)
-            }
-            (Some(va), Some(vb)) if va == vb => {
-                self.apply_same_vtree(a, b, op, va)
-            }
+            (None, Some(vb_id)) => self.apply_expanded(a, b, op, vb_id),
+            (Some(va_id), None) => self.apply_expanded(a, b, op, va_id),
+            (Some(va), Some(vb)) if va == vb => self.apply_same_vtree(a, b, op, va),
             (Some(va), Some(vb)) => {
                 // Different vtree nodes — find the common ancestor
                 if self.is_descendant_of(va, vb) {
@@ -476,7 +572,9 @@ impl SddManager {
         for &(pa, sa) in &a_elems {
             for &(pb, sb) in &b_elems {
                 let prime = self.apply(pa, pb, BoolOp::And);
-                if prime == SddId::FALSE { continue; }
+                if prime == SddId::FALSE {
+                    continue;
+                }
                 let sub = self.apply(sa, sb, op);
                 result_elems.push((prime, sub));
             }
@@ -486,7 +584,13 @@ impl SddManager {
     }
 
     /// Apply when SDDs are at different vtree levels. Normalize to `target_vtree`.
-    fn apply_different_vtree(&mut self, a: SddId, b: SddId, op: BoolOp, target_vtree: VTreeId) -> SddId {
+    fn apply_different_vtree(
+        &mut self,
+        a: SddId,
+        b: SddId,
+        op: BoolOp,
+        target_vtree: VTreeId,
+    ) -> SddId {
         let a_norm = self.normalize_to(a, target_vtree);
         let b_norm = self.normalize_to(b, target_vtree);
         self.apply_same_vtree(a_norm, b_norm, op, target_vtree)
@@ -523,10 +627,7 @@ impl SddManager {
                     // SDD belongs in the left (prime) side
                     // Create {(id, TRUE), (NOT id, FALSE)} — already compressed & trimmed
                     let neg_id = self.negate(id);
-                    self.make_decision_raw(target, vec![
-                        (id, SddId::TRUE),
-                        (neg_id, SddId::FALSE),
-                    ])
+                    self.make_decision_raw(target, vec![(id, SddId::TRUE), (neg_id, SddId::FALSE)])
                 } else if self.is_descendant_of(v, right) {
                     // SDD belongs in the right (sub) side
                     // Create {(TRUE, id)} — trimming: this just returns id via unique_d
@@ -545,19 +646,35 @@ impl SddManager {
     /// The caller must guarantee the elements are already compressed.
     fn make_decision_raw(&mut self, vtree: VTreeId, mut elements: Vec<Element>) -> SddId {
         elements.retain(|&(p, _)| p != SddId::FALSE);
-        if elements.is_empty() { return SddId::FALSE; }
-        if elements.len() == 1 && elements[0].0 == SddId::TRUE { return elements[0].1; }
+        if elements.is_empty() {
+            return SddId::FALSE;
+        }
+        if elements.len() == 1 && elements[0].0 == SddId::TRUE {
+            return elements[0].1;
+        }
         if elements.len() == 2 {
             let (p1, s1) = elements[0];
             let (p2, s2) = elements[1];
-            if s1 == SddId::TRUE && s2 == SddId::FALSE { return p1; }
-            if s2 == SddId::TRUE && s1 == SddId::FALSE { return p2; }
+            if s1 == SddId::TRUE && s2 == SddId::FALSE {
+                return p1;
+            }
+            if s2 == SddId::TRUE && s1 == SddId::FALSE {
+                return p2;
+            }
         }
         elements.sort();
-        let key = UniqueKey::Decision { vtree, elements: elements.clone() };
-        if let Some(&id) = self.unique_table.get(&key) { return id; }
+        let key = UniqueKey::Decision {
+            vtree,
+            elements: elements.clone(),
+        };
+        if let Some(&id) = self.unique_table.get(&key) {
+            return id;
+        }
         let id = SddId(self.nodes.len() as u32);
-        self.nodes.push(SddNode::Decision { vtree, elements: elements.clone() });
+        self.nodes.push(SddNode::Decision {
+            vtree,
+            elements: elements.clone(),
+        });
         self.unique_table.insert(key, id);
         id
     }
@@ -606,9 +723,8 @@ impl SddManager {
                 let result = match self.nodes[id.0 as usize].clone() {
                     SddNode::Literal { var, polarity } => self.literal(var, !polarity),
                     SddNode::Decision { vtree, elements } => {
-                        let neg_elems: Vec<Element> = elements.iter()
-                            .map(|&(p, s)| (p, self.negate(s)))
-                            .collect();
+                        let neg_elems: Vec<Element> =
+                            elements.iter().map(|&(p, s)| (p, self.negate(s))).collect();
                         self.unique_d(vtree, neg_elems)
                     }
                     _ => unreachable!(),
@@ -626,8 +742,12 @@ impl SddManager {
     }
 
     fn wmc_inner(&self, id: SddId, memo: &mut HashMap<SddId, f64>) -> f64 {
-        if id == SddId::FALSE { return 0.0; }
-        if id == SddId::TRUE { return 1.0; }
+        if id == SddId::FALSE {
+            return 0.0;
+        }
+        if id == SddId::TRUE {
+            return 1.0;
+        }
 
         if let Some(&cached) = memo.get(&id) {
             return cached;
@@ -642,11 +762,10 @@ impl SddManager {
                     *self.neg_weight.get(idx).unwrap_or(&0.0)
                 }
             }
-            SddNode::Decision { elements, .. } => {
-                elements.iter().map(|&(prime, sub)| {
-                    self.wmc_inner(prime, memo) * self.wmc_inner(sub, memo)
-                }).sum()
-            }
+            SddNode::Decision { elements, .. } => elements
+                .iter()
+                .map(|&(prime, sub)| self.wmc_inner(prime, memo) * self.wmc_inner(sub, memo))
+                .sum(),
             _ => unreachable!(),
         };
 
@@ -662,38 +781,455 @@ impl SddManager {
         match id {
             SddId::FALSE => vec![],
             SddId::TRUE => vec![BTreeSet::new()],
-            _ => {
-                match &self.nodes[id.0 as usize] {
-                    SddNode::Literal { var, polarity } => {
-                        let mut model = BTreeSet::new();
-                        model.insert((*var, *polarity));
-                        vec![model]
-                    }
-                    SddNode::Decision { elements, .. } => {
-                        let mut models = Vec::new();
-                        for &(prime, sub) in elements {
-                            if sub == SddId::FALSE { continue; }
-                            let prime_models = self.enumerate_models(prime);
-                            let sub_models = self.enumerate_models(sub);
-                            for pm in &prime_models {
-                                for sm in &sub_models {
-                                    let mut combined = pm.clone();
-                                    combined.extend(sm);
-                                    models.push(combined);
-                                }
+            _ => match &self.nodes[id.0 as usize] {
+                SddNode::Literal { var, polarity } => {
+                    let mut model = BTreeSet::new();
+                    model.insert((*var, *polarity));
+                    vec![model]
+                }
+                SddNode::Decision { elements, .. } => {
+                    let mut models = Vec::new();
+                    for &(prime, sub) in elements {
+                        if sub == SddId::FALSE {
+                            continue;
+                        }
+                        let prime_models = self.enumerate_models(prime);
+                        let sub_models = self.enumerate_models(sub);
+                        for pm in &prime_models {
+                            for sm in &sub_models {
+                                let mut combined = pm.clone();
+                                combined.extend(sm);
+                                models.push(combined);
                             }
                         }
-                        models
                     }
-                    _ => unreachable!(),
+                    models
                 }
-            }
+                _ => unreachable!(),
+            },
         }
     }
 
     /// Number of nodes in the manager (including TRUE/FALSE).
     pub fn node_count(&self) -> usize {
         self.nodes.len()
+    }
+}
+
+impl SddManager {
+    /// Interruptible counterpart of [`SddManager::literal`].
+    pub fn try_literal(
+        &mut self,
+        var: u32,
+        polarity: bool,
+        budget: &mut SddOperationBudget<'_>,
+    ) -> Result<SddId, SddBudgetError> {
+        budget.checkpoint()?;
+        let key = UniqueKey::Literal { var, polarity };
+        if let Some(&id) = self.unique_table.get(&key) {
+            return Ok(id);
+        }
+        budget.before_allocation(self.nodes.len())?;
+        let id = SddId(self.nodes.len() as u32);
+        self.nodes.push(SddNode::Literal { var, polarity });
+        self.unique_table.insert(key, id);
+        Ok(id)
+    }
+
+    /// Interruptible counterpart of [`SddManager::apply`].
+    pub fn try_apply(
+        &mut self,
+        a: SddId,
+        b: SddId,
+        op: BoolOp,
+        budget: &mut SddOperationBudget<'_>,
+    ) -> Result<SddId, SddBudgetError> {
+        budget.checkpoint()?;
+        match op {
+            BoolOp::And => {
+                if a == SddId::FALSE || b == SddId::FALSE {
+                    return Ok(SddId::FALSE);
+                }
+                if a == SddId::TRUE {
+                    return Ok(b);
+                }
+                if b == SddId::TRUE {
+                    return Ok(a);
+                }
+                if a == b {
+                    return Ok(a);
+                }
+            }
+            BoolOp::Or => {
+                if a == SddId::TRUE || b == SddId::TRUE {
+                    return Ok(SddId::TRUE);
+                }
+                if a == SddId::FALSE {
+                    return Ok(b);
+                }
+                if b == SddId::FALSE {
+                    return Ok(a);
+                }
+                if a == b {
+                    return Ok(a);
+                }
+            }
+        }
+        if let (
+            SddNode::Literal {
+                var: va,
+                polarity: pa,
+            },
+            SddNode::Literal {
+                var: vb,
+                polarity: pb,
+            },
+        ) = (&self.nodes[a.0 as usize], &self.nodes[b.0 as usize])
+        {
+            if va == vb && pa != pb {
+                return Ok(if op == BoolOp::And {
+                    SddId::FALSE
+                } else {
+                    SddId::TRUE
+                });
+            }
+        }
+        let key = if a.0 <= b.0 {
+            (a, b, op as u8)
+        } else {
+            (b, a, op as u8)
+        };
+        if let Some(&cached) = self.apply_cache.get(&key) {
+            return Ok(cached);
+        }
+        let result = self.try_apply_inner(a, b, op, budget)?;
+        self.apply_cache.insert(key, result);
+        Ok(result)
+    }
+
+    fn try_apply_inner(
+        &mut self,
+        a: SddId,
+        b: SddId,
+        op: BoolOp,
+        budget: &mut SddOperationBudget<'_>,
+    ) -> Result<SddId, SddBudgetError> {
+        budget.checkpoint()?;
+        let va = self.vtree_of(a);
+        let vb = self.vtree_of(b);
+        match (va, vb) {
+            (None, None) => unreachable!("try_apply_inner with two constants"),
+            (None, Some(vtree)) | (Some(vtree), None) => {
+                self.try_apply_expanded(a, b, op, vtree, budget)
+            }
+            (Some(left), Some(right)) if left == right => {
+                self.try_apply_same_vtree(a, b, op, left, budget)
+            }
+            (Some(left), Some(right)) => {
+                let target = if self.is_descendant_of(left, right) {
+                    right
+                } else if self.is_descendant_of(right, left) {
+                    left
+                } else {
+                    self.find_lca(left, right)
+                };
+                self.try_apply_different_vtree(a, b, op, target, budget)
+            }
+        }
+    }
+
+    fn try_expand(
+        &mut self,
+        id: SddId,
+        vtree: VTreeId,
+        budget: &mut SddOperationBudget<'_>,
+    ) -> Result<Vec<Element>, SddBudgetError> {
+        budget.checkpoint()?;
+        match id {
+            SddId::TRUE => Ok(vec![(SddId::TRUE, SddId::TRUE)]),
+            SddId::FALSE => Ok(vec![(SddId::TRUE, SddId::FALSE)]),
+            _ => {
+                let node_vtree = self.vtree_of(id);
+                match &self.nodes[id.0 as usize] {
+                    SddNode::Decision {
+                        vtree: node_tree,
+                        elements,
+                    } if *node_tree == vtree => Ok(elements.clone()),
+                    _ => {
+                        let left = self.vtree_left(vtree);
+                        let current = node_vtree.unwrap();
+                        if current == left || self.is_descendant_of(current, left) {
+                            let negated = self.try_negate(id, budget)?;
+                            Ok(vec![(id, SddId::TRUE), (negated, SddId::FALSE)])
+                        } else {
+                            Ok(vec![(SddId::TRUE, id)])
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    fn try_apply_same_vtree(
+        &mut self,
+        a: SddId,
+        b: SddId,
+        op: BoolOp,
+        vtree: VTreeId,
+        budget: &mut SddOperationBudget<'_>,
+    ) -> Result<SddId, SddBudgetError> {
+        let left_elements = self.try_expand(a, vtree, budget)?;
+        let right_elements = self.try_expand(b, vtree, budget)?;
+        let mut result = Vec::new();
+        for &(left_prime, left_sub) in &left_elements {
+            for &(right_prime, right_sub) in &right_elements {
+                budget.checkpoint()?;
+                let prime = self.try_apply(left_prime, right_prime, BoolOp::And, budget)?;
+                if prime == SddId::FALSE {
+                    continue;
+                }
+                let sub = self.try_apply(left_sub, right_sub, op, budget)?;
+                result.push((prime, sub));
+            }
+        }
+        self.try_unique_d(vtree, result, budget)
+    }
+
+    fn try_apply_different_vtree(
+        &mut self,
+        a: SddId,
+        b: SddId,
+        op: BoolOp,
+        target: VTreeId,
+        budget: &mut SddOperationBudget<'_>,
+    ) -> Result<SddId, SddBudgetError> {
+        let left = self.try_normalize_to(a, target, budget)?;
+        let right = self.try_normalize_to(b, target, budget)?;
+        self.try_apply_same_vtree(left, right, op, target, budget)
+    }
+
+    fn try_apply_expanded(
+        &mut self,
+        a: SddId,
+        b: SddId,
+        op: BoolOp,
+        target: VTreeId,
+        budget: &mut SddOperationBudget<'_>,
+    ) -> Result<SddId, SddBudgetError> {
+        let left = self.try_normalize_to(a, target, budget)?;
+        let right = self.try_normalize_to(b, target, budget)?;
+        self.try_apply_same_vtree(left, right, op, target, budget)
+    }
+
+    fn try_normalize_to(
+        &mut self,
+        id: SddId,
+        target: VTreeId,
+        budget: &mut SddOperationBudget<'_>,
+    ) -> Result<SddId, SddBudgetError> {
+        budget.checkpoint()?;
+        if id == SddId::TRUE || id == SddId::FALSE {
+            return Ok(id);
+        }
+        match self.vtree_of(id) {
+            Some(current) if current == target => Ok(id),
+            Some(current) => {
+                let left = self.vtree_left(target);
+                let right = self.vtree_right(target);
+                if self.is_descendant_of(current, left) {
+                    let negated = self.try_negate(id, budget)?;
+                    self.try_make_decision_raw(
+                        target,
+                        vec![(id, SddId::TRUE), (negated, SddId::FALSE)],
+                        budget,
+                    )
+                } else if self.is_descendant_of(current, right) {
+                    self.try_unique_d(target, vec![(SddId::TRUE, id)], budget)
+                } else {
+                    Ok(id)
+                }
+            }
+            None => Ok(id),
+        }
+    }
+
+    fn try_make_decision_raw(
+        &mut self,
+        vtree: VTreeId,
+        mut elements: Vec<Element>,
+        budget: &mut SddOperationBudget<'_>,
+    ) -> Result<SddId, SddBudgetError> {
+        budget.checkpoint()?;
+        elements.retain(|&(prime, _)| prime != SddId::FALSE);
+        if elements.is_empty() {
+            return Ok(SddId::FALSE);
+        }
+        if elements.len() == 1 && elements[0].0 == SddId::TRUE {
+            return Ok(elements[0].1);
+        }
+        if elements.len() == 2 {
+            let (p1, s1) = elements[0];
+            let (p2, s2) = elements[1];
+            if s1 == SddId::TRUE && s2 == SddId::FALSE {
+                return Ok(p1);
+            }
+            if s2 == SddId::TRUE && s1 == SddId::FALSE {
+                return Ok(p2);
+            }
+        }
+        elements.sort();
+        let key = UniqueKey::Decision {
+            vtree,
+            elements: elements.clone(),
+        };
+        if let Some(&id) = self.unique_table.get(&key) {
+            return Ok(id);
+        }
+        budget.before_allocation(self.nodes.len())?;
+        let id = SddId(self.nodes.len() as u32);
+        self.nodes.push(SddNode::Decision { vtree, elements });
+        self.unique_table.insert(key, id);
+        Ok(id)
+    }
+
+    fn try_unique_d(
+        &mut self,
+        vtree: VTreeId,
+        mut elements: Vec<Element>,
+        budget: &mut SddOperationBudget<'_>,
+    ) -> Result<SddId, SddBudgetError> {
+        budget.checkpoint()?;
+        elements.retain(|&(prime, _)| prime != SddId::FALSE);
+        if elements.is_empty() {
+            return Ok(SddId::FALSE);
+        }
+        if elements.len() == 1 && elements[0].0 == SddId::TRUE {
+            return Ok(elements[0].1);
+        }
+        if elements.len() == 2 {
+            let (p1, s1) = elements[0];
+            let (p2, s2) = elements[1];
+            if s1 == SddId::TRUE && s2 == SddId::FALSE {
+                return Ok(p1);
+            }
+            if s2 == SddId::TRUE && s1 == SddId::FALSE {
+                return Ok(p2);
+            }
+        }
+        elements = self.try_compress(elements, budget)?;
+        if elements.is_empty() {
+            return Ok(SddId::FALSE);
+        }
+        if elements.len() == 1 && elements[0].0 == SddId::TRUE {
+            return Ok(elements[0].1);
+        }
+        if elements.len() == 2 {
+            let (p1, s1) = elements[0];
+            let (p2, s2) = elements[1];
+            if s1 == SddId::TRUE && s2 == SddId::FALSE {
+                return Ok(p1);
+            }
+            if s2 == SddId::TRUE && s1 == SddId::FALSE {
+                return Ok(p2);
+            }
+        }
+        elements.sort();
+        let key = UniqueKey::Decision {
+            vtree,
+            elements: elements.clone(),
+        };
+        if let Some(&id) = self.unique_table.get(&key) {
+            return Ok(id);
+        }
+        budget.before_allocation(self.nodes.len())?;
+        let id = SddId(self.nodes.len() as u32);
+        self.nodes.push(SddNode::Decision { vtree, elements });
+        self.unique_table.insert(key, id);
+        Ok(id)
+    }
+
+    fn try_compress(
+        &mut self,
+        elements: Vec<Element>,
+        budget: &mut SddOperationBudget<'_>,
+    ) -> Result<Vec<Element>, SddBudgetError> {
+        budget.checkpoint()?;
+        let mut grouped: HashMap<SddId, Vec<SddId>> = HashMap::new();
+        for &(prime, sub) in &elements {
+            grouped.entry(sub).or_default().push(prime);
+        }
+        if grouped.len() == elements.len() {
+            return Ok(elements);
+        }
+        let mut result = Vec::new();
+        for (sub, primes) in grouped {
+            let mut iterator = primes.into_iter();
+            let mut merged = iterator.next().unwrap();
+            for prime in iterator {
+                merged = self.try_apply(merged, prime, BoolOp::Or, budget)?;
+            }
+            result.push((merged, sub));
+        }
+        Ok(result)
+    }
+
+    /// Interruptible counterpart of [`SddManager::negate`].
+    pub fn try_negate(
+        &mut self,
+        id: SddId,
+        budget: &mut SddOperationBudget<'_>,
+    ) -> Result<SddId, SddBudgetError> {
+        budget.checkpoint()?;
+        match id {
+            SddId::FALSE => Ok(SddId::TRUE),
+            SddId::TRUE => Ok(SddId::FALSE),
+            _ => {
+                if let Some(&cached) = self.negate_cache.get(&id) {
+                    return Ok(cached);
+                }
+                let result = match self.nodes[id.0 as usize].clone() {
+                    SddNode::Literal { var, polarity } => {
+                        self.try_literal(var, !polarity, budget)?
+                    }
+                    SddNode::Decision { vtree, elements } => {
+                        let mut negated = Vec::with_capacity(elements.len());
+                        for (prime, sub) in elements {
+                            negated.push((prime, self.try_negate(sub, budget)?));
+                        }
+                        self.try_unique_d(vtree, negated, budget)?
+                    }
+                    _ => unreachable!(),
+                };
+                self.negate_cache.insert(id, result);
+                Ok(result)
+            }
+        }
+    }
+
+    /// Interruptible counterpart of [`SddManager::exactly_one`].
+    pub fn try_exactly_one(
+        &mut self,
+        vars: &[u32],
+        budget: &mut SddOperationBudget<'_>,
+    ) -> Result<SddId, SddBudgetError> {
+        budget.checkpoint()?;
+        match vars {
+            [] => Ok(SddId::FALSE),
+            [only] => self.try_literal(*only, true, budget),
+            [first, rest @ ..] => {
+                let first_true = self.try_literal(*first, true, budget)?;
+                let first_false = self.try_literal(*first, false, budget)?;
+                let mut all_false = SddId::TRUE;
+                for variable in rest {
+                    let literal = self.try_literal(*variable, false, budget)?;
+                    all_false = self.try_apply(all_false, literal, BoolOp::And, budget)?;
+                }
+                let left = self.try_apply(first_true, all_false, BoolOp::And, budget)?;
+                let recursive = self.try_exactly_one(rest, budget)?;
+                let right = self.try_apply(first_false, recursive, BoolOp::And, budget)?;
+                self.try_apply(left, right, BoolOp::Or, budget)
+            }
+        }
     }
 }
 
@@ -708,7 +1244,9 @@ pub struct SddProvenance {
 
 impl SddProvenance {
     pub fn new() -> Self {
-        Self { manager: Arc::new(Mutex::new(SddManager::new())) }
+        Self {
+            manager: Arc::new(Mutex::new(SddManager::new())),
+        }
     }
 
     /// Access the underlying manager (for explanation export).
@@ -718,7 +1256,9 @@ impl SddProvenance {
 }
 
 impl Default for SddProvenance {
-    fn default() -> Self { Self::new() }
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 // Manual Debug for SddManager (contains non-Debug HashMap keys)
@@ -736,8 +1276,12 @@ impl std::fmt::Debug for SddManager {
 impl Provenance for SddProvenance {
     type Tag = SddId;
 
-    fn zero(&self) -> SddId { SddId::FALSE }
-    fn one(&self) -> SddId { SddId::TRUE }
+    fn zero(&self) -> SddId {
+        SddId::FALSE
+    }
+    fn one(&self) -> SddId {
+        SddId::TRUE
+    }
 
     fn disjunction(&self, a: &SddId, b: &SddId) -> SddId {
         self.manager.lock().unwrap().apply(*a, *b, BoolOp::Or)
@@ -751,7 +1295,9 @@ impl Provenance for SddProvenance {
         self.manager.lock().unwrap().negate(*a)
     }
 
-    fn saturate(&self, a: &SddId) -> SddId { *a }
+    fn saturate(&self, a: &SddId) -> SddId {
+        *a
+    }
 
     fn tag_from_probability(&self, prob: f64) -> SddId {
         let mut mgr = self.manager.lock().unwrap();
@@ -809,7 +1355,11 @@ mod tests {
         let x = mgr.literal(0, true);
         let y = mgr.literal(1, true);
         let xy = mgr.apply(x, y, BoolOp::And);
-        assert!((mgr.wmc(xy) - 0.48).abs() < EPS, "0.8*0.6 = 0.48, got {}", mgr.wmc(xy));
+        assert!(
+            (mgr.wmc(xy) - 0.48).abs() < EPS,
+            "0.8*0.6 = 0.48, got {}",
+            mgr.wmc(xy)
+        );
     }
 
     #[test]
@@ -821,7 +1371,11 @@ mod tests {
         let y = mgr.literal(1, true);
         let xy = mgr.apply(x, y, BoolOp::Or);
         // P(x OR y) = 0.8 + 0.6 - 0.48 = 0.92
-        assert!((mgr.wmc(xy) - 0.92).abs() < EPS, "expected 0.92, got {}", mgr.wmc(xy));
+        assert!(
+            (mgr.wmc(xy) - 0.92).abs() < EPS,
+            "expected 0.92, got {}",
+            mgr.wmc(xy)
+        );
     }
 
     #[test]
@@ -847,7 +1401,11 @@ mod tests {
         let xy = mgr.apply(x, y, BoolOp::And);
         let neg_xy = mgr.negate(xy);
         // P(NOT (x AND y)) = 1 - 0.48 = 0.52
-        assert!((mgr.wmc(neg_xy) - 0.52).abs() < EPS, "expected 0.52, got {}", mgr.wmc(neg_xy));
+        assert!(
+            (mgr.wmc(neg_xy) - 0.52).abs() < EPS,
+            "expected 0.52, got {}",
+            mgr.wmc(neg_xy)
+        );
     }
 
     #[test]
@@ -866,7 +1424,11 @@ mod tests {
         let f = mgr.apply(xy, xz, BoolOp::Or);
         let neg_f = mgr.negate(f);
         let total = mgr.wmc(f) + mgr.wmc(neg_f);
-        assert!((total - 1.0).abs() < EPS, "P(f) + P(¬f) = {}, expected 1.0", total);
+        assert!(
+            (total - 1.0).abs() < EPS,
+            "P(f) + P(¬f) = {}, expected 1.0",
+            total
+        );
     }
 
     #[test]
@@ -884,7 +1446,11 @@ mod tests {
         let xy = mgr.apply(x, y, BoolOp::And);
         let xz = mgr.apply(x, z, BoolOp::And);
         let f = mgr.apply(xy, xz, BoolOp::Or);
-        assert!((mgr.wmc(f) - 0.64).abs() < EPS, "expected 0.64, got {}", mgr.wmc(f));
+        assert!(
+            (mgr.wmc(f) - 0.64).abs() < EPS,
+            "expected 0.64, got {}",
+            mgr.wmc(f)
+        );
     }
 
     #[test]
@@ -919,7 +1485,12 @@ mod tests {
         // our WMC is correct for this specific construction.
         let prob = mgr.wmc(f);
         let expected = 0.64 + 0.4 - 0.64 * 0.4; // = 0.784
-        assert!((prob - expected).abs() < EPS, "expected {}, got {}", expected, prob);
+        assert!(
+            (prob - expected).abs() < EPS,
+            "expected {}, got {}",
+            expected,
+            prob
+        );
     }
 
     #[test]
@@ -967,7 +1538,11 @@ mod tests {
         let blocked = mgr.literal(1, true);
         let neg_blocked = mgr.negate(blocked);
         let result = mgr.apply(active, neg_blocked, BoolOp::And);
-        assert!((mgr.wmc(result) - 0.56).abs() < EPS, "expected 0.56, got {}", mgr.wmc(result));
+        assert!(
+            (mgr.wmc(result) - 0.56).abs() < EPS,
+            "expected 0.56, got {}",
+            mgr.wmc(result)
+        );
     }
 
     #[test]
@@ -1056,5 +1631,56 @@ mod tests {
         let both = mgr.apply(left, right, BoolOp::And);
         assert_eq!(both, SddId::FALSE);
         assert_eq!(mgr.wmc(both), 0.0);
+    }
+
+    #[test]
+    fn budgeted_operations_never_cross_node_limit() {
+        let mut mgr = SddManager::new();
+        mgr.ensure_variable(0, 0.8);
+        mgr.ensure_variable(1, 0.6);
+        let mut available = || true;
+        let mut budget = SddOperationBudget::new(3, &mut available);
+        let x = mgr.try_literal(0, true, &mut budget).unwrap();
+        assert_eq!(mgr.node_count(), 3);
+        let error = mgr.try_literal(1, true, &mut budget).unwrap_err();
+        assert_eq!(error, SddBudgetError::NodeBudgetExceeded);
+        assert_eq!(mgr.node_count(), 3);
+        assert_ne!(x, SddId::FALSE);
+    }
+
+    #[test]
+    fn budgeted_operations_interrupt_at_recursive_deadline() {
+        let mut mgr = SddManager::new();
+        mgr.ensure_variable(0, 0.8);
+        let mut checks = 0usize;
+        let mut available = || {
+            checks += 1;
+            checks <= 1
+        };
+        let mut budget = SddOperationBudget::new(100, &mut available);
+        let error = mgr.try_literal(0, true, &mut budget).unwrap_err();
+        assert_eq!(error, SddBudgetError::DeadlineExceeded);
+        assert_eq!(mgr.node_count(), 2);
+    }
+
+    #[test]
+    fn budgeted_apply_matches_unlimited_apply() {
+        let mut unlimited = SddManager::new();
+        unlimited.ensure_variable(0, 0.8);
+        unlimited.ensure_variable(1, 0.6);
+        let ux = unlimited.literal(0, true);
+        let uy = unlimited.literal(1, true);
+        let expected = unlimited.apply(ux, uy, BoolOp::Or);
+        let expected_wmc = unlimited.wmc(expected);
+
+        let mut budgeted = SddManager::new();
+        budgeted.ensure_variable(0, 0.8);
+        budgeted.ensure_variable(1, 0.6);
+        let mut available = || true;
+        let mut budget = SddOperationBudget::new(1_000, &mut available);
+        let x = budgeted.try_literal(0, true, &mut budget).unwrap();
+        let y = budgeted.try_literal(1, true, &mut budget).unwrap();
+        let actual = budgeted.try_apply(x, y, BoolOp::Or, &mut budget).unwrap();
+        assert!((budgeted.wmc(actual) - expected_wmc).abs() < EPS);
     }
 }

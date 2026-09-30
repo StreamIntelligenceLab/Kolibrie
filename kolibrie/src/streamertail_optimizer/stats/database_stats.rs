@@ -10,19 +10,25 @@
 
 use crate::sparql_database::SparqlDatabase;
 use rayon::prelude::*;
-use std::collections::HashMap;
-use std::sync::RwLock;
+use shared::dataset_index::GraphId;
+use std::collections::{HashMap, HashSet};
 
 /// Database statistics for cost-based optimization
 #[derive(Debug)]
 pub struct DatabaseStats {
     pub total_triples: u64,
     pub quoted_triple_count: u64,
+    pub named_graph_count: u64,
+    pub graph_cardinalities: HashMap<GraphId, u64>,
     pub predicate_cardinalities: HashMap<u32, u64>,
     pub subject_cardinalities: HashMap<u32, u64>,
     pub object_cardinalities: HashMap<u32, u64>,
-    pub join_selectivity_cache: RwLock<HashMap<u32, f64>>,
-    pub predicate_histogram: HashMap<u32, Vec<(u32, u64)>>, // For better selectivity estimation
+    /// Join-key domain sizes: a join through predicate `p` fans out by roughly `cardinality(p) / distinct(p)` rows per binding
+    pub predicate_distinct_subjects: HashMap<u32, u64>,
+    pub predicate_distinct_objects: HashMap<u32, u64>,
+    /// Dataset-wide domain sizes, used when a pattern leaves its predicate unbound
+    pub distinct_subjects: u64,
+    pub distinct_objects: u64,
 }
 
 impl DatabaseStats {
@@ -31,20 +37,25 @@ impl DatabaseStats {
         Self {
             total_triples: 0,
             quoted_triple_count: 0,
+            named_graph_count: 0,
+            graph_cardinalities: HashMap::new(),
             predicate_cardinalities: HashMap::new(),
             subject_cardinalities: HashMap::new(),
             object_cardinalities: HashMap::new(),
-            join_selectivity_cache: RwLock::new(HashMap::new()),
-            predicate_histogram: HashMap::new(),
+            predicate_distinct_subjects: HashMap::new(),
+            predicate_distinct_objects: HashMap::new(),
+            distinct_subjects: 0,
+            distinct_objects: 0,
         }
     }
 
     /// Gathers statistics from the database using sampling for performance
     pub fn gather_stats_fast(database: &SparqlDatabase) -> Self {
-        let total_triples = database.triples.len() as u64;
-
-        // Convert BTreeSet to Vec for sampling
-        let triples_vec: Vec<_> = database.triples.iter().collect();
+        // Term and predicate distributions must cover the complete RDF
+        // dataset. Graph-specific cardinalities below cap these global
+        // distributions for default, fixed named, and variable GRAPH scans.
+        let quads = database.dataset_index.all_quads();
+        let total_triples = quads.len() as u64;
 
         // Use sampling for large datasets instead of full scan
         let sample_size = (total_triples as usize).min(100_000);
@@ -55,10 +66,10 @@ impl DatabaseStats {
         };
 
         // Sample the data by stepping through the vector
-        let sampled_triples: Vec<_> = triples_vec.iter().step_by(step).take(sample_size).collect();
+        let sampled_quads: Vec<_> = quads.iter().step_by(step).take(sample_size).collect();
 
         // Use parallel processing for stats gathering
-        let stats_data: Vec<_> = sampled_triples
+        let stats_data: Vec<_> = sampled_quads
             .par_iter()
             .map(|triple| {
                 let subject = triple.subject;
@@ -72,11 +83,19 @@ impl DatabaseStats {
         let mut predicate_cardinalities: HashMap<u32, u64> = HashMap::new();
         let mut subject_cardinalities: HashMap<u32, u64> = HashMap::new();
         let mut object_cardinalities: HashMap<u32, u64> = HashMap::new();
+        let mut predicate_subjects: HashMap<u32, HashSet<u32>> = HashMap::new();
+        let mut predicate_objects: HashMap<u32, HashSet<u32>> = HashMap::new();
+        let mut all_subjects: HashSet<u32> = HashSet::new();
+        let mut all_objects: HashSet<u32> = HashSet::new();
 
         for (subject, predicate, object) in stats_data {
             *predicate_cardinalities.entry(predicate).or_insert(0) += 1;
             *subject_cardinalities.entry(subject).or_insert(0) += 1;
             *object_cardinalities.entry(object).or_insert(0) += 1;
+            predicate_subjects.entry(predicate).or_default().insert(subject);
+            predicate_objects.entry(predicate).or_default().insert(object);
+            all_subjects.insert(subject);
+            all_objects.insert(object);
         }
 
         // Scale up sampled statistics
@@ -91,17 +110,72 @@ impl DatabaseStats {
             .values_mut()
             .for_each(|v| *v *= scale_factor);
 
+        // Distinct counts do not grow linearly with the sample, so each is capped at the matching cardinality to keep fan-out at or above one
+        let scale_distinct = |observed: u64, cardinality: u64| {
+            observed.saturating_mul(scale_factor).min(cardinality).max(1)
+        };
+        let predicate_distinct_subjects = predicate_subjects
+            .into_iter()
+            .map(|(predicate, subjects)| {
+                let cardinality = predicate_cardinalities.get(&predicate).copied().unwrap_or(0);
+                (predicate, scale_distinct(subjects.len() as u64, cardinality))
+            })
+            .collect();
+        let predicate_distinct_objects = predicate_objects
+            .into_iter()
+            .map(|(predicate, objects)| {
+                let cardinality = predicate_cardinalities.get(&predicate).copied().unwrap_or(0);
+                (predicate, scale_distinct(objects.len() as u64, cardinality))
+            })
+            .collect();
+        let distinct_subjects = scale_distinct(all_subjects.len() as u64, total_triples);
+        let distinct_objects = scale_distinct(all_objects.len() as u64, total_triples);
+
         let quoted_triple_count = database.quoted_triple_store.read().unwrap().len() as u64;
+        let mut graph_cardinalities = HashMap::new();
+        graph_cardinalities.insert(
+            GraphId::Default,
+            database.dataset_index.len_graph(GraphId::Default) as u64,
+        );
+        for graph in database.dataset_index.named_graphs() {
+            graph_cardinalities.insert(graph, database.dataset_index.len_graph(graph) as u64);
+        }
+        let named_graph_count = database.dataset_index.named_graphs().len() as u64;
 
         Self {
             total_triples,
             quoted_triple_count,
+            named_graph_count,
+            graph_cardinalities,
             predicate_cardinalities,
             subject_cardinalities,
             object_cardinalities,
-            join_selectivity_cache: RwLock::new(HashMap::new()),
-            predicate_histogram: HashMap::new(),
+            predicate_distinct_subjects,
+            predicate_distinct_objects,
+            distinct_subjects,
+            distinct_objects,
         }
+    }
+
+    /// Distinct subjects reached through a predicate
+    pub fn get_predicate_distinct_subjects(&self, predicate: u32) -> u64 {
+        self.predicate_distinct_subjects
+            .get(&predicate)
+            .copied()
+            .unwrap_or(0)
+    }
+
+    /// Distinct objects reached through a predicate
+    pub fn get_predicate_distinct_objects(&self, predicate: u32) -> u64 {
+        self.predicate_distinct_objects
+            .get(&predicate)
+            .copied()
+            .unwrap_or(0)
+    }
+
+    /// Number of distinct predicates observed
+    pub fn distinct_predicates(&self) -> u64 {
+        self.predicate_cardinalities.len() as u64
     }
 
     /// Gets the cardinality for a predicate
@@ -125,31 +199,8 @@ impl DatabaseStats {
         self.object_cardinalities.get(&object).copied().unwrap_or(0)
     }
 
-    /// Gets or computes join selectivity
-    pub fn get_join_selectivity(&self, predicate: u32) -> f64 {
-        // First, try to read from cache (shared read lock)
-        {
-            let cache = self.join_selectivity_cache.read().unwrap();
-            if let Some(&selectivity) = cache.get(&predicate) {
-                return selectivity;
-            }
-        }  // Read lock released here
-        
-        // Compute selectivity
-        let cardinality = self.get_predicate_cardinality(predicate);
-        let selectivity = if self.total_triples > 0 {
-            (cardinality as f64) / (self.total_triples as f64)
-        } else {
-            0.1
-        };
-
-        // Cache the result
-        {
-            let mut cache = self.join_selectivity_cache.write().unwrap();
-            cache.insert(predicate, selectivity);
-        }
-        
-        selectivity
+    pub fn get_graph_cardinality(&self, graph: GraphId) -> u64 {
+        self.graph_cardinalities.get(&graph).copied().unwrap_or(0)
     }
 
     /// Updates statistics with new data
@@ -158,9 +209,6 @@ impl DatabaseStats {
         *self.predicate_cardinalities.entry(predicate).or_insert(0) += 1;
         *self.subject_cardinalities.entry(subject).or_insert(0) += 1;
         *self.object_cardinalities.entry(object).or_insert(0) += 1;
-
-        // Clear cache as statistics have changed
-        self.join_selectivity_cache.write().unwrap().clear();
     }
 
     /// Removes statistics for deleted data
@@ -186,9 +234,6 @@ impl DatabaseStats {
                 *count -= 1;
             }
         }
-
-        // Clear cache as statistics have changed
-        self.join_selectivity_cache.write().unwrap().clear();
     }
 }
 

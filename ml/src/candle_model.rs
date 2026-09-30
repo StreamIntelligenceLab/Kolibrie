@@ -12,6 +12,7 @@ use std::cell::RefCell;
 use std::collections::{HashMap, VecDeque};
 use std::error::Error;
 use std::fs;
+use std::path::{Path, PathBuf};
 
 use candle_core::{Device, Tensor};
 use candle_nn::VarMap;
@@ -317,6 +318,12 @@ impl MlpNeuralPredicate {
             hidden_act: self.hidden_act,
             output_type: self.output_type,
         };
+        let path = portable_model_path(path);
+        if let Some(parent) = path.parent() {
+            if !parent.as_os_str().is_empty() {
+                fs::create_dir_all(parent)?;
+            }
+        }
         fs::write(path, serde_json::to_vec_pretty(&payload)?)?;
         Ok(())
     }
@@ -327,6 +334,7 @@ impl MlpNeuralPredicate {
         output_type: OutputType,
         path: &str,
     ) -> MlResult<Self> {
+        let path = portable_model_path(path);
         let payload: SavedModel = serde_json::from_slice(&fs::read(path)?)?;
         let mut model = Self::new(input_dim, hidden, output_type)?;
         if payload.output_type != output_type {
@@ -340,6 +348,17 @@ impl MlpNeuralPredicate {
         drop(layers);
         Ok(model)
     }
+}
+
+fn portable_model_path(path: &str) -> PathBuf {
+    let raw_path = Path::new(path);
+    #[cfg(windows)]
+    {
+        if let Ok(stripped) = raw_path.strip_prefix("/tmp") {
+            return std::env::temp_dir().join(stripped);
+        }
+    }
+    raw_path.to_path_buf()
 }
 
 fn output_dim(output_type: OutputType) -> usize {

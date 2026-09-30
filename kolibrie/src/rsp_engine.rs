@@ -9,18 +9,18 @@
 
 use crate::rsp::r2r::R2ROperator;
 use crate::rsp::r2s::Relation2StreamOperator;
-use crate::rsp::s2r::{ContentContainer, ReportStrategy, Tick};
+use crate::rsp::s2r::{ContentContainer, ProbabilisticOccurrence, ReportStrategy, Tick};
 use crate::rsp::window_runner::{WindowRunner, WindowSpec};
 
+use crossbeam::channel::{unbounded, Receiver, RecvTimeoutError, Sender};
 #[cfg(not(test))]
 use log::{debug, error}; // Use log crate when building application
 use shared::query::{Fallback, SyncPolicy};
 use shared::rule::Rule;
 use std::collections::HashMap;
+use std::collections::HashSet;
 use std::fmt::Debug;
 use std::hash::Hash;
-use crossbeam::channel::{unbounded, RecvTimeoutError, Receiver, Sender};
-use std::collections::HashSet;
 use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::Instant;
@@ -40,6 +40,9 @@ use datalog::reasoning::materialisation::cross_window_incremental::{
 use datalog::reasoning::materialisation::cross_window_naive::naive_sds_plus;
 use shared::dictionary::Dictionary;
 use shared::triple::Triple;
+use shared::hybrid::{
+    normalize_stream_iri, HybridError, HybridProbabilityResult, SeedId, SeedRegistry,
+};
 use std::sync::RwLock;
 
 // Re-exports to preserve the public API used by kolibrie-http-server and examples.
@@ -102,7 +105,8 @@ pub struct ResultConsumer<I> {
 macro_rules! create_window_processor {
     ($window_iri:expr, $query:expr, $query_execution_mode:expr,
      $r2r_store:expr, $has_joins:expr, $cross_window_enabled:expr,
-     $window_result_sender:expr, $r2s_consumer_func:expr) => {{
+     $window_result_sender:expr, $r2s_consumer_func:expr,
+     $seed_registry:expr, $latest_hybrid_results:expr) => {{
         let mut prev_window_triples: Vec<I> = Vec::new();
         move |content: ContentContainer<I>| {
             debug!(
@@ -111,6 +115,12 @@ macro_rules! create_window_processor {
             );
 
             let ts = content.get_last_timestamp_changed();
+            let live_seed_ids: Vec<SeedId> = content
+                .probabilistic_occurrences()
+                .iter()
+                .filter(|occurrence| !content.is_deterministic(&occurrence.item))
+                .map(|occurrence| occurrence.seed_id)
+                .collect();
             if $cross_window_enabled {
                 let raw_triples: Vec<(Triple, u64)> = content
                     .iter_with_timestamps()
@@ -136,6 +146,13 @@ macro_rules! create_window_processor {
 
             let mut store = $r2r_store.lock().unwrap();
 
+            if let Some(simple_r2r) = store.as_any_mut().downcast_mut::<SimpleR2R>() {
+                match $seed_registry.lock().unwrap().snapshot_for_ids(live_seed_ids) {
+                    Ok(snapshot) => simple_r2r.set_live_seed_snapshot(snapshot),
+                    Err(error) => error!("Unable to build live hybrid seed snapshot: {}", error),
+                }
+            }
+
             // Evict triples from the previous firing of this window
             for t in &prev_window_triples {
                 store.remove(t);
@@ -151,6 +168,13 @@ macro_rules! create_window_processor {
             // Run forward-chaining inference to materialise derived facts
             store.materialize();
 
+            if let Some(simple_r2r) = store.as_any_mut().downcast_mut::<SimpleR2R>() {
+                $latest_hybrid_results.lock().unwrap().insert(
+                    $window_iri.clone(),
+                    simple_r2r.last_hybrid_results().clone(),
+                );
+            }
+
             let results = store.execute_query(&$query);
             debug!("Got # results {} for window {}", results.len(), $window_iri);
 
@@ -162,8 +186,8 @@ macro_rules! create_window_processor {
                 mapped_results.reserve(results.len());
 
                 for res in &results {
-                    if let Some(bindings) = (res as &dyn std::any::Any)
-                        .downcast_ref::<Vec<(String, String)>>()
+                    if let Some(bindings) =
+                        (res as &dyn std::any::Any).downcast_ref::<Vec<(String, String)>>()
                     {
                         let map: HashMap<String, String> = bindings.iter().cloned().collect();
                         mapped_results.push(map);
@@ -244,6 +268,8 @@ where
     cross_window_dictionary: Option<Arc<RwLock<Dictionary>>>,
     cross_window_output_iris: Arc<Vec<String>>,
     cross_window_reasoning_mode: CrossWindowReasoningMode,
+    hybrid_seed_registry: Arc<Mutex<SeedRegistry>>,
+    latest_hybrid_results: Arc<Mutex<HashMap<String, HashMap<Triple, HybridProbabilityResult>>>>,
 }
 
 impl<I, O> RSPEngine<I, O>
@@ -303,12 +329,9 @@ where
         let mut cross_window_context = None;
         let mut cross_window_output_iris = Vec::new();
         if let Some(n3_rules) = cross_window_rules {
-            let dict = shared_dict
-                .as_ref()
-                .ok_or_else(|| {
-                    "Cross-window SDS+ reasoning requires a SimpleR2R shared dictionary"
-                        .to_string()
-                })?;
+            let dict = shared_dict.as_ref().ok_or_else(|| {
+                "Cross-window SDS+ reasoning requires a SimpleR2R shared dictionary".to_string()
+            })?;
             let mut reasoner = datalog::reasoning::Reasoner::new();
             reasoner.dictionary = Arc::clone(dict);
             let window_widths: HashMap<String, u64> = query_config
@@ -316,8 +339,9 @@ where
                 .iter()
                 .map(|w| (w.window_iri.clone(), w.width as u64))
                 .collect();
-            let (rules, context) = parse_n3_rules_for_sds(n3_rules, &mut reasoner, window_widths)
-                .map_err(|e| format!("Failed to parse cross-window N3 rules: {}", e))?;
+            let (rules, context) =
+                parse_n3_rules_for_sds(n3_rules, &mut reasoner, window_widths)
+                    .map_err(|e| format!("Failed to parse cross-window N3 rules: {}", e))?;
             let window_iris: HashSet<String> = query_config
                 .windows
                 .iter()
@@ -326,7 +350,9 @@ where
             cross_window_output_iris = context
                 .all_component_iris
                 .iter()
-                .filter(|iri| !window_iris.contains(*iri) && iri.as_str() != CROSS_WINDOW_STATIC_IRI)
+                .filter(|iri| {
+                    !window_iris.contains(*iri) && iri.as_str() != CROSS_WINDOW_STATIC_IRI
+                })
                 .cloned()
                 .collect();
             parsed_cross_window_rules = rules;
@@ -357,15 +383,25 @@ where
                 .map(|s| Arc::clone(&s.item.dictionary))
             {
                 for rule_str in &sparql_rules {
+                    let parsed_hybrid_config = crate::parser::parse_combined_query(rule_str)
+                        .ok()
+                        .and_then(|(_, combined)| combined.rule)
+                        .and_then(|rule| rule.prob_annotation)
+                        .and_then(|annotation| annotation.hybrid_config);
                     let mut temp_db = SparqlDatabase::new();
                     temp_db.dictionary = Arc::clone(&dict);
                     match process_rule_definition(rule_str, &mut temp_db) {
                         Ok((rule, _)) => {
-                            if let Some(simple_r2r) = store.as_any_mut().downcast_mut::<SimpleR2R>() {
+                            if let Some(simple_r2r) = store.as_any_mut().downcast_mut::<SimpleR2R>()
+                            {
+                                if let Some(config) = parsed_hybrid_config {
+                                    simple_r2r.set_hybrid_config(config)
+                                        .map_err(|error| error.to_string())?;
+                                }
                                 simple_r2r.rules.push(rule);
                             }
                         }
-                        Err(e) => error!("Failed to parse SPARQL rule: {:?}", e),
+                        Err(e) => return Err(format!("Failed to parse SPARQL rule: {e}")),
                     }
                 }
             }
@@ -389,6 +425,15 @@ where
         let stream_type = query_config.stream_type.clone();
         let r2s_operator = Arc::new(Mutex::new(Relation2StreamOperator::new(stream_type, 0)));
         let cross_window_enabled = !parsed_cross_window_rules.is_empty();
+        if cross_window_enabled
+            && store.as_any_mut().downcast_mut::<SimpleR2R>()
+                .is_some_and(|simple| simple.hybrid_enabled())
+        {
+            return Err(
+                "Hybrid probabilistic materialisation and cross-window SDS+ reasoning cannot be combined in v1"
+                    .to_string(),
+            );
+        }
 
         let mut engine = RSPEngine {
             windows,
@@ -412,6 +457,8 @@ where
             cross_window_dictionary: shared_dict,
             cross_window_output_iris: Arc::new(cross_window_output_iris),
             cross_window_reasoning_mode,
+            hybrid_seed_registry: Arc::new(Mutex::new(SeedRegistry::new())),
+            latest_hybrid_results: Arc::new(Mutex::new(HashMap::new())),
         };
 
         match operation_mode {
@@ -445,6 +492,8 @@ where
             let window_result_sender = self.window_result_sender.clone();
             let r2r_store = self.r2r.clone();
             let cross_window_enabled = self.cross_window_enabled;
+            let seed_registry = Arc::clone(&self.hybrid_seed_registry);
+            let latest_hybrid_results = Arc::clone(&self.latest_hybrid_results);
 
             let r2s_consumer_func: Arc<dyn Fn(Vec<O>, usize) + Send + Sync> = if has_joins {
                 Arc::new(|_, _| {})
@@ -468,7 +517,9 @@ where
                 has_joins,
                 cross_window_enabled,
                 window_result_sender,
-                r2s_consumer_func
+                r2s_consumer_func,
+                seed_registry,
+                latest_hybrid_results
             );
 
             // Register based on mode
@@ -508,7 +559,8 @@ where
 
         thread::spawn(move || {
             // Latest results per window (replace semantics)
-            let mut last_materialized: HashMap<String, Vec<HashMap<String, String>>> = HashMap::new();
+            let mut last_materialized: HashMap<String, Vec<HashMap<String, String>>> =
+                HashMap::new();
             // Windows that have fired since the last reset
             let mut cycle_triggered: HashSet<String> = HashSet::new();
             // When the first window fired in the current cycle
@@ -525,14 +577,18 @@ where
                 };
 
                 // Receive next window result (or timeout/disconnect)
-                let maybe_result: Option<WindowResult> = if let Some(remaining) = timeout_remaining {
+                let maybe_result: Option<WindowResult> = if let Some(remaining) = timeout_remaining
+                {
                     match receiver.recv_timeout(remaining) {
                         Ok(r) => Some(r),
                         Err(RecvTimeoutError::Timeout) => {
                             // Deadline elapsed
                             if !cycle_triggered.is_empty() {
                                 match &sync_policy {
-                                    SyncPolicy::Timeout { fallback: Fallback::Steal, .. } => {
+                                    SyncPolicy::Timeout {
+                                        fallback: Fallback::Steal,
+                                        ..
+                                    } => {
                                         if last_materialized.len() == num_windows {
                                             if cross_window_enabled {
                                                 if let Some(dict) = &cross_window_dictionary {
@@ -553,11 +609,21 @@ where
                                                     );
                                                 }
                                             } else {
-                                                emit_results(&last_materialized, &static_data_plan, &static_db, &r2s_operator, max_ts, &consumer);
+                                                emit_results(
+                                                    &last_materialized,
+                                                    &static_data_plan,
+                                                    &static_db,
+                                                    &r2s_operator,
+                                                    max_ts,
+                                                    &consumer,
+                                                );
                                             }
                                         }
                                     }
-                                    SyncPolicy::Timeout { fallback: Fallback::Drop, .. } => {
+                                    SyncPolicy::Timeout {
+                                        fallback: Fallback::Drop,
+                                        ..
+                                    } => {
                                         // discard this cycle
                                     }
                                     _ => {}
@@ -635,7 +701,14 @@ where
                                 );
                             }
                         } else {
-                            emit_results(&last_materialized, &static_data_plan, &static_db, &r2s_operator, max_ts, &consumer);
+                            emit_results(
+                                &last_materialized,
+                                &static_data_plan,
+                                &static_db,
+                                &r2s_operator,
+                                max_ts,
+                                &consumer,
+                            );
                         }
                         cycle_triggered.clear();
                         cycle_start = None;
@@ -664,7 +737,14 @@ where
                                             );
                                         }
                                     } else {
-                                        emit_results(&last_materialized, &static_data_plan, &static_db, &r2s_operator, max_ts, &consumer);
+                                        emit_results(
+                                            &last_materialized,
+                                            &static_data_plan,
+                                            &static_db,
+                                            &r2s_operator,
+                                            max_ts,
+                                            &consumer,
+                                        );
                                     }
                                 }
                                 cycle_triggered.clear();
@@ -762,7 +842,10 @@ where
 
         // Check whether to emit based on policy.
         if last_mat.len() == num_windows {
-            debug!("SingleThread: all {} windows materialized, emitting", num_windows);
+            debug!(
+                "SingleThread: all {} windows materialized, emitting",
+                num_windows
+            );
             let static_data_plan = self.rsp_query_plan.static_data_plan.clone();
             if self.cross_window_enabled {
                 if let Some(dict) = &self.cross_window_dictionary {
@@ -783,7 +866,14 @@ where
                     );
                 }
             } else {
-                emit_results(&*last_mat, &static_data_plan, &self.static_db, &self.r2s_operator, max_ts, &consumer);
+                emit_results(
+                    &*last_mat,
+                    &static_data_plan,
+                    &self.static_db,
+                    &self.r2s_operator,
+                    max_ts,
+                    &consumer,
+                );
             }
 
             match sync_policy {
@@ -854,7 +944,65 @@ where
 
     /// Return the stream IRIs registered across all configured windows.
     pub fn stream_iris(&self) -> Vec<String> {
-        self.window_configs.iter().map(|w| w.stream_iri.clone()).collect()
+        self.window_configs
+            .iter()
+            .map(|w| w.stream_iri.clone())
+            .collect()
+    }
+}
+
+impl<O> RSPEngine<Triple, O>
+where
+    O: Clone + Hash + Eq + Send + 'static + From<Vec<(String, String)>>,
+{
+    /// Add one independently probabilistic stream occurrence. Identity is
+    /// allocated before fan-out, so overlapping windows share the same seed.
+    pub fn add_probabilistic_to_stream(
+        &mut self,
+        stream_iri: &str,
+        triple: Triple,
+        probability: f64,
+        timestamp: usize,
+    ) -> Result<SeedId, HybridError> {
+        if matches!(self.operation_mode, OperationMode::SingleThread)
+            && (self.cross_window_enabled
+                || self.windows.len() > 1
+                || self.rsp_query_plan.static_data_plan.is_some())
+        {
+            self.process_single_thread_window_results();
+        }
+
+        let (event, seed_id) = {
+            let mut registry = self.hybrid_seed_registry.lock()
+                .map_err(|_| HybridError::PoisonedState)?;
+            let event = registry.next_event_key(stream_iri, timestamp);
+            let seed_id = registry.register_occurrence(
+                event.clone(),
+                triple.clone(),
+                probability,
+            )?;
+            (event, seed_id)
+        };
+        let occurrence = ProbabilisticOccurrence { item: triple, event, seed_id };
+        let input = normalize_stream_iri(stream_iri);
+        for (index, config) in self.window_configs.iter().enumerate() {
+            if config.stream_iri.starts_with('?')
+                || normalize_stream_iri(&config.stream_iri) == input
+            {
+                if let Some(window) = self.windows.get_mut(index) {
+                    window.add_probabilistic_to_window(occurrence.clone());
+                }
+            }
+        }
+        Ok(seed_id)
+    }
+
+    pub fn latest_hybrid_results(
+        &self,
+        window_iri: &str,
+    ) -> Option<HashMap<Triple, HybridProbabilityResult>> {
+        self.latest_hybrid_results.lock().ok()
+            .and_then(|results| results.get(window_iri).cloned())
     }
 }
 
@@ -881,7 +1029,10 @@ fn emit_results<O>(
         joined
     };
 
-    debug!("emit_results: emitting {} bindings before R2S filter", final_results.len());
+    debug!(
+        "emit_results: emitting {} bindings before R2S filter",
+        final_results.len()
+    );
     let outputs: Vec<O> = final_results
         .into_iter()
         .map(|b| {
@@ -935,12 +1086,15 @@ fn natural_join(
 }
 
 /// Join results from multiple windows using natural join semantics.
-fn join_window_results(window_buffers: &HashMap<String, Vec<HashMap<String, String>>>) -> Vec<HashMap<String, String>> {
+fn join_window_results(
+    window_buffers: &HashMap<String, Vec<HashMap<String, String>>>,
+) -> Vec<HashMap<String, String>> {
     if window_buffers.is_empty() {
         return Vec::new();
     }
 
-    let mut all_windows: Vec<Vec<HashMap<String, String>>> = window_buffers.values().cloned().collect();
+    let mut all_windows: Vec<Vec<HashMap<String, String>>> =
+        window_buffers.values().cloned().collect();
 
     if all_windows.len() == 1 {
         return all_windows.into_iter().next().unwrap();
@@ -1012,8 +1166,8 @@ fn build_cross_window_sds(
     let static_triples = {
         let db = static_db.lock().unwrap();
         let dict_r = dict.read().unwrap();
-        db.triples
-            .iter()
+        db.query_default_triples(None, None, None)
+            .into_iter()
             .filter_map(|triple| {
                 let subject = dict_r.decode(triple.subject)?.to_string();
                 let predicate = dict_r.decode(triple.predicate)?.to_string();

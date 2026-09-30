@@ -36,9 +36,6 @@
 - **Extensible Dictionary Encoding**: カスタマイズ可能な辞書によりRDF用語を効率的にエンコード/デコードします。
 - **Comprehensive API**: データ操作、クエリ、結果処理のための豊富なメソッド群を提供します。
 
-> [!WARNING]
-> CUDAの利用は実験的で、現在開発中です。
-
 ## Installation（インストール）
 
 ### Native Installation（ネイティブ）
@@ -66,29 +63,22 @@ use kolibrie::SparqlDatabase;
 
 ### Docker Installation（Docker）
 
-**Kolibrie** は、用途に応じた複数のDockerプロファイルを提供します。Docker設定はRust、CUDA（GPUビルド向け）、PythonのMLフレームワークを含む依存関係を自動的に処理します。
+**Kolibrie** は、Web UI と開発環境向けのDockerプロファイルを提供します。Docker設定はRustとPythonのMLフレームワークを含む依存関係を自動的に処理します。
 
 #### Prerequisites（前提）
 
 * [Docker](https://docs.docker.com/get-docker/) がインストールされていること
 * [Docker Compose](https://docs.docker.com/compose/install/) がインストールされていること
-* GPUサポート用：[NVIDIA Docker runtime](https://github.com/NVIDIA/nvidia-docker) がインストールされていること
 
 #### Quick Start
 
-1. **CPUのみビルド**（多くのユーザーに推奨）：
+1. **Web UI ビルド**：
 
 ```bash
 docker compose --profile cpu up --build
 ```
 
-2. **GPU対応ビルド**（NVIDIA GPU + nvidia-dockerが必要）：
-
-```bash
-docker compose --profile gpu up --build
-```
-
-3. **開発ビルド**（GPUの有無を自動検出）：
+2. **開発ビルド**：
 
 ```bash
 docker compose --profile dev up --build
@@ -209,6 +199,43 @@ for row in results {
     println!("Subject: {}, Object: {}", row[0], row[1]);
 }
 ```
+
+#### 名前付きグラフ、`GRAPH`、`UNION`
+
+Kolibrie の標準 SELECT と Update は、単一のアーキテクチャを使用します。既存の `nom` パーサーが再帰的なグループパターンを構築し、同じ論理プラン、Streamertail オプティマイザー、物理実行系へ変換します。`GRAPH`、`UNION`、Update の `WHERE` 用に別のパーサーや評価系はありません。この統一された経路は、固定または変数のグラフ名、ネストしたグループ、およびマルチセット（重複を保持する）`UNION` を含む再帰的な `GRAPH` パターンをサポートします。
+
+```rust
+let rows = execute_query_rayon_parallel2_volcano(
+    r#"
+    PREFIX ex: <http://example.org/>
+    SELECT DISTINCT ?g ?item WHERE {
+        { GRAPH ?g { ?item ex:status "active" } }
+        UNION
+        { GRAPH ?g { { ?item ex:status "pending" } } }
+    }
+    "#,
+    &mut db,
+);
+```
+
+`GRAPH <name>` は、指定された名前付きグラフのみを読み込みます。`GRAPH ?g` は名前付きグラフの識別子を反復処理して `?g` にバインドします。デフォルトグラフは対象に含まれません。`DISTINCT` を指定しない場合、`UNION` の各分岐によって生成された重複解は保持されます。
+
+データセット句はクエリのデータセットを置き換えます。複数の `FROM` グラフは、重複するトリプルを除いてクエリのデフォルトグラフにマージされます。いずれかのデータセット句がある場合、`GRAPH` から参照できるのは `FROM NAMED` に列挙されたグラフだけです。`FROM` を伴わない `FROM NAMED` は空のクエリデフォルトグラフを作り、`FROM NAMED` を伴わない `FROM` では名前付きグラフは公開されません。データセット句がない場合は、物理デフォルトグラフとカタログに登録されたすべての名前付きグラフが参照できます。
+
+#### サポートされる SPARQL Update 形式
+
+エラー情報を保持する Rust API は、以下の6つの Update 形式だけを受け付けます。同じ操作内で、デフォルトグラフと名前付きグラフのテンプレートを組み合わせることができ、各 `WHERE` は SELECT と同じパーサー、論理プランナー、オプティマイザー、実行系を使用します。
+
+```rust
+db.execute_update(r#"
+    PREFIX ex: <http://example.org/>
+    DELETE { ?s ex:oldValue ?value }
+    INSERT { GRAPH ex:archive { ?s ex:value ?value } }
+    WHERE  { ?s ex:oldValue ?value }
+"#)?;
+```
+
+サポートされる形式は、`INSERT DATA`、`DELETE DATA`、`INSERT ... WHERE`、`DELETE ... WHERE`、複合形式の `DELETE/INSERT ... WHERE`、および `DELETE WHERE` です。変更を適用する前に `WHERE` パターンを1回だけ評価し、削除を先に、挿入を後に実行します。Python では `SparqlDatabase.update()` で同じ動作を利用できます。`WITH`、`USING`、`LOAD`、グラフ管理操作など、その他の SPARQL 1.1 Update 形式はこのリリースの対象外です。
 
 #### Query with FILTER
 

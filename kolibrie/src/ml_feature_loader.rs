@@ -11,7 +11,7 @@
 use std::collections::HashMap;
 use std::error::Error;
 
-use crate::execute_query::{execute_query, execute_query_rayon_parallel2_volcano};
+use crate::execute_query::execute_query_rayon_parallel2_volcano;
 use crate::parser::parse_sparql_query;
 use crate::sparql_database::SparqlDatabase;
 
@@ -22,12 +22,11 @@ pub fn query_training_rows(
     db: &mut SparqlDatabase,
     select_query: &str,
 ) -> LoaderResult<Vec<HashMap<String, RdfTerm>>> {
-    let (_, parsed) = parse_sparql_query(select_query).map_err(|err| {
-        format!("failed to parse training data query: {err:?}")
-    })?;
+    let (_, parsed) = parse_sparql_query(select_query)
+        .map_err(|err| format!("failed to parse training data query: {err:?}"))?;
 
     let variables: Vec<String> = parsed
-        .1
+        .variables
         .iter()
         .filter_map(|(kind, var, _)| {
             if *kind == "VAR" || var.starts_with('?') {
@@ -42,11 +41,7 @@ pub fn query_training_rows(
         return Err("training data query must SELECT at least one variable".into());
     }
 
-    let rows = if select_query.contains("<<") {
-        execute_query_rayon_parallel2_volcano(select_query, db)
-    } else {
-        execute_query(select_query, db)
-    };
+    let rows = execute_query_rayon_parallel2_volcano(select_query, db);
     Ok(rows
         .into_iter()
         .map(|row| {
@@ -115,7 +110,8 @@ mod tests {
     fn rdf_term_to_f64_xsd_types() {
         assert_eq!(rdf_term_to_f64(&"42".to_string()).unwrap(), 42.0);
         assert_eq!(
-            rdf_term_to_f64(&"\"3.5\"^^<http://www.w3.org/2001/XMLSchema#double>".to_string()).unwrap(),
+            rdf_term_to_f64(&"\"3.5\"^^<http://www.w3.org/2001/XMLSchema#double>".to_string())
+                .unwrap(),
             3.5
         );
         assert!(rdf_term_to_f64(&"http://example.org/value".to_string()).is_err());

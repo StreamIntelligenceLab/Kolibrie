@@ -170,7 +170,7 @@ impl Reasoner {
 
         let substituted = substitute(query, bindings);
         let mut results = Vec::new();
-        let all_facts: Vec<Triple> = self.index_manager.query(None, None, None);
+        let all_facts: Vec<Triple> = self.dataset_index.query(None, None, None);
 
         for fact in &all_facts {
             let fact_pattern = fact.to_pattern();
