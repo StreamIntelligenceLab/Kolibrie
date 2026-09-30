@@ -433,13 +433,12 @@ pub fn compact_results(results: Vec<BTreeMap<String, String>>) -> Vec<BTreeMap<S
     compacted
 }
 
-fn extract_join_parameters(premise: &TriplePattern, dict: &Dictionary) -> (String, String, String) {
-    let (subject_term, predicate_term, object_term) = premise;
+fn extract_join_parameters(premise: &TriplePattern) -> (String, String) {
+    let (subject_term, _predicate_term, object_term) = premise;
 
     let subject_var = match subject_term {
         Term::Variable(v) => v.clone(),
         Term::Constant(c) => {
-            // For constants, create a synthetic variable name
             format!("__const_subj_{}", c)
         }
         Term::QuotedTriple(_) => "__quoted_subj".to_string(),
@@ -448,7 +447,6 @@ fn extract_join_parameters(premise: &TriplePattern, dict: &Dictionary) -> (Strin
     let object_var = match object_term {
         Term::Variable(v) => v.clone(),
         Term::Constant(c) => {
-            // For constants, create a synthetic variable name
             format!("__const_obj_{}", c)
         }
         Term::QuotedTriple(_) => "__quoted_obj".to_string(),
@@ -486,15 +484,12 @@ pub fn perform_hash_join_for_rules(
     dict: &Dictionary,
     final_results: Vec<BTreeMap<String, String>>,
 ) -> Vec<BTreeMap<String, String>> {
-
-    // Extract variable names from the premise
     let (subject, object) = extract_join_parameters(premise);
 
     if final_results.is_empty() {
         return Vec::new();
     }
 
-    // Constant predicate filters here; a variable one is bound per row.
     let (predicate_filter, predicate_var) = match &premise.1 {
         Term::Constant(c) => (Some(*c), None),
         Term::Variable(v) => (None, Some(v.as_str())),
@@ -532,7 +527,7 @@ pub fn perform_hash_join_for_rules(
         return Vec::new();
     }
 
-    // Build simple hash table - this is the key optimization
+    // Build simple hash table
     let hash_table = build_simple_hash_table(
         &final_results,
         &subject,

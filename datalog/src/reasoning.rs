@@ -21,7 +21,6 @@ use shared::terms::TriplePattern;
 use shared::triple::Triple;
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use shared::index_manager::TripleIndex;
-use shared::dataset_index::DatasetIndex;
 use shared::rule_index::RuleIndex;
 use shared::rule::Rule;
 use shared::provenance::Provenance;
@@ -82,7 +81,7 @@ impl Reasoner {
         drop(dict);
 
         let triple = Triple { subject: s, predicate: p, object: o };
-        self.dataset_index.insert(&triple);
+        self.index_manager.insert(&triple);
         self.probability_seeds.insert(triple, probability);
     }
 
@@ -95,7 +94,7 @@ impl Reasoner {
         drop(dict);
 
         for triple in &rdf_star_triples {
-            self.dataset_index.insert(triple);
+            self.index_manager.insert(&triple);
         }
     }
 
@@ -107,7 +106,7 @@ impl Reasoner {
         let o = dict.encode(object);
         drop(dict);  // Release lock early
 
-        self.dataset_index.insert(&Triple {
+        self.index_manager.insert(&Triple {
             subject: s,
             predicate: p,
             object: o,
@@ -116,7 +115,7 @@ impl Reasoner {
 
     /// Insert an already-ground triple directly into the fact index.
     pub fn insert_ground_triple(&mut self, triple: Triple) {
-        self.dataset_index.insert(&triple);
+        self.index_manager.insert(&triple);
     }
 
     /// Query the ABox for instance-level assertions (using TrieIndex now)
@@ -132,7 +131,7 @@ impl Reasoner {
         let o = object.map(|o| dict.encode(o));
         drop(dict);  // Release lock early
 
-        self.dataset_index.query(s, p, o)
+        self.index_manager.query(s, p, o)
     }
 
     /// Add new method to handle constraints
