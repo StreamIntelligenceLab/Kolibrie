@@ -23,4 +23,3 @@ pub mod seed_spec;
 pub mod tag_store;
 pub mod terms;
 pub mod triple;
-pub mod index_manager;

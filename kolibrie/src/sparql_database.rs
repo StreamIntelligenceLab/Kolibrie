@@ -186,7 +186,6 @@ fn reencode_term_id(
 
 #[derive(Debug, Clone)]
 pub struct SparqlDatabase {
-    pub dataset_index: DatasetIndex,
     pub dictionary: Arc<RwLock<Dictionary>>,
     pub prefixes: HashMap<String, String>,
     pub udfs: HashMap<String, ClonableFn>,
@@ -213,7 +212,6 @@ impl SparqlDatabase {
     /// Creates a new database with a user-chosen indexing strategy.
     pub fn with_config(config: IndexConfig) -> Self {
         Self {
-            dataset_index: DatasetIndex::new(),
             dictionary: Arc::new(RwLock::new(Dictionary::new())),
             prefixes: HashMap::new(),
             udfs: HashMap::new(),
@@ -721,8 +719,6 @@ impl SparqlDatabase {
         self.index_manager
             .as_deref_mut()
             .expect("index not built — call build_all_indexes() first")
-    pub fn set_prefixes(&mut self, prefixes: HashMap<String, String>) {
-        self.prefixes = prefixes;
     }
 
     pub fn get_or_build_stats(&mut self) -> Arc<DatabaseStats> {
@@ -760,39 +756,6 @@ impl SparqlDatabase {
         removed
     }
 
-    pub fn add_quad(&mut self, quad: Quad) -> bool {
-        let inserted = self.dataset_index.insert_quad(&quad);
-        inserted
-    }
-
-    pub fn delete_quad(&mut self, quad: &Quad) -> bool {
-        let deleted = self.dataset_index.delete_quad(quad);
-        deleted
-    }
-
-    pub fn add_quad_parts(
-        &mut self,
-        subject: &str,
-        predicate: &str,
-        object: &str,
-        graph: &str,
-    ) -> bool {
-        let subject_id = self.encode_term_star(subject);
-        let predicate_id = self.encode_term_star(predicate);
-        let object_id = self.encode_term_star(object);
-        let graph_id = {
-            let mut dict = self.dictionary.write().unwrap();
-            dict.encode(graph)
-        };
-
-        self.add_quad(Quad {
-            subject: subject_id,
-            predicate: predicate_id,
-            object: object_id,
-            graph: GraphId::Named(graph_id),
-        })
-    }
-
     pub fn query_default_triples(
         &self,
         s: Option<u32>,
@@ -800,16 +763,6 @@ impl SparqlDatabase {
         o: Option<u32>,
     ) -> Vec<Triple> {
         self.dataset_index.query_default(s, p, o)
-    }
-
-    pub fn query_graph_quads(
-        &self,
-        graph: GraphId,
-        s: Option<u32>,
-        p: Option<u32>,
-        o: Option<u32>,
-    ) -> Vec<Quad> {
-        self.dataset_index.query_graph(graph, s, p, o)
     }
 
     /// Helper function that accepts parts of a triple, constructs a Triple, and adds it
@@ -934,44 +887,6 @@ impl SparqlDatabase {
             };
 
             output.push_str(&format!("{} {} {} .\n", s_str, p_str, o_str));
-        }
-        output
-    }
-
-    pub fn generate_nquads(&self) -> String {
-        let mut output = String::new();
-        for quad in self.dataset_index.all_quads() {
-            let s = self.decode_any(quad.subject).unwrap_or_default();
-            let p = self.decode_any(quad.predicate).unwrap_or_default();
-            let o = self.decode_any(quad.object).unwrap_or_default();
-
-            let s_str = if s.starts_with("<<") || s.starts_with("_:") {
-                s
-            } else {
-                format!("<{}>", s)
-            };
-            let p_str = format!("<{}>", p);
-            let o_str = if o.starts_with("<<") || o.starts_with("_:") {
-                o
-            } else if looks_like_absolute_iri(&o) {
-                format!("<{}>", o)
-            } else {
-                format!("\"{}\"", escape_ntriples_literal(&o))
-            };
-            match quad.graph {
-                GraphId::Default => {
-                    output.push_str(&format!("{} {} {} .\n", s_str, p_str, o_str));
-                }
-                GraphId::Named(graph_id) => {
-                    let graph = self.decode_any(graph_id).unwrap_or_default();
-                    let graph = if graph.starts_with("_:") {
-                        graph
-                    } else {
-                        format!("<{}>", graph)
-                    };
-                    output.push_str(&format!("{} {} {} {} .\n", s_str, p_str, o_str, graph));
-                }
-            }
         }
         output
     }
@@ -4104,21 +4019,6 @@ impl SparqlDatabase {
         F: Fn(Vec<&str>) -> String + Send + Sync + 'static,
     {
         self.udfs.insert(name.to_string(), ClonableFn::new(f));
-    }
-
-    /// Rebuild every graph-scoped index without collapsing named graphs into
-    /// the default graph or losing empty named-graph identities.
-    pub fn build_all_indexes(&mut self) {
-        let quads = self.dataset_index.all_quads();
-        let named_graphs = self.dataset_index.named_graphs();
-        let mut rebuilt = DatasetIndex::new();
-        for graph in named_graphs {
-            rebuilt.create_graph(graph);
-        }
-        for quad in quads {
-            rebuilt.insert_quad(&quad);
-        }
-        self.dataset_index = rebuilt;
     }
 
     /// Triple to string

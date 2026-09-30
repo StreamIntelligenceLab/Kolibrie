@@ -24,3 +24,4 @@ pub mod utils;
 pub mod streamertail_optimizer;
 pub mod rsp;
 pub mod query_engine;
+pub mod index_manager;
