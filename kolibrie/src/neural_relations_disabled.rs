@@ -48,7 +48,7 @@ pub fn materialize_neural_relations_for_patterns(
     _patterns: &[(&str, &str, &str)],
     _prefixes: &HashMap<String, String>,
 ) -> Result<(), String> {
-    if db.neural_relation_decls.is_empty() {
+    if !db.implicit_neural_materialization || db.neural_relation_decls.is_empty() {
         Ok(())
     } else {
         Err("ML_FEATURE_DISABLED".into())

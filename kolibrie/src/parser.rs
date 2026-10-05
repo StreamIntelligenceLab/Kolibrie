@@ -2584,6 +2584,8 @@ pub fn parse_ml_predict(input: &str) -> IResult<&str, MLPredictClause<'_>> {
     let (input, _) = tag("OUTPUT").parse(input)?;
     let (input, _) = multispace1.parse(input)?;
     let (input, output_var) = variable(input)?;
+    let (input, distribution) =
+        opt(preceded(multispace1, tag("DISTRIBUTION"))).parse(input)?;
     let (input, _) = multispace0.parse(input)?;
     let (input, _) = char(')').parse(input)?;
 
@@ -2596,6 +2598,7 @@ pub fn parse_ml_predict(input: &str) -> IResult<&str, MLPredictClause<'_>> {
             input_where: where_patterns,
             input_filters: filter_conditions,
             output: output_var,
+            distribution: distribution.is_some(),
         },
     ))
 }
@@ -3169,7 +3172,7 @@ pub fn parse_rule(input: &str) -> IResult<&str, CombinedRule<'_>> {
     let (input, _) = multispace0.parse(input)?;
 
     // Parse WHERE clause
-    let (input, (patterns, filters, values_clause, binds, subqueries, _, neg_patterns)) =
+    let (input, (patterns, filters, values_clause, binds, subqueries, window_blocks, neg_patterns)) =
         parse_where(input)?;
     let body = (patterns, filters, values_clause, binds, subqueries);
 
@@ -3191,6 +3194,7 @@ pub fn parse_rule(input: &str) -> IResult<&str, CombinedRule<'_>> {
             train_neural_relation_decls: Vec::new(),
             body,
             negated_body: neg_patterns,
+            window_blocks,
             conclusion: conclusions,
             ml_predict,
             prob_annotation,
@@ -3316,7 +3320,7 @@ pub fn parse_combined_query_with_options(
                 model_decls: Vec::new(),
                 neural_relation_decls: Vec::new(),
                 train_neural_relation_decls: Vec::new(),
-                rule: None,
+                rules: Vec::new(),
                 ml_predict: None,
                 sparql: Some(SparqlOperation::Select(query)),
             },
@@ -3339,7 +3343,7 @@ pub fn parse_combined_query_with_options(
                 model_decls: Vec::new(),
                 neural_relation_decls: Vec::new(),
                 train_neural_relation_decls: Vec::new(),
-                rule: None,
+                rules: Vec::new(),
                 ml_predict: None,
                 sparql: Some(SparqlOperation::Update(update)),
             },
@@ -3355,14 +3359,28 @@ pub fn parse_combined_query_with_options(
     let (extension_input, (model_decls, neural_relation_decls, train_neural_relation_decls)) =
         parse_top_level_neural_decls(extension_input)?;
     let (extension_input, _) = multispace0.parse(extension_input)?;
-    let (extension_input, mut rule) = opt(parse_rule).parse(extension_input)?;
-    let (extension_input, _) = multispace0.parse(extension_input)?;
-    if let Some(rule) = rule.as_mut() {
-        rule.model_decls = model_decls.clone();
-        rule.neural_relation_decls = neural_relation_decls.clone();
-        rule.train_neural_relation_decls = train_neural_relation_decls.clone();
+    // A top-level ML.PREDICT may precede the rules
+    let (extension_input, leading_ml_predict) = opt(parse_ml_predict).parse(extension_input)?;
+    let mut extension_input = sparql_skip_ws(extension_input);
+    let mut rules = Vec::new();
+    loop {
+        match parse_rule(extension_input) {
+            Ok((remaining, mut rule)) => {
+                rule.model_decls = model_decls.clone();
+                rule.neural_relation_decls = neural_relation_decls.clone();
+                rule.train_neural_relation_decls = train_neural_relation_decls.clone();
+                rules.push(rule);
+                extension_input = sparql_skip_ws(remaining);
+            }
+            Err(nom::Err::Error(_)) => break,
+            Err(error) => return Err(error),
+        }
     }
-    let (extension_input, ml_predict) = opt(parse_ml_predict).parse(extension_input)?;
+    let (extension_input, trailing_ml_predict) = opt(parse_ml_predict).parse(extension_input)?;
+    if leading_ml_predict.is_some() && trailing_ml_predict.is_some() {
+        return sparql_error(extension_input, nom::error::ErrorKind::Verify);
+    }
+    let ml_predict = leading_ml_predict.or(trailing_ml_predict);
     let extension_input = sparql_skip_ws(extension_input);
 
     let (remaining, sparql) = if extension_input.is_empty() {
@@ -3392,7 +3410,7 @@ pub fn parse_combined_query_with_options(
             model_decls,
             neural_relation_decls,
             train_neural_relation_decls,
-            rule,
+            rules,
             ml_predict,
             sparql,
         },
@@ -3581,6 +3599,13 @@ pub fn process_rule_definition(
     let parse_result = parse_combined_query(rule_input);
 
     if let Ok((_rest, combined)) = parse_result {
+        let single = combined.single_rule()?;
+        if combined.ml_predict.is_some() {
+            return Err("process_rule_definition does not execute a top-level ML.PREDICT; use kolibrie::program".to_string());
+        }
+        if single.and_then(|rule| rule.ml_predict.as_ref()).is_some_and(|predict| predict.distribution) {
+            return Err("in-rule ML.PREDICT ... DISTRIBUTION is not supported; write a top-level ML.PREDICT in a program".to_string());
+        }
         for (prefix, uri) in &combined.prefixes {
             database.prefixes.insert(prefix.clone(), uri.clone());
         }
@@ -3612,7 +3637,8 @@ pub fn process_rule_definition(
 
         #[allow(unused_mut)] // ML-enabled execution can rewrite this rule.
         let mut rule = combined
-            .rule
+            .single_rule()?
+            .cloned()
             .ok_or_else(|| "Failed to parse rule definition".to_string())?;
 
         materialize_neural_relations_for_patterns(database, &rule.body.0, &rule_prefixes)?;

@@ -412,7 +412,7 @@ WHERE {
         let (_rest, combined_query) = parse_combined_query(rule)
             .expect("Failed to parse combined query");
         
-        if let Some(rule_def) = combined_query.rule {
+        if let Some(rule_def) = combined_query.single_rule().expect("expected at most one RULE block").cloned() {
             // FIXED: Acquire write lock for conversion
             let mut dict = database.dictionary.write().unwrap();
             let dynamic_rule = convert_combined_rule(rule_def, &mut dict, &combined_query.prefixes);

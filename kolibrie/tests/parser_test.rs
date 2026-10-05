@@ -647,7 +647,7 @@ ML.PREDICT(MODEL "digit_model",
 
         let (rest, combined) = parse_combined_query(input).unwrap();
         assert!(rest.trim().is_empty());
-        assert!(combined.rule.is_none());
+        assert!(combined.rules.is_empty());
         assert_eq!(combined.model_decls.len(), 1);
         assert_eq!(combined.neural_relation_decls.len(), 1);
 

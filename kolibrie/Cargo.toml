@@ -323,6 +323,16 @@ required-features = ["ml"]
 path = "examples/sparql_syntax/ml_train/mnist_train.rs"
 
 [[example]]
+name = "mnist_compare"
+required-features = ["ml"]
+path = "examples/sparql_syntax/ml_train/mnist_compare.rs"
+
+[[example]]
+name = "mnist_addition"
+required-features = ["ml"]
+path = "examples/sparql_syntax/ml_train/mnist_addition.rs"
+
+[[example]]
 name = "provenance_feedback_loop"
 required-features = ["ml"]
 path = "examples/sparql_syntax/ml_train/provenance_feedback_loop.rs"

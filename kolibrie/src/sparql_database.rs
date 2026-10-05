@@ -116,7 +116,7 @@ fn parse_form_urlencoded(body: &str) -> HashMap<String, String> {
         .collect()
 }
 
-fn reencode_term_id(
+pub(crate) fn reencode_term_id(
     id: u32,
     source_dictionary: &Dictionary,
     source_quoted_triples: &QuotedTripleStore,
@@ -230,6 +230,7 @@ pub struct SparqlDatabase {
     pub stats_rebuild_count: u64,
     pub stats_rebuild_nanos: u64,
     pub quoted_triple_store: Arc<RwLock<QuotedTripleStore>>,
+    pub implicit_neural_materialization: bool,
 }
 
 #[allow(dead_code)]
@@ -263,6 +264,7 @@ impl SparqlDatabase {
             stats_rebuild_count: 0,
             stats_rebuild_nanos: 0,
             quoted_triple_store: Arc::new(RwLock::new(QuotedTripleStore::new())),
+            implicit_neural_materialization: true,
         }
     }
 
@@ -2119,6 +2121,7 @@ impl SparqlDatabase {
             stats_rebuild_count: 0,
             stats_rebuild_nanos: 0,
             quoted_triple_store: Arc::new(RwLock::new(merged_quoted_triples)),
+            implicit_neural_materialization: self.implicit_neural_materialization,
         }
     }
 

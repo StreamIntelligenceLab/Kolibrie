@@ -1240,18 +1240,80 @@ impl SddManager {
 #[derive(Debug, Clone)]
 pub struct SddProvenance {
     manager: Arc<Mutex<SddManager>>,
+    guard: Option<Arc<SddGuard>>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SddLimits {
+    pub max_nodes: usize,
+    pub deadline: Option<std::time::Instant>,
+}
+
+#[derive(Debug)]
+struct SddGuard {
+    limits: SddLimits,
+    error: Mutex<Option<SddBudgetError>>,
 }
 
 impl SddProvenance {
     pub fn new() -> Self {
         Self {
             manager: Arc::new(Mutex::new(SddManager::new())),
+            guard: None,
+        }
+    }
+
+    pub fn with_limits(limits: SddLimits) -> Self {
+        Self {
+            manager: Arc::new(Mutex::new(SddManager::new())),
+            guard: Some(Arc::new(SddGuard {
+                limits,
+                error: Mutex::new(None),
+            })),
         }
     }
 
     /// Access the underlying manager (for explanation export).
     pub fn manager(&self) -> &Arc<Mutex<SddManager>> {
         &self.manager
+    }
+
+    pub fn budget_error(&self) -> Option<SddBudgetError> {
+        self.guard
+            .as_ref()
+            .and_then(|guard| *guard.error.lock().unwrap())
+    }
+
+    pub fn try_with_budget<T>(
+        &self,
+        operation: impl FnOnce(&mut SddManager, &mut SddOperationBudget<'_>) -> Result<T, SddBudgetError>,
+    ) -> Result<T, SddBudgetError> {
+        let (max_nodes, deadline) = match &self.guard {
+            Some(guard) => {
+                if let Some(error) = *guard.error.lock().unwrap() {
+                    return Err(error);
+                }
+                (guard.limits.max_nodes, guard.limits.deadline)
+            }
+            None => (usize::MAX, None),
+        };
+        let mut available = || deadline.map_or(true, |deadline| std::time::Instant::now() < deadline);
+        let mut budget = SddOperationBudget::new(max_nodes, &mut available);
+        let mut manager = self.manager.lock().unwrap();
+        let result = operation(&mut manager, &mut budget);
+        drop(manager);
+        if let (Err(error), Some(guard)) = (&result, &self.guard) {
+            guard.error.lock().unwrap().get_or_insert(*error);
+        }
+        result
+    }
+
+    fn guarded_apply(&self, a: SddId, b: SddId, op: BoolOp) -> SddId {
+        if self.guard.is_none() {
+            return self.manager.lock().unwrap().apply(a, b, op);
+        }
+        self.try_with_budget(|manager, budget| manager.try_apply(a, b, op, budget))
+            .unwrap_or(SddId::FALSE)
     }
 }
 
@@ -1284,15 +1346,23 @@ impl Provenance for SddProvenance {
     }
 
     fn disjunction(&self, a: &SddId, b: &SddId) -> SddId {
-        self.manager.lock().unwrap().apply(*a, *b, BoolOp::Or)
+        self.guarded_apply(*a, *b, BoolOp::Or)
     }
 
     fn conjunction(&self, a: &SddId, b: &SddId) -> SddId {
-        self.manager.lock().unwrap().apply(*a, *b, BoolOp::And)
+        self.guarded_apply(*a, *b, BoolOp::And)
     }
 
     fn negate(&self, a: &SddId) -> SddId {
-        self.manager.lock().unwrap().negate(*a)
+        if self.guard.is_none() {
+            return self.manager.lock().unwrap().negate(*a);
+        }
+        self.try_with_budget(|manager, budget| manager.try_negate(*a, budget))
+            .unwrap_or(SddId::FALSE)
+    }
+
+    fn is_exhausted(&self) -> bool {
+        self.budget_error().is_some()
     }
 
     fn saturate(&self, a: &SddId) -> SddId {

@@ -30,6 +30,7 @@ pub mod neural_relations;
 #[path = "neural_relations_disabled.rs"]
 pub mod neural_relations;
 pub mod parser;
+pub mod program;
 pub mod query_builder;
 pub mod rsp_engine;
 pub mod sparql_database;

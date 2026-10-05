@@ -398,11 +398,10 @@ impl MlExecutionContext {
         query: &CombinedQuery<'_>,
         db: &crate::sparql_database::SparqlDatabase,
     ) -> Result<(), MlError> {
-        let rule = query.rule.as_ref();
         let has_declarations = !query.model_decls.is_empty()
             || !query.neural_relation_decls.is_empty()
             || !query.train_neural_relation_decls.is_empty()
-            || rule.is_some_and(|r| {
+            || query.rules.iter().any(|r| {
                 !r.model_decls.is_empty()
                     || !r.neural_relation_decls.is_empty()
                     || !r.train_neural_relation_decls.is_empty()
@@ -413,22 +412,23 @@ impl MlExecutionContext {
         for name in query
             .model_decls
             .iter()
-            .chain(rule.into_iter().flat_map(|r| &r.model_decls))
+            .chain(query.rules.iter().flat_map(|r| &r.model_decls))
             .map(|d| d.name.as_str())
             .chain(
                 query
                     .neural_relation_decls
                     .iter()
-                    .chain(rule.into_iter().flat_map(|r| &r.neural_relation_decls))
+                    .chain(query.rules.iter().flat_map(|r| &r.neural_relation_decls))
                     .map(|d| d.model_name.as_str()),
             )
         {
             validate_model_name(name)?;
         }
-        for train in query.train_neural_relation_decls.iter().chain(
-            rule.into_iter()
-                .flat_map(|r| &r.train_neural_relation_decls),
-        ) {
+        for train in query
+            .train_neural_relation_decls
+            .iter()
+            .chain(query.rules.iter().flat_map(|r| &r.train_neural_relation_decls))
+        {
             if let Some(path) = &train.save_path {
                 self.local_artifact(path)?;
             }
@@ -436,7 +436,7 @@ impl MlExecutionContext {
         for predict in query
             .ml_predict
             .iter()
-            .chain(rule.into_iter().filter_map(|r| r.ml_predict.as_ref()))
+            .chain(query.rules.iter().filter_map(|r| r.ml_predict.as_ref()))
         {
             validate_model_name(predict.model)?;
             if self.require_local().is_err() {

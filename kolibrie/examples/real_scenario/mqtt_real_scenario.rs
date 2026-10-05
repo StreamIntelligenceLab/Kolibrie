@@ -861,7 +861,7 @@ WHERE {
                 for (idx, rule) in active_rules.iter().enumerate() {
                     match parse_combined_query(rule) {
                         Ok((_rest, combined_query)) => {
-                            if let Some(rule) = combined_query.rule.clone() {
+                            if let Some(rule) = combined_query.single_rule().expect("expected at most one RULE block").cloned() {
                                 // FIXED: Acquire write lock for conversion
                                 let mut dict = database.dictionary.write().unwrap();
                                 let dynamic_rule = convert_combined_rule(

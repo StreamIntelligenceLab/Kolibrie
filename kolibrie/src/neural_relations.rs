@@ -28,6 +28,9 @@ use crate::sparql_database::SparqlDatabase;
 
 type NeuralResult<T> = Result<T, Box<dyn Error>>;
 
+pub const DISTRIBUTION_REQUIRES_PROGRAM: &str =
+    "ML.PREDICT ... OUTPUT ?v DISTRIBUTION runs only through kolibrie::program; legacy entry points predict the argmax";
+
 pub fn default_model_artifact_path(model_name: &str) -> String {
     let sanitized: String = model_name
         .chars()
@@ -377,6 +380,9 @@ pub fn execute_top_level_ml_predict(
 ) -> NeuralResult<()> {
     database.ml_context.require_local()?;
     crate::ml_policy::validate_model_name(ml_predict.model)?;
+    if ml_predict.distribution {
+        return Err(DISTRIBUTION_REQUIRES_PROGRAM.into());
+    }
     let relation = resolve_unique_relation_for_model(database, ml_predict.model)?;
     let rows = run_ml_predict_input_query(database, ml_predict.input_raw, prefixes)?;
 
@@ -427,8 +433,11 @@ pub fn execute_neural_program(database: &mut SparqlDatabase, program: &str) -> R
     let (_rest, combined) =
         parse_combined_query(program).map_err(|_| "Failed to parse neural program".to_string())?;
 
-    if combined.rule.is_some() {
+    if !combined.rules.is_empty() {
         return Err("execute_neural_program only accepts MODEL / NEURAL RELATION / TRAIN NEURAL RELATION declarations and top-level ML.PREDICT".to_string());
+    }
+    if combined.ml_predict.as_ref().is_some_and(|predict| predict.distribution) {
+        return Err(DISTRIBUTION_REQUIRES_PROGRAM.to_string());
     }
 
     for (prefix, uri) in &combined.prefixes {
@@ -595,6 +604,9 @@ pub fn materialize_neural_relations_for_patterns(
     patterns: &[(&str, &str, &str)],
     prefixes: &HashMap<String, String>,
 ) -> Result<(), String> {
+    if !database.implicit_neural_materialization {
+        return Ok(());
+    }
     for (_, predicate, _) in patterns {
         let resolved = database.resolve_query_term(predicate, prefixes);
         if database.neural_relation_decls.contains_key(&resolved) {

@@ -385,7 +385,7 @@ where
                 for rule_str in &sparql_rules {
                     let parsed_hybrid_config = crate::parser::parse_combined_query(rule_str)
                         .ok()
-                        .and_then(|(_, combined)| combined.rule)
+                        .and_then(|(_, combined)| combined.single_rule().ok().flatten().cloned())
                         .and_then(|rule| rule.prob_annotation)
                         .and_then(|annotation| annotation.hybrid_config);
                     let mut temp_db = SparqlDatabase::new();

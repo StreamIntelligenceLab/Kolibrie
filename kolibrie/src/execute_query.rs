@@ -99,6 +99,7 @@ pub fn execute_sparql_query(
     database: &mut SparqlDatabase,
 ) -> Result<Vec<Vec<String>>, String> {
     let combined = parse_request(sparql, false)?;
+    combined.single_rule()?;
     database
         .ml_context
         .validate_request(&combined, database)
@@ -148,6 +149,7 @@ fn execute_request(
     allow_data_aliases: bool,
 ) -> Result<Vec<Vec<String>>, String> {
     let combined = parse_request(sparql, allow_data_aliases)?;
+    combined.single_rule()?;
     database
         .ml_context
         .validate_request(&combined, database)
@@ -178,6 +180,7 @@ fn execute_update_request(
     allow_data_aliases: bool,
 ) -> Result<UpdateSummary, String> {
     let combined = parse_request(sparql, allow_data_aliases)?;
+    combined.single_rule()?;
     let prefixes = prepare_extensions(&combined, database)?;
     match combined.sparql.as_ref() {
         Some(SparqlOperation::Update(update)) => {
@@ -214,6 +217,9 @@ fn execute_approved_prediction(
     prefixes: &HashMap<String, String>,
     database: &mut SparqlDatabase,
 ) -> Result<Vec<Vec<String>>, String> {
+    if predict.distribution {
+        return Err("ML.PREDICT ... OUTPUT ?v DISTRIBUTION runs only through kolibrie::program".to_string());
+    }
     database
         .ml_context
         .approved_model(predict.model)

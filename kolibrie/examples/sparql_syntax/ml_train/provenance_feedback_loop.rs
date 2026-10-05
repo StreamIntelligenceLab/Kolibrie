@@ -169,7 +169,11 @@ fn execute_sdd_rule_batch(db: &mut SparqlDatabase, rule_inputs: &[String]) -> us
 
         let mut prefixes = combined.prefixes.clone();
         db.share_prefixes_with(&mut prefixes);
-        let parsed_rule = combined.rule.expect("expected RULE block");
+        let parsed_rule = combined
+            .single_rule()
+            .expect("expected at most one RULE block")
+            .cloned()
+            .expect("expected RULE block");
 
         let mut dict = reasoner.dictionary.write().unwrap();
         let dynamic_rule = convert_combined_rule(parsed_rule, &mut dict, &prefixes);

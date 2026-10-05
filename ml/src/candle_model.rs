@@ -16,7 +16,7 @@ use std::path::{Path, PathBuf};
 
 use candle_core::{Device, Tensor};
 use candle_nn::VarMap;
-use rand::Rng;
+use rand::{Rng, SeedableRng};
 use serde::{Deserialize, Serialize};
 
 use shared::query::OptimizerKind;
@@ -51,7 +51,6 @@ struct ForwardCache {
 struct GradientState {
     weight_grads: Vec<Vec<Vec<f64>>>,
     bias_grads: Vec<Vec<f64>>,
-    example_count: usize,
 }
 
 #[derive(Debug, Clone)]
@@ -82,7 +81,14 @@ pub struct MlpNeuralPredicate {
 
 impl MlpNeuralPredicate {
     pub fn new(input_dim: usize, hidden: &[usize], output_type: OutputType) -> MlResult<Self> {
-        let mut rng = rand::rng();
+        Self::new_with_rng(input_dim, hidden, output_type, &mut rand::rng())
+    }
+
+    pub fn new_seeded(input_dim: usize, hidden: &[usize], output_type: OutputType, seed: u64) -> MlResult<Self> {
+        Self::new_with_rng(input_dim, hidden, output_type, &mut rand::rngs::StdRng::seed_from_u64(seed))
+    }
+
+    fn new_with_rng(input_dim: usize, hidden: &[usize], output_type: OutputType, rng: &mut impl Rng) -> MlResult<Self> {
         let mut dims = Vec::with_capacity(hidden.len() + 2);
         dims.push(input_dim);
         dims.extend_from_slice(hidden);
@@ -123,6 +129,14 @@ impl MlpNeuralPredicate {
     }
 
     pub fn forward_with_grads(&self, rows: &[Vec<f64>]) -> MlResult<(Tensor, Vec<Vec<f64>>)> {
+        self.forward_impl(rows, true)
+    }
+
+    pub fn predict(&self, rows: &[Vec<f64>]) -> MlResult<Vec<Vec<f64>>> {
+        Ok(self.forward_impl(rows, false)?.1)
+    }
+
+    fn forward_impl(&self, rows: &[Vec<f64>], retain_cache: bool) -> MlResult<(Tensor, Vec<Vec<f64>>)> {
         let layers = self.layers.borrow();
         if rows.is_empty() {
             let out_dim = output_dim(self.output_type);
@@ -153,16 +167,16 @@ impl MlpNeuralPredicate {
 
         let mut activations = rows.to_vec();
         for (layer_idx, layer) in layers.iter().enumerate() {
-            cache.layer_inputs.push(activations.clone());
+            if retain_cache { cache.layer_inputs.push(activations.clone()); }
             let z = linear_batch(&activations, layer);
-            cache.pre_activations.push(z.clone());
+            if retain_cache { cache.pre_activations.push(z.clone()); }
             activations = if layer_idx + 1 == layers.len() {
                 output_activation(&z, self.output_type)
             } else {
                 hidden_activation(&z, self.hidden_act)
             };
         }
-        cache.outputs = activations.clone();
+        if retain_cache { cache.outputs = activations.clone(); }
 
         let flat: Vec<f32> = activations
             .iter()
@@ -174,7 +188,7 @@ impl MlpNeuralPredicate {
             &Device::Cpu,
         )?;
         drop(layers);
-        self.forward_queue.borrow_mut().push_back(cache);
+        if retain_cache { self.forward_queue.borrow_mut().push_back(cache); }
         Ok((tensor, activations))
     }
 
@@ -257,8 +271,6 @@ impl MlpNeuralPredicate {
                     delta = prev_delta;
                 }
             }
-
-            grad_state.example_count += 1;
         }
 
         Ok(())
@@ -270,13 +282,13 @@ impl MlpNeuralPredicate {
         self.forward_queue.borrow_mut().clear();
     }
 
-    pub fn optimizer_step(&self, optimizer: OptimizerKind, learning_rate: f64) {
+    pub fn optimizer_step(&self, optimizer: OptimizerKind, learning_rate: f64, example_count: usize) {
         let mut layers = self.layers.borrow_mut();
         let grads = self.grad_state.borrow_mut();
-        if grads.example_count == 0 {
+        if example_count == 0 {
             return;
         }
-        let denom = grads.example_count as f64;
+        let denom = example_count as f64;
 
         match optimizer {
             OptimizerKind::Sgd => {
@@ -491,7 +503,6 @@ fn zero_grads_for_layers(layers: &[DenseLayer]) -> GradientState {
             .iter()
             .map(|layer| vec![0.0; layer.bias.len()])
             .collect(),
-        example_count: 0,
     }
 }
 
@@ -534,6 +545,24 @@ mod tests {
     use super::*;
 
     #[test]
+    fn seeded_inference_is_repeatable_and_does_not_retain_backward_caches() {
+        let a = MlpNeuralPredicate::new_seeded(2, &[4], OutputType::Categorical(3), 17).unwrap();
+        let b = MlpNeuralPredicate::new_seeded(2, &[4], OutputType::Categorical(3), 17).unwrap();
+        let c = MlpNeuralPredicate::new_seeded(2, &[4], OutputType::Categorical(3), 18).unwrap();
+        assert_eq!(a.to_bytes().unwrap(), b.to_bytes().unwrap());
+        assert_ne!(a.to_bytes().unwrap(), c.to_bytes().unwrap());
+        let rows = [vec![0.25, 0.75]];
+        let (tracked, expected) = a.forward_with_grads(&rows).unwrap();
+        for _ in 0..20 {
+            assert_eq!(a.predict(&rows).unwrap(), expected);
+        }
+        assert_eq!(a.forward_queue.borrow().len(), 1);
+        a.surrogate_backward(&tracked, &[HashMap::from([(0, -1.0)])], &HashMap::from([(0, 0)])).unwrap();
+        assert!(a.forward_queue.borrow().is_empty());
+        assert!(a.predict(&[vec![0.0]]).is_err());
+    }
+
+    #[test]
     fn byte_loading_checks_all_layer_dimensions() {
         let model = MlpNeuralPredicate::new(2, &[3], OutputType::Binary).unwrap();
         let bytes = model.to_bytes().unwrap();
@@ -559,6 +588,101 @@ mod tests {
             let total: f64 = row.iter().sum();
             assert!((total - 1.0).abs() < 1e-9);
         }
+    }
+
+    fn linear_model(output: OutputType, weights: Vec<Vec<f64>>, bias: Vec<f64>) -> MlpNeuralPredicate {
+        let model = MlpNeuralPredicate::new(weights[0].len(), &[], output).unwrap();
+        {
+            let mut layers = model.layers.borrow_mut();
+            layers[0].weights = weights;
+            layers[0].bias = bias;
+        }
+        model
+    }
+
+    fn accumulated_bias_grads(model: &MlpNeuralPredicate, row: &[f64], d_output: &[f64]) -> Vec<f64> {
+        let (tracked, _) = model.forward_with_grads(&[row.to_vec()]).unwrap();
+        let grads: HashMap<u32, f64> = d_output.iter().enumerate().map(|(i, g)| (i as u32, *g)).collect();
+        let cols: HashMap<u32, usize> = (0..d_output.len()).map(|i| (i as u32, i)).collect();
+        model.surrogate_backward(&tracked, &[grads], &cols).unwrap();
+        let state = model.grad_state.borrow();
+        state.bias_grads[0].clone()
+    }
+
+    #[test]
+    fn categorical_cross_entropy_chain_matches_finite_differences() {
+        let row = [0.3, -1.2];
+        let label = 2;
+        let weights = vec![vec![0.4, -0.3], vec![-0.2, 0.7], vec![0.1, 0.05]];
+        for bias in [vec![0.0, 0.1, -0.2], vec![30.0, 0.0, -30.0]] {
+            let model = linear_model(OutputType::Categorical(3), weights.clone(), bias.clone());
+            let probs = model.predict(&[row.to_vec()]).unwrap().remove(0);
+            let mut d_output = vec![0.0; 3];
+            d_output[label] = -1.0 / probs[label].max(f64::MIN_POSITIVE);
+            let analytic = accumulated_bias_grads(&model, &row, &d_output);
+            let loss = |b: &[f64]| {
+                let z: Vec<f64> = weights
+                    .iter()
+                    .zip(b)
+                    .map(|(w, b)| w.iter().zip(&row).map(|(w, x)| w * x).sum::<f64>() + b)
+                    .collect();
+                let max = z.iter().copied().fold(f64::NEG_INFINITY, f64::max);
+                let log_sum = z.iter().map(|v| (v - max).exp()).sum::<f64>().ln() + max;
+                log_sum - z[label]
+            };
+            for k in 0..3 {
+                let h = 1e-6;
+                let mut up = bias.clone();
+                let mut down = bias.clone();
+                up[k] += h;
+                down[k] -= h;
+                let numeric = (loss(&up) - loss(&down)) / (2.0 * h);
+                assert!((analytic[k] - numeric).abs() <= 1e-6, "{k}: {} vs {numeric}", analytic[k]);
+            }
+        }
+    }
+
+    #[test]
+    fn binary_cross_entropy_chain_matches_finite_differences() {
+        let row = [0.5, 2.0];
+        let weights = vec![vec![0.3, -0.4]];
+        for (label, bias) in [(1.0, 0.2), (0.0, 0.2), (1.0, -35.0), (0.0, 35.0)] {
+            let model = linear_model(OutputType::Binary, weights.clone(), vec![bias]);
+            let p = model.predict(&[row.to_vec()]).unwrap()[0][0];
+            let q = (1.0 - p).max(f64::MIN_POSITIVE);
+            let d_output = [-(label / p.max(f64::MIN_POSITIVE)) + (1.0 - label) / q];
+            let analytic = accumulated_bias_grads(&model, &row, &d_output)[0];
+            let loss = |b: f64| {
+                let z: f64 = weights[0].iter().zip(&row).map(|(w, x)| w * x).sum::<f64>() + b;
+                let softplus = |v: f64| if v > 0.0 { v + (-v).exp().ln_1p() } else { v.exp().ln_1p() };
+                label * softplus(-z) + (1.0 - label) * softplus(z)
+            };
+            let h = 1e-6;
+            let numeric = (loss(bias + h) - loss(bias - h)) / (2.0 * h);
+            assert!((analytic - numeric).abs() <= 1e-6, "{label} {bias}: {analytic} vs {numeric}");
+        }
+    }
+
+    #[test]
+    fn optimizer_normalizes_once_by_the_supplied_example_count() {
+        let row = [1.0, 2.0];
+        let steps: Vec<Vec<f64>> = [1usize, 2]
+            .iter()
+            .map(|count| {
+                let model = linear_model(OutputType::Binary, vec![vec![0.1, 0.2]], vec![0.0]);
+                accumulated_bias_grads(&model, &row, &[0.5]);
+                model.optimizer_step(OptimizerKind::Sgd, 0.1, *count);
+                let layers = model.layers.borrow();
+                vec![layers[0].bias[0], layers[0].weights[0][0] - 0.1, layers[0].weights[0][1] - 0.2]
+            })
+            .collect();
+        for (one, two) in steps[0].iter().zip(&steps[1]) {
+            assert!((one - 2.0 * two).abs() <= 1e-15, "{one} {two}");
+            assert!(one.abs() > 0.0);
+        }
+        let model = linear_model(OutputType::Binary, vec![vec![0.1, 0.2]], vec![0.0]);
+        model.optimizer_step(OptimizerKind::Adam, 0.1, 0);
+        assert_eq!(model.layers.borrow()[0].bias[0], 0.0);
     }
 
     #[test]
