@@ -48,12 +48,12 @@ impl<'a> Clone for QueryBuilder<'a> {
             subject_filter: self.subject_filter.clone(),
             predicate_filter: self.predicate_filter.clone(),
             object_filter: self.object_filter.clone(),
-            // we cannot clone custom closures, so we just drop them:
+            // Custom closures cannot be cloned, so they are dropped
             custom_filter: None,
             join_conditions: self.join_conditions.clone(),
             join_db: self.join_db,
             distinct_results: self.distinct_results,
-            // likewise drop any sort_key:
+            // Likewise drop any sort_key
             sort_key: None,
             sort_direction: self.sort_direction,
             limit: self.limit,
@@ -102,7 +102,6 @@ impl Clone for TripleFilter {
             Self::StartsWith(s) => Self::StartsWith(s.clone()),
             Self::EndsWith(s) => Self::EndsWith(s.clone()),
             // We can't clone function pointers, so this is a limitation
-            // In practice, you'd rarely need to clone a filter with a custom function
             Self::Custom(_) => panic!("Cannot clone TripleFilter::Custom"),
         }
     }
@@ -336,11 +335,37 @@ impl<'a> QueryBuilder<'a> {
             // For streaming queries, return empty set as results come through stream
             BTreeSet::new()
         } else {
+            self.apply_filters().into_iter().collect()
+        }
+    }
+
+    /// Return unique materialized triples after ordering and slicing
+    pub fn get_ordered_triples(self) -> Vec<Triple> {
+        if self.is_streaming {
+            Vec::new()
+        } else {
             self.apply_filters()
         }
     }
 
-    /// Get results as decoded (subject, predicate, object) tuples
+    /// Decode while preserving result order
+    pub fn get_ordered_decoded_triples(self) -> Vec<(String, String, String)> {
+        let db = self.db;
+        let triples = self.get_ordered_triples();
+        let dict = db.dictionary.read().unwrap();
+        triples
+            .into_iter()
+            .map(|triple| {
+                (
+                    dict.decode(triple.subject).unwrap_or("").to_string(),
+                    dict.decode(triple.predicate).unwrap_or("").to_string(),
+                    dict.decode(triple.object).unwrap_or("").to_string(),
+                )
+            })
+            .collect()
+    }
+
+    /// Get decoded triples in legacy set order
     pub fn get_decoded_triples(self) -> Vec<(String, String, String)> {
         // Store a reference to the database
         let db = self.db;
@@ -461,8 +486,28 @@ impl<'a> QueryBuilder<'a> {
         groups
     }
 
+    /// Applies `offset` and then `limit` to an already ordered result vector
+    fn slice_ordered(
+        mut results: Vec<Triple>,
+        offset: Option<usize>,
+        limit: Option<usize>,
+    ) -> Vec<Triple> {
+        let offset = offset.unwrap_or(0);
+        if offset >= results.len() {
+            results.clear();
+        } else if offset > 0 {
+            results.drain(..offset);
+        }
+
+        if let Some(limit) = limit {
+            results.truncate(limit);
+        }
+
+        results
+    }
+
     // Applies all the configured filters and returns the matching triples
-    fn apply_filters(self) -> BTreeSet<Triple> {
+    fn apply_filters(self) -> Vec<Triple> {
         let mut results = BTreeSet::new();
         let dict = self.db.dictionary.read().unwrap();
 
@@ -520,31 +565,16 @@ impl<'a> QueryBuilder<'a> {
             }
         }
 
-        // Apply sorting if specified
-        if let Some(key_fn) = self.sort_key {
-            let mut sorted: Vec<Triple> = results.into_iter().collect();
+        let mut ordered: Vec<Triple> = results.into_iter().collect();
+        if let Some(key_fn) = &self.sort_key {
             match self.sort_direction {
-                SortDirection::Ascending => sorted.sort_by_key(|t| key_fn(t)),
-                SortDirection::Descending => sorted.sort_by(|a, b| key_fn(b).cmp(&key_fn(a))),
+                SortDirection::Ascending => ordered.sort_by_key(|t| key_fn(t)),
+                SortDirection::Descending => ordered.sort_by_key(|t| std::cmp::Reverse(key_fn(t))),
             }
-            results = sorted.into_iter().collect();
-        }
-
-        // Apply limit and offset
-        if self.offset.is_some() || self.limit.is_some() {
-            let offset = self.offset.unwrap_or(0);
-            let sorted: Vec<Triple> = results.into_iter().collect();
-            let sliced = if let Some(limit) = self.limit {
-                let end = (offset + limit).min(sorted.len());
-                sorted[offset..end].to_vec()
-            } else {
-                sorted[offset..].to_vec()
-            };
-            results = sliced.into_iter().collect();
         }
         drop(dict);
 
-        results
+        Self::slice_ordered(ordered, self.offset, self.limit)
     }
 
     // Helper method to apply a filter to a string value
@@ -792,7 +822,6 @@ impl<'a> QueryBuilder<'a> {
 
             if matches {
                 // Convert to Triple (simplified encoding)
-                // In practice, you'd want to use proper dictionary encoding
                 let triple = Triple {
                     subject: self.encode_string(&window_triple.s),
                     predicate: self.encode_string(&window_triple.p),
@@ -810,7 +839,7 @@ impl<'a> QueryBuilder<'a> {
             }
         }
 
-        // Apply sorting, limiting, etc.
+        // Apply sorting, limiting, etc
         self.post_process_results(matching_triples)
     }
 
@@ -837,19 +866,6 @@ impl<'a> QueryBuilder<'a> {
         }
 
         // Apply offset and limit
-        let offset = self.offset.unwrap_or(0);
-        if offset < results.len() {
-            results = results[offset..].to_vec();
-        } else {
-            results.clear();
-        }
-
-        if let Some(limit) = self.limit {
-            if results.len() > limit {
-                results.truncate(limit);
-            }
-        }
-
-        results
+        Self::slice_ordered(results, self.offset, self.limit)
     }
 }

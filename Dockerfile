@@ -3,6 +3,7 @@ ARG BASE_IMAGE=ubuntu:${BASE_TAG}
 ARG ENABLE_WEB_UI=true
 
 FROM ${BASE_IMAGE}
+ARG ENABLE_ML=false
 
 ENV DEBIAN_FRONTEND=noninteractive
 
@@ -36,54 +37,33 @@ ENV RUSTUP_HOME=/usr/local/rustup \
     CARGO_HOME=/usr/local/cargo \
     PATH=/usr/local/cargo/bin:$PATH
 
-RUN echo "Installing Python and ML dependencies..."; \
-    apt-get update && apt-get install -y \
-        python3 \
-        python3-pip \
-        python3-dev \
-    && rm -rf /var/lib/apt/lists/*
-
-RUN echo "Installing Python ML packages..."; \
-    pip3 install --no-cache-dir \
-        rdflib>=6.0.0 \
-        scikit-learn>=1.0.0 \
-        numpy>=1.20.0 \
-        pandas \
-        packaging>=20.0 \
-        psutil \
-        torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cpu; \
-    pip3 install --no-cache-dir tensorflow || echo "TensorFlow CPU installation failed, continuing..."
-
-RUN echo "Installing mlschema library..."; \
-    cd /app/ml/src && \
-    pip3 install -e . && \
-    python3 -c "import mlschema; print('mlschema installed:', mlschema.__file__)" || true
+# ML runtimes are installed only for explicitly enabled images.
+RUN if [ "$ENABLE_ML" = "true" ]; then \
+      apt-get update && apt-get install -y python3 python3-pip python3-dev && \
+      pip3 install --no-cache-dir numpy scikit-learn rdflib pandas packaging psutil && \
+      pip3 install --no-cache-dir -e /app/ml/src && \
+      rm -rf /var/lib/apt/lists/*; \
+    fi
 
 ENV PYTHONPATH=/app/ml/src:/app/python/target/release:${PYTHONPATH}
 
 ARG ENABLE_WEB_UI
-RUN echo "Building Rust workspace..." && \
-    if [ "$ENABLE_WEB_UI" = "true" ]; then \
-        cargo build --release -p kolibrie-http-server; \
+RUN if [ "$ENABLE_ML" = "true" ]; then \
+      if [ "$ENABLE_WEB_UI" = "true" ]; then \
+        cargo build --release -p kolibrie-http-server --features ml; \
+      else \
+        cargo build --release -p cli --features ml; \
+      fi; \
     else \
+      if [ "$ENABLE_WEB_UI" = "true" ]; then \
+        cargo build --release -p kolibrie-http-server; \
+      else \
         cargo build --release; \
+      fi; \
     fi
 
-RUN echo "Creating ML models directory..."; \
-    mkdir -p /app/ml/examples/models; \
-    echo "Running ML verification example..."; \
-    cargo run --release --example combination_ml || echo "ML example verification completed with warnings"
-
-RUN echo "======================================" && \
-    echo "Final Build Configuration:" && \
-    echo "- Web UI Enabled: ${ENABLE_WEB_UI}" && \
-    echo "- Rust Version: $(rustc --version)" && \
-    echo "- Python Version: $(python3 --version)" && \
-    echo "======================================" && \
-    if [ "$ENABLE_WEB_UI" = "true" ]; then \
-        ls -lh /app/target/release/kolibrie-http-server; \
-    fi
-
+# Approved artifacts and registry are mounted read-only by the administrator.
+# Building an image never generates, imports, or approves a model.
 EXPOSE 8080
 
 ARG ENABLE_WEB_UI

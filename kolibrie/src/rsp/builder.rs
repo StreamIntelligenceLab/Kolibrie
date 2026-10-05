@@ -226,9 +226,6 @@ where
             .find(|block| block.window_name == window_clause.window_iri)
             .map(|block| {
                 // Convert window block patterns to query plan
-                for (j, (s, p, o)) in block.patterns.iter().enumerate() {
-                    println!(" Registering     {}: {} {} {}", j + 1, s, p, o);
-                }
                 let op = build_logical_plan(
                     Vec::new(),
                     block.patterns.clone(),
@@ -238,7 +235,6 @@ where
                     &[],
                     None,
                 );
-                println!("\tResults in {:?}", op);
                 op
             })
             .unwrap_or_else(|| spo_query);
@@ -309,13 +305,11 @@ where
             None => None,
         };
 
-        println!("logical window plans {:?}", window_plans);
 
         let window_plans = window_plans
             .iter()
             .map(|v| optimizer.find_best_plan(v))
             .collect();
-        println!("physical window plans {:?}", window_plans);
 
         Ok(RSPQueryPlan {
             window_plans,
@@ -333,7 +327,7 @@ where
         let syntax = self.syntax.clone();
         let rules = self.rules.take().unwrap_or("");
         let result_consumer = self.result_consumer.take().unwrap_or(ResultConsumer {
-            function: Arc::new(Box::new(|r| println!("Bindings: {:?}", r))),
+            function: Arc::new(Box::new(|_| {})),
         });
         let operation_mode = self.operation_mode;
         let cross_window_rules = self.cross_window_rules.take();

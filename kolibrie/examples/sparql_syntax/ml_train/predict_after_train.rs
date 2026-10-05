@@ -16,18 +16,11 @@ fn tmp_model_path(name: &str) -> String {
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_nanos())
         .unwrap_or(0);
-    let mut path = std::env::temp_dir();
-    path.push(format!(
-        "kolibrie_example_{}_{}_{}.bin",
-        name,
-        std::process::id(),
-        nanos,
-    ));
-    path.to_string_lossy().into_owned()
+    format!("kolibrie_example_{}_{}_{}.bin", name, std::process::id(), nanos)
 }
 
 fn main() {
-    let mut database = SparqlDatabase::new();
+    let mut database = SparqlDatabase::with_ml_context(local_ml::trusted_context());
 
     for (sample, label, x0, x1, x2) in [
         ("s0", "A", "1", "0", "0"),
@@ -118,3 +111,5 @@ ML.PREDICT(MODEL "digit_model",
         println!("  {subject} -> {object}");
     }
 }
+
+mod local_ml { include!(concat!(env!("CARGO_MANIFEST_DIR"), "/examples/support/ml_context.rs")); }

@@ -59,21 +59,35 @@ type SpoGraphIndex = HashMap<u32, HashMap<u32, HashMap<u32, HashSet<GraphId>>>>;
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct DatasetIndex {
-    // Graph-leading indexes for graph-scoped patterns.
     gspo: GraphNestedIndex,
     gpos: GraphNestedIndex,
     gosp: GraphNestedIndex,
-    // Triple-to-graph index for GRAPH ?g and membership checks.
     spog: SpoGraphIndex,
-    // Graph identity is independent from graph contents. `serde(default)` keeps
-    // indexes written before the catalog was introduced readable.
     #[serde(default)]
     named_graphs: HashSet<u32>,
+    #[serde(skip)]
+    generation: u64,
+    #[serde(skip)]
+    resets: u64,
 }
 
 impl DatasetIndex {
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// Mutation counter; compare readings with `wrapping_sub`, not `<`
+    pub fn generation(&self) -> u64 {
+        self.generation
+    }
+
+    /// Number of non-empty `clear()` calls
+    pub fn resets(&self) -> u64 {
+        self.resets
+    }
+
+    fn record_change(&mut self) {
+        self.generation = self.generation.wrapping_add(1);
     }
 
     pub fn insert_triple(&mut self, triple: &Triple) -> bool {
@@ -107,11 +121,16 @@ impl DatasetIndex {
     }
 
     pub fn insert_quad(&mut self, quad: &Quad) -> bool {
-        if let GraphId::Named(graph) = quad.graph {
-            self.named_graphs.insert(graph);
-        }
+        // Registering a new named graph counts as a mutation
+        let named_a_graph = match quad.graph {
+            GraphId::Named(graph) => self.named_graphs.insert(graph),
+            GraphId::Default => false,
+        };
 
         if self.contains_quad(quad) {
+            if named_a_graph {
+                self.record_change();
+            }
             return false;
         }
 
@@ -154,6 +173,7 @@ impl DatasetIndex {
             .entry(o)
             .or_default()
             .insert(g);
+        self.record_change();
         true
     }
 
@@ -179,6 +199,7 @@ impl DatasetIndex {
         remove_from_graph_index(&mut self.gpos, g, p, o, s);
         remove_from_graph_index(&mut self.gosp, g, o, s, p);
         remove_from_spog(&mut self.spog, s, p, o, g);
+        self.record_change();
         true
     }
 
@@ -197,13 +218,7 @@ impl DatasetIndex {
             .collect()
     }
 
-    /// Queries a logical default graph formed by merging the supplied source
-    /// graphs.
-    ///
-    /// SPARQL dataset clauses define the query default graph as an RDF merge:
-    /// the same triple occurring in more than one source graph is returned
-    /// once. An empty source list therefore represents an empty query default
-    /// graph (for example, `FROM NAMED` without `FROM`).
+    /// Queries a logical default graph formed by merging the supplied source graphs
     pub fn query_merged_graphs(
         &self,
         source_graphs: &[GraphId],
@@ -453,6 +468,9 @@ impl DatasetIndex {
             GraphId::Named(graph) => {
                 let existed = self.graph_exists(GraphId::Named(graph));
                 self.named_graphs.insert(graph);
+                if !existed {
+                    self.record_change();
+                }
                 !existed
             }
         }
@@ -473,8 +491,10 @@ impl DatasetIndex {
                 if !self.graph_exists(graph) {
                     return false;
                 }
+                // Removing the graph identity counts as one additional mutation
                 self.clear_graph(graph);
                 self.named_graphs.remove(&graph_id);
+                self.record_change();
                 true
             }
         }
@@ -504,11 +524,13 @@ impl DatasetIndex {
         // Clearing a named graph retains its identity, including for an old
         // deserialized index whose catalog is populated lazily.
         if let GraphId::Named(graph_id) = graph {
-            if self.graph_exists(graph) {
-                self.named_graphs.insert(graph_id);
+            if self.graph_exists(graph) && self.named_graphs.insert(graph_id) {
+                // Register a legacy (pre-catalog) graph
+                self.record_change();
             }
         }
 
+        // delete_quad records one mutation per removed quad
         let quads = self.query_graph(graph, None, None, None);
         for quad in quads {
             self.delete_quad(&quad);
@@ -516,15 +538,66 @@ impl DatasetIndex {
     }
 
     pub fn clear(&mut self) {
+        // No-op on an empty dataset
+        if self.gspo.is_empty() && self.named_graphs.is_empty() {
+            return;
+        }
         self.gspo.clear();
         self.gpos.clear();
         self.gosp.clear();
         self.spog.clear();
         self.named_graphs.clear();
+        self.resets = self.resets.wrapping_add(1);
+        self.record_change();
+    }
+
+    /// Visits every quad without allocating; order is unspecified
+    pub fn for_each_quad(&self, mut visit: impl FnMut(GraphId, u32, u32, u32)) {
+        for (&graph, subjects) in &self.gspo {
+            for (&subject, predicates) in subjects {
+                for (&predicate, objects) in predicates {
+                    for &object in objects {
+                        visit(graph, subject, predicate, object);
+                    }
+                }
+            }
+        }
+    }
+
+    /// Visits every quad of one graph in place
+    pub fn for_each_quad_in_graph(&self, graph: GraphId, mut visit: impl FnMut(u32, u32, u32)) {
+        let Some(subjects) = self.gspo.get(&graph) else {
+            return;
+        };
+        for (&subject, predicates) in subjects {
+            for (&predicate, objects) in predicates {
+                for &object in objects {
+                    visit(subject, predicate, object);
+                }
+            }
+        }
+    }
+
+    /// Counts one graph's quads without materializing them
+    pub fn count_graph(&self, graph: GraphId) -> usize {
+        self.gspo.get(&graph).map_or(0, |subjects| {
+            subjects
+                .values()
+                .map(|predicates| predicates.values().map(HashSet::len).sum::<usize>())
+                .sum()
+        })
+    }
+
+    /// Counts every quad without materializing them
+    pub fn count_quads(&self) -> usize {
+        self.gspo
+            .keys()
+            .map(|&graph| self.count_graph(graph))
+            .sum()
     }
 
     pub fn len_graph(&self, graph: GraphId) -> usize {
-        self.query_graph(graph, None, None, None).len()
+        self.count_graph(graph)
     }
 
     pub fn len_default(&self) -> usize {
@@ -821,5 +894,160 @@ mod tests {
             vec![shared]
         );
         assert!(index.query_merged_graphs(&[], None, None, None).is_empty());
+    }
+
+    fn named(id: u32) -> GraphId {
+        GraphId::Named(id)
+    }
+
+    fn quad(s: u32, p: u32, o: u32, graph: GraphId) -> Quad {
+        Quad {
+            subject: s,
+            predicate: p,
+            object: o,
+            graph,
+        }
+    }
+
+    /// Returns the generation delta caused by `change`
+    fn advance(index: &mut DatasetIndex, change: impl FnOnce(&mut DatasetIndex)) -> u64 {
+        let before = index.generation();
+        change(index);
+        index.generation().wrapping_sub(before)
+    }
+
+    #[test]
+    fn a_successful_quad_mutation_advances_the_generation_once() {
+        let mut index = DatasetIndex::new();
+        assert_eq!(advance(&mut index, |i| assert!(i.insert_triple(&triple(1, 2, 3)))), 1);
+        assert_eq!(advance(&mut index, |i| assert!(i.delete_triple(&triple(1, 2, 3)))), 1);
+        assert_eq!(
+            advance(&mut index, |i| assert!(i.insert_quad(&quad(1, 2, 3, named(9))))),
+            1
+        );
+        assert_eq!(
+            advance(&mut index, |i| assert!(i.delete_quad(&quad(1, 2, 3, named(9))))),
+            1
+        );
+    }
+
+    #[test]
+    fn a_graph_mutation_advances_the_generation_once() {
+        let mut index = DatasetIndex::new();
+        assert_eq!(advance(&mut index, |i| assert!(i.create_graph(named(5)))), 1);
+        assert_eq!(advance(&mut index, |i| assert!(i.drop_graph(named(5)))), 1);
+    }
+
+    #[test]
+    fn a_mutation_that_changes_nothing_leaves_the_generation_alone() {
+        let mut index = DatasetIndex::new();
+        index.insert_triple(&triple(1, 2, 3));
+        index.create_graph(named(5));
+
+        // Duplicate insert
+        assert_eq!(advance(&mut index, |i| assert!(!i.insert_triple(&triple(1, 2, 3)))), 0);
+        // Delete of a missing quad
+        assert_eq!(advance(&mut index, |i| assert!(!i.delete_triple(&triple(9, 9, 9)))), 0);
+        // Existing graph created, missing graph dropped
+        assert_eq!(advance(&mut index, |i| assert!(!i.create_graph(named(5)))), 0);
+        assert_eq!(advance(&mut index, |i| assert!(!i.drop_graph(named(404)))), 0);
+        // Default graph cannot be created
+        assert_eq!(advance(&mut index, |i| assert!(!i.create_graph(GraphId::Default))), 0);
+    }
+
+    #[test]
+    fn clearing_an_empty_dataset_changes_nothing() {
+        let mut index = DatasetIndex::new();
+        assert_eq!(advance(&mut index, |i| i.clear()), 0);
+
+        index.insert_triple(&triple(1, 2, 3));
+        assert!(advance(&mut index, |i| i.clear()) >= 1);
+        assert_eq!(advance(&mut index, |i| i.clear()), 0);
+    }
+
+    #[test]
+    fn only_a_real_full_clear_counts_as_a_reset() {
+        let mut index = DatasetIndex::new();
+        index.clear();
+        assert_eq!(index.resets(), 0);
+
+        index.insert_quad(&quad(1, 2, 3, named(7)));
+        index.clear_graph(named(7));
+        assert_eq!(index.resets(), 0, "clearing one graph is ordinary deletion");
+
+        index.insert_triple(&triple(1, 2, 3));
+        index.clear();
+        assert_eq!(index.resets(), 1);
+    }
+
+    #[test]
+    fn clearing_a_graph_records_one_change_per_removed_quad() {
+        let mut index = DatasetIndex::new();
+        index.insert_quad(&quad(1, 2, 3, named(7)));
+        index.insert_quad(&quad(4, 5, 6, named(7)));
+
+        assert_eq!(advance(&mut index, |i| i.clear_graph(named(7))), 2);
+        // Second clear removes nothing
+        assert_eq!(advance(&mut index, |i| i.clear_graph(named(7))), 0);
+    }
+
+    /// Delete/insert pairs count as mutations even when the size is unchanged
+    #[test]
+    fn a_constant_size_replacement_still_advances_the_generation() {
+        let mut index = DatasetIndex::new();
+        for i in 0..10 {
+            index.insert_triple(&triple(i, 1, i));
+        }
+        let before = index.generation();
+        let size_before = index.count_quads();
+
+        for i in 0..10 {
+            assert!(index.delete_triple(&triple(i, 1, i)));
+            assert!(index.insert_triple(&triple(i + 100, 1, i)));
+        }
+
+        assert_eq!(index.count_quads(), size_before);
+        assert_eq!(index.generation().wrapping_sub(before), 20);
+    }
+
+    #[test]
+    fn naming_a_graph_through_a_duplicate_quad_is_still_a_change() {
+        let mut index = DatasetIndex::new();
+        index.insert_quad(&quad(1, 2, 3, named(4)));
+        // Same quad, graph already named
+        assert_eq!(
+            advance(&mut index, |i| assert!(!i.insert_quad(&quad(1, 2, 3, named(4))))),
+            0
+        );
+    }
+
+    #[test]
+    fn counting_agrees_with_materialising() {
+        let mut index = DatasetIndex::new();
+        assert_eq!(index.count_quads(), 0);
+        index.insert_triple(&triple(1, 2, 3));
+        index.insert_quad(&quad(4, 5, 6, named(7)));
+        index.insert_quad(&quad(8, 9, 10, named(7)));
+        index.create_graph(named(8));
+
+        assert_eq!(index.count_quads(), index.all_quads().len());
+        assert_eq!(index.count_graph(GraphId::Default), 1);
+        assert_eq!(index.count_graph(named(7)), 2);
+        assert_eq!(index.count_graph(named(8)), 0);
+        assert_eq!(index.count_graph(named(404)), 0);
+    }
+
+    #[test]
+    fn visiting_quads_yields_exactly_the_snapshot() {
+        let mut index = DatasetIndex::new();
+        index.insert_triple(&triple(1, 2, 3));
+        index.insert_quad(&quad(4, 5, 6, named(7)));
+        index.create_graph(named(8));
+
+        let mut visited = Vec::new();
+        index.for_each_quad(|graph, s, p, o| visited.push(quad(s, p, o, graph)));
+        visited.sort_unstable();
+
+        assert_eq!(visited, index.all_quads());
     }
 }

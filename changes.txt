@@ -121,6 +121,43 @@
 120. Validate quad terms before cloning the binding in `match_quad`
 121. Add optional `exec-stats` feature with scan probe, candidate quad, and emitted row counters
 122. Add cross-shape tests asserting identical result bags regardless of pattern order
+123. Add `term_order` module giving ORDER BY, MIN, and MAX one total order (unbound, then numbers by value, then other terms), fixing the comparison cycle on mixed numeric and non-numeric values
+124. Fix FILTER error semantics with three-valued logic: unbound variables, type mismatches, and division by zero drop the row, also under negation and `&&`/`||`; non-numeric operands compare lexically
+125. Fix GROUP BY results to carry only grouping keys and aggregates, and share one aggregate implementation between top-level queries and subqueries
+126. Fix subquery ORDER BY to sort before LIMIT, and decode sort keys once per row instead of once per comparison
+127. Fix QueryBuilder OFFSET/LIMIT to apply after sorting and return nothing instead of panicking when the offset is past the result size
+128. Refresh cached database statistics after every triple/quad insert, delete, N-Triples load, and SPARQL Update; count datasets up to 100,000 quads exactly and sample larger ones with a size-proportional step
+129. Refine the cost model with a per-probe scan cost, star-pattern cardinality estimate, hash join for cross products, and zero cost for invisible named graphs; skip plan memoization for plans carrying inline data
+130. Reduce execution allocations: share `DatasetView` through `Arc`, evaluate FILTER and decode rows in chunks per dictionary lock, move the input bindings into the last UNION branch, and skip duplicate checks when only one default graph is visible
+131. Add `optimizer_hotpath` Criterion benchmark and tests for allocation profile, operator work counters, join-variant equivalence, FILTER, ORDER BY, aggregation scope, QueryBuilder ordering, and statistics invalidation
+132. Make ML opt-in behind the `ml` Cargo feature across `kolibrie`, CLI, HTTP server, and Python binding; ML syntax still parses without it and execution returns `ML_FEATURE_DISABLED`
+133. Add `MlExecutionContext` trust policy (`ml_policy` module) that denies ML execution by default, with `execute_sparql_with_ml_context` and `SparqlDatabase::with_ml_context`
+134. Add HTTP model allowlist via `KOLIBRIE_MODEL_ALLOWLIST` (JSON registry with artifact paths and SHA-256 digests); HTTP never trains, writes artifacts, or registers query declarations, and returns stable error codes
+135. Add trusted-local training through `MlExecutionContext::trusted_local(output_dir)`; `SAVE_TO` accepts only a validated filename and never overwrites an existing artifact
+136. Add native model `to_bytes`/`from_bytes`, honor the declared MLP architecture in training, and stop Python example predictors from training on import
+137. Route the Streamertail `MLPredict` operator through the ML policy (approved models only), remove its legacy handler helpers, and move `ML.PREDICT` alias lowering into `ml_syntax`
+138. Make the default Docker image ML-free; `--build-arg ENABLE_ML=true` builds the optional ML runtime
+139. Add `COUNT(*)` and DISTINCT aggregates (`COUNT`, `SUM`, `AVG`, `MIN`, `MAX`) through a shared `aggregate` module; an ungrouped empty input yields one row and non-numeric operands leave SUM/AVG unbound
+140. Add ordered QueryBuilder API: `get_ordered_triples()` and `get_ordered_decoded_triples()`
+141. Add ML security, aggregate COUNT/DISTINCT, ordered QueryBuilder, and Python example import-safety tests
+142. Add `PlanningStatsPolicy` (`AlwaysFresh` or `Bounded { minimum_batch, refresh_fraction }`); the default `Bounded { 100, 0.5 }` reuses planning statistics until enough of the store has changed instead of rebuilding after every write
+143. Add mutation generation and reset counters to `DatasetIndex`, plus `for_each_quad`, `for_each_quad_in_graph`, `count_graph`, and `count_quads` for visiting and counting without materializing quads
+144. Add `PlanningStatsSnapshot`, `get_or_build_planning_stats`, `replace_dataset_index`, and rebuild count/time metrics (`stats_rebuild_metrics`) to `SparqlDatabase`
+145. Rewrite statistics collection as one pass over the quads with a fast term hasher (`TermMap`, `TermSet`) and stable hash-based sampling that does not depend on visit order
+146. Skip building statistics for plans with no join order to choose, and give graphs missing from a stale snapshot a cardinality of 1 so new predicates and named graphs stay queryable
+147. Add `replay_profile` example and tests for the statistics cache, statistics collector, and result safety under stale statistics
+148. Add the program API (`program` module): `compile_program`, `execute_program`, and `query_program_result` run `MODEL` / `NEURAL RELATION` / `TRAIN NEURAL RELATION`, a top-level `ML.PREDICT`, and several `RULE` blocks as one execution
+149. Add `ML.PREDICT ... OUTPUT ?var DISTRIBUTION` to publish every label with its probability as an exclusive choice instead of only the top label
+150. Support multiple `RULE` blocks per request (`CombinedQuery.rules`), evaluated to one joint SDD fixpoint; single-rule entry points reject multi-rule requests through `single_rule()`
+151. Add `PredictionSnapshot` validation for frozen, predicted, and tagged probabilistic inputs: label domain and order, sum within 1e-7 without renormalization, conflict and overlap checks
+152. Publish program results as a separate hypothesis-view dataset with `prob:value` RDF-star annotations; the input triples are never modified, and trained artifacts and neural declarations are published only after the whole run succeeds
+153. Add resource limits for program execution (`ProgramLimits`: seeds, SDD nodes, deadline) with budgeted SDD operations (`SddLimits`, `try_infer_new_facts_with_sdd_seed_specs`) that stop materialisation and discard partial results
+154. Add checked rule lowering that rejects windows, NOT, VALUES, BIND, subqueries, in-rule `ML.PREDICT`, and non-SDD PROB modes instead of silently dropping them
+155. Fix neural training loss to average once over all supervised examples in a batch (`optimizer_step` takes the example count) and guard cross-entropy/BCE gradients at zero probability
+156. Add `execute_supervised_training` for label-supervised training without a background reasoner, and an `implicit_neural_materialization` switch so program runs and result queries never trigger hidden predictions
+157. Reuse the input row for the last match of each scan in the Streamertail engine instead of cloning it for every match
+158. Add MNIST addition as a Kolibrie program: `mnist_addition` example, shared `mnist_program` text, `mnist_compare` benchmark adapter, and the former Rust-built rules kept as a differential oracle
+159. Add program tests for the parser, rule lowering, joint execution, exclusive semantics, publication, snapshot lifecycle, coverage, resource limits, and ML train/predict agreement
 
 0.1.1
 1. Modify whole project by making Cargo workspace

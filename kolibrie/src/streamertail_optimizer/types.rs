@@ -14,7 +14,7 @@ use shared::{
 };
 use std::collections::HashMap;
 
-/// Owned execution representation of Kolibrie's existing arithmetic syntax.
+/// Owned execution representation of Kolibrie's existing arithmetic syntax
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ConditionArithmetic {
     Operand(String),
@@ -24,11 +24,7 @@ pub enum ConditionArithmetic {
     Divide(Box<ConditionArithmetic>, Box<ConditionArithmetic>),
 }
 
-/// Owned execution representation of the existing parsed `FilterExpression`.
-///
-/// The parser remains source-borrowed; lowering copies each expression once
-/// into the physical plan. This avoids leaking query strings to manufacture a
-/// `'static` parser lifetime.
+/// Owned execution representation of the existing parsed `FilterExpression`
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ConditionExpression {
     Comparison(String, String, String),
@@ -40,22 +36,74 @@ pub enum ConditionExpression {
     FunctionCall(String, Vec<String>),
 }
 
-/// Represents a condition for filtering operations.
+/// Represents a condition for filtering operations
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Condition {
     pub expression: ConditionExpression,
 }
 
-/// ID-based result type for performance optimization.
+/// The outcome of evaluating a filter expression
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Truth {
+    True,
+    False,
+    Error,
+}
+
+impl Truth {
+    fn from_bool(value: bool) -> Self {
+        if value {
+            Truth::True
+        } else {
+            Truth::False
+        }
+    }
+
+    /// `false && error` is `false`; any other pairing with an error is an error
+    fn and(self, right: impl FnOnce() -> Truth) -> Truth {
+        if self == Truth::False {
+            return Truth::False;
+        }
+        match (self, right()) {
+            (_, Truth::False) => Truth::False,
+            (Truth::True, Truth::True) => Truth::True,
+            _ => Truth::Error,
+        }
+    }
+
+    /// `true || error` is `true`; any other pairing with an error is an error
+    fn or(self, right: impl FnOnce() -> Truth) -> Truth {
+        if self == Truth::True {
+            return Truth::True;
+        }
+        match (self, right()) {
+            (_, Truth::True) => Truth::True,
+            (Truth::False, Truth::False) => Truth::False,
+            _ => Truth::Error,
+        }
+    }
+
+    fn negate(self) -> Truth {
+        match self {
+            Truth::True => Truth::False,
+            Truth::False => Truth::True,
+            Truth::Error => Truth::Error,
+        }
+    }
+
+    /// The FILTER boundary: a solution survives only a true expression
+    fn keeps_solution(self) -> bool {
+        self == Truth::True
+    }
+}
+
+/// ID-based result type for performance optimization
 #[derive(Debug, Clone)]
 pub struct IdResult {
     pub bindings: HashMap<String, u32>,
 }
 
-/// One owned projection item for a subquery.
-///
-/// The parser keeps source-borrowed strings, while logical and physical plans
-/// must own the query metadata that survives optimization.
+/// One owned projection item for a subquery
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SubqueryProjection {
     pub kind: String,
@@ -63,11 +111,10 @@ pub struct SubqueryProjection {
     pub alias: Option<String>,
 }
 
-/// SELECT modifiers that must be applied inside a subquery before its
-/// solutions are joined back into the enclosing group graph pattern.
+/// SELECT modifiers applied inside a subquery before its rows join the outer query
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SubquerySpec {
-    /// `None` represents `SELECT *`; `Some` is an explicit projection list.
+    /// `None` represents `SELECT *`; `Some` is an explicit projection list
     pub projection: Option<Vec<SubqueryProjection>>,
     pub distinct: bool,
     pub group_vars: Vec<String>,
@@ -266,19 +313,20 @@ impl Condition {
         }
     }
 
+    /// Evaluates the condition at the FILTER boundary
     pub fn evaluate(&self, result: &HashMap<String, String>) -> bool {
-        self.evaluate_filter(&self.expression, result)
+        self.evaluate_filter(&self.expression, result).keeps_solution()
     }
 
     fn evaluate_filter(
         &self,
         expression: &ConditionExpression,
         result: &HashMap<String, String>,
-    ) -> bool {
+    ) -> Truth {
         match expression {
             ConditionExpression::Comparison(variable, operator, value) => {
                 let Some(result_value) = result.get(Self::normalize_variable(variable)) else {
-                    return false;
+                    return Truth::Error;
                 };
                 let rhs = if Self::is_variable(value) {
                     result
@@ -288,7 +336,7 @@ impl Condition {
                     Some(Self::normalize_lexical(value))
                 };
                 let Some(rhs) = rhs else {
-                    return false;
+                    return Truth::Error;
                 };
                 let lhs = Self::normalize_lexical(result_value);
                 Self::compare_lexical(lhs, operator, rhs)
@@ -300,21 +348,21 @@ impl Condition {
                         .parse::<f64>()
                         .ok()
                 };
-                let Ok(left) = Self::evaluate_arithmetic(left, &resolver) else {
-                    return false;
-                };
-                let Ok(right) = Self::evaluate_arithmetic(right, &resolver) else {
-                    return false;
+                let (Ok(left), Ok(right)) = (
+                    Self::evaluate_arithmetic(left, &resolver),
+                    Self::evaluate_arithmetic(right, &resolver),
+                ) else {
+                    return Truth::Error;
                 };
                 Self::compare_numeric(left, operator, right)
             }
-            ConditionExpression::And(left, right) => {
-                self.evaluate_filter(left, result) && self.evaluate_filter(right, result)
-            }
-            ConditionExpression::Or(left, right) => {
-                self.evaluate_filter(left, result) || self.evaluate_filter(right, result)
-            }
-            ConditionExpression::Not(inner) => !self.evaluate_filter(inner, result),
+            ConditionExpression::And(left, right) => self
+                .evaluate_filter(left, result)
+                .and(|| self.evaluate_filter(right, result)),
+            ConditionExpression::Or(left, right) => self
+                .evaluate_filter(left, result)
+                .or(|| self.evaluate_filter(right, result)),
+            ConditionExpression::Not(inner) => self.evaluate_filter(inner, result).negate(),
             ConditionExpression::ArithmeticExpr(expression) => {
                 let resolver = |variable: &str| {
                     result
@@ -323,59 +371,76 @@ impl Condition {
                         .ok()
                 };
                 Self::evaluate_arithmetic(expression, &resolver)
-                    .map(|value| value != 0.0)
-                    .unwrap_or(false)
+                    .map(|value| Truth::from_bool(value != 0.0))
+                    .unwrap_or(Truth::Error)
             }
             ConditionExpression::FunctionCall(name, arguments) => {
                 if name != "isTRIPLE" {
-                    return false;
+                    return Truth::Error;
                 }
                 let Some(argument) = arguments.first() else {
-                    return false;
+                    return Truth::Error;
                 };
                 let value = if Self::is_variable(argument) {
-                    result
-                        .get(Self::normalize_variable(argument))
-                        .map(String::as_str)
-                        .unwrap_or("")
+                    let Some(value) = result.get(Self::normalize_variable(argument)) else {
+                        return Truth::Error;
+                    };
+                    value.as_str()
                 } else {
                     argument
                 };
-                value.starts_with("<<") && value.ends_with(">>")
+                Truth::from_bool(value.starts_with("<<") && value.ends_with(">>"))
             }
         }
     }
 
-    fn compare_lexical(lhs: &str, operator: &str, rhs: &str) -> bool {
+    /// Relational comparison over the engine's untyped lexical values
+    fn compare_lexical(lhs: &str, operator: &str, rhs: &str) -> Truth {
         match operator {
-            "=" => lhs == rhs,
-            "!=" => lhs != rhs,
-            ">" => lhs.parse::<f64>().unwrap_or(0.0) > rhs.parse::<f64>().unwrap_or(0.0),
-            ">=" => lhs.parse::<f64>().unwrap_or(0.0) >= rhs.parse::<f64>().unwrap_or(0.0),
-            "<" => lhs.parse::<f64>().unwrap_or(0.0) < rhs.parse::<f64>().unwrap_or(0.0),
-            "<=" => lhs.parse::<f64>().unwrap_or(0.0) <= rhs.parse::<f64>().unwrap_or(0.0),
-            _ => false,
+            "=" => return Truth::from_bool(lhs == rhs),
+            "!=" => return Truth::from_bool(lhs != rhs),
+            _ => {}
+        }
+
+        let ordering = match (lhs.parse::<f64>(), rhs.parse::<f64>()) {
+            (Ok(left), Ok(right)) => match left.partial_cmp(&right) {
+                Some(ordering) => ordering,
+                // A NaN operand is unordered against everything, itself included
+                None => return Truth::Error,
+            },
+            (Err(_), Err(_)) => lhs.cmp(rhs),
+            _ => return Truth::Error,
+        };
+
+        match operator {
+            ">" => Truth::from_bool(ordering.is_gt()),
+            ">=" => Truth::from_bool(ordering.is_ge()),
+            "<" => Truth::from_bool(ordering.is_lt()),
+            "<=" => Truth::from_bool(ordering.is_le()),
+            _ => Truth::Error,
         }
     }
 
-    fn compare_numeric(lhs: f64, operator: &str, rhs: f64) -> bool {
+    fn compare_numeric(lhs: f64, operator: &str, rhs: f64) -> Truth {
         match operator {
-            "=" => lhs == rhs,
-            "!=" => lhs != rhs,
-            ">" => lhs > rhs,
-            ">=" => lhs >= rhs,
-            "<" => lhs < rhs,
-            "<=" => lhs <= rhs,
-            _ => false,
+            "=" => Truth::from_bool(lhs == rhs),
+            "!=" => Truth::from_bool(lhs != rhs),
+            ">" => Truth::from_bool(lhs > rhs),
+            ">=" => Truth::from_bool(lhs >= rhs),
+            "<" => Truth::from_bool(lhs < rhs),
+            "<=" => Truth::from_bool(lhs <= rhs),
+            _ => Truth::Error,
         }
     }
 
+    /// The ID-based counterpart of [`Condition::evaluate`], with the same
     pub fn evaluate_with_ids(
         &self,
         result: &HashMap<String, u32>,
         dictionary: &Dictionary,
     ) -> bool {
         self.evaluate_filter_with_ids(&self.expression, result, dictionary)
+            .keeps_solution()
     }
 
     fn evaluate_filter_with_ids(
@@ -383,19 +448,20 @@ impl Condition {
         expression: &ConditionExpression,
         result: &HashMap<String, u32>,
         dictionary: &Dictionary,
-    ) -> bool {
+    ) -> Truth {
         match expression {
             ConditionExpression::Comparison(variable, operator, value) => {
                 let Some(&id) = result.get(Self::normalize_variable(variable)) else {
-                    return false;
+                    return Truth::Error;
                 };
                 if Self::is_variable(value) {
                     let Some(&rhs) = result.get(Self::normalize_variable(value)) else {
-                        return false;
+                        return Truth::Error;
                     };
                     return match operator.as_str() {
-                        "=" => id == rhs,
-                        "!=" => id != rhs,
+                        // Interned IDs are term identity, so equality needs no decode
+                        "=" => Truth::from_bool(id == rhs),
+                        "!=" => Truth::from_bool(id != rhs),
                         _ => {
                             let lhs = dictionary.decode(id).unwrap_or("");
                             let rhs = dictionary.decode(rhs).unwrap_or("");
@@ -413,45 +479,44 @@ impl Condition {
                     let &id = result.get(Self::normalize_variable(variable))?;
                     dictionary.decode(id)?.parse::<f64>().ok()
                 };
-                let Ok(left) = Self::evaluate_arithmetic(left, &resolver) else {
-                    return false;
-                };
-                let Ok(right) = Self::evaluate_arithmetic(right, &resolver) else {
-                    return false;
+                let (Ok(left), Ok(right)) = (
+                    Self::evaluate_arithmetic(left, &resolver),
+                    Self::evaluate_arithmetic(right, &resolver),
+                ) else {
+                    return Truth::Error;
                 };
                 Self::compare_numeric(left, operator, right)
             }
-            ConditionExpression::And(left, right) => {
-                self.evaluate_filter_with_ids(left, result, dictionary)
-                    && self.evaluate_filter_with_ids(right, result, dictionary)
-            }
-            ConditionExpression::Or(left, right) => {
-                self.evaluate_filter_with_ids(left, result, dictionary)
-                    || self.evaluate_filter_with_ids(right, result, dictionary)
-            }
-            ConditionExpression::Not(inner) => {
-                !self.evaluate_filter_with_ids(inner, result, dictionary)
-            }
+            ConditionExpression::And(left, right) => self
+                .evaluate_filter_with_ids(left, result, dictionary)
+                .and(|| self.evaluate_filter_with_ids(right, result, dictionary)),
+            ConditionExpression::Or(left, right) => self
+                .evaluate_filter_with_ids(left, result, dictionary)
+                .or(|| self.evaluate_filter_with_ids(right, result, dictionary)),
+            ConditionExpression::Not(inner) => self
+                .evaluate_filter_with_ids(inner, result, dictionary)
+                .negate(),
             ConditionExpression::ArithmeticExpr(expression) => {
                 let resolver = |variable: &str| {
                     let &id = result.get(Self::normalize_variable(variable))?;
                     dictionary.decode(id)?.parse::<f64>().ok()
                 };
                 Self::evaluate_arithmetic(expression, &resolver)
-                    .map(|value| value != 0.0)
-                    .unwrap_or(false)
+                    .map(|value| Truth::from_bool(value != 0.0))
+                    .unwrap_or(Truth::Error)
             }
             ConditionExpression::FunctionCall(name, arguments) => {
                 use shared::quoted_triple_store::is_quoted_triple_id;
                 if name != "isTRIPLE" {
-                    return false;
+                    return Truth::Error;
                 }
                 let Some(argument) = arguments.first() else {
-                    return false;
+                    return Truth::Error;
                 };
-                result
-                    .get(Self::normalize_variable(argument))
-                    .is_some_and(|id| is_quoted_triple_id(*id))
+                match result.get(Self::normalize_variable(argument)) {
+                    Some(id) => Truth::from_bool(is_quoted_triple_id(*id)),
+                    None => Truth::Error,
+                }
             }
         }
     }

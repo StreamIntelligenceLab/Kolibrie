@@ -10,7 +10,6 @@
 
 use datalog::parser_n3_logic::parse_n3_rule;
 use datalog::reasoning::Reasoner;
-use kolibrie::execute_query::execute_query_rayon_parallel2_volcano;
 use kolibrie::parser::process_rule_definition;
 use kolibrie::rsp_engine::{
     OperationMode, QueryExecutionMode, RSPBuilder, ResultConsumer, SimpleR2R,
@@ -277,7 +276,40 @@ fn strip_hash_comments(text: &str) -> String {
     output
 }
 
+fn http_ml_context(
+) -> Result<&'static kolibrie::ml_policy::MlExecutionContext, &'static kolibrie::ml_policy::MlError>
+{
+    static CONTEXT: std::sync::OnceLock<
+        Result<kolibrie::ml_policy::MlExecutionContext, kolibrie::ml_policy::MlError>,
+    > = std::sync::OnceLock::new();
+    CONTEXT
+        .get_or_init(|| {
+            if cfg!(feature = "ml") {
+                kolibrie::ml_policy::MlExecutionContext::from_environment()
+            } else {
+                Ok(kolibrie::ml_policy::MlExecutionContext::disabled())
+            }
+        })
+        .as_ref()
+}
+
+fn ml_error_response(error: &str) -> String {
+    let (status, code) = match error {
+        "ML_FEATURE_DISABLED" => ("503 Service Unavailable", "ML_FEATURE_DISABLED"),
+        "ML_FORBIDDEN" => ("403 Forbidden", "ML_FORBIDDEN"),
+        "ML_INVALID_ARTIFACT" => ("403 Forbidden", "ML_INVALID_ARTIFACT"),
+        "ML_INVALID_CONFIGURATION" => ("503 Service Unavailable", "ML_INVALID_CONFIGURATION"),
+        _ => ("400 Bad Request", "QUERY_EXECUTION_FAILED"),
+    };
+    let body = serde_json::json!({"error": code}).to_string();
+    format!("HTTP/1.1 {status}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nAccess-Control-Allow-Origin: *\r\n\r\n{body}", body.len())
+}
+
 fn main() {
+    if http_ml_context().is_err() {
+        eprintln!("ML_INVALID_CONFIGURATION");
+        std::process::exit(1);
+    }
     println!("Starting Kolibrie HTTP Server on 0.0.0.0:8080");
 
     let sessions: Sessions = Arc::new(Mutex::new(HashMap::new()));
@@ -292,8 +324,8 @@ fn main() {
                     handle_client(stream, sessions);
                 });
             }
-            Err(e) => {
-                eprintln!("Connection failed: {}", e);
+            Err(_e) => {
+                eprintln!("HTTP_OPERATION_FAILED");
             }
         }
     }
@@ -315,13 +347,13 @@ fn handle_client(mut stream: TcpStream, sessions: Sessions) {
             let _ = stream.flush();
         }
         Err(e) if e.kind() == io::ErrorKind::InvalidData => {
-            eprintln!("Request rejected: {}", e);
+            eprintln!("HTTP_OPERATION_FAILED");
             let response = error_response(413, "Payload Too Large");
             let _ = stream.write_all(response.as_bytes());
             let _ = stream.flush();
         }
-        Err(e) => {
-            eprintln!("Failed to read from connection: {}", e);
+        Err(_e) => {
+            eprintln!("HTTP_OPERATION_FAILED");
             let response = error_response(400, "Bad Request");
             let _ = stream.write_all(response.as_bytes());
             let _ = stream.flush();
@@ -639,8 +671,8 @@ fn handle_request(request: &HttpRequest, sessions: &Sessions) -> String {
 fn request_body(body: &[u8]) -> Option<&str> {
     match std::str::from_utf8(body) {
         Ok(body) => Some(body),
-        Err(e) => {
-            eprintln!("Request body is not valid UTF-8: {}", e);
+        Err(_e) => {
+            eprintln!("HTTP_OPERATION_FAILED");
             None
         }
     }
@@ -649,12 +681,24 @@ fn request_body(body: &[u8]) -> Option<&str> {
 fn rsp_register(body: &str, sessions: &Sessions) -> String {
     let req: RspRegisterRequest = match serde_json::from_str(body) {
         Ok(r) => r,
-        Err(e) => {
-            eprintln!("RSP register JSON error: {}", e);
-            return json_error_response(&format!("Invalid JSON: {}", e));
+        Err(_e) => {
+            eprintln!("HTTP_OPERATION_FAILED");
+            return json_error_response("INVALID_JSON");
         }
     };
 
+    // Validate RSP policy before creating a session
+    let policy_db = SparqlDatabase::new();
+    for text in std::iter::once(&req.query)
+        .chain(req.sparql_rules.iter().flatten())
+    {
+        if let Err(error) = kolibrie::execute_query::validate_query_policy(
+            &strip_hash_comments(text),
+            &policy_db,
+        ) {
+            return ml_error_response(&error);
+        }
+    }
     println!("RSP register: building engine for new session");
 
     // The SSE sender is lazily populated when the browser opens the SSE connection.
@@ -702,9 +746,9 @@ fn rsp_register(body: &str, sessions: &Sessions) -> String {
             .build()
         {
             Ok(e) => e,
-            Err(e) => {
-                eprintln!("RSP build error: {}", e);
-                return json_error_response(&format!("Failed to build RSP engine: {}", e));
+            Err(_e) => {
+                eprintln!("HTTP_OPERATION_FAILED");
+                return json_error_response("RSP_BUILD_FAILED");
             }
         };
 
@@ -748,10 +792,7 @@ fn rsp_register(body: &str, sessions: &Sessions) -> String {
         .unwrap()
         .insert(session_id.clone(), EngineSession { engine, sse_sender });
 
-    println!(
-        "RSP register: session {} created, streams: {:?}",
-        session_id, streams
-    );
+    println!("RSP_SESSION_CREATED stream_count={}", streams.len());
 
     let response = RspRegisterResponse {
         session_id,
@@ -775,9 +816,9 @@ fn rsp_register(body: &str, sessions: &Sessions) -> String {
 fn rsp_push(body: &str, sessions: &Sessions) -> String {
     let req: RspPushRequest = match serde_json::from_str(body) {
         Ok(r) => r,
-        Err(e) => {
-            eprintln!("RSP push JSON error: {}", e);
-            return json_error_response(&format!("Invalid JSON: {}", e));
+        Err(_e) => {
+            eprintln!("HTTP_OPERATION_FAILED");
+            return json_error_response("INVALID_JSON");
         }
     };
 
@@ -790,19 +831,13 @@ fn rsp_push(body: &str, sessions: &Sessions) -> String {
     let session = match sessions_lock.get_mut(&req.session_id) {
         Some(s) => s,
         None => {
-            eprintln!("RSP push: session {} not found", req.session_id);
+            eprintln!("HTTP_OPERATION_FAILED");
             return json_error_response("Session not found");
         }
     };
 
     let triples = session.engine.parse_data(&ntriples);
-    println!(
-        "RSP push: {} triple(s) to stream '{}' at t={} (session {})",
-        triples.len(),
-        req.stream,
-        req.timestamp,
-        req.session_id
-    );
+    println!("RSP_PUSH triple_count={}", triples.len());
 
     for triple in triples {
         session
@@ -810,9 +845,7 @@ fn rsp_push(body: &str, sessions: &Sessions) -> String {
             .add_to_stream(&req.stream, triple, req.timestamp);
     }
 
-    // Flush any pending channel results (multi-window / static-data join case).
-    // For single-window queries, the consumer is called directly from add_to_window
-    // already, so this is a no-op in the simple case.
+    // Flush pending multi-window results
     session.engine.process_single_thread_window_results();
 
     // Signal end-of-firing to the SSE client so it can flush its display buffer
@@ -858,7 +891,7 @@ fn rsp_events_sse(session_id: &str, mut stream: TcpStream, sessions: &Sessions) 
     }
     stream.flush().ok();
 
-    println!("RSP SSE: client connected for session {}", session_id);
+    println!("RSP_CLIENT_CONNECTED");
 
     // Block-forward events until the client disconnects or the tx is dropped.
     for received in rx {
@@ -874,7 +907,7 @@ fn rsp_events_sse(session_id: &str, mut stream: TcpStream, sessions: &Sessions) 
         stream.flush().ok();
     }
 
-    println!("RSP SSE: client disconnected for session {}", session_id);
+    println!("RSP_CLIENT_DISCONNECTED");
 }
 
 // ── Existing SPARQL and legacy RSP-QL handlers ───────────────────────────────
@@ -894,11 +927,22 @@ fn serve_playground() -> String {
 }
 
 fn execute_sparql_with_context(body: &str) -> String {
+    match http_ml_context() {
+        Ok(context) => execute_sparql_with_policy(body, context),
+        Err(_) => ml_error_response("ML_INVALID_CONFIGURATION"),
+    }
+}
+
+// Use only the host-selected ML policy
+fn execute_sparql_with_policy(
+    body: &str,
+    context: &kolibrie::ml_policy::MlExecutionContext,
+) -> String {
     let request: QueryRequest = match serde_json::from_str(body) {
         Ok(req) => req,
-        Err(e) => {
-            eprintln!("JSON parse error after {} byte(s): {}", body.len(), e);
-            return json_error_response(&format!("Invalid JSON: {}", e));
+        Err(_e) => {
+            eprintln!("INVALID_JSON");
+            return json_error_response("INVALID_JSON");
         }
     };
 
@@ -931,7 +975,15 @@ fn execute_sparql_with_context(body: &str) -> String {
     );
 
     let mut database = SparqlDatabase::new();
-    let use_optimizer = request.format == "ntriples";
+    database.ml_context = context.clone();
+    // Validate the full request before changing database state
+    for text in queries.iter().chain(rules.iter()) {
+        if let Err(error) =
+            kolibrie::execute_query::validate_query_policy(&strip_hash_comments(text), &database)
+        {
+            return ml_error_response(&error);
+        }
+    }
 
     // Load RDF data once
     if let Some(rdf_data) = request.rdf {
@@ -967,10 +1019,7 @@ fn execute_sparql_with_context(body: &str) -> String {
         }
     }
 
-    // Process N3 logic rules (n3logic field) using parse_n3_rule + Reasoner.
-    // Syntax: @prefix declarations followed by { premise } => { conclusion } .
-    // This is completely separate from the SPARQL RULE syntax — it uses the
-    // Reasoner class (datalog/reasoning.rs) exactly as shown in the test example.
+    // Process N3 rules with the datalog reasoner
     if let Some(ref n3_rules_text) = request.n3logic {
         let n3_rules_text = strip_hash_comments(n3_rules_text);
         if has_n3_rule_text(&n3_rules_text) {
@@ -1000,7 +1049,7 @@ fn execute_sparql_with_context(body: &str) -> String {
                     .collect()
             };
 
-            println!("Decoded triples are: {:?}", decoded_triples);
+            println!("Decoded triple count: {}", decoded_triples.len());
 
             // Now load into the Reasoner — no borrow conflict
             for (s, p, o) in &decoded_triples {
@@ -1044,7 +1093,8 @@ fn execute_sparql_with_context(body: &str) -> String {
                     }
                 }
                 Err(e) => {
-                    eprintln!("N3 rule parse error: {:?}", e);
+                    let _ = e;
+                    eprintln!("N3_PARSE_ERROR");
                 }
             }
         }
@@ -1069,7 +1119,8 @@ fn execute_sparql_with_context(body: &str) -> String {
                     }
                 }
                 Err(e) => {
-                    eprintln!("Rule {} processing error: {:?}", idx + 1, e);
+                    let _ = e;
+                    return ml_error_response("RULE_EXECUTION_FAILED");
                 }
             }
         }
@@ -1083,10 +1134,13 @@ fn execute_sparql_with_context(body: &str) -> String {
         let start_time = std::time::Instant::now();
         let executable_query = strip_hash_comments(query);
 
-        let results = if use_optimizer {
-            execute_query_rayon_parallel2_volcano(&executable_query, &mut database)
-        } else {
-            execute_query_rayon_parallel2_volcano(&executable_query, &mut database)
+        let results = match kolibrie::execute_query::execute_sparql_with_ml_context(
+            &executable_query,
+            &mut database,
+            context,
+        ) {
+            Ok(rows) => rows,
+            Err(error) => return ml_error_response(&error),
         };
 
         let execution_time = start_time.elapsed().as_secs_f64() * 1000.0;
@@ -1104,8 +1158,8 @@ fn execute_sparql_with_context(body: &str) -> String {
     };
     let json = match serde_json::to_string(&response) {
         Ok(j) => j,
-        Err(e) => {
-            eprintln!("Failed to serialize response: {}", e);
+        Err(_e) => {
+            eprintln!("HTTP_OPERATION_FAILED");
             return json_error_response("Failed to serialize results");
         }
     };
@@ -1127,17 +1181,19 @@ fn execute_sparql_with_context(body: &str) -> String {
 fn execute_rsp_query(body: &str) -> String {
     let request: RspQueryRequest = match serde_json::from_str(body) {
         Ok(req) => req,
-        Err(e) => {
-            eprintln!("RSP JSON parse error: {}", e);
-            return json_error_response(&format!("Invalid JSON: {}", e));
+        Err(_e) => {
+            eprintln!("HTTP_OPERATION_FAILED");
+            return json_error_response("INVALID_JSON");
         }
     };
 
-    println!(
-        "RSP: processing query with {} event(s), static_format={}",
-        request.events.len(),
-        request.static_format
-    );
+    if let Err(error) = kolibrie::execute_query::validate_query_policy(
+        &strip_hash_comments(&request.query),
+        &SparqlDatabase::new(),
+    ) {
+        return ml_error_response(&error);
+    }
+    println!("RSP_REQUEST event_count={}", request.events.len());
 
     // Collect results via a shared container that the engine writes into.
     let result_container: Arc<Mutex<Vec<Vec<(String, String)>>>> = Arc::new(Mutex::new(Vec::new()));
@@ -1163,9 +1219,9 @@ fn execute_rsp_query(body: &str) -> String {
             .build()
         {
             Ok(e) => e,
-            Err(e) => {
-                eprintln!("RSP build error: {}", e);
-                return json_error_response(&format!("Failed to build RSP engine: {}", e));
+            Err(_e) => {
+                eprintln!("HTTP_OPERATION_FAILED");
+                return json_error_response("RSP_BUILD_FAILED");
             }
         };
 
@@ -1211,12 +1267,7 @@ fn execute_rsp_query(body: &str) -> String {
             continue;
         }
         let triples = engine.parse_data(&ntriples);
-        println!(
-            "RSP: pushing {} triple(s) to stream '{}' at t={}",
-            triples.len(),
-            event.stream,
-            event.timestamp
-        );
+        println!("RSP_PUSH triple_count={}", triples.len());
         for triple in triples {
             engine.add_to_stream(&event.stream, triple, event.timestamp);
         }
@@ -1243,8 +1294,8 @@ fn execute_rsp_query(body: &str) -> String {
     };
     let json = match serde_json::to_string(&response) {
         Ok(j) => j,
-        Err(e) => {
-            eprintln!("RSP serialization error: {}", e);
+        Err(_e) => {
+            eprintln!("HTTP_OPERATION_FAILED");
             return json_error_response("Failed to serialize RSP results");
         }
     };
@@ -1268,6 +1319,151 @@ fn execute_rsp_query(body: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::strip_hash_comments;
+
+    #[test]
+    fn rsp_policy_rejection_precedes_session_creation() {
+        let declaration = r#"MODEL "unapproved" { ARCH MLP { HIDDEN [4] } OUTPUT BINARY { true } }"#;
+        let expected = if cfg!(feature = "ml") { "403" } else { "503" };
+        let body = serde_json::json!({"query":declaration}).to_string();
+        assert!(super::execute_rsp_query(&body).starts_with(&format!("HTTP/1.1 {expected}")));
+        let sessions: super::Sessions = std::sync::Arc::new(std::sync::Mutex::new(
+            std::collections::HashMap::new(),
+        ));
+        let query = "REGISTER RSTREAM <urn:out> AS SELECT * FROM NAMED WINDOW :w ON <urn:in> [RANGE 3 STEP 1] WHERE { WINDOW :w { ?s ?p ?o } }";
+        let body = serde_json::json!({"query":query,"sparql_rules":[declaration]}).to_string();
+        let response = super::rsp_register(&body, &sessions);
+        assert!(response.starts_with(&format!("HTTP/1.1 {expected}")), "{response}");
+        assert!(sessions.lock().unwrap().is_empty());
+        assert!(super::execute_rsp_query(&serde_json::json!({"query":query}).to_string())
+            .starts_with("HTTP/1.1 200"));
+    }
+
+    #[cfg(feature = "ml")]
+    #[test]
+    fn approved_native_http_inference_and_rule_inference() {
+        use std::fs;
+        let root = std::env::temp_dir().join(format!(
+            "kolibrie-http-approved-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        fs::create_dir(&root).unwrap();
+        struct Cleanup(std::path::PathBuf);
+        impl Drop for Cleanup {
+            fn drop(&mut self) {
+                let _ = fs::remove_dir_all(&self.0);
+            }
+        }
+        let _cleanup = Cleanup(root.clone());
+        let artifact = root.join("approved.bin");
+        fs::write(&artifact, br#"{"layers":[{"weights":[[1.0]],"bias":[0.0]}],"hidden_act":"Relu","output_type":"Binary"}"#).unwrap();
+        let registry = root.join("registry.json");
+        fs::write(
+            &registry,
+            serde_json::json!({"models":[{
+                "name":"approved", "backend":"native", "artifact":artifact, "input_dim":1,
+                "sha256":"beb88ebac80e89c0169a811f0f7043a61e43520ee3e180abfb0d40a946422806"
+            }]})
+            .to_string(),
+        )
+        .unwrap();
+        let context = kolibrie::ml_policy::MlExecutionContext::from_registry(&registry).unwrap();
+        let inference = r#"ML.PREDICT(MODEL "approved", INPUT { SELECT ?x WHERE { VALUES ?x { 0 } } }, OUTPUT ?prediction)"#;
+        let response = super::execute_sparql_with_policy(
+            &serde_json::json!({"sparql":inference}).to_string(),
+            &context,
+        );
+        assert!(response.starts_with("HTTP/1.1 200"), "{response}");
+        assert!(response.contains("0.5"));
+        let rule = format!("RULE :Predict :- CONSTRUCT {{ <urn:subject> <urn:score> ?prediction }} WHERE {{ VALUES ?x {{ 0 }} }} {inference}");
+        let response = super::execute_sparql_with_policy(
+            &serde_json::json!({
+                "rule":rule, "sparql":"SELECT ?v WHERE { <urn:subject> <urn:score> ?v }"
+            })
+            .to_string(),
+            &context,
+        );
+        assert!(response.starts_with("HTTP/1.1 200"), "{response}");
+        assert!(response.contains("0.5"));
+        fs::write(&artifact, b"tampered").unwrap();
+        let response = super::execute_sparql_with_policy(&serde_json::json!({
+            "queries":[inference, "MODEL \"training\" { ARCH MLP { HIDDEN [4] } OUTPUT BINARY { true } }"]
+        }).to_string(), &context);
+        assert!(response.contains("ML_FORBIDDEN"), "{response}");
+        assert!(!response.contains("ML_INVALID_ARTIFACT"));
+    }
+
+    #[test]
+    fn captured_request_child() {
+        if std::env::var_os("KOLIBRIE_CAPTURE_CHILD").is_none() {
+            return;
+        }
+        let response = super::execute_sparql_with_context(
+            r#"{"sparql":"SELECT ?x WHERE { VALUES ?x { \"SENSITIVE_LOG_CANARY\" } }"}"#,
+        );
+        assert!(response.starts_with("HTTP/1.1 200"));
+        let rejected = super::execute_sparql_with_context(
+            r#"{"sparql":"MODEL \"SENSITIVE_LOG_CANARY\" { ARCH MLP { HIDDEN [4] } OUTPUT BINARY { true } }"}"#,
+        );
+        assert!(!rejected.contains("SENSITIVE_LOG_CANARY"));
+        let malformed =
+            super::execute_sparql_with_context(r#"{"sparql":{"SENSITIVE_LOG_CANARY":1}}"#);
+        assert!(!malformed.contains("SENSITIVE_LOG_CANARY"));
+    }
+
+    #[test]
+    fn subprocess_output_does_not_contain_request_values() {
+        let output = std::process::Command::new(std::env::current_exe().unwrap())
+            .args(["--exact", "tests::captured_request_child", "--nocapture"])
+            .env("KOLIBRIE_CAPTURE_CHILD", "1")
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        for bytes in [&output.stdout, &output.stderr] {
+            assert!(!String::from_utf8_lossy(bytes).contains("SENSITIVE_LOG_CANARY"));
+        }
+    }
+
+    #[test]
+    fn http_rejects_training_before_processing_the_batch() {
+        let body = serde_json::json!({
+            "queries": [
+                "INSERT DATA { <urn:canary> <urn:p> <urn:o> }",
+                "MODEL \"canary_model\" { ARCH MLP { HIDDEN [4] } OUTPUT BINARY { true } }"
+            ]
+        })
+        .to_string();
+        let response = super::execute_sparql_with_context(&body);
+        let expected = if cfg!(feature = "ml") { "403" } else { "503" };
+        assert!(
+            response.starts_with(&format!("HTTP/1.1 {expected}")),
+            "{response}"
+        );
+        assert!(!response.contains("canary"));
+    }
+
+    #[test]
+    fn http_ordinary_select_still_works() {
+        let response = super::execute_sparql_with_context(
+            r#"{"sparql":"SELECT ?x WHERE { VALUES ?x { 7 } }"}"#,
+        );
+        assert!(response.starts_with("HTTP/1.1 200"));
+        assert!(response.contains("7"));
+    }
+
+    #[test]
+    fn error_responses_never_echo_underlying_details() {
+        let response = super::ml_error_response("sensitive/path traceback query canary");
+        assert!(!response.contains("canary"));
+        assert!(!response.contains("traceback"));
+    }
 
     #[test]
     fn strips_hash_comments_without_touching_iris_or_literals() {

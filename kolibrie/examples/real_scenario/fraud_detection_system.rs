@@ -624,7 +624,7 @@ fn run_ml_predict_from_clause(
 }
 
 fn setup_knowledge_base() -> SparqlDatabase {
-    let mut db = SparqlDatabase::new();
+    let mut db = SparqlDatabase::with_ml_context(local_ml::trusted_context());
 
     db.prefixes.insert("ex".into(),  "http://fraud.example.org/".into());
     db.prefixes.insert("rdf".into(), "http://www.w3.org/1999/02/22-rdf-syntax-ns#".into());
@@ -1617,3 +1617,5 @@ fn synthesise_transaction(
 
     (tx, is_fraud)
 }
+
+mod local_ml { include!(concat!(env!("CARGO_MANIFEST_DIR"), "/examples/support/ml_context.rs")); }

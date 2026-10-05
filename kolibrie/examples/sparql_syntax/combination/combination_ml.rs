@@ -61,7 +61,9 @@ fn main() -> Result<(), Box<dyn Error>> {
 </rdf:RDF>
     "#;
 
-    let mut database = SparqlDatabase::new();
+    let mut database = SparqlDatabase::with_ml_context(
+        kolibrie::ml_policy::MlExecutionContext::from_environment()?
+    );
     database.parse_rdf(rdf_xml_data);
     database.get_or_build_stats();
     println!("Database RDF triples loaded.");

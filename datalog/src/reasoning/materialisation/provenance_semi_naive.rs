@@ -127,6 +127,12 @@ impl<P: Provenance> ProvenanceInferenceStrategy<P> for ProvenanceSemiNaiveStrate
         let mut new_facts: HashSet<Triple> = HashSet::new();
         let mut tag_changed = false;
         let provenance = tag_store.provenance().clone();
+        if provenance.is_exhausted() {
+            return ProvenanceInferResult {
+                new_facts,
+                tag_changed,
+            };
+        }
 
         let end_idx = all_facts.len();
 
@@ -154,6 +160,9 @@ impl<P: Provenance> ProvenanceInferenceStrategy<P> for ProvenanceSemiNaiveStrate
             );
 
             for (binding, matched_triples) in &binding_sets {
+                if provenance.is_exhausted() {
+                    break;
+                }
                 let u32_binding = convert_string_binding_to_u32(binding, dictionary);
 
                 if !evaluate_filters(&u32_binding, &rule.filters, dictionary) {

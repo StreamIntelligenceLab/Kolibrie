@@ -545,7 +545,7 @@ WHERE {
                     println!("Rule #{} - Parsing rule...", idx+1);
                     match parse_combined_query(rule) {
                         Ok((_rest, combined_query)) => {
-                            if let Some(rule_def) = combined_query.rule {
+                            if let Some(rule_def) = combined_query.single_rule().expect("expected at most one RULE block").cloned() {
                                 println!("Rule #{} - Successfully parsed", idx+1);
                                 
                                 // FIXED: Acquire write lock for conversion

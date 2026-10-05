@@ -1,7 +1,7 @@
 #!/bin/bash
 
 PACKAGES_STATUS_FILE="/app/.packages_status"
-BASE_PACKAGES="build-essential cmake curl git libssl-dev pkg-config python3 python3-dev python3-pip python3-setuptools python3-wheel wget bc bash"
+BASE_PACKAGES="build-essential cmake curl git libssl-dev pkg-config wget bc bash"
 
 echo "=== System Packages Verification Starting ==="
 

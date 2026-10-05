@@ -8,22 +8,15 @@
  * you can obtain one at https://mozilla.org/MPL/2.0/.
  */
 
-//! Unified SPARQL query and update execution.
-//!
-//! Standard SELECT and the supported Update forms are parsed into the same
-//! lexical AST, lowered once into Kolibrie's existing logical algebra,
-//! optimized by Streamertail, and evaluated by the physical execution engine.
-
 use crate::error_handler::format_parse_error;
-use crate::neural_relations::{
-    execute_train_decl, materialize_neural_relations_for_patterns, register_neural_declarations,
-};
+use crate::neural_relations::{execute_train_decl, materialize_neural_relations_for_patterns};
 use crate::parser::{parse_combined_query, parse_combined_query_with_options};
 use crate::sparql_database::SparqlDatabase;
 use crate::streamertail_optimizer::{
     build_logical_plan_from_group, compile_graph_term, compile_term, DatasetView, ExecutionEngine,
     Streamertail,
 };
+use crate::term_order;
 use shared::dataset_index::{GraphId, GraphTerm, Quad};
 use shared::query::{
     CombinedQuery, DeleteClause, GroupGraphPattern, InsertClause, LexicalQuadPattern,
@@ -36,7 +29,46 @@ use std::sync::atomic::{AtomicU64, Ordering as AtomicOrdering};
 
 type StringBinding = HashMap<String, String>;
 
-/// Summary returned by the error-preserving update entry point.
+/// Validate a request without changing the database
+pub fn validate_query_policy(sparql: &str, database: &SparqlDatabase) -> Result<(), String> {
+    let combined = parse_request(sparql, true).map_err(|_| "SPARQL_PARSE_ERROR".to_string())?;
+    database
+        .ml_context
+        .validate_request(&combined, database)
+        .map_err(|e| e.to_string())
+}
+
+/// Execute with temporary host-selected ML authority
+pub fn execute_sparql_with_ml_context(
+    sparql: &str,
+    database: &mut SparqlDatabase,
+    context: &crate::ml_policy::MlExecutionContext,
+) -> Result<Vec<Vec<String>>, String> {
+    with_ml_context(database, context, |database| {
+        execute_request(sparql, database, true)
+    })
+}
+
+pub(crate) fn with_ml_context<R>(
+    database: &mut SparqlDatabase,
+    context: &crate::ml_policy::MlExecutionContext,
+    execute: impl FnOnce(&mut SparqlDatabase) -> R,
+) -> R {
+    let previous = std::mem::replace(&mut database.ml_context, context.clone());
+    struct ContextScope<'a> {
+        database: &'a mut SparqlDatabase,
+        previous: crate::ml_policy::MlExecutionContext,
+    }
+    impl Drop for ContextScope<'_> {
+        fn drop(&mut self) {
+            self.database.ml_context = std::mem::take(&mut self.previous);
+        }
+    }
+    let scope = ContextScope { database, previous };
+    execute(scope.database)
+}
+
+/// Summary returned by the error-preserving update entry point
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct UpdateSummary {
     pub inserted_quads: usize,
@@ -44,11 +76,6 @@ pub struct UpdateSummary {
 }
 
 /// Execute SELECT or a compatibility Update request through the unified
-/// parser → logical plan → optimizer → physical executor pipeline.
-///
-/// This historical adapter accepts standalone `INSERT { ... }` and
-/// `DELETE { ... }` as DATA aliases. The error-preserving Update API below
-/// intentionally accepts only standard syntax.
 pub fn execute_query_rayon_parallel2_volcano(
     sparql: &str,
     database: &mut SparqlDatabase,
@@ -56,23 +83,35 @@ pub fn execute_query_rayon_parallel2_volcano(
     match execute_request(sparql, database, true) {
         Ok(results) => results,
         Err(error) => {
-            eprintln!("SPARQL execution failed: {error}");
+            match error.as_str() {
+                "ML_FEATURE_DISABLED" | "ML_FORBIDDEN" | "ML_INVALID_CONFIGURATION"
+                | "ML_INVALID_ARTIFACT" | "ML_EXECUTION_FAILED" => eprintln!("{error}"),
+                _ => eprintln!("SPARQL_EXECUTION_FAILED"),
+            }
             Vec::new()
         }
     }
 }
 
-/// Execute a query request without accepting Update syntax.
-///
-/// HTTP query endpoints use this entry point so a request submitted with
-/// `application/sparql-query` (or a `query=` parameter) cannot mutate the
-/// dataset. Kolibrie's explicitly dispatched RULE/RSP/ML extensions remain
-/// available when no standard Update operation is present.
+/// Execute a query request without accepting Update syntax
 pub fn execute_sparql_query(
     sparql: &str,
     database: &mut SparqlDatabase,
 ) -> Result<Vec<Vec<String>>, String> {
     let combined = parse_request(sparql, false)?;
+    combined.single_rule()?;
+    database
+        .ml_context
+        .validate_request(&combined, database)
+        .map_err(|e| e.to_string())?;
+    if let Some(predict) = &combined.ml_predict {
+        #[cfg(feature = "ml")]
+        if database.ml_context.require_local().is_ok() {
+            crate::neural_relations::execute_neural_program(database, sparql)?;
+            return Ok(Vec::new());
+        }
+        return execute_approved_prediction(predict, &combined.prefixes, database);
+    }
     match combined.sparql.as_ref() {
         Some(SparqlOperation::Update(_)) => {
             Err("expected a SPARQL query, found an Update operation".to_string())
@@ -88,7 +127,7 @@ pub fn execute_sparql_query(
     }
 }
 
-/// Execute one of the six supported standard SPARQL Update forms.
+/// Execute one of the six supported standard SPARQL Update forms
 pub fn execute_sparql_update(
     sparql: &str,
     database: &mut SparqlDatabase,
@@ -96,9 +135,7 @@ pub fn execute_sparql_update(
     execute_update_request(sparql, database, false)
 }
 
-/// Compatibility entry point used by legacy adapters. It differs from
-/// `execute_sparql_update` only by accepting standalone INSERT/DELETE aliases;
-/// both paths produce and execute the same `UpdateOperation`.
+/// Compatibility entry point that also accepts standalone INSERT/DELETE aliases
 pub(crate) fn execute_sparql_update_compat(
     sparql: &str,
     database: &mut SparqlDatabase,
@@ -112,6 +149,19 @@ fn execute_request(
     allow_data_aliases: bool,
 ) -> Result<Vec<Vec<String>>, String> {
     let combined = parse_request(sparql, allow_data_aliases)?;
+    combined.single_rule()?;
+    database
+        .ml_context
+        .validate_request(&combined, database)
+        .map_err(|e| e.to_string())?;
+    if let Some(predict) = &combined.ml_predict {
+        #[cfg(feature = "ml")]
+        if database.ml_context.require_local().is_ok() {
+            crate::neural_relations::execute_neural_program(database, sparql)?;
+            return Ok(Vec::new());
+        }
+        return execute_approved_prediction(predict, &combined.prefixes, database);
+    }
     let prefixes = prepare_extensions(&combined, database)?;
 
     match combined.sparql.as_ref() {
@@ -130,6 +180,7 @@ fn execute_update_request(
     allow_data_aliases: bool,
 ) -> Result<UpdateSummary, String> {
     let combined = parse_request(sparql, allow_data_aliases)?;
+    combined.single_rule()?;
     let prefixes = prepare_extensions(&combined, database)?;
     match combined.sparql.as_ref() {
         Some(SparqlOperation::Update(update)) => {
@@ -161,23 +212,69 @@ fn parse_request(input: &str, allow_data_aliases: bool) -> Result<CombinedQuery<
     }
 }
 
+fn execute_approved_prediction(
+    predict: &shared::query::MLPredictClause<'_>,
+    prefixes: &HashMap<String, String>,
+    database: &mut SparqlDatabase,
+) -> Result<Vec<Vec<String>>, String> {
+    if predict.distribution {
+        return Err("ML.PREDICT ... OUTPUT ?v DISTRIBUTION runs only through kolibrie::program".to_string());
+    }
+    database
+        .ml_context
+        .approved_model(predict.model)
+        .map_err(|e| e.to_string())?;
+    let mut input = String::new();
+    for (prefix, iri) in prefixes {
+        input.push_str(&format!("PREFIX {prefix}: <{iri}>\n"));
+    }
+    input.push_str(predict.input_raw);
+    let rows = execute_sparql_query(&input, database)?;
+    let features = rows
+        .iter()
+        .map(|r| {
+            r.iter()
+                .map(|v| {
+                    crate::ml_feature_loader::rdf_term_to_f64(v)
+                        .map_err(|_| "ML_INVALID_INPUT".to_string())
+                })
+                .collect::<Result<Vec<_>, _>>()
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    let predictions = database
+        .ml_context
+        .predict(predict.model, &features)
+        .map_err(|e| e.to_string())?;
+    Ok(rows
+        .into_iter()
+        .zip(predictions)
+        .map(|(mut row, prediction)| {
+            row.push(prediction);
+            row
+        })
+        .collect())
+}
+
 fn prepare_extensions(
     combined: &CombinedQuery<'_>,
     database: &mut SparqlDatabase,
 ) -> Result<HashMap<String, String>, String> {
+    database
+        .ml_context
+        .validate_request(combined, database)
+        .map_err(|e| e.to_string())?;
     // Database prefixes remain available, while a query-local declaration
-    // takes precedence for this request.
     let mut prefixes = database.prefixes.clone();
     prefixes.extend(combined.prefixes.clone());
     database.prefixes.extend(combined.prefixes.clone());
 
-    register_neural_declarations(
+    crate::neural_relations::register_neural_declarations_checked(
         database,
         &prefixes,
         &combined.model_decls,
         &combined.neural_relation_decls,
         &combined.train_neural_relation_decls,
-    );
+    )?;
 
     let normalized_trains = combined
         .train_neural_relation_decls
@@ -219,7 +316,11 @@ fn optimize_and_execute(
     dataset: &DatasetView,
     database: &mut SparqlDatabase,
 ) -> Bindings {
-    let stats = database.get_or_build_stats();
+    let stats = if logical_plan.requires_cost_based_join_ordering() {
+        database.get_or_build_planning_stats()
+    } else {
+        std::sync::Arc::new(crate::streamertail_optimizer::DatabaseStats::new())
+    };
     let mut optimizer = Streamertail::with_cached_stats_and_dataset(stats, dataset.clone());
     let physical_plan = optimizer.find_best_plan(&logical_plan);
     ExecutionEngine::execute_with_ids_and_dataset(&physical_plan, database, dataset)
@@ -416,54 +517,33 @@ fn aggregate_rows(rows: Vec<StringBinding>, query: &SelectQuery<'_>) -> Vec<Stri
     }
 
     groups
-        .into_values()
-        .map(|group| {
-            let mut result = group.first().cloned().unwrap_or_default();
+        .into_iter()
+        .map(|(key, group)| {
+            // A grouped solution is described by its grouping key and its aggregates only
+            let mut result = StringBinding::new();
+            for (variable, value) in query.group_vars.iter().zip(key) {
+                if let Some(value) = value {
+                    result.insert(normalize_variable(variable).to_string(), value);
+                }
+            }
+
             for (kind, variable, alias) in &query.variables {
                 if *kind == "VAR" || *kind == "*" {
                     continue;
                 }
                 let output = normalize_variable(alias.unwrap_or(variable)).to_string();
                 let input = normalize_variable(variable);
+                let normalized_kind = kind.to_ascii_uppercase();
+                let descriptor = crate::aggregate::Aggregate::parse(&normalized_kind);
+                if descriptor.kind == "COUNT" && input == "*" {
+                    result.insert(output, descriptor.star_count(&group));
+                    continue;
+                }
                 let values = group
                     .iter()
-                    .filter_map(|row| row.get(input))
+                    .filter_map(|row| row.get(input).map(String::as_str))
                     .collect::<Vec<_>>();
-                let value = match kind.to_ascii_uppercase().as_str() {
-                    "COUNT" => Some(values.len().to_string()),
-                    "SUM" => Some(
-                        values
-                            .iter()
-                            .filter_map(|value| value.parse::<f64>().ok())
-                            .sum::<f64>()
-                            .to_string(),
-                    ),
-                    "AVG" => {
-                        let numbers = values
-                            .iter()
-                            .filter_map(|value| value.parse::<f64>().ok())
-                            .collect::<Vec<_>>();
-                        (!numbers.is_empty()).then(|| {
-                            (numbers.iter().sum::<f64>() / numbers.len() as f64).to_string()
-                        })
-                    }
-                    "MIN" => values
-                        .iter()
-                        .filter_map(|value| value.parse::<f64>().ok())
-                        .min_by(|left, right| {
-                            left.partial_cmp(right).unwrap_or(std::cmp::Ordering::Equal)
-                        })
-                        .map(|value| value.to_string()),
-                    "MAX" => values
-                        .iter()
-                        .filter_map(|value| value.parse::<f64>().ok())
-                        .max_by(|left, right| {
-                            left.partial_cmp(right).unwrap_or(std::cmp::Ordering::Equal)
-                        })
-                        .map(|value| value.to_string()),
-                    _ => None,
-                };
-                if let Some(value) = value {
+                if let Some(value) = aggregate_value(kind, &values) {
                     result.insert(output, value);
                 } else {
                     result.remove(&output);
@@ -474,18 +554,23 @@ fn aggregate_rows(rows: Vec<StringBinding>, query: &SelectQuery<'_>) -> Vec<Stri
         .collect()
 }
 
+/// Computes one aggregate over the values a group bound to its input variable
+pub(crate) fn aggregate_value(kind: &str, values: &[&str]) -> Option<String> {
+    crate::aggregate::value(kind, values)
+}
+
 fn apply_order_by(rows: &mut [StringBinding], conditions: &[OrderCondition<'_>]) {
+    if conditions.is_empty() {
+        return;
+    }
+
     rows.sort_by(|left, right| {
         for condition in conditions {
             let variable = normalize_variable(condition.variable);
-            let left_value = left.get(variable).map(String::as_str).unwrap_or("");
-            let right_value = right.get(variable).map(String::as_str).unwrap_or("");
-            let comparison = match (left_value.parse::<f64>(), right_value.parse::<f64>()) {
-                (Ok(left), Ok(right)) => left
-                    .partial_cmp(&right)
-                    .unwrap_or(std::cmp::Ordering::Equal),
-                _ => left_value.cmp(right_value),
-            };
+            let comparison = term_order::compare(
+                left.get(variable).map(String::as_str),
+                right.get(variable).map(String::as_str),
+            );
             let comparison = match condition.direction {
                 SortDirection::Asc => comparison,
                 SortDirection::Desc => comparison.reverse(),
@@ -558,7 +643,6 @@ fn execute_update_operation(
             database,
         )?,
     };
-    database.invalidate_stats_cache();
     Ok(summary)
 }
 
@@ -577,7 +661,6 @@ fn execute_modify(
     let dataset = DatasetView::from_database(database);
 
     // The WHERE is evaluated once. Both templates are instantiated completely
-    // from this same pre-operation solution sequence before any quad mutation.
     let bindings = optimize_and_execute(logical_plan, &dataset, database);
     let deletions = match delete {
         Some(delete) => instantiate_templates(&delete.quads, &bindings, prefixes, database, false)?,
@@ -609,8 +692,7 @@ fn instantiate_templates(
 ) -> Result<BTreeSet<Quad>, String> {
     let mut quads = BTreeSet::new();
     for binding in bindings {
-        // SPARQL Update gives every solution its own blank-node allocation,
-        // while repeated labels within that solution share the same node.
+        // SPARQL Update gives every solution its own blank-node allocation
         let mut blank_nodes = HashMap::new();
         for template in templates {
             if let Some(quad) = instantiate_quad(

@@ -56,6 +56,10 @@ pub trait Provenance: Clone + 'static {
     /// Check whether a tag has converged (old ≈ new after saturation).
     /// Returns `true` if the tag is considered stable.
     fn is_saturated(&self, old: &Self::Tag, new: &Self::Tag) -> bool;
+
+    fn is_exhausted(&self) -> bool {
+        false
+    }
 }
 
 /// Epsilon for floating-point convergence comparisons.

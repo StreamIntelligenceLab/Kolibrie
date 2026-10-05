@@ -57,7 +57,6 @@ fn escape_ntriples_literal(value: &str) -> String {
 }
 
 /// Decodes the lexical value of an N-Triples/N-Quads double-quoted literal
-/// and returns the suffix following its escape-aware closing quote.
 fn decode_ntriples_literal(term: &str) -> Option<(String, &str)> {
     let body = term.strip_prefix('"')?;
     let mut characters = body.char_indices();
@@ -117,7 +116,7 @@ fn parse_form_urlencoded(body: &str) -> HashMap<String, String> {
         .collect()
 }
 
-fn reencode_term_id(
+pub(crate) fn reencode_term_id(
     id: u32,
     source_dictionary: &Dictionary,
     source_quoted_triples: &QuotedTripleStore,
@@ -169,8 +168,48 @@ fn reencode_term_id(
     translated
 }
 
+/// Staleness policy for planning statistics
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum PlanningStatsPolicy {
+    AlwaysFresh,
+    Bounded {
+        minimum_batch: u64,
+        refresh_fraction: f64,
+    },
+}
+
+impl PlanningStatsPolicy {
+    /// Refresh after 100 mutations or half the store
+    pub const DEFAULT_BOUNDED: Self = PlanningStatsPolicy::Bounded {
+        minimum_batch: 100,
+        refresh_fraction: 0.5,
+    };
+}
+
+impl Default for PlanningStatsPolicy {
+    fn default() -> Self {
+        Self::DEFAULT_BOUNDED
+    }
+}
+
+/// A planning statistics snapshot
+#[derive(Debug, Clone)]
+pub struct PlanningStatsSnapshot {
+    pub stats: Arc<DatabaseStats>,
+    /// `DatasetIndex::generation` at build time
+    pub generation: u64,
+    /// `total_triples` at build time
+    pub quads_at_build: u64,
+    /// Statistics epoch at build time
+    pub epoch: u64,
+    /// `DatasetIndex::resets` at build time
+    pub resets: u64,
+}
+
 #[derive(Debug, Clone)]
 pub struct SparqlDatabase {
+    /// Host-selected ML authority
+    pub ml_context: crate::ml_policy::MlExecutionContext,
     pub dataset_index: DatasetIndex,
     pub dictionary: Arc<RwLock<Dictionary>>,
     pub prefixes: HashMap<String, String>,
@@ -184,13 +223,27 @@ pub struct SparqlDatabase {
     pub ml_predict_materialized_triples: HashMap<String, Vec<Triple>>,
     pub probability_seeds: HashMap<Triple, f64>,
     pub cached_stats: Option<Arc<DatabaseStats>>,
+    pub exact_stats_generation: u64,
+    pub planning_stats: Option<PlanningStatsSnapshot>,
+    pub planning_stats_policy: PlanningStatsPolicy,
+    pub stats_epoch: u64,
+    pub stats_rebuild_count: u64,
+    pub stats_rebuild_nanos: u64,
     pub quoted_triple_store: Arc<RwLock<QuotedTripleStore>>,
+    pub implicit_neural_materialization: bool,
 }
 
 #[allow(dead_code)]
 impl SparqlDatabase {
+    /// Initialize with host-selected ML authority
+    pub fn with_ml_context(context: crate::ml_policy::MlExecutionContext) -> Self {
+        let mut database = Self::new();
+        database.ml_context = context;
+        database
+    }
     pub fn new() -> Self {
         Self {
+            ml_context: crate::ml_policy::MlExecutionContext::disabled(),
             dataset_index: DatasetIndex::new(),
             dictionary: Arc::new(RwLock::new(Dictionary::new())),
             prefixes: HashMap::new(),
@@ -204,13 +257,18 @@ impl SparqlDatabase {
             ml_predict_materialized_triples: HashMap::new(),
             probability_seeds: HashMap::new(),
             cached_stats: None,
+            exact_stats_generation: 0,
+            planning_stats: None,
+            planning_stats_policy: PlanningStatsPolicy::default(),
+            stats_epoch: 0,
+            stats_rebuild_count: 0,
+            stats_rebuild_nanos: 0,
             quoted_triple_store: Arc::new(RwLock::new(QuotedTripleStore::new())),
+            implicit_neural_materialization: true,
         }
     }
 
-    /// Encode a term that may be a quoted triple `<< s p o >>` (recursive).
-    /// Returns the u32 ID for the term.
-    /// Handles stripping `<>` from URIs and `""` from literals.
+    /// Encode a term that may be a quoted triple `<< s p o >>` (recursive)
     pub fn encode_term_star(&self, term: &str) -> u32 {
         let trimmed = term.trim();
         if trimmed.starts_with("<<") && trimmed.ends_with(">>") {
@@ -236,7 +294,7 @@ impl SparqlDatabase {
         }
     }
 
-    /// Decode a u32 ID that may be a regular dictionary ID or a quoted triple ID.
+    /// Decode a u32 ID that may be a regular dictionary ID or a quoted triple ID
     pub fn decode_any(&self, id: u32) -> Option<String> {
         if is_quoted_triple_id(id) {
             let qt = self.quoted_triple_store.read().unwrap();
@@ -248,8 +306,7 @@ impl SparqlDatabase {
         }
     }
 
-    /// Split quoted triple content `s p o` into three parts, respecting nested `<< >>`.
-    /// This is used both internally and by the query optimizer for pattern parsing.
+    /// Split quoted triple content `s p o` into three parts, respecting nested `<< >>`
     pub fn split_quoted_triple_content(content: &str) -> (String, String, String) {
         let mut parts: Vec<String> = Vec::new();
         let mut current = String::new();
@@ -322,18 +379,109 @@ impl SparqlDatabase {
         self.prefixes = prefixes;
     }
 
+    /// Returns exact statistics, rebuilding them if the dataset generation changed
     pub fn get_or_build_stats(&mut self) -> Arc<DatabaseStats> {
+        let generation = self.dataset_index.generation();
         if let Some(stats) = &self.cached_stats {
-            return stats.clone(); // ← Clone the Arc (cheap), not the DatabaseStats
+            if self.exact_stats_generation == generation {
+                return stats.clone();
+            }
         }
 
-        let stats = Arc::new(DatabaseStats::gather_stats_fast(self));
+        let stats = self.rebuild_stats();
         self.cached_stats = Some(stats.clone());
+        self.exact_stats_generation = generation;
         stats
     }
 
+    /// Returns statistics for plan selection; under `Bounded` they may be stale within the threshold
+    pub fn get_or_build_planning_stats(&mut self) -> Arc<DatabaseStats> {
+        if self.planning_stats_policy == PlanningStatsPolicy::AlwaysFresh {
+            return self.get_or_build_stats();
+        }
+
+        let generation = self.dataset_index.generation();
+        if let Some(snapshot) = &self.planning_stats {
+            if self.planning_snapshot_is_usable(snapshot, generation) {
+                return snapshot.stats.clone();
+            }
+        }
+
+        let stats = self.rebuild_stats();
+        self.planning_stats = Some(PlanningStatsSnapshot {
+            stats: stats.clone(),
+            generation,
+            quads_at_build: stats.total_triples,
+            epoch: self.stats_epoch,
+            resets: self.dataset_index.resets(),
+        });
+        stats
+    }
+
+    /// Returns true if the cached planning snapshot is still within the policy threshold
+    fn planning_snapshot_is_usable(
+        &self,
+        snapshot: &PlanningStatsSnapshot,
+        generation: u64,
+    ) -> bool {
+        // Invalidate on explicit reset or full clear
+        if snapshot.epoch != self.stats_epoch || snapshot.resets != self.dataset_index.resets() {
+            return false;
+        }
+
+        // wrapping_sub handles counter wraparound; a replaced index yields a large delta
+        let mutations = generation.wrapping_sub(snapshot.generation);
+        if mutations == 0 {
+            return true;
+        }
+
+        // Always rebuild a snapshot taken on an empty dataset
+        if snapshot.quads_at_build == 0 {
+            return false;
+        }
+
+        let PlanningStatsPolicy::Bounded {
+            minimum_batch,
+            refresh_fraction,
+        } = self.planning_stats_policy
+        else {
+            return false;
+        };
+
+        let proportional = (refresh_fraction * snapshot.quads_at_build.max(1) as f64).ceil() as u64;
+        mutations < minimum_batch.max(proportional)
+    }
+
+    /// Builds statistics and records rebuild count and duration
+    fn rebuild_stats(&mut self) -> Arc<DatabaseStats> {
+        let started = std::time::Instant::now();
+        let stats = Arc::new(DatabaseStats::gather_stats_fast(self));
+        self.stats_rebuild_count += 1;
+        self.stats_rebuild_nanos = self
+            .stats_rebuild_nanos
+            .saturating_add(started.elapsed().as_nanos() as u64);
+        stats
+    }
+
+    /// Invalidates all cached statistics
     pub fn invalidate_stats_cache(&mut self) {
         self.cached_stats = None;
+        self.planning_stats = None;
+        self.stats_epoch = self.stats_epoch.wrapping_add(1);
+    }
+
+    /// Replaces the dataset index and invalidates cached statistics
+    pub fn replace_dataset_index(&mut self, dataset_index: DatasetIndex) {
+        self.dataset_index = dataset_index;
+        self.invalidate_stats_cache();
+    }
+
+    /// Number of statistics rebuilds and their total duration
+    pub fn stats_rebuild_metrics(&self) -> (u64, std::time::Duration) {
+        (
+            self.stats_rebuild_count,
+            std::time::Duration::from_nanos(self.stats_rebuild_nanos),
+        )
     }
 
     pub fn query(&self) -> QueryBuilder<'_> {
@@ -349,13 +497,11 @@ impl SparqlDatabase {
     }
 
     pub fn add_quad(&mut self, quad: Quad) -> bool {
-        let inserted = self.dataset_index.insert_quad(&quad);
-        inserted
+        self.dataset_index.insert_quad(&quad)
     }
 
     pub fn delete_quad(&mut self, quad: &Quad) -> bool {
-        let deleted = self.dataset_index.delete_quad(quad);
-        deleted
+        self.dataset_index.delete_quad(quad)
     }
 
     pub fn add_quad_parts(
@@ -400,7 +546,7 @@ impl SparqlDatabase {
         self.dataset_index.query_graph(graph, s, p, o)
     }
 
-    /// Helper function that accepts parts of a triple, constructs a Triple, and adds it
+    /// Encodes three lexical terms and adds the resulting triple
     pub fn add_triple_parts(&mut self, subject: &str, predicate: &str, object: &str) {
         let mut dict = self.dictionary.write().unwrap();
         let subject_id = dict.encode(subject);
@@ -438,7 +584,7 @@ impl SparqlDatabase {
         self.probability_seeds.insert(triple, probability);
     }
 
-    /// Helper function that accepts parts of a triple, constructs a Triple, and deletes it
+    /// Encodes three lexical terms and deletes the resulting triple
     pub fn delete_triple_parts(&mut self, subject: &str, predicate: &str, object: &str) -> bool {
         let mut dict = self.dictionary.write().unwrap();
         let subject_id = dict.encode(subject);
@@ -486,7 +632,7 @@ impl SparqlDatabase {
         }
         drop(dict);
 
-        // For each subject, create an <rdf:Description> element.
+        // For each subject, create an <rdf:Description> element
         for (subject, po_pairs) in subjects {
             xml.push_str(&format!("  <rdf:Description rdf:about=\"{}\">\n", subject));
             for (predicate, object) in po_pairs {
@@ -770,8 +916,8 @@ impl SparqlDatabase {
                         }
                     }
                     Ok(Event::Eof) => break,
-                    Err(e) => {
-                        eprintln!("Error reading XML: {:?}", e);
+                    Err(_e) => {
+                        eprintln!("KOLIBRIE_OPERATION_FAILED");
                         break;
                     }
                     _ => {}
@@ -837,11 +983,11 @@ impl SparqlDatabase {
                     }
                 }
                 Ok(Event::Eof) => {
-                    eprintln!("Reached EOF before reading prefixes.");
+                    eprintln!("KOLIBRIE_OPERATION_FAILED");
                     break;
                 }
-                Err(e) => {
-                    eprintln!("Error reading XML: {:?}", e);
+                Err(_e) => {
+                    eprintln!("KOLIBRIE_OPERATION_FAILED");
                     break;
                 }
                 _ => {}
@@ -935,8 +1081,8 @@ impl SparqlDatabase {
                     }
                 }
                 Ok(Event::Eof) => break,
-                Err(e) => {
-                    eprintln!("Error reading XML: {:?}", e);
+                Err(_e) => {
+                    eprintln!("KOLIBRIE_OPERATION_FAILED");
                     break;
                 }
                 _ => {}
@@ -988,12 +1134,12 @@ impl SparqlDatabase {
                         .to_string();
                     self.prefixes.insert(prefix, uri);
                 } else {
-                    eprintln!("Invalid prefix declaration: {}", line);
+                    eprintln!("KOLIBRIE_OPERATION_FAILED");
                 }
                 continue;
             }
 
-            // Tokenize, but keep ; , . as delimiters only when outside URIs, literals, and quoted triples.
+            // Tokenize, but keep ; , . as delimiters only when outside URIs, literals, and quoted triples
             let tokens = Self::tokenize_turtle_star_line(line);
 
             let mut subject_raw: Option<String> = None;
@@ -1140,7 +1286,7 @@ impl SparqlDatabase {
         }
     }
 
-    /// Tokenize a Turtle-star line, keeping `<< ... >>` and punctuation structure intact.
+    /// Tokenize a Turtle-star line, keeping `<< ... >>` and punctuation structure intact
     fn tokenize_turtle_star_line(line: &str) -> Vec<String> {
         let mut tokens = Vec::new();
         let mut current = String::new();
@@ -1296,7 +1442,7 @@ impl SparqlDatabase {
                                 .to_string();
                             local_db.prefixes.insert(prefix, uri);
                         } else {
-                            eprintln!("Invalid prefix declaration: {}", line);
+                            eprintln!("KOLIBRIE_OPERATION_FAILED");
                         }
                     } else {
                         statement.push_str(line);
@@ -1362,7 +1508,7 @@ impl SparqlDatabase {
 
                     // N-Triples must end with a dot
                     if !line.ends_with('.') {
-                        eprintln!("Invalid N-Triples line (missing dot): {}", line);
+                        eprintln!("KOLIBRIE_OPERATION_FAILED");
                         continue;
                     }
 
@@ -1418,7 +1564,7 @@ impl SparqlDatabase {
             let line_without_dot = if line.ends_with('.') {
                 line[..line.len() - 1].trim()
             } else {
-                eprintln!("Invalid N-Quads line (missing dot): {}", line);
+                eprintln!("KOLIBRIE_OPERATION_FAILED");
                 continue;
             };
 
@@ -1446,11 +1592,7 @@ impl SparqlDatabase {
     fn parse_nquads_line(&self, line: &str) -> Option<(String, String, String, Option<String>)> {
         let mut parts = self.parse_ntriples_parts(line);
         if !matches!(parts.len(), 3 | 4) {
-            eprintln!(
-                "Invalid N-Quads line (expected 3 or 4 parts, got {}): {}",
-                parts.len(),
-                line
-            );
+            eprintln!("KOLIBRIE_OPERATION_FAILED");
             return None;
         }
         let subject = self.clean_ntriples_term(&parts.remove(0));
@@ -1465,7 +1607,7 @@ impl SparqlDatabase {
         let parts = self.parse_ntriples_parts(line);
         if parts.len() == 3 {
             let subject = self.clean_ntriples_term(&parts[0]);
-            // Expand the Turtle `a` shorthand for rdf:type in predicate position.
+            // Expand the Turtle `a` shorthand for rdf:type in predicate position
             let predicate = if parts[1] == "a" {
                 "http://www.w3.org/1999/02/22-rdf-syntax-ns#type".to_string()
             } else {
@@ -1474,11 +1616,7 @@ impl SparqlDatabase {
             let object = self.clean_ntriples_term(&parts[2]);
             Some((subject, predicate, object))
         } else {
-            eprintln!(
-                "Invalid N-Triples line (expected 3 parts, got {}): {}",
-                parts.len(),
-                line
-            );
+            eprintln!("KOLIBRIE_OPERATION_FAILED");
             None
         }
     }
@@ -1752,7 +1890,7 @@ impl SparqlDatabase {
             if let Some(uri) = self.prefixes.get(prefix) {
                 format!("{}{}", uri, local_name)
             } else {
-                eprintln!("Unknown prefix: {}", prefix);
+                eprintln!("KOLIBRIE_OPERATION_FAILED");
                 term.to_string()
             }
         } else {
@@ -1808,7 +1946,7 @@ impl SparqlDatabase {
             else if let Some(uri) = self.prefixes.get(prefix) {
                 format!("{}{}", uri, local_name)
             } else {
-                eprintln!("Unknown prefix in query: {}", prefix);
+                eprintln!("KOLIBRIE_OPERATION_FAILED");
                 term.to_string()
             }
         } else {
@@ -1826,7 +1964,6 @@ impl SparqlDatabase {
         let mut translated_ids = HashMap::new();
 
         // Preserve the complete lexical dictionary, not only terms currently
-        // referenced by default-graph triples.
         let mut other_term_ids: Vec<_> = other_dict.id_to_string.keys().copied().collect();
         other_term_ids.sort_unstable();
         for id in other_term_ids {
@@ -1841,8 +1978,6 @@ impl SparqlDatabase {
         }
 
         // Preserve even currently-unreferenced quoted terms. Quads and metadata
-        // below use the same translation cache, so every occurrence receives
-        // the same target ID.
         let mut other_quoted_ids: Vec<_> = other_quoted_triples
             .id_to_components
             .keys()
@@ -1868,8 +2003,7 @@ impl SparqlDatabase {
             dataset_index.insert_quad(&quad);
         }
 
-        // Graph names and every term in the other database must be translated:
-        // numeric dictionary IDs are local to their originating database.
+        // Graph names and every term in the other database must be translated
         for graph in other.dataset_index.named_graphs() {
             let GraphId::Named(graph_id) = graph else {
                 continue;
@@ -1972,13 +2106,22 @@ impl SparqlDatabase {
             rule_map: HashMap::new(),
             model_decls: self.model_decls.clone(),
             neural_relation_decls: self.neural_relation_decls.clone(),
+            ml_context: self.ml_context.clone(),
             train_neural_relation_decls: self.train_neural_relation_decls.clone(),
             neural_model_artifacts: self.neural_model_artifacts.clone(),
             neural_materialized_triples: self.neural_materialized_triples.clone(),
             ml_predict_materialized_triples: self.ml_predict_materialized_triples.clone(),
             probability_seeds: merged_seeds,
+            // Statistics are rebuilt on first use
             cached_stats: None,
+            exact_stats_generation: 0,
+            planning_stats: None,
+            planning_stats_policy: self.planning_stats_policy,
+            stats_epoch: 0,
+            stats_rebuild_count: 0,
+            stats_rebuild_nanos: 0,
             quoted_triple_store: Arc::new(RwLock::new(merged_quoted_triples)),
+            implicit_neural_materialization: self.implicit_neural_materialization,
         }
     }
 
@@ -2031,12 +2174,19 @@ impl SparqlDatabase {
                 .map(|row| row.join("\t"))
                 .collect::<Vec<_>>()
                 .join("\n"),
-            Err(error) => format!("Query Failed: {error}"),
+            Err(error) => {
+                let (status, code) = match error.as_str() {
+                    "ML_FEATURE_DISABLED" => ("503 Service Unavailable", "ML_FEATURE_DISABLED"),
+                    "ML_FORBIDDEN" => ("403 Forbidden", "ML_FORBIDDEN"),
+                    "ML_INVALID_ARTIFACT" => ("403 Forbidden", "ML_INVALID_ARTIFACT"),
+                    _ => return "Query Failed: QUERY_EXECUTION_FAILED".to_string(),
+                };
+                format!("HTTP/1.1 {status}\r\nContent-Type: text/plain\r\nContent-Length: {}\r\n\r\n{code}", code.len())
+            }
         }
     }
 
-    /// Execute one of Kolibrie's supported standard SPARQL Update forms while
-    /// preserving parse/evaluation errors for Rust callers.
+    /// Executes one supported standard SPARQL Update form and reports what changed
     pub fn execute_update(
         &mut self,
         update: &str,
@@ -2052,10 +2202,7 @@ impl SparqlDatabase {
             );
         }
 
-        // Historical standalone INSERT/DELETE aliases are parsed into the
-        // same UpdateOperation and use the same optimized executor. Keeping
-        // the old short success text preserves callers that compare it
-        // exactly.
+        // Historical standalone INSERT/DELETE aliases parse into the same update operation
         if crate::execute_query::execute_sparql_update_compat(update, self).is_ok() {
             return "Update Successful".to_string();
         }
@@ -2063,6 +2210,13 @@ impl SparqlDatabase {
     }
 
     pub fn handle_http_request(&mut self, request: &str) -> String {
+        let context = self.ml_context.for_http();
+        crate::execute_query::with_ml_context(self, &context, |db| {
+            db.handle_http_request_inner(request)
+        })
+    }
+
+    fn handle_http_request_inner(&mut self, request: &str) -> String {
         let mut headers = [httparse::EMPTY_HEADER; 16];
         let mut req = httparse::Request::new(&mut headers);
         req.parse(request.as_bytes()).unwrap();
@@ -2113,17 +2267,9 @@ impl SparqlDatabase {
         "Bad Request".to_string()
     }
 
+    /// Return the decoded graph size for diagnostics
     pub fn debug_print_triples(&self) {
-        let dict = self.dictionary.read().unwrap();
-        let default_triples = self.query_default_triples(None, None, None);
-        for triple in &default_triples {
-            println!(
-                "Stored Triple -> Subject: {}, Predicate: {}, Object: {}",
-                dict.decode(triple.subject).unwrap(),
-                dict.decode(triple.predicate).unwrap(),
-                dict.decode(triple.object).unwrap()
-            );
-        }
+        println!("TRIPLE_COUNT {}", self.query_default_triples(None, None, None).len());
     }
 
     // Create user defined function
@@ -2134,8 +2280,7 @@ impl SparqlDatabase {
         self.udfs.insert(name.to_string(), ClonableFn::new(f));
     }
 
-    /// Rebuild every graph-scoped index without collapsing named graphs into
-    /// the default graph or losing empty named-graph identities.
+    /// Rebuilds every graph-scoped index, keeping named graphs distinct from the default
     pub fn build_all_indexes(&mut self) {
         let quads = self.dataset_index.all_quads();
         let named_graphs = self.dataset_index.named_graphs();

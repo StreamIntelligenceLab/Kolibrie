@@ -186,73 +186,80 @@ class GradientBoostingPredictor(BasePredictor):
         # Calculate prediction standard deviation
         return np.std([tree[0].predict(X_scaled) for tree in self.model.estimators_], axis=0)
 
-# Generate training data
-np.random.seed(42)
-n_samples = 1000
+def generate_models():
+    """Explicit local generation. Importing this module never trains or writes."""
+    # Generate training data
+    np.random.seed(42)
+    n_samples = 1000
 
-temperature = np.random.normal(22, 5, n_samples)
-humidity = np.random.normal(50, 15, n_samples)
-occupancy = np.random.randint(0, 20, n_samples)
+    temperature = np.random.normal(22, 5, n_samples)
+    humidity = np.random.normal(50, 15, n_samples)
+    occupancy = np.random.randint(0, 20, n_samples)
 
-# Create target variable with some noise
-future_temp = (
-    temperature * 0.7 +
-    (humidity - 50) * 0.02 +
-    occupancy * 0.1 +
-    np.random.normal(0, 1, n_samples)
-)
+    # Create target variable with some noise
+    future_temp = (
+        temperature * 0.7 +
+        (humidity - 50) * 0.02 +
+        occupancy * 0.1 +
+        np.random.normal(0, 1, n_samples)
+    )
 
-# Split data into train and test sets
-from sklearn.model_selection import train_test_split
-X = np.column_stack([temperature, humidity, occupancy])
-y = future_temp
-X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42)
+    # Split data into train and test sets
+    from sklearn.model_selection import train_test_split
+    X = np.column_stack([temperature, humidity, occupancy])
+    y = future_temp
+    X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42)
 
-# Train and save models
-models_dir = os.path.join(os.path.dirname(__file__), "models")
-os.makedirs(models_dir, exist_ok=True)
+    # Train and save models
+    models_dir = os.environ["KOLIBRIE_TRAINING_OUTPUT"]
+    os.makedirs(models_dir, exist_ok=True)
 
-# RandomForest model
-rf_model = RandomForestPredictor()
-rf_model.train(X_train, y_train)
-rf_model.predict(X_test)  # Run once to get performance metrics
-rf_schema_file = rf_model.save_with_schema(os.path.join(models_dir, "rf_temperature_predictor.pkl"),
-                                         X_train, y_train, X_test, y_test)
+    # RandomForest model
+    rf_model = RandomForestPredictor()
+    rf_model.train(X_train, y_train)
+    rf_model.predict(X_test)  # Run once to get performance metrics
+    rf_schema_file = rf_model.save_with_schema(os.path.join(models_dir, "rf_temperature_predictor.pkl"),
+                                             X_train, y_train, X_test, y_test)
 
-# GradientBoosting model
-gb_model = GradientBoostingPredictor()
-gb_model.train(X_train, y_train)
-gb_model.predict(X_test)  # Run once to get performance metrics
-gb_schema_file = gb_model.save_with_schema(os.path.join(models_dir, "gb_temperature_predictor.pkl"),
-                                         X_train, y_train, X_test, y_test)
+    # GradientBoosting model
+    gb_model = GradientBoostingPredictor()
+    gb_model.train(X_train, y_train)
+    gb_model.predict(X_test)  # Run once to get performance metrics
+    gb_schema_file = gb_model.save_with_schema(os.path.join(models_dir, "gb_temperature_predictor.pkl"),
+                                             X_train, y_train, X_test, y_test)
 
-# Linear Regression model
-lr_model = LinearRegressionPredictor()
-lr_model.train(X_train, y_train)
-lr_model.predict(X_test)  # Run once to get performance metrics
-lr_schema_file = lr_model.save_with_schema(os.path.join(models_dir, "lr_temperature_predictor.pkl"),
-                                         X_train, y_train, X_test, y_test)
+    # Linear Regression model
+    lr_model = LinearRegressionPredictor()
+    lr_model.train(X_train, y_train)
+    lr_model.predict(X_test)  # Run once to get performance metrics
+    lr_schema_file = lr_model.save_with_schema(os.path.join(models_dir, "lr_temperature_predictor.pkl"),
+                                             X_train, y_train, X_test, y_test)
 
-print(f"RandomForest model saved to {os.path.join(models_dir, 'rf_temperature_predictor.pkl')}")
-print(f"RandomForest schema saved to {rf_schema_file}")
-print(f"GradientBoosting model saved to {os.path.join(models_dir, 'gb_temperature_predictor.pkl')}")
-print(f"GradientBoosting schema saved to {gb_schema_file}")
-print(f"LinearRegression model saved to {os.path.join(models_dir, 'lr_temperature_predictor.pkl')}")
-print(f"LinearRegression schema saved to {lr_schema_file}")
+    print(f"RandomForest model saved to {os.path.join(models_dir, 'rf_temperature_predictor.pkl')}")
+    print(f"RandomForest schema saved to {rf_schema_file}")
+    print(f"GradientBoosting model saved to {os.path.join(models_dir, 'gb_temperature_predictor.pkl')}")
+    print(f"GradientBoosting schema saved to {gb_schema_file}")
+    print(f"LinearRegression model saved to {os.path.join(models_dir, 'lr_temperature_predictor.pkl')}")
+    print(f"LinearRegression schema saved to {lr_schema_file}")
 
-print("\nPerformance Comparison:")
-rf_metrics = rf_model.get_performance_metrics()
-gb_metrics = gb_model.get_performance_metrics()
-lr_metrics = lr_model.get_performance_metrics()
+    print("\nPerformance Comparison:")
+    rf_metrics = rf_model.get_performance_metrics()
+    gb_metrics = gb_model.get_performance_metrics()
+    lr_metrics = lr_model.get_performance_metrics()
 
-print("\nRandomForest Model:")
-for key, value in rf_metrics.items():
-    print(f"  {key}: {value}")
+    print("\nRandomForest Model:")
+    for key, value in rf_metrics.items():
+        print(f"  {key}: {value}")
 
-print("\nGradientBoosting Model:")
-for key, value in gb_metrics.items():
-    print(f"  {key}: {value}")
+    print("\nGradientBoosting Model:")
+    for key, value in gb_metrics.items():
+        print(f"  {key}: {value}")
 
-print("\nLinearRegression Model:")
-for key, value in lr_metrics.items():
-    print(f"  {key}: {value}")
+    print("\nLinearRegression Model:")
+    for key, value in lr_metrics.items():
+        print(f"  {key}: {value}")
+
+if __name__ == "__main__":
+    # Import under the stable module name so pickle never records __main__ classes.
+    import importlib
+    importlib.import_module("temperature_predictor").generate_models()

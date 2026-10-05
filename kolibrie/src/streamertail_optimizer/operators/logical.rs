@@ -69,6 +69,37 @@ pub enum LogicalOperator {
 }
 
 impl LogicalOperator {
+    pub fn requires_cost_based_join_ordering(&self) -> bool {
+        self.reorderable_scan_count()
+            .is_none_or(|patterns| patterns >= 2)
+    }
+
+    /// Number of joinable base patterns, or `None` if the plan contains other operators
+    fn reorderable_scan_count(&self) -> Option<usize> {
+        match self {
+            Self::Unit => Some(0),
+            Self::Scan { .. } => Some(1),
+            Self::Graph { input, .. }
+            | Self::Selection {
+                predicate: input, ..
+            }
+            | Self::Projection {
+                predicate: input, ..
+            }
+            | Self::Bind { input, .. } => input.reorderable_scan_count(),
+            Self::Join { left, right } => Some(
+                left.reorderable_scan_count()?
+                    .saturating_add(right.reorderable_scan_count()?),
+            ),
+            // Conservatively require statistics
+            Self::Union { .. }
+            | Self::Subquery { .. }
+            | Self::MLPredict { .. }
+            | Self::Values { .. }
+            | Self::Buffer { .. } => None,
+        }
+    }
+
     /// Creates the SPARQL unit table.
     pub fn unit() -> Self {
         Self::Unit

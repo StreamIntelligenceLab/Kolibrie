@@ -36,6 +36,7 @@ pub fn try_candle_predict(
     rule_prefixes: &HashMap<String, String>,
     input_rows: &[HashMap<String, u32>],
 ) -> CandleResult<Option<CandleDispatch>> {
+    database.ml_context.require_local()?;
     let output_var = ml_predict.output.trim_start_matches('?');
 
     // Find the ML output predicate from the conclusion template
@@ -94,7 +95,11 @@ pub fn try_candle_predict(
         relation.feature_vars.len(),
         hidden,
         output_type,
-        &artifact_path,
+        database
+            .ml_context
+            .local_artifact(&artifact_path)?
+            .to_str()
+            .ok_or("invalid artifact path")?,
     )?;
 
     let probs = if features.is_empty() {
@@ -124,6 +129,7 @@ pub fn try_candle_predict_by_model_name(
     model_name: &str,
     input_rows: &[HashMap<String, u32>],
 ) -> CandleResult<Option<CandleDispatch>> {
+    database.ml_context.require_local()?;
     // Find the relation bound to this model name
     let matching: Vec<&NeuralRelationDecl> = database
         .neural_relation_decls
@@ -140,7 +146,11 @@ pub fn try_candle_predict_by_model_name(
         Some(m) => m,
         None => return Ok(None),
     };
-    let artifact_path = match database.neural_model_artifacts.get(&relation.model_name).cloned() {
+    let artifact_path = match database
+        .neural_model_artifacts
+        .get(&relation.model_name)
+        .cloned()
+    {
         Some(p) => p,
         None => return Ok(None),
     };
@@ -152,7 +162,11 @@ pub fn try_candle_predict_by_model_name(
         relation.feature_vars.len(),
         hidden,
         output_type,
-        &artifact_path,
+        database
+            .ml_context
+            .local_artifact(&artifact_path)?
+            .to_str()
+            .ok_or("invalid artifact path")?,
     )?;
 
     let probs = if features.is_empty() {
@@ -236,12 +250,16 @@ fn map_probs_to_labels(
     match output_kind {
         NeuralOutputKind::Exclusive { labels } => {
             for row in probs {
-                let (argmax_idx, argmax_prob) = row
-                    .iter()
-                    .enumerate()
-                    .fold((0usize, f64::NEG_INFINITY), |acc, (idx, p)| {
-                        if *p > acc.1 { (idx, *p) } else { acc }
-                    });
+                let (argmax_idx, argmax_prob) =
+                    row.iter()
+                        .enumerate()
+                        .fold((0usize, f64::NEG_INFINITY), |acc, (idx, p)| {
+                            if *p > acc.1 {
+                                (idx, *p)
+                            } else {
+                                acc
+                            }
+                        });
                 let label = labels
                     .get(argmax_idx)
                     .cloned()

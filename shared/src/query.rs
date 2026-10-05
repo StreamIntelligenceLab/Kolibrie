@@ -138,6 +138,7 @@ pub struct MLPredictClause<'a> {
     pub input_where: Vec<(&'a str, &'a str, &'a str)>, // Parsed WHERE patterns
     pub input_filters: Vec<FilterExpression<'a>>, // Parsed FILTER conditions
     pub output: &'a str,
+    pub distribution: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -316,6 +317,7 @@ pub struct CombinedRule<'a> {
     ),
     /// Negated body atoms parsed from `NOT triple_pattern` clauses in WHERE.
     pub negated_body: Vec<(&'a str, &'a str, &'a str)>,
+    pub window_blocks: Vec<WindowBlock<'a>>,
     pub conclusion: Vec<(&'a str, &'a str, &'a str)>,
     pub ml_predict: Option<MLPredictClause<'a>>, // new field for ML.PREDICT clause
     pub prob_annotation: Option<ProbAnnotation<'a>>, // probabilistic rule annotation
@@ -415,10 +417,23 @@ pub struct CombinedQuery<'a> {
     pub model_decls: Vec<ModelDecl>,
     pub neural_relation_decls: Vec<NeuralRelationDecl>,
     pub train_neural_relation_decls: Vec<TrainNeuralRelationDecl>,
-    pub rule: Option<CombinedRule<'a>>,
+    pub rules: Vec<CombinedRule<'a>>,
     pub ml_predict: Option<MLPredictClause<'a>>,
     /// The single standard-SPARQL syntax tree. Extension-only requests leave
     /// this as `None`; recognized standard syntax never falls through to an
     /// extension parser.
     pub sparql: Option<SparqlOperation<'a>>,
+}
+
+impl<'a> CombinedQuery<'a> {
+    pub fn single_rule(&self) -> Result<Option<&CombinedRule<'a>>, String> {
+        match self.rules.as_slice() {
+            [] => Ok(None),
+            [rule] => Ok(Some(rule)),
+            rules => Err(format!(
+                "this entry point executes one RULE block, but the request contains {}; use the program API for multiple rules",
+                rules.len()
+            )),
+        }
+    }
 }
