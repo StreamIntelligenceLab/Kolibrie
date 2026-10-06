@@ -14,9 +14,8 @@ exclude = ["target/"]
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
-build = "build.rs"
-
 [dependencies]
+sha2 = { version = "0.10", optional = true }
 quick-xml = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
@@ -28,32 +27,31 @@ url = { workspace = true }
 percent-encoding = { workspace = true }
 httparse = { workspace = true }
 crossbeam = { workspace = true }
-pyo3 = { workspace = true }
-gpu = { path = "../gpu" }
+pyo3 = { workspace = true, optional = true }
 shared = { path = "../shared" }
 datalog =  { path = "../datalog" }
-ml = { path = "../ml" }
+ml = { path = "../ml", optional = true }
 chrono = "0.4.40"
 rumqttc = "0.21.0"
 log = "0.4.27"
 annotate-snippets = "0.12.10"
-bincode = "1.3"
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2.161"
 
 [target.'cfg(windows)'.dependencies]
-winapi = { version = "0.3.9", features = ["sysinfoapi"] }
+winapi = { version = "0.3.9", features = ["processthreadsapi", "psapi", "sysinfoapi"] }
+
+[features]
+default = []
+ml = ["dep:ml", "dep:pyo3", "dep:sha2"]
+exec-stats = []
 
 [dev-dependencies]
 criterion = "0.5.1"
 
 [lib]
 path = "src/lib.rs"
-
-[features]
-# When the "cuda" feature is enabled, all CUDA code is compiled in
-cuda = []
 
 [[bench]]
 name = "my_benchmark"
@@ -79,6 +77,20 @@ harness = false
 name = "family_tree_cross_window_compare"
 path = "benches/family_tree_cross_window_compare.rs"
 harness = false
+
+[[bench]]
+name = "hybrid_probability"
+path = "benches/hybrid_probability.rs"
+harness = false
+
+[[bench]]
+name = "optimizer_hotpath"
+path = "benches/optimizer_hotpath.rs"
+harness = false
+
+[[example]]
+name = "replay_profile"
+path = "examples/replay_profile/replay_profile.rs"
 
 [[example]]
 name = "automate_policy"
@@ -189,6 +201,10 @@ name = "n_triple_10M"
 path = "examples/sparql_syntax/n_triples_data/n_triple_10M.rs"
 
 [[example]]
+name = "repro_sensor_path_benchmark"
+path = "examples/sparql_syntax/n_triples_data/repro_sensor_path_benchmark.rs"
+
+[[example]]
 name = "n3_data_simple"
 path = "examples/sparql_syntax/n3_data/n3_data.rs"
 
@@ -229,10 +245,6 @@ name = "one_thread"
 path = "examples/sparql_syntax/from_file/one_thread.rs"
 
 [[example]]
-name = "cuda_example"
-path = "examples/sparql_syntax/from_file/cuda_example.rs"
-
-[[example]]
 name = "udf"
 path = "examples/sparql_syntax/user_defined_function/udf.rs"
 
@@ -258,6 +270,7 @@ path = "examples/sparql_syntax/combination/combination.rs"
 
 [[example]]
 name = "combination_stream"
+required-features = ["ml"]
 path = "examples/sparql_syntax/combination/combination_stream.rs"
 
 [[example]]
@@ -270,14 +283,17 @@ path = "examples/sparql_syntax/combination/combination_logic_extend.rs"
 
 [[example]]
 name = "combination_ml"
+required-features = ["ml"]
 path = "examples/sparql_syntax/combination/combination_ml.rs"
 
 [[example]]
 name = "combination_ml_savings"
+required-features = ["ml"]
 path = "examples/sparql_syntax/combination/combination_ml_savings.rs"
 
 [[example]]
 name = "combination_ml_change_conclusion"
+required-features = ["ml"]
 path = "examples/sparql_syntax/combination/combination_ml_change_conclusion.rs"
 
 [[example]]
@@ -286,6 +302,7 @@ path = "examples/sparql_syntax/combination/multiple_conclusions.rs"
 
 [[example]]
 name = "full_combination"
+required-features = ["ml"]
 path = "examples/sparql_syntax/combination/full_combination.rs"
 
 [[example]]
@@ -302,14 +319,27 @@ path = "examples/sparql_syntax/rsp_ql_syntax/retrieve_multiple_window.rs"
 
 [[example]]
 name = "mnist_train"
+required-features = ["ml"]
 path = "examples/sparql_syntax/ml_train/mnist_train.rs"
 
 [[example]]
+name = "mnist_compare"
+required-features = ["ml"]
+path = "examples/sparql_syntax/ml_train/mnist_compare.rs"
+
+[[example]]
+name = "mnist_addition"
+required-features = ["ml"]
+path = "examples/sparql_syntax/ml_train/mnist_addition.rs"
+
+[[example]]
 name = "provenance_feedback_loop"
+required-features = ["ml"]
 path = "examples/sparql_syntax/ml_train/provenance_feedback_loop.rs"
 
 [[example]]
 name = "predict_after_train"
+required-features = ["ml"]
 path = "examples/sparql_syntax/ml_train/predict_after_train.rs"
 
 [[example]]
@@ -326,6 +356,7 @@ path = "examples/real_scenario/mqtt_real_scenario.rs"
 
 [[example]]
 name = "fraud_detection_system"
+required-features = ["ml"]
 path = "examples/real_scenario/fraud_detection_system.rs"
 
 [[example]]

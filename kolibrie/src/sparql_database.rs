@@ -8,17 +8,10 @@
  * you can obtain one at https://mozilla.org/MPL/2.0/.
  */
 
-use shared::dictionary::Dictionary;
-use shared::query::{FilterExpression, ModelDecl, NeuralRelationDecl, TrainNeuralRelationDecl};
-use shared::quoted_triple_store::{QuotedTripleStore, is_quoted_triple_id};
-use shared::triple::Triple;
-use crate::parser;
+use crate::query_builder::QueryBuilder;
+use crate::streamertail_optimizer::DatabaseStats;
 use crate::utils;
 use crate::utils::ClonableFn;
-#[cfg(feature = "cuda")]
-use crate::cuda::cuda_join::*;
-use shared::index_manager::UnifiedIndex;
-use crate::query_builder::QueryBuilder;
 use crossbeam::channel::unbounded;
 use crossbeam::scope;
 use percent_encoding::percent_decode;
@@ -26,29 +19,201 @@ use quick_xml::events::Event;
 use quick_xml::name::QName;
 use quick_xml::Reader;
 use rayon::prelude::*;
-#[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
-use std::arch::x86_64::*;
-#[cfg(target_arch = "aarch64")]
-use std::arch::aarch64::*;
+use shared::dataset_index::{DatasetIndex, GraphId, Quad};
+use shared::dictionary::Dictionary;
+use shared::query::{ModelDecl, NeuralRelationDecl, TrainNeuralRelationDecl};
+use shared::quoted_triple_store::{is_quoted_triple_id, QuotedTripleStore};
+use shared::triple::Triple;
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::sync::Arc;
 use std::sync::{Mutex, RwLock};
 use url::Url;
-use crate::streamertail_optimizer::DatabaseStats;
 
-const MIN_CHUNK_SIZE: usize = 1024;
-const HASHMAP_INITIAL_CAPACITY: usize = 4096;
+fn looks_like_absolute_iri(value: &str) -> bool {
+    let Some((scheme, _)) = value.split_once(':') else {
+        return false;
+    };
+    let mut characters = scheme.chars();
+    characters
+        .next()
+        .is_some_and(|first| first.is_ascii_alphabetic())
+        && characters.all(|character| {
+            character.is_ascii_alphanumeric() || matches!(character, '+' | '-' | '.')
+        })
+}
 
-const MIN_CHUNK_SIZE1: usize = 1024;
-const HASHMAP_INITIAL_CAPACITY1: usize = 1024;
+fn escape_ntriples_literal(value: &str) -> String {
+    value
+        .chars()
+        .flat_map(|character| match character {
+            '\\' => "\\\\".chars().collect::<Vec<_>>(),
+            '"' => "\\\"".chars().collect(),
+            '\n' => "\\n".chars().collect(),
+            '\r' => "\\r".chars().collect(),
+            '\t' => "\\t".chars().collect(),
+            other => vec![other],
+        })
+        .collect()
+}
+
+/// Decodes the lexical value of an N-Triples/N-Quads double-quoted literal
+fn decode_ntriples_literal(term: &str) -> Option<(String, &str)> {
+    let body = term.strip_prefix('"')?;
+    let mut characters = body.char_indices();
+    let mut value = String::new();
+
+    while let Some((offset, character)) = characters.next() {
+        match character {
+            '"' => return Some((value, &body[offset + character.len_utf8()..])),
+            '\\' => {
+                let (_, escaped) = characters.next()?;
+                match escaped {
+                    't' => value.push('\t'),
+                    'b' => value.push('\u{0008}'),
+                    'n' => value.push('\n'),
+                    'r' => value.push('\r'),
+                    'f' => value.push('\u{000c}'),
+                    '"' => value.push('"'),
+                    '\'' => value.push('\''),
+                    '\\' => value.push('\\'),
+                    'u' | 'U' => {
+                        let digits = if escaped == 'u' { 4 } else { 8 };
+                        let mut scalar = String::with_capacity(digits);
+                        for _ in 0..digits {
+                            let (_, digit) = characters.next()?;
+                            if !digit.is_ascii_hexdigit() {
+                                return None;
+                            }
+                            scalar.push(digit);
+                        }
+                        let scalar = u32::from_str_radix(&scalar, 16).ok()?;
+                        value.push(char::from_u32(scalar)?);
+                    }
+                    _ => return None,
+                }
+            }
+            character => value.push(character),
+        }
+    }
+
+    None
+}
+
+fn decode_form_component(component: &str) -> String {
+    let normalized = component
+        .bytes()
+        .map(|byte| if byte == b'+' { b' ' } else { byte })
+        .collect::<Vec<_>>();
+    percent_decode(&normalized).decode_utf8_lossy().into_owned()
+}
+
+fn parse_form_urlencoded(body: &str) -> HashMap<String, String> {
+    body.split('&')
+        .map(|pair| {
+            let (name, value) = pair.split_once('=').unwrap_or((pair, ""));
+            (decode_form_component(name), decode_form_component(value))
+        })
+        .collect()
+}
+
+pub(crate) fn reencode_term_id(
+    id: u32,
+    source_dictionary: &Dictionary,
+    source_quoted_triples: &QuotedTripleStore,
+    target_dictionary: &mut Dictionary,
+    target_quoted_triples: &mut QuotedTripleStore,
+    translated_ids: &mut HashMap<u32, u32>,
+) -> u32 {
+    if let Some(translated) = translated_ids.get(&id) {
+        return *translated;
+    }
+
+    let translated = if is_quoted_triple_id(id) {
+        let (subject, predicate, object) = source_quoted_triples
+            .decode(id)
+            .unwrap_or_else(|| panic!("quoted triple ID {id} is missing from its source store"));
+        let subject = reencode_term_id(
+            subject,
+            source_dictionary,
+            source_quoted_triples,
+            target_dictionary,
+            target_quoted_triples,
+            translated_ids,
+        );
+        let predicate = reencode_term_id(
+            predicate,
+            source_dictionary,
+            source_quoted_triples,
+            target_dictionary,
+            target_quoted_triples,
+            translated_ids,
+        );
+        let object = reencode_term_id(
+            object,
+            source_dictionary,
+            source_quoted_triples,
+            target_dictionary,
+            target_quoted_triples,
+            translated_ids,
+        );
+        target_quoted_triples.encode(subject, predicate, object)
+    } else {
+        let lexical = source_dictionary
+            .decode(id)
+            .unwrap_or_else(|| panic!("term ID {id} is missing from its source dictionary"));
+        target_dictionary.encode(lexical)
+    };
+
+    translated_ids.insert(id, translated);
+    translated
+}
+
+/// Staleness policy for planning statistics
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum PlanningStatsPolicy {
+    AlwaysFresh,
+    Bounded {
+        minimum_batch: u64,
+        refresh_fraction: f64,
+    },
+}
+
+impl PlanningStatsPolicy {
+    /// Refresh after 100 mutations or half the store
+    pub const DEFAULT_BOUNDED: Self = PlanningStatsPolicy::Bounded {
+        minimum_batch: 100,
+        refresh_fraction: 0.5,
+    };
+}
+
+impl Default for PlanningStatsPolicy {
+    fn default() -> Self {
+        Self::DEFAULT_BOUNDED
+    }
+}
+
+/// A planning statistics snapshot
+#[derive(Debug, Clone)]
+pub struct PlanningStatsSnapshot {
+    pub stats: Arc<DatabaseStats>,
+    /// `DatasetIndex::generation` at build time
+    pub generation: u64,
+    /// `total_triples` at build time
+    pub quads_at_build: u64,
+    /// Statistics epoch at build time
+    pub epoch: u64,
+    /// `DatasetIndex::resets` at build time
+    pub resets: u64,
+}
 
 #[derive(Debug, Clone)]
 pub struct SparqlDatabase {
-    pub triples: BTreeSet<Triple>,
+    /// Host-selected ML authority
+    pub ml_context: crate::ml_policy::MlExecutionContext,
+    pub dataset_index: DatasetIndex,
     pub dictionary: Arc<RwLock<Dictionary>>,
     pub prefixes: HashMap<String, String>,
     pub udfs: HashMap<String, ClonableFn>,
-    pub index_manager: UnifiedIndex,
     pub rule_map: HashMap<String, String>,
     pub model_decls: HashMap<String, ModelDecl>,
     pub neural_relation_decls: HashMap<String, NeuralRelationDecl>,
@@ -58,18 +223,31 @@ pub struct SparqlDatabase {
     pub ml_predict_materialized_triples: HashMap<String, Vec<Triple>>,
     pub probability_seeds: HashMap<Triple, f64>,
     pub cached_stats: Option<Arc<DatabaseStats>>,
+    pub exact_stats_generation: u64,
+    pub planning_stats: Option<PlanningStatsSnapshot>,
+    pub planning_stats_policy: PlanningStatsPolicy,
+    pub stats_epoch: u64,
+    pub stats_rebuild_count: u64,
+    pub stats_rebuild_nanos: u64,
     pub quoted_triple_store: Arc<RwLock<QuotedTripleStore>>,
+    pub implicit_neural_materialization: bool,
 }
 
 #[allow(dead_code)]
 impl SparqlDatabase {
+    /// Initialize with host-selected ML authority
+    pub fn with_ml_context(context: crate::ml_policy::MlExecutionContext) -> Self {
+        let mut database = Self::new();
+        database.ml_context = context;
+        database
+    }
     pub fn new() -> Self {
         Self {
-            triples: BTreeSet::new(),
+            ml_context: crate::ml_policy::MlExecutionContext::disabled(),
+            dataset_index: DatasetIndex::new(),
             dictionary: Arc::new(RwLock::new(Dictionary::new())),
             prefixes: HashMap::new(),
             udfs: HashMap::new(),
-            index_manager: UnifiedIndex::new(),
             rule_map: HashMap::new(),
             model_decls: HashMap::new(),
             neural_relation_decls: HashMap::new(),
@@ -79,13 +257,18 @@ impl SparqlDatabase {
             ml_predict_materialized_triples: HashMap::new(),
             probability_seeds: HashMap::new(),
             cached_stats: None,
+            exact_stats_generation: 0,
+            planning_stats: None,
+            planning_stats_policy: PlanningStatsPolicy::default(),
+            stats_epoch: 0,
+            stats_rebuild_count: 0,
+            stats_rebuild_nanos: 0,
             quoted_triple_store: Arc::new(RwLock::new(QuotedTripleStore::new())),
+            implicit_neural_materialization: true,
         }
     }
 
-    /// Encode a term that may be a quoted triple `<< s p o >>` (recursive).
-    /// Returns the u32 ID for the term.
-    /// Handles stripping `<>` from URIs and `""` from literals.
+    /// Encode a term that may be a quoted triple `<< s p o >>` (recursive)
     pub fn encode_term_star(&self, term: &str) -> u32 {
         let trimmed = term.trim();
         if trimmed.starts_with("<<") && trimmed.ends_with(">>") {
@@ -97,25 +280,21 @@ impl SparqlDatabase {
             let mut qt = self.quoted_triple_store.write().unwrap();
             qt.encode(s_id, p_id, o_id)
         } else {
-            // Strip angle brackets from URIs
             let cleaned = if trimmed.starts_with('<') && trimmed.ends_with('>') {
-                &trimmed[1..trimmed.len() - 1]
+                trimmed[1..trimmed.len() - 1].to_string()
             } else if trimmed.starts_with('"') {
-                // Handle literal: strip quotes, keep value
-                if let Some(close_pos) = trimmed[1..].find('"') {
-                    &trimmed[1..close_pos + 1]
-                } else {
-                    trimmed.trim_matches('"')
-                }
+                decode_ntriples_literal(trimmed)
+                    .map(|(value, _)| value)
+                    .unwrap_or_else(|| trimmed.trim_matches('"').to_string())
             } else {
-                trimmed
+                trimmed.to_string()
             };
             let mut dict = self.dictionary.write().unwrap();
-            dict.encode(cleaned)
+            dict.encode(&cleaned)
         }
     }
 
-    /// Decode a u32 ID that may be a regular dictionary ID or a quoted triple ID.
+    /// Decode a u32 ID that may be a regular dictionary ID or a quoted triple ID
     pub fn decode_any(&self, id: u32) -> Option<String> {
         if is_quoted_triple_id(id) {
             let qt = self.quoted_triple_store.read().unwrap();
@@ -127,8 +306,7 @@ impl SparqlDatabase {
         }
     }
 
-    /// Split quoted triple content `s p o` into three parts, respecting nested `<< >>`.
-    /// This is used both internally and by the query optimizer for pattern parsing.
+    /// Split quoted triple content `s p o` into three parts, respecting nested `<< >>`
     pub fn split_quoted_triple_content(content: &str) -> (String, String, String) {
         let mut parts: Vec<String> = Vec::new();
         let mut current = String::new();
@@ -197,22 +375,113 @@ impl SparqlDatabase {
         }
     }
 
-    pub fn set_prefixes(&mut self, prefixes: HashMap<String, String>){
-        self.prefixes=prefixes;
+    pub fn set_prefixes(&mut self, prefixes: HashMap<String, String>) {
+        self.prefixes = prefixes;
     }
 
+    /// Returns exact statistics, rebuilding them if the dataset generation changed
     pub fn get_or_build_stats(&mut self) -> Arc<DatabaseStats> {
+        let generation = self.dataset_index.generation();
         if let Some(stats) = &self.cached_stats {
-            return stats.clone();  // ← Clone the Arc (cheap), not the DatabaseStats
+            if self.exact_stats_generation == generation {
+                return stats.clone();
+            }
         }
-        
-        let stats = Arc::new(DatabaseStats::gather_stats_fast(self));
+
+        let stats = self.rebuild_stats();
         self.cached_stats = Some(stats.clone());
+        self.exact_stats_generation = generation;
         stats
     }
-    
+
+    /// Returns statistics for plan selection; under `Bounded` they may be stale within the threshold
+    pub fn get_or_build_planning_stats(&mut self) -> Arc<DatabaseStats> {
+        if self.planning_stats_policy == PlanningStatsPolicy::AlwaysFresh {
+            return self.get_or_build_stats();
+        }
+
+        let generation = self.dataset_index.generation();
+        if let Some(snapshot) = &self.planning_stats {
+            if self.planning_snapshot_is_usable(snapshot, generation) {
+                return snapshot.stats.clone();
+            }
+        }
+
+        let stats = self.rebuild_stats();
+        self.planning_stats = Some(PlanningStatsSnapshot {
+            stats: stats.clone(),
+            generation,
+            quads_at_build: stats.total_triples,
+            epoch: self.stats_epoch,
+            resets: self.dataset_index.resets(),
+        });
+        stats
+    }
+
+    /// Returns true if the cached planning snapshot is still within the policy threshold
+    fn planning_snapshot_is_usable(
+        &self,
+        snapshot: &PlanningStatsSnapshot,
+        generation: u64,
+    ) -> bool {
+        // Invalidate on explicit reset or full clear
+        if snapshot.epoch != self.stats_epoch || snapshot.resets != self.dataset_index.resets() {
+            return false;
+        }
+
+        // wrapping_sub handles counter wraparound; a replaced index yields a large delta
+        let mutations = generation.wrapping_sub(snapshot.generation);
+        if mutations == 0 {
+            return true;
+        }
+
+        // Always rebuild a snapshot taken on an empty dataset
+        if snapshot.quads_at_build == 0 {
+            return false;
+        }
+
+        let PlanningStatsPolicy::Bounded {
+            minimum_batch,
+            refresh_fraction,
+        } = self.planning_stats_policy
+        else {
+            return false;
+        };
+
+        let proportional = (refresh_fraction * snapshot.quads_at_build.max(1) as f64).ceil() as u64;
+        mutations < minimum_batch.max(proportional)
+    }
+
+    /// Builds statistics and records rebuild count and duration
+    fn rebuild_stats(&mut self) -> Arc<DatabaseStats> {
+        let started = std::time::Instant::now();
+        let stats = Arc::new(DatabaseStats::gather_stats_fast(self));
+        self.stats_rebuild_count += 1;
+        self.stats_rebuild_nanos = self
+            .stats_rebuild_nanos
+            .saturating_add(started.elapsed().as_nanos() as u64);
+        stats
+    }
+
+    /// Invalidates all cached statistics
     pub fn invalidate_stats_cache(&mut self) {
         self.cached_stats = None;
+        self.planning_stats = None;
+        self.stats_epoch = self.stats_epoch.wrapping_add(1);
+    }
+
+    /// Replaces the dataset index and invalidates cached statistics
+    pub fn replace_dataset_index(&mut self, dataset_index: DatasetIndex) {
+        self.dataset_index = dataset_index;
+        self.invalidate_stats_cache();
+    }
+
+    /// Number of statistics rebuilds and their total duration
+    pub fn stats_rebuild_metrics(&self) -> (u64, std::time::Duration) {
+        (
+            self.stats_rebuild_count,
+            std::time::Duration::from_nanos(self.stats_rebuild_nanos),
+        )
     }
 
     pub fn query(&self) -> QueryBuilder<'_> {
@@ -220,19 +489,64 @@ impl SparqlDatabase {
     }
 
     pub fn add_triple(&mut self, triple: Triple) {
-        self.triples.insert(triple.clone());
-        self.index_manager.insert(&triple);
-    }
-    
-    pub fn delete_triple(&mut self, triple: &Triple) -> bool {
-        let removed = self.triples.remove(triple);
-        if removed {
-            self.index_manager.delete(triple);
-        }
-        removed
+        self.dataset_index.insert_triple(&triple);
     }
 
-    /// Helper function that accepts parts of a triple, constructs a Triple, and adds it
+    pub fn delete_triple(&mut self, triple: &Triple) -> bool {
+        self.dataset_index.delete_triple(triple)
+    }
+
+    pub fn add_quad(&mut self, quad: Quad) -> bool {
+        self.dataset_index.insert_quad(&quad)
+    }
+
+    pub fn delete_quad(&mut self, quad: &Quad) -> bool {
+        self.dataset_index.delete_quad(quad)
+    }
+
+    pub fn add_quad_parts(
+        &mut self,
+        subject: &str,
+        predicate: &str,
+        object: &str,
+        graph: &str,
+    ) -> bool {
+        let subject_id = self.encode_term_star(subject);
+        let predicate_id = self.encode_term_star(predicate);
+        let object_id = self.encode_term_star(object);
+        let graph_id = {
+            let mut dict = self.dictionary.write().unwrap();
+            dict.encode(graph)
+        };
+
+        self.add_quad(Quad {
+            subject: subject_id,
+            predicate: predicate_id,
+            object: object_id,
+            graph: GraphId::Named(graph_id),
+        })
+    }
+
+    pub fn query_default_triples(
+        &self,
+        s: Option<u32>,
+        p: Option<u32>,
+        o: Option<u32>,
+    ) -> Vec<Triple> {
+        self.dataset_index.query_default(s, p, o)
+    }
+
+    pub fn query_graph_quads(
+        &self,
+        graph: GraphId,
+        s: Option<u32>,
+        p: Option<u32>,
+        o: Option<u32>,
+    ) -> Vec<Quad> {
+        self.dataset_index.query_graph(graph, s, p, o)
+    }
+
+    /// Encodes three lexical terms and adds the resulting triple
     pub fn add_triple_parts(&mut self, subject: &str, predicate: &str, object: &str) {
         let mut dict = self.dictionary.write().unwrap();
         let subject_id = dict.encode(subject);
@@ -248,19 +562,29 @@ impl SparqlDatabase {
         self.add_triple(triple);
     }
 
-    pub fn add_tagged_triple(&mut self, subject: &str, predicate: &str, object: &str, probability: f64) {
+    pub fn add_tagged_triple(
+        &mut self,
+        subject: &str,
+        predicate: &str,
+        object: &str,
+        probability: f64,
+    ) {
         let mut dict = self.dictionary.write().unwrap();
         let s = dict.encode(subject);
         let p = dict.encode(predicate);
         let o = dict.encode(object);
         drop(dict);
 
-        let triple = Triple { subject: s, predicate: p, object: o };
+        let triple = Triple {
+            subject: s,
+            predicate: p,
+            object: o,
+        };
         self.add_triple(triple.clone());
         self.probability_seeds.insert(triple, probability);
     }
 
-    /// Helper function that accepts parts of a triple, constructs a Triple, and deletes it
+    /// Encodes three lexical terms and deletes the resulting triple
     pub fn delete_triple_parts(&mut self, subject: &str, predicate: &str, object: &str) -> bool {
         let mut dict = self.dictionary.write().unwrap();
         let subject_id = dict.encode(subject);
@@ -280,7 +604,7 @@ impl SparqlDatabase {
         let mut xml = String::new();
         xml.push_str("<?xml version=\"1.0\"?>\n");
         xml.push_str("<rdf:RDF");
-    
+
         // Write namespace declarations (from the stored prefixes)
         for (prefix, uri) in &self.prefixes {
             if prefix.is_empty() {
@@ -292,19 +616,23 @@ impl SparqlDatabase {
         // Always include the standard RDF namespace
         xml.push_str(" xmlns:rdf=\"http://www.w3.org/1999/02/22-rdf-syntax-ns#\"");
         xml.push_str(">\n");
-    
+
         // Group triples by subject
         let dict = self.dictionary.read().unwrap();
         let mut subjects: BTreeMap<String, Vec<(String, String)>> = BTreeMap::new();
-        for triple in &self.triples {
+        let default_triples = self.query_default_triples(None, None, None);
+        for triple in &default_triples {
             let subject = dict.decode(triple.subject);
             let predicate = dict.decode(triple.predicate);
             let object = dict.decode(triple.object);
-            subjects.entry(subject.unwrap().to_string()).or_default().push((predicate.unwrap().to_string(), object.unwrap().to_string()));
+            subjects
+                .entry(subject.unwrap().to_string())
+                .or_default()
+                .push((predicate.unwrap().to_string(), object.unwrap().to_string()));
         }
         drop(dict);
-    
-        // For each subject, create an <rdf:Description> element.
+
+        // For each subject, create an <rdf:Description> element
         for (subject, po_pairs) in subjects {
             xml.push_str(&format!("  <rdf:Description rdf:about=\"{}\">\n", subject));
             for (predicate, object) in po_pairs {
@@ -312,7 +640,7 @@ impl SparqlDatabase {
             }
             xml.push_str("  </rdf:Description>\n");
         }
-    
+
         xml.push_str("</rdf:RDF>\n");
         xml
     }
@@ -320,12 +648,16 @@ impl SparqlDatabase {
     /// Serializes all triples as N-Triples-star format
     pub fn generate_ntriples(&self) -> String {
         let mut output = String::new();
-        for triple in &self.triples {
+        for triple in self.query_default_triples(None, None, None) {
             let s = self.decode_any(triple.subject).unwrap_or_default();
             let p = self.decode_any(triple.predicate).unwrap_or_default();
             let o = self.decode_any(triple.object).unwrap_or_default();
 
-            let s_str = if s.starts_with("<<") { s } else { format!("<{}>", s) };
+            let s_str = if s.starts_with("<<") {
+                s
+            } else {
+                format!("<{}>", s)
+            };
             let p_str = format!("<{}>", p);
             let o_str = if o.starts_with("<<") {
                 o
@@ -336,6 +668,44 @@ impl SparqlDatabase {
             };
 
             output.push_str(&format!("{} {} {} .\n", s_str, p_str, o_str));
+        }
+        output
+    }
+
+    pub fn generate_nquads(&self) -> String {
+        let mut output = String::new();
+        for quad in self.dataset_index.all_quads() {
+            let s = self.decode_any(quad.subject).unwrap_or_default();
+            let p = self.decode_any(quad.predicate).unwrap_or_default();
+            let o = self.decode_any(quad.object).unwrap_or_default();
+
+            let s_str = if s.starts_with("<<") || s.starts_with("_:") {
+                s
+            } else {
+                format!("<{}>", s)
+            };
+            let p_str = format!("<{}>", p);
+            let o_str = if o.starts_with("<<") || o.starts_with("_:") {
+                o
+            } else if looks_like_absolute_iri(&o) {
+                format!("<{}>", o)
+            } else {
+                format!("\"{}\"", escape_ntriples_literal(&o))
+            };
+            match quad.graph {
+                GraphId::Default => {
+                    output.push_str(&format!("{} {} {} .\n", s_str, p_str, o_str));
+                }
+                GraphId::Named(graph_id) => {
+                    let graph = self.decode_any(graph_id).unwrap_or_default();
+                    let graph = if graph.starts_with("_:") {
+                        graph
+                    } else {
+                        format!("<{}>", graph)
+                    };
+                    output.push_str(&format!("{} {} {} {} .\n", s_str, p_str, o_str, graph));
+                }
+            }
         }
         output
     }
@@ -353,8 +723,11 @@ impl SparqlDatabase {
         }
 
         // Group triples by subject, then by predicate
-        let mut subjects: std::collections::BTreeMap<String, std::collections::BTreeMap<String, Vec<String>>> = std::collections::BTreeMap::new();
-        for triple in &self.triples {
+        let mut subjects: std::collections::BTreeMap<
+            String,
+            std::collections::BTreeMap<String, Vec<String>>,
+        > = std::collections::BTreeMap::new();
+        for triple in self.query_default_triples(None, None, None) {
             let s = self.decode_any(triple.subject).unwrap_or_default();
             let p = self.decode_any(triple.predicate).unwrap_or_default();
             let o = self.decode_any(triple.object).unwrap_or_default();
@@ -518,7 +891,9 @@ impl SparqlDatabase {
                             // Skip empty or whitespace-only text
                             if !trimmed_object.is_empty() {
                                 if let Ok(subject_str) = std::str::from_utf8(&current_subject) {
-                                    if let Ok(predicate_str) = std::str::from_utf8(&current_predicate) {
+                                    if let Ok(predicate_str) =
+                                        std::str::from_utf8(&current_predicate)
+                                    {
                                         let resolved_predicate = self.resolve_term(predicate_str);
                                         // Lock the dictionary for encoding
                                         let mut dict = dictionary.write().unwrap();
@@ -541,8 +916,8 @@ impl SparqlDatabase {
                         }
                     }
                     Ok(Event::Eof) => break,
-                    Err(e) => {
-                        eprintln!("Error reading XML: {:?}", e);
+                    Err(_e) => {
+                        eprintln!("KOLIBRIE_OPERATION_FAILED");
                         break;
                     }
                     _ => {}
@@ -568,7 +943,9 @@ impl SparqlDatabase {
         // Merge all BTreeSets into the main triples set
         let triples_sets = Arc::try_unwrap(triples_set).unwrap().into_inner().unwrap();
         for local_triples in triples_sets {
-            self.triples.extend(local_triples);
+            for triple in local_triples {
+                self.add_triple(triple);
+            }
         }
     }
 
@@ -606,11 +983,11 @@ impl SparqlDatabase {
                     }
                 }
                 Ok(Event::Eof) => {
-                    eprintln!("Reached EOF before reading prefixes.");
+                    eprintln!("KOLIBRIE_OPERATION_FAILED");
                     break;
                 }
-                Err(e) => {
-                    eprintln!("Error reading XML: {:?}", e);
+                Err(_e) => {
+                    eprintln!("KOLIBRIE_OPERATION_FAILED");
                     break;
                 }
                 _ => {}
@@ -704,8 +1081,8 @@ impl SparqlDatabase {
                     }
                 }
                 Ok(Event::Eof) => break,
-                Err(e) => {
-                    eprintln!("Error reading XML: {:?}", e);
+                Err(_e) => {
+                    eprintln!("KOLIBRIE_OPERATION_FAILED");
                     break;
                 }
                 _ => {}
@@ -716,123 +1093,209 @@ impl SparqlDatabase {
             if triples.len() >= 8192 {
                 // Process triples in parallel using Rayon
                 let local_triples: BTreeSet<Triple> = triples.into_par_iter().collect();
-                self.triples.extend(local_triples);
+                for triple in local_triples {
+                    self.add_triple(triple);
+                }
                 triples = Vec::with_capacity(8192);
             }
         }
 
         if !triples.is_empty() {
             let local_triples: BTreeSet<Triple> = triples.into_par_iter().collect();
-            self.triples.extend(local_triples);
+            for triple in local_triples {
+                self.add_triple(triple);
+            }
         }
     }
 
-    // New parse_turtle function
     pub fn parse_turtle(&mut self, turtle_data: &str) {
-        let lines = turtle_data.lines();
-
-        for line in lines {
-            let line = line.trim();
+        for raw_line in turtle_data.lines() {
+            let line = raw_line.trim();
 
             // Skip empty lines and comments
             if line.is_empty() || line.starts_with("#") {
                 continue;
             }
 
+            // Prefix declarations
             if line.starts_with("@prefix") || line.starts_with("PREFIX") {
                 let prefix_line = line
                     .trim_start_matches("@prefix")
                     .trim_start_matches("PREFIX")
                     .trim_end_matches('.')
                     .trim();
+
                 let parts: Vec<&str> = prefix_line.split_whitespace().collect();
                 if parts.len() >= 2 {
                     let prefix = parts[0].trim_end_matches(':').to_string();
-                    let uri = parts[1].trim_start_matches('<').trim_end_matches('>').to_string();
+                    let uri = parts[1]
+                        .trim_start_matches('<')
+                        .trim_end_matches('>')
+                        .to_string();
                     self.prefixes.insert(prefix, uri);
                 } else {
-                    eprintln!("Invalid prefix declaration: {}", line);
+                    eprintln!("KOLIBRIE_OPERATION_FAILED");
                 }
                 continue;
             }
 
-            // Use quoted-triple-aware tokenization
-            let line_no_dot = line.trim_end_matches('.').trim();
-            let tokens = Self::tokenize_turtle_star_line(line_no_dot);
+            // Tokenize, but keep ; , . as delimiters only when outside URIs, literals, and quoted triples
+            let tokens = Self::tokenize_turtle_star_line(line);
 
-            if tokens.len() >= 3 {
-                let subject_raw = &tokens[0];
-                let predicate_raw = &tokens[1];
-                let object_raw = tokens[2..].join(" ");
+            let mut subject_raw: Option<String> = None;
+            let mut predicate_raw: Option<String> = None;
+            let mut object_tokens: Vec<String> = Vec::new();
 
-                // Check for annotation syntax {| ... |}
-                let (object_part, annotations) = if let Some(ann_start) = object_raw.find("{|") {
-                    let obj = object_raw[..ann_start].trim().to_string();
-                    // Extract annotation content between {| and |}
-                    if let Some(ann_end) = object_raw.find("|}") {
-                        let ann_content = object_raw[ann_start + 2..ann_end].trim();
-                        let ann_parts: Vec<&str> = ann_content.splitn(2, char::is_whitespace).collect();
-                        if ann_parts.len() == 2 {
-                            (obj, vec![(ann_parts[0].to_string(), ann_parts[1].to_string())])
+            let mut expect_subject = true;
+            let mut expect_predicate = false;
+            let mut expect_object = false;
+
+            let flush_object = |this: &mut Self,
+                                subject_raw: &Option<String>,
+                                predicate_raw: &Option<String>,
+                                object_tokens: &mut Vec<String>| {
+                if let (Some(s_raw), Some(p_raw)) = (subject_raw.as_ref(), predicate_raw.as_ref()) {
+                    if object_tokens.is_empty() {
+                        return;
+                    }
+
+                    let object_raw = object_tokens.join(" ");
+
+                    // Handle annotation syntax {| ... |}
+                    let (object_part, annotations) = if let Some(ann_start) = object_raw.find("{|")
+                    {
+                        let obj = object_raw[..ann_start].trim().to_string();
+
+                        if let Some(ann_end) = object_raw.find("|}") {
+                            let ann_content = object_raw[ann_start + 2..ann_end].trim();
+                            let ann_parts: Vec<&str> =
+                                ann_content.splitn(2, char::is_whitespace).collect();
+
+                            if ann_parts.len() == 2 {
+                                (
+                                    obj,
+                                    vec![(ann_parts[0].to_string(), ann_parts[1].to_string())],
+                                )
+                            } else {
+                                (obj, vec![])
+                            }
                         } else {
-                            (obj, vec![])
+                            (object_raw, vec![])
                         }
                     } else {
                         (object_raw, vec![])
-                    }
-                } else {
-                    (object_raw, vec![])
-                };
-
-                let subject = self.resolve_query_term(&Self::clean_turtle_term(subject_raw), &self.prefixes);
-                let predicate = self.resolve_query_term(&Self::clean_turtle_term(predicate_raw), &self.prefixes);
-                let object = self.resolve_query_term(&Self::clean_turtle_term(&object_part), &self.prefixes);
-
-                // Check if subject or object is a quoted triple
-                if subject.starts_with("<<") || object.starts_with("<<") {
-                    let s_id = self.encode_term_star(&subject);
-                    let p_id = self.encode_term_star(&predicate);
-                    let o_id = self.encode_term_star(&object);
-                    let triple = Triple { subject: s_id, predicate: p_id, object: o_id };
-                    self.add_triple(triple);
-                } else {
-                    let mut dict = self.dictionary.write().unwrap();
-                    let triple = Triple {
-                        subject: dict.encode(&subject),
-                        predicate: dict.encode(&predicate),
-                        object: dict.encode(&object),
                     };
-                    drop(dict);
-                    self.add_triple(triple);
-                }
 
-                // Handle annotations: emit additional triples with << s p o >> as subject
-                for (ann_pred, ann_obj) in &annotations {
-                    let qt_str = format!("<< {} {} {} >>", subject, predicate, object);
-                    let qt_id = self.encode_term_star(&qt_str);
-                    let ann_p_id = self.encode_term_star(
-                        &self.resolve_query_term(&Self::clean_turtle_term(ann_pred), &self.prefixes),
-                    );
-                    let ann_o_id = self.encode_term_star(
-                        &self.resolve_query_term(&Self::clean_turtle_term(ann_obj), &self.prefixes),
-                    );
-                    let ann_triple = Triple { subject: qt_id, predicate: ann_p_id, object: ann_o_id };
-                    self.add_triple(ann_triple);
+                    let subject =
+                        this.resolve_query_term(&Self::clean_turtle_term(s_raw), &this.prefixes);
+                    let predicate =
+                        this.resolve_query_term(&Self::clean_turtle_term(p_raw), &this.prefixes);
+                    let object = this
+                        .resolve_query_term(&Self::clean_turtle_term(&object_part), &this.prefixes);
+
+                    // Emit the main triple
+                    if subject.starts_with("<<") || object.starts_with("<<") {
+                        let s_id = this.encode_term_star(&subject);
+                        let p_id = this.encode_term_star(&predicate);
+                        let o_id = this.encode_term_star(&object);
+                        let triple = Triple {
+                            subject: s_id,
+                            predicate: p_id,
+                            object: o_id,
+                        };
+                        this.add_triple(triple);
+                    } else {
+                        let mut dict = this.dictionary.write().unwrap();
+                        let triple = Triple {
+                            subject: dict.encode(&subject),
+                            predicate: dict.encode(&predicate),
+                            object: dict.encode(&object),
+                        };
+                        drop(dict);
+                        this.add_triple(triple);
+                    }
+
+                    // Emit annotation triples, if any
+                    for (ann_pred, ann_obj) in &annotations {
+                        let qt_str = format!("<< {} {} {} >>", subject, predicate, object);
+                        let qt_id = this.encode_term_star(&qt_str);
+
+                        let ann_p_id = this.encode_term_star(&this.resolve_query_term(
+                            &Self::clean_turtle_term(ann_pred),
+                            &this.prefixes,
+                        ));
+                        let ann_o_id =
+                            this.encode_term_star(&this.resolve_query_term(
+                                &Self::clean_turtle_term(ann_obj),
+                                &this.prefixes,
+                            ));
+
+                        let ann_triple = Triple {
+                            subject: qt_id,
+                            predicate: ann_p_id,
+                            object: ann_o_id,
+                        };
+                        this.add_triple(ann_triple);
+                    }
+
+                    object_tokens.clear();
                 }
-            } else {
-                eprintln!("Skipping invalid line: {}", line);
+            };
+
+            for token in tokens {
+                match token.as_str() {
+                    "." => {
+                        flush_object(self, &subject_raw, &predicate_raw, &mut object_tokens);
+                        subject_raw = None;
+                        predicate_raw = None;
+                        expect_subject = true;
+                        expect_predicate = false;
+                        expect_object = false;
+                    }
+                    ";" => {
+                        flush_object(self, &subject_raw, &predicate_raw, &mut object_tokens);
+                        predicate_raw = None;
+                        expect_predicate = true;
+                        expect_object = false;
+                    }
+                    "," => {
+                        flush_object(self, &subject_raw, &predicate_raw, &mut object_tokens);
+                        expect_object = true;
+                    }
+                    _ => {
+                        if expect_subject {
+                            subject_raw = Some(token);
+                            expect_subject = false;
+                            expect_predicate = true;
+                        } else if expect_predicate {
+                            predicate_raw = Some(token);
+                            expect_predicate = false;
+                            expect_object = true;
+                        } else if expect_object {
+                            object_tokens.push(token);
+                        } else {
+                            // Fallback for slightly malformed input
+                            object_tokens.push(token);
+                        }
+                    }
+                }
             }
+
+            // Flush any trailing object if the line does not end with '.'
+            flush_object(self, &subject_raw, &predicate_raw, &mut object_tokens);
         }
     }
 
-    /// Tokenize a Turtle-star line, keeping `<< ... >>` as a single token.
+    /// Tokenize a Turtle-star line, keeping `<< ... >>` and punctuation structure intact
     fn tokenize_turtle_star_line(line: &str) -> Vec<String> {
         let mut tokens = Vec::new();
         let mut current = String::new();
-        let mut depth = 0i32;
-        let mut in_uri = false;
-        let mut in_literal = false;
+
+        let mut depth = 0i32; // quoted-triple nesting depth
+        let mut in_uri = false; // inside <...>
+        let mut in_literal = false; // inside "..."
         let mut escaped = false;
+
         let mut chars = line.chars().peekable();
 
         while let Some(ch) = chars.next() {
@@ -841,19 +1304,23 @@ impl SparqlDatabase {
                 escaped = false;
                 continue;
             }
+
             match ch {
                 '\\' if in_literal => {
                     current.push(ch);
                     escaped = true;
                 }
+
                 '"' if !in_uri && depth == 0 => {
                     in_literal = !in_literal;
                     current.push(ch);
                 }
+
                 '"' if depth > 0 => {
                     in_literal = !in_literal;
                     current.push(ch);
                 }
+
                 '<' if !in_literal => {
                     if chars.peek() == Some(&'<') && !in_uri {
                         current.push(ch);
@@ -870,6 +1337,7 @@ impl SparqlDatabase {
                         current.push(ch);
                     }
                 }
+
                 '>' if !in_literal => {
                     if depth > 0 && !in_uri {
                         current.push(ch);
@@ -892,6 +1360,16 @@ impl SparqlDatabase {
                         current.push(ch);
                     }
                 }
+
+                ';' | ',' | '.' if depth == 0 && !in_uri && !in_literal => {
+                    let trimmed = current.trim().to_string();
+                    if !trimmed.is_empty() {
+                        tokens.push(trimmed);
+                        current.clear();
+                    }
+                    tokens.push(ch.to_string());
+                }
+
                 ' ' | '\t' | '\n' | '\r' if depth == 0 && !in_uri && !in_literal => {
                     let trimmed = current.trim().to_string();
                     if !trimmed.is_empty() {
@@ -899,15 +1377,18 @@ impl SparqlDatabase {
                         current.clear();
                     }
                 }
+
                 _ => {
                     current.push(ch);
                 }
             }
         }
+
         let trimmed = current.trim().to_string();
         if !trimmed.is_empty() {
             tokens.push(trimmed);
         }
+
         tokens
     }
 
@@ -929,16 +1410,18 @@ impl SparqlDatabase {
     pub fn parse_n3(&mut self, n3_data: &str) {
         let lines: Vec<String> = n3_data.lines().map(|l| l.trim().to_string()).collect();
         let chunk_size = 1000;
-        let chunks: Vec<Vec<String>> = lines
-            .chunks(chunk_size)
-            .map(|c| c.to_vec())
-            .collect();
-    
-        let partial_results: Vec<(BTreeSet<Triple>, Arc<RwLock<Dictionary>>, HashMap<String, String>)> =
-            chunks.par_iter().map(|chunk| {
+        let chunks: Vec<Vec<String>> = lines.chunks(chunk_size).map(|c| c.to_vec()).collect();
+
+        let partial_results: Vec<(
+            Vec<Triple>,
+            Arc<RwLock<Dictionary>>,
+            HashMap<String, String>,
+        )> = chunks
+            .par_iter()
+            .map(|chunk| {
                 let mut local_db = SparqlDatabase::new();
                 let mut statement = String::new();
-    
+
                 for raw_line in chunk {
                     let mut line = raw_line.as_str();
                     if let Some(comment_start) = line.find('#') {
@@ -953,10 +1436,13 @@ impl SparqlDatabase {
                         let parts: Vec<&str> = line.split_whitespace().collect();
                         if parts.len() >= 2 {
                             let prefix = parts[0].trim_end_matches(':').to_string();
-                            let uri = parts[1].trim_start_matches('<').trim_end_matches('>').to_string();
+                            let uri = parts[1]
+                                .trim_start_matches('<')
+                                .trim_end_matches('>')
+                                .to_string();
                             local_db.prefixes.insert(prefix, uri);
                         } else {
-                            eprintln!("Invalid prefix declaration: {}", line);
+                            eprintln!("KOLIBRIE_OPERATION_FAILED");
                         }
                     } else {
                         statement.push_str(line);
@@ -967,13 +1453,18 @@ impl SparqlDatabase {
                         }
                     }
                 }
-    
-                (local_db.triples, local_db.dictionary, local_db.prefixes)
-            }).collect();
-    
+
+                (
+                    local_db.query_default_triples(None, None, None),
+                    local_db.dictionary,
+                    local_db.prefixes,
+                )
+            })
+            .collect();
+
         for (triples, dict_arc, pref) in partial_results {
             for t in triples {
-                self.triples.insert(t);
+                self.add_triple(t);
             }
             let mut self_dict = self.dictionary.write().unwrap();
             let other_dict = dict_arc.read().unwrap();
@@ -991,7 +1482,7 @@ impl SparqlDatabase {
         let partial_results = self.parse_ntriples(ntriples_data);
 
         let encoded_triples = self.encode_triples(partial_results);
-        for encoded_triple in encoded_triples{
+        for encoded_triple in encoded_triples {
             self.add_triple(encoded_triple);
         }
     }
@@ -1017,7 +1508,7 @@ impl SparqlDatabase {
 
                     // N-Triples must end with a dot
                     if !line.ends_with('.') {
-                        eprintln!("Invalid N-Triples line (missing dot): {}", line);
+                        eprintln!("KOLIBRIE_OPERATION_FAILED");
                         continue;
                     }
 
@@ -1025,7 +1516,9 @@ impl SparqlDatabase {
                     let line_without_dot = &line[..line.len() - 1].trim();
 
                     // Parse the triple
-                    if let Some((subject, predicate, object)) = self.parse_ntriples_line(line_without_dot) {
+                    if let Some((subject, predicate, object)) =
+                        self.parse_ntriples_line(line_without_dot)
+                    {
                         local_triples.push((subject, predicate, object));
                     }
                 }
@@ -1037,7 +1530,10 @@ impl SparqlDatabase {
     }
 
     // Encode triples
-    pub fn encode_triples(&mut self, non_encoded_triples: Vec<Vec<(String, String, String)>>) -> Vec<Triple>{
+    pub fn encode_triples(
+        &mut self,
+        non_encoded_triples: Vec<Vec<(String, String, String)>>,
+    ) -> Vec<Triple> {
         let mut encoded_triples = Vec::new();
         for triple_strings in non_encoded_triples {
             for (subject, predicate, object) in triple_strings {
@@ -1052,14 +1548,80 @@ impl SparqlDatabase {
         encoded_triples
     }
 
-    pub fn parse_and_encode_ntriples(&mut self, ntriples_data: &str) -> Vec<Triple>{
+    pub fn parse_and_encode_ntriples(&mut self, ntriples_data: &str) -> Vec<Triple> {
         let partial_results = self.parse_ntriples(ntriples_data);
 
         self.encode_triples(partial_results)
     }
 
+    pub fn parse_nquads_and_add(&mut self, nquads_data: &str) {
+        for raw_line in nquads_data.lines() {
+            let line = raw_line.trim();
+            if line.is_empty() || line.starts_with('#') {
+                continue;
+            }
+
+            let line_without_dot = if line.ends_with('.') {
+                line[..line.len() - 1].trim()
+            } else {
+                eprintln!("KOLIBRIE_OPERATION_FAILED");
+                continue;
+            };
+
+            if let Some((subject, predicate, object, graph)) =
+                self.parse_nquads_line(line_without_dot)
+            {
+                match graph {
+                    Some(graph) => {
+                        self.add_quad_parts(&subject, &predicate, &object, &graph);
+                    }
+                    None => {
+                        let quad = Quad {
+                            subject: self.encode_term_star(&subject),
+                            predicate: self.encode_term_star(&predicate),
+                            object: self.encode_term_star(&object),
+                            graph: GraphId::Default,
+                        };
+                        self.add_quad(quad);
+                    }
+                }
+            }
+        }
+    }
+
+    fn parse_nquads_line(&self, line: &str) -> Option<(String, String, String, Option<String>)> {
+        let mut parts = self.parse_ntriples_parts(line);
+        if !matches!(parts.len(), 3 | 4) {
+            eprintln!("KOLIBRIE_OPERATION_FAILED");
+            return None;
+        }
+        let subject = self.clean_ntriples_term(&parts.remove(0));
+        let predicate = self.clean_ntriples_term(&parts.remove(0));
+        let object = self.clean_ntriples_term(&parts.remove(0));
+        let graph = (!parts.is_empty()).then(|| self.clean_ntriples_term(&parts.remove(0)));
+        Some((subject, predicate, object, graph))
+    }
+
     // Helper method to parse a single N-Triples line
     fn parse_ntriples_line(&self, line: &str) -> Option<(String, String, String)> {
+        let parts = self.parse_ntriples_parts(line);
+        if parts.len() == 3 {
+            let subject = self.clean_ntriples_term(&parts[0]);
+            // Expand the Turtle `a` shorthand for rdf:type in predicate position
+            let predicate = if parts[1] == "a" {
+                "http://www.w3.org/1999/02/22-rdf-syntax-ns#type".to_string()
+            } else {
+                self.clean_ntriples_term(&parts[1])
+            };
+            let object = self.clean_ntriples_term(&parts[2]);
+            Some((subject, predicate, object))
+        } else {
+            eprintln!("KOLIBRIE_OPERATION_FAILED");
+            None
+        }
+    }
+
+    fn parse_ntriples_parts(&self, line: &str) -> Vec<String> {
         let mut parts = Vec::new();
         let mut current_part = String::new();
         let mut in_uri = false;
@@ -1197,20 +1759,7 @@ impl SparqlDatabase {
             parts.push(current_part.trim().to_string());
         }
 
-        if parts.len() == 3 {
-            let subject = self.clean_ntriples_term(&parts[0]);
-            // Expand the Turtle `a` shorthand for rdf:type in predicate position.
-            let predicate = if parts[1] == "a" {
-                "http://www.w3.org/1999/02/22-rdf-syntax-ns#type".to_string()
-            } else {
-                self.clean_ntriples_term(&parts[1])
-            };
-            let object = self.clean_ntriples_term(&parts[2]);
-            Some((subject, predicate, object))
-        } else {
-            eprintln!("Invalid N-Triples line (expected 3 parts, got {}): {}", parts.len(), line);
-            None
-        }
+        parts
     }
 
     // Helper method to clean N-Triples terms
@@ -1224,25 +1773,22 @@ impl SparqlDatabase {
 
         // Handle URIs
         if term.starts_with('<') && term.ends_with('>') {
-            return term[1..term.len()-1].to_string();
+            return term[1..term.len() - 1].to_string();
         }
-        
+
         // Handle literals (keep quotes and datatype/language info)
         if term.starts_with('"') {
-            if let Some(close_quote_pos) = term[1..].find('"') {
-                let close_quote_pos = close_quote_pos + 1;
-                let literal_value = &term[1..close_quote_pos];
-                let rest = &term[close_quote_pos + 1..];
+            if let Some((literal_value, rest)) = decode_ntriples_literal(term) {
                 if rest.is_empty() {
-                    return literal_value.to_string();
+                    return literal_value;
                 } else if rest.starts_with("^^") {
-                    return literal_value.to_string();
-                } else if rest.starts_with("@") {
-                    return format!("{}{}", literal_value, rest);
+                    return literal_value;
+                } else if rest.starts_with('@') {
+                    return format!("{literal_value}{rest}");
                 }
             }
         }
-        
+
         // Return as-is for other cases
         term.to_string()
     }
@@ -1298,7 +1844,7 @@ impl SparqlDatabase {
                             object: dict.encode(&resolved_object),
                         };
                         drop(dict);
-                        self.triples.insert(triple);
+                        self.add_triple(triple);
 
                         current_state = "predicate";
                     }
@@ -1344,7 +1890,7 @@ impl SparqlDatabase {
             if let Some(uri) = self.prefixes.get(prefix) {
                 format!("{}{}", uri, local_name)
             } else {
-                eprintln!("Unknown prefix: {}", prefix);
+                eprintln!("KOLIBRIE_OPERATION_FAILED");
                 term.to_string()
             }
         } else {
@@ -1356,7 +1902,7 @@ impl SparqlDatabase {
     pub fn register_prefixes_from_query(&mut self, query: &str) {
         // Simple regex to extract PREFIX declarations
         let prefix_pattern = regex::Regex::new(r"PREFIX\s+([a-zA-Z0-9_]+):\s*<([^>]+)>").unwrap();
-        
+
         for captures in prefix_pattern.captures_iter(query) {
             if captures.len() >= 3 {
                 let prefix = captures[1].to_string();
@@ -1365,7 +1911,7 @@ impl SparqlDatabase {
             }
         }
     }
-    
+
     // Method to ensure prefixes are properly shared between components
     pub fn share_prefixes_with(&self, prefixes: &mut HashMap<String, String>) {
         for (prefix, uri) in &self.prefixes {
@@ -1391,16 +1937,16 @@ impl SparqlDatabase {
             let mut parts = term.splitn(2, ':');
             let prefix = parts.next().unwrap();
             let local_name = parts.next().unwrap_or("");
-            
+
             // First check the passed prefixes map
             if let Some(uri) = prefixes.get(prefix) {
                 format!("{}{}", uri, local_name)
-            } 
+            }
             // Then check the database's own prefixes map as a fallback
             else if let Some(uri) = self.prefixes.get(prefix) {
                 format!("{}{}", uri, local_name)
             } else {
-                eprintln!("Unknown prefix in query: {}", prefix);
+                eprintln!("KOLIBRIE_OPERATION_FAILED");
                 term.to_string()
             }
         } else {
@@ -1408,1528 +1954,175 @@ impl SparqlDatabase {
         }
     }
 
-    pub fn apply_filters_simd<'a>(
-        &self,
-        results: Vec<BTreeMap<&'a str, String>>,
-        filters: Vec<FilterExpression<'a>>,
-    ) -> Vec<BTreeMap<&'a str, String>> {
-        results
-            .into_iter()
-            .filter(|result| {
-                filters.iter().all(|filter_expr| {
-                    match filter_expr {
-                        FilterExpression::Comparison(var, operator, value) => {
-                            // Check if either side contains arithmetic operations
-                            let has_arithmetic = var.contains('+') || var.contains('-') || 
-                                                var.contains('*') || var.contains('/') ||
-                                                value.contains('+') || value.contains('-') || 
-                                                value.contains('*') || value.contains('/');
-                            
-                            if has_arithmetic {
-                                // Use the non-SIMD arithmetic expression evaluator for complex expressions
-                                let left_result = self.evaluate_arithmetic_string(result, var);
-                                let right_result = self.evaluate_arithmetic_string(result, value);
-                                
-                                match (left_result, right_result) {
-                                    (Ok(left_val), Ok(right_val)) => {
-                                        // Both sides are numeric, perform comparison
-                                        match *operator {
-                                            "=" => left_val == right_val,
-                                            "!=" => left_val != right_val,
-                                            ">" => left_val > right_val,
-                                            ">=" => left_val >= right_val,
-                                            "<" => left_val < right_val,
-                                            "<=" => left_val <= right_val,
-                                            _ => false,
-                                        }
-                                    },
-                                    _ => false // At least one expression couldn't be evaluated
-                                }
-                            } else {
-                                // For simple expressions without arithmetic operators, use the SIMD approach
-                                if let Some(var_value_str) = result.get(var) {
-                                    // First, try parsing both values as numbers
-                                    let var_value_num = var_value_str.parse::<i32>();
-                                    let filter_value_num = value.parse::<i32>();
-    
-                                    if var_value_num.is_ok() && filter_value_num.is_ok() {
-                                        // Both values are numeric, perform SIMD numeric comparison
-                                        let var_value = var_value_num.unwrap();
-                                        let filter_value = filter_value_num.unwrap();
-    
-                                        // On x86 (SSE2) or x86_64 (SSE2) use SIMD intrinsics
-                                        #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
-                                        {
-                                            unsafe {
-                                                // Load values into SIMD registers
-                                                let var_simd = _mm_set1_epi32(var_value);
-                                                let filter_simd = _mm_set1_epi32(filter_value);
-                                                return match *operator {
-                                                    "=" => _mm_movemask_epi8(_mm_cmpeq_epi32(
-                                                        var_simd,
-                                                        filter_simd,
-                                                    )) == 0xFFFF,
-                                                    "!=" => _mm_movemask_epi8(_mm_cmpeq_epi32(
-                                                        var_simd,
-                                                        filter_simd,
-                                                    )) != 0xFFFF,
-                                                    ">" => _mm_movemask_epi8(_mm_cmpgt_epi32(
-                                                        var_simd,
-                                                        filter_simd,
-                                                    )) == 0xFFFF,
-                                                    ">=" => {
-                                                        let eq = _mm_cmpeq_epi32(var_simd, filter_simd);
-                                                        let gt = _mm_cmpgt_epi32(var_simd, filter_simd);
-                                                        _mm_movemask_epi8(_mm_or_si128(eq, gt)) == 0xFFFF
-                                                    }
-                                                    "<" => _mm_movemask_epi8(_mm_cmpgt_epi32(
-                                                        filter_simd,
-                                                        var_simd,
-                                                    )) == 0xFFFF,
-                                                    "<=" => {
-                                                        let eq = _mm_cmpeq_epi32(var_simd, filter_simd);
-                                                        let lt = _mm_cmpgt_epi32(filter_simd, var_simd);
-                                                        _mm_movemask_epi8(_mm_or_si128(eq, lt)) == 0xFFFF
-                                                    }
-                                                    _ => false,
-                                                };
-                                            }
-                                        }
-    
-                                        // On ARM (aarch64) use NEON intrinsics
-                                        #[cfg(target_arch = "aarch64")]
-                                        {
-                                            unsafe {
-                                                let var_neon = vdupq_n_s32(var_value);
-                                                let filter_neon = vdupq_n_s32(filter_value);
-                                                return match *operator {
-                                                    "=" => {
-                                                        let cmp = vceqq_s32(var_neon, filter_neon);
-                                                        (vgetq_lane_u32(cmp, 0) == 0xFFFFFFFF)
-                                                            && (vgetq_lane_u32(cmp, 1) == 0xFFFFFFFF)
-                                                            && (vgetq_lane_u32(cmp, 2) == 0xFFFFFFFF)
-                                                            && (vgetq_lane_u32(cmp, 3) == 0xFFFFFFFF)
-                                                    }
-                                                    "!=" => {
-                                                        let cmp = vceqq_s32(var_neon, filter_neon);
-                                                        !((vgetq_lane_u32(cmp, 0) == 0xFFFFFFFF)
-                                                            && (vgetq_lane_u32(cmp, 1) == 0xFFFFFFFF)
-                                                            && (vgetq_lane_u32(cmp, 2) == 0xFFFFFFFF)
-                                                            && (vgetq_lane_u32(cmp, 3) == 0xFFFFFFFF))
-                                                    }
-                                                    ">" => {
-                                                        let cmp = vcgtq_s32(var_neon, filter_neon);
-                                                        (vgetq_lane_u32(cmp, 0) == 0xFFFFFFFF)
-                                                            && (vgetq_lane_u32(cmp, 1) == 0xFFFFFFFF)
-                                                            && (vgetq_lane_u32(cmp, 2) == 0xFFFFFFFF)
-                                                            && (vgetq_lane_u32(cmp, 3) == 0xFFFFFFFF)
-                                                    }
-                                                    ">=" => {
-                                                        let eq = vceqq_s32(var_neon, filter_neon);
-                                                        let gt = vcgtq_s32(var_neon, filter_neon);
-                                                        let cmp = vorrq_u32(eq, gt);
-                                                        (vgetq_lane_u32(cmp, 0) == 0xFFFFFFFF)
-                                                            && (vgetq_lane_u32(cmp, 1) == 0xFFFFFFFF)
-                                                            && (vgetq_lane_u32(cmp, 2) == 0xFFFFFFFF)
-                                                            && (vgetq_lane_u32(cmp, 3) == 0xFFFFFFFF)
-                                                    }
-                                                    "<" => {
-                                                        let cmp = vcgtq_s32(filter_neon, var_neon);
-                                                        (vgetq_lane_u32(cmp, 0) == 0xFFFFFFFF)
-                                                            && (vgetq_lane_u32(cmp, 1) == 0xFFFFFFFF)
-                                                            && (vgetq_lane_u32(cmp, 2) == 0xFFFFFFFF)
-                                                            && (vgetq_lane_u32(cmp, 3) == 0xFFFFFFFF)
-                                                    }
-                                                    "<=" => {
-                                                        let eq = vceqq_s32(var_neon, filter_neon);
-                                                        let lt = vcgtq_s32(filter_neon, var_neon);
-                                                        let cmp = vorrq_u32(eq, lt);
-                                                        (vgetq_lane_u32(cmp, 0) == 0xFFFFFFFF)
-                                                            && (vgetq_lane_u32(cmp, 1) == 0xFFFFFFFF)
-                                                            && (vgetq_lane_u32(cmp, 2) == 0xFFFFFFFF)
-                                                            && (vgetq_lane_u32(cmp, 3) == 0xFFFFFFFF)
-                                                    }
-                                                    _ => false,
-                                                }
-                                            }
-                                        }
-    
-                                        // Fallback (or if compiled for a non‐SIMD platform)
-                                        #[cfg(not(any(
-                                            target_arch = "x86",
-                                            target_arch = "x86_64",
-                                            target_arch = "aarch64"
-                                        )))]
-                                        {
-                                            return match *operator {
-                                                "=" => var_value == filter_value,
-                                                "!=" => var_value != filter_value,
-                                                ">" => var_value > filter_value,
-                                                ">=" => var_value >= filter_value,
-                                                "<" => var_value < filter_value,
-                                                "<=" => var_value <= filter_value,
-                                                _ => false,
-                                            };
-                                        }
-                                    } else {
-                                        // At least one value is a string, perform string comparison
-                                        let var_bytes = var_value_str.as_bytes();
-                                        let filter_bytes = value.as_bytes();
-    
-                                        let var_len = var_bytes.len();
-                                        let filter_len = filter_bytes.len();
-    
-                                        // If lengths differ, they can't be equal
-                                        if var_len != filter_len {
-                                            return match *operator {
-                                                "=" => false,
-                                                "!=" => true,
-                                                _ => false, // Other operators are not supported for strings
-                                            };
-                                        }
-    
-                                        let mut i = 0;
-                                        #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
-                                        {
-                                            unsafe {
-                                                while i + 16 <= var_len {
-                                                    let var_chunk = _mm_loadu_si128(
-                                                        var_bytes[i..].as_ptr() as *const __m128i,
-                                                    );
-                                                    let filter_chunk = _mm_loadu_si128(
-                                                        filter_bytes[i..].as_ptr() as *const __m128i,
-                                                    );
-                                                    let cmp = _mm_cmpeq_epi8(var_chunk, filter_chunk);
-                                                    let mask = _mm_movemask_epi8(cmp);
-                                                    if mask != 0xFFFF {
-                                                        return match *operator {
-                                                            "=" => false,
-                                                            "!=" => true,
-                                                            _ => false,
-                                                        };
-                                                    }
-                                                    i += 16;
-                                                }
-                                            }
-                                        }
-    
-                                        #[cfg(target_arch = "aarch64")]
-                                        {
-                                            unsafe {
-                                                while i + 16 <= var_len {
-                                                    let var_chunk = vld1q_u8(var_bytes[i..].as_ptr());
-                                                    let filter_chunk = vld1q_u8(filter_bytes[i..].as_ptr());
-                                                    let cmp = vceqq_u8(var_chunk, filter_chunk);
-                                                    let cmp_arr: [u8; 16] = std::mem::transmute(cmp);
-                                                    if cmp_arr.iter().any(|&lane| lane != 0xFF) {
-                                                        return match *operator {
-                                                            "=" => false,
-                                                            "!=" => true,
-                                                            _ => false,
-                                                        };
-                                                    }
-                                                    i += 16;
-                                                }
-                                            }
-                                        }
-    
-                                        // Handle remaining bytes
-                                        if i < var_len {
-                                            for j in i..var_len {
-                                                if var_bytes[j] != filter_bytes[j] {
-                                                    return match *operator {
-                                                        "=" => false,
-                                                        "!=" => true,
-                                                        _ => false,
-                                                    };
-                                                }
-                                            }
-                                        }
-    
-                                        // Strings are equal
-                                        match *operator {
-                                            "=" => true,
-                                            "!=" => false,
-                                            _ => false, // Other operators not supported for strings
-                                        }
-                                    }
-                                } else {
-                                    false
-                                }
-                            }
-                        },
-                        FilterExpression::And(left, right) => {
-                            self.evaluate_filter_expression(result, left) && 
-                            self.evaluate_filter_expression(result, right)
-                        },
-                        FilterExpression::Or(left, right) => {
-                            self.evaluate_filter_expression(result, left) || 
-                            self.evaluate_filter_expression(result, right)
-                        },
-                        FilterExpression::Not(expr) => {
-                            !self.evaluate_filter_expression(result, expr)
-                        },
-                        FilterExpression::ArithmeticExpr(expr) => {
-                            match self.evaluate_arithmetic_expression(result, expr) {
-                                Ok(val) => val != 0.0,
-                                Err(_) => false,
-                            }
-                        }
-                        FilterExpression::FunctionCall(func_name, args) => {
-                            match *func_name {
-                                "isTRIPLE" => {
-                                    if let Some(arg) = args.first() {
-                                        let val = if arg.starts_with('?') {
-                                            result.get(arg).map(|s| s.as_str()).unwrap_or("")
-                                        } else {
-                                            arg
-                                        };
-                                        val.starts_with("<<") && val.ends_with(">>")
-                                    } else {
-                                        false
-                                    }
-                                }
-                                _ => false,
-                            }
-                        }
-                    }
-                })
-            })
-            .collect()
-    }
-
-    // Helper function to evaluate an arithmetic expression
-    fn evaluate_arithmetic_expression<'a>(
-        &self,
-        result: &BTreeMap<&'a str, String>,
-        expr: &shared::query::ArithmeticExpression<'a>
-    ) -> Result<f64, String> {
-        match expr {
-            shared::query::ArithmeticExpression::Operand(operand) => {
-                // Check if it's a variable
-                if operand.starts_with('?') {
-                    if let Some(var_value) = result.get(*operand) {
-                        // Parse the variable value as a number
-                        var_value.parse::<f64>().map_err(|_| format!("Cannot parse '{}' as a number", var_value))
-                    } else {
-                        Err(format!("Variable '{}' not found", operand))
-                    }
-                } 
-                // Check if it's a numeric literal
-                else if operand.chars().all(|c| c.is_digit(10) || c == '.') {
-                    operand.parse::<f64>().map_err(|_| format!("Cannot parse '{}' as a number", operand))
-                } 
-                // Check if it's a string literal
-                else if operand.starts_with('"') && operand.ends_with('"') {
-                    Err(format!("Cannot perform arithmetic on string literal '{}'", operand))
-                } 
-                // Parse it as a number
-                else {
-                    operand.parse::<f64>().map_err(|_| format!("Cannot parse '{}' as a number", operand))
-                }
-            },
-            shared::query::ArithmeticExpression::Add(left, right) => {
-                let left_val = self.evaluate_arithmetic_expression(result, left)?;
-                let right_val = self.evaluate_arithmetic_expression(result, right)?;
-                Ok(left_val + right_val)
-            },
-            shared::query::ArithmeticExpression::Subtract(left, right) => {
-                let left_val = self.evaluate_arithmetic_expression(result, left)?;
-                let right_val = self.evaluate_arithmetic_expression(result, right)?;
-                Ok(left_val - right_val)
-            },
-            shared::query::ArithmeticExpression::Multiply(left, right) => {
-                let left_val = self.evaluate_arithmetic_expression(result, left)?;
-                let right_val = self.evaluate_arithmetic_expression(result, right)?;
-                Ok(left_val * right_val)
-            },
-            shared::query::ArithmeticExpression::Divide(left, right) => {
-                let left_val = self.evaluate_arithmetic_expression(result, left)?;
-                let right_val = self.evaluate_arithmetic_expression(result, right)?;
-                if right_val == 0.0 {
-                    Err("Division by zero".to_string())
-                } else {
-                    Ok(left_val / right_val)
-                }
-            }
-        }
-    }
-
-    // Helper function to parse and evaluate an arithmetic expression from a string
-    fn evaluate_arithmetic_string<'a>(
-        &self,
-        result: &BTreeMap<&'a str, String>,
-        expr_str: &'a str
-    ) -> Result<f64, String> {
-        // Check for parenthesized expressions and remove them if needed
-        let expr_to_parse = if expr_str.starts_with('(') && expr_str.ends_with(')') {
-            &expr_str[1..expr_str.len()-1]
-        } else {
-            expr_str
-        };
-        
-        if expr_to_parse.contains('+') || expr_to_parse.contains('-') || 
-           expr_to_parse.contains('*') || expr_to_parse.contains('/') {
-            // Parse the expression string into an ArithmeticExpression
-            match parser::parse_arithmetic_expression(expr_to_parse) {
-                Ok((_, arithmetic_expr)) => {
-                    // Evaluate the parsed expression
-                    self.evaluate_arithmetic_expression(result, &arithmetic_expr)
-                },
-                Err(e) => {
-                    // Print the error
-                    eprintln!("Failed to parse arithmetic expression '{}': {:?}", expr_to_parse, e);
-                    
-                    // If parsing fails, try to treat it as a simple operand
-                    if expr_to_parse.starts_with('?') {
-                        // It's a variable
-                        if let Some(var_value) = result.get(expr_to_parse) {
-                            var_value.parse::<f64>().map_err(|_| format!("Cannot parse '{}' as a number", var_value))
-                        } else {
-                            Err(format!("Variable '{}' not found", expr_to_parse))
-                        }
-                    } else {
-                        // Parse as a number
-                        expr_to_parse.parse::<f64>().map_err(|_| format!("Cannot parse '{}' as a number", expr_to_parse))
-                    }
-                }
-            }
-        } else {
-            // No arithmetic operators, treat as simple operand
-            if expr_to_parse.starts_with('?') {
-                // It's a variable
-                if let Some(var_value) = result.get(expr_to_parse) {
-                    var_value.parse::<f64>().map_err(|_| format!("Cannot parse '{}' as a number", var_value))
-                } else {
-                    Err(format!("Variable '{}' not found", expr_to_parse))
-                }
-            } else {
-                // Parse as a number
-                expr_to_parse.parse::<f64>().map_err(|_| format!("Cannot parse '{}' as a number", expr_to_parse))
-            }
-        }
-    }
-
-    // Helper method to evaluate a filter expression against a result
-    fn evaluate_filter_expression<'a>(
-        &self,
-        result: &BTreeMap<&'a str, String>,
-        filter_expr: &FilterExpression<'a>
-    ) -> bool {
-        match filter_expr {
-            FilterExpression::Comparison(left, operator, right) => {
-                // Evaluate both sides as arithmetic expressions
-                let left_result = self.evaluate_arithmetic_string(result, left);
-                let right_result = self.evaluate_arithmetic_string(result, right);
-                
-                match (left_result, right_result) {
-                    (Ok(left_val), Ok(right_val)) => {
-                        // Both sides are numeric, perform numeric comparison
-                        match *operator {
-                            "=" => left_val == right_val,
-                            "!=" => left_val != right_val,
-                            ">" => left_val > right_val,
-                            ">=" => left_val >= right_val,
-                            "<" => left_val < right_val,
-                            "<=" => left_val <= right_val,
-                            _ => false,
-                        }
-                    },
-                    _ => {
-                        let left_str = if left.starts_with('?') {
-                            // Fix for the type mismatch error - convert to string
-                            match result.get(left) {
-                                Some(val) => val.as_str(),
-                                None => left,
-                            }
-                        } else {
-                            left
-                        };
-                        
-                        let right_str = if right.starts_with('?') {
-                            // Fix for the type mismatch error - convert to string
-                            match result.get(right) {
-                                Some(val) => val.as_str(),
-                                None => right,
-                            }
-                        } else {
-                            right
-                        };
-                        
-                        match *operator {
-                            "=" => left_str == right_str,
-                            "!=" => left_str != right_str,
-                            _ => false, // Other operators not supported for strings
-                        }
-                    }
-                }
-            },
-            FilterExpression::And(left, right) => {
-                self.evaluate_filter_expression(result, left) && 
-                self.evaluate_filter_expression(result, right)
-            },
-            FilterExpression::Or(left, right) => {
-                self.evaluate_filter_expression(result, left) || 
-                self.evaluate_filter_expression(result, right)
-            },
-            FilterExpression::Not(expr) => {
-                !self.evaluate_filter_expression(result, expr)
-            },
-            FilterExpression::ArithmeticExpr(expr) => {
-                match self.evaluate_arithmetic_expression(result, expr) {
-                    Ok(val) => val != 0.0,
-                    Err(_) => false,
-                }
-            }
-            FilterExpression::FunctionCall(func_name, args) => {
-                match *func_name {
-                    "isTRIPLE" => {
-                        if let Some(arg) = args.first() {
-                            let val = if arg.starts_with('?') {
-                                result.get(arg).map(|s| s.as_str()).unwrap_or("")
-                            } else {
-                                arg
-                            };
-                            val.starts_with("<<") && val.ends_with(">>")
-                        } else {
-                            false
-                        }
-                    }
-                    _ => false,
-                }
-            }
-        }
-    }
-
     pub fn union(&mut self, other: &SparqlDatabase) -> Self {
-        // Create a new dictionary by cloning and merging
         let self_dict = self.dictionary.read().unwrap();
         let other_dict = other.dictionary.read().unwrap();
         let mut merged_dictionary = self_dict.clone();
-        drop(self_dict);
+        let self_quoted_triples = self.quoted_triple_store.read().unwrap();
+        let other_quoted_triples = other.quoted_triple_store.read().unwrap();
+        let mut merged_quoted_triples = self_quoted_triples.clone();
+        let mut translated_ids = HashMap::new();
 
-        // Re-encode triples from the other database using the merged dictionary
-        let mut re_encoded_triples = BTreeSet::new();
-        for triple in &other.triples {
-            let subject =
-                merged_dictionary.encode(other_dict.decode(triple.subject).unwrap());
-            let predicate =
-                merged_dictionary.encode(other_dict.decode(triple.predicate).unwrap());
-            let object = merged_dictionary.encode(other_dict.decode(triple.object).unwrap());
-            re_encoded_triples.insert(Triple {
+        // Preserve the complete lexical dictionary, not only terms currently
+        let mut other_term_ids: Vec<_> = other_dict.id_to_string.keys().copied().collect();
+        other_term_ids.sort_unstable();
+        for id in other_term_ids {
+            reencode_term_id(
+                id,
+                &other_dict,
+                &other_quoted_triples,
+                &mut merged_dictionary,
+                &mut merged_quoted_triples,
+                &mut translated_ids,
+            );
+        }
+
+        // Preserve even currently-unreferenced quoted terms. Quads and metadata
+        let mut other_quoted_ids: Vec<_> = other_quoted_triples
+            .id_to_components
+            .keys()
+            .copied()
+            .collect();
+        other_quoted_ids.sort_unstable();
+        for id in other_quoted_ids {
+            reencode_term_id(
+                id,
+                &other_dict,
+                &other_quoted_triples,
+                &mut merged_dictionary,
+                &mut merged_quoted_triples,
+                &mut translated_ids,
+            );
+        }
+
+        let mut dataset_index = DatasetIndex::new();
+        for graph in self.dataset_index.named_graphs() {
+            dataset_index.create_graph(graph);
+        }
+        for quad in self.dataset_index.all_quads() {
+            dataset_index.insert_quad(&quad);
+        }
+
+        // Graph names and every term in the other database must be translated
+        for graph in other.dataset_index.named_graphs() {
+            let GraphId::Named(graph_id) = graph else {
+                continue;
+            };
+            let graph_id = reencode_term_id(
+                graph_id,
+                &other_dict,
+                &other_quoted_triples,
+                &mut merged_dictionary,
+                &mut merged_quoted_triples,
+                &mut translated_ids,
+            );
+            dataset_index.create_graph(GraphId::Named(graph_id));
+        }
+        for quad in other.dataset_index.all_quads() {
+            let subject = reencode_term_id(
+                quad.subject,
+                &other_dict,
+                &other_quoted_triples,
+                &mut merged_dictionary,
+                &mut merged_quoted_triples,
+                &mut translated_ids,
+            );
+            let predicate = reencode_term_id(
+                quad.predicate,
+                &other_dict,
+                &other_quoted_triples,
+                &mut merged_dictionary,
+                &mut merged_quoted_triples,
+                &mut translated_ids,
+            );
+            let object = reencode_term_id(
+                quad.object,
+                &other_dict,
+                &other_quoted_triples,
+                &mut merged_dictionary,
+                &mut merged_quoted_triples,
+                &mut translated_ids,
+            );
+            let graph = match quad.graph {
+                GraphId::Default => GraphId::Default,
+                GraphId::Named(graph_id) => GraphId::Named(reencode_term_id(
+                    graph_id,
+                    &other_dict,
+                    &other_quoted_triples,
+                    &mut merged_dictionary,
+                    &mut merged_quoted_triples,
+                    &mut translated_ids,
+                )),
+            };
+            dataset_index.insert_quad(&Quad {
                 subject,
                 predicate,
                 object,
+                graph,
             });
         }
 
-        // Merge the triples
-        let union_triples: BTreeSet<Triple> =
-            self.triples.union(&re_encoded_triples).cloned().collect();
         let mut merged_seeds = self.probability_seeds.clone();
         for (triple, prob) in &other.probability_seeds {
-            let subject = merged_dictionary.encode(other_dict.decode(triple.subject).unwrap());
-            let predicate = merged_dictionary.encode(other_dict.decode(triple.predicate).unwrap());
-            let object = merged_dictionary.encode(other_dict.decode(triple.object).unwrap());
-            merged_seeds.insert(Triple { subject, predicate, object }, *prob);
+            let subject = reencode_term_id(
+                triple.subject,
+                &other_dict,
+                &other_quoted_triples,
+                &mut merged_dictionary,
+                &mut merged_quoted_triples,
+                &mut translated_ids,
+            );
+            let predicate = reencode_term_id(
+                triple.predicate,
+                &other_dict,
+                &other_quoted_triples,
+                &mut merged_dictionary,
+                &mut merged_quoted_triples,
+                &mut translated_ids,
+            );
+            let object = reencode_term_id(
+                triple.object,
+                &other_dict,
+                &other_quoted_triples,
+                &mut merged_dictionary,
+                &mut merged_quoted_triples,
+                &mut translated_ids,
+            );
+            merged_seeds.insert(
+                Triple {
+                    subject,
+                    predicate,
+                    object,
+                },
+                *prob,
+            );
         }
 
         Self {
-            triples: union_triples,
+            dataset_index,
             dictionary: Arc::new(RwLock::new(merged_dictionary)),
             prefixes: self.prefixes.clone(),
             udfs: HashMap::new(),
-            index_manager: UnifiedIndex::new(),
             rule_map: HashMap::new(),
             model_decls: self.model_decls.clone(),
             neural_relation_decls: self.neural_relation_decls.clone(),
+            ml_context: self.ml_context.clone(),
             train_neural_relation_decls: self.train_neural_relation_decls.clone(),
             neural_model_artifacts: self.neural_model_artifacts.clone(),
             neural_materialized_triples: self.neural_materialized_triples.clone(),
             ml_predict_materialized_triples: self.ml_predict_materialized_triples.clone(),
             probability_seeds: merged_seeds,
+            // Statistics are rebuilt on first use
             cached_stats: None,
-            quoted_triple_store: Arc::clone(&self.quoted_triple_store),
+            exact_stats_generation: 0,
+            planning_stats: None,
+            planning_stats_policy: self.planning_stats_policy,
+            stats_epoch: 0,
+            stats_rebuild_count: 0,
+            stats_rebuild_nanos: 0,
+            quoted_triple_store: Arc::new(RwLock::new(merged_quoted_triples)),
+            implicit_neural_materialization: self.implicit_neural_materialization,
         }
-    }
-
-    pub fn par_join(&mut self, other: &SparqlDatabase, predicate: &str) -> Self {
-        let mut dict = self.dictionary.write().unwrap();
-        let predicate_id = dict.encode(predicate);
-        drop(dict);
-        let other_map: BTreeMap<&u32, Vec<&Triple>> = other
-            .triples
-            .par_iter()
-            .filter(|other_triple| other_triple.predicate == predicate_id)
-            .flat_map(|other_triple| {
-                vec![
-                    (&other_triple.subject, other_triple),
-                    (&other_triple.object, other_triple),
-                ]
-            })
-            .fold(
-                || BTreeMap::new(),
-                |mut acc, (key, triple)| {
-                    acc.entry(key).or_insert_with(Vec::new).push(triple);
-                    acc
-                },
-            )
-            .reduce(
-                || BTreeMap::new(),
-                |mut acc, map| {
-                    for (key, triples) in map {
-                        acc.entry(key).or_insert_with(Vec::new).extend(triples);
-                    }
-                    acc
-                },
-            );
-
-        let joined_triples: BTreeSet<Triple> = self
-            .triples
-            .par_iter()
-            .filter(|triple| triple.predicate == predicate_id)
-            .fold(
-                || BTreeSet::new(),
-                |mut local_set, triple| {
-                    if let Some(matching_triples) = other_map.get(&triple.object) {
-                        for other_triple in matching_triples {
-                            local_set.insert(Triple {
-                                subject: triple.subject,
-                                predicate: other_triple.predicate,
-                                object: other_triple.object,
-                            });
-                        }
-                    }
-                    local_set
-                },
-            )
-            .reduce(
-                || BTreeSet::new(),
-                |mut set1, set2| {
-                    set1.extend(set2);
-                    set1
-                },
-            );
-
-        Self {
-            triples: joined_triples,
-            dictionary: Arc::clone(&self.dictionary),
-            prefixes: self.prefixes.clone(),
-            udfs: HashMap::new(),
-            index_manager: UnifiedIndex::new(),
-            rule_map: HashMap::new(),
-            model_decls: self.model_decls.clone(),
-            neural_relation_decls: self.neural_relation_decls.clone(),
-            train_neural_relation_decls: self.train_neural_relation_decls.clone(),
-            neural_model_artifacts: self.neural_model_artifacts.clone(),
-            neural_materialized_triples: self.neural_materialized_triples.clone(),
-            ml_predict_materialized_triples: self.ml_predict_materialized_triples.clone(),
-            probability_seeds: HashMap::new(),
-            cached_stats: None,
-            quoted_triple_store: Arc::clone(&self.quoted_triple_store),
-        }
-    }
-
-    pub fn perform_join<'a>(
-        &self,
-        subject_var: &'a str,
-        predicate: &'a str,
-        object_var: &'a str,
-        triples: Vec<Triple>,
-        dictionary: &'a Dictionary,
-        final_results: Vec<BTreeMap<&'a str, String>>,
-    ) -> Vec<BTreeMap<&'a str, String>> {
-        let mut new_results = Vec::new();
-
-        for triple in triples {
-            let subject = dictionary.decode(triple.subject).unwrap();
-            let pred = dictionary.decode(triple.predicate).unwrap();
-            let object = dictionary.decode(triple.object).unwrap();
-
-            if pred == predicate {
-                for result in &final_results {
-                    let mut extended_result = result.clone();
-                    let mut valid_extension = true;
-
-                    // Check and extend the result with the subject
-                    if let Some(existing_subject) = extended_result.get(subject_var) {
-                        if existing_subject != &subject {
-                            valid_extension = false;
-                        }
-                    } else {
-                        extended_result.insert(subject_var, subject.to_string());
-                    }
-
-                    // Check and extend the result with the object
-                    if let Some(existing_object) = extended_result.get(object_var) {
-                        if existing_object != &object {
-                            valid_extension = false;
-                        }
-                    } else {
-                        extended_result.insert(object_var, object.to_string());
-                    }
-
-                    if valid_extension {
-                        new_results.push(extended_result);
-                    }
-                }
-            }
-        }
-
-        new_results
-    }
-
-    pub fn perform_join_par_simd_with_strict_filter_1<'a>(
-        &self,
-        subject_var: &'a str,
-        predicate: String,
-        object_var: &'a str,
-        triples: Vec<Triple>,
-        dictionary: &Arc<RwLock<Dictionary>>,
-        final_results: Vec<BTreeMap<&'a str, String>>,
-        literal_filter: Option<String>,
-    ) -> Vec<BTreeMap<&'a str, String>> {
-        if final_results.is_empty() {
-            return Vec::new();
-        }
-
-        let dictionary = dictionary.read().unwrap();
-
-        let predicate_bytes = predicate.as_bytes();
-        let literal_filter_bytes = literal_filter.as_ref().map(|s| s.as_bytes());
-
-        // Partition final_results into groups based on variable bindings
-        let mut both_vars_bound: HashMap<(String, String), Vec<BTreeMap<&'a str, String>>> =
-            HashMap::new();
-        let mut subject_var_bound: HashMap<String, Vec<BTreeMap<&'a str, String>>> = HashMap::new();
-        let mut object_var_bound: HashMap<String, Vec<BTreeMap<&'a str, String>>> = HashMap::new();
-        let mut neither_var_bound: Vec<BTreeMap<&'a str, String>> = Vec::new();
-
-        for result in final_results {
-            let subject_binding = result.get(subject_var).cloned();
-            let object_binding = result.get(object_var).cloned();
-
-            match (subject_binding, object_binding) {
-                (Some(subj_val), Some(obj_val)) => {
-                    both_vars_bound
-                        .entry((subj_val.clone(), obj_val.clone()))
-                        .or_default()
-                        .push(result);
-                }
-                (Some(subj_val), None) => {
-                    subject_var_bound
-                        .entry(subj_val.clone())
-                        .or_default()
-                        .push(result);
-                }
-                (None, Some(obj_val)) => {
-                    object_var_bound
-                        .entry(obj_val.clone())
-                        .or_default()
-                        .push(result);
-                }
-                (None, None) => {
-                    neither_var_bound.push(result);
-                }
-            }
-        }
-
-        // Pre-allocate output vector
-        let results = Mutex::new(Vec::new());
-
-        // Using Rayon for parallel processing
-        triples.par_chunks(256).for_each(|chunk| {
-            let mut local_results = Vec::new();
-
-            for triple in chunk {
-                if let (Some(subject), Some(pred), Some(object)) = (
-                    dictionary.decode(triple.subject),
-                    dictionary.decode(triple.predicate),
-                    dictionary.decode(triple.object),
-                ) {
-                    // SIMD predicate comparison
-                    if pred.as_bytes() != predicate_bytes {
-                        continue;
-                    }
-
-                    // SIMD literal filter comparison
-                    if let Some(filter_bytes) = literal_filter_bytes {
-                        if object.as_bytes() != filter_bytes {
-                            continue;
-                        }
-                    }
-
-                    // Process group both_vars_bound
-                    {
-                        let key = (subject.to_string(), object.to_string());
-                        if let Some(results_vec) = both_vars_bound.get(&key) {
-                            for result in results_vec {
-                                let extended_result = result.clone();
-                                local_results.push(extended_result);
-                            }
-                        }
-                    }
-
-                    // Process group subject_var_bound
-                    {
-                        if let Some(results_vec) = subject_var_bound.get(subject) {
-                            for result in results_vec {
-                                let mut extended_result = result.clone();
-                                // Extend object_var
-                                if let Some(existing_object) = extended_result.get(object_var) {
-                                    if existing_object != &object {
-                                        continue; // Inconsistent variable binding
-                                    }
-                                } else {
-                                    extended_result.insert(object_var, object.to_string());
-                                }
-                                local_results.push(extended_result);
-                            }
-                        }
-                    }
-
-                    // Process group object_var_bound
-                    {
-                        if let Some(results_vec) = object_var_bound.get(object) {
-                            for result in results_vec {
-                                let mut extended_result = result.clone();
-                                // Extend subject_var
-                                if let Some(existing_subject) = extended_result.get(subject_var) {
-                                    if existing_subject != &subject {
-                                        continue; // Inconsistent variable binding
-                                    }
-                                } else {
-                                    extended_result.insert(subject_var, subject.to_string());
-                                }
-                                local_results.push(extended_result);
-                            }
-                        }
-                    }
-
-                    // Process group neither_var_bound
-                    for result in &neither_var_bound {
-                        let mut extended_result = result.clone();
-                        // Extend subject_var
-                        if let Some(existing_subject) = extended_result.get(subject_var) {
-                            if existing_subject != &subject {
-                                continue; // Inconsistent variable binding
-                            }
-                        } else {
-                            extended_result.insert(subject_var, subject.to_string());
-                        }
-                        // Extend object_var
-                        if let Some(existing_object) = extended_result.get(object_var) {
-                            if existing_object != &object {
-                                continue; // Inconsistent variable binding
-                            }
-                        } else {
-                            extended_result.insert(object_var, object.to_string());
-                        }
-                        local_results.push(extended_result);
-                    }
-                }
-            }
-
-            // Push local results to the shared results vector
-            let mut global_results = results.lock().unwrap();
-            global_results.extend(local_results);
-        });
-
-        results.into_inner().unwrap()
-    }
-
-    pub fn perform_join_par_simd_with_strict_filter_2<'a>(
-        &self,
-        subject_var: &'a str,
-        predicate: String,
-        object_var: &'a str,
-        triples: Vec<Triple>,
-        dictionary: &'a Dictionary,
-        final_results: Vec<BTreeMap<&'a str, String>>,
-        literal_filter: Option<String>,
-    ) -> Vec<BTreeMap<&'a str, String>> {
-        if final_results.is_empty() {
-            return Vec::new();
-        }
-
-        let predicate_bytes = predicate.as_bytes();
-        let literal_filter_bytes = literal_filter.as_ref().map(|s| s.as_bytes());
-
-        // Partition final_results into groups based on variable bindings.
-        let mut both_vars_bound: HashMap<(String, String), Vec<BTreeMap<&'a str, String>>> = HashMap::new();
-        let mut subject_var_bound: HashMap<String, Vec<BTreeMap<&'a str, String>>> = HashMap::new();
-        let mut object_var_bound: HashMap<String, Vec<BTreeMap<&'a str, String>>> = HashMap::new();
-        let mut neither_var_bound: Vec<BTreeMap<&'a str, String>> = Vec::new();
-
-        for result in final_results {
-            let subject_binding = result.get(subject_var).cloned();
-            let object_binding = result.get(object_var).cloned();
-
-            match (subject_binding, object_binding) {
-                (Some(subj_val), Some(obj_val)) => {
-                    both_vars_bound
-                        .entry((subj_val.clone(), obj_val.clone()))
-                        .or_default()
-                        .push(result);
-                }
-                (Some(subj_val), None) => {
-                    subject_var_bound.entry(subj_val.clone()).or_default().push(result);
-                }
-                (None, Some(obj_val)) => {
-                    object_var_bound.entry(obj_val.clone()).or_default().push(result);
-                }
-                (None, None) => {
-                    neither_var_bound.push(result);
-                }
-            }
-        }
-
-        // Pre-allocate output vector.
-        let results = Mutex::new(Vec::new());
-
-        // Using Rayon for parallel processing.
-        triples.par_chunks(256).for_each(|chunk| {
-            let mut local_results = Vec::new();
-
-            for triple in chunk {
-                if let (Some(subject), Some(pred), Some(object)) = (
-                    dictionary.decode(triple.subject),
-                    dictionary.decode(triple.predicate),
-                    dictionary.decode(triple.object),
-                ) {
-                    // SIMD predicate comparison using simd_eq.
-                    if !unsafe { simd_eq(pred.as_bytes(), predicate_bytes) } {
-                        continue;
-                    }
-
-                    // SIMD literal filter comparison.
-                    if let Some(filter_bytes) = literal_filter_bytes {
-                        if !unsafe { simd_eq(object.as_bytes(), filter_bytes) } {
-                            continue;
-                        }
-                    }
-
-                    // Process group both_vars_bound.
-                    {
-                        let key = (subject.to_string(), object.to_string());
-                        if let Some(results_vec) = both_vars_bound.get(&key) {
-                            for result in results_vec {
-                                local_results.push(result.clone());
-                            }
-                        }
-                    }
-
-                    // Process group subject_var_bound.
-                    {
-                        if let Some(results_vec) = subject_var_bound.get(subject) {
-                            for result in results_vec {
-                                let mut extended_result = result.clone();
-                                // Extend object_var.
-                                if let Some(existing_object) = extended_result.get(object_var) {
-                                    if existing_object != &object {
-                                        continue; // Inconsistent variable binding.
-                                    }
-                                } else {
-                                    extended_result.insert(object_var, object.to_string());
-                                }
-                                local_results.push(extended_result);
-                            }
-                        }
-                    }
-
-                    // Process group object_var_bound.
-                    {
-                        if let Some(results_vec) = object_var_bound.get(object) {
-                            for result in results_vec {
-                                let mut extended_result = result.clone();
-                                // Extend subject_var.
-                                if let Some(existing_subject) = extended_result.get(subject_var) {
-                                    if existing_subject != &subject {
-                                        continue; // Inconsistent variable binding.
-                                    }
-                                } else {
-                                    extended_result.insert(subject_var, subject.to_string());
-                                }
-                                local_results.push(extended_result);
-                            }
-                        }
-                    }
-
-                    // Process group neither_var_bound.
-                    for result in &neither_var_bound {
-                        let mut extended_result = result.clone();
-                        // Extend subject_var.
-                        if let Some(existing_subject) = extended_result.get(subject_var) {
-                            if existing_subject != &subject {
-                                continue; // Inconsistent variable binding.
-                            }
-                        } else {
-                            extended_result.insert(subject_var, subject.to_string());
-                        }
-                        // Extend object_var.
-                        if let Some(existing_object) = extended_result.get(object_var) {
-                            if existing_object != &object {
-                                continue; // Inconsistent variable binding.
-                            }
-                        } else {
-                            extended_result.insert(object_var, object.to_string());
-                        }
-                        local_results.push(extended_result);
-                    }
-                }
-            }
-
-            // Push local results to the shared results vector.
-            let mut global_results = results.lock().unwrap();
-            global_results.extend(local_results);
-        });
-
-        results.into_inner().unwrap()
-    }
-
-    pub fn perform_join_sequential<'a>(
-        &self,
-        subject_var: &'a str,
-        predicate: String,
-        object_var: &'a str,
-        triples: Vec<Triple>,
-        dictionary: &'a Dictionary,
-        final_results: Vec<BTreeMap<&'a str, String>>,
-        literal_filter: Option<String>,
-    ) -> Vec<BTreeMap<&'a str, String>> {
-        if final_results.is_empty() {
-            return Vec::new();
-        }
-
-        let predicate_bytes = predicate.as_bytes();
-        let literal_filter_bytes = literal_filter.as_ref().map(|s| s.as_bytes());
-
-        // Partition final_results into groups based on variable bindings.
-        let mut both_vars_bound: HashMap<(String, String), Vec<BTreeMap<&'a str, String>>> =
-            HashMap::new();
-        let mut subject_var_bound: HashMap<String, Vec<BTreeMap<&'a str, String>>> = HashMap::new();
-        let mut object_var_bound: HashMap<String, Vec<BTreeMap<&'a str, String>>> = HashMap::new();
-        let mut neither_var_bound: Vec<BTreeMap<&'a str, String>> = Vec::new();
-
-        for result in final_results {
-            let subject_binding = result.get(subject_var).cloned();
-            let object_binding = result.get(object_var).cloned();
-
-            match (subject_binding, object_binding) {
-                (Some(subj_val), Some(obj_val)) => {
-                    both_vars_bound
-                        .entry((subj_val.clone(), obj_val.clone()))
-                        .or_default()
-                        .push(result);
-                }
-                (Some(subj_val), None) => {
-                    subject_var_bound
-                        .entry(subj_val.clone())
-                        .or_default()
-                        .push(result);
-                }
-                (None, Some(obj_val)) => {
-                    object_var_bound
-                        .entry(obj_val.clone())
-                        .or_default()
-                        .push(result);
-                }
-                (None, None) => {
-                    neither_var_bound.push(result);
-                }
-            }
-        }
-
-        let mut results = Vec::new();
-
-        // Process triples sequentially.
-        for triple in triples {
-            if let (Some(subject), Some(pred), Some(object)) = (
-                dictionary.decode(triple.subject),
-                dictionary.decode(triple.predicate),
-                dictionary.decode(triple.object),
-            ) {
-                // Check if the predicate matches.
-                if pred.as_bytes() != predicate_bytes {
-                    continue;
-                }
-
-                // Check the literal filter if provided.
-                if let Some(filter_bytes) = literal_filter_bytes {
-                    if object.as_bytes() != filter_bytes {
-                        continue;
-                    }
-                }
-
-                // Process group where both variables are already bound.
-                {
-                    let key = (subject.to_string(), object.to_string());
-                    if let Some(results_vec) = both_vars_bound.get(&key) {
-                        for result in results_vec {
-                            results.push(result.clone());
-                        }
-                    }
-                }
-
-                // Process group where only subject_var is bound.
-                {
-                    if let Some(results_vec) = subject_var_bound.get(subject) {
-                        for result in results_vec {
-                            let mut extended_result = result.clone();
-                            // Extend the object_var binding.
-                            if let Some(existing_object) = extended_result.get(object_var) {
-                                if existing_object != &object {
-                                    continue; // Inconsistent variable binding.
-                                }
-                            } else {
-                                extended_result.insert(object_var, object.to_string());
-                            }
-                            results.push(extended_result);
-                        }
-                    }
-                }
-
-                // Process group where only object_var is bound.
-                {
-                    if let Some(results_vec) = object_var_bound.get(object) {
-                        for result in results_vec {
-                            let mut extended_result = result.clone();
-                            // Extend the subject_var binding.
-                            if let Some(existing_subject) = extended_result.get(subject_var) {
-                                if existing_subject != &subject {
-                                    continue; // Inconsistent variable binding.
-                                }
-                            } else {
-                                extended_result.insert(subject_var, subject.to_string());
-                            }
-                            results.push(extended_result);
-                        }
-                    }
-                }
-
-                // Process group where neither variable is bound.
-                for result in &neither_var_bound {
-                    let mut extended_result = result.clone();
-                    // Extend the subject_var binding.
-                    if let Some(existing_subject) = extended_result.get(subject_var) {
-                        if existing_subject != &subject {
-                            continue; // Inconsistent variable binding.
-                        }
-                    } else {
-                        extended_result.insert(subject_var, subject.to_string());
-                    }
-                    // Extend the object_var binding.
-                    if let Some(existing_object) = extended_result.get(object_var) {
-                        if existing_object != &object {
-                            continue; // Inconsistent variable binding.
-                        }
-                    } else {
-                        extended_result.insert(object_var, object.to_string());
-                    }
-                    results.push(extended_result);
-                }
-            }
-        }
-
-        results
-    }
-
-    pub fn perform_join_sequential_simd<'a>(
-        &self,
-        subject_var: &'a str,
-        predicate: String,
-        object_var: &'a str,
-        triples: Vec<Triple>,
-        dictionary: &'a Dictionary,
-        final_results: Vec<BTreeMap<&'a str, String>>,
-        literal_filter: Option<String>,
-    ) -> Vec<BTreeMap<&'a str, String>> {
-        if final_results.is_empty() {
-            return Vec::new();
-        }
-
-        let predicate_bytes = predicate.as_bytes();
-        let literal_filter_bytes = literal_filter.as_ref().map(|s| s.as_bytes());
-
-        // Partition final_results into groups based on variable bindings.
-        let mut both_vars_bound: HashMap<(String, String), Vec<BTreeMap<&'a str, String>>> =
-            HashMap::new();
-        let mut subject_var_bound: HashMap<String, Vec<BTreeMap<&'a str, String>>> = HashMap::new();
-        let mut object_var_bound: HashMap<String, Vec<BTreeMap<&'a str, String>>> = HashMap::new();
-        let mut neither_var_bound: Vec<BTreeMap<&'a str, String>> = Vec::new();
-
-        for result in final_results {
-            let subject_binding = result.get(subject_var).cloned();
-            let object_binding = result.get(object_var).cloned();
-
-            match (subject_binding, object_binding) {
-                (Some(subj_val), Some(obj_val)) => {
-                    both_vars_bound
-                        .entry((subj_val.clone(), obj_val.clone()))
-                        .or_default()
-                        .push(result);
-                }
-                (Some(subj_val), None) => {
-                    subject_var_bound
-                        .entry(subj_val.clone())
-                        .or_default()
-                        .push(result);
-                }
-                (None, Some(obj_val)) => {
-                    object_var_bound
-                        .entry(obj_val.clone())
-                        .or_default()
-                        .push(result);
-                }
-                (None, None) => {
-                    neither_var_bound.push(result);
-                }
-            }
-        }
-
-        let mut results = Vec::new();
-
-        // Process triples sequentially.
-        for triple in triples {
-            if let (Some(subject), Some(pred), Some(object)) = (
-                dictionary.decode(triple.subject),
-                dictionary.decode(triple.predicate),
-                dictionary.decode(triple.object),
-            ) {
-                // Use SIMD-based comparison for the predicate.
-                if !simd_bytes_eq(pred.as_bytes(), predicate_bytes) {
-                    continue;
-                }
-
-                // Use SIMD-based comparison for the literal filter if provided.
-                if let Some(filter_bytes) = literal_filter_bytes {
-                    if !simd_bytes_eq(object.as_bytes(), filter_bytes) {
-                        continue;
-                    }
-                }
-
-                // Process group where both variables are already bound.
-                {
-                    let key = (subject.to_string(), object.to_string());
-                    if let Some(results_vec) = both_vars_bound.get(&key) {
-                        for result in results_vec {
-                            results.push(result.clone());
-                        }
-                    }
-                }
-
-                // Process group where only subject_var is bound.
-                {
-                    if let Some(results_vec) = subject_var_bound.get(subject) {
-                        for result in results_vec {
-                            let mut extended_result = result.clone();
-                            // Extend the object_var binding.
-                            if let Some(existing_object) = extended_result.get(object_var) {
-                                if existing_object != &object {
-                                    continue; // Inconsistent variable binding.
-                                }
-                            } else {
-                                extended_result.insert(object_var, object.to_string());
-                            }
-                            results.push(extended_result);
-                        }
-                    }
-                }
-
-                // Process group where only object_var is bound.
-                {
-                    if let Some(results_vec) = object_var_bound.get(object) {
-                        for result in results_vec {
-                            let mut extended_result = result.clone();
-                            // Extend the subject_var binding.
-                            if let Some(existing_subject) = extended_result.get(subject_var) {
-                                if existing_subject != &subject {
-                                    continue; // Inconsistent variable binding.
-                                }
-                            } else {
-                                extended_result.insert(subject_var, subject.to_string());
-                            }
-                            results.push(extended_result);
-                        }
-                    }
-                }
-
-                // Process group where neither variable is bound.
-                for result in &neither_var_bound {
-                    let mut extended_result = result.clone();
-                    // Extend the subject_var binding.
-                    if let Some(existing_subject) = extended_result.get(subject_var) {
-                        if existing_subject != &subject {
-                            continue; // Inconsistent variable binding.
-                        }
-                    } else {
-                        extended_result.insert(subject_var, subject.to_string());
-                    }
-                    // Extend the object_var binding.
-                    if let Some(existing_object) = extended_result.get(object_var) {
-                        if existing_object != &object {
-                            continue; // Inconsistent variable binding.
-                        }
-                    } else {
-                        extended_result.insert(object_var, object.to_string());
-                    }
-                    results.push(extended_result);
-                }
-            }
-        }
-
-        results
-    }
-
-    pub fn perform_join_par_simd_with_strict_filter_3<'a>(
-        &self,
-        subject_var: &'a str,
-        predicate: String,
-        object_var: &'a str,
-        triples: Vec<Triple>,
-        dictionary: &'a Dictionary,
-        final_results: Vec<BTreeMap<&'a str, String>>,
-        literal_filter: Option<String>,
-    ) -> Vec<BTreeMap<&'a str, String>> {
-        // Early return for empty joins
-        if final_results.is_empty() {
-            return Vec::new();
-        }
-
-        // Pre-fetch predicate and filter bytes to avoid string comparisons
-        let predicate_bytes = predicate.as_bytes();
-        let literal_filter_bytes = literal_filter.as_ref().map(|s| s.as_bytes());
-
-        // Preallocate with capacity estimation to avoid rehashing
-        let estimated_capacity = (final_results.len() / 4).max(HASHMAP_INITIAL_CAPACITY);
-        
-        // Use with_capacity to preallocate hashmap space
-        let mut both_vars_bound: HashMap<(String, String), Vec<usize>> = 
-            HashMap::with_capacity(estimated_capacity);
-        let mut subject_var_bound: HashMap<String, Vec<usize>> = 
-            HashMap::with_capacity(estimated_capacity);
-        let mut object_var_bound: HashMap<String, Vec<usize>> = 
-            HashMap::with_capacity(estimated_capacity);
-        let mut neither_var_bound: Vec<usize> = Vec::with_capacity(final_results.len() / 2);
-
-        // Pre-compute and classify bindings - this is serial but much faster than doing it in parallel
-        for (idx, result) in final_results.iter().enumerate() {
-            let subject_binding = result.get(subject_var);
-            let object_binding = result.get(object_var);
-
-            match (subject_binding, object_binding) {
-                (Some(subj_val), Some(obj_val)) => {
-                    both_vars_bound
-                        .entry((subj_val.clone(), obj_val.clone()))
-                        .or_insert_with(|| Vec::with_capacity(4))
-                        .push(idx);
-                }
-                (Some(subj_val), None) => {
-                    subject_var_bound
-                        .entry(subj_val.clone())
-                        .or_insert_with(|| Vec::with_capacity(8))
-                        .push(idx);
-                }
-                (None, Some(obj_val)) => {
-                    object_var_bound
-                        .entry(obj_val.clone())
-                        .or_insert_with(|| Vec::with_capacity(8))
-                        .push(idx);
-                }
-                (None, None) => {
-                    neither_var_bound.push(idx);
-                }
-            }
-        }
-
-        // Immutable shared references for threading
-        let final_results_arc = Arc::new(final_results);
-        let both_vars_bound_arc = Arc::new(both_vars_bound);
-        let subject_var_bound_arc = Arc::new(subject_var_bound);
-        let object_var_bound_arc = Arc::new(object_var_bound);
-        let neither_var_bound_arc = Arc::new(neither_var_bound);
-
-        // Calculate optimal chunk size based on available processors and dataset size
-        let chunk_size = (triples.len() / rayon::current_num_threads()).max(MIN_CHUNK_SIZE);
-        
-        // Process triples in chunks for better cache locality and load balancing
-        let results = triples
-            .par_chunks(chunk_size)
-            .flat_map(|triple_chunk| {
-                // Preallocate result vector for this chunk based on estimated hit rate
-                let mut local_results = Vec::with_capacity(triple_chunk.len() / 4);
-                
-                // Process each triple in the chunk
-                for triple in triple_chunk {
-                    // Step 1: Quick predicate check first (early filter)
-                    let pred_opt = dictionary.decode(triple.predicate);
-                    if pred_opt.is_none() || pred_opt.as_ref().unwrap().as_bytes() != predicate_bytes {
-                        continue;
-                    }
-                    
-                    // Step 2: Filter check if needed
-                    if let Some(filter_bytes) = &literal_filter_bytes {
-                        let obj_opt = dictionary.decode(triple.object);
-                        if obj_opt.is_none() || obj_opt.as_ref().unwrap().as_bytes() != *filter_bytes {
-                            continue;
-                        }
-                        
-                        // Decode subject only if predicate and object pass filters
-                        if let Some(subj) = dictionary.decode(triple.subject) {
-                            process_join(
-                                &subj,
-                                obj_opt.unwrap(),
-                                subject_var,
-                                object_var,
-                                &both_vars_bound_arc,
-                                &subject_var_bound_arc,
-                                &object_var_bound_arc,
-                                &neither_var_bound_arc,
-                                &final_results_arc,
-                                &mut local_results,
-                            );
-                        }
-                    } else {
-                        // No filter - decode both subject and object
-                        let subj_opt = dictionary.decode(triple.subject);
-                        let obj_opt = dictionary.decode(triple.object);
-                        
-                        if let (Some(subj), Some(obj)) = (subj_opt, obj_opt) {
-                            process_join(
-                                &subj,
-                                &obj,
-                                subject_var,
-                                object_var,
-                                &both_vars_bound_arc,
-                                &subject_var_bound_arc,
-                                &object_var_bound_arc,
-                                &neither_var_bound_arc,
-                                &final_results_arc,
-                                &mut local_results,
-                            );
-                        }
-                    }
-                }
-                
-                local_results
-            })
-            .collect();
-
-        results
-    }
-
-    pub fn perform_join_par_simd_with_strict_filter_4<'a>(
-        &self,
-        subject_var: &'a str,
-        predicate: String,
-        object_var: &'a str,
-        triples: Vec<Triple>,
-        dictionary: &'a Dictionary,
-        final_results: Vec<BTreeMap<&'a str, String>>,
-        literal_filter: Option<String>,
-    ) -> Vec<BTreeMap<&'a str, String>> {
-        // Early return for empty joins
-        if final_results.is_empty() {
-            return Vec::new();
-        }
-
-        // Pre-fetch predicate and filter bytes to avoid string comparisons
-        let predicate_bytes = predicate.as_bytes();
-        let literal_filter_bytes = literal_filter.as_ref().map(|s| s.as_bytes());
-
-        let estimated_capacity = (final_results.len() / 3).max(HASHMAP_INITIAL_CAPACITY1);
-        
-        let mut both_vars_bound: HashMap<(String, String), Vec<usize>> = 
-            HashMap::with_capacity(estimated_capacity / 2);  // This tends to be smaller
-        let mut subject_var_bound: HashMap<String, Vec<usize>> = 
-            HashMap::with_capacity(estimated_capacity);
-        let mut object_var_bound: HashMap<String, Vec<usize>> = 
-            HashMap::with_capacity(estimated_capacity);
-        let mut neither_var_bound: Vec<usize> = Vec::with_capacity(final_results.len() / 2);
-
-        // Pre-compute and classify bindings - this is serial but much faster than doing it in parallel
-        for (idx, result) in final_results.iter().enumerate() {
-            let subject_binding = result.get(subject_var);
-            let object_binding = result.get(object_var);
-
-            match (subject_binding, object_binding) {
-                (Some(subj_val), Some(obj_val)) => {
-                    both_vars_bound
-                        .entry((subj_val.clone(), obj_val.clone()))
-                        .or_insert_with(|| Vec::with_capacity(4))
-                        .push(idx);
-                }
-                (Some(subj_val), None) => {
-                    subject_var_bound
-                        .entry(subj_val.clone())
-                        .or_insert_with(|| Vec::with_capacity(8))
-                        .push(idx);
-                }
-                (None, Some(obj_val)) => {
-                    object_var_bound
-                        .entry(obj_val.clone())
-                        .or_insert_with(|| Vec::with_capacity(8))
-                        .push(idx);
-                }
-                (None, None) => {
-                    neither_var_bound.push(idx);
-                }
-            }
-        }
-
-        // Immutable shared references for threading
-        let final_results_arc = Arc::new(final_results);
-        let both_vars_bound_arc = Arc::new(both_vars_bound);
-        let subject_var_bound_arc = Arc::new(subject_var_bound);
-        let object_var_bound_arc = Arc::new(object_var_bound);
-        let neither_var_bound_arc = Arc::new(neither_var_bound);
-
-        let chunk_size = ((triples.len() / rayon::current_num_threads()) * 3 / 2).max(MIN_CHUNK_SIZE1);
-        
-        let results = triples
-            .par_chunks(chunk_size)
-            .fold(
-                || Vec::with_capacity(chunk_size / 4),  // Local vector capacity based on chunk size
-                |mut local_results, triple_chunk| {
-                    // Create a local result buffer
-                    process_triple_chunk(
-                        triple_chunk,
-                        predicate_bytes,
-                        &literal_filter_bytes,
-                        subject_var,
-                        object_var,
-                        &both_vars_bound_arc,
-                        &subject_var_bound_arc,
-                        &object_var_bound_arc,
-                        &neither_var_bound_arc,
-                        &final_results_arc,
-                        &mut local_results,
-                        dictionary,
-                    );
-                    
-                    local_results
-                },
-            )
-            .reduce(
-                || Vec::new(),
-                |mut acc, mut chunk| {
-                    if acc.is_empty() {
-                        return chunk;
-                    }
-                    if chunk.is_empty() {
-                        return acc;
-                    }
-                    
-                    // Pre-allocate to avoid reallocation during append
-                    if acc.capacity() < acc.len() + chunk.len() {
-                        acc.reserve(chunk.len());
-                    }
-                    acc.append(&mut chunk);
-                    acc
-                },
-            );
-
-        results
     }
 
     pub fn handle_query(&mut self, query: &str) -> String {
@@ -2950,7 +2143,9 @@ impl SparqlDatabase {
         let object_id = dict.encode(object);
 
         let mut result = String::new();
-        for triple in &self.triples {
+        let matching_triples =
+            self.query_default_triples(Some(subject_id), Some(predicate_id), Some(object_id));
+        for triple in matching_triples {
             if triple.subject == subject_id
                 && triple.predicate == predicate_id
                 && triple.object == object_id
@@ -2972,35 +2167,56 @@ impl SparqlDatabase {
         result
     }
 
-    pub fn handle_update(&mut self, update: &str) -> String {
-        use crate::parser::{parse_insert, parse_delete};
+    fn handle_http_sparql_query(&mut self, query: &str) -> String {
+        match crate::execute_query::execute_sparql_query(query, self) {
+            Ok(rows) => rows
+                .into_iter()
+                .map(|row| row.join("\t"))
+                .collect::<Vec<_>>()
+                .join("\n"),
+            Err(error) => {
+                let (status, code) = match error.as_str() {
+                    "ML_FEATURE_DISABLED" => ("503 Service Unavailable", "ML_FEATURE_DISABLED"),
+                    "ML_FORBIDDEN" => ("403 Forbidden", "ML_FORBIDDEN"),
+                    "ML_INVALID_ARTIFACT" => ("403 Forbidden", "ML_INVALID_ARTIFACT"),
+                    _ => return "Query Failed: QUERY_EXECUTION_FAILED".to_string(),
+                };
+                format!("HTTP/1.1 {status}\r\nContent-Type: text/plain\r\nContent-Length: {}\r\n\r\n{code}", code.len())
+            }
+        }
+    }
 
-        let trimmed = update.trim();
-        if trimmed.starts_with("INSERT") {
-            if let Ok((_, insert_clause)) = parse_insert(trimmed) {
-                for (subject, predicate, object) in insert_clause.triples {
-                    let subject_id = self.encode_term_star(subject);
-                    let predicate_id = self.encode_term_star(predicate);
-                    let object_id = self.encode_term_star(object);
-                    self.add_triple(Triple { subject: subject_id, predicate: predicate_id, object: object_id });
-                }
-                return "Update Successful".to_string();
-            }
-        } else if trimmed.starts_with("DELETE") {
-            if let Ok((_, delete_clause)) = parse_delete(trimmed) {
-                for (subject, predicate, object) in delete_clause.triples {
-                    let subject_id = self.encode_term_star(subject);
-                    let predicate_id = self.encode_term_star(predicate);
-                    let object_id = self.encode_term_star(object);
-                    self.delete_triple(&Triple { subject: subject_id, predicate: predicate_id, object: object_id });
-                }
-                return "Update Successful".to_string();
-            }
+    /// Executes one supported standard SPARQL Update form and reports what changed
+    pub fn execute_update(
+        &mut self,
+        update: &str,
+    ) -> Result<crate::execute_query::UpdateSummary, String> {
+        crate::execute_query::execute_sparql_update(update, self)
+    }
+
+    pub fn handle_update(&mut self, update: &str) -> String {
+        if let Ok(summary) = self.execute_update(update) {
+            return format!(
+                "Update Successful (inserted {}, deleted {})",
+                summary.inserted_quads, summary.deleted_quads
+            );
+        }
+
+        // Historical standalone INSERT/DELETE aliases parse into the same update operation
+        if crate::execute_query::execute_sparql_update_compat(update, self).is_ok() {
+            return "Update Successful".to_string();
         }
         "Update Failed".to_string()
     }
 
     pub fn handle_http_request(&mut self, request: &str) -> String {
+        let context = self.ml_context.for_http();
+        crate::execute_query::with_ml_context(self, &context, |db| {
+            db.handle_http_request_inner(request)
+        })
+    }
+
+    fn handle_http_request_inner(&mut self, request: &str) -> String {
         let mut headers = [httparse::EMPTY_HEADER; 16];
         let mut req = httparse::Request::new(&mut headers);
         req.parse(request.as_bytes()).unwrap();
@@ -3010,7 +2226,7 @@ impl SparqlDatabase {
                 let url = Url::parse(&("http://localhost".to_owned() + req.path.unwrap())).unwrap();
                 let query_pairs: HashMap<_, _> = url.query_pairs().into_owned().collect();
                 if let Some(query) = query_pairs.get("query") {
-                    return self.handle_query(query);
+                    return self.handle_http_sparql_query(query);
                 }
             }
             "POST" => {
@@ -3024,26 +2240,15 @@ impl SparqlDatabase {
                     if content_type == b"application/sparql-query" {
                         // Direct POST query
                         if let Some(body) = request.split("\r\n\r\n").nth(1) {
-                            return self.handle_query(body);
+                            return self.handle_http_sparql_query(body);
                         }
                     } else if content_type == b"application/x-www-form-urlencoded" {
                         // URL-encoded POST query or update
                         if let Some(body) = request.split("\r\n\r\n").nth(1) {
-                            let body_decoded =
-                                percent_decode(body.as_bytes()).decode_utf8().unwrap();
-                            let params: HashMap<_, _> = body_decoded
-                                .split('&')
-                                .map(|pair| {
-                                    let mut split = pair.split('=');
-                                    (
-                                        split.next().unwrap().to_string(),
-                                        split.next().unwrap_or("").to_string(),
-                                    )
-                                })
-                                .collect();
+                            let params = parse_form_urlencoded(body);
 
                             if let Some(query) = params.get("query") {
-                                return self.handle_query(query);
+                                return self.handle_http_sparql_query(query);
                             } else if let Some(update) = params.get("update") {
                                 return self.handle_update(update);
                             }
@@ -3062,178 +2267,9 @@ impl SparqlDatabase {
         "Bad Request".to_string()
     }
 
+    /// Return the decoded graph size for diagnostics
     pub fn debug_print_triples(&self) {
-        let dict = self.dictionary.read().unwrap();
-        for triple in &self.triples {
-            println!(
-                "Stored Triple -> Subject: {}, Predicate: {}, Object: {}",
-                dict.decode(triple.subject).unwrap(),
-                dict.decode(triple.predicate).unwrap(),
-                dict.decode(triple.object).unwrap()
-            );
-        }
-    }
-
-    #[cfg(feature = "cuda")]
-    pub fn perform_hash_join_cuda_wrapper<'a>(
-        &self,
-        subject_var: &'a str,
-        predicate: String,
-        object_var: &'a str,
-        triples: Vec<Triple>,
-        dictionary: &'a Dictionary,
-        final_results: Vec<BTreeMap<&'a str, String>>,
-        literal_filter: Option<String>,
-    ) -> Vec<BTreeMap<&'a str, String>> {
-        if final_results.is_empty() {
-            return Vec::new();
-        }
-
-        // Prepare data for CUDA
-        let subjects: Vec<u32> = triples.iter().map(|t| t.subject).collect();
-        let predicates: Vec<u32> = triples.iter().map(|t| t.predicate).collect();
-        let objects: Vec<u32> = triples.iter().map(|t| t.object).collect();
-
-        let predicate_filter = dictionary.clone().encode(&predicate);
-
-        let literal_filter_value = literal_filter
-            .as_ref()
-            .map(|lit| dictionary.clone().encode(lit))
-            .unwrap_or(0);
-
-        let literal_filter_option = if literal_filter.is_some() {
-            Some(literal_filter_value)
-        } else {
-            None
-        };
-
-        // Call CUDA function
-        let matching_indices = hash_join_cuda(
-            &subjects,
-            &predicates,
-            &objects,
-            predicate_filter,
-            literal_filter_option,
-        );
-
-        // Prepare variable bindings
-        let mut both_vars_bound: HashMap<(String, String), Vec<BTreeMap<&'a str, String>>> =
-            HashMap::new();
-        let mut subject_var_bound: HashMap<String, Vec<BTreeMap<&'a str, String>>> = HashMap::new();
-        let mut object_var_bound: HashMap<String, Vec<BTreeMap<&'a str, String>>> = HashMap::new();
-        let mut neither_var_bound: Vec<BTreeMap<&'a str, String>> = Vec::new();
-
-        for result in final_results {
-            let subject_binding = result.get(subject_var).cloned();
-            let object_binding = result.get(object_var).cloned();
-
-            match (subject_binding, object_binding) {
-                (Some(subj_val), Some(obj_val)) => {
-                    both_vars_bound
-                        .entry((subj_val.clone(), obj_val.clone()))
-                        .or_default()
-                        .push(result);
-                }
-                (Some(subj_val), None) => {
-                    subject_var_bound
-                        .entry(subj_val.clone())
-                        .or_default()
-                        .push(result);
-                }
-                (None, Some(obj_val)) => {
-                    object_var_bound
-                        .entry(obj_val.clone())
-                        .or_default()
-                        .push(result);
-                }
-                (None, None) => {
-                    neither_var_bound.push(result);
-                }
-            }
-        }
-
-        // Reconstruct results
-        let mut results = Vec::new();
-
-        for idx in matching_indices {
-            let triple = &triples[idx as usize];
-
-            if let (Some(subject), Some(object)) = (
-                dictionary.decode(triple.subject),
-                dictionary.decode(triple.object),
-            ) {
-                // Process group both_vars_bound
-                {
-                    let key = (subject.to_string(), object.to_string());
-                    if let Some(results_vec) = both_vars_bound.get(&key) {
-                        for result in results_vec {
-                            let extended_result = result.clone();
-                            results.push(extended_result);
-                        }
-                    }
-                }
-
-                // Process group subject_var_bound
-                {
-                    if let Some(results_vec) = subject_var_bound.get(subject) {
-                        for result in results_vec {
-                            let mut extended_result = result.clone();
-                            // Extend object_var
-                            if let Some(existing_object) = extended_result.get(object_var) {
-                                if existing_object != &object {
-                                    continue; // Inconsistent variable binding
-                                }
-                            } else {
-                                extended_result.insert(object_var, object.to_string());
-                            }
-                            results.push(extended_result);
-                        }
-                    }
-                }
-
-                // Process group object_var_bound
-                {
-                    if let Some(results_vec) = object_var_bound.get(object) {
-                        for result in results_vec {
-                            let mut extended_result = result.clone();
-                            // Extend subject_var
-                            if let Some(existing_subject) = extended_result.get(subject_var) {
-                                if existing_subject != &subject {
-                                    continue; // Inconsistent variable binding
-                                }
-                            } else {
-                                extended_result.insert(subject_var, subject.to_string());
-                            }
-                            results.push(extended_result);
-                        }
-                    }
-                }
-
-                // Process group neither_var_bound
-                for result in &neither_var_bound {
-                    let mut extended_result = result.clone();
-                    // Extend subject_var
-                    if let Some(existing_subject) = extended_result.get(subject_var) {
-                        if existing_subject != &subject {
-                            continue; // Inconsistent variable binding
-                        }
-                    } else {
-                        extended_result.insert(subject_var, subject.to_string());
-                    }
-                    // Extend object_var
-                    if let Some(existing_object) = extended_result.get(object_var) {
-                        if existing_object != &object {
-                            continue; // Inconsistent variable binding
-                        }
-                    } else {
-                        extended_result.insert(object_var, object.to_string());
-                    }
-                    results.push(extended_result);
-                }
-            }
-        }
-
-        results
+        println!("TRIPLE_COUNT {}", self.query_default_triples(None, None, None).len());
     }
 
     // Create user defined function
@@ -3244,37 +2280,18 @@ impl SparqlDatabase {
         self.udfs.insert(name.to_string(), ClonableFn::new(f));
     }
 
-    /// Rebuild all indexes from the current state of `self.triples`.
+    /// Rebuilds every graph-scoped index, keeping named graphs distinct from the default
     pub fn build_all_indexes(&mut self) {
-        // Clear existing indexes
-        self.index_manager.clear();
-        
-        // Get all triples as a vector for parallel processing
-        let triples: Vec<Triple> = self.triples.iter().cloned().collect();
-        
-        // Calculate optimal chunk size based on available cores and data size
-        let num_threads = rayon::current_num_threads();
-        let chunk_size = (triples.len() / num_threads).max(1000);
-        
-        // Build indexes in parallel chunks
-        let partial_indexes: Vec<_> = triples
-            .par_chunks(chunk_size)
-            .map(|chunk| {
-                let mut local_index = shared::index_manager::UnifiedIndex::new();
-                for triple in chunk {
-                    local_index.insert(triple);
-                }
-                local_index
-            })
-            .collect();
-        
-        // Merge all partial indexes
-        for partial_index in partial_indexes {
-            self.index_manager.merge_from(partial_index);
+        let quads = self.dataset_index.all_quads();
+        let named_graphs = self.dataset_index.named_graphs();
+        let mut rebuilt = DatasetIndex::new();
+        for graph in named_graphs {
+            rebuilt.create_graph(graph);
         }
-        
-        // Optimize the final merged index
-        self.index_manager.optimize();
+        for quad in quads {
+            rebuilt.insert_quad(&quad);
+        }
+        self.dataset_index = rebuilt;
     }
 
     /// Triple to string
@@ -3282,353 +2299,11 @@ impl SparqlDatabase {
         let subject = dict.decode(triple.subject);
         let predicate = dict.decode(triple.predicate);
         let object = dict.decode(triple.object);
-        format!("{} {} {}", subject.unwrap(), predicate.unwrap(), object.unwrap())
-    }
-
-    pub fn decode_triple(&self, triple: &Triple) -> Option<(String, String, String)> {
-        let dict = self.dictionary.read().unwrap();
-        let subject = dict.decode(triple.subject)?.to_string();
-        let predicate = dict.decode(triple.predicate)?.to_string();
-        let object = dict.decode(triple.object)?.to_string();
-        drop(dict);
-        
-        Some((subject, predicate, object))
-    }
-}
-
-#[cfg_attr(any(target_arch = "x86", target_arch = "x86_64"), target_feature(enable = "sse2"))]
-#[cfg_attr(target_arch = "aarch64", target_feature(enable = "neon"))]
-pub unsafe fn simd_eq(a: &[u8], b: &[u8]) -> bool {
-    if a.len() != b.len() {
-        return false;
-    }
-
-    // SSE2 implementation for x86/x86_64
-    #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
-    {
-        let len = a.len();
-        let chunks = len / 16;
-        let mut i = 0;
-        while i < chunks * 16 {
-            let pa = a.as_ptr().add(i) as *const __m128i;
-            let pb = b.as_ptr().add(i) as *const __m128i;
-            let va = _mm_loadu_si128(pa);
-            let vb = _mm_loadu_si128(pb);
-            let cmp = _mm_cmpeq_epi8(va, vb);
-            let mask = _mm_movemask_epi8(cmp);
-            if mask != 0xFFFF {
-                return false;
-            }
-            i += 16;
-        }
-        // Compare any remaining bytes
-        for j in (chunks * 16)..len {
-            if a[j] != b[j] {
-                return false;
-            }
-        }
-        return true;
-    }
-
-    // NEON implementation for aarch64
-    #[cfg(target_arch = "aarch64")]
-    {
-        let len = a.len();
-        let chunks = len / 16;
-        let mut i = 0;
-        while i < chunks * 16 {
-            let pa = a.as_ptr().add(i);
-            let pb = b.as_ptr().add(i);
-            let va = vld1q_u8(pa);
-            let vb = vld1q_u8(pb);
-            let cmp = vceqq_u8(va, vb);
-            let cmp_u64 = vreinterpretq_u64_u8(cmp);
-            let low = vgetq_lane_u64(cmp_u64, 0);
-            let high = vgetq_lane_u64(cmp_u64, 1);
-            if low != u64::MAX || high != u64::MAX {
-                return false;
-            }
-            i += 16;
-        }
-        // Compare any remaining bytes
-        for j in (chunks * 16)..len {
-            if a[j] != b[j] {
-                return false;
-            }
-        }
-        return true;
-    }
-
-    // Fallback for other architectures
-    #[cfg(not(any(target_arch = "x86", target_arch = "x86_64", target_arch = "aarch64")))]
-    {
-        return a == b;
-    }
-}
-
-#[inline]
-fn simd_bytes_eq(a: &[u8], b: &[u8]) -> bool {
-    if a.len() != b.len() {
-        return false;
-    }
-    #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
-    unsafe {
-        use std::arch::x86_64::*;
-        let mut i = 0;
-        let len = a.len();
-        while i + 16 <= len {
-            let a_chunk = _mm_loadu_si128(a.as_ptr().add(i) as *const __m128i);
-            let b_chunk = _mm_loadu_si128(b.as_ptr().add(i) as *const __m128i);
-            let cmp = _mm_cmpeq_epi8(a_chunk, b_chunk);
-            // If all 16 bytes match, _mm_movemask_epi8 returns 0xFFFF.
-            if _mm_movemask_epi8(cmp) != 0xFFFF {
-                return false;
-            }
-            i += 16;
-        }
-        // Compare any remaining bytes.
-        for j in i..len {
-            if a[j] != b[j] {
-                return false;
-            }
-        }
-        true
-    }
-    #[cfg(not(any(target_arch = "x86", target_arch = "x86_64")))]
-    {
-        // Fallback on non-x86 architectures.
-        a == b
-    }
-}
-
-#[inline(always)]
-fn process_join<'a>(
-    subject: &str,
-    object: &str,
-    subject_var: &'a str,
-    object_var: &'a str,
-    both_vars_bound: &Arc<HashMap<(String, String), Vec<usize>>>,
-    subject_var_bound: &Arc<HashMap<String, Vec<usize>>>,
-    object_var_bound: &Arc<HashMap<String, Vec<usize>>>,
-    neither_var_bound: &Arc<Vec<usize>>,
-    final_results_arc: &Arc<Vec<BTreeMap<&'a str, String>>>,
-    local_results: &mut Vec<BTreeMap<&'a str, String>>,
-) {
-    // Check both_vars_bound - most restrictive case first
-    if let Some(result_indices) = both_vars_bound.get(&(subject.to_string(), object.to_string())) {
-        for &idx in result_indices {
-            local_results.push(final_results_arc[idx].clone());
-        }
-    }
-
-    // Process subject_var_bound
-    if let Some(result_indices) = subject_var_bound.get(subject) {
-        for &idx in result_indices {
-            let base_result = &final_results_arc[idx];
-            // Check for object consistency if it exists
-            if let Some(existing_object) = base_result.get(object_var) {
-                if existing_object == object {
-                    local_results.push(base_result.clone());
-                }
-            } else {
-                // Bind the object variable
-                let mut extended_result = base_result.clone();
-                extended_result.insert(object_var, object.to_string());
-                local_results.push(extended_result);
-            }
-        }
-    }
-
-    // Process object_var_bound
-    if let Some(result_indices) = object_var_bound.get(object) {
-        for &idx in result_indices {
-            let base_result = &final_results_arc[idx];
-            // Check for subject consistency if it exists
-            if let Some(existing_subject) = base_result.get(subject_var) {
-                if existing_subject == subject {
-                    local_results.push(base_result.clone());
-                }
-            } else {
-                // Bind the subject variable
-                let mut extended_result = base_result.clone();
-                extended_result.insert(subject_var, subject.to_string());
-                local_results.push(extended_result);
-            }
-        }
-    }
-
-    // Process neither_var_bound - least restrictive case last
-    for &idx in neither_var_bound.iter() {
-        let base_result = &final_results_arc[idx];
-        
-        // Check both consistency constraints
-        let subject_consistent = base_result
-            .get(subject_var)
-            .map_or(true, |existing| existing == subject);
-        let object_consistent = base_result
-            .get(object_var)
-            .map_or(true, |existing| existing == object);
-
-        if subject_consistent && object_consistent {
-            let mut extended_result = base_result.clone();
-            
-            // Only insert if not already present
-            if !base_result.contains_key(subject_var) {
-                extended_result.insert(subject_var, subject.to_string());
-            }
-            if !base_result.contains_key(object_var) {
-                extended_result.insert(object_var, object.to_string());
-            }
-            
-            local_results.push(extended_result);
-        }
-    }
-}
-
-#[inline(always)]
-fn process_triple_chunk<'a>(
-    triple_chunk: &[Triple],
-    predicate_bytes: &[u8],
-    literal_filter_bytes: &Option<&[u8]>,
-    subject_var: &'a str,
-    object_var: &'a str,
-    both_vars_bound: &Arc<HashMap<(String, String), Vec<usize>>>,
-    subject_var_bound: &Arc<HashMap<String, Vec<usize>>>,
-    object_var_bound: &Arc<HashMap<String, Vec<usize>>>,
-    neither_var_bound: &Arc<Vec<usize>>,
-    final_results_arc: &Arc<Vec<BTreeMap<&'a str, String>>>,
-    local_results: &mut Vec<BTreeMap<&'a str, String>>,
-    dictionary: &'a Dictionary,
-) {
-    // Pre-filter triples to avoid unnecessary decoding
-    for triple in triple_chunk {
-        let pred_opt = dictionary.decode(triple.predicate);
-        if pred_opt.is_none() || pred_opt.as_ref().unwrap().as_bytes() != predicate_bytes {
-            continue;
-        }
-        
-        if let Some(filter_bytes) = literal_filter_bytes {
-            let obj_opt = dictionary.decode(triple.object);
-            if obj_opt.is_none() || obj_opt.as_ref().unwrap().as_bytes() != *filter_bytes {
-                continue;
-            }
-            
-            if let Some(subj) = dictionary.decode(triple.subject) {
-                process_join_efficiently(
-                    &subj,
-                    obj_opt.unwrap(),
-                    subject_var,
-                    object_var,
-                    both_vars_bound,
-                    subject_var_bound,
-                    object_var_bound,
-                    neither_var_bound,
-                    final_results_arc,
-                    local_results,
-                );
-            }
-        } else {
-            let subj_opt = dictionary.decode(triple.subject);
-            let obj_opt = dictionary.decode(triple.object);
-            
-            if let (Some(subj), Some(obj)) = (subj_opt, obj_opt) {
-                process_join_efficiently(
-                    &subj,
-                    &obj,
-                    subject_var,
-                    object_var,
-                    both_vars_bound,
-                    subject_var_bound,
-                    object_var_bound,
-                    neither_var_bound,
-                    final_results_arc,
-                    local_results,
-                );
-            }
-        }
-    }
-}
-
-
-#[inline(always)]
-fn process_join_efficiently<'a>(
-    subject: &str,
-    object: &str,
-    subject_var: &'a str,
-    object_var: &'a str,
-    both_vars_bound: &Arc<HashMap<(String, String), Vec<usize>>>,
-    subject_var_bound: &Arc<HashMap<String, Vec<usize>>>,
-    object_var_bound: &Arc<HashMap<String, Vec<usize>>>,
-    neither_var_bound: &Arc<Vec<usize>>,
-    final_results_arc: &Arc<Vec<BTreeMap<&'a str, String>>>,
-    local_results: &mut Vec<BTreeMap<&'a str, String>>,
-) {
-    if let Some(result_indices) = both_vars_bound.get(&(subject.to_string(), object.to_string())) {
-        for &idx in result_indices {
-            // Clone efficiently with pre-allocation
-            let result = final_results_arc[idx].clone();
-            local_results.push(result);
-        }
-        return; // Early return after handling the most restrictive case
-    }
-
-    // Check for subject var bound - second most restrictive
-    if let Some(result_indices) = subject_var_bound.get(subject) {
-        for &idx in result_indices {
-            let base_result = &final_results_arc[idx];
-            // Check for object consistency if it exists
-            if let Some(existing_object) = base_result.get(object_var) {
-                if existing_object == object {
-                    local_results.push(base_result.clone());
-                }
-            } else {
-                let mut extended_result = base_result.clone();
-                extended_result.insert(object_var, object.to_string());
-                local_results.push(extended_result);
-            }
-        }
-    }
-
-    // Check for object var bound
-    if let Some(result_indices) = object_var_bound.get(object) {
-        for &idx in result_indices {
-            let base_result = &final_results_arc[idx];
-            if let Some(existing_subject) = base_result.get(subject_var) {
-                if existing_subject == subject {
-                    local_results.push(base_result.clone());
-                }
-            } else {
-                let mut extended_result = base_result.clone();
-                extended_result.insert(subject_var, subject.to_string());
-                local_results.push(extended_result);
-            }
-        }
-    }
-
-    // Process least restrictive case - neither var bound
-    for &idx in neither_var_bound.iter() {
-        let base_result = &final_results_arc[idx];
-        
-        // Check both consistency constraints
-        let subject_consistent = base_result
-            .get(subject_var)
-            .map_or(true, |existing| existing == subject);
-        let object_consistent = base_result
-            .get(object_var)
-            .map_or(true, |existing| existing == object);
-
-        if subject_consistent && object_consistent {
-            let mut extended_result = base_result.clone();
-            
-            // Only insert if not already present
-            if !base_result.contains_key(subject_var) {
-                extended_result.insert(subject_var, subject.to_string());
-            }
-            if !base_result.contains_key(object_var) {
-                extended_result.insert(object_var, object.to_string());
-            }
-            
-            local_results.push(extended_result);
-        }
+        format!(
+            "{} {} {}",
+            subject.unwrap(),
+            predicate.unwrap(),
+            object.unwrap()
+        )
     }
 }

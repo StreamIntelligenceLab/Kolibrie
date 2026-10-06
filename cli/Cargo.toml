@@ -7,3 +7,7 @@ description = "A command-line interface for Kolibrie"
 [dependencies]
 clap = { workspace = true }
 kolibrie = { path = "../kolibrie" }
+
+[features]
+default = []
+ml = ["kolibrie/ml"]

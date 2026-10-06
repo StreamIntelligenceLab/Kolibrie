@@ -8,14 +8,27 @@
  * you can obtain one at https://mozilla.org/MPL/2.0/.
  */
 
+use super::super::types::SubquerySpec;
 use super::super::Condition;
-use shared::terms::{TriplePattern, Bindings};
+use shared::dataset_index::{GraphTerm, QuadPattern};
+use shared::terms::{Bindings, TriplePattern};
 
 /// Logical operators represent the high-level query structure before optimization
 #[derive(Debug, Clone)]
 pub enum LogicalOperator {
+    /// The SPARQL unit table: one empty solution mapping.
+    Unit,
     Scan {
-        pattern: TriplePattern,
+        pattern: QuadPattern,
+    },
+    /// Multiset union. Branches are optimizer boundaries and retain duplicates.
+    Union {
+        branches: Vec<LogicalOperator>,
+    },
+    /// Evaluate an input pattern with the given active named graph.
+    Graph {
+        input: Box<LogicalOperator>,
+        graph: GraphTerm,
     },
     Selection {
         predicate: Box<LogicalOperator>,
@@ -31,11 +44,11 @@ pub enum LogicalOperator {
     },
     Buffer {
         content: Bindings,
-        origin: String
+        origin: String,
     },
     Subquery {
         inner: Box<LogicalOperator>,
-        projected_vars: Vec<String>,
+        spec: SubquerySpec,
     },
     Bind {
         input: Box<LogicalOperator>,
@@ -45,7 +58,7 @@ pub enum LogicalOperator {
     },
     Values {
         variables: Vec<String>,
-        values: Vec<Vec<Option<String>>>, // Each row can have Some(value) or None (UNDEF)
+        values: Vec<Vec<Option<u32>>>, // Each row can have an encoded term or UNDEF
     },
     MLPredict {
         input: Box<LogicalOperator>,
@@ -56,9 +69,68 @@ pub enum LogicalOperator {
 }
 
 impl LogicalOperator {
+    pub fn requires_cost_based_join_ordering(&self) -> bool {
+        self.reorderable_scan_count()
+            .is_none_or(|patterns| patterns >= 2)
+    }
+
+    /// Number of joinable base patterns, or `None` if the plan contains other operators
+    fn reorderable_scan_count(&self) -> Option<usize> {
+        match self {
+            Self::Unit => Some(0),
+            Self::Scan { .. } => Some(1),
+            Self::Graph { input, .. }
+            | Self::Selection {
+                predicate: input, ..
+            }
+            | Self::Projection {
+                predicate: input, ..
+            }
+            | Self::Bind { input, .. } => input.reorderable_scan_count(),
+            Self::Join { left, right } => Some(
+                left.reorderable_scan_count()?
+                    .saturating_add(right.reorderable_scan_count()?),
+            ),
+            // Conservatively require statistics
+            Self::Union { .. }
+            | Self::Subquery { .. }
+            | Self::MLPredict { .. }
+            | Self::Values { .. }
+            | Self::Buffer { .. } => None,
+        }
+    }
+
+    /// Creates the SPARQL unit table.
+    pub fn unit() -> Self {
+        Self::Unit
+    }
+
     /// Creates a new scan logical operator
     pub fn scan(pattern: TriplePattern) -> Self {
+        Self::quad_scan(QuadPattern {
+            subject: pattern.0,
+            predicate: pattern.1,
+            object: pattern.2,
+            graph: GraphTerm::Default,
+        })
+    }
+
+    /// Creates a graph-aware scan logical operator.
+    pub fn quad_scan(pattern: QuadPattern) -> Self {
         Self::Scan { pattern }
+    }
+
+    /// Creates a multiset UNION logical operator.
+    pub fn union(branches: Vec<LogicalOperator>) -> Self {
+        Self::Union { branches }
+    }
+
+    /// Creates a GRAPH logical operator.
+    pub fn graph(input: LogicalOperator, graph: GraphTerm) -> Self {
+        Self::Graph {
+            input: Box::new(input),
+            graph,
+        }
     }
 
     /// Creates a new selection logical operator
@@ -85,15 +157,15 @@ impl LogicalOperator {
         }
     }
 
-    pub fn buffer(content: Bindings, origin: String) -> Self{
-        Self::Buffer {content, origin}
+    pub fn buffer(content: Bindings, origin: String) -> Self {
+        Self::Buffer { content, origin }
     }
 
     /// Creates a new subquery logical operator
-    pub fn subquery(inner: LogicalOperator, projected_vars: Vec<String>) -> Self {
+    pub fn subquery(inner: LogicalOperator, spec: SubquerySpec) -> Self {
         Self::Subquery {
-            inner: Box:: new(inner),
-            projected_vars,
+            inner: Box::new(inner),
+            spec,
         }
     }
 
@@ -113,7 +185,7 @@ impl LogicalOperator {
     }
 
     /// Creates a new values logical operator
-    pub fn values(variables: Vec<String>, values: Vec<Vec<Option<String>>>) -> Self {
+    pub fn values(variables: Vec<String>, values: Vec<Vec<Option<u32>>>) -> Self {
         Self::Values { variables, values }
     }
 

@@ -60,10 +60,10 @@ pub fn incremental_sds_plus(
     reasoner.dictionary = Arc::clone(dict);
 
     for (t, _) in &d_old {
-        reasoner.index_manager.insert(t);
+        reasoner.dataset_index.insert(t);
     }
     for (t, _) in &d_new {
-        reasoner.index_manager.insert(t);
+        reasoner.dataset_index.insert(t);
     }
 
     // Seed TagStore with expiry values from D_old ∪ D_new.
@@ -88,7 +88,7 @@ pub fn incremental_sds_plus(
     );
 
     let component_iris = all_component_iris(sds_current);
-    let all_facts = reasoner.index_manager.query(None, None, None);
+    let all_facts = reasoner.dataset_index.query(None, None, None);
     let mut result: SdsWithExpiry = HashMap::new();
 
     for triple in all_facts {
@@ -108,3 +108,4 @@ pub fn incremental_sds_plus(
 
     result
 }
+

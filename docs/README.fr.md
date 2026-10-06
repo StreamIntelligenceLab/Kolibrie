@@ -36,9 +36,6 @@ Pour plus d’informations, veuillez consulter le [site web du Stream Intelligen
 - **Codage de Dictionnaire Extensible** : encodage/décodage efficace des termes RDF via un dictionnaire personnalisable.
 - **API Complète** : un ensemble riche de méthodes pour manipuler les données, exécuter des requêtes et traiter les résultats.
 
-> [!WARNING]
-> L’utilisation de CUDA est expérimentale et en cours de développement.
-
 ## Installation
 
 ### Installation Native
@@ -66,29 +63,22 @@ use kolibrie::SparqlDatabase;
 
 ### Installation Docker
 
-**Kolibrie** fournit un support Docker avec plusieurs configurations pour différents cas d’usage. L’environnement Docker gère automatiquement toutes les dépendances, y compris Rust, CUDA (pour les builds GPU) et les frameworks Python ML.
+**Kolibrie** fournit un support Docker pour la Web UI et les environnements de développement. L’environnement Docker gère automatiquement les dépendances Rust et Python ML.
 
 #### Prérequis
 
 * [Docker](https://docs.docker.com/get-docker/) installé
 * [Docker Compose](https://docs.docker.com/compose/install/) installé
-* Pour le support GPU : [NVIDIA Docker runtime](https://github.com/NVIDIA/nvidia-docker) installé
 
 #### Démarrage Rapide
 
-1. **Build CPU uniquement** (recommandé pour la plupart des utilisateurs) :
+1. **Build Web UI** :
 
 ```bash
 docker compose --profile cpu up --build
 ```
 
-2. **Build avec GPU activé** (nécessite un GPU NVIDIA et nvidia-docker) :
-
-```bash
-docker compose --profile gpu up --build
-```
-
-3. **Build de développement** (détecte automatiquement la disponibilité GPU) :
+2. **Build de développement** :
 
 ```bash
 docker compose --profile dev up --build
@@ -215,6 +205,69 @@ for row in results {
     println!("Sujet: {}, Objet: {}", row[0], row[1]);
 }
 ```
+
+#### Graphes nommés, `GRAPH` et `UNION`
+
+Les chemins standard SELECT et Update de Kolibrie utilisent une architecture
+unique : le parseur `nom` existant produit des motifs de groupe récursifs,
+ensuite convertis vers le même plan logique, l'optimiseur Streamertail et
+l'exécuteur physique. Aucun parseur ni évaluateur séparé n'est utilisé pour
+`GRAPH`, `UNION` ou les motifs `WHERE` d'une mise à jour. Ce chemin unifié prend
+en charge les motifs `GRAPH` récursifs avec des noms de graphe fixes ou
+variables, des groupes imbriqués et `UNION` avec une sémantique de
+multiensemble :
+
+```rust
+let rows = execute_query_rayon_parallel2_volcano(
+    r#"
+    PREFIX ex: <http://example.org/>
+    SELECT DISTINCT ?g ?item WHERE {
+        { GRAPH ?g { ?item ex:status "active" } }
+        UNION
+        { GRAPH ?g { { ?item ex:status "pending" } } }
+    }
+    "#,
+    &mut db,
+);
+```
+
+`GRAPH <nom>` lit uniquement ce graphe nommé. `GRAPH ?g` parcourt les identités
+des graphes nommés et lie `?g` ; le graphe par défaut n'est jamais inclus. Sans
+`DISTINCT`, les solutions dupliquées produites par `UNION` sont conservées.
+
+Les clauses de jeu de données remplacent le jeu de données de la requête.
+Plusieurs graphes `FROM` sont fusionnés dans le graphe par défaut de la requête,
+en supprimant les triplets dupliqués. Dès qu'une clause de jeu de données est
+présente, seuls les graphes énumérés avec `FROM NAMED` sont visibles par
+`GRAPH`. `FROM NAMED` sans `FROM` donne un graphe par défaut de requête vide,
+tandis que `FROM` sans `FROM NAMED` ne rend aucun graphe nommé visible. Sans
+clause de jeu de données, le graphe par défaut physique et tous les graphes
+nommés catalogués sont visibles.
+
+#### Formes SPARQL Update prises en charge
+
+L'API Rust qui préserve les erreurs accepte exactement les six formes de mise à
+jour ci-dessous. Les modèles du graphe par défaut et des graphes nommés peuvent
+être combinés dans une même opération, et chaque `WHERE` utilise le même
+parseur, planificateur logique, optimiseur et exécuteur que SELECT.
+
+```rust
+db.execute_update(r#"
+    PREFIX ex: <http://example.org/>
+    DELETE { ?s ex:oldValue ?value }
+    INSERT { GRAPH ex:archive { ?s ex:value ?value } }
+    WHERE  { ?s ex:oldValue ?value }
+"#)?;
+```
+
+Les formes prises en charge sont `INSERT DATA`, `DELETE DATA`,
+`INSERT ... WHERE`, `DELETE ... WHERE`, la forme combinée
+`DELETE/INSERT ... WHERE` et `DELETE WHERE`. Le motif `WHERE` est évalué une
+seule fois avant l'application des changements ; les suppressions sont
+effectuées avant les insertions. Python expose le même comportement avec
+`SparqlDatabase.update()`. Les autres formes SPARQL 1.1 Update, telles que
+`WITH`, `USING`, `LOAD` et les opérations de gestion des graphes, ne font pas
+partie de cette version.
 
 #### Requête avec FILTER
 

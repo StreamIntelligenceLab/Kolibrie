@@ -35,7 +35,7 @@ fn execute_sample_query(database: &mut SparqlDatabase) {
         ?employee foaf:workplaceHomepage ?workplaceHomepage .
         ?employee ds:annual_salary ?salary
     }"#;
-    execute_query(sparql, database);
+    execute_query_rayon_parallel2_volcano(sparql, database);
 }
 
 fn execute_sample_query_volcano(database: &mut SparqlDatabase) {
@@ -66,7 +66,7 @@ fn execute_sample_query_complex(database: &mut SparqlDatabase) {
             }
         }
     }"#;
-    execute_query(sparql, database);
+    execute_query_rayon_parallel2_volcano(sparql, database);
 }
 
 fn execute_sample_query_volcano_complex(database: &mut SparqlDatabase) {

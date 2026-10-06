@@ -34,9 +34,6 @@ Voor meer informatie over ons onderzoek en lopende projecten, bezoek de [Stream 
 - **Uitbreidbare Dictionary Encoding**: Codeert en decodeert RDF-termen efficiënt met behulp van een aanpasbare dictionary.
 - **Uitgebreide API**: Biedt een rijke set methoden voor gegevensmanipulatie, querying en resultaatsverwerking.
 
-> [!WARNING]
-> het gebruik van CUDA is experimenteel en in ontwikkeling
-
 ## Installatie
 
 ### Native Installatie
@@ -64,29 +61,22 @@ use kolibrie::SparqlDatabase;
 
 ### Docker Installatie
 
-**Kolibrie** biedt Docker-ondersteuning met meerdere configuraties voor verschillende gebruikssituaties. De Docker-setup behandelt automatisch alle afhankelijkheden inclusief Rust, CUDA (voor GPU builds), en Python ML frameworks.
+**Kolibrie** biedt Docker-ondersteuning voor de Web UI en ontwikkelomgevingen. De Docker-setup behandelt automatisch Rust- en Python ML-afhankelijkheden.
 
 #### Vereisten
 
 * [Docker](https://docs.docker.com/get-docker/) geïnstalleerd
 * [Docker Compose](https://docs.docker.com/compose/install/) geïnstalleerd
-* Voor GPU-ondersteuning: [NVIDIA Docker runtime](https://github.com/NVIDIA/nvidia-docker) geïnstalleerd
 
 #### Snelstart
 
-1. **Alleen CPU build** (aanbevolen voor de meeste gebruikers):
+1. **Web UI build**:
 
 ```bash
 docker compose --profile cpu up --build
 ```
 
-2. **GPU-enabled build** (vereist NVIDIA GPU en nvidia-docker):
-
-```bash
-docker compose --profile gpu up --build
-```
-
-3. **Development build** (detecteert automatisch GPU-beschikbaarheid):
+2. **Development build**:
 
 ```bash
 docker compose --profile dev up --build
@@ -213,6 +203,67 @@ for row in results {
     println!("Subject: {}, Object: {}", row[0], row[1]);
 }
 ```
+
+#### Benoemde grafen, `GRAPH` en `UNION`
+
+Kolibries standaard SELECT- en Update-paden gebruiken één architectuur: de
+bestaande `nom`-parser bouwt recursieve groepspatronen die naar hetzelfde
+logische plan, dezelfde Streamertail-optimizer en dezelfde fysieke executor
+worden vertaald. Er is geen afzonderlijke parser of evaluator voor `GRAPH`,
+`UNION` of Update-`WHERE`-patronen. Het uniforme pad ondersteunt recursieve
+`GRAPH`-patronen met vaste of variabele graafnamen, geneste groepen en
+multiset-`UNION`:
+
+```rust
+let rows = execute_query_rayon_parallel2_volcano(
+    r#"
+    PREFIX ex: <http://example.org/>
+    SELECT DISTINCT ?g ?item WHERE {
+        { GRAPH ?g { ?item ex:status "active" } }
+        UNION
+        { GRAPH ?g { { ?item ex:status "pending" } } }
+    }
+    "#,
+    &mut db,
+);
+```
+
+`GRAPH <name>` leest uitsluitend die benoemde graaf. `GRAPH ?g` doorloopt de
+identiteiten van benoemde grafen en bindt `?g`; de standaardgraaf wordt nooit
+meegenomen. Zonder `DISTINCT` blijven dubbele oplossingen die door `UNION`
+worden opgeleverd behouden.
+
+Datasetclausules vervangen de querydataset. Meerdere `FROM`-grafen worden tot
+de standaardgraaf van de query samengevoegd, waarbij dubbele triples worden
+onderdrukt. Zodra een datasetclausule aanwezig is, zijn voor `GRAPH` alleen de
+met `FROM NAMED` vermelde grafen zichtbaar. `FROM NAMED` zonder `FROM` levert
+een lege standaardgraaf voor de query op; `FROM` zonder `FROM NAMED` stelt geen
+benoemde grafen beschikbaar. Zonder datasetclausules zijn de fysieke
+standaardgraaf en alle gecatalogiseerde benoemde grafen zichtbaar.
+
+#### Ondersteunde SPARQL Update-vormen
+
+De foutbehoudende Rust-API accepteert precies de zes onderstaande Update-vormen.
+Templates voor de standaardgraaf en benoemde grafen kunnen in dezelfde
+bewerking worden gecombineerd; elke `WHERE` gebruikt dezelfde parser, logische
+planner, optimizer en executor als SELECT.
+
+```rust
+db.execute_update(r#"
+    PREFIX ex: <http://example.org/>
+    DELETE { ?s ex:oldValue ?value }
+    INSERT { GRAPH ex:archive { ?s ex:value ?value } }
+    WHERE  { ?s ex:oldValue ?value }
+"#)?;
+```
+
+Ondersteunde vormen zijn `INSERT DATA`, `DELETE DATA`, `INSERT ... WHERE`,
+`DELETE ... WHERE`, gecombineerd `DELETE/INSERT ... WHERE` en `DELETE WHERE`.
+Het `WHERE`-patroon wordt eenmaal geëvalueerd voordat wijzigingen worden
+toegepast, waarbij verwijderingen vóór invoegingen plaatsvinden. Python biedt
+hetzelfde gedrag via `SparqlDatabase.update()`. Andere SPARQL 1.1
+Update-vormen, zoals `WITH`, `USING`, `LOAD` en graafbeheerbewerkingen, maken
+geen deel uit van deze release.
 
 #### Query met FILTER
 

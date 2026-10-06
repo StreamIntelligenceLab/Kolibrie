@@ -2,7 +2,7 @@ use kolibrie::parser::*;
 use kolibrie::sparql_database::SparqlDatabase;
 use kolibrie::rsp_engine::{RSPBuilder, SimpleR2R, ResultConsumer, QueryExecutionMode};
 use ml::MLHandler;
-use ml::generate_ml_models;
+
 use datalog::reasoning::Reasoner;
 use shared::triple::Triple;
 use shared::rule::Rule;
@@ -101,7 +101,7 @@ fn setup_ml_model() -> Result<MLHandler, Box<dyn std::error::Error>> {
         .count() >= 3;
     
     if !models_exist {
-        generate_ml_models(&model_dir, "predictor.py")?;
+        return Err("Generate models explicitly before running this local example".into());
     }
     
     let mut ml_handler = MLHandler::new()?;
@@ -114,7 +114,7 @@ fn setup_ml_model() -> Result<MLHandler, Box<dyn std::error::Error>> {
 }
 
 fn setup_knowledge_base() -> SparqlDatabase {
-    let mut database = SparqlDatabase::new();
+    let mut database = SparqlDatabase::with_ml_context(local_ml::trusted_context());
     
     // Register prefixes
     database.prefixes.insert("ex".to_string(), "http://example.org/".to_string());
@@ -196,7 +196,9 @@ fn run_combined_workflow(
             // Decode all triples FIRST with proper scoping
             let decoded_triples: Vec<(String, String, String)> = {
                 let dict = database.dictionary.read().unwrap();
-                database.triples.iter()
+                database
+                    .query_default_triples(None, None, None)
+                    .iter()
                     .filter_map(|triple| {
                         let s = dict.decode(triple.subject)?.to_string();
                         let p = dict.decode(triple.predicate)?.to_string();
@@ -273,8 +275,9 @@ fn query_comfort_level(database: &SparqlDatabase, sensor_uri: &str) -> String {
     };
     
     if let (Some(comfort_pred_id), Some(sensor_id)) = (comfort_pred_id, sensor_id) {
-        if let Some(triple) = database.triples.iter()
-            .find(|t| t.subject == sensor_id && t.predicate == comfort_pred_id)
+        if let Some(triple) = database
+            .query_default_triples(Some(sensor_id), Some(comfort_pred_id), None)
+            .first()
         {
             let dict = database.dictionary.read().unwrap();
             if let Some(value) = dict.decode(triple.object) {
@@ -285,3 +288,5 @@ fn query_comfort_level(database: &SparqlDatabase, sensor_uri: &str) -> String {
     
     "comfortable".to_string()
 }
+
+mod local_ml { include!(concat!(env!("CARGO_MANIFEST_DIR"), "/examples/support/ml_context.rs")); }

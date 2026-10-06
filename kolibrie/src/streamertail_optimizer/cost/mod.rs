@@ -10,4 +10,4 @@
 
 pub mod estimator;
 
-pub use estimator::{CostConstants, CostEstimator};
+pub use estimator::{collect_pattern_variables, normalize_variable, CostConstants, CostEstimator};

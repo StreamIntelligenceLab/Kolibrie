@@ -22,12 +22,11 @@ pub fn query_training_rows(
     db: &mut SparqlDatabase,
     select_query: &str,
 ) -> LoaderResult<Vec<HashMap<String, RdfTerm>>> {
-    let (_, parsed) = parse_sparql_query(select_query).map_err(|err| {
-        format!("failed to parse training data query: {err:?}")
-    })?;
+    let (_, parsed) = parse_sparql_query(select_query)
+        .map_err(|err| format!("failed to parse training data query: {err:?}"))?;
 
     let variables: Vec<String> = parsed
-        .1
+        .variables
         .iter()
         .filter_map(|(kind, var, _)| {
             if *kind == "VAR" || var.starts_with('?') {
@@ -111,7 +110,8 @@ mod tests {
     fn rdf_term_to_f64_xsd_types() {
         assert_eq!(rdf_term_to_f64(&"42".to_string()).unwrap(), 42.0);
         assert_eq!(
-            rdf_term_to_f64(&"\"3.5\"^^<http://www.w3.org/2001/XMLSchema#double>".to_string()).unwrap(),
+            rdf_term_to_f64(&"\"3.5\"^^<http://www.w3.org/2001/XMLSchema#double>".to_string())
+                .unwrap(),
             3.5
         );
         assert!(rdf_term_to_f64(&"http://example.org/value".to_string()).is_err());

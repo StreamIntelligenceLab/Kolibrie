@@ -56,7 +56,7 @@ fn simple_select_all() {
 
     let sparql = r#"PREFIX foaf: <http://xmlns.com/foaf/0.1/> PREFIX ds: <https://data.cityofchicago.org/resource/xzkq-xp2w/> SELECT * WHERE {?employee foaf:name ?name . ?employee foaf:title ?title . ?employee foaf:workplaceHomepage ?workplaceHomepage . ?employee ds:full_or_part_time ?full_or_part_time . ?employee ds:salary_or_hourly ?salary_or_hourly . ?employee ds:annual_salary ?salary}"#;
 
-    let results = execute_query(sparql, &mut database);
+    let results = execute_query_rayon_parallel2_volcano(sparql, &mut database);
 
     // Now the main function is responsible for printing the results
     println!("Results:");

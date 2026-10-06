@@ -55,7 +55,7 @@ fn filter_query() {
 
     let sparql = r#"PREFIX ds: <https://data.cityofchicago.org/resource/xzkq-xp2w/> SELECT ?employee ?salary WHERE {?employee ds:annual_salary ?salary FILTER(?salary > 75000)}"#;
 
-    let results = execute_query(sparql, &mut database);
+    let results = execute_query_rayon_parallel2_volcano(sparql, &mut database);
 
     // Now the main function is responsible for printing the results
     println!("Results:");

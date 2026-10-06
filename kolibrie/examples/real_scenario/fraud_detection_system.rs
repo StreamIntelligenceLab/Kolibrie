@@ -515,8 +515,10 @@ fn extract_data_for_ml_fraud(
 
     for (i, (var_name, _)) in feature_predicates.iter().enumerate() {
         if let Some(pred_id) = pred_ids[i] {
-            if let Some(triple) = database.triples.iter()
-                .find(|t| t.subject == tx_id && t.predicate == pred_id)
+            if let Some(triple) = database
+                .query_default_triples(Some(tx_id), Some(pred_id), None)
+                .into_iter()
+                .next()
             {
                 row.insert(var_name.to_string(), triple.object);
             }
@@ -622,7 +624,7 @@ fn run_ml_predict_from_clause(
 }
 
 fn setup_knowledge_base() -> SparqlDatabase {
-    let mut db = SparqlDatabase::new();
+    let mut db = SparqlDatabase::with_ml_context(local_ml::trusted_context());
 
     db.prefixes.insert("ex".into(),  "http://fraud.example.org/".into());
     db.prefixes.insert("rdf".into(), "http://www.w3.org/1999/02/22-rdf-syntax-ns#".into());
@@ -1075,7 +1077,9 @@ fn run_reasoning(
 ) -> Vec<String> {
     let decoded_triples: Vec<(String, String, String)> = {
         let dict = database.dictionary.read().unwrap();
-        database.triples.iter()
+        database
+            .query_default_triples(None, None, None)
+            .iter()
             .filter_map(|t| Some((
                 dict.decode(t.subject)?.to_string(),
                 dict.decode(t.predicate)?.to_string(),
@@ -1121,24 +1125,20 @@ fn run_reasoning(
 
         if let (Some(tx_id), Some(sflag_id)) = (tx_id_opt, sflag_opt) {
             let dict = database.dictionary.read().unwrap();
-            for t in database.triples.iter() {
-                if t.subject == tx_id && t.predicate == sflag_id {
-                    if let Some(val) = dict.decode(t.object) {
-                        let local = val.rsplit('/').next().unwrap_or(val);
-                        flags.push(local.to_string());
-                    }
+            for t in database.query_default_triples(Some(tx_id), Some(sflag_id), None) {
+                if let Some(val) = dict.decode(t.object) {
+                    let local = val.rsplit('/').next().unwrap_or(val);
+                    flags.push(local.to_string());
                 }
             }
         }
 
         if let (Some(tx_id), Some(risk_id)) = (tx_id_opt, risk_opt) {
             let dict = database.dictionary.read().unwrap();
-            for t in database.triples.iter() {
-                if t.subject == tx_id && t.predicate == risk_id {
-                    if let Some(val) = dict.decode(t.object) {
-                        let local = val.rsplit('/').next().unwrap_or(val);
-                        flags.push(format!("risk:{}", local));
-                    }
+            for t in database.query_default_triples(Some(tx_id), Some(risk_id), None) {
+                if let Some(val) = dict.decode(t.object) {
+                    let local = val.rsplit('/').next().unwrap_or(val);
+                    flags.push(format!("risk:{}", local));
                 }
             }
         }
@@ -1617,3 +1617,5 @@ fn synthesise_transaction(
 
     (tx, is_fraud)
 }
+
+mod local_ml { include!(concat!(env!("CARGO_MANIFEST_DIR"), "/examples/support/ml_context.rs")); }

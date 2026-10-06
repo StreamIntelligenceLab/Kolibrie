@@ -61,7 +61,9 @@ fn main() -> Result<(), Box<dyn Error>> {
 </rdf:RDF>
     "#;
 
-    let mut database = SparqlDatabase::new();
+    let mut database = SparqlDatabase::with_ml_context(
+        kolibrie::ml_policy::MlExecutionContext::from_environment()?
+    );
     database.parse_rdf(rdf_xml_data);
     database.get_or_build_stats();
     println!("Database RDF triples loaded.");
@@ -219,9 +221,9 @@ fn extract_data_for_ml(database: &mut SparqlDatabase) -> Result<Vec<HashMap<Stri
         database.dictionary.write().unwrap().encode("http://example.org/sensor#occupancy")
     });
     
-    let subjects: std::collections::HashSet<u32> = database.triples
-        .iter()
-        .filter(|t| t.predicate == temp_pred)
+    let subjects: std::collections::HashSet<u32> = database
+        .query_default_triples(None, Some(temp_pred), None)
+        .into_iter()
         .map(|t| t.subject)
         .collect();
     
@@ -229,15 +231,24 @@ fn extract_data_for_ml(database: &mut SparqlDatabase) -> Result<Vec<HashMap<Stri
         let mut row = HashMap::new();
         row.insert("room".to_string(), subject);
         
-        if let Some(triple) = database.triples.iter().find(|t| t.subject == subject && t.predicate == temp_pred) {
+        if let Some(triple) = database
+            .query_default_triples(Some(subject), Some(temp_pred), None)
+            .first()
+        {
             row.insert("temp".to_string(), triple.object);
         }
         
-        if let Some(triple) = database.triples.iter().find(|t| t.subject == subject && t.predicate == humidity_pred) {
+        if let Some(triple) = database
+            .query_default_triples(Some(subject), Some(humidity_pred), None)
+            .first()
+        {
             row.insert("humidity".to_string(), triple.object);
         }
         
-        if let Some(triple) = database.triples.iter().find(|t| t.subject == subject && t.predicate == occupancy_pred) {
+        if let Some(triple) = database
+            .query_default_triples(Some(subject), Some(occupancy_pred), None)
+            .first()
+        {
             row.insert("occupancy".to_string(), triple.object);
         }
         
@@ -284,7 +295,7 @@ fn add_prediction_to_database(prediction: &Prediction, database: &mut SparqlData
     let object_id = dict.encode(&prediction.predicted_temperature.to_string());
     drop(dict);
     
-    database.triples.insert(Triple {
+    database.add_triple(Triple {
         subject: subject_id,
         predicate: predicate_id,
         object: object_id,
@@ -296,7 +307,7 @@ fn add_prediction_to_database(prediction: &Prediction, database: &mut SparqlData
     let confidence_object_id = dict.encode(&prediction.confidence.to_string());
     drop(dict);
     
-    database.triples.insert(Triple {
+    database.add_triple(Triple {
         subject: subject_id,
         predicate: confidence_predicate_id,
         object: confidence_object_id,
@@ -312,7 +323,7 @@ fn add_prediction_to_database(prediction: &Prediction, database: &mut SparqlData
     let timestamp_object_id = dict.encode(&timestamp_str);
     drop(dict);
     
-    database.triples.insert(Triple {
+    database.add_triple(Triple {
         subject: subject_id,
         predicate: timestamp_predicate_id,
         object: timestamp_object_id,

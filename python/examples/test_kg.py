@@ -17,11 +17,11 @@ Before running the test, run such commands in the terminal:
 5. run python script
 '''
 
-import py_kolibrie
+import kolibrie
 
 def knowledge_graph():
     # Create the knowledge graph instance
-    graph = py_kolibrie.PyKnowledgeGraph()
+    graph = kolibrie.KnowledgeGraph()
 
     # Add ABox triples (instance-level)
     graph.add_abox_triple("Alice", "hasParent", "Bob")
@@ -38,25 +38,25 @@ def knowledge_graph():
 
     # Define a dynamic rule:
     # If X hasParent Y and Y hasParent Z, then X hasGrandparent Z
-    grandparent_rule = py_kolibrie.PyRule(
+    grandparent_rule = kolibrie.Rule(
         premise=[
-            py_kolibrie.PyTriplePattern(
-                py_kolibrie.PyTerm.Variable("X"),
-                py_kolibrie.PyTerm.Constant(has_parent_const),
-                py_kolibrie.PyTerm.Variable("Y"),
+            kolibrie.TriplePattern(
+                kolibrie.Term.Variable("X"),
+                kolibrie.Term.Constant(has_parent_const),
+                kolibrie.Term.Variable("Y"),
             ),
-            py_kolibrie.PyTriplePattern(
-                py_kolibrie.PyTerm.Variable("Y"),
-                py_kolibrie.PyTerm.Constant(has_parent_const),
-                py_kolibrie.PyTerm.Variable("Z"),
+            kolibrie.TriplePattern(
+                kolibrie.Term.Variable("Y"),
+                kolibrie.Term.Constant(has_parent_const),
+                kolibrie.Term.Variable("Z"),
             )
         ],
         filters=[],  # No filters
         conclusion=[  # Changed from single pattern to list of patterns
-            py_kolibrie.PyTriplePattern(
-                py_kolibrie.PyTerm.Variable("X"),
-                py_kolibrie.PyTerm.Constant(has_grandparent_const),
-                py_kolibrie.PyTerm.Variable("Z"),
+            kolibrie.TriplePattern(
+                kolibrie.Term.Variable("X"),
+                kolibrie.Term.Constant(has_grandparent_const),
+                kolibrie.Term.Variable("Z"),
             )
         ]
     )

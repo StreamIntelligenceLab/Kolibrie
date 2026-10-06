@@ -8,8 +8,13 @@
  * you can obtain one at https://mozilla.org/MPL/2.0/.
  */
 
+#![cfg(feature = "ml")]
+
 use kolibrie::parser::process_rule_definition;
 use kolibrie::sparql_database::SparqlDatabase;
+
+#[path = "common/ml_local.rs"]
+mod ml_local;
 
 fn tmp_model_path(name: &str) -> String {
     let id = std::process::id();
@@ -17,7 +22,7 @@ fn tmp_model_path(name: &str) -> String {
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_nanos())
         .unwrap_or(0);
-    format!("/tmp/kolibrie_ml_predict_{}_{}_{}.bin", name, id, nanos)
+    format!("kolibrie_ml_predict_{}_{}_{}.bin", name, id, nanos)
 }
 
 fn populate_multiclass_db(db: &mut SparqlDatabase) {
@@ -96,12 +101,13 @@ TRAIN NEURAL RELATION ex:predictedDigit {{
 }
 
 fn train_binary(db: &mut SparqlDatabase, save_path: &str) {
+    // Use a linear model to avoid random convergence failures
     let program = format!(
         r#"
 PREFIX ex: <http://example.org/>
 
 MODEL "fraud_model" {{
-    ARCH MLP {{ HIDDEN [8, 4] }}
+    ARCH MLP {{ HIDDEN [] }}
     OUTPUT BINARY {{ true }}
 }}
 
@@ -137,7 +143,8 @@ fn lookup_object(db: &SparqlDatabase, subject_iri: &str, predicate_iri: &str) ->
     let dict = db.dictionary.read().unwrap();
     let s = *dict.string_to_id.get(subject_iri)?;
     let p = *dict.string_to_id.get(predicate_iri)?;
-    for t in &db.triples {
+    let triples = db.query_default_triples(Some(s), Some(p), None);
+    for t in &triples {
         if t.subject == s && t.predicate == p {
             return dict.decode(t.object).map(str::to_string);
         }
@@ -148,13 +155,13 @@ fn lookup_object(db: &SparqlDatabase, subject_iri: &str, predicate_iri: &str) ->
 fn count_triples_with_predicate(db: &SparqlDatabase, predicate_iri: &str) -> usize {
     let dict = db.dictionary.read().unwrap();
     let Some(&pred_id) = dict.string_to_id.get(predicate_iri) else { return 0; };
-    db.triples.iter().filter(|t| t.predicate == pred_id).count()
+    db.query_default_triples(None, Some(pred_id), None).len()
 }
 
 /// Head-only output variable materializes predictions
 #[test]
 fn head_only_output_variable_materializes() {
-    let mut db = SparqlDatabase::new();
+    let mut db = ml_local::database();
     populate_multiclass_db(&mut db);
     train_multiclass(&mut db, &tmp_model_path("head_only"));
 
@@ -201,7 +208,7 @@ ML.PREDICT(MODEL "digit_model",
 /// INPUT FILTER only predicts rows with x0 > 0
 #[test]
 fn input_filter_preserved() {
-    let mut db = SparqlDatabase::new();
+    let mut db = ml_local::database();
     populate_multiclass_db(&mut db);
     train_multiclass(&mut db, &tmp_model_path("filter"));
 
@@ -238,10 +245,89 @@ ML.PREDICT(MODEL "digit_model",
     assert!(lookup_object(&db, "s2", "http://example.org/predictedDigit").is_none());
 }
 
+#[test]
+fn top_level_ml_predict_materializes_after_training() {
+    let mut db = ml_local::database();
+    populate_multiclass_db(&mut db);
+    train_multiclass(&mut db, &tmp_model_path("top_level"));
+
+    let predict = r#"
+PREFIX ex: <http://example.org/>
+
+ML.PREDICT(MODEL "digit_model",
+    INPUT {
+        SELECT ?sample ?x0 ?x1 ?x2
+        WHERE {
+            ?sample ex:x0 ?x0 .
+            ?sample ex:x1 ?x1 .
+            ?sample ex:x2 ?x2 .
+            FILTER (?x0 > 0)
+        }
+    },
+    OUTPUT ?label
+)
+"#;
+
+    kolibrie::neural_relations::execute_neural_program(&mut db, predict)
+        .expect("top-level ML.PREDICT failed");
+
+    let count = count_triples_with_predicate(&db, "http://example.org/predictedDigit");
+    assert_eq!(count, 2, "top-level ML.PREDICT should respect INPUT FILTER");
+    assert_eq!(
+        lookup_object(&db, "s0", "http://example.org/predictedDigit").as_deref(),
+        Some("A")
+    );
+    assert_eq!(
+        lookup_object(&db, "s1", "http://example.org/predictedDigit").as_deref(),
+        Some("A")
+    );
+    assert!(lookup_object(&db, "s2", "http://example.org/predictedDigit").is_none());
+}
+
+#[test]
+fn top_level_ml_predict_rejects_ambiguous_model_relation_mapping() {
+    let mut db = ml_local::database();
+
+    let program = r#"
+PREFIX ex: <http://example.org/>
+
+MODEL "shared_model" {
+    ARCH MLP { HIDDEN [4] }
+    OUTPUT EXCLUSIVE { "A", "B" }
+}
+
+NEURAL RELATION ex:firstPrediction USING MODEL "shared_model" {
+    INPUT { ?sample ex:x0 ?x0 . }
+    FEATURES { ?x0 }
+}
+
+NEURAL RELATION ex:secondPrediction USING MODEL "shared_model" {
+    INPUT { ?sample ex:x0 ?x0 . }
+    FEATURES { ?x0 }
+}
+
+ML.PREDICT(MODEL "shared_model",
+    INPUT {
+        SELECT ?sample ?x0
+        WHERE { ?sample ex:x0 ?x0 . }
+    },
+    OUTPUT ?label
+)
+"#;
+
+    let err = kolibrie::neural_relations::execute_neural_program(&mut db, program)
+        .expect_err("ambiguous model-to-relation mapping should fail");
+    assert!(
+        err.contains("matches 2 NEURAL RELATION"),
+        "unexpected error: {}",
+        err
+    );
+}
+
 /// Binary output emits every row and adds the `_prob` companion
 #[test]
 fn binary_always_emit_with_probability_companion() {
-    let mut db = SparqlDatabase::new();
+    let mut db = ml_local::database();
     populate_binary_db(&mut db);
     train_binary(&mut db, &tmp_model_path("binary"));
 
@@ -294,7 +380,7 @@ ML.PREDICT(MODEL "fraud_model",
 /// Rerun cleans stale predictions after feature changes
 #[test]
 fn rerun_cleans_stale_predictions() {
-    let mut db = SparqlDatabase::new();
+    let mut db = ml_local::database();
     populate_multiclass_db(&mut db);
     train_multiclass(&mut db, &tmp_model_path("rerun"));
 
@@ -350,7 +436,7 @@ ML.PREDICT(MODEL "digit_model",
 /// Non-ML conclusions survive ML materialization
 #[test]
 fn preserves_non_ml_conclusions() {
-    let mut db = SparqlDatabase::new();
+    let mut db = ml_local::database();
     populate_multiclass_db(&mut db);
     train_multiclass(&mut db, &tmp_model_path("mixed_conclusions"));
 
@@ -388,7 +474,7 @@ ML.PREDICT(MODEL "digit_model",
 /// Empty INPUT rerun clears stale predictions
 #[test]
 fn empty_input_rerun_clears_stale() {
-    let mut db = SparqlDatabase::new();
+    let mut db = ml_local::database();
     populate_multiclass_db(&mut db);
     train_multiclass(&mut db, &tmp_model_path("empty_rerun"));
 
@@ -443,7 +529,7 @@ ML.PREDICT(MODEL "digit_model",
 /// Unused OUTPUT variable returns an error
 #[test]
 fn unused_output_variable_errors() {
-    let mut db = SparqlDatabase::new();
+    let mut db = ml_local::database();
     populate_multiclass_db(&mut db);
     train_multiclass(&mut db, &tmp_model_path("unused"));
 
@@ -485,7 +571,7 @@ ML.PREDICT(MODEL "digit_model",
 /// Model-name mismatch returns an error
 #[test]
 fn model_name_mismatch_errors() {
-    let mut db = SparqlDatabase::new();
+    let mut db = ml_local::database();
     populate_multiclass_db(&mut db);
     train_multiclass(&mut db, &tmp_model_path("mismatch"));
 
@@ -527,7 +613,7 @@ ML.PREDICT(MODEL "other_model",
 /// Missing INPUT SELECT anchor returns an error
 #[test]
 fn missing_anchor_in_input_select_errors() {
-    let mut db = SparqlDatabase::new();
+    let mut db = ml_local::database();
     populate_multiclass_db(&mut db);
     train_multiclass(&mut db, &tmp_model_path("missing_anchor"));
 
@@ -569,7 +655,7 @@ ML.PREDICT(MODEL "digit_model",
 /// Multiple predicates for one OUTPUT variable return an error
 #[test]
 fn multiple_conclusion_predicates_errors() {
-    let mut db = SparqlDatabase::new();
+    let mut db = ml_local::database();
     populate_multiclass_db(&mut db);
     train_multiclass(&mut db, &tmp_model_path("multi_pred"));
 

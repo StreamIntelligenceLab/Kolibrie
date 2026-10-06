@@ -8,7 +8,7 @@
  * you can obtain one at https://mozilla.org/MPL/2.0/.
  */
 
-use kolibrie::execute_query::execute_query;
+use kolibrie::execute_query::execute_query_rayon_parallel2_volcano;
 use kolibrie::parser::*;
 use kolibrie::sparql_database::SparqlDatabase;
 use datalog::reasoning::Reasoner;
@@ -433,11 +433,11 @@ fn main() {
                 
                 // Parse the RDF data into the database
                 database.parse_rdf(&rdf_xml_data);
-                println!("Updated RDF triples: {} triples", database.triples.len());
+                println!("Updated RDF triples: {} triples", database.dataset_index.len_default());
                 
                 // Load data into knowledge graph - FIXED: Proper lock handling
                 // Collect triples first to avoid holding lock during iteration
-                let triples_to_add: Vec<_> = database.triples.iter().cloned().collect();
+                let triples_to_add = database.query_default_triples(None, None, None);
                 
                 for triple in triples_to_add {
                     let dict = database.dictionary.read().unwrap();
@@ -451,7 +451,7 @@ fn main() {
                     }
                 }
                 
-                println!("KnowledgeGraph ABox loaded with {} triples", database.triples.len());
+                println!("KnowledgeGraph ABox loaded with {} triples", database.dataset_index.len_default());
                 
                 // Rule 1: If it's quiet (noise level < 30), use noise for detection
                 let rule1 = r#"PREFIX ex: <http://example.org#>
@@ -545,7 +545,7 @@ WHERE {
                     println!("Rule #{} - Parsing rule...", idx+1);
                     match parse_combined_query(rule) {
                         Ok((_rest, combined_query)) => {
-                            if let Some(rule_def) = combined_query.rule {
+                            if let Some(rule_def) = combined_query.single_rule().expect("expected at most one RULE block").cloned() {
                                 println!("Rule #{} - Successfully parsed", idx+1);
                                 
                                 // FIXED: Acquire write lock for conversion
@@ -598,7 +598,7 @@ WHERE {
                 
                 // Add inferred facts to database
                 for triple in inferred_facts.iter() {
-                    database.triples.insert(triple.clone());
+                    database.add_triple(triple.clone());
                 }
                 
                 // Query for sensors by grid position
@@ -610,7 +610,7 @@ WHERE {
                             ex:gridY ?y .
                 }"#;
             
-                let grid_sensor_results = execute_query(query_grid_sensors, &mut database);
+                let grid_sensor_results = execute_query_rayon_parallel2_volcano(query_grid_sensors, &mut database);
                 println!("\n==> Sensors in grid coordinates:");
                 for row in grid_sensor_results {
                     println!("{:?}", row);
@@ -623,7 +623,7 @@ WHERE {
                     ?room ex:detectionStrategy ?strategy .
                 }"#;
             
-                let strategy_results = execute_query(query_strategies, &mut database);
+                let strategy_results = execute_query_rayon_parallel2_volcano(query_strategies, &mut database);
                 println!("\n==> Detection strategies:");
                 for row in strategy_results {
                     println!("{:?}", row);
@@ -636,7 +636,7 @@ WHERE {
                     ?room ex:fallbackDetectionStrategy ?strategy .
                 }"#;
             
-                let fallback_results = execute_query(query_fallbacks, &mut database);
+                let fallback_results = execute_query_rayon_parallel2_volcano(query_fallbacks, &mut database);
                 println!("\n==> Fallback strategies:");
                 for row in fallback_results {
                     println!("{:?}", row);
@@ -651,7 +651,7 @@ WHERE {
                     FILTER(?detected = "true")
                 }"#;
             
-                let motion_results = execute_query(query_motion, &mut database);
+                let motion_results = execute_query_rayon_parallel2_volcano(query_motion, &mut database);
                 println!("\n==> Active motion detection:");
                 for row in motion_results {
                     println!("{:?}", row);
@@ -666,7 +666,7 @@ WHERE {
                            ex:timeOfDetection ?time .
                 }"#;
             
-                let detection_results = execute_query(query_detections, &mut database);
+                let detection_results = execute_query_rayon_parallel2_volcano(query_detections, &mut database);
                 println!("\n==> Detected objects");
                 for row in detection_results {
                     println!("{:?}", row);
@@ -681,7 +681,7 @@ WHERE {
                            ex:timeOfDetection ?time .
                 }"#;
             
-                let unauthorized_results = execute_query(query_unauthorized, &mut database);
+                let unauthorized_results = execute_query_rayon_parallel2_volcano(query_unauthorized, &mut database);
                 println!("\n==> Unauthorized detection events:");
                 for row in unauthorized_results {
                     println!("{:?}", row);

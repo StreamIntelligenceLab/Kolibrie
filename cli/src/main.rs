@@ -36,6 +36,6 @@ fn main() {
     database.parse_rdf_from_file(&args.file);
 
     // Execute query
-    let results = execute_query(&args.query, &mut database);
+    let results = execute_query_rayon_parallel2_volcano(&args.query, &mut database);
     println!("Results: {:?}", results);
 }
