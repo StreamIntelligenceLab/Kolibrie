@@ -31,7 +31,6 @@ pyo3 = { workspace = true, optional = true }
 shared = { path = "../shared" }
 datalog =  { path = "../datalog" }
 datalogmtl = { path = "../datalogmtl" }
-ml = { path = "../ml" }
 ml = { path = "../ml", optional = true }
 chrono = "0.4.40"
 rumqttc = "0.21.0"

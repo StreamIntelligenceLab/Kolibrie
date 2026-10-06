@@ -9,7 +9,7 @@
  */
 
 use std::collections::{BTreeMap, HashMap, HashSet};
-use shared::index_manager::UnifiedIndex;
+use shared::dataset_index::DatasetIndex;
 use shared::triple::Triple;
 use shared::terms::TriplePattern;
 use datalog::reasoning::matches_rule_pattern;
@@ -29,9 +29,9 @@ pub trait TemporalStore {
 // Phase 1: TemporalSnapshotStore
 // ────────────────────────────────────────────────────────────────
 
-/// Phase 1: one UnifiedIndex per timestamp. O(w * |facts|) memory.
+/// Phase 1: one DatasetIndex per timestamp. O(w * |facts|) memory.
 pub struct TemporalSnapshotStore {
-    snapshots: BTreeMap<u64, UnifiedIndex>,
+    snapshots: BTreeMap<u64, DatasetIndex>,
     pub horizon: u64,
 }
 
@@ -43,7 +43,7 @@ impl TemporalSnapshotStore {
 
 impl TemporalStore for TemporalSnapshotStore {
     fn insert(&mut self, triple: &Triple, t: u64) {
-        self.snapshots.entry(t).or_insert_with(UnifiedIndex::new).insert(triple);
+        self.snapshots.entry(t).or_insert_with(DatasetIndex::new).insert(triple);
     }
 
     fn query_at(&self, pattern: &TriplePattern, t: u64) -> Vec<HashMap<String, u32>> {
@@ -106,7 +106,7 @@ pub struct IntervalFactStore {
     /// For each distinct triple, a sorted list of non-overlapping validity intervals.
     facts: HashMap<Triple, Vec<ValidityInterval>>,
     /// Current tick's index, rebuilt on each advance() for Base atom joins.
-    current_index: UnifiedIndex,
+    current_index: DatasetIndex,
     current_tick: u64,
     pub horizon: u64,
 }
@@ -115,7 +115,7 @@ impl IntervalFactStore {
     pub fn new(horizon: u64) -> Self {
         Self {
             facts: HashMap::new(),
-            current_index: UnifiedIndex::new(),
+            current_index: DatasetIndex::new(),
             current_tick: 0,
             horizon,
         }

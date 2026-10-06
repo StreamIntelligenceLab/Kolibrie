@@ -102,17 +102,20 @@ fn rsp_ql_istream_semantics() {
     );
 }
 
-/// DSTREAM: sliding window (RANGE=3 STEP=1) — 5 window firings, 1 DSTREAM emission.
+/// DSTREAM: sliding window (RANGE=3 STEP=1) — 5 window firings, 2 DSTREAM emissions.
+///
+/// A RANGE 3 window spans exactly 3 timestamps, so once it is full every slide
+/// drops exactly one fact out the back — and DSTREAM reports each of those.
 ///
 /// Window firing sequence (OnWindowClose fires when ts > window.close):
-///   - ts=1: add A -> no fire yet.
-///   - ts=2: add B -> window (0,1) fires with {A};       DSTREAM: old=∅     -> last={A},       no emission.
-///   - ts=3: add C -> window (0,2) fires with {A,B};     DSTREAM: old={A}   -> last={A,B},     no emission.
-///   - ts=4: add D -> window (0,3) fires with {A,B,C};   DSTREAM: old={A,B} -> last={A,B,C},   no emission.
-///   - ts=5: add E -> window (1,4) fires with {A,B,C,D}; DSTREAM: old={A,B,C} -> last={A,B,C,D}, no emission.
-///   - ts=6: add F -> window (2,5) fires with {B,C,D,E}; DSTREAM: old={A,B,C,D} -> deleted={A} -> emit A.
+///   - ts=1: add A -> no fire yet (only an empty window closes; 0 bindings).
+///   - ts=2: add B -> fires [-1,1] with {A};     DSTREAM: old=∅       -> last={A},     no emission.
+///   - ts=3: add C -> fires [0,2]  with {A,B};   DSTREAM: old={A}     -> last={A,B},   no emission.
+///   - ts=4: add D -> fires [1,3]  with {A,B,C}; DSTREAM: old={A,B}   -> last={A,B,C}, no emission.
+///   - ts=5: add E -> fires [2,4]  with {B,C,D}; DSTREAM: old={A,B,C} -> deleted={A}   -> emit A.
+///   - ts=6: add F -> fires [3,5]  with {C,D,E}; DSTREAM: old={B,C,D} -> deleted={B}   -> emit B.
 ///
-/// Total consumer calls: 1 -> [A].
+/// Total consumer calls: 2 -> [A], [B].
 /// No stop() — flushing all active windows would corrupt R2S state.
 #[test]
 fn rsp_ql_dstream_semantics() {
@@ -148,27 +151,27 @@ fn rsp_ql_dstream_semantics() {
         engine.add(t, 1);
     }
 
-    // ts=2: B -> window (0,1) fires with {A}; DSTREAM: old=∅ -> no emission.
+    // ts=2: B -> window [-1,1] fires with {A}; DSTREAM: old=∅ -> no emission.
     for t in engine.parse_data("<http://test/subjectB> a <http://test/DType> .") {
         engine.add(t, 2);
     }
 
-    // ts=3: C -> window (0,2) fires with {A,B}; DSTREAM: old={A} -> no emission.
+    // ts=3: C -> window [0,2] fires with {A,B}; DSTREAM: old={A} -> no emission.
     for t in engine.parse_data("<http://test/subjectC> a <http://test/DType> .") {
         engine.add(t, 3);
     }
 
-    // ts=4: D -> window (0,3) fires with {A,B,C}; DSTREAM: old={A,B} -> no emission.
+    // ts=4: D -> window [1,3] fires with {A,B,C}; DSTREAM: old={A,B} -> no emission.
     for t in engine.parse_data("<http://test/subjectD> a <http://test/DType> .") {
         engine.add(t, 4);
     }
 
-    // ts=5: E -> window (1,4) fires with {A,B,C,D}; DSTREAM: old={A,B,C} -> no emission.
+    // ts=5: E -> window [2,4] fires with {B,C,D}; DSTREAM: old={A,B,C} -> deleted={A} -> emit A.
     for t in engine.parse_data("<http://test/subjectE> a <http://test/DType> .") {
         engine.add(t, 5);
     }
 
-    // ts=6: F -> window (2,5) fires with {B,C,D,E}; DSTREAM: old={A,B,C,D} -> deleted={A} -> emit A.
+    // ts=6: F -> window [3,5] fires with {C,D,E}; DSTREAM: old={B,C,D} -> deleted={B} -> emit B.
     for t in engine.parse_data("<http://test/subjectF> a <http://test/DType> .") {
         engine.add(t, 6);
     }
@@ -176,17 +179,27 @@ fn rsp_ql_dstream_semantics() {
     let results = result_container.lock().unwrap();
     assert_eq!(
         results.len(),
-        1,
-        "DSTREAM: 5 window firings -> 1 consumer call (window (2,5) deletes subjectA). Got: {:?}",
+        2,
+        "DSTREAM: 5 window firings -> 2 consumer calls ([2,4] drops subjectA, [3,5] drops subjectB). Got: {:?}",
         *results
     );
-    // The one result must bind ?s to subjectA (deleted from window (1,4) -> (2,5)).
+    // Emission 1: {A,B,C} -> {B,C,D} dropped subjectA.
+    assert_eq!(results[0].len(), 1);
     assert!(
         results[0]
             .iter()
             .any(|(k, v)| k == "s" && v.contains("subjectA")),
-        "DSTREAM result must bind ?s to subjectA (deleted), got: {:?}",
+        "DSTREAM emission 1 must bind ?s to subjectA (deleted), got: {:?}",
         results[0]
+    );
+    // Emission 2: {B,C,D} -> {C,D,E} dropped subjectB.
+    assert_eq!(results[1].len(), 1);
+    assert!(
+        results[1]
+            .iter()
+            .any(|(k, v)| k == "s" && v.contains("subjectB")),
+        "DSTREAM emission 2 must bind ?s to subjectB (deleted), got: {:?}",
+        results[1]
     );
 }
 
