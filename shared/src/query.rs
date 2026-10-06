@@ -11,7 +11,7 @@
 use std::collections::HashMap;
 use std::time::Duration;
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum FilterExpression<'a> {
     Comparison(&'a str, &'a str, &'a str),
     And(Box<FilterExpression<'a>>, Box<FilterExpression<'a>>),
@@ -21,7 +21,7 @@ pub enum FilterExpression<'a> {
     FunctionCall(&'a str, Vec<&'a str>),
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ArithmeticExpression<'a> {
     Operand(&'a str), // Variable, literal, or number
     Add(Box<ArithmeticExpression<'a>>, Box<ArithmeticExpression<'a>>),
@@ -35,10 +35,11 @@ impl<'a> ArithmeticExpression<'a> {
     pub fn evaluate<F: Fn(&str) -> Option<f64>>(&self, resolve: &F) -> Result<f64, String> {
         match self {
             Self::Operand(s) => {
-                if s.starts_with('?') {
+                if s.starts_with(['?', '$']) {
                     resolve(s).ok_or_else(|| format!("Variable '{}' not found or not numeric", s))
                 } else {
-                    s.parse::<f64>().map_err(|_| format!("Cannot parse '{}' as number", s))
+                    s.parse::<f64>()
+                        .map_err(|_| format!("Cannot parse '{}' as number", s))
                 }
             }
             Self::Add(l, r) => Ok(l.evaluate(resolve)? + r.evaluate(resolve)?),
@@ -57,39 +58,71 @@ impl<'a> ArithmeticExpression<'a> {
 }
 
 // Define the Value enum to represent terms or UNDEF in VALUES clause
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Value {
     Term(String),
     Undef,
 }
 
 // Define the ValuesClause struct to hold variables and their corresponding values
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ValuesClause<'a> {
     pub variables: Vec<&'a str>,
     pub values: Vec<Vec<Value>>,
 }
 
-// Define the InsertClause struct to hold triple patterns for the INSERT clause
-#[derive(Debug, Clone)]
+/// A source-borrowed triple pattern as it appears in SPARQL text.
+///
+/// The three slices retain their lexical spelling, including variable sigils,
+/// IRI brackets, literal quotes/suffixes, blank-node prefixes, and RDF-star
+/// quoted-triple delimiters. Resolution and dictionary encoding happen only
+/// when this syntax tree is lowered into the query plan.
+pub type LexicalTriplePattern<'a> = (&'a str, &'a str, &'a str);
+
+/// A source-borrowed quad used by update data blocks and templates.
+/// `graph == None` denotes the default graph.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LexicalQuadPattern<'a> {
+    pub graph: Option<&'a str>,
+    pub triple: LexicalTriplePattern<'a>,
+}
+
+/// The existing tuple representation used by BIND.
+pub type BindClause<'a> = (&'a str, Vec<&'a str>, &'a str);
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct InsertClause<'a> {
-    pub triples: Vec<(&'a str, &'a str, &'a str)>,
+    pub quads: Vec<LexicalQuadPattern<'a>>,
 }
 
-// Define the DeleteClause struct to hold triple patterns for the DELETE clause
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DeleteClause<'a> {
-    pub triples: Vec<(&'a str, &'a str, &'a str)>,
+    pub quads: Vec<LexicalQuadPattern<'a>>,
 }
 
-#[derive(Debug, Clone)]
+/// Recursive graph-pattern algebra shared by SELECT and update WHERE clauses.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum GroupGraphPattern<'a> {
+    /// The empty group graph pattern. It evaluates to one solution mapping.
+    Unit,
+    Bgp(Vec<LexicalTriplePattern<'a>>),
+    Join(Vec<GroupGraphPattern<'a>>),
+    /// UNION preserves branch multiplicity; DISTINCT is a SELECT modifier.
+    Union(Vec<GroupGraphPattern<'a>>),
+    Graph {
+        /// Raw IRI, prefixed name, or variable lexeme following GRAPH.
+        name: &'a str,
+        pattern: Box<GroupGraphPattern<'a>>,
+    },
+    Filter(FilterExpression<'a>),
+    Bind(BindClause<'a>),
+    Values(ValuesClause<'a>),
+    SubQuery(Box<SubQuery<'a>>),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SubQuery<'a> {
-    pub variables: Vec<(&'a str, &'a str, Option<&'a str>)>, // SELECT variables
-    pub patterns: Vec<(&'a str, &'a str, &'a str)>,          // WHERE patterns
-    pub filters: Vec<FilterExpression<'a>>,           // FILTER conditions
-    pub binds: Vec<(&'a str, Vec<&'a str>, &'a str)>,        // BIND clauses
-    pub _values_clause: Option<ValuesClause<'a>>,            // VALUES clause
-    pub limit: Option<usize>, // Add LIMIT support
+    pub query: SelectQuery<'a>,
 }
 
 #[derive(Debug, Clone)]
@@ -100,11 +133,12 @@ pub struct RuleHead<'a> {
 #[derive(Debug, Clone)]
 pub struct MLPredictClause<'a> {
     pub model: &'a str,
-    pub input_raw: &'a str,                                 // Raw input query string
+    pub input_raw: &'a str, // Raw input query string
     pub input_select: Vec<(&'a str, &'a str, Option<&'a str>)>, // Parsed SELECT variables
-    pub input_where: Vec<(&'a str, &'a str, &'a str)>,      // Parsed WHERE patterns
-    pub input_filters: Vec<FilterExpression<'a>>,    // Parsed FILTER conditions
+    pub input_where: Vec<(&'a str, &'a str, &'a str)>, // Parsed WHERE patterns
+    pub input_filters: Vec<FilterExpression<'a>>, // Parsed FILTER conditions
     pub output: &'a str,
+    pub distribution: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -207,7 +241,10 @@ pub enum SyncPolicy {
     /// Wait until all windows have fired in the current cycle (τ=∞)
     Wait,
     /// Wait up to `duration`; on expiry apply `fallback`
-    Timeout { duration: Duration, fallback: Fallback },
+    Timeout {
+        duration: Duration,
+        fallback: Fallback,
+    },
 }
 
 impl Default for SyncPolicy {
@@ -219,7 +256,7 @@ impl Default for SyncPolicy {
 #[derive(Clone, Debug)]
 pub enum StreamType<'a> {
     RStream,
-    IStream, 
+    IStream,
     DStream,
     Custom(&'a str),
 }
@@ -258,6 +295,8 @@ pub struct ProbAnnotation<'a> {
     pub combination: &'a str,
     pub threshold: Option<f64>,
     pub confidence: Option<f64>,
+    /// Fully validated policy for `provenance=hybrid`.
+    pub hybrid_config: Option<crate::hybrid::HybridConfig>,
 }
 
 // Modified CombinedRule to include windowing
@@ -271,13 +310,14 @@ pub struct CombinedRule<'a> {
     pub train_neural_relation_decls: Vec<TrainNeuralRelationDecl>,
     pub body: (
         Vec<(&'a str, &'a str, &'a str)>, // triple patterns from WHERE
-        Vec<FilterExpression<'a>>, // filters
+        Vec<FilterExpression<'a>>,        // filters
         Option<ValuesClause<'a>>,
         Vec<(&'a str, Vec<&'a str>, &'a str)>, // BIND clauses
         Vec<SubQuery<'a>>,                     // subqueries
     ),
     /// Negated body atoms parsed from `NOT triple_pattern` clauses in WHERE.
     pub negated_body: Vec<(&'a str, &'a str, &'a str)>,
+    pub window_blocks: Vec<WindowBlock<'a>>,
     pub conclusion: Vec<(&'a str, &'a str, &'a str)>,
     pub ml_predict: Option<MLPredictClause<'a>>, // new field for ML.PREDICT clause
     pub prob_annotation: Option<ProbAnnotation<'a>>, // probabilistic rule annotation
@@ -305,16 +345,68 @@ pub struct RetrieveClause<'a> {
     pub graph_pattern: Vec<(&'a str, &'a str, &'a str)>,
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SortDirection {
     Asc,
     Desc,
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct OrderCondition<'a> {
     pub variable: &'a str,
     pub direction: SortDirection,
+}
+
+/// A SELECT query in Kolibrie's supported SPARQL fragment.
+///
+/// Projection entries retain the historical `(kind, variable, alias)` shape:
+/// ordinary variables use `"VAR"` and aggregates use their canonical
+/// uppercase function name.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SelectQuery<'a> {
+    pub distinct: bool,
+    pub variables: Vec<(&'a str, &'a str, Option<&'a str>)>,
+    /// Graph IRIs used to form the replacement default graph.
+    pub from: Vec<&'a str>,
+    /// Graph IRIs visible to GRAPH in the replacement dataset.
+    pub from_named: Vec<&'a str>,
+    pub pattern: GroupGraphPattern<'a>,
+    pub group_vars: Vec<&'a str>,
+    pub order_conditions: Vec<OrderCondition<'a>>,
+    pub limit: Option<usize>,
+}
+
+/// The six SPARQL Update forms supported by Kolibrie.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum UpdateOperation<'a> {
+    InsertData(InsertClause<'a>),
+    DeleteData(DeleteClause<'a>),
+    InsertWhere {
+        insert: InsertClause<'a>,
+        where_pattern: GroupGraphPattern<'a>,
+    },
+    /// `DELETE { template } WHERE { pattern }`
+    DeleteWhere {
+        delete: DeleteClause<'a>,
+        where_pattern: GroupGraphPattern<'a>,
+    },
+    DeleteInsertWhere {
+        delete: DeleteClause<'a>,
+        insert: InsertClause<'a>,
+        where_pattern: GroupGraphPattern<'a>,
+    },
+    /// `DELETE WHERE { pattern }`; the parsed quad block is both the template
+    /// and the WHERE graph pattern.
+    DeleteWhereShorthand {
+        delete: DeleteClause<'a>,
+        where_pattern: GroupGraphPattern<'a>,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SparqlOperation<'a> {
+    Select(SelectQuery<'a>),
+    Update(UpdateOperation<'a>),
 }
 
 #[derive(Debug, Clone)]
@@ -325,21 +417,23 @@ pub struct CombinedQuery<'a> {
     pub model_decls: Vec<ModelDecl>,
     pub neural_relation_decls: Vec<NeuralRelationDecl>,
     pub train_neural_relation_decls: Vec<TrainNeuralRelationDecl>,
-    pub rule: Option<CombinedRule<'a>>,
+    pub rules: Vec<CombinedRule<'a>>,
     pub ml_predict: Option<MLPredictClause<'a>>,
-    pub sparql: (
-        Option<InsertClause<'a>>,
-        Vec<(&'a str, &'a str, Option<&'a str>)>,
-        Vec<(&'a str, &'a str, &'a str)>,
-        Vec<FilterExpression<'a>>,
-        Vec<&'a str>,
-        HashMap<String, String>,
-        Option<ValuesClause<'a>>,
-        Vec<(&'a str, Vec<&'a str>, &'a str)>,
-        Vec<SubQuery<'a>>,
-        Option<usize>,
-        Vec<WindowBlock<'a>>,
-        Vec<OrderCondition<'a>>,
-    ),
-    pub delete_clause: Option<DeleteClause<'a>>,
+    /// The single standard-SPARQL syntax tree. Extension-only requests leave
+    /// this as `None`; recognized standard syntax never falls through to an
+    /// extension parser.
+    pub sparql: Option<SparqlOperation<'a>>,
+}
+
+impl<'a> CombinedQuery<'a> {
+    pub fn single_rule(&self) -> Result<Option<&CombinedRule<'a>>, String> {
+        match self.rules.as_slice() {
+            [] => Ok(None),
+            [rule] => Ok(Some(rule)),
+            rules => Err(format!(
+                "this entry point executes one RULE block, but the request contains {}; use the program API for multiple rules",
+                rules.len()
+            )),
+        }
+    }
 }

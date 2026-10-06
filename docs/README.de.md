@@ -208,6 +208,68 @@ for row in results {
 }
 ```
 
+#### Benannte Graphen, `GRAPH` und `UNION`
+
+Kolibries standardmäßige SELECT- und Update-Verarbeitung verwendet eine einzige
+Architektur: Der bestehende `nom`-Parser erzeugt rekursive Gruppenmuster, die
+in denselben logischen Plan, Streamertail-Optimierer und physischen Executor
+überführt werden. Für `GRAPH`, `UNION` und Update-`WHERE` gibt es keinen
+separaten Parser oder Evaluator. Der einheitliche Pfad unterstützt rekursive
+`GRAPH`-Muster mit festen oder variablen Graphnamen, verschachtelten Gruppen
+und Multimengen-`UNION`:
+
+```rust
+let rows = execute_query_rayon_parallel2_volcano(
+    r#"
+    PREFIX ex: <http://example.org/>
+    SELECT DISTINCT ?g ?item WHERE {
+        { GRAPH ?g { ?item ex:status "active" } }
+        UNION
+        { GRAPH ?g { { ?item ex:status "pending" } } }
+    }
+    "#,
+    &mut db,
+);
+```
+
+`GRAPH <name>` liest ausschließlich diesen benannten Graphen. `GRAPH ?g`
+durchläuft die Identitäten benannter Graphen und bindet `?g`; der Standardgraph
+ist dabei niemals enthalten. Ohne `DISTINCT` bleiben doppelte Lösungen, die
+durch `UNION` entstehen, erhalten.
+
+Datensatzklauseln ersetzen den Abfragedatensatz. Mehrere `FROM`-Graphen werden
+zum Standardgraphen der Abfrage zusammengeführt, wobei doppelte Tripel
+unterdrückt werden. Sobald eine Datensatzklausel vorhanden ist, sind für
+`GRAPH` ausschließlich die mit `FROM NAMED` aufgeführten Graphen sichtbar.
+`FROM NAMED` ohne `FROM` erzeugt einen leeren Abfrage-Standardgraphen; `FROM`
+ohne `FROM NAMED` macht keine benannten Graphen sichtbar. Ohne Datensatzklauseln
+sind der physische Standardgraph und alle katalogisierten benannten Graphen
+sichtbar.
+
+#### Unterstützte SPARQL-Update-Formen
+
+Die fehlererhaltende Rust-API akzeptiert genau die sechs unten aufgeführten
+Update-Formen. Templates für den Standardgraphen und benannte Graphen können in
+derselben Operation kombiniert werden; jedes `WHERE` verwendet denselben
+Parser, logischen Planer, Optimierer und Executor wie SELECT.
+
+```rust
+db.execute_update(r#"
+    PREFIX ex: <http://example.org/>
+    DELETE { ?s ex:oldValue ?value }
+    INSERT { GRAPH ex:archive { ?s ex:value ?value } }
+    WHERE  { ?s ex:oldValue ?value }
+"#)?;
+```
+
+Unterstützt werden `INSERT DATA`, `DELETE DATA`, `INSERT ... WHERE`,
+`DELETE ... WHERE`, kombiniertes `DELETE/INSERT ... WHERE` und `DELETE WHERE`.
+Das `WHERE`-Muster wird einmal ausgewertet, bevor Änderungen angewendet werden;
+dabei werden Löschungen vor Einfügungen ausgeführt. Python stellt dasselbe
+Verhalten über `SparqlDatabase.update()` bereit. Andere SPARQL-1.1-Update-Formen
+wie `WITH`, `USING`, `LOAD` und Graphverwaltungsoperationen sind nicht
+Bestandteil dieses Releases.
+
 #### Abfrage mit FILTER
 
 ```rust

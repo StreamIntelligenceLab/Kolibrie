@@ -46,7 +46,7 @@ fn main() {
 
   let mut database = SparqlDatabase::new();
   database.parse_rdf(rdf_xml_data);
-  println!("Database RDF triples: {:#?}", database.triples);
+  println!("Database RDF triples: {:#?}", database.query_default_triples(None, None, None));
 
   // Process the rule definition separately
   let rule_definition = r#"PREFIX ex: <http://example.org#>
@@ -85,6 +85,6 @@ WHERE {
   ?room ex:overheatingAlert true . 
 }"#;
   
-  let query_results = execute_query(select_query, &mut database);
+  let query_results = execute_query_rayon_parallel2_volcano(select_query, &mut database);
   println!("Query results: {:?}", query_results);
 }

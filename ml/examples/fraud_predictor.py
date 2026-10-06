@@ -2,11 +2,11 @@
 # Copyright © 2026 Volodymyr Kadzhaia
 # Copyright © 2026 Pieter Bonte
 # KU Leuven — Stream Intelligence Lab, Belgium
-# 
+#
 # This Source Code Form is subject to the terms of the Mozilla Public
 # License, v. 2.0. If a copy of the MPL was not distributed with this file,
 # you can obtain one at https://mozilla.org/MPL/2.0/.
-# 
+#
 
 from sklearn.calibration import CalibratedClassifierCV
 from sklearn.ensemble import GradientBoostingClassifier
@@ -401,58 +401,46 @@ def _do_train(model_path):
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Module-level training block
-# ─────────────────────────────────────────────────────────────────────────────
-#
-# CRITICAL — must be at MODULE LEVEL, not inside if __name__ == '__main__'.
-#
-# When lib.rs calls generate_ml_models() it does:
-#   importlib.import_module('fraud_predictor')
-# This executes the block below.  Because the module is imported as
-# 'fraud_predictor', pickle will store the class path as
-# 'fraud_predictor.FraudDetectionPredictor'.  lib.rs can then resolve it on
-# the subsequent pickle.load() call.
-#
-# Self-healing load-test
-# ─────────────────────
-# An existing pkl saved from a __main__ run stores the class as
-# '__main__.FraudDetectionPredictor'.  We catch the resulting AttributeError
-# (or any other pickle failure), delete the stale files, and retrain
-# automatically — no manual deletion of the pkl required.
+def generate_models():
+    """Explicit local generation. Importing this module never trains or writes."""
+    models_dir = os.environ["KOLIBRIE_TRAINING_OUTPUT"]
+    os.makedirs(models_dir, exist_ok=True)
 
-models_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'models')
-os.makedirs(models_dir, exist_ok=True)
+    _model_path = os.path.join(models_dir, 'fraud_predictor.pkl')
 
-_model_path = os.path.join(models_dir, 'fraud_predictor.pkl')
+    _needs_training = True
 
-_needs_training = True
+    if os.path.exists(_model_path):
+        try:
+            with open(_model_path, 'rb') as _f:
+                _probe = pickle.load(_f)
+            if (hasattr(_probe, 'feature_names')
+                    and len(_probe.feature_names) != len(FraudDetectionPredictor.FEATURE_NAMES)):
+                raise ValueError(
+                    f"Feature count mismatch: pkl has {len(_probe.feature_names)} "
+                    f"features, current class has "
+                    f"{len(FraudDetectionPredictor.FEATURE_NAMES)}. Retraining."
+                )
+            if getattr(_probe, 'model_version', None) != FraudDetectionPredictor.MODEL_VERSION:
+                raise ValueError(
+                    f"Model version mismatch: pkl has "
+                    f"{getattr(_probe, 'model_version', 'unknown')}, current class has "
+                    f"{FraudDetectionPredictor.MODEL_VERSION}. Retraining."
+                )
+            _needs_training = False
+            print(f'[fraud_predictor] Existing model verified OK → skipping training.')
+        except Exception as _load_err:
+            print(f'[fraud_predictor] Existing pkl cannot be loaded ({_load_err}).')
+            print('[fraud_predictor] Likely saved from __main__ context — deleting and retraining ...')
+            os.remove(_model_path)
+            _ttl = _model_path.replace('.pkl', '.ttl')
+            if os.path.exists(_ttl):
+                os.remove(_ttl)
 
-if os.path.exists(_model_path):
-    try:
-        with open(_model_path, 'rb') as _f:
-            _probe = pickle.load(_f)
-        if (hasattr(_probe, 'feature_names')
-                and len(_probe.feature_names) != len(FraudDetectionPredictor.FEATURE_NAMES)):
-            raise ValueError(
-                f"Feature count mismatch: pkl has {len(_probe.feature_names)} "
-                f"features, current class has "
-                f"{len(FraudDetectionPredictor.FEATURE_NAMES)}. Retraining."
-            )
-        if getattr(_probe, 'model_version', None) != FraudDetectionPredictor.MODEL_VERSION:
-            raise ValueError(
-                f"Model version mismatch: pkl has "
-                f"{getattr(_probe, 'model_version', 'unknown')}, current class has "
-                f"{FraudDetectionPredictor.MODEL_VERSION}. Retraining."
-            )
-        _needs_training = False
-        print(f'[fraud_predictor] Existing model verified OK → skipping training.')
-    except Exception as _load_err:
-        print(f'[fraud_predictor] Existing pkl cannot be loaded ({_load_err}).')
-        print('[fraud_predictor] Likely saved from __main__ context — deleting and retraining ...')
-        os.remove(_model_path)
-        _ttl = _model_path.replace('.pkl', '.ttl')
-        if os.path.exists(_ttl):
-            os.remove(_ttl)
+    if _needs_training:
+        _do_train(_model_path)
 
-if _needs_training:
-    _do_train(_model_path)
+if __name__ == "__main__":
+    # Import under the stable module name so pickle never records __main__ classes.
+    import importlib
+    importlib.import_module("fraud_predictor").generate_models()

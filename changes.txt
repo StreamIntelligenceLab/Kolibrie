@@ -72,6 +72,92 @@
 71. Add RSP-engine CityBench-inspired benchmark using generated streams, S2R windowing, and cross-window rules
 72. Add family-tree cross-window SDS+ benchmark with parentOf facts in SDS stream 1 and all other family facts in SDS stream 2
 73. Add old/new data-ratio evaluation for family-tree benchmark to compare incremental update against naive from-scratch recomputation
+74. Add first-class top-level `ML.PREDICT` syntax outside `RULE`, with neural-relation-based materialization after training, ambiguity checks for model-to-relation mapping, parser/runtime tests, and updated `predict_after_train` example
+75. Clean Python bindings API by exposing `kolibrie.SparqlDatabase`, `KnowledgeGraph`, and related classes without `Py*` prefixes; add `SparqlDatabase.load_file(path, format=None)` with Turtle, N-Triples, and RDF/XML dispatch; update Python examples
+76. Fix Streamertail star-join planning to avoid object-position star explosions in path queries
+77. Add graph-aware `DatasetIndex` with `GraphId`, `Quad`, `QuadPattern`, graph-scoped indexes, default-graph compatibility methods, and named-graph lookup support
+78. Migrate `SparqlDatabase` canonical storage from `UnifiedIndex`/`BTreeSet<Triple>` to `DatasetIndex`, keeping triples as the default-graph public API
+79. Add default and named graph insert/delete/query paths, N-Quads parsing/serialization, graph clearing, and same-triple-in-multiple-graphs handling
+80. Add SPARQL named graph execution support for `GRAPH <g>`, `GRAPH ?g`, `FROM NAMED`, and mixed default/named graph joins
+81. Update optimizer, Streamertail execution, query builder/engine, RSP code, ML execution, HTTP server, and Datalog reasoning to read/write through `DatasetIndex`
+82. Remove legacy `index_manager` module usage and direct `SparqlDatabase.triples` storage access from runtime code
+83. Add named graph tests for default graph isolation, named graph selection, graph variable binding, `FROM NAMED` filtering, and N-Quads roundtrip
+84. Re-run WatDiv 10M benchmark on the DatasetIndex-backed implementation and record that default graph queries complete without catastrophic regression
+85. Add stable probabilistic stream occurrence identities with `SeedRegistry`, immutable snapshots, overlapping-window identity preservation, and non-recycled seed IDs
+86. Add a hash-consed canonical full-lineage DAG with literal, conjunction, disjunction, and negation nodes for provenance materialisation
+87. Add opt-in `PROB(provenance=hybrid, ...)` configuration, explicit exact/lower-bound/needs-exact result statuses, metrics, and RDF-star result annotations
+88. Add lazy best-first top-k proof enumeration with exact retained-proof WMC, adaptive k tightening, cap-hit detection, and marginal-gain probing
+89. Add selective full-lineage SDD compilation with interruptible deadline/node budgets and exact handling of negation and exclusive groups
+90. Add probabilistic RSP ingestion, occurrence-aware window sidecars, live-window lineage rebuilding, and latest hybrid result access
+91. Move neural training target evaluation to full lineage and selective exact SDD/WMC gradients while preserving first-class neural training syntax
+92. Add brute-force, lineage, top-k, SDD, parser, RSP, expiry/rebuild, and multi-thread ingestion tests plus hybrid Criterion benchmarks
+93. Add certified probability intervals for hybrid top-k evaluation, including lower/upper bounds, residual frontier accounting, and bounded Alert/NoAlert decisions
+94. Add automatic interval-driven top-k to SDD switching with adaptive k growth, exact retained-proof WMC, probe accounting, and conservative interruption behavior
+95. Add explicit `threshold=auto:cost(fp=...,fn=...)` parser support with cost-ratio threshold resolution and strict validation of malformed or unsafe policies
+96. Extend hybrid probability results, metrics, RDF-star annotations, and RSP consumers with bounded results, upper bounds, effective thresholds, and threshold policy metadata
+97. Preserve legacy numeric threshold behavior and reject automatic threshold syntax for legacy `combination=topk` threshold-as-k parsing
+98. Add interval oracle, certified alert/no-alert, uncertain escalation, residual/probe accounting, parser, RDF, stream, and RSP regression tests
+99. Extend hybrid Criterion benchmarks with certified decision rates, interval width, SDD node counts, escalation rate, latency percentiles, and survivor recall checks
+100. Unify standard SELECT and Update handling in the existing `nom` parser -> recursive group algebra -> logical plan -> Streamertail optimizer -> physical execution architecture; remove the parallel strict parser and recursive evaluator
+101. Extend the existing parser and plans with fixed, variable, nested, missing, and empty `GRAPH` patterns plus multiset `UNION`, while preserving FILTER, arithmetic, BIND, VALUES, subqueries, aggregation, ordering, limits, and RDF-star
+102. Add SPARQL dataset replacement for `FROM` and `FROM NAMED`: merged duplicate-free query defaults, restricted named-graph visibility, and the required empty default graph for `FROM NAMED` without `FROM`
+103. Support exactly six SPARQL Update forms on default and named graphs: `INSERT DATA`, `DELETE DATA`, `INSERT ... WHERE`, `DELETE ... WHERE`, combined `DELETE/INSERT ... WHERE`, and `DELETE WHERE`
+104. Evaluate each Update `WHERE` once through the same optimized query plan, instantiate DELETE and INSERT from one binding snapshot, delete before inserting, and allocate INSERT template blank nodes per solution
+105. Preserve named quads and empty graph identities through index rebuilding and database unions; graph-variable execution includes catalogued empty named graphs for empty patterns
+106. Route Rust, legacy query/update adapters, Python `update()`, and HTTP updates through the unified implementation, with parser, GRAPH, UNION, dataset, Update, optimizer, RDF-star, and integration regression coverage and no new dependency
+107. Remove the deprecated `execute_query` adapter and migrate CLI, HTTP server, benchmarks, and examples to `execute_query_rayon_parallel2_volcano`
+108. Remove the superseded pre-Streamertail join methods (`par_join`, `perform_join`, `perform_join_par_simd_with_strict_filter_1..4`, `perform_join_sequential`, `perform_join_sequential_simd`) and their SIMD helpers from `SparqlDatabase`
+109. Remove the unused `apply_filters_simd` filter-evaluation path from `SparqlDatabase` in favor of Streamertail `Condition` evaluation
+110. Remove the unused streaming join and merge-join helper chain from `shared::join_algorithm`, keeping `perform_hash_join_for_rules` for Datalog rule evaluation
+111. Fix rule premises with constant subject/object matching every triple with the same predicate
+112. Fix rule premises with a variable predicate silently deriving nothing
+113. Fix repeated-variable premises like `rel(V, V)` matching triples where subject != object
+114. Replace the four join operators that all ran the same dependent join with three real algorithms: `BindJoin`, `HashJoin`, and `NestedLoopJoin`, each parallelized with rayon
+115. Cost each join algorithm by its actual work so the optimizer picks bind join for selective left sides, hash join for wide ones, and nested loop for Cartesian products
+116. Collect per-predicate distinct subject and object counts in `DatabaseStats`
+117. Estimate join cardinality from shared variables and distinct counts instead of `min(left, right) * selectivity`
+118. Order joins by greedy connected selection over scan groups, replacing the pairwise cost swap that pushed unbound scans ahead of selective anchors
+119. Estimate scan cardinality from the variables a plan prefix already binds
+120. Validate quad terms before cloning the binding in `match_quad`
+121. Add optional `exec-stats` feature with scan probe, candidate quad, and emitted row counters
+122. Add cross-shape tests asserting identical result bags regardless of pattern order
+123. Add `term_order` module giving ORDER BY, MIN, and MAX one total order (unbound, then numbers by value, then other terms), fixing the comparison cycle on mixed numeric and non-numeric values
+124. Fix FILTER error semantics with three-valued logic: unbound variables, type mismatches, and division by zero drop the row, also under negation and `&&`/`||`; non-numeric operands compare lexically
+125. Fix GROUP BY results to carry only grouping keys and aggregates, and share one aggregate implementation between top-level queries and subqueries
+126. Fix subquery ORDER BY to sort before LIMIT, and decode sort keys once per row instead of once per comparison
+127. Fix QueryBuilder OFFSET/LIMIT to apply after sorting and return nothing instead of panicking when the offset is past the result size
+128. Refresh cached database statistics after every triple/quad insert, delete, N-Triples load, and SPARQL Update; count datasets up to 100,000 quads exactly and sample larger ones with a size-proportional step
+129. Refine the cost model with a per-probe scan cost, star-pattern cardinality estimate, hash join for cross products, and zero cost for invisible named graphs; skip plan memoization for plans carrying inline data
+130. Reduce execution allocations: share `DatasetView` through `Arc`, evaluate FILTER and decode rows in chunks per dictionary lock, move the input bindings into the last UNION branch, and skip duplicate checks when only one default graph is visible
+131. Add `optimizer_hotpath` Criterion benchmark and tests for allocation profile, operator work counters, join-variant equivalence, FILTER, ORDER BY, aggregation scope, QueryBuilder ordering, and statistics invalidation
+132. Make ML opt-in behind the `ml` Cargo feature across `kolibrie`, CLI, HTTP server, and Python binding; ML syntax still parses without it and execution returns `ML_FEATURE_DISABLED`
+133. Add `MlExecutionContext` trust policy (`ml_policy` module) that denies ML execution by default, with `execute_sparql_with_ml_context` and `SparqlDatabase::with_ml_context`
+134. Add HTTP model allowlist via `KOLIBRIE_MODEL_ALLOWLIST` (JSON registry with artifact paths and SHA-256 digests); HTTP never trains, writes artifacts, or registers query declarations, and returns stable error codes
+135. Add trusted-local training through `MlExecutionContext::trusted_local(output_dir)`; `SAVE_TO` accepts only a validated filename and never overwrites an existing artifact
+136. Add native model `to_bytes`/`from_bytes`, honor the declared MLP architecture in training, and stop Python example predictors from training on import
+137. Route the Streamertail `MLPredict` operator through the ML policy (approved models only), remove its legacy handler helpers, and move `ML.PREDICT` alias lowering into `ml_syntax`
+138. Make the default Docker image ML-free; `--build-arg ENABLE_ML=true` builds the optional ML runtime
+139. Add `COUNT(*)` and DISTINCT aggregates (`COUNT`, `SUM`, `AVG`, `MIN`, `MAX`) through a shared `aggregate` module; an ungrouped empty input yields one row and non-numeric operands leave SUM/AVG unbound
+140. Add ordered QueryBuilder API: `get_ordered_triples()` and `get_ordered_decoded_triples()`
+141. Add ML security, aggregate COUNT/DISTINCT, ordered QueryBuilder, and Python example import-safety tests
+142. Add `PlanningStatsPolicy` (`AlwaysFresh` or `Bounded { minimum_batch, refresh_fraction }`); the default `Bounded { 100, 0.5 }` reuses planning statistics until enough of the store has changed instead of rebuilding after every write
+143. Add mutation generation and reset counters to `DatasetIndex`, plus `for_each_quad`, `for_each_quad_in_graph`, `count_graph`, and `count_quads` for visiting and counting without materializing quads
+144. Add `PlanningStatsSnapshot`, `get_or_build_planning_stats`, `replace_dataset_index`, and rebuild count/time metrics (`stats_rebuild_metrics`) to `SparqlDatabase`
+145. Rewrite statistics collection as one pass over the quads with a fast term hasher (`TermMap`, `TermSet`) and stable hash-based sampling that does not depend on visit order
+146. Skip building statistics for plans with no join order to choose, and give graphs missing from a stale snapshot a cardinality of 1 so new predicates and named graphs stay queryable
+147. Add `replay_profile` example and tests for the statistics cache, statistics collector, and result safety under stale statistics
+148. Add the program API (`program` module): `compile_program`, `execute_program`, and `query_program_result` run `MODEL` / `NEURAL RELATION` / `TRAIN NEURAL RELATION`, a top-level `ML.PREDICT`, and several `RULE` blocks as one execution
+149. Add `ML.PREDICT ... OUTPUT ?var DISTRIBUTION` to publish every label with its probability as an exclusive choice instead of only the top label
+150. Support multiple `RULE` blocks per request (`CombinedQuery.rules`), evaluated to one joint SDD fixpoint; single-rule entry points reject multi-rule requests through `single_rule()`
+151. Add `PredictionSnapshot` validation for frozen, predicted, and tagged probabilistic inputs: label domain and order, sum within 1e-7 without renormalization, conflict and overlap checks
+152. Publish program results as a separate hypothesis-view dataset with `prob:value` RDF-star annotations; the input triples are never modified, and trained artifacts and neural declarations are published only after the whole run succeeds
+153. Add resource limits for program execution (`ProgramLimits`: seeds, SDD nodes, deadline) with budgeted SDD operations (`SddLimits`, `try_infer_new_facts_with_sdd_seed_specs`) that stop materialisation and discard partial results
+154. Add checked rule lowering that rejects windows, NOT, VALUES, BIND, subqueries, in-rule `ML.PREDICT`, and non-SDD PROB modes instead of silently dropping them
+155. Fix neural training loss to average once over all supervised examples in a batch (`optimizer_step` takes the example count) and guard cross-entropy/BCE gradients at zero probability
+156. Add `execute_supervised_training` for label-supervised training without a background reasoner, and an `implicit_neural_materialization` switch so program runs and result queries never trigger hidden predictions
+157. Reuse the input row for the last match of each scan in the Streamertail engine instead of cloning it for every match
+158. Add MNIST addition as a Kolibrie program: `mnist_addition` example, shared `mnist_program` text, `mnist_compare` benchmark adapter, and the former Rust-built rules kept as a differential oracle
+159. Add program tests for the parser, rule lowering, joint execution, exclusive semantics, publication, snapshot lifecycle, coverage, resource limits, and ML train/predict agreement
 
 0.1.1
 1. Modify whole project by making Cargo workspace

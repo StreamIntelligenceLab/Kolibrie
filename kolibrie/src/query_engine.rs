@@ -84,7 +84,7 @@ impl QueryEngine {
 
     pub fn stats(&self) -> QueryEngineStats {
         QueryEngineStats {
-            memory_triple_count: self.database.index_manager.query(None, None, None).len(),
+            memory_triple_count: self.database.dataset_index.len_default(),
         }
     }
 }

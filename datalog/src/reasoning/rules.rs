@@ -195,7 +195,6 @@ pub fn join_premise_with_hash_join(
         all_facts,
         &dict,
         current_bindings,
-        None,
     )
 }
 

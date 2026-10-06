@@ -10,7 +10,7 @@
 use kolibrie::parser::*;
 use kolibrie::sparql_database::SparqlDatabase;
 use kolibrie::execute_ml::execute_ml_prediction_from_clause;
-use kolibrie::execute_query::execute_query;
+use kolibrie::execute_query::execute_query_rayon_parallel2_volcano;
 use ml::MLHandler;
 use pyo3::prepare_freethreaded_python;
 use serde::{Deserialize, Serialize};
@@ -41,10 +41,10 @@ fn extract_financial_data_from_database(
 ) -> Result<Vec<FinancialData>, Box<dyn Error>> {
     // Acquire read lock once at the start
     let dict = database.dictionary.read().unwrap();
-    
+    let default_triples = database.query_default_triples(None, None, None);
+
     // Extract data from database
-    let financial_data: Vec<FinancialData> = database
-        .triples
+    let financial_data: Vec<FinancialData> = default_triples
         .iter()
         .filter(|triple| {
             dict.decode(triple.predicate)
@@ -66,8 +66,7 @@ fn extract_financial_data_from_database(
                 .unwrap_or(0.0);
 
             // Find spending and savings_rate
-            let spending = database
-                .triples
+            let spending = default_triples
                 .iter()
                 .find(|t| {
                     t.subject == triple.subject
@@ -79,8 +78,7 @@ fn extract_financial_data_from_database(
                 .and_then(|v| v.parse().ok())
                 .unwrap_or(0.0);
 
-            let savings_rate = database
-                .triples
+            let savings_rate = default_triples
                 .iter()
                 .find(|t| {
                     t.subject == triple.subject
@@ -256,7 +254,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         </rdf:RDF>
     "#;
 
-    let mut database = SparqlDatabase::new();
+    let mut database = SparqlDatabase::with_ml_context(local_ml::trusted_context());
     database.parse_rdf(rdf_xml_data);
     println!("Database RDF triples loaded.");
 
@@ -312,7 +310,7 @@ RULE :SavingsAlert :-
                     match execute_ml_prediction_from_clause(
                         ml_predict, 
                         &database, 
-                        "saving_predictor.py", 
+                        "saving_predictor",
                         extract_financial_data_from_database, 
                         predict_savings
                     ) {
@@ -337,7 +335,7 @@ RULE :SavingsAlert :-
                                 
                                 drop(dict); // Release lock before inserting
                                 
-                                database.triples.insert(Triple {
+                                database.add_triple(Triple {
                                     subject: subject_id,
                                     predicate: predicate_id,
                                     object: object_id,
@@ -353,7 +351,7 @@ RULE :SavingsAlert :-
                                 
                                 drop(dict);
                                 
-                                database.triples.insert(Triple {
+                                database.add_triple(Triple {
                                     subject: subject_id,
                                     predicate: confidence_predicate_id,
                                     object: confidence_object_id,
@@ -372,7 +370,7 @@ RULE :SavingsAlert :-
                                 
                                 drop(dict);
                                 
-                                database.triples.insert(Triple {
+                                database.add_triple(Triple {
                                     subject: subject_id,
                                     predicate: timestamp_predicate_id,
                                     object: timestamp_object_id,
@@ -393,7 +391,7 @@ RULE :SavingsAlert :-
                             
                             drop(dict);
                             
-                            database.triples.insert(Triple {
+                            database.add_triple(Triple {
                                 subject: metadata_subject_id,
                                 predicate: timestamp_predicate_id,
                                 object: timestamp_value_id,
@@ -420,7 +418,7 @@ WHERE {
 }"#;
 
     // Execute the SELECT query to get results
-    let query_results = execute_query(select_query, &mut database);
+    let query_results = execute_query_rayon_parallel2_volcano(select_query, &mut database);
     println!("Final query results (users with savings alerts): {:?}", query_results);
     
     // Execute a query to show predictions for comparison
@@ -431,7 +429,7 @@ WHERE {
           finance:predictionConfidence ?confidence
 }"#;
     
-    let predictions_results = execute_query(predictions_query, &mut database);
+    let predictions_results = execute_query_rayon_parallel2_volcano(predictions_query, &mut database);
     println!("ML Predictions in database: {:?}", predictions_results);
     
     // Execute a query to show all user financial data for comparison
@@ -443,8 +441,10 @@ WHERE {
           finance:savings_rate ?savings_rate
 }"#;
     
-    let all_users_results = execute_query(all_users_query, &mut database);
+    let all_users_results = execute_query_rayon_parallel2_volcano(all_users_query, &mut database);
     println!("All user financial data: {:?}", all_users_results);
 
     Ok(())
 }
+
+mod local_ml { include!(concat!(env!("CARGO_MANIFEST_DIR"), "/examples/support/ml_context.rs")); }

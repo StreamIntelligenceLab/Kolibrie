@@ -1,7 +1,7 @@
 /*
- * Copyright © 2024 Volodymyr Kadzhaia
- * Copyright © 2024 Pieter Bonte
- * KU Leuven — Stream Intelligence Lab, Belgium
+ * Copyright Â© 2024 Volodymyr Kadzhaia
+ * Copyright Â© 2024 Pieter Bonte
+ * KU Leuven â€” Stream Intelligence Lab, Belgium
  *
  * This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this file,
@@ -9,15 +9,762 @@
  */
 
 use super::super::operators::PhysicalOperator;
+use super::exec_stats::exec_count;
+use super::super::types::{SubqueryProjection, SubquerySpec};
 
 use crate::sparql_database::SparqlDatabase;
-use ml::MLPredictionResult;
+use crate::term_order;
 use rayon::prelude::*;
 
-use shared::terms::{Term, TriplePattern};
+use shared::dataset_index::{GraphId, GraphTerm, QuadPattern};
+use shared::query::SortDirection;
 use shared::quoted_triple_store::is_quoted_triple_id;
+use shared::terms::{Bindings, Term};
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
+use std::sync::Arc;
+
+/// Below this many rows a bind join runs on one thread, since splitting costs more in plan re-entry than it saves
+const BIND_JOIN_MIN_CHUNK: usize = 64;
+
+/// Rows a FILTER evaluates under a single dictionary read guard
+const FILTER_LOCK_CHUNK: usize = 1024;
+
+/// The RDF dataset visible to one query execution
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DatasetView {
+    pub default_graphs: Vec<GraphId>,
+    pub named_graphs: HashSet<GraphId>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::streamertail_optimizer::Condition;
+    use shared::dataset_index::Quad;
+
+    fn encode(database: &SparqlDatabase, value: &str) -> u32 {
+        database.dictionary.write().unwrap().encode(value)
+    }
+
+    fn row(pairs: &[(&str, u32)]) -> HashMap<String, u32> {
+        pairs
+            .iter()
+            .map(|(variable, value)| ((*variable).to_string(), *value))
+            .collect()
+    }
+
+    fn sorted(bindings: Bindings) -> Vec<Vec<(String, u32)>> {
+        let mut rows: Vec<Vec<(String, u32)>> = bindings
+            .into_iter()
+            .map(|row| {
+                let mut pairs: Vec<(String, u32)> = row.into_iter().collect();
+                pairs.sort();
+                pairs
+            })
+            .collect();
+        rows.sort();
+        rows
+    }
+
+    #[test]
+    fn hash_join_agrees_with_the_nested_loop_on_every_row_shape() {
+        let cases: Vec<(Bindings, Bindings)> = vec![
+            // Shared variable, several matches and one dangling value
+            (
+                vec![row(&[("x", 1), ("a", 10)]), row(&[("x", 2), ("a", 20)])],
+                vec![
+                    row(&[("x", 1), ("b", 11)]),
+                    row(&[("x", 1), ("b", 12)]),
+                    row(&[("x", 3), ("b", 13)]),
+                ],
+            ),
+            // Right side leaves the key variable unbound
+            (
+                vec![row(&[("x", 1), ("a", 10)])],
+                vec![row(&[("b", 11)]), row(&[("x", 1), ("b", 12)])],
+            ),
+            // Left side leaves the key variable unbound
+            (
+                vec![row(&[("a", 10)]), row(&[("x", 1), ("a", 11)])],
+                vec![row(&[("x", 1), ("b", 12)]), row(&[("x", 2), ("b", 13)])],
+            ),
+            // Conflicting values on the shared variable
+            (
+                vec![row(&[("x", 1)])],
+                vec![row(&[("x", 2)])],
+            ),
+            // No shared variable at all: a Cartesian product
+            (
+                vec![row(&[("a", 1)]), row(&[("a", 2)])],
+                vec![row(&[("b", 3)]), row(&[("b", 4)])],
+            ),
+        ];
+
+        for (index, (left, right)) in cases.into_iter().enumerate() {
+            let expected =
+                sorted(ExecutionEngine::join_solution_sequences(left.clone(), right.clone()));
+            let actual = sorted(ExecutionEngine::hash_join_solution_sequences(left, right));
+            assert_eq!(actual, expected, "case {} disagreed with the nested loop", index);
+        }
+    }
+
+    #[test]
+    fn unit_and_union_preserve_solution_multiplicity() {
+        let mut database = SparqlDatabase::new();
+        let plan =
+            PhysicalOperator::union(vec![PhysicalOperator::unit(), PhysicalOperator::unit()]);
+
+        let results = ExecutionEngine::execute_with_ids(&plan, &mut database);
+        assert_eq!(results, vec![HashMap::new(), HashMap::new()]);
+    }
+
+    #[test]
+    fn graph_variable_binds_before_filter_and_includes_empty_graphs() {
+        let mut database = SparqlDatabase::new();
+        let first = encode(&database, "http://example.com/first");
+        let second = encode(&database, "http://example.com/second");
+        database.dataset_index.create_graph(GraphId::Named(first));
+        database.dataset_index.create_graph(GraphId::Named(second));
+
+        let plan = PhysicalOperator::graph(
+            PhysicalOperator::filter(
+                PhysicalOperator::unit(),
+                Condition::new("$g".to_string(), "=".to_string(), "?expected".to_string()),
+            ),
+            GraphTerm::Variable("$g".to_string()),
+        );
+        let context = ExecutionContext::new(DatasetView::from_database(&database));
+        let mut input = HashMap::new();
+        input.insert("expected".to_string(), second);
+
+        let results = ExecutionEngine::execute_with_ids_and_input(
+            &plan,
+            &mut database,
+            &context,
+            vec![input],
+        );
+
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].get("g"), Some(&second));
+    }
+
+    #[test]
+    fn graph_scan_checks_repeated_variables_against_incoming_bindings() {
+        let mut database = SparqlDatabase::new();
+        let graph = encode(&database, "http://example.com/graph");
+        let subject = encode(&database, "http://example.com/subject");
+        let predicate = encode(&database, "http://example.com/predicate");
+        let other = encode(&database, "http://example.com/other");
+        database.add_quad(Quad {
+            subject,
+            predicate,
+            object: subject,
+            graph: GraphId::Named(graph),
+        });
+        database.add_quad(Quad {
+            subject,
+            predicate,
+            object: other,
+            graph: GraphId::Named(graph),
+        });
+
+        let scan = PhysicalOperator::quad_index_scan(QuadPattern {
+            subject: Term::Variable("?value".to_string()),
+            predicate: Term::Constant(predicate),
+            object: Term::Variable("$value".to_string()),
+            graph: GraphTerm::Default,
+        });
+        let plan = PhysicalOperator::graph(scan, GraphTerm::Named(graph));
+
+        let results = ExecutionEngine::execute_with_ids(&plan, &mut database);
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].get("value"), Some(&subject));
+    }
+
+    #[test]
+    fn scan_matches_a_variable_repeated_within_one_pattern() {
+        let mut database = SparqlDatabase::new();
+        let predicate = encode(&database, "http://example.com/self");
+        let looping = encode(&database, "http://example.com/looping");
+        let other = encode(&database, "http://example.com/other");
+        database.add_quad(Quad {
+            subject: looping,
+            predicate,
+            object: looping,
+            graph: GraphId::Default,
+        });
+        database.add_quad(Quad {
+            subject: looping,
+            predicate,
+            object: other,
+            graph: GraphId::Default,
+        });
+
+        let plan = PhysicalOperator::quad_index_scan(QuadPattern {
+            subject: Term::Variable("?x".to_string()),
+            predicate: Term::Constant(predicate),
+            object: Term::Variable("?x".to_string()),
+            graph: GraphTerm::Default,
+        });
+
+        let results = ExecutionEngine::execute_with_ids(&plan, &mut database);
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].get("x"), Some(&looping));
+    }
+
+    #[test]
+    fn merged_default_suppresses_duplicate_triples() {
+        let mut database = SparqlDatabase::new();
+        let graph = encode(&database, "http://example.com/graph");
+        let subject = encode(&database, "http://example.com/subject");
+        let predicate = encode(&database, "http://example.com/predicate");
+        let object = encode(&database, "value");
+        database.add_quad(Quad {
+            subject,
+            predicate,
+            object,
+            graph: GraphId::Default,
+        });
+        database.add_quad(Quad {
+            subject,
+            predicate,
+            object,
+            graph: GraphId::Named(graph),
+        });
+
+        let plan = PhysicalOperator::table_scan((
+            Term::Variable("?s".to_string()),
+            Term::Variable("?p".to_string()),
+            Term::Variable("?o".to_string()),
+        ));
+        let dataset = DatasetView::new(
+            [GraphId::Default, GraphId::Named(graph)],
+            std::iter::empty(),
+        );
+
+        let results = ExecutionEngine::execute_with_ids_and_dataset(&plan, &mut database, &dataset);
+        assert_eq!(results.len(), 1);
+    }
+
+    fn scan(
+        database: &SparqlDatabase,
+        pattern: &QuadPattern,
+        dataset: DatasetView,
+        incoming: Bindings,
+    ) -> Bindings {
+        let context = ExecutionContext::new(dataset);
+        ExecutionEngine::execute_quad_scan_with_ids(database, pattern, &context, incoming)
+    }
+
+    fn candidates(
+        database: &SparqlDatabase,
+        graph: GraphId,
+        subject: Option<u32>,
+        predicate: Option<u32>,
+        object: Option<u32>,
+    ) -> Vec<(u32, u32, u32)> {
+        database
+            .dataset_index
+            .query_graph(graph, subject, predicate, object)
+            .into_iter()
+            .map(|quad| (quad.subject, quad.predicate, quad.object))
+            .collect()
+    }
+
+    fn add(
+        database: &mut SparqlDatabase,
+        subject: u32,
+        predicate: u32,
+        object: u32,
+        graph: GraphId,
+    ) {
+        database.add_quad(Quad {
+            subject,
+            predicate,
+            object,
+            graph,
+        });
+    }
+
+    fn variable(name: &str) -> Term {
+        Term::Variable(name.to_string())
+    }
+
+    #[test]
+    fn scan_emits_zero_one_and_many_matches_in_candidate_order() {
+        let mut database = SparqlDatabase::new();
+        let predicate = encode(&database, "http://example.com/p");
+        let many = encode(&database, "http://example.com/many");
+        let one = encode(&database, "http://example.com/one");
+        let none = encode(&database, "http://example.com/none");
+        let single = encode(&database, "single");
+        for value in ["first", "second", "third"] {
+            let object = encode(&database, value);
+            add(&mut database, many, predicate, object, GraphId::Default);
+        }
+        add(&mut database, one, predicate, single, GraphId::Default);
+
+        let pattern = QuadPattern {
+            subject: variable("?s"),
+            predicate: Term::Constant(predicate),
+            object: variable("?o"),
+            graph: GraphTerm::Default,
+        };
+        let incoming = vec![
+            row(&[("s", many), ("tag", 1)]),
+            row(&[("s", none), ("tag", 2)]),
+            row(&[("s", one), ("tag", 3)]),
+            row(&[("s", many), ("tag", 1)]),
+        ];
+
+        let results = scan(
+            &database,
+            &pattern,
+            DatasetView::from_database(&database),
+            incoming,
+        );
+
+        let many_rows: Bindings = candidates(
+            &database,
+            GraphId::Default,
+            Some(many),
+            Some(predicate),
+            None,
+        )
+        .into_iter()
+        .map(|(_, _, object)| row(&[("s", many), ("tag", 1), ("o", object)]))
+        .collect();
+        assert_eq!(many_rows.len(), 3);
+        let mut expected = many_rows.clone();
+        expected.push(row(&[("s", one), ("tag", 3), ("o", single)]));
+        expected.extend(many_rows);
+        assert_eq!(results, expected);
+    }
+
+    #[test]
+    fn scan_rejects_repeated_variable_conflicts_before_extending_rows() {
+        let mut database = SparqlDatabase::new();
+        let predicate = encode(&database, "http://example.com/p");
+        let b = encode(&database, "http://example.com/b");
+        let a = encode(&database, "http://example.com/a");
+        let c = encode(&database, "http://example.com/c");
+        let d = encode(&database, "http://example.com/d");
+        add(&mut database, a, predicate, b, GraphId::Default);
+        add(&mut database, a, predicate, a, GraphId::Default);
+        add(&mut database, c, predicate, c, GraphId::Default);
+        add(&mut database, c, predicate, d, GraphId::Default);
+
+        let all = candidates(&database, GraphId::Default, None, Some(predicate), None);
+        let last_valid = all
+            .iter()
+            .rposition(|(subject, _, object)| subject == object)
+            .unwrap();
+        assert!(all[..last_valid]
+            .iter()
+            .any(|(subject, _, object)| subject != object));
+
+        let pattern = QuadPattern {
+            subject: variable("?x"),
+            predicate: Term::Constant(predicate),
+            object: variable("$x"),
+            graph: GraphTerm::Default,
+        };
+        let results = scan(
+            &database,
+            &pattern,
+            DatasetView::from_database(&database),
+            vec![
+                row(&[]),
+                row(&[("x", a), ("keep", 7)]),
+                row(&[("x", d), ("keep", 8)]),
+            ],
+        );
+
+        let mut expected: Bindings = all
+            .iter()
+            .filter(|(subject, _, object)| subject == object)
+            .map(|(subject, _, _)| row(&[("x", *subject)]))
+            .collect();
+        assert_eq!(expected.len(), 2);
+        expected.push(row(&[("x", a), ("keep", 7)]));
+        assert_eq!(results, expected);
+    }
+
+    #[test]
+    fn scan_binds_visible_named_graphs_once_per_match() {
+        let mut database = SparqlDatabase::new();
+        let predicate = encode(&database, "http://example.com/p");
+        let subject = encode(&database, "http://example.com/s");
+        let first = encode(&database, "http://example.com/g1");
+        let second = encode(&database, "http://example.com/g2");
+        let hidden = encode(&database, "http://example.com/g3");
+        let values: Vec<u32> = ["default", "one", "two", "three", "self"]
+            .into_iter()
+            .map(|value| encode(&database, value))
+            .collect();
+        add(
+            &mut database,
+            subject,
+            predicate,
+            values[0],
+            GraphId::Default,
+        );
+        add(
+            &mut database,
+            subject,
+            predicate,
+            values[1],
+            GraphId::Named(first),
+        );
+        add(
+            &mut database,
+            subject,
+            predicate,
+            values[2],
+            GraphId::Named(second),
+        );
+        add(
+            &mut database,
+            subject,
+            predicate,
+            values[3],
+            GraphId::Named(hidden),
+        );
+        add(
+            &mut database,
+            first,
+            predicate,
+            values[4],
+            GraphId::Named(first),
+        );
+        let dataset = || {
+            DatasetView::new(
+                [GraphId::Default],
+                [GraphId::Named(first), GraphId::Named(second)],
+            )
+        };
+
+        let graph_pattern = QuadPattern {
+            subject: variable("?s"),
+            predicate: Term::Constant(predicate),
+            object: variable("?o"),
+            graph: GraphTerm::Variable("?g".to_string()),
+        };
+        let results = scan(
+            &database,
+            &graph_pattern,
+            dataset(),
+            vec![
+                row(&[]),
+                row(&[("g", second), ("tag", 1)]),
+                row(&[("g", hidden), ("tag", 2)]),
+            ],
+        );
+        let mut graphs = vec![GraphId::Named(first), GraphId::Named(second)];
+        graphs.sort_unstable();
+        let mut expected = Vec::new();
+        for graph in graphs {
+            let GraphId::Named(graph_id) = graph else {
+                unreachable!()
+            };
+            for (s, _, o) in candidates(&database, graph, None, Some(predicate), None) {
+                expected.push(row(&[("g", graph_id), ("s", s), ("o", o)]));
+            }
+        }
+        assert_eq!(expected.len(), 3);
+        expected.push(row(&[
+            ("g", second),
+            ("tag", 1),
+            ("s", subject),
+            ("o", values[2]),
+        ]));
+        assert_eq!(results, expected);
+
+        let shared_pattern = QuadPattern {
+            subject: variable("?g"),
+            predicate: Term::Constant(predicate),
+            object: variable("?o"),
+            graph: GraphTerm::Variable("$g".to_string()),
+        };
+        let results = scan(&database, &shared_pattern, dataset(), vec![row(&[])]);
+        assert_eq!(results, vec![row(&[("g", first), ("o", values[4])])]);
+
+        let named_pattern = |graph| QuadPattern {
+            subject: variable("?s"),
+            predicate: Term::Constant(predicate),
+            object: variable("?o"),
+            graph: GraphTerm::Named(graph),
+        };
+        let results = scan(
+            &database,
+            &named_pattern(second),
+            dataset(),
+            vec![row(&[("tag", 3)]), row(&[("tag", 3)])],
+        );
+        let second_row = row(&[("tag", 3), ("s", subject), ("o", values[2])]);
+        assert_eq!(results, vec![second_row.clone(), second_row]);
+        let results = scan(&database, &named_pattern(hidden), dataset(), vec![row(&[])]);
+        assert!(results.is_empty());
+    }
+
+    #[test]
+    fn scan_suppresses_merged_default_duplicates_for_each_input_row() {
+        let mut database = SparqlDatabase::new();
+        let graph = encode(&database, "http://example.com/graph");
+        let subject = encode(&database, "http://example.com/subject");
+        let predicate = encode(&database, "http://example.com/predicate");
+        let shared = encode(&database, "shared");
+        let extra = encode(&database, "extra");
+        add(&mut database, subject, predicate, shared, GraphId::Default);
+        add(
+            &mut database,
+            subject,
+            predicate,
+            shared,
+            GraphId::Named(graph),
+        );
+        add(
+            &mut database,
+            subject,
+            predicate,
+            extra,
+            GraphId::Named(graph),
+        );
+
+        let pattern = QuadPattern {
+            subject: variable("?s"),
+            predicate: Term::Constant(predicate),
+            object: variable("?o"),
+            graph: GraphTerm::Default,
+        };
+        let dataset = DatasetView::new(
+            [GraphId::Default, GraphId::Named(graph)],
+            std::iter::empty(),
+        );
+        let results = scan(
+            &database,
+            &pattern,
+            dataset,
+            vec![row(&[("tag", 1)]), row(&[("tag", 2)])],
+        );
+
+        let expected: Bindings = [1, 2]
+            .into_iter()
+            .flat_map(|tag| {
+                [shared, extra]
+                    .into_iter()
+                    .map(move |object| row(&[("tag", tag), ("s", subject), ("o", object)]))
+            })
+            .collect();
+        assert_eq!(results, expected);
+    }
+
+    #[test]
+    fn scan_matches_quoted_triples_through_the_general_path() {
+        let mut database = SparqlDatabase::new();
+        let predicate = encode(&database, "http://example.com/p");
+        let source = encode(&database, "http://example.com/source");
+        let first = encode(&database, "http://example.com/first");
+        let second = encode(&database, "http://example.com/second");
+        let plain = encode(&database, "http://example.com/plain");
+        let alice = encode(&database, "http://example.com/alice");
+        let bob = encode(&database, "http://example.com/bob");
+        let one = encode(&database, "one");
+        let two = encode(&database, "two");
+        let (first_quoted, second_quoted) = {
+            let mut store = database.quoted_triple_store.write().unwrap();
+            (
+                store.encode(first, predicate, one),
+                store.encode(second, predicate, two),
+            )
+        };
+        add(&mut database, first_quoted, source, alice, GraphId::Default);
+        add(&mut database, second_quoted, source, bob, GraphId::Default);
+        add(&mut database, plain, source, alice, GraphId::Default);
+
+        let pattern = QuadPattern {
+            subject: Term::QuotedTriple(Box::new((
+                variable("?s"),
+                Term::Constant(predicate),
+                variable("?o"),
+            ))),
+            predicate: Term::Constant(source),
+            object: variable("?who"),
+            graph: GraphTerm::Default,
+        };
+        let results = scan(
+            &database,
+            &pattern,
+            DatasetView::from_database(&database),
+            vec![
+                row(&[("tag", 1)]),
+                row(&[("s", second), ("tag", 2)]),
+                row(&[("s", second), ("who", alice)]),
+            ],
+        );
+
+        let mut expected: Bindings =
+            candidates(&database, GraphId::Default, None, Some(source), None)
+                .into_iter()
+                .filter_map(|(subject, _, who)| {
+                    let (s, o) = if subject == first_quoted {
+                        (first, one)
+                    } else if subject == second_quoted {
+                        (second, two)
+                    } else {
+                        return None;
+                    };
+                    Some(row(&[("tag", 1), ("s", s), ("o", o), ("who", who)]))
+                })
+                .collect();
+        assert_eq!(expected.len(), 2);
+        expected.push(row(&[("s", second), ("tag", 2), ("o", two), ("who", bob)]));
+        assert_eq!(results, expected);
+    }
+
+    #[test]
+    fn values_keeps_all_undef_and_heterogeneous_union_rows() {
+        let mut database = SparqlDatabase::new();
+        let value = encode(&database, "value");
+        let plan = PhysicalOperator::union(vec![
+            PhysicalOperator::values(vec!["?x".to_string()], vec![vec![Some(value)]]),
+            PhysicalOperator::values(vec!["?y".to_string()], vec![vec![None]]),
+        ]);
+
+        let results = ExecutionEngine::execute_with_ids(&plan, &mut database);
+        assert_eq!(results.len(), 2);
+        assert_eq!(results[0].get("x"), Some(&value));
+        assert!(results[1].is_empty());
+    }
+}
+
+impl DatasetView {
+    /// The normal database dataset: the physical default graph plus every
+    pub fn from_database(database: &SparqlDatabase) -> Self {
+        Self {
+            default_graphs: vec![GraphId::Default],
+            named_graphs: database.dataset_index.named_graphs().into_iter().collect(),
+        }
+    }
+
+    /// Creates an explicit SPARQL dataset view
+    pub fn new(
+        default_graphs: impl IntoIterator<Item = GraphId>,
+        named_graphs: impl IntoIterator<Item = GraphId>,
+    ) -> Self {
+        let mut seen_defaults = HashSet::new();
+        let default_graphs = default_graphs
+            .into_iter()
+            .filter(|graph| seen_defaults.insert(*graph))
+            .collect();
+        let named_graphs = named_graphs
+            .into_iter()
+            .filter(|graph| matches!(graph, GraphId::Named(_)))
+            .collect();
+        Self {
+            default_graphs,
+            named_graphs,
+        }
+    }
+
+    /// Creates a dataset with an empty query default and explicit named
+    pub fn empty_default(named_graphs: impl IntoIterator<Item = GraphId>) -> Self {
+        Self::new(std::iter::empty(), named_graphs)
+    }
+
+    pub fn is_named_visible(&self, graph: GraphId) -> bool {
+        matches!(graph, GraphId::Named(_)) && self.named_graphs.contains(&graph)
+    }
+}
+
+/// Recursive execution state. An active graph is established by a `GRAPH`
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ExecutionContext {
+    /// Shared, so deriving a child context per `GRAPH` scope does not rebuild the graph sets
+    pub dataset: Arc<DatasetView>,
+    pub active_graph: Option<GraphId>,
+}
+
+impl ExecutionContext {
+    pub fn new(dataset: DatasetView) -> Self {
+        Self {
+            dataset: Arc::new(dataset),
+            active_graph: None,
+        }
+    }
+
+    fn with_active_graph(&self, graph: GraphId) -> Self {
+        Self {
+            dataset: Arc::clone(&self.dataset),
+            active_graph: Some(graph),
+        }
+    }
+}
+
+#[derive(Clone, Copy, Default)]
+struct FreshBindings<'p> {
+    entries: [(&'p str, u32); 4],
+    len: usize,
+}
+
+impl<'p> FreshBindings<'p> {
+    fn push(&mut self, binding: (&'p str, u32)) {
+        self.entries[self.len] = binding;
+        self.len += 1;
+    }
+
+    fn get(&self, variable: &str) -> Option<u32> {
+        self.entries[..self.len]
+            .iter()
+            .find(|(name, _)| *name == variable)
+            .map(|(_, value)| *value)
+    }
+
+    fn apply(&self, mut row: HashMap<String, u32>) -> HashMap<String, u32> {
+        row.reserve(self.len);
+        for (variable, value) in &self.entries[..self.len] {
+            row.insert((*variable).to_string(), *value);
+        }
+        row
+    }
+}
+
+enum PendingMatch<'p> {
+    Fresh(FreshBindings<'p>),
+    Complete(HashMap<String, u32>),
+}
+
+struct RowExtender<'p> {
+    row: HashMap<String, u32>,
+    pending: Option<PendingMatch<'p>>,
+}
+
+impl<'p> RowExtender<'p> {
+    fn new(row: HashMap<String, u32>) -> Self {
+        Self { row, pending: None }
+    }
+
+    fn row(&self) -> &HashMap<String, u32> {
+        &self.row
+    }
+
+    fn emit(&mut self, next: PendingMatch<'p>, results: &mut Bindings) {
+        match self.pending.replace(next) {
+            Some(PendingMatch::Fresh(fresh)) => results.push(fresh.apply(self.row.clone())),
+            Some(PendingMatch::Complete(bindings)) => results.push(bindings),
+            None => {}
+        }
+    }
+
+    fn finish(self, results: &mut Bindings) {
+        match self.pending {
+            Some(PendingMatch::Fresh(fresh)) => results.push(fresh.apply(self.row)),
+            Some(PendingMatch::Complete(bindings)) => results.push(bindings),
+            None => {}
+        }
+    }
+}
 
 /// Execution engine for physical operators
 pub struct ExecutionEngine;
@@ -28,26 +775,42 @@ impl ExecutionEngine {
         operator: &PhysicalOperator,
         database: &mut SparqlDatabase,
     ) -> Vec<HashMap<String, String>> {
-        let id_results = Self::execute_with_ids(operator, database);
+        let dataset = DatasetView::from_database(database);
+        Self::execute_with_dataset(operator, database, &dataset)
+    }
+
+    /// Executes a plan against an explicit SPARQL dataset and decodes the results
+    pub fn execute_with_dataset(
+        operator: &PhysicalOperator,
+        database: &mut SparqlDatabase,
+        dataset: &DatasetView,
+    ) -> Vec<HashMap<String, String>> {
+        let id_results = Self::execute_with_ids_and_dataset(operator, database, dataset);
 
         // Convert ID results to string results only at the final step
         id_results
-        .into_par_iter()
-        .map(|id_result| {
-            let dict = database.dictionary.read().unwrap();
-            let qt_store = database.quoted_triple_store.read().unwrap();
-            let result: HashMap<String, String> = id_result
-            .into_iter()
-            .map(|(var, id)| {
-                let decoded = dict.decode_term(id, &qt_store)
-                    .unwrap_or_else(|| "unknown".to_string());
-                (var, decoded)
+            .into_par_iter()
+            .chunks(FILTER_LOCK_CHUNK)
+            .flat_map_iter(|chunk| {
+                let dict = database.dictionary.read().unwrap();
+                let qt_store = database.quoted_triple_store.read().unwrap();
+                let decoded: Vec<HashMap<String, String>> = chunk
+                    .into_iter()
+                    .map(|id_result| {
+                        id_result
+                            .into_iter()
+                            .map(|(var, id)| {
+                                let value = dict
+                                    .decode_term(id, &qt_store)
+                                    .unwrap_or_else(|| "unknown".to_string());
+                                (var, value)
+                            })
+                            .collect()
+                    })
+                    .collect();
+                decoded.into_iter()
             })
-            .collect();
-            drop(dict);
-            result
-        })
-        .collect()
+            .collect()
     }
 
     /// Executes a physical operator and returns ID-based results for performance
@@ -55,95 +818,170 @@ impl ExecutionEngine {
         operator: &PhysicalOperator,
         database: &mut SparqlDatabase,
     ) -> Vec<HashMap<String, u32>> {
+        let dataset = DatasetView::from_database(database);
+        Self::execute_with_ids_and_dataset(operator, database, &dataset)
+    }
+
+    /// Executes a plan against an explicit SPARQL dataset
+    pub fn execute_with_ids_and_dataset(
+        operator: &PhysicalOperator,
+        database: &mut SparqlDatabase,
+        dataset: &DatasetView,
+    ) -> Bindings {
+        let context = ExecutionContext::new(dataset.clone());
+        Self::execute_with_ids_and_context(operator, database, &context)
+    }
+
+    /// Executes a plan with an explicit recursive execution context
+    pub fn execute_with_ids_and_context(
+        operator: &PhysicalOperator,
+        database: &SparqlDatabase,
+        context: &ExecutionContext,
+    ) -> Bindings {
+        Self::execute_with_ids_and_input(operator, database, context, vec![HashMap::new()])
+    }
+
+    /// Executes a plan using the supplied solution sequence as input
+    pub fn execute_with_ids_and_input(
+        operator: &PhysicalOperator,
+        database: &SparqlDatabase,
+        context: &ExecutionContext,
+        mut incoming: Bindings,
+    ) -> Bindings {
+        if incoming.is_empty() {
+            return Vec::new();
+        }
+
         match operator {
+            PhysicalOperator::Unit => incoming,
             PhysicalOperator::TableScan { pattern } => {
-                if Self::has_quoted_triple_term(pattern) {
-                    Self::resolve_quoted_triple_scan(database, pattern)
-                } else {
-                    Self::execute_table_scan_with_ids(database, pattern)
-                }
+                Self::execute_quad_scan_with_ids(database, pattern, context, incoming)
             }
             PhysicalOperator::IndexScan { pattern } => {
-                if Self::has_quoted_triple_term(pattern) {
-                    Self::resolve_quoted_triple_scan(database, pattern)
-                } else {
-                    Self::execute_index_scan_with_ids(database, pattern)
+                Self::execute_quad_scan_with_ids(database, pattern, context, incoming)
+            }
+            PhysicalOperator::Union { branches } => {
+                let mut results = Vec::new();
+                let last = branches.len().saturating_sub(1);
+                for (index, branch) in branches.iter().enumerate() {
+                    // Every branch evaluates against the same input, so only the last one may consume it
+                    let branch_input = if index == last {
+                        std::mem::take(&mut incoming)
+                    } else {
+                        incoming.clone()
+                    };
+                    results.extend(Self::execute_with_ids_and_input(
+                        branch,
+                        database,
+                        context,
+                        branch_input,
+                    ));
                 }
+                results
+            }
+            PhysicalOperator::Graph { input, graph } => {
+                Self::execute_graph_with_ids(database, input, graph, context, incoming)
             }
             PhysicalOperator::Filter { input, condition } => {
-                let input_results = Self::execute_with_ids(input, database);
-                // Use parallel filtering
+                let input_results =
+                    Self::execute_with_ids_and_input(input, database, context, incoming);
+                // The guard is taken per chunk rather than per row: one atomic
                 input_results
-                .into_par_iter()
-                .filter(|result| {
-                    let dict = database.dictionary.read().unwrap();
-                    let result = condition.evaluate_with_ids(result, &*dict);
-                    drop(dict);
-                    result
-                })
-                .collect()
+                    .into_par_iter()
+                    .chunks(FILTER_LOCK_CHUNK)
+                    .flat_map_iter(|chunk| {
+                        let dict = database.dictionary.read().unwrap();
+                        let kept: Vec<_> = chunk
+                            .into_iter()
+                            .filter(|result| condition.evaluate_with_ids(result, &dict))
+                            .collect();
+                        drop(dict);
+                        kept.into_iter()
+                    })
+                    .collect()
             }
             PhysicalOperator::Projection { input, variables } => {
-                let input_results = Self::execute_with_ids(input, database);
+                let input_results =
+                    Self::execute_with_ids_and_input(input, database, context, incoming);
 
                 // Strip '?' prefix from projection variables for matching
                 let stripped_vars: Vec<String> = variables
                     .iter()
-                    .map(|v| v.strip_prefix('?').unwrap_or(v).to_string())
+                    .map(|v| Self::normalize_variable(v).to_string())
                     .collect();
 
                 let projected: Vec<HashMap<String, u32>> = input_results
                     .into_par_iter()
                     .map(|mut result| {
-                        result.retain(|k, _| {
-                            let k_stripped = k.strip_prefix('?').unwrap_or(k);
-                            stripped_vars.contains(&k_stripped.to_string())
-                        });
+                        result.retain(|k, _| stripped_vars.iter().any(|var| var == k));
                         result
                     })
                     .collect();
                 projected
             }
-            PhysicalOperator::OptimizedHashJoin { left, right } => {
-                let left_results = Self::execute_with_ids(left, database);
-                let right_results = Self::execute_with_ids(right, database);
-                Self::execute_optimized_hash_join_with_ids(left_results, right_results)
+            PhysicalOperator::BindJoin { left, right } => {
+                let left_results =
+                    Self::execute_with_ids_and_input(left, database, context, incoming);
+                Self::execute_bind_join(right, database, context, left_results)
             }
             PhysicalOperator::HashJoin { left, right } => {
-                let left_results = Self::execute_with_ids(left, database);
-                let right_results = Self::execute_with_ids(right, database);
-                Self::execute_hash_join_with_ids(left_results, right_results)
+                let left_results =
+                    Self::execute_with_ids_and_input(left, database, context, incoming);
+                if left_results.is_empty() {
+                    return Vec::new();
+                }
+                let right_results = Self::execute_with_ids_and_context(right, database, context);
+                Self::hash_join_solution_sequences(left_results, right_results)
             }
             PhysicalOperator::NestedLoopJoin { left, right } => {
-                let left_results = Self::execute_with_ids(left, database);
-                let right_results = Self::execute_with_ids(right, database);
-                Self::execute_nested_loop_join_with_ids(left_results, right_results)
-            }
-            PhysicalOperator::ParallelJoin { left, right } => {
-                Self::execute_parallel_join_with_ids(left, right, database)
+                let left_results =
+                    Self::execute_with_ids_and_input(left, database, context, incoming);
+                if left_results.is_empty() {
+                    return Vec::new();
+                }
+                let right_results = Self::execute_with_ids_and_context(right, database, context);
+                Self::join_solution_sequences(left_results, right_results)
             }
             PhysicalOperator::StarJoin { join_var, patterns } => {
-                Self::execute_star_join_with_ids(database, join_var, patterns)
+                let _ = join_var;
+                let mut results = incoming;
+                for pattern in patterns {
+                    let quad = QuadPattern {
+                        subject: pattern.0.clone(),
+                        predicate: pattern.1.clone(),
+                        object: pattern.2.clone(),
+                        graph: GraphTerm::Default,
+                    };
+                    results = Self::execute_quad_scan_with_ids(database, &quad, context, results);
+                    if results.is_empty() {
+                        break;
+                    }
+                }
+                results
             }
             PhysicalOperator::InMemoryBuffer { content, origin: _ } => {
-                content.clone() // TODO: make sure we dont have to clone here
+                Self::join_solution_sequences(incoming, content.clone())
             }
-            PhysicalOperator:: Subquery { inner, projected_vars } => {
-                // Execute the inner query with IDs
-                let inner_results = Self::execute_with_ids(inner, database);
-                
-                // Project only the requested variables
-                inner_results
-                    .into_iter()
-                    .map(|mut row| {
-                        row.retain(|k, _| projected_vars.contains(&k.to_string()));
-                        row
-                    })
-                    .collect()
+            PhysicalOperator::Subquery { inner, spec } => {
+                // A subquery has its own variable scope and is evaluated once
+                let inner_results = Self::execute_with_ids_and_input(
+                    inner,
+                    database,
+                    context,
+                    vec![HashMap::new()],
+                );
+                let finalized = Self::finalize_subquery(inner_results, spec, database);
+                Self::join_solution_sequences(incoming, finalized)
             }
-            PhysicalOperator::Bind { input, function_name, arguments, output_variable } => {
-                let mut input_results = Self::execute_with_ids(input, database);
-                let output_var = output_variable.strip_prefix('?').unwrap_or(output_variable);
+            PhysicalOperator::Bind {
+                input,
+                function_name,
+                arguments,
+                output_variable,
+            } => {
+                let mut input_results =
+                    Self::execute_with_ids_and_input(input, database, context, incoming);
+                let output_var = Self::normalize_variable(output_variable);
 
                 if function_name == "CONCAT" {
                     // Decode all needed values first
@@ -154,8 +992,8 @@ impl ExecutionEngine {
                             arguments
                                 .iter()
                                 .map(|arg| {
-                                    let arg_stripped = arg.strip_prefix('?').unwrap_or(arg);
-                                    if arg.starts_with('?') {
+                                    let arg_stripped = Self::normalize_variable(arg);
+                                    if Self::is_variable(arg) {
                                         if let Some(&id) = row.get(arg_stripped) {
                                             dict.decode(id).unwrap_or("").to_string()
                                         } else {
@@ -169,7 +1007,7 @@ impl ExecutionEngine {
                         })
                         .collect();
                     drop(dict);
-                    
+
                     // Now encode the concatenated results
                     let mut dict_write = database.dictionary.write().unwrap();
                     for (row, decoded_row) in input_results.iter_mut().zip(decoded_values.iter()) {
@@ -178,7 +1016,7 @@ impl ExecutionEngine {
                         row.insert(output_var.to_string(), result_id);
                     }
                     drop(dict_write);
-                    
+
                     input_results
                 } else if let Some(func) = database.udfs.get(function_name.as_str()) {
                     // Similar fix for UDF
@@ -189,8 +1027,8 @@ impl ExecutionEngine {
                             arguments
                                 .iter()
                                 .map(|arg| {
-                                    let arg_stripped = arg.strip_prefix('?').unwrap_or(arg);
-                                    if arg.starts_with('?') {
+                                    let arg_stripped = Self::normalize_variable(arg);
+                                    if Self::is_variable(arg) {
                                         if let Some(&id) = row.get(arg_stripped) {
                                             dict.decode(id).unwrap_or("").to_string()
                                         } else {
@@ -204,22 +1042,26 @@ impl ExecutionEngine {
                         })
                         .collect();
                     drop(dict);
-                    
+
                     let mut dict_write = database.dictionary.write().unwrap();
                     for (row, decoded_row) in input_results.iter_mut().zip(decoded_args.iter()) {
-                        let resolved_args: Vec<&str> = decoded_row.iter().map(|s| s.as_str()).collect();
+                        let resolved_args: Vec<&str> =
+                            decoded_row.iter().map(|s| s.as_str()).collect();
                         let result = func.call(resolved_args);
                         let result_id = dict_write.encode(&result);
                         row.insert(output_var.to_string(), result_id);
                     }
                     drop(dict_write);
-                    
+
                     input_results
-                } else if function_name == "SUBJECT" || function_name == "PREDICATE" || function_name == "OBJECT" {
+                } else if function_name == "SUBJECT"
+                    || function_name == "PREDICATE"
+                    || function_name == "OBJECT"
+                {
                     let qt_store = database.quoted_triple_store.read().unwrap();
                     for row in &mut input_results {
                         if let Some(arg) = arguments.first() {
-                            let arg_stripped = arg.strip_prefix('?').unwrap_or(arg);
+                            let arg_stripped = Self::normalize_variable(arg);
                             if let Some(&id) = row.get(arg_stripped) {
                                 if is_quoted_triple_id(id) {
                                     if let Some((s, p, o)) = qt_store.decode(id) {
@@ -240,15 +1082,18 @@ impl ExecutionEngine {
                 } else if function_name == "TRIPLE" {
                     if arguments.len() == 3 {
                         for row in &mut input_results {
-                            let args: Vec<Option<u32>> = arguments.iter().map(|arg| {
-                                let arg_stripped = arg.strip_prefix('?').unwrap_or(arg);
-                                if arg.starts_with('?') {
-                                    row.get(arg_stripped).copied()
-                                } else {
-                                    let mut dict = database.dictionary.write().unwrap();
-                                    Some(dict.encode(arg_stripped))
-                                }
-                            }).collect();
+                            let args: Vec<Option<u32>> = arguments
+                                .iter()
+                                .map(|arg| {
+                                    let arg_stripped = Self::normalize_variable(arg);
+                                    if Self::is_variable(arg) {
+                                        row.get(arg_stripped).copied()
+                                    } else {
+                                        let mut dict = database.dictionary.write().unwrap();
+                                        Some(dict.encode(arg_stripped))
+                                    }
+                                })
+                                .collect();
                             if let (Some(s), Some(p), Some(o)) = (args[0], args[1], args[2]) {
                                 let mut qt_store = database.quoted_triple_store.write().unwrap();
                                 let qt_id = qt_store.encode(s, p, o);
@@ -261,9 +1106,13 @@ impl ExecutionEngine {
                     let mut dict_write = database.dictionary.write().unwrap();
                     for row in &mut input_results {
                         if let Some(arg) = arguments.first() {
-                            let arg_stripped = arg.strip_prefix('?').unwrap_or(arg);
+                            let arg_stripped = Self::normalize_variable(arg);
                             if let Some(&id) = row.get(arg_stripped) {
-                                let result_str = if is_quoted_triple_id(id) { "true" } else { "false" };
+                                let result_str = if is_quoted_triple_id(id) {
+                                    "true"
+                                } else {
+                                    "false"
+                                };
                                 let result_id = dict_write.encode(result_str);
                                 row.insert(output_var.to_string(), result_id);
                             }
@@ -272,249 +1121,733 @@ impl ExecutionEngine {
                     drop(dict_write);
                     input_results
                 } else {
-                    eprintln!("Function {} not found", function_name);
+                    eprintln!("UDF_NOT_FOUND");
                     input_results
                 }
             }
             PhysicalOperator::Values { variables, values } => {
                 let stripped_vars: Vec<String> = variables
                     .iter()
-                    .map(|v| v.strip_prefix('?').unwrap_or(v).to_string())
+                    .map(|v| Self::normalize_variable(v).to_string())
                     .collect();
 
                 // Convert VALUES data to result rows
                 let mut results = Vec::new();
-    
-                let mut dict = database.dictionary.write().unwrap();
+
                 for value_row in values {
                     let mut row = HashMap::new();
-        
+
                     for (i, var) in stripped_vars.iter().enumerate() {
-                        if let Some(Some(value)) = value_row.get(i) {
-                            // Encode the value in the dictionary
-                            let value_id = dict.encode(value);
-                            row.insert(var.clone(), value_id);
+                        if let Some(Some(value_id)) = value_row.get(i) {
+                            row.insert(var.clone(), *value_id);
                         }
                     }
-        
-                    // Only add non-empty rows
-                    if !row.is_empty() {
-                        results.push(row);
-                    }
+
+                    // An all-UNDEF row is still the unit solution mapping
+                    results.push(row);
                 }
-                drop(dict);
-    
-                results
+
+                Self::join_solution_sequences(incoming, results)
             }
-            PhysicalOperator::MLPredict {
-                input,
-                model_name,
-                model_path,
-                input_variables,
-                output_variable,
-            } => {
-                // Execute the input operator first
-                let input_results = Self::execute_with_ids(input, database);
-
-                if input_results.is_empty() {
-                    return input_results;
+            PhysicalOperator::MLPredict { input, model_name, input_variables, output_variable, .. } => {
+                if database.ml_context.approved_model(model_name).is_err() {
+                    eprintln!("ML_EXECUTION_REJECTED");
+                    return Vec::new();
                 }
-
-                println!("[ML.PREDICT] Executing prediction with model: {}", model_name);
-                println!("[ML.PREDICT] Model path: {}", model_path);
-                println!("[ML.PREDICT] Input variables: {:?}", input_variables);
-                println!("[ML.PREDICT] Output variable: {}", output_variable);
-                println!("[ML.PREDICT] Input rows: {}", input_results.len());
-
-                // Try Candle first: when the model name maps to exactly one registered
-                // NEURAL RELATION, run the trained Candle MLP. Otherwise fall back to
-                // the legacy Python/sklearn path.
-                match crate::ml_predict_candle::try_candle_predict_by_model_name(
-                    database,
-                    model_name,
-                    &input_results,
-                ) {
-                    Ok(Some(dispatch)) => {
-                        println!("[ML.PREDICT] Dispatched to Candle (model={})", model_name);
-                        return Self::merge_candle_predictions(
-                            input_results,
-                            dispatch.predictions,
-                            output_variable,
-                            database,
-                        );
-                    }
-                    Ok(None) => {
-                        println!("[ML.PREDICT] No Candle registration for model '{}', falling back to Python", model_name);
-                    }
-                    Err(e) => {
-                        eprintln!("[ML.PREDICT] Candle dispatch error: {}", e);
-                        return input_results;
-                    }
-                }
-
-                // Extract input data for ML prediction
-                let input_data = Self::extract_ml_input_data(&input_results, input_variables, database);
-
-                // Call the existing ML handler infrastructure
-                match Self::invoke_ml_handler(model_path, model_name, input_data) {
-                    Ok(predictions) => {
-                        Self::merge_ml_predictions(input_results, predictions, output_variable, database)
-                    }
-                    Err(e) => {
-                        eprintln!("[ML.PREDICT] Error executing ML model: {}", e);
-                        input_results
-                    }
+                let rows = Self::execute_with_ids_and_input(input, database, context, incoming);
+                let data = {
+                    let dict = database.dictionary.read().unwrap();
+                    rows.iter().map(|row| input_variables.iter().map(|var| {
+                        row.get(Self::normalize_variable(var)).and_then(|id| dict.decode(*id))
+                            .and_then(|value| value.parse::<f64>().ok())
+                    }).collect::<Option<Vec<_>>>()).collect::<Option<Vec<_>>>()
+                };
+                let Some(data) = data else { return Vec::new(); };
+                match database.ml_context.predict(model_name, &data) {
+                    Ok(predictions) => Self::merge_candle_predictions(rows, predictions, output_variable, database),
+                    Err(_) => { eprintln!("ML_EXECUTION_FAILED"); Vec::new() }
                 }
             }
         }
     }
 
-    /// Extracts input data for ML prediction from query results
-    fn extract_ml_input_data(
-        input_results: &[HashMap<String, u32>],
-        input_variables: &[String],
+    fn normalize_variable(variable: &str) -> &str {
+        variable
+            .strip_prefix('?')
+            .or_else(|| variable.strip_prefix('$'))
+            .unwrap_or(variable)
+    }
+
+    fn is_variable(value: &str) -> bool {
+        value.starts_with('?') || value.starts_with('$')
+    }
+
+    fn finalize_subquery(
+        rows: Bindings,
+        spec: &SubquerySpec,
         database: &SparqlDatabase,
-    ) -> Vec<Vec<f64>> {
-        if let Some(first_row) = input_results.first() {
-            println!("[ML.PREDICT DEBUG] First row keys: {:?}", first_row.keys().collect::<Vec<_>>());
-            println!("[ML.PREDICT DEBUG] Input variables to check: {:?}", input_variables);
-            
-            // Show what values decode to
-            let dict = database.dictionary.read().unwrap();
-            for (key, &id) in first_row {
-                if let Some(value) = dict.decode(id) {
-                    println!("[ML.PREDICT DEBUG]   {} -> {} (parses as f64: {})", 
-                        key, value, value.parse::<f64>().is_ok());
-                }
-            }
-            drop(dict);
-        }
-        
-        // Identify which variables are actually numeric by checking the first row
-        let numeric_vars: Vec<String> = if let Some(first_row) = input_results.first() {
-            let dict = database.dictionary.read().unwrap();
-            let vars: Vec<String> = input_variables
+    ) -> Bindings {
+        let mut rows = Self::aggregate_subquery_rows(rows, spec, database);
+        Self::apply_subquery_order(&mut rows, &spec.order_conditions, database);
+
+        if let Some(projection) = &spec.projection {
+            let projected_variables: HashSet<String> = projection
                 .iter()
-                .filter(|var| {
-                    let var_stripped = var.strip_prefix('?').unwrap_or(var);
-                    if let Some(&id) = first_row.get(var_stripped) {
-                        if let Some(value_str) = dict.decode(id) {
-                            value_str.parse::<f64>().is_ok()
-                        } else {
-                            false
-                        }
-                    } else {
-                        false
-                    }
-                })
-                .cloned()
+                .map(Self::subquery_output_variable)
                 .collect();
-            drop(dict);
-            vars
-        } else {
-            return Vec::new();
-        };
-        
-        println!("[ML.PREDICT] Numeric feature variables: {:?}", numeric_vars);
-        
-        // Now extract only numeric features
-        let dict = database.dictionary.read().unwrap();
-        let result: Vec<Vec<f64>> = input_results
-            .iter()
-            .map(|row| {
-                numeric_vars
+            for row in &mut rows {
+                row.retain(|variable, _| projected_variables.contains(variable));
+            }
+        }
+
+        if spec.distinct {
+            let mut seen = HashSet::new();
+            rows.retain(|row| {
+                let mut key: Vec<_> = row
                     .iter()
-                    .filter_map(|var| {
-                        let var_stripped = var.strip_prefix('?').unwrap_or(var);
-                        
-                        if let Some(&id) = row.get(var_stripped) {
-                            if let Some(value_str) = dict.decode(id) {
-                                value_str.parse::<f64>().ok()
-                            } else {
-                                None
-                            }
-                        } else {
-                            None
-                        }
+                    .map(|(variable, value)| (variable.clone(), *value))
+                    .collect();
+                key.sort_unstable();
+                seen.insert(key)
+            });
+        }
+
+        if let Some(limit) = spec.limit {
+            rows.truncate(limit);
+        }
+        rows
+    }
+
+    fn aggregate_subquery_rows(
+        rows: Bindings,
+        spec: &SubquerySpec,
+        database: &SparqlDatabase,
+    ) -> Bindings {
+        let aggregates: Vec<&SubqueryProjection> = spec
+            .projection
+            .iter()
+            .flatten()
+            .filter(|projection| projection.kind != "VAR" && projection.kind != "*")
+            .collect();
+        if aggregates.is_empty() && spec.group_vars.is_empty() {
+            return rows;
+        }
+
+        let mut groups: BTreeMap<Vec<Option<u32>>, Bindings> = BTreeMap::new();
+        for row in rows {
+            let key = spec
+                .group_vars
+                .iter()
+                .map(|variable| row.get(Self::normalize_variable(variable)).copied())
+                .collect();
+            groups.entry(key).or_default().push(row);
+        }
+        if groups.is_empty() && spec.group_vars.is_empty() {
+            groups.insert(Vec::new(), Vec::new());
+        }
+
+        groups
+            .into_iter()
+            .map(|(key, group)| {
+                // Only the grouping key and the aggregates describe the group
+                let mut result = HashMap::new();
+                for (variable, id) in spec.group_vars.iter().zip(key) {
+                    if let Some(id) = id {
+                        result.insert(Self::normalize_variable(variable).to_string(), id);
+                    }
+                }
+
+                for aggregate in &aggregates {
+                    let input = Self::normalize_variable(&aggregate.variable);
+                    let normalized_kind = aggregate.kind.to_ascii_uppercase();
+                    let descriptor = crate::aggregate::Aggregate::parse(&normalized_kind);
+                    if descriptor.kind == "COUNT" && input == "*" {
+                        let count = descriptor.star_count(&group);
+                        let id = database.dictionary.write().unwrap().encode(&count);
+                        result.insert(Self::subquery_output_variable(aggregate), id);
+                        continue;
+                    }
+                    let values = group
+                        .iter()
+                        .filter_map(|row| row.get(input).copied())
+                        .filter_map(|id| database.decode_any(id))
+                        .collect::<Vec<_>>();
+                    let value = crate::execute_query::aggregate_value(
+                        &aggregate.kind,
+                        &values.iter().map(String::as_str).collect::<Vec<_>>(),
+                    );
+                    let output = Self::subquery_output_variable(aggregate);
+                    if let Some(value) = value {
+                        let id = database.dictionary.write().unwrap().encode(&value);
+                        result.insert(output, id);
+                    } else {
+                        result.remove(&output);
+                    }
+                }
+                result
+            })
+            .collect()
+    }
+
+    fn apply_subquery_order(
+        rows: &mut Bindings,
+        conditions: &[(String, SortDirection)],
+        database: &SparqlDatabase,
+    ) {
+        if conditions.is_empty() {
+            return;
+        }
+
+        // Decode each ordering value once. Decoding inside the comparator
+        let mut keyed: Vec<(Vec<Option<String>>, HashMap<String, u32>)> = rows
+            .drain(..)
+            .map(|row| {
+                let keys = conditions
+                    .iter()
+                    .map(|(variable, _)| {
+                        row.get(Self::normalize_variable(variable))
+                            .and_then(|id| database.decode_any(*id))
                     })
-                    .collect()
+                    .collect();
+                (keys, row)
             })
             .collect();
-        drop(dict);
-        result
+
+        keyed.sort_by(|(left, _), (right, _)| {
+            for (index, (_, direction)) in conditions.iter().enumerate() {
+                let comparison =
+                    term_order::compare(left[index].as_deref(), right[index].as_deref());
+                let comparison = match direction {
+                    SortDirection::Asc => comparison,
+                    SortDirection::Desc => comparison.reverse(),
+                };
+                if comparison != std::cmp::Ordering::Equal {
+                    return comparison;
+                }
+            }
+            std::cmp::Ordering::Equal
+        });
+
+        rows.extend(keyed.into_iter().map(|(_, row)| row));
     }
 
-    /// Invokes the ML handler to make predictions
-    fn invoke_ml_handler(
-        model_dir: &str,
-        model_name: &str,
-        input_data: Vec<Vec<f64>>,
-    ) -> Result<MLPredictionResult, Box<dyn std::error::Error>> {
-        use ml::MLHandler;
-        use ml::generate_ml_models;
+    fn subquery_output_variable(projection: &SubqueryProjection) -> String {
+        Self::normalize_variable(projection.alias.as_deref().unwrap_or(&projection.variable))
+            .to_string()
+    }
 
-        println!("[ML.PREDICT] Initializing ML handler...");
-        let mut ml_handler = MLHandler::new()?;
+    fn execute_graph_with_ids(
+        database: &SparqlDatabase,
+        input: &PhysicalOperator,
+        graph: &GraphTerm,
+        context: &ExecutionContext,
+        incoming: Bindings,
+    ) -> Bindings {
+        match graph {
+            GraphTerm::Default => {
+                let default_context = ExecutionContext {
+                    dataset: Arc::clone(&context.dataset),
+                    active_graph: None,
+                };
+                Self::execute_with_ids_and_input(input, database, &default_context, incoming)
+            }
+            GraphTerm::Named(graph_id) => {
+                let graph_id = GraphId::Named(*graph_id);
+                if !context.dataset.is_named_visible(graph_id)
+                    || !database.dataset_index.graph_exists(graph_id)
+                {
+                    return Vec::new();
+                }
+                let graph_context = context.with_active_graph(graph_id);
+                Self::execute_with_ids_and_input(input, database, &graph_context, incoming)
+            }
+            GraphTerm::Variable(variable) => {
+                let variable = Self::normalize_variable(variable).to_string();
+                let mut visible_graphs: Vec<_> =
+                    context.dataset.named_graphs.iter().copied().collect();
+                visible_graphs.sort_unstable();
 
-        println!("[ML.PREDICT] Looking for models in: {}", model_dir);
+                let mut results = Vec::new();
+                for row in incoming {
+                    if let Some(&bound_graph) = row.get(&variable) {
+                        let graph = GraphId::Named(bound_graph);
+                        if context.dataset.is_named_visible(graph)
+                            && database.dataset_index.graph_exists(graph)
+                        {
+                            let graph_context = context.with_active_graph(graph);
+                            results.extend(Self::execute_with_ids_and_input(
+                                input,
+                                database,
+                                &graph_context,
+                                vec![row],
+                            ));
+                        }
+                        continue;
+                    }
 
-        let model_dir_path = std::path::PathBuf::from(model_dir);
-        std::fs::create_dir_all(&model_dir_path)?;
-
-        // Check if a matching .pkl model exists
-        let models_exist = std::fs::read_dir(&model_dir_path)?
-            .filter_map(Result::ok)
-            .filter(|entry| {
-                let path = entry.path();
-                path.is_file() && path.extension().map_or(false, |ext| ext == "pkl") &&
-                path.file_stem().and_then(|s| s.to_str()).map_or(false, |stem| stem.ends_with("_predictor"))
-            })
-            .count() >= 1;
-
-        if !models_exist {
-            println!("[ML.PREDICT] Models not found. Generating models...");
-            // Derive script name from model_name: "fraud_predictor" -> "fraud_predictor.py"
-            let script_name = format!("{}.py", model_name);
-            let predictor_script = model_dir_path
-                .parent()
-                .and_then(|p| p.parent())
-                .map(|p| p.join(&script_name))
-                .unwrap_or_else(|| std::path::PathBuf::from(&script_name));
-
-            if let Some(script_path) = predictor_script.to_str() {
-                generate_ml_models(&model_dir_path, script_path)?;
+                    for graph in &visible_graphs {
+                        if !database.dataset_index.graph_exists(*graph) {
+                            continue;
+                        }
+                        let GraphId::Named(graph_id) = *graph else {
+                            continue;
+                        };
+                        let mut graph_row = row.clone();
+                        graph_row.insert(variable.clone(), graph_id);
+                        let graph_context = context.with_active_graph(*graph);
+                        results.extend(Self::execute_with_ids_and_input(
+                            input,
+                            database,
+                            &graph_context,
+                            vec![graph_row],
+                        ));
+                    }
+                }
+                results
             }
         }
-        
-        println!("[ML.PREDICT] Discovering models and analyzing schemas...");
-        let model_ids = ml_handler.discover_and_load_models(&model_dir_path, model_name)?;
-        
-        if model_ids.is_empty() {
-            return Err("No valid models found with TTL schemas".into());
-        }
-        
-        let best_model_name = ml_handler.best_model.as_deref().unwrap_or(&model_ids[0]);
-        println!("[ML.PREDICT] Using best model: {}", best_model_name);
-        
-        println!("[ML.PREDICT] Running predictions on {} samples...", input_data.len());
-        let start = std::time::Instant::now();
-        
-        let result = ml_handler.predict(best_model_name, input_data)?;
-        
-        let elapsed = start.elapsed();
-        println!("[ML.PREDICT] Prediction completed in {:.3}s", elapsed.as_secs_f64());
-        println!("[ML.PREDICT] Throughput: {:.1} predictions/sec", 
-            result.predictions.len() as f64 / elapsed.as_secs_f64());
-        
-        Ok(result)
     }
 
-    /// Merges string-valued Candle predictions back into id-encoded query rows.
+    fn execute_quad_scan_with_ids(
+        database: &SparqlDatabase,
+        pattern: &QuadPattern,
+        context: &ExecutionContext,
+        incoming: Bindings,
+    ) -> Bindings {
+        let mut results = Vec::new();
+
+        // The visible graph set is the same for every incoming row, so it is built once
+        let visible_graphs: Vec<GraphId> = if matches!(pattern.graph, GraphTerm::Variable(_)) {
+            let mut graphs: Vec<GraphId> = context.dataset.named_graphs.iter().copied().collect();
+            graphs.sort_unstable();
+            graphs
+        } else {
+            Vec::new()
+        };
+
+        for row in incoming {
+            let mut extender = RowExtender::new(row);
+            match &pattern.graph {
+                GraphTerm::Default => {
+                    if let Some(active_graph) = context.active_graph {
+                        Self::scan_one_graph(
+                            database,
+                            pattern,
+                            active_graph,
+                            None,
+                            &mut extender,
+                            &mut results,
+                        );
+                    } else {
+                        Self::scan_query_default(
+                            database,
+                            pattern,
+                            context,
+                            &mut extender,
+                            &mut results,
+                        );
+                    }
+                }
+                GraphTerm::Named(graph_id) => {
+                    let graph = GraphId::Named(*graph_id);
+                    if context.dataset.is_named_visible(graph)
+                        && database.dataset_index.graph_exists(graph)
+                    {
+                        Self::scan_one_graph(
+                            database,
+                            pattern,
+                            graph,
+                            None,
+                            &mut extender,
+                            &mut results,
+                        );
+                    }
+                }
+                GraphTerm::Variable(variable) => {
+                    let variable = Self::normalize_variable(variable);
+                    if let Some(&bound_graph) = extender.row().get(variable) {
+                        let graph = GraphId::Named(bound_graph);
+                        if context.dataset.is_named_visible(graph)
+                            && database.dataset_index.graph_exists(graph)
+                        {
+                            Self::scan_one_graph(
+                                database,
+                                pattern,
+                                graph,
+                                Some((variable, bound_graph)),
+                                &mut extender,
+                                &mut results,
+                            );
+                        }
+                    } else {
+                        for graph in visible_graphs.iter().copied() {
+                            if !database.dataset_index.graph_exists(graph) {
+                                continue;
+                            }
+                            let GraphId::Named(graph_id) = graph else {
+                                continue;
+                            };
+                            Self::scan_one_graph(
+                                database,
+                                pattern,
+                                graph,
+                                Some((variable, graph_id)),
+                                &mut extender,
+                                &mut results,
+                            );
+                        }
+                    }
+                }
+            }
+            extender.finish(&mut results);
+        }
+
+        results
+    }
+
+    fn scan_query_default<'p>(
+        database: &SparqlDatabase,
+        pattern: &'p QuadPattern,
+        context: &ExecutionContext,
+        extender: &mut RowExtender<'p>,
+        results: &mut Bindings,
+    ) {
+        let (subject, predicate, object) = Self::bound_scan_keys(pattern, extender.row(), None);
+        // Merging several graphs into one query default can surface the same triple twice
+        let merges_graphs = context.dataset.default_graphs.len() > 1;
+        let mut seen = HashSet::new();
+
+        for graph in &context.dataset.default_graphs {
+            exec_count!(SCAN_PROBES);
+            for quad in database
+                .dataset_index
+                .query_graph(*graph, subject, predicate, object)
+            {
+                exec_count!(QUADS_EXAMINED);
+                if merges_graphs && !seen.insert((quad.subject, quad.predicate, quad.object)) {
+                    continue;
+                }
+                Self::match_quad(
+                    database,
+                    pattern,
+                    quad.subject,
+                    quad.predicate,
+                    quad.object,
+                    None,
+                    extender,
+                    results,
+                );
+            }
+        }
+    }
+
+    fn scan_one_graph<'p>(
+        database: &SparqlDatabase,
+        pattern: &'p QuadPattern,
+        graph: GraphId,
+        graph_binding: Option<(&'p str, u32)>,
+        extender: &mut RowExtender<'p>,
+        results: &mut Bindings,
+    ) {
+        // The graph binding does not depend on the candidate quad, so resolve it once per row
+        let fresh_graph = match graph_binding {
+            None => None,
+            Some((variable, graph_id)) => match extender.row().get(variable) {
+                Some(&existing) if existing != graph_id => return,
+                Some(_) => None,
+                None => Some((variable, graph_id)),
+            },
+        };
+
+        let (subject, predicate, object) =
+            Self::bound_scan_keys(pattern, extender.row(), fresh_graph);
+        exec_count!(SCAN_PROBES);
+        for quad in database
+            .dataset_index
+            .query_graph(graph, subject, predicate, object)
+        {
+            exec_count!(QUADS_EXAMINED);
+            Self::match_quad(
+                database,
+                pattern,
+                quad.subject,
+                quad.predicate,
+                quad.object,
+                fresh_graph,
+                extender,
+                results,
+            );
+        }
+    }
+
+    fn bound_scan_keys(
+        pattern: &QuadPattern,
+        row: &HashMap<String, u32>,
+        fresh_graph: Option<(&str, u32)>,
+    ) -> (Option<u32>, Option<u32>, Option<u32>) {
+        (
+            Self::bound_term_value(&pattern.subject, row, fresh_graph),
+            Self::bound_term_value(&pattern.predicate, row, fresh_graph),
+            Self::bound_term_value(&pattern.object, row, fresh_graph),
+        )
+    }
+
+    fn bound_term_value(
+        term: &Term,
+        row: &HashMap<String, u32>,
+        fresh_graph: Option<(&str, u32)>,
+    ) -> Option<u32> {
+        match term {
+            Term::Constant(value) => Some(*value),
+            Term::Variable(variable) => {
+                let variable = Self::normalize_variable(variable);
+                row.get(variable).copied().or_else(|| {
+                    fresh_graph
+                        .filter(|(name, _)| *name == variable)
+                        .map(|(_, value)| value)
+                })
+            }
+            Term::QuotedTriple(_) => None,
+        }
+    }
+
+    fn match_quad<'p>(
+        database: &SparqlDatabase,
+        pattern: &'p QuadPattern,
+        subject: u32,
+        predicate: u32,
+        object: u32,
+        fresh_graph: Option<(&'p str, u32)>,
+        extender: &mut RowExtender<'p>,
+        results: &mut Bindings,
+    ) {
+        let values = [
+            (&pattern.subject, subject),
+            (&pattern.predicate, predicate),
+            (&pattern.object, object),
+        ];
+
+        // Quoted triples bind a variable number of nested variables; every other pattern binds at most three and fits a stack buffer
+        if values
+            .iter()
+            .any(|(term, _)| matches!(term, Term::QuotedTriple(_)))
+        {
+            let mut bindings = extender.row().clone();
+            if let Some((variable, graph_id)) = fresh_graph {
+                bindings.insert(variable.to_string(), graph_id);
+            }
+            for (term, value) in values {
+                if !Self::match_term_with_store(database, term, value, &mut bindings) {
+                    return;
+                }
+            }
+            exec_count!(ROWS_EMITTED);
+            extender.emit(PendingMatch::Complete(bindings), results);
+            return;
+        }
+
+        let mut fresh = FreshBindings::default();
+        if let Some(binding) = fresh_graph {
+            fresh.push(binding);
+        }
+        for (term, value) in values {
+            match term {
+                Term::Constant(constant) => {
+                    if *constant != value {
+                        return;
+                    }
+                }
+                Term::Variable(variable) => {
+                    let variable = Self::normalize_variable(variable);
+                    let existing = extender
+                        .row()
+                        .get(variable)
+                        .copied()
+                        .or_else(|| fresh.get(variable));
+                    match existing {
+                        Some(bound) if bound != value => return,
+                        Some(_) => {}
+                        None => fresh.push((variable, value)),
+                    }
+                }
+                Term::QuotedTriple(_) => unreachable!("quoted triples take the general path"),
+            }
+        }
+
+        exec_count!(ROWS_EMITTED);
+        extender.emit(PendingMatch::Fresh(fresh), results);
+    }
+
+    fn match_term_with_store(
+        database: &SparqlDatabase,
+        term: &Term,
+        value: u32,
+        bindings: &mut HashMap<String, u32>,
+    ) -> bool {
+        match term {
+            Term::Constant(constant) => *constant == value,
+            Term::Variable(variable) => {
+                let variable = Self::normalize_variable(variable);
+                if let Some(&existing) = bindings.get(variable) {
+                    existing == value
+                } else {
+                    bindings.insert(variable.to_string(), value);
+                    true
+                }
+            }
+            Term::QuotedTriple(pattern) => {
+                if !is_quoted_triple_id(value) {
+                    return false;
+                }
+                let components = {
+                    let store = database.quoted_triple_store.read().unwrap();
+                    store.decode(value)
+                };
+                let Some((subject, predicate, object)) = components else {
+                    return false;
+                };
+                Self::match_term_with_store(database, &pattern.0, subject, bindings)
+                    && Self::match_term_with_store(database, &pattern.1, predicate, bindings)
+                    && Self::match_term_with_store(database, &pattern.2, object, bindings)
+            }
+        }
+    }
+
+    /// Feeds a solution sequence into a dependent plan in parallel chunks, concatenated in chunk order to match a sequential pass
+    fn execute_bind_join(
+        right: &PhysicalOperator,
+        database: &SparqlDatabase,
+        context: &ExecutionContext,
+        left_results: Bindings,
+    ) -> Bindings {
+        if left_results.is_empty() {
+            return Vec::new();
+        }
+
+        let threads = rayon::current_num_threads();
+        let chunk_size = (left_results.len() / threads.max(1)).max(BIND_JOIN_MIN_CHUNK);
+        if chunk_size >= left_results.len() {
+            return Self::execute_with_ids_and_input(right, database, context, left_results);
+        }
+
+        let chunks: Vec<Bindings> = left_results
+            .par_chunks(chunk_size)
+            .map(|chunk| {
+                Self::execute_with_ids_and_input(right, database, context, chunk.to_vec())
+            })
+            .collect();
+        chunks.into_iter().flatten().collect()
+    }
+
+    /// Merges two solution mappings if they agree on every shared variable
+    fn merge_rows(
+        left_row: &HashMap<String, u32>,
+        right_row: &HashMap<String, u32>,
+    ) -> Option<HashMap<String, u32>> {
+        for (variable, left_value) in left_row {
+            if let Some(right_value) = right_row.get(variable) {
+                if right_value != left_value {
+                    return None;
+                }
+            }
+        }
+        let mut joined = left_row.clone();
+        for (variable, value) in right_row {
+            joined.entry(variable.clone()).or_insert(*value);
+        }
+        Some(joined)
+    }
+
+    /// Variables bound by some row on both sides, in deterministic order
+    fn shared_variables(left: &Bindings, right: &Bindings) -> Vec<String> {
+        let left_variables: HashSet<&str> =
+            left.iter().flat_map(|row| row.keys().map(String::as_str)).collect();
+        let mut shared: Vec<&str> = right
+            .iter()
+            .flat_map(|row| row.keys().map(String::as_str))
+            .filter(|variable| left_variables.contains(variable))
+            .collect();
+        shared.sort_unstable();
+        shared.dedup();
+        shared.into_iter().map(str::to_string).collect()
+    }
+
+    /// The join key of a row, or `None` when it leaves a key variable unbound
+    fn join_key(row: &HashMap<String, u32>, variables: &[String]) -> Option<Vec<u32>> {
+        variables.iter().map(|variable| row.get(variable).copied()).collect()
+    }
+
+    fn join_solution_sequences(left: Bindings, right: Bindings) -> Bindings {
+        if left.is_empty() || right.is_empty() {
+            return Vec::new();
+        }
+
+        left.par_iter()
+            .flat_map_iter(|left_row| {
+                right
+                    .iter()
+                    .filter_map(move |right_row| Self::merge_rows(left_row, right_row))
+            })
+            .collect()
+    }
+
+    /// Build/probe join that builds on the right side and probes in parallel with the left, so emitted order matches the nested loop
+    fn hash_join_solution_sequences(left: Bindings, right: Bindings) -> Bindings {
+        if left.is_empty() || right.is_empty() {
+            return Vec::new();
+        }
+
+        let key_variables = Self::shared_variables(&left, &right);
+        if key_variables.is_empty() {
+            return Self::join_solution_sequences(left, right);
+        }
+
+        let mut table: HashMap<Vec<u32>, Vec<&HashMap<String, u32>>> = HashMap::new();
+        let mut unkeyed: Vec<&HashMap<String, u32>> = Vec::new();
+        for right_row in &right {
+            match Self::join_key(right_row, &key_variables) {
+                Some(key) => table.entry(key).or_default().push(right_row),
+                None => unkeyed.push(right_row),
+            }
+        }
+
+        // Only a left row that leaves a key variable unbound has to consider
+        let any_left_row_unkeyed = left.iter().any(|row| {
+            key_variables
+                .iter()
+                .any(|variable| !row.contains_key(variable))
+        });
+        let all_right: Vec<&HashMap<String, u32>> = if any_left_row_unkeyed {
+            right.iter().collect()
+        } else {
+            Vec::new()
+        };
+
+        left.par_iter()
+            .flat_map_iter(|left_row| {
+                // A fully bound left row probes the table plus the unhashable rows; a partially bound one can match anything
+                let (probed, residual) = match Self::join_key(left_row, &key_variables) {
+                    Some(key) => (
+                        table.get(&key).map(Vec::as_slice).unwrap_or(&[]),
+                        unkeyed.as_slice(),
+                    ),
+                    None => (all_right.as_slice(), &[][..]),
+                };
+                probed
+                    .iter()
+                    .chain(residual.iter())
+                    .filter_map(move |right_row| Self::merge_rows(left_row, right_row))
+            })
+            .collect()
+    }
+
+
+    /// Merges string-valued Candle predictions back into id-encoded query rows
     fn merge_candle_predictions(
         mut input_results: Vec<HashMap<String, u32>>,
         predictions: Vec<String>,
         output_variable: &str,
-        database: &mut SparqlDatabase,
+        database: &SparqlDatabase,
     ) -> Vec<HashMap<String, u32>> {
         let output_var = output_variable.strip_prefix('?').unwrap_or(output_variable);
 
@@ -527,930 +1860,7 @@ impl ExecutionEngine {
         }
         drop(dict);
 
-        println!("[ML.PREDICT] Candle: merged {} predictions", predictions.len());
         input_results
     }
 
-    /// Merges ML predictions back into query results
-    fn merge_ml_predictions(
-        mut input_results: Vec<HashMap<String, u32>>,
-        predictions: MLPredictionResult,
-        output_variable: &str,
-        database: &mut SparqlDatabase,
-    ) -> Vec<HashMap<String, u32>> {
-        let output_var = output_variable.strip_prefix('?').unwrap_or(output_variable);
-        
-        let mut dict = database.dictionary.write().unwrap();
-        for (i, prediction) in predictions.predictions.iter().enumerate() {
-            if i < input_results.len() {
-                let prediction_str = prediction.to_string();
-                let prediction_id = dict.encode(&prediction_str);
-                input_results[i].insert(output_var.to_string(), prediction_id);
-            }
-        }
-        drop(dict);
-        
-        println!("[ML.PREDICT] Successfully added {} predictions", predictions.predictions.len());
-        input_results
-    }
-
-    /// Executes a table scan with ID-based results
-    fn execute_table_scan_with_ids(
-        database: &SparqlDatabase,
-        pattern: &TriplePattern,
-    ) -> Vec<HashMap<String, u32>> {
-        let mut results = Vec::new();
-
-        // Iterate through all triples in the database
-        for triple in &database.triples {
-            let mut bindings = HashMap::new();
-            let mut matches = true;
-
-            // Check subject
-            match &pattern.0 {
-                Term::Variable(var) => {
-                    let var_stripped = var.strip_prefix('?').unwrap_or(var);
-                    bindings.insert(var_stripped.to_string(), triple.subject);
-                }
-                Term::Constant(constant) => {
-                    if triple.subject != *constant {
-                        matches = false;
-                    }
-                }
-                Term::QuotedTriple(_) => {
-                    // QuotedTriple patterns are pre-resolved before reaching here
-                    matches = false;
-                }
-            }
-
-            if !matches {
-                continue;
-            }
-
-            // Check predicate
-            match &pattern.1 {
-                Term::Variable(var) => {
-                    let var_stripped = var.strip_prefix('?').unwrap_or(var);
-                    bindings.insert(var_stripped.to_string(), triple.predicate);
-                }
-                Term::Constant(constant) => {
-                    if triple.predicate != *constant {
-                        matches = false;
-                    }
-                }
-                Term::QuotedTriple(_) => {
-                    matches = false;
-                }
-            }
-
-            if !matches {
-                continue;
-            }
-
-            // Check object
-            match &pattern.2 {
-                Term::Variable(var) => {
-                    let var_stripped = var.strip_prefix('?').unwrap_or(var);
-                    bindings.insert(var_stripped.to_string(), triple.object);
-                }
-                Term::Constant(constant) => {
-                    if triple.object != *constant {
-                        matches = false;
-                    }
-                }
-                Term::QuotedTriple(_) => {
-                    matches = false;
-                }
-            }
-
-            if matches {
-                results.push(bindings);
-            }
-        }
-
-        results
-    }
-
-    /// Executes a star join: multiple patterns sharing the same subject
-    fn execute_star_join_with_ids(
-        database: &SparqlDatabase,
-        join_var: &str,
-        patterns: &[TriplePattern],
-    ) -> Vec<HashMap<String, u32>> {
-        if patterns.is_empty() {
-            return Vec::new();
-        }
-        
-        let join_var_stripped = join_var.strip_prefix('?').unwrap_or(join_var);
-
-        // Find the most selective pattern
-        let mut pattern_estimates: Vec<(usize, u64)> = patterns
-        .iter()
-        .enumerate()
-        .map(|(idx, pattern)| {
-            let cardinality = Self::estimate_pattern_cardinality(database, pattern);
-            (idx, cardinality)
-        })
-        .collect();
-
-        pattern_estimates.sort_by_key(|(_, card)| *card);
-
-        // Execute the MOST SELECTIVE pattern first
-        let (most_selective_idx, first_card) = pattern_estimates[0];
-        let most_selective_pattern = &patterns[most_selective_idx];
-
-        let mut results = Self::execute_index_scan_with_ids(database, most_selective_pattern);
-
-        if results.is_empty() {
-            return Vec::new();
-        }
-
-        // Adaptive strategy: use sequential for large result sets
-        let use_sequential = results.len() > 10_000 || first_card > 50_000;
-
-        // Process remaining patterns
-        for (pattern_idx, _) in &pattern_estimates[1..] {
-            let pattern = &patterns[*pattern_idx];
-
-            if use_sequential {
-                // Process one-by-one with strict memory control
-                let mut new_results = Vec::new();
-
-                for binding in results.iter().take(100_000) {  // Hard limit on input size
-                    if let Some(&join_value) = binding.get(join_var_stripped) {
-                        let mut bound_bindings = HashMap::new();
-                        bound_bindings.insert(join_var_stripped.to_string(), join_value);
-
-                        let bound_pattern = Self::bind_pattern(pattern, &bound_bindings);
-                        let matches = Self::execute_index_scan_with_ids(database, &bound_pattern);
-
-                        for match_binding in matches {
-                            let mut merged = binding.clone();
-                            for (var, val) in match_binding {
-                                merged.entry(var).or_insert(val);
-                            }
-                            new_results.push(merged);
-
-                            // Hard stop if we exceed 500K results
-                            if new_results.len() >= 500_000 {
-                                results = new_results;
-                                return results;  // Early exit
-                            }
-                        }
-                    }
-                }
-
-                results = new_results;
-            } else {
-                // Fast path for small result sets
-                results = results
-                .into_par_iter()
-                .flat_map(|binding| {
-                    if let Some(&join_value) = binding.get(join_var_stripped) {
-                        let mut bound_bindings = HashMap::new();
-                        bound_bindings.insert(join_var_stripped.to_string(), join_value);
-
-                        let bound_pattern = Self::bind_pattern(pattern, &bound_bindings);
-                        let matches = Self::execute_index_scan_with_ids(database, &bound_pattern);
-
-                        matches
-                        .into_iter()
-                        .map(|match_binding| {
-                            let mut merged = binding.clone();
-                            for (var, val) in match_binding {
-                                merged.entry(var).or_insert(val);
-                            }
-                            merged
-                        })
-                        .collect::<Vec<_>>()
-                    } else {
-                        Vec::new()
-                    }
-                })
-                .collect();
-            }
-
-            if results.is_empty() {
-                return Vec::new();
-            }
-        }
-
-        results
-    }
-
-    // Helper function to estimate pattern cardinality
-    fn estimate_pattern_cardinality(_database: &SparqlDatabase, pattern: &TriplePattern) -> u64 {
-        let bound_count = [&pattern.0, &pattern.1, &pattern.2]
-            .iter()
-            .filter(|term| matches!(term, Term::Constant(_)))
-            .count();
-
-        match bound_count {
-            3 => 1,
-            2 => 100,      // Estimate for two-bound patterns
-            1 => 10000,    // Estimate for one-bound patterns
-            0 => 1000000,  // Estimate for fully unbound
-            _ => 1000000,
-        }
-    }
-
-    /// Executes an optimized hash join with ID-based results
-    fn execute_optimized_hash_join_with_ids(
-        left_results: Vec<HashMap<String, u32>>,
-        right_results: Vec<HashMap<String, u32>>,
-    ) -> Vec<HashMap<String, u32>> {
-        if left_results.is_empty() || right_results.is_empty() {
-            return Vec::new();
-        }
-
-        // Find common variables for join condition
-        let left_vars: HashSet<String> = left_results[0].keys().cloned().collect();
-        let right_vars: HashSet<String> = right_results[0].keys().cloned().collect();
-        let common_vars: Vec<String> = left_vars.intersection(&right_vars).cloned().collect();
-
-        if common_vars.is_empty() {
-            // Cartesian product if no common variables
-            return Self::cartesian_product_join(left_results, right_results);
-        }
-
-        // Build hash table from smaller relation
-        let (build_side, probe_side) = if left_results.len() <= right_results.len() {
-            (left_results, right_results)
-        } else {
-            (right_results, left_results)
-        };
-
-        let mut hash_table: HashMap<Vec<u32>, Vec<HashMap<String, u32>>> = HashMap::with_capacity(build_side.len());
-
-        // Build phase
-        for tuple in build_side {
-            let key: Vec<u32> = common_vars.iter().map(|var| tuple[var]).collect();
-            hash_table.entry(key).or_default().push(tuple);
-        }
-
-        // Probe phase
-        probe_side
-        .par_iter()
-        .flat_map(|probe_tuple| {
-            let key: Vec<u32> = common_vars.iter().map(|var| probe_tuple[var]).collect();
-
-            if let Some(matching_tuples) = hash_table.get(&key) {
-                matching_tuples
-                .iter()
-                .map(|build_tuple| {
-                    let mut result = (*build_tuple).clone();
-                    result.extend(probe_tuple.iter().map(|(k, v)| (k.clone(), *v)));
-                    result
-                })
-                .collect::<Vec<_>>()
-            } else {
-                Vec::new()
-            }
-        })
-        .collect()
-    }
-
-    /// Executes a regular hash join with ID-based results
-    fn execute_hash_join_with_ids(
-        left_results: Vec<HashMap<String, u32>>,
-        right_results: Vec<HashMap<String, u32>>,
-    ) -> Vec<HashMap<String, u32>> {
-        if left_results.is_empty() || right_results.is_empty() {
-            return Vec::new();
-        }
-
-        // Find common variables
-        let left_vars: HashSet<String> = left_results[0].keys().cloned().collect();
-        let right_vars: HashSet<String> = right_results[0].keys().cloned().collect();
-        let common_vars: Vec<String> = left_vars.intersection(&right_vars).cloned().collect();
-
-        if common_vars.is_empty() {
-            return Self::cartesian_product_join(left_results, right_results);
-        }
-
-        // Simple hash join implementation
-        let mut results = Vec::new();
-        let mut hash_table: HashMap<Vec<u32>, Vec<HashMap<String, u32>>> = HashMap::new();
-
-        // Build hash table from left results
-        for left_tuple in left_results {
-            let key: Vec<u32> = common_vars.iter().map(|var| left_tuple[var]).collect();
-            hash_table.entry(key).or_default().push(left_tuple);
-        }
-
-        // Probe with right results
-        for right_tuple in right_results {
-            let key: Vec<u32> = common_vars.iter().map(|var| right_tuple[var]).collect();
-
-            if let Some(matching_left_tuples) = hash_table.get(&key) {
-                for left_tuple in matching_left_tuples {
-                    let mut joined_tuple = left_tuple.clone();
-                    for (var, value) in &right_tuple {
-                        if !joined_tuple.contains_key(var) {
-                            joined_tuple.insert(var.clone(), *value);
-                        }
-                    }
-                    results.push(joined_tuple);
-                }
-            }
-        }
-
-        results
-    }
-
-    /// Executes a nested loop join with ID-based results
-    fn execute_nested_loop_join_with_ids(
-        left_results: Vec<HashMap<String, u32>>,
-        right_results: Vec<HashMap<String, u32>>,
-    ) -> Vec<HashMap<String, u32>> {
-        left_results
-        .into_iter()
-        .flat_map(|left_tuple| {
-            right_results
-            .iter()
-            .filter_map(|right_tuple| {
-                Self::can_join_with_ids(&left_tuple, right_tuple).then(|| {
-                    let mut joined_tuple = left_tuple.clone();
-                    for (var, value) in right_tuple {
-                        if !joined_tuple.contains_key(var) {
-                            joined_tuple.insert(var.clone(), *value);
-                        }
-                    }
-                    joined_tuple
-                })
-            })
-            .collect::<Vec<_>>()
-        })
-        .collect()
-    }
-
-    /// Executes a bind join - uses left results to directly probe right index
-    fn execute_bind_join_with_ids(
-        left_results: Vec<HashMap<String, u32>>,
-        right_pattern: &TriplePattern,
-        database: &SparqlDatabase,
-    ) -> Vec<HashMap<String, u32>> {
-        // Safety limits
-        let total_results = std::sync::atomic::AtomicUsize::new(0);
-        let max_total = 1_000_000;
-
-        let chunk_size = (left_results.len() / rayon::current_num_threads()).max(1).max(100);
-
-        left_results
-        .par_chunks(chunk_size)
-        .flat_map(|chunk| {
-            chunk.iter().flat_map(|left_tuple| {
-                // Check global limit
-                if total_results.load(std::sync::atomic::Ordering::Relaxed) >= max_total {
-                    return Vec::new();
-                }
-
-                let bound_pattern = Self::bind_pattern(right_pattern, left_tuple);
-                let matches = Self::execute_index_scan_with_ids(database, &bound_pattern);
-
-                // Limit matches per binding
-                let match_limit = matches.len().min(10_000);
-
-                matches.into_iter()
-                .take(match_limit)  // Apply limit
-                .map(|right_tuple| {
-                    let mut result = left_tuple.clone();
-                    for (k, v) in right_tuple {
-                        result.entry(k).or_insert(v);
-                    }
-                    // Track total
-                    total_results.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                    result
-                })
-                .take_while(|_| {
-                    // Stop if limit reached
-                    total_results.load(std::sync::atomic::Ordering::Relaxed) < max_total
-                })
-                .collect::<Vec<_>>()
-            }).collect::<Vec<_>>()
-        })
-        .collect()
-    }
-
-    // Helper: Bind variables from bindings into pattern
-    fn bind_pattern(
-        pattern: &TriplePattern,
-        bindings: &HashMap<String, u32>,
-    ) -> TriplePattern {
-        let subject = match &pattern.0 {
-            Term::Variable(var) => {
-                let lookup_var = var.strip_prefix('?').unwrap_or(var);
-                bindings.get(lookup_var)
-                .map(|&id| Term::Constant(id))
-                .unwrap_or_else(|| pattern.0.clone())
-            }
-            constant => constant.clone(),
-        };
-
-        let predicate = match &pattern.1 {
-            Term::Variable(var) => {
-                let lookup_var = var.strip_prefix('?').unwrap_or(var);
-                bindings.get(lookup_var)
-                .map(|&id| Term::Constant(id))
-                .unwrap_or_else(|| pattern.1.clone())
-            }
-            constant => constant.clone(),
-        };
-
-        let object = match &pattern.2 {
-            Term::Variable(var) => {
-                let lookup_var = var.strip_prefix('?').unwrap_or(var);
-                bindings.get(lookup_var)
-                .map(|&id| Term::Constant(id))
-                .unwrap_or_else(|| pattern.2.clone())
-            }
-            constant => constant.clone(),
-        };
-
-        (subject, predicate, object)
-    }
-
-    /// Executes a parallel join using SIMD optimization
-    fn execute_parallel_join_with_ids(
-        left: &PhysicalOperator,
-        right: &PhysicalOperator,
-        database: &mut SparqlDatabase,
-    ) -> Vec<HashMap<String, u32>> {
-        // Execute left side first
-        let left_results = Self::execute_with_ids(left, database);
-
-        // If right side is an index scan, use bind join
-        if let Some(right_pattern) = Self::extract_pattern(right) {
-            return Self::execute_bind_join_with_ids(left_results, right_pattern, database);
-        }
-
-        // Execute right side
-        let right_results = Self::execute_with_ids(right, database);
-
-        // If both sides are sorted by join key, use merge join
-        if Self::can_use_merge_join(&left_results, &right_results) {
-            return Self::execute_merge_join_with_ids(left_results, right_results);
-        }
-
-        // Hash join for unsorted data
-        Self::execute_hash_join_with_ids(left_results, right_results)
-    }
-
-    /// Check if we can use merge join (both sides have same join variables)
-    fn can_use_merge_join(
-        left_results: &[HashMap<String, u32>],
-        right_results: &[HashMap<String, u32>],
-    ) -> bool {
-        if left_results.is_empty() || right_results.is_empty() {
-            return false;
-        }
-
-        // Find common variables
-        let left_vars: HashSet<String> = left_results[0].keys().cloned().collect();
-        let right_vars: HashSet<String> = right_results[0].keys().cloned().collect();
-        let common_vars: Vec<String> = left_vars.intersection(&right_vars).cloned().collect();
-
-        // Merge join works well when we have 1-2 common variables
-        ! common_vars.is_empty() && common_vars.len() <= 2
-    }
-
-    /// Executes a merge join on sorted data
-    fn execute_merge_join_with_ids(
-        mut left_results: Vec<HashMap<String, u32>>,
-        mut right_results: Vec<HashMap<String, u32>>,
-    ) -> Vec<HashMap<String, u32>> {
-        if left_results.is_empty() || right_results.is_empty() {
-            return Vec::new();
-        }
-
-        // Find common variables for join
-        let left_vars: HashSet<String> = left_results[0].keys().cloned().collect();
-        let right_vars: HashSet<String> = right_results[0].keys().cloned().collect();
-        let common_vars: Vec<String> = left_vars.intersection(&right_vars).cloned().collect();
-
-        if common_vars.is_empty() {
-            return Self::cartesian_product_join(left_results, right_results);
-        }
-
-        // Sort both sides by join key
-        left_results.par_sort_unstable_by(|a, b| {
-            for var in &common_vars {
-                match a.get(var).cmp(&b.get(var)) {
-                    std::cmp::Ordering::Equal => continue,
-                    other => return other,
-                }
-            }
-            std::cmp::Ordering::Equal
-        });
-
-        right_results.par_sort_unstable_by(|a, b| {
-            for var in &common_vars {
-                match a.get(var).cmp(&b.get(var)) {
-                    std::cmp::Ordering::Equal => continue,
-                    other => return other,
-                }
-            }
-            std::cmp::Ordering::Equal
-        });
-
-        // Build index of right side by join key for parallel lookup
-        let mut right_index: HashMap<Vec<u32>, Vec<usize>> = HashMap::new();
-        for (idx, tuple) in right_results.iter().enumerate() {
-            let key: Vec<u32> = common_vars.iter().filter_map(|v| tuple.get(v).copied()).collect();
-            right_index.entry(key).or_default().push(idx);
-        }
-
-        // Parallel merge using index
-        left_results
-        .par_iter()
-        .flat_map(|left_tuple| {
-            let key: Vec<u32> = common_vars.iter().filter_map(|v| left_tuple.get(v).copied()).collect();
-
-            if let Some(right_indices) = right_index.get(&key) {
-                right_indices
-                .iter()
-                .map(|&idx| {
-                    let mut joined = left_tuple.clone();
-                    for (k, v) in &right_results[idx] {
-                        if ! joined.contains_key(k) {
-                            joined.insert(k.clone(), *v);
-                        }
-                    }
-                    joined
-                })
-                .collect::<Vec<_>>()
-            } else {
-                Vec::new()
-            }
-        })
-        .collect()
-    }
-
-    /// Checks if two tuples can be joined based on common variables
-    fn can_join_with_ids(left: &HashMap<String, u32>, right: &HashMap<String, u32>) -> bool {
-        for (var, left_value) in left {
-            if let Some(right_value) = right.get(var) {
-                if left_value != right_value {
-                    return false;
-                }
-            }
-        }
-        true
-    }
-
-    /// Performs cartesian product join when no common variables exist
-    fn cartesian_product_join(
-        left_results: Vec<HashMap<String, u32>>,
-        right_results: Vec<HashMap<String, u32>>,
-    ) -> Vec<HashMap<String, u32>> {
-        left_results
-        .into_par_iter()
-        .flat_map(|left_tuple| {
-            right_results
-            .iter()
-            .map(|right_tuple| {
-                let mut joined_tuple = left_tuple.clone();
-                joined_tuple.extend(right_tuple.iter().map(|(k, v)| (k.clone(), *v)));
-                joined_tuple
-            })
-            .collect::<Vec<_>>()
-        })
-        .collect()
-    }
-
-    /// Extracts a pattern from a physical operator if it's a scan
-    fn extract_pattern(operator: &PhysicalOperator) -> Option<&TriplePattern> {
-        match operator {
-            PhysicalOperator::TableScan { pattern } => Some(pattern),
-            PhysicalOperator::IndexScan { pattern } => Some(pattern),
-            _ => None,
-        }
-    }
-
-    /// Check if a TriplePattern contains any QuotedTriple terms.
-    fn has_quoted_triple_term(pattern: &TriplePattern) -> bool {
-        pattern.0.is_quoted_triple() || pattern.1.is_quoted_triple() || pattern.2.is_quoted_triple()
-    }
-
-    /// Check if a Term matches a u32 value, binding variables as needed.
-    fn match_term(term: &Term, value: u32, bindings: &mut HashMap<String, u32>) -> bool {
-        match term {
-            Term::Constant(c) => *c == value,
-            Term::Variable(v) => {
-                let v_stripped = v.strip_prefix('?').unwrap_or(v);
-                if let Some(&existing) = bindings.get(v_stripped) {
-                    existing == value
-                } else {
-                    bindings.insert(v_stripped.to_string(), value);
-                    true
-                }
-            }
-            Term::QuotedTriple(_) => {
-                // A quoted triple pattern in this position means we need the value
-                // to itself be a quoted triple ID — this case is handled by
-                // resolve_quoted_triple_pattern before reaching here
-                is_quoted_triple_id(value)
-            }
-        }
-    }
-
-    /// Pre-resolve QuotedTriple terms in a pattern by scanning the QuotedTripleStore.
-    /// For each matching quoted triple, substitute the constant ID and recurse.
-    fn resolve_quoted_triple_scan(
-        database: &SparqlDatabase,
-        pattern: &TriplePattern,
-    ) -> Vec<HashMap<String, u32>> {
-        // Find which positions contain QuotedTriple terms
-        let has_qt_subject = matches!(&pattern.0, Term::QuotedTriple(_));
-        let has_qt_object = matches!(&pattern.2, Term::QuotedTriple(_));
-
-        if !has_qt_subject && !has_qt_object {
-            return Self::execute_index_scan_with_ids(database, pattern);
-        }
-
-        // Collect all quoted triple entries upfront to avoid holding the lock
-        let qt_entries: Vec<(u32, (u32, u32, u32))> = {
-            let qt_store = database.quoted_triple_store.read().unwrap();
-            qt_store.id_to_components.iter().map(|(&id, &comp)| (id, comp)).collect()
-        };
-
-        let mut all_results = Vec::new();
-
-        for (qt_id, (s, p, o)) in &qt_entries {
-            let mut inner_bindings = HashMap::new();
-
-            // If subject is a QuotedTriple pattern, match its components
-            if has_qt_subject {
-                if let Term::QuotedTriple(qt_pattern) = &pattern.0 {
-                    if !Self::match_term(&qt_pattern.0, *s, &mut inner_bindings) { continue; }
-                    if !Self::match_term(&qt_pattern.1, *p, &mut inner_bindings) { continue; }
-                    if !Self::match_term(&qt_pattern.2, *o, &mut inner_bindings) { continue; }
-                }
-            }
-
-            // If object is a QuotedTriple pattern, match its components
-            if has_qt_object {
-                if let Term::QuotedTriple(qt_pattern) = &pattern.2 {
-                    if !Self::match_term(&qt_pattern.0, *s, &mut inner_bindings) { continue; }
-                    if !Self::match_term(&qt_pattern.1, *p, &mut inner_bindings) { continue; }
-                    if !Self::match_term(&qt_pattern.2, *o, &mut inner_bindings) { continue; }
-                }
-            }
-
-            // Create a concrete pattern with quoted triple IDs substituted
-            let concrete_subject = if has_qt_subject {
-                Term::Constant(*qt_id)
-            } else {
-                pattern.0.clone()
-            };
-            let concrete_object = if has_qt_object {
-                Term::Constant(*qt_id)
-            } else {
-                pattern.2.clone()
-            };
-            let concrete_pattern = (concrete_subject, pattern.1.clone(), concrete_object);
-
-            // Execute the concrete pattern against the index
-            let outer_results = Self::execute_index_scan_with_ids(database, &concrete_pattern);
-
-            // Merge inner and outer bindings
-            for outer_row in outer_results {
-                let mut merged = inner_bindings.clone();
-                let mut conflict = false;
-                for (k, v) in &outer_row {
-                    if let Some(&existing) = merged.get(k) {
-                        if existing != *v {
-                            conflict = true;
-                            break;
-                        }
-                    } else {
-                        merged.insert(k.clone(), *v);
-                    }
-                }
-                if !conflict {
-                    all_results.push(merged);
-                }
-            }
-        }
-
-        all_results
-    }
-
-    /// Executes an index scan with specialized index-based approach
-    fn execute_index_scan_with_ids(
-        database: &SparqlDatabase,
-        pattern: &TriplePattern,
-    ) -> Vec<HashMap<String, u32>> {
-        // Determine which index to use based on bound variables
-        match pattern {
-            // FULLY BOUND (3 constants) - just check if triple exists
-            (Term::Constant(s), Term::Constant(p), Term::Constant(o)) => {
-                // Use SPO index to check existence
-                if let Some(pred_map) = database.index_manager.spo.get(s) {
-                    if let Some(objects) = pred_map.get(p) {
-                        if objects.contains(o) {
-                            // Triple exists - return empty binding (no variables to bind)
-                            return vec![HashMap::new()];
-                        }
-                    }
-                }
-                // Triple doesn't exist
-                Vec::new()
-            }
-
-            // TWO BOUNDS (2 constants, 1 variable)
-            (Term::Constant(s), Term::Constant(p), Term::Variable(o)) => {
-                Self::scan_sp_index_with_ids(database, *s, *p, o.clone())
-            }
-            (Term::Constant(s), Term::Variable(p), Term::Constant(o)) => {
-                Self::scan_so_index_with_ids(database, *s, *o, p.clone())
-            }
-            (Term::Variable(s), Term::Constant(p), Term::Constant(o)) => {
-                Self::scan_po_index_with_ids(database, *p, *o, s.clone())
-            }
-
-            // ONE BOUND (1 constant, 2 variables)
-            (Term::Constant(s), Term::Variable(p), Term::Variable(o)) => {
-                Self::scan_s_index_with_ids(database, *s, p.clone(), o.clone())
-            }
-            (Term::Variable(s), Term::Constant(p), Term::Variable(o)) => {
-                Self::scan_p_index_with_ids(database, *p, s.clone(), o.clone())
-            }
-            (Term::Variable(s), Term::Variable(p), Term::Constant(o)) => {
-                Self::scan_o_index_with_ids(database, *o, s.clone(), p.clone())
-            }
-
-            // FULLY UNBOUND (0 constants, 3 variables) - table scan is appropriate
-            (Term::Variable(s), Term::Variable(p), Term::Variable(o)) => {
-                println!("INFO: Full table scan for fully unbound pattern (? {}, ?{}, ?{})", s, p, o);
-                Self::execute_table_scan_with_ids(database, pattern)
-            }
-
-            // Patterns containing QuotedTriple terms should be pre-resolved
-            // before reaching this function. If they arrive here, return empty.
-            _ => Vec::new(),
-        }
-    }
-
-    /// Scans SP index (Subject-Predicate -> Object)
-    fn scan_sp_index_with_ids(
-        database: &SparqlDatabase,
-        subject: u32,
-        predicate: u32,
-        object_var: String,
-    ) -> Vec<HashMap<String, u32>> {
-        // Strip '?' prefix from variable name
-        let object_var = object_var.strip_prefix('?').unwrap_or(&object_var).to_string();
-
-        if let Some(pred_map) = database.index_manager.spo.get(&subject) {
-            if let Some(objects) = pred_map.get(&predicate) {
-                // Use pre-compute the key
-                objects.iter().map(|&object| {
-                    let mut result = HashMap::with_capacity(1);  // Pre-size
-                    result.insert(object_var.clone(), object);  // Still need clone in closure
-                    result
-                }).collect()
-            } else {
-                Vec::new()
-            }
-        } else {
-            Vec::new()
-        }
-    }
-
-    /// Scans SO index (Subject-Object -> Predicate)
-    fn scan_so_index_with_ids(
-        database: &SparqlDatabase,
-        subject: u32,
-        object: u32,
-        predicate_var: String,
-    ) -> Vec<HashMap<String, u32>> {
-        // Strip '?' prefix from variable name
-        let predicate_var = predicate_var.strip_prefix('?').unwrap_or(&predicate_var).to_string();
-
-        if let Some(obj_map) = database.index_manager.sop.get(&subject) {
-            if let Some(predicates) = obj_map.get(&object) {
-                // Use iterator with pre-sized HashMap
-                predicates.iter().map(|&predicate| {
-                    let mut result = HashMap::with_capacity(1);
-                    result.insert(predicate_var.clone(), predicate);
-                    result
-                }).collect()
-            } else {
-                Vec::new()
-            }
-        } else {
-            Vec::new()
-        }
-    }
-
-    /// Scans PO index (Predicate-Object -> Subject)
-    fn scan_po_index_with_ids(
-        database: &SparqlDatabase,
-        predicate: u32,
-        object: u32,
-        subject_var: String,
-    ) -> Vec<HashMap<String, u32>> {
-        // Strip '?' prefix from variable name
-        let subject_var = subject_var.strip_prefix('?').unwrap_or(&subject_var).to_string();
-
-        if let Some(obj_map) = database.index_manager.pos.get(&predicate) {
-            if let Some(subjects) = obj_map.get(&object) {
-                // Use iterator with pre-sized HashMap
-                subjects.iter().map(|&subject| {
-                    let mut result = HashMap::with_capacity(1);
-                    result.insert(subject_var.clone(), subject);
-                    result
-                }).collect()
-            } else {
-                Vec::new()
-            }
-        } else {
-            Vec::new()
-        }
-    }
-
-    /// Scans S index (Subject -> (Predicate, Object))
-    fn scan_s_index_with_ids(
-        database: &SparqlDatabase,
-        subject: u32,
-        predicate_var: String,
-        object_var: String,
-    ) -> Vec<HashMap<String, u32>> {
-        // Strip '?' prefix from variable names
-        let predicate_var = predicate_var.strip_prefix('?').unwrap_or(&predicate_var).to_string();
-        let object_var = object_var.strip_prefix('?').unwrap_or(&object_var).to_string();
-
-        if let Some(pred_map) = database.index_manager.spo.get(&subject) {
-            // Clone variable names once before flat_map
-            pred_map.iter().flat_map(|(&predicate, objects)| {
-                let predicate_var = predicate_var.clone();
-                let object_var = object_var.clone();
-                objects.iter().map(move |&object| {
-                    let mut result = HashMap::with_capacity(2);
-                    result.insert(predicate_var.clone(), predicate);
-                    result.insert(object_var.clone(), object);
-                    result
-                })
-            }).collect()
-        } else {
-            Vec::new()
-        }
-    }
-
-    /// Scans P index (Predicate -> (Subject, Object))
-    fn scan_p_index_with_ids(
-        database: &SparqlDatabase,
-        predicate: u32,
-        subject_var: String,
-        object_var: String,
-    ) -> Vec<HashMap<String, u32>> {
-        // Strip '?' prefix from variable names
-        let subject_var = subject_var.strip_prefix('?').unwrap_or(&subject_var).to_string();
-        let object_var = object_var.strip_prefix('?').unwrap_or(&object_var).to_string();
-
-        if let Some(obj_map) = database.index_manager.pos.get(&predicate) {
-            // Clone variable names once before flat_map
-            obj_map.iter().flat_map(|(&object, subjects)| {
-                let subject_var = subject_var.clone();
-                let object_var = object_var.clone();
-                subjects.iter().map(move |&subject| {
-                    let mut result = HashMap::with_capacity(2);
-                    result.insert(subject_var.clone(), subject);
-                    result.insert(object_var.clone(), object);
-                    result
-                })
-            }).collect()
-        } else {
-            Vec::new()
-        }
-    }
-
-    /// Scans O index (Object -> (Subject, Predicate))
-    fn scan_o_index_with_ids(
-        database: &SparqlDatabase,
-        object: u32,
-        subject_var: String,
-        predicate_var: String,
-    ) -> Vec<HashMap<String, u32>> {
-        // Strip '?' prefix from variable names
-        let subject_var = subject_var.strip_prefix('?').unwrap_or(&subject_var).to_string();
-        let predicate_var = predicate_var.strip_prefix('?').unwrap_or(&predicate_var).to_string();
-
-        if let Some(subj_map) = database.index_manager.osp.get(&object) {
-            // Clone variable names once before flat_map
-            subj_map.iter().flat_map(|(&subject, predicates)| {
-                let subject_var = subject_var.clone();
-                let predicate_var = predicate_var.clone();
-                predicates.iter().map(move |&predicate| {
-                    let mut result = HashMap::with_capacity(2);
-                    result.insert(subject_var.clone(), subject);
-                    result.insert(predicate_var.clone(), predicate);
-                    result
-                })
-            }).collect()
-        } else {
-            Vec::new()
-        }
-    }
 }

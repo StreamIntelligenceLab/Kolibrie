@@ -10,4 +10,4 @@
 
 pub mod database_stats;
 
-pub use database_stats::DatabaseStats;
+pub use database_stats::{DatabaseStats, GraphMap, TermBuildHasher, TermHasher, TermMap, TermSet};

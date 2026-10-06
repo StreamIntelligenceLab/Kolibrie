@@ -1,5 +1,5 @@
 use std::collections::HashSet;
-use shared::index_manager::UnifiedIndex;
+use shared::dataset_index::DatasetIndex;
 use shared::triple::Triple;
 use crate::reasoning::materialisation::replace_variables_with_bound_values;
 use crate::reasoning::Reasoner;
@@ -9,7 +9,7 @@ impl Reasoner {
 
     /// Modified infer_new_facts_semi_naive to handle inconsistencies
     pub fn infer_new_facts_semi_naive_with_repairs(&mut self) -> Vec<Triple> {
-        let all_initial = self.index_manager.query(None, None, None);
+        let all_initial = self.dataset_index.query(None, None, None);
         let mut all_facts: HashSet<Triple> = all_initial.into_iter().collect();
 
         // First, check if initial facts are consistent
@@ -17,9 +17,9 @@ impl Reasoner {
             let repairs = self.compute_repairs(&all_facts);
             if let Some(best_repair) = repairs.into_iter().max_by_key(|r| r.len()) {
                 // Clear index manager and reinsert repaired facts
-                self.index_manager = UnifiedIndex::new();
+                self.dataset_index = DatasetIndex::new();
                 for fact in &best_repair {
-                    self.index_manager.insert(fact);
+                    self.dataset_index.insert(fact);
                 }
                 all_facts = best_repair;
             }
@@ -48,7 +48,7 @@ impl Reasoner {
                             temp_facts.insert(inferred.clone());
 
                             if !self.violates_constraints(&temp_facts) {
-                                if self.index_manager.insert(&inferred)
+                                if self.dataset_index.insert(&inferred)
                                     && !all_facts.contains(&inferred)
                                 {
                                     new_delta.insert(inferred.clone());
@@ -73,3 +73,4 @@ impl Reasoner {
     }
 
 }
+

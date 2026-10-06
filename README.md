@@ -272,6 +272,63 @@ for row in results {
 }
 ```
 
+#### Named graphs, `GRAPH`, and `UNION`
+
+Kolibrie's standard SELECT and Update paths use one architecture: the existing
+`nom` parser builds recursive group patterns, which are lowered into the same
+logical plan, Streamertail optimizer, and physical executor. There is no
+separate parser or evaluator for `GRAPH`, `UNION`, or Update `WHERE` patterns.
+The unified path supports recursive `GRAPH` patterns with fixed or variable
+graph names, nested groups, and multiset `UNION`:
+
+```rust
+let rows = execute_query_rayon_parallel2_volcano(
+    r#"
+    PREFIX ex: <http://example.org/>
+    SELECT DISTINCT ?g ?item WHERE {
+        { GRAPH ?g { ?item ex:status "active" } }
+        UNION
+        { GRAPH ?g { { ?item ex:status "pending" } } }
+    }
+    "#,
+    &mut db,
+);
+```
+
+`GRAPH <name>` reads only that named graph. `GRAPH ?g` iterates named graph
+identities and binds `?g`; the default graph is never included. Without
+`DISTINCT`, duplicate solutions contributed by `UNION` are retained.
+
+Dataset clauses replace the query dataset. Multiple `FROM` graphs are merged
+into the query default graph with duplicate triples suppressed. Once any
+dataset clause is present, only graphs listed by `FROM NAMED` are visible to
+`GRAPH`; `FROM NAMED` without `FROM` gives an empty query default, while
+`FROM` without `FROM NAMED` exposes no named graphs. With no dataset clauses,
+the physical default graph and all catalogued named graphs are visible.
+
+#### Supported SPARQL Update forms
+
+The error-preserving Rust API accepts exactly the six Update forms listed
+below. Default and named-graph templates can be mixed in the same operation,
+and each `WHERE` uses the same parser, logical planner, optimizer, and executor
+as SELECT.
+
+```rust
+db.execute_update(r#"
+    PREFIX ex: <http://example.org/>
+    DELETE { ?s ex:oldValue ?value }
+    INSERT { GRAPH ex:archive { ?s ex:value ?value } }
+    WHERE  { ?s ex:oldValue ?value }
+"#)?;
+```
+
+Supported forms are `INSERT DATA`, `DELETE DATA`, `INSERT ... WHERE`,
+`DELETE ... WHERE`, combined `DELETE/INSERT ... WHERE`, and `DELETE WHERE`.
+The `WHERE` pattern is evaluated once before changes are applied, with deletes
+performed before inserts. Python exposes the same behavior as
+`SparqlDatabase.update()`. Other SPARQL 1.1 Update forms such as `WITH`,
+`USING`, `LOAD`, and graph-management operations are not part of this release.
+
 #### Query with FILTER
 
 ```rust

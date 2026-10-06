@@ -8,35 +8,47 @@
  * you can obtain one at https://mozilla.org/MPL/2.0/.
  */
 
+use super::super::types::SubquerySpec;
 use super::super::Condition;
+use shared::dataset_index::{GraphTerm, QuadPattern};
 use shared::terms::{Bindings, TriplePattern};
 
 /// Physical operators represent the actual execution plan after optimization
 #[derive(Debug, Clone)]
 pub enum PhysicalOperator {
+    /// The SPARQL unit table: one empty solution mapping.
+    Unit,
     TableScan {
-        pattern: TriplePattern,
+        pattern: QuadPattern,
     },
     IndexScan {
-        pattern: TriplePattern,
+        pattern: QuadPattern,
+    },
+    /// Multiset union. No duplicate elimination is performed.
+    Union {
+        branches: Vec<PhysicalOperator>,
+    },
+    /// Evaluate an input plan under a fixed or variable named graph.
+    Graph {
+        input: Box<PhysicalOperator>,
+        graph: GraphTerm,
     },
     Filter {
         input: Box<PhysicalOperator>,
         condition: Condition,
     },
+    /// Pipelined dependent join whose left solutions feed the right side, so its scans probe indexes with bound values
+    BindJoin {
+        left: Box<PhysicalOperator>,
+        right: Box<PhysicalOperator>,
+    },
+    /// Build/probe join over the shared-variable key of two independently executed sides
     HashJoin {
         left: Box<PhysicalOperator>,
         right: Box<PhysicalOperator>,
     },
+    /// Materialized pairwise join over both sides, and the algorithm for Cartesian products
     NestedLoopJoin {
-        left: Box<PhysicalOperator>,
-        right: Box<PhysicalOperator>,
-    },
-    ParallelJoin {
-        left: Box<PhysicalOperator>,
-        right: Box<PhysicalOperator>,
-    },
-    OptimizedHashJoin {
         left: Box<PhysicalOperator>,
         right: Box<PhysicalOperator>,
     },
@@ -48,13 +60,13 @@ pub enum PhysicalOperator {
         input: Box<PhysicalOperator>,
         variables: Vec<String>,
     },
-    InMemoryBuffer{
+    InMemoryBuffer {
         content: Bindings,
-        origin: String
+        origin: String,
     },
     Subquery {
         inner: Box<PhysicalOperator>,
-        projected_vars:  Vec<String>,
+        spec: SubquerySpec,
     },
     Bind {
         input: Box<PhysicalOperator>,
@@ -64,7 +76,7 @@ pub enum PhysicalOperator {
     },
     Values {
         variables: Vec<String>,
-        values: Vec<Vec<Option<String>>>,
+        values: Vec<Vec<Option<u32>>>,
     },
     MLPredict {
         input: Box<PhysicalOperator>,
@@ -76,14 +88,52 @@ pub enum PhysicalOperator {
 }
 
 impl PhysicalOperator {
+    /// Creates the SPARQL unit table.
+    pub fn unit() -> Self {
+        Self::Unit
+    }
+
     /// Creates a new table scan physical operator
     pub fn table_scan(pattern: TriplePattern) -> Self {
+        Self::quad_table_scan(QuadPattern {
+            subject: pattern.0,
+            predicate: pattern.1,
+            object: pattern.2,
+            graph: GraphTerm::Default,
+        })
+    }
+
+    /// Creates a graph-aware table scan.
+    pub fn quad_table_scan(pattern: QuadPattern) -> Self {
         Self::TableScan { pattern }
     }
 
     /// Creates a new index scan physical operator
     pub fn index_scan(pattern: TriplePattern) -> Self {
+        Self::quad_index_scan(QuadPattern {
+            subject: pattern.0,
+            predicate: pattern.1,
+            object: pattern.2,
+            graph: GraphTerm::Default,
+        })
+    }
+
+    /// Creates a graph-aware index scan.
+    pub fn quad_index_scan(pattern: QuadPattern) -> Self {
         Self::IndexScan { pattern }
+    }
+
+    /// Creates a multiset UNION physical operator.
+    pub fn union(branches: Vec<PhysicalOperator>) -> Self {
+        Self::Union { branches }
+    }
+
+    /// Creates a GRAPH physical operator.
+    pub fn graph(input: PhysicalOperator, graph: GraphTerm) -> Self {
+        Self::Graph {
+            input: Box::new(input),
+            graph,
+        }
     }
 
     /// Creates a new filter physical operator
@@ -91,6 +141,14 @@ impl PhysicalOperator {
         Self::Filter {
             input: Box::new(input),
             condition,
+        }
+    }
+
+    /// Creates a new bind join physical operator
+    pub fn bind_join(left: PhysicalOperator, right: PhysicalOperator) -> Self {
+        Self::BindJoin {
+            left: Box::new(left),
+            right: Box::new(right),
         }
     }
 
@@ -110,22 +168,6 @@ impl PhysicalOperator {
         }
     }
 
-    /// Creates a new parallel join physical operator
-    pub fn parallel_join(left: PhysicalOperator, right: PhysicalOperator) -> Self {
-        Self::ParallelJoin {
-            left: Box::new(left),
-            right: Box::new(right),
-        }
-    }
-
-    /// Creates a new optimized hash join physical operator
-    pub fn optimized_hash_join(left: PhysicalOperator, right: PhysicalOperator) -> Self {
-        Self::OptimizedHashJoin {
-            left: Box::new(left),
-            right: Box::new(right),
-        }
-    }
-
     /// Creates a new projection physical operator
     pub fn projection(input: PhysicalOperator, variables: Vec<String>) -> Self {
         Self::Projection {
@@ -134,15 +176,15 @@ impl PhysicalOperator {
         }
     }
 
-    pub fn buffer(content: Bindings, origin: String)-> Self {
-        Self::InMemoryBuffer {content, origin}
+    pub fn buffer(content: Bindings, origin: String) -> Self {
+        Self::InMemoryBuffer { content, origin }
     }
 
     /// Creates a new subquery physical operator
-    pub fn subquery(inner: PhysicalOperator, projected_vars: Vec<String>) -> Self {
+    pub fn subquery(inner: PhysicalOperator, spec: SubquerySpec) -> Self {
         Self::Subquery {
             inner: Box::new(inner),
-            projected_vars,
+            spec,
         }
     }
 
@@ -162,7 +204,7 @@ impl PhysicalOperator {
     }
 
     /// Creates a new values physical operator
-    pub fn values(variables: Vec<String>, values: Vec<Vec<Option<String>>>) -> Self {
+    pub fn values(variables: Vec<String>, values: Vec<Vec<Option<u32>>>) -> Self {
         Self::Values { variables, values }
     }
 

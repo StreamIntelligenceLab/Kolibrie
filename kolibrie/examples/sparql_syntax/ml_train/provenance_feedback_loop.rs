@@ -6,7 +6,7 @@
  *   -> SPARQL-star feature query -> train a neural relation -> feed predictions back into RULE syntax
  */
 
-use kolibrie::execute_query::execute_query;
+use kolibrie::execute_query::execute_query_rayon_parallel2_volcano;
 use kolibrie::execute_ml_train::build_ground_reasoner_from_db;
 use kolibrie::neural_relations::execute_neural_program;
 use kolibrie::parser::{convert_combined_rule, parse_combined_query, process_rule_definition};
@@ -15,7 +15,7 @@ use shared::sdd::SddProvenance;
 
 const EX: &str = "http://example.org/";
 const PROB: &str = "http://www.w3.org/ns/prob#";
-const MODEL_PATH: &str = "/tmp/kolibrie_provenance_feedback_model.bin";
+const MODEL_PATH: &str = "kolibrie_provenance_feedback_model.bin";
 const SENSOR_TYPE: &str = "http://example.org/Sensor";
 const LABEL_MONITOR: &str = "http://example.org/monitor";
 const LABEL_DISPATCH: &str = "http://example.org/dispatch";
@@ -169,7 +169,11 @@ fn execute_sdd_rule_batch(db: &mut SparqlDatabase, rule_inputs: &[String]) -> us
 
         let mut prefixes = combined.prefixes.clone();
         db.share_prefixes_with(&mut prefixes);
-        let parsed_rule = combined.rule.expect("expected RULE block");
+        let parsed_rule = combined
+            .single_rule()
+            .expect("expected at most one RULE block")
+            .cloned()
+            .expect("expected RULE block");
 
         let mut dict = reasoner.dictionary.write().unwrap();
         let dynamic_rule = convert_combined_rule(parsed_rule, &mut dict, &prefixes);
@@ -186,11 +190,11 @@ fn execute_sdd_rule_batch(db: &mut SparqlDatabase, rule_inputs: &[String]) -> us
     drop(dict);
 
     for triple in rdf_star {
-        db.triples.insert(triple);
+        db.add_triple(triple);
     }
 
     for triple in &derived_facts {
-        db.triples.insert(triple.clone());
+        db.add_triple(triple.clone());
     }
 
     derived_facts.len()
@@ -253,7 +257,7 @@ fn provenance_rows_from_rdf_star(db: &SparqlDatabase) -> Vec<Vec<String>> {
     let mut rows: std::collections::BTreeMap<String, (Option<String>, Option<String>)> =
         std::collections::BTreeMap::new();
 
-    for triple in &db.triples {
+    for triple in db.query_default_triples(None, None, None) {
         let predicate = db.decode_any(triple.predicate).unwrap_or_default();
         if predicate != prob_value && predicate != proof_count {
             continue;
@@ -384,7 +388,7 @@ fn main() {
         },
     ];
 
-    let mut db = SparqlDatabase::new();
+    let mut db = SparqlDatabase::with_ml_context(local_ml::trusted_context());
 
     println!("Syntax-first provenance -> neural relation -> reasoning feedback loop");
     println!("Probabilistic base facts are still loaded through a Rust helper; rules, queries, and neural declarations are shown in syntax\n");
@@ -413,7 +417,7 @@ fn main() {
     let provenance_inferred = execute_sdd_rule_batch(&mut db, &[temp_rule, hr_rule]);
     println!("\n  Shared SDD inference produced {} new provenance-tagged facts", provenance_inferred);
 
-    let risk_rows = execute_query(&risk_signal_query(), &mut db);
+    let risk_rows = execute_query_rayon_parallel2_volcano(&risk_signal_query(), &mut db);
     println!("\n  Derived {} riskSignal facts", risk_rows.len());
 
     println!("\n[3/5] Inspecting provenance with SPARQL-star and building neural features");
@@ -431,7 +435,7 @@ fn main() {
 
     let prediction_query = prediction_query();
     print_block("  Prediction query", &prediction_query);
-    let prediction_rows = execute_query(&prediction_query, &mut db);
+    let prediction_rows = execute_query_rayon_parallel2_volcano(&prediction_query, &mut db);
     print_rows("  Predicted responses", &prediction_rows);
 
     println!("\n[5/5] Feeding predictions back into RULE syntax");
@@ -443,8 +447,10 @@ fn main() {
 
     let case_query = dispatch_case_query();
     print_block("  Final SELECT query", &case_query);
-    let case_rows = execute_query(&case_query, &mut db);
+    let case_rows = execute_query_rayon_parallel2_volcano(&case_query, &mut db);
     print_rows("  Dispatch cases opened by the rule", &case_rows);
 
     println!("\nModel saved to {MODEL_PATH}");
 }
+
+mod local_ml { include!(concat!(env!("CARGO_MANIFEST_DIR"), "/examples/support/ml_context.rs")); }

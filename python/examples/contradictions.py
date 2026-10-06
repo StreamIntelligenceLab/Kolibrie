@@ -8,17 +8,17 @@
 # you can obtain one at https://mozilla.org/MPL/2.0/.
 # 
 
-from py_kolibrie import (
-    PyKnowledgeGraph,
-    PyTriplePattern,
-    PyTerm,
-    PyRule,
+from kolibrie import (
+    KnowledgeGraph,
+    TriplePattern,
+    Term,
+    Rule,
 )
 
 def example_with_contradictions():
     """Builds a knowledge graph that has contradictory facts and constraints"""
 
-    kg = PyKnowledgeGraph()
+    kg = KnowledgeGraph()
 
     # Add some basic facts that will create a contradiction
     kg.add_abox_triple("john", "isA", "professor")
@@ -33,25 +33,25 @@ def example_with_contradictions():
     #
     # The conclusion is a "dummy" triple (0, 0, 0), just to trigger a violation.
     constraint_premise = [
-        PyTriplePattern(
-            subject=PyTerm.Variable("X"),
-            predicate=PyTerm.Constant(kg.encode_term("isA")),
-            object=PyTerm.Constant(kg.encode_term("professor")),
+        TriplePattern(
+            subject=Term.Variable("X"),
+            predicate=Term.Constant(kg.encode_term("isA")),
+            object=Term.Constant(kg.encode_term("professor")),
         ),
-        PyTriplePattern(
-            subject=PyTerm.Variable("X"),
-            predicate=PyTerm.Constant(kg.encode_term("isA")),
-            object=PyTerm.Constant(kg.encode_term("student")),
+        TriplePattern(
+            subject=Term.Variable("X"),
+            predicate=Term.Constant(kg.encode_term("isA")),
+            object=Term.Constant(kg.encode_term("student")),
         ),
     ]
     constraint_conclusion = [  # Changed to a list containing one triple pattern
-        PyTriplePattern(
-            subject=PyTerm.Constant(0),
-            predicate=PyTerm.Constant(0),
-            object=PyTerm.Constant(0),
+        TriplePattern(
+            subject=Term.Constant(0),
+            predicate=Term.Constant(0),
+            object=Term.Constant(0),
         )
     ]
-    constraint_rule = PyRule(
+    constraint_rule = Rule(
         premise=constraint_premise,
         filters=[],
         conclusion=constraint_conclusion,
@@ -60,20 +60,20 @@ def example_with_contradictions():
 
     # Inference rule #1: If X teaches Y, then X is a professor
     professor_rule_premise = [
-        PyTriplePattern(
-            subject=PyTerm.Variable("X"),
-            predicate=PyTerm.Constant(kg.encode_term("teaches")),
-            object=PyTerm.Variable("Y"),
+        TriplePattern(
+            subject=Term.Variable("X"),
+            predicate=Term.Constant(kg.encode_term("teaches")),
+            object=Term.Variable("Y"),
         )
     ]
     professor_rule_conclusion = [  # Changed to a list containing one triple pattern
-        PyTriplePattern(
-            subject=PyTerm.Variable("X"),
-            predicate=PyTerm.Constant(kg.encode_term("isA")),
-            object=PyTerm.Constant(kg.encode_term("professor")),
+        TriplePattern(
+            subject=Term.Variable("X"),
+            predicate=Term.Constant(kg.encode_term("isA")),
+            object=Term.Constant(kg.encode_term("professor")),
         )
     ]
-    professor_rule = PyRule(
+    professor_rule = Rule(
         premise=professor_rule_premise,
         filters=[],
         conclusion=professor_rule_conclusion,
@@ -82,20 +82,20 @@ def example_with_contradictions():
 
     # Inference rule #2: If X is enrolled in Y, then X is a student
     student_rule_premise = [
-        PyTriplePattern(
-            subject=PyTerm.Variable("X"),
-            predicate=PyTerm.Constant(kg.encode_term("enrolledIn")),
-            object=PyTerm.Variable("Y"),
+        TriplePattern(
+            subject=Term.Variable("X"),
+            predicate=Term.Constant(kg.encode_term("enrolledIn")),
+            object=Term.Variable("Y"),
         )
     ]
     student_rule_conclusion = [  # Changed to a list containing one triple pattern
-        PyTriplePattern(
-            subject=PyTerm.Variable("X"),
-            predicate=PyTerm.Constant(kg.encode_term("isA")),
-            object=PyTerm.Constant(kg.encode_term("student")),
+        TriplePattern(
+            subject=Term.Variable("X"),
+            predicate=Term.Constant(kg.encode_term("isA")),
+            object=Term.Constant(kg.encode_term("student")),
         )
     ]
-    student_rule = PyRule(
+    student_rule = Rule(
         premise=student_rule_premise,
         filters=[],
         conclusion=student_rule_conclusion,
@@ -104,7 +104,7 @@ def example_with_contradictions():
 
     return kg
 
-def print_all_facts(kg: PyKnowledgeGraph):
+def print_all_facts(kg: KnowledgeGraph):
     """Queries and prints all ABox facts in the knowledge graph"""
     all_facts = kg.query_abox()
     for (subj, pred, obj) in all_facts:
@@ -129,21 +129,21 @@ def main():
         print(f"{subj} {pred} {obj}")
 
     # Query for John's roles under repair semantics
-    query_for_john = PyTriplePattern(
-        subject=PyTerm.Constant(kg.encode_term("john")),
-        predicate=PyTerm.Constant(kg.encode_term("isA")),
-        object=PyTerm.Variable("Role"),
+    query_for_john = TriplePattern(
+        subject=Term.Constant(kg.encode_term("john")),
+        predicate=Term.Constant(kg.encode_term("isA")),
+        object=Term.Variable("Role"),
     )
     results = kg.query_with_repairs(query_for_john)
 
     print("\nQuery results for John's roles:")
     for bindings in results:
-        # Each 'bindings' is a dict: { "Role": PyTerm.Constant(u32) }
+        # Each 'bindings' is a dict: { "Role": Term.Constant(u32) }
         role_term = bindings.get("Role")
         if role_term is not None:
             # If you had a decode method, e.g. kg.decode_term(...),
             # you could convert the integer back to string. For now,
-            # we'll just print the PyTerm as-is:
+            # we'll just print the Term as-is:
             print(f"Role: {role_term}")
 
 if __name__ == "__main__":

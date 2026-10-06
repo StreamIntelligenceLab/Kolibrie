@@ -10,7 +10,7 @@
 
 use chrono::{Local, Timelike};
 use datalog::reasoning::Reasoner;
-use kolibrie::execute_query::execute_query;
+use kolibrie::execute_query::execute_query_rayon_parallel2_volcano;
 use kolibrie::parser::*;
 use kolibrie::sparql_database::SparqlDatabase;
 use rumqttc::{Client, MqttOptions, QoS, RecvTimeoutError};
@@ -741,11 +741,11 @@ fn main() {
 
                 // Parse the RDF data into the database
                 database.parse_rdf(&rdf_xml_data);
-                println!("Database loaded with {} triples", database.triples.len());
+                println!("Database loaded with {} triples", database.dataset_index.len_default());
 
                 // FIXED: Load data into knowledge graph with proper lock handling
                 // Collect triples first to avoid holding lock
-                let triples_to_add: Vec<_> = database.triples.iter().cloned().collect();
+                let triples_to_add = database.query_default_triples(None, None, None);
                 
                 for triple in triples_to_add {
                     let dict = database.dictionary.read().unwrap();
@@ -861,7 +861,7 @@ WHERE {
                 for (idx, rule) in active_rules.iter().enumerate() {
                     match parse_combined_query(rule) {
                         Ok((_rest, combined_query)) => {
-                            if let Some(rule) = combined_query.rule.clone() {
+                            if let Some(rule) = combined_query.single_rule().expect("expected at most one RULE block").cloned() {
                                 // FIXED: Acquire write lock for conversion
                                 let mut dict = database.dictionary.write().unwrap();
                                 let dynamic_rule = convert_combined_rule(
@@ -918,7 +918,7 @@ WHERE {
 
                 // Add inferred facts to database
                 for triple in inferred_facts.iter() {
-                    database.triples.insert(triple.clone());
+                    database.add_triple(triple.clone());
                 }
 
                 // Direct time-based checks for detections
@@ -1085,7 +1085,7 @@ WHERE {
                             ex:objectType ?type .
                 }"#;
 
-                let authorized_results = execute_query(query_authorized, &mut database);
+                let authorized_results = execute_query_rayon_parallel2_volcano(query_authorized, &mut database);
                 if !authorized_results.is_empty() && security_state.lock().unwrap().can_send_alarm()
                 {
                     println!("\n==> AUTHORIZED DETECTIONS FROM SPARQL:");

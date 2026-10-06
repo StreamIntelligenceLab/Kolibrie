@@ -127,6 +127,12 @@ impl<P: Provenance> ProvenanceInferenceStrategy<P> for ProvenanceSemiNaiveStrate
         let mut new_facts: HashSet<Triple> = HashSet::new();
         let mut tag_changed = false;
         let provenance = tag_store.provenance().clone();
+        if provenance.is_exhausted() {
+            return ProvenanceInferResult {
+                new_facts,
+                tag_changed,
+            };
+        }
 
         let end_idx = all_facts.len();
 
@@ -154,6 +160,9 @@ impl<P: Provenance> ProvenanceInferenceStrategy<P> for ProvenanceSemiNaiveStrate
             );
 
             for (binding, matched_triples) in &binding_sets {
+                if provenance.is_exhausted() {
+                    break;
+                }
                 let u32_binding = convert_string_binding_to_u32(binding, dictionary);
 
                 if !evaluate_filters(&u32_binding, &rule.filters, dictionary) {
@@ -300,7 +309,7 @@ fn run_negative_stratum_pass<P: Provenance>(
     tag_store: &mut TagStore<P>,
     provenance: &P,
 ) -> Vec<Triple> {
-    let all_facts: Vec<Triple> = reasoner.index_manager.query(None, None, None);
+    let all_facts: Vec<Triple> = reasoner.dataset_index.query(None, None, None);
     let all_facts_set: HashSet<Triple> = all_facts.iter().cloned().collect();
     let mut new_derived: Vec<Triple> = Vec::new();
 
@@ -375,7 +384,7 @@ fn run_negative_stratum_pass<P: Provenance>(
 
                 if !all_facts_set.contains(&inferred) && !new_derived.contains(&inferred) {
                     tag_store.set_tag(&inferred, conclusion_tag.clone());
-                    reasoner.index_manager.insert(&inferred);
+                    reasoner.dataset_index.insert(&inferred);
                     new_derived.push(inferred);
                 } else {
                     tag_store.update_disjunction(&inferred, &conclusion_tag);
@@ -387,3 +396,4 @@ fn run_negative_stratum_pass<P: Provenance>(
     drop(dict);
     new_derived
 }
+

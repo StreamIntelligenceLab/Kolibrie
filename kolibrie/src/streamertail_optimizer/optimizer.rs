@@ -8,14 +8,15 @@
  * you can obtain one at https://mozilla.org/MPL/2.0/.
  */
 
-use super::cost::CostEstimator;
-use super::execution::ExecutionEngine;
+use super::cost::{collect_pattern_variables, CostEstimator};
+use super::execution::{DatasetView, ExecutionEngine};
 use super::operators::{LogicalOperator, PhysicalOperator};
 use super::stats::DatabaseStats;
+use super::types::{ConditionArithmetic, ConditionExpression};
 
 use crate::sparql_database::SparqlDatabase;
+use shared::dataset_index::{GraphTerm, QuadPattern};
 use shared::terms::{Term, TriplePattern};
-use shared::query::FilterExpression;
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::sync::Arc;
 
@@ -24,16 +25,33 @@ pub struct Streamertail {
     pub memo: HashMap<String, PhysicalOperator>,
     pub selected_variables: Vec<String>,
     pub stats: Arc<DatabaseStats>,
+    dataset: Option<DatasetView>,
 }
 
-fn serialize_arith_expr(expr: &shared::query::ArithmeticExpression) -> String {
-    use shared::query::ArithmeticExpression as AE;
+fn serialize_arith_expr(expr: &ConditionArithmetic) -> String {
+    use ConditionArithmetic as AE;
     match expr {
         AE::Operand(s) => s.to_string(),
-        AE::Add(l, r) => format!("({} + {})", serialize_arith_expr(l), serialize_arith_expr(r)),
-        AE::Subtract(l, r) => format!("({} - {})", serialize_arith_expr(l), serialize_arith_expr(r)),
-        AE::Multiply(l, r) => format!("({} * {})", serialize_arith_expr(l), serialize_arith_expr(r)),
-        AE::Divide(l, r) => format!("({} / {})", serialize_arith_expr(l), serialize_arith_expr(r)),
+        AE::Add(l, r) => format!(
+            "({} + {})",
+            serialize_arith_expr(l),
+            serialize_arith_expr(r)
+        ),
+        AE::Subtract(l, r) => format!(
+            "({} - {})",
+            serialize_arith_expr(l),
+            serialize_arith_expr(r)
+        ),
+        AE::Multiply(l, r) => format!(
+            "({} * {})",
+            serialize_arith_expr(l),
+            serialize_arith_expr(r)
+        ),
+        AE::Divide(l, r) => format!(
+            "({} / {})",
+            serialize_arith_expr(l),
+            serialize_arith_expr(r)
+        ),
     }
 }
 
@@ -45,6 +63,7 @@ impl Streamertail {
             memo: HashMap::new(),
             selected_variables: Vec::new(),
             stats,
+            dataset: None,
         }
     }
 
@@ -53,12 +72,180 @@ impl Streamertail {
             memo: HashMap::new(),
             selected_variables: Vec::new(),
             stats,
+            dataset: None,
+        }
+    }
+
+    /// Creates an optimizer whose estimates reflect a replacement SPARQL
+    pub fn with_cached_stats_and_dataset(stats: Arc<DatabaseStats>, dataset: DatasetView) -> Self {
+        Self {
+            memo: HashMap::new(),
+            selected_variables: Vec::new(),
+            stats,
+            dataset: Some(dataset),
+        }
+    }
+
+    fn cost_estimator(&self) -> CostEstimator<'_> {
+        match self.dataset.as_ref() {
+            Some(dataset) => CostEstimator::with_dataset(&self.stats, dataset),
+            None => CostEstimator::new(&self.stats),
         }
     }
 
     /// Finds the best physical plan for a logical plan
     pub fn find_best_plan(&mut self, logical_plan: &LogicalOperator) -> PhysicalOperator {
-        self.find_best_plan_recursive(logical_plan)
+        let reordered = self.reorder_logical(logical_plan);
+        self.find_best_plan_recursive(&reordered)
+    }
+
+    /// Reorders each uninterrupted group of same-scope scans so every scan after the first shares a variable with the ones before it
+    fn reorder_logical(&self, plan: &LogicalOperator) -> LogicalOperator {
+        match plan {
+            LogicalOperator::Join { left, right } => {
+                if self.homogeneous_scan_scope(plan).is_some() {
+                    let mut patterns = Vec::new();
+                    Self::flatten_scan_group(plan, &mut patterns);
+                    if patterns.len() > 1 {
+                        return Self::rebuild_left_deep(self.greedy_order_scans(patterns));
+                    }
+                }
+                LogicalOperator::join(self.reorder_logical(left), self.reorder_logical(right))
+            }
+            LogicalOperator::Graph { input, graph } => {
+                LogicalOperator::graph(self.reorder_logical(input), graph.clone())
+            }
+            LogicalOperator::Selection {
+                predicate,
+                condition,
+            } => LogicalOperator::selection(self.reorder_logical(predicate), condition.clone()),
+            LogicalOperator::Projection {
+                predicate,
+                variables,
+            } => LogicalOperator::projection(self.reorder_logical(predicate), variables.clone()),
+            LogicalOperator::Union { branches } => LogicalOperator::union(
+                branches
+                    .iter()
+                    .map(|branch| self.reorder_logical(branch))
+                    .collect(),
+            ),
+            LogicalOperator::Subquery { inner, spec } => {
+                LogicalOperator::subquery(self.reorder_logical(inner), spec.clone())
+            }
+            LogicalOperator::Bind {
+                input,
+                function_name,
+                arguments,
+                output_variable,
+            } => LogicalOperator::bind(
+                self.reorder_logical(input),
+                function_name.clone(),
+                arguments.clone(),
+                output_variable.clone(),
+            ),
+            other => other.clone(),
+        }
+    }
+
+    fn flatten_scan_group(plan: &LogicalOperator, out: &mut Vec<QuadPattern>) {
+        match plan {
+            LogicalOperator::Scan { pattern } => out.push(pattern.clone()),
+            LogicalOperator::Join { left, right } => {
+                Self::flatten_scan_group(left, out);
+                Self::flatten_scan_group(right, out);
+            }
+            _ => {}
+        }
+    }
+
+    fn rebuild_left_deep(patterns: Vec<QuadPattern>) -> LogicalOperator {
+        let mut plan: Option<LogicalOperator> = None;
+        for pattern in patterns {
+            let scan = LogicalOperator::quad_scan(pattern);
+            plan = Some(match plan {
+                Some(existing) => LogicalOperator::join(existing, scan),
+                None => scan,
+            });
+        }
+        plan.unwrap_or_else(LogicalOperator::unit)
+    }
+
+    /// Orders scans so the cheapest anchored pattern runs first and every later pattern joins through a variable the prefix already binds
+    fn greedy_order_scans(&self, patterns: Vec<QuadPattern>) -> Vec<QuadPattern> {
+        let cost_estimator = self.cost_estimator();
+        let empty = HashSet::new();
+
+        let variables: Vec<HashSet<String>> = patterns
+            .iter()
+            .map(|pattern| {
+                let mut set = HashSet::new();
+                collect_pattern_variables(pattern, &mut set);
+                set
+            })
+            .collect();
+        let constants: Vec<usize> = patterns
+            .iter()
+            .map(|pattern| {
+                [&pattern.subject, &pattern.predicate, &pattern.object]
+                    .iter()
+                    .filter(|term| matches!(term, Term::Constant(_)))
+                    .count()
+            })
+            .collect();
+
+        let mut remaining: Vec<usize> = (0..patterns.len()).collect();
+        let mut bound: HashSet<String> = HashSet::new();
+        let mut order: Vec<usize> = Vec::with_capacity(patterns.len());
+
+        // Nothing is bound yet, so constants alone rank the seed
+        let seed = *remaining
+            .iter()
+            .min_by_key(|&&index| {
+                (
+                    cost_estimator.estimate_bound_scan_cardinality(&patterns[index], &empty),
+                    std::cmp::Reverse(constants[index]),
+                    index,
+                )
+            })
+            .expect("scan group is never empty");
+        remaining.retain(|&index| index != seed);
+        bound.extend(variables[seed].iter().cloned());
+        order.push(seed);
+
+        while !remaining.is_empty() {
+            let connected: Vec<usize> = remaining
+                .iter()
+                .copied()
+                .filter(|&index| !variables[index].is_disjoint(&bound))
+                .collect();
+            let candidates = if connected.is_empty() {
+                &remaining
+            } else {
+                &connected
+            };
+
+            let next = *candidates
+                .iter()
+                .min_by_key(|&&index| {
+                    (
+                        cost_estimator.estimate_bound_scan_cardinality(&patterns[index], &bound),
+                        std::cmp::Reverse(constants[index]),
+                        index,
+                    )
+                })
+                .expect("candidate list is never empty");
+
+            remaining.retain(|&index| index != next);
+            bound.extend(variables[next].iter().cloned());
+            order.push(next);
+        }
+
+        let mut ordered: Vec<Option<QuadPattern>> =
+            patterns.into_iter().map(Some).collect();
+        order
+            .into_iter()
+            .map(|index| ordered[index].take().expect("each pattern is used once"))
+            .collect()
     }
 
     /// Executes a physical plan and returns results
@@ -68,6 +255,26 @@ impl Streamertail {
         database: &mut SparqlDatabase,
     ) -> Vec<HashMap<String, String>> {
         ExecutionEngine::execute(plan, database)
+    }
+
+    /// Executes an optimized plan against a replacement SPARQL dataset
+    pub fn execute_plan_with_dataset(
+        &self,
+        plan: &PhysicalOperator,
+        database: &mut SparqlDatabase,
+        dataset: &DatasetView,
+    ) -> Vec<HashMap<String, String>> {
+        ExecutionEngine::execute_with_dataset(plan, database, dataset)
+    }
+
+    /// Executes an optimized plan against a replacement SPARQL dataset, returning id bindings
+    pub fn execute_plan_with_ids_and_dataset(
+        &self,
+        plan: &PhysicalOperator,
+        database: &mut SparqlDatabase,
+        dataset: &DatasetView,
+    ) -> Vec<HashMap<String, u32>> {
+        ExecutionEngine::execute_with_ids_and_dataset(plan, database, dataset)
     }
 
     /// Optimizes and executes a logical plan in one step
@@ -83,31 +290,27 @@ impl Streamertail {
     /// Detects if a join tree is a star query pattern
     fn is_star_query(&self, plan: &LogicalOperator) -> Option<Vec<(String, Vec<TriplePattern>)>> {
         let mut patterns = Vec::new();
-        self.collect_patterns(plan, &mut patterns);
+        if !self.collect_patterns(plan, &mut patterns) {
+            return None;
+        }
 
         if patterns.len() < 3 {
             return None;
         }
 
-        // Count how many patterns each variable appears
+        // Count subject-centered stars only. Object-position "stars" can explode
         let mut var_counts: std::collections::BTreeMap<String, Vec<usize>> = BTreeMap::new();
 
         for (idx, pattern) in patterns.iter().enumerate() {
             if let Term::Variable(var) = &pattern.0 {
                 var_counts.entry(var.clone()).or_default().push(idx);
             }
-            if let Term::Variable(var) = &pattern.1 {
-                var_counts.entry(var.clone()).or_default().push(idx);
-            }
-            if let Term::Variable(var) = &pattern.2 {
-                var_counts.entry(var.clone()).or_default().push(idx);
-            }
         }
 
-        // Find all variables that appear in 2+ patterns
+        // Find variables that appear as the subject in at least 3 patterns
         let mut star_vars: Vec<(&String, &Vec<usize>)> = var_counts
             .iter()
-            .filter(|(_, indices)| indices.len() >= 2)  // <- Lowered from 3 to 2
+            .filter(|(_, indices)| indices.len() >= 3)
             .collect();
 
         // Sort by number of occurrences (most frequent first)
@@ -129,11 +332,9 @@ impl Streamertail {
                 .copied()
                 .collect();
 
-            if available.len() >= 2 {  // Need at least 2 patterns for a star
-                let star_patterns: Vec<TriplePattern> = available
-                    .iter()
-                    .map(|&idx| patterns[idx].clone())
-                    .collect();
+            if available.len() >= 3 {
+                let star_patterns: Vec<TriplePattern> =
+                    available.iter().map(|&idx| patterns[idx].clone()).collect();
 
                 // Mark these patterns as used
                 for &idx in &available {
@@ -151,34 +352,24 @@ impl Streamertail {
         }
     }
 
-    fn collect_patterns(&self, plan: &LogicalOperator, patterns: &mut Vec<TriplePattern>) {
+    /// Collects only one uninterrupted join group, stopping at any other operator
+    fn collect_patterns(&self, plan: &LogicalOperator, patterns: &mut Vec<TriplePattern>) -> bool {
         match plan {
             LogicalOperator::Scan { pattern } => {
-                patterns.push(pattern.clone());
+                if pattern.graph != GraphTerm::Default {
+                    return false;
+                }
+                patterns.push((
+                    pattern.subject.clone(),
+                    pattern.predicate.clone(),
+                    pattern.object.clone(),
+                ));
+                true
             }
             LogicalOperator::Join { left, right } => {
-                self.collect_patterns(left, patterns);
-                self.collect_patterns(right, patterns);
+                self.collect_patterns(left, patterns) && self.collect_patterns(right, patterns)
             }
-            LogicalOperator::Selection { predicate, ..  } => {
-                self.collect_patterns(predicate, patterns);
-            }
-            LogicalOperator::Projection { predicate, .. } => {
-                self.collect_patterns(predicate, patterns);
-            }
-            LogicalOperator::Buffer { content: _, origin: _ } => { }
-            LogicalOperator::Subquery { inner, .. } => {
-                // Subqueries are treated as separate scopes, so we don't collect their patterns
-                // for star query detection in the outer query
-                self.collect_patterns(inner, patterns);
-            }
-            LogicalOperator::Bind { input, .. } => {
-                self.collect_patterns(input, patterns);
-            }
-            LogicalOperator::Values { .. } => { }
-            LogicalOperator::MLPredict { input, .. } => {
-                self.collect_patterns(input, patterns);
-            }
+            _ => false,
         }
     }
 
@@ -186,49 +377,76 @@ impl Streamertail {
     fn find_best_plan_recursive(&mut self, logical_plan: &LogicalOperator) -> PhysicalOperator {
         let key = self.create_memo_key(logical_plan);
 
-        if let Some(plan) = self.memo.get(&key) {
-            return plan.clone();
+        if let Some(key) = &key {
+            if let Some(plan) = self.memo.get(key) {
+                return plan.clone();
+            }
         }
 
-        if let LogicalOperator::Projection { predicate: proj_pred, variables } = logical_plan {
-            if let LogicalOperator::Selection { predicate: sel_pred, condition } = proj_pred.as_ref() {
+        if let LogicalOperator::Projection {
+            predicate: proj_pred,
+            variables,
+        } = logical_plan
+        {
+            if let LogicalOperator::Selection {
+                predicate: sel_pred,
+                condition,
+            } = proj_pred.as_ref()
+            {
                 if let Some(stars) = self.is_star_query(sel_pred) {
                     // Build: Projection(Filter(StarJoin))
                     let star_plan = self.build_star_join_from_patterns(stars, sel_pred);
                     let filtered_plan = PhysicalOperator::filter(star_plan, condition.clone());
-                    let projected_plan = PhysicalOperator::projection(filtered_plan, variables.clone());
-                    self.memo.insert(key, projected_plan.clone());
-                    return projected_plan;
+                    let projected_plan =
+                        PhysicalOperator::projection(filtered_plan, variables.clone());
+                    return self.memoize(key, projected_plan);
                 }
             }
         }
 
         // Handle Selection wrapping star query (no projection)
-        if let LogicalOperator::Selection { predicate, condition } = logical_plan {
+        if let LogicalOperator::Selection {
+            predicate,
+            condition,
+        } = logical_plan
+        {
             if let Some(stars) = self.is_star_query(predicate) {
                 let star_plan = self.build_star_join_from_patterns(stars, predicate);
                 let filtered_plan = PhysicalOperator::filter(star_plan, condition.clone());
-                self.memo.insert(key, filtered_plan.clone());
-                return filtered_plan;
+                return self.memoize(key, filtered_plan);
             }
         }
 
         // Handle star query without selection or projection
-        if ! matches!(logical_plan, LogicalOperator::Selection { .. } | LogicalOperator::Projection { ..  }) {
+        if !matches!(
+            logical_plan,
+            LogicalOperator::Selection { .. } | LogicalOperator::Projection { .. }
+        ) {
             if let Some(stars) = self.is_star_query(logical_plan) {
                 let star_plan = self.build_star_join_from_patterns(stars, logical_plan);
-                self.memo.insert(key, star_plan.clone());
-                return star_plan;
+                return self.memoize(key, star_plan);
             }
         }
 
         let mut candidates = Vec::new();
 
         match logical_plan {
+            LogicalOperator::Unit => candidates.push(PhysicalOperator::unit()),
             LogicalOperator::Scan { pattern } => {
                 // Implementation rules: Map logical scan to physical scans
                 let best_scan = self.choose_best_scan(pattern);
                 candidates.push(best_scan);
+            }
+            LogicalOperator::Union { branches } => {
+                let branches = branches
+                    .iter()
+                    .map(|branch| self.find_best_plan_recursive(branch))
+                    .collect();
+                candidates.push(PhysicalOperator::union(branches));
+            }
+            LogicalOperator::Graph { input, graph } => {
+                let input = self.find_best_plan_recursive(input);
+                candidates.push(PhysicalOperator::graph(input, graph.clone()));
             }
             LogicalOperator::Selection {
                 predicate,
@@ -250,21 +468,12 @@ impl Streamertail {
                 ));
             }
             LogicalOperator::Join { left, right } => {
-                // Add join reordering based on cost
-                let left_cost = self.estimate_logical_cost(left);
-                let right_cost = self.estimate_logical_cost(right);
+                // Join order is already fixed by `reorder_logical`
+                let best_left_plan = self.find_best_plan_recursive(left);
+                let best_right_plan = self.find_best_plan_recursive(right);
 
-                let (cheaper_side, expensive_side) = if left_cost <= right_cost {
-                    (left, right)
-                } else {
-                    (right, left) // Swap for better order
-                };
-
-                let best_left_plan = self.find_best_plan_recursive(cheaper_side);
-                let best_right_plan = self.find_best_plan_recursive(expensive_side);
-
-                // Implementation rules: Different join algorithms
-                candidates.push(PhysicalOperator::optimized_hash_join(
+                // Implementation rules: costing decides between the three join algorithms
+                candidates.push(PhysicalOperator::bind_join(
                     best_left_plan.clone(),
                     best_right_plan.clone(),
                 ));
@@ -274,44 +483,36 @@ impl Streamertail {
                     best_right_plan.clone(),
                 ));
 
-                // Only use nested loop for small datasets
-                let left_cardinality = self.estimate_output_cardinality_from_logical(cheaper_side);
-                let right_cardinality =
-                    self.estimate_output_cardinality_from_logical(expensive_side);
-
-                if left_cardinality < 1000 && right_cardinality < 1000 {
-                    candidates.push(PhysicalOperator::nested_loop_join(
-                        best_left_plan.clone(),
-                        best_right_plan.clone(),
-                    ));
-                }
-
-                // Add parallel join option
-                candidates.push(PhysicalOperator::parallel_join(
+                candidates.push(PhysicalOperator::nested_loop_join(
                     best_left_plan,
                     best_right_plan,
                 ));
             }
-            LogicalOperator::Buffer { content, origin} => {
-                let best_buffer = PhysicalOperator::InMemoryBuffer {content: content.clone(), origin: origin.clone()};
+            LogicalOperator::Buffer { content, origin } => {
+                let best_buffer = PhysicalOperator::InMemoryBuffer {
+                    content: content.clone(),
+                    origin: origin.clone(),
+                };
                 candidates.push(best_buffer);
             }
-            LogicalOperator::Subquery { inner, projected_vars } => {
+            LogicalOperator::Subquery { inner, spec } => {
                 // Recursively optimize the inner query
                 let optimized_inner = self.find_best_plan_recursive(inner);
-                
-                // Wrap it in a subquery operator with projection
-                let subquery_plan = PhysicalOperator::subquery(
-                    optimized_inner,
-                    projected_vars.clone()
-                );
-                
+
+                // Keep every subquery-local SELECT modifier attached until execution
+                let subquery_plan = PhysicalOperator::subquery(optimized_inner, spec.clone());
+
                 candidates.push(subquery_plan);
             }
-            LogicalOperator::Bind { input, function_name, arguments, output_variable } => {
+            LogicalOperator::Bind {
+                input,
+                function_name,
+                arguments,
+                output_variable,
+            } => {
                 // Recursively optimize the input
                 let best_input_plan = self.find_best_plan_recursive(input);
-    
+
                 // Create the physical BIND operator
                 let bind_plan = PhysicalOperator::bind(
                     best_input_plan,
@@ -319,15 +520,12 @@ impl Streamertail {
                     arguments.clone(),
                     output_variable.clone(),
                 );
-    
+
                 candidates.push(bind_plan);
             }
             LogicalOperator::Values { variables, values } => {
                 // VALUES is a leaf operator
-                candidates.push(PhysicalOperator::values(
-                    variables.clone(),
-                    values.clone(),
-                ));
+                candidates.push(PhysicalOperator::values(variables.clone(), values.clone()));
             }
             LogicalOperator::MLPredict {
                 input,
@@ -338,8 +536,8 @@ impl Streamertail {
                 // Recursively optimize the input
                 let best_input_plan = self.find_best_plan_recursive(input);
 
-                // Discover model path
-                let model_path = self.discover_model_path();
+                // Preserve operator layout while execution uses the approved registry
+                let model_path = String::new();
 
                 // Create the physical ML.PREDICT operator
                 let ml_predict_plan = PhysicalOperator::ml_predict(
@@ -355,7 +553,7 @@ impl Streamertail {
         }
 
         // Cost-based optimization: Choose the best candidate
-        let cost_estimator = CostEstimator::new(&self.stats);
+        let cost_estimator = self.cost_estimator();
         let best_plan = candidates
             .into_iter()
             .min_by_key(|plan| {
@@ -365,35 +563,19 @@ impl Streamertail {
             .unwrap();
 
         // Memoize the best plan
-        self.memo.insert(key, best_plan.clone());
-        best_plan
+        self.memoize(key, best_plan)
     }
 
-    /// Discovers the model path from the model name
-    fn discover_model_path(&self) -> String {
-        let mut path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-        
-        loop {
-            let ml_dir = path.join("ml");
-            if ml_dir.exists() && ml_dir.is_dir() {
-                let model_dir = ml_dir.join("examples").join("models");
-                
-                // Return just the model directory - the ML handler will discover models
-                if model_dir.exists() {
-                    return model_dir.to_string_lossy().to_string();
-                }
-                
-                break;
+    fn homogeneous_scan_scope(&self, plan: &LogicalOperator) -> Option<GraphTerm> {
+        match plan {
+            LogicalOperator::Scan { pattern } => Some(pattern.graph.clone()),
+            LogicalOperator::Join { left, right } => {
+                let left = self.homogeneous_scan_scope(left)?;
+                let right = self.homogeneous_scan_scope(right)?;
+                (left == right).then_some(left)
             }
-            
-            if !path.pop() {
-                eprintln!("Warning: Could not locate 'ml' directory!");
-                break;
-            }
+            _ => None,
         }
-        
-        // Fallback to relative path
-        format!("ml/examples/models")
     }
 
     /// Helper method to build a star join physical plan from detected star patterns
@@ -418,11 +600,14 @@ impl Streamertail {
             let mut star_operators: Vec<(String, Vec<TriplePattern>)> = stars;
 
             star_operators.sort_by_key(|(_, patterns)| {
-                let bound_count = patterns.iter().filter(|p| {
-                    matches!(p.0, Term::Constant(_)) ||
-                    matches!(p.1, Term::Constant(_)) ||
-                    matches!(p.2, Term::Constant(_))
-                }).count();
+                let bound_count = patterns
+                    .iter()
+                    .filter(|p| {
+                        matches!(p.0, Term::Constant(_))
+                            || matches!(p.1, Term::Constant(_))
+                            || matches!(p.2, Term::Constant(_))
+                    })
+                    .count();
                 std::cmp::Reverse(bound_count)
             });
 
@@ -439,14 +624,14 @@ impl Streamertail {
                     .collect();
 
                 for scan in star_scans {
-                    result = PhysicalOperator::parallel_join(result, scan);
+                    result = PhysicalOperator::bind_join(result, scan);
                 }
             }
 
             for (idx, pattern) in all_patterns.iter().enumerate() {
                 if !used_pattern_indices.contains(&idx) {
                     let scan = PhysicalOperator::index_scan(pattern.clone());
-                    result = PhysicalOperator::parallel_join(result, scan);
+                    result = PhysicalOperator::bind_join(result, scan);
                 }
             }
 
@@ -460,7 +645,7 @@ impl Streamertail {
                 for (idx, pattern) in all_patterns.iter().enumerate() {
                     if !used_pattern_indices.contains(&idx) {
                         let scan = PhysicalOperator::index_scan(pattern.clone());
-                        result = PhysicalOperator::parallel_join(result, scan);
+                        result = PhysicalOperator::bind_join(result, scan);
                     }
                 }
 
@@ -479,24 +664,29 @@ impl Streamertail {
     }
 
     /// Chooses the best scan method based on pattern selectivity
-    fn choose_best_scan(&self, pattern: &TriplePattern) -> PhysicalOperator {
-        let bound_vars = self.count_bound_variables(pattern);
-        let cost_estimator = CostEstimator::new(&self.stats);
-        let estimated_size = cost_estimator.estimate_cardinality(pattern);
+    fn choose_best_scan(&self, pattern: &QuadPattern) -> PhysicalOperator {
+        let triple = (
+            pattern.subject.clone(),
+            pattern.predicate.clone(),
+            pattern.object.clone(),
+        );
+        let bound_vars = self.count_bound_variables(&triple);
+        let cost_estimator = self.cost_estimator();
+        let estimated_size = cost_estimator.estimate_quad_cardinality(pattern);
 
         match bound_vars {
-            3 => PhysicalOperator::index_scan(pattern.clone()), // Fully bound - always use index
-            2 => PhysicalOperator::index_scan(pattern.clone()), // Two bounds - index is better
+            3 => PhysicalOperator::quad_index_scan(pattern.clone()), // Fully bound - always use index
+            2 => PhysicalOperator::quad_index_scan(pattern.clone()), // Two bounds - index is better
             1 => {
                 // Use index if result set is small enough
                 if estimated_size < 10000 {
-                    PhysicalOperator::index_scan(pattern.clone())
+                    PhysicalOperator::quad_index_scan(pattern.clone())
                 } else {
-                    PhysicalOperator::table_scan(pattern.clone())
+                    PhysicalOperator::quad_table_scan(pattern.clone())
                 }
             }
-            0 => PhysicalOperator::table_scan(pattern.clone()), // Full scan
-            _ => PhysicalOperator::table_scan(pattern.clone()),
+            0 => PhysicalOperator::quad_table_scan(pattern.clone()), // Full scan
+            _ => PhysicalOperator::quad_table_scan(pattern.clone()),
         }
     }
 
@@ -522,16 +712,66 @@ impl Streamertail {
         count
     }
 
-    /// Creates a memo key for caching optimized plans
-    fn create_memo_key(&self, logical_plan: &LogicalOperator) -> String {
-        self.serialize_logical_plan(logical_plan)
+    /// Creates a memo key for caching optimized plans, when one is worth having
+    fn create_memo_key(&self, logical_plan: &LogicalOperator) -> Option<String> {
+        if Self::carries_inline_data(logical_plan) {
+            return None;
+        }
+        Some(self.serialize_logical_plan(logical_plan))
+    }
+
+    /// Whether a plan embeds inline data that a memo key would have to copy
+    fn carries_inline_data(plan: &LogicalOperator) -> bool {
+        match plan {
+            LogicalOperator::Buffer { .. } | LogicalOperator::Values { .. } => true,
+            LogicalOperator::Unit | LogicalOperator::Scan { .. } => false,
+            LogicalOperator::Union { branches } => {
+                branches.iter().any(Self::carries_inline_data)
+            }
+            LogicalOperator::Graph { input, .. }
+            | LogicalOperator::Selection {
+                predicate: input, ..
+            }
+            | LogicalOperator::Projection {
+                predicate: input, ..
+            }
+            | LogicalOperator::Subquery { inner: input, .. }
+            | LogicalOperator::Bind { input, .. }
+            | LogicalOperator::MLPredict { input, .. } => Self::carries_inline_data(input),
+            LogicalOperator::Join { left, right } => {
+                Self::carries_inline_data(left) || Self::carries_inline_data(right)
+            }
+        }
+    }
+
+    /// Records a plan under its key, when the plan was memoizable at all
+    fn memoize(&mut self, key: Option<String>, plan: PhysicalOperator) -> PhysicalOperator {
+        if let Some(key) = key {
+            self.memo.insert(key, plan.clone());
+        }
+        plan
     }
 
     /// Serializes a logical plan to a string for memoization
     fn serialize_logical_plan(&self, plan: &LogicalOperator) -> String {
         match plan {
+            LogicalOperator::Unit => "Unit".to_string(),
             LogicalOperator::Scan { pattern } => {
-                format!("Scan({:?},{:?},{:?})", pattern.0, pattern.1, pattern.2)
+                format!(
+                    "Scan({:?},{:?},{:?},graph={:?})",
+                    pattern.subject, pattern.predicate, pattern.object, pattern.graph
+                )
+            }
+            LogicalOperator::Union { branches } => {
+                let branches = branches
+                    .iter()
+                    .map(|branch| self.serialize_logical_plan(branch))
+                    .collect::<Vec<_>>()
+                    .join(",");
+                format!("Union({branches})")
+            }
+            LogicalOperator::Graph { input, graph } => {
+                format!("Graph({graph:?},[{}])", self.serialize_logical_plan(input))
             }
             LogicalOperator::Selection {
                 predicate,
@@ -561,20 +801,21 @@ impl Streamertail {
                 )
             }
             LogicalOperator::Buffer { content, origin } => {
-                format!(
-                    "Buffer({:?},{:?})",
-                    origin,
-                    content
-                )
+                format!("Buffer({:?},{:?})", origin, content)
             }
-            LogicalOperator::Subquery { inner, projected_vars } => {
+            LogicalOperator::Subquery { inner, spec } => {
                 format!(
                     "Subquery({:?},[{}])",
-                    projected_vars,
+                    spec,
                     self.serialize_logical_plan(inner)
                 )
             }
-            LogicalOperator::Bind { input, function_name, arguments, output_variable } => {
+            LogicalOperator::Bind {
+                input,
+                function_name,
+                arguments,
+                output_variable,
+            } => {
                 format!(
                     "Bind({}, {}({:?}), {})",
                     self.serialize_logical_plan(input),
@@ -584,11 +825,8 @@ impl Streamertail {
                 )
             }
             LogicalOperator::Values { variables, values } => {
-                format!(
-                    "Values({:?}, {} rows)",
-                    variables,
-                    values.len()
-                )
+                // Values are semantic content, not merely a cardinality hint
+                format!("Values({variables:?}, {values:?})")
             }
             LogicalOperator::MLPredict {
                 input,
@@ -608,163 +846,41 @@ impl Streamertail {
     }
 
     /// Serializes a filter expression to a string
-    fn serialize_filter_expression(&self, expr: &FilterExpression) -> String {
+    fn serialize_filter_expression(&self, expr: &ConditionExpression) -> String {
         match expr {
-            FilterExpression::Comparison(var, op, value) => {
+            ConditionExpression::Comparison(var, op, value) => {
                 format!("{}{}'{}'", var, op, value)
             }
-            FilterExpression::And(left, right) => {
+            ConditionExpression::ArithmeticComparison(left, op, right) => {
+                format!(
+                    "ARITH({}){}ARITH({})",
+                    serialize_arith_expr(left),
+                    op,
+                    serialize_arith_expr(right)
+                )
+            }
+            ConditionExpression::And(left, right) => {
                 format!(
                     "({} AND {})",
                     self.serialize_filter_expression(left),
                     self.serialize_filter_expression(right)
                 )
             }
-            FilterExpression::Or(left, right) => {
+            ConditionExpression::Or(left, right) => {
                 format!(
                     "({} OR {})",
                     self.serialize_filter_expression(left),
                     self.serialize_filter_expression(right)
                 )
             }
-            FilterExpression::Not(inner) => {
+            ConditionExpression::Not(inner) => {
                 format!("NOT({})", self.serialize_filter_expression(inner))
             }
-            FilterExpression::ArithmeticExpr(expr) => {
+            ConditionExpression::ArithmeticExpr(expr) => {
                 format!("ARITH({})", serialize_arith_expr(expr))
             }
-            FilterExpression::FunctionCall(name, args) => {
+            ConditionExpression::FunctionCall(name, args) => {
                 format!("{}({})", name, args.join(", "))
-            }
-        }
-    }
-
-    /// Estimates the cost of a logical plan
-    fn estimate_logical_cost(&self, logical_plan: &LogicalOperator) -> u64 {
-        let cost_estimator = CostEstimator::new(&self.stats);
-
-        match logical_plan {
-            LogicalOperator::Scan { pattern } => cost_estimator.estimate_cardinality(pattern),
-            LogicalOperator::Join { left, right } => {
-                let left_cost = self.estimate_logical_cost(left);
-                let right_cost = self.estimate_logical_cost(right);
-                let left_card = self.estimate_output_cardinality_from_logical(left);
-                let right_card = self.estimate_output_cardinality_from_logical(right);
-
-                // More sophisticated join cost estimation
-                let join_selectivity = self.estimate_join_selectivity(left, right);
-                left_cost + right_cost + ((left_card * right_card) as f64 * join_selectivity) as u64
-            }
-            LogicalOperator::Selection {
-                predicate,
-                condition,
-            } => {
-                let base_cost = self.estimate_logical_cost(predicate);
-                let selectivity = cost_estimator.estimate_selectivity(condition);
-                (base_cost as f64 * selectivity) as u64
-            }
-            LogicalOperator::Projection { predicate, .. } => self.estimate_logical_cost(predicate),
-            LogicalOperator::Buffer { .. } => 0,
-            LogicalOperator::Subquery { inner, .. } => {
-                // Subqueries have materialization cost
-                let inner_cost = self.estimate_logical_cost(inner);
-                let inner_card = self.estimate_output_cardinality_from_logical(inner);
-                // Add materialization overhead (storing results)
-                inner_cost + inner_card
-            }
-            LogicalOperator::Bind { input, arguments, .. } => {
-                let base_cost = self.estimate_logical_cost(input);
-                let cardinality = self.estimate_output_cardinality_from_logical(input);
-                // Add cost proportional to number of arguments and cardinality
-                base_cost + (cardinality * arguments.len() as u64)
-            }
-            LogicalOperator::Values { values, .. } => {
-                // VALUES has very low cost
-                values.len() as u64
-            }
-            LogicalOperator::MLPredict { input, input_variables, .. } => {
-                let base_cost = self.estimate_logical_cost(input);
-                let cardinality = self.estimate_output_cardinality_from_logical(input);
-                
-                // ML operations are expensive, so we add significant overhead
-                let ml_overhead = 100; // Cost per prediction
-                // ML prediction cost: base cost + (cardinality * input_features * ML_overhead)
-                base_cost + (cardinality * input_variables.len() as u64 * ml_overhead)
-            }
-        }
-    }
-
-    /// Estimates join selectivity
-    fn estimate_join_selectivity(&self, left: &LogicalOperator, right: &LogicalOperator) -> f64 {
-        // Extract predicates from the join patterns
-        let left_predicate = self.extract_predicate_from_plan(left);
-        let right_predicate = self.extract_predicate_from_plan(right);
-
-        // Use the actual join selectivity from database stats
-        match (left_predicate, right_predicate) {
-            (Some(pred), _) => self.stats.get_join_selectivity(pred),
-            (None, Some(pred)) => self.stats.get_join_selectivity(pred),
-            (None, None) => 0.1, // Fallback to default
-        }
-    }
-
-    /// Extracts the predicate ID from a logical plan if it's a scan
-    fn extract_predicate_from_plan(&self, plan: &LogicalOperator) -> Option<u32> {
-        match plan {
-            LogicalOperator::Scan { pattern } => {
-                if let Term::Constant(pred_id) = pattern.1 {
-                    Some(pred_id)
-                } else {
-                    None
-                }
-            }
-            LogicalOperator::Join { left, ..  } => self.extract_predicate_from_plan(left),
-            LogicalOperator::Selection { predicate, .. } => self.extract_predicate_from_plan(predicate),
-            LogicalOperator::Projection { predicate, .. } => self.extract_predicate_from_plan(predicate),
-            LogicalOperator::Buffer {.. } => None,
-            LogicalOperator::Subquery { inner, .. } => self.extract_predicate_from_plan(inner),
-            LogicalOperator::Bind { input, .. } => self.extract_predicate_from_plan(input),
-            LogicalOperator::Values { .. } => None,
-            LogicalOperator::MLPredict { input, .. } => self.extract_predicate_from_plan(input),
-        }
-    }
-
-    /// Estimates output cardinality from a logical plan
-    fn estimate_output_cardinality_from_logical(&self, logical_plan: &LogicalOperator) -> u64 {
-        let cost_estimator = CostEstimator::new(&self.stats);
-
-        match logical_plan {
-            LogicalOperator::Scan { pattern } => cost_estimator.estimate_cardinality(pattern),
-            LogicalOperator::Selection {
-                predicate,
-                condition,
-            } => {
-                let base_card = self.estimate_output_cardinality_from_logical(predicate);
-                let selectivity = cost_estimator.estimate_selectivity(condition);
-                ((base_card as f64 * selectivity) as u64).max(1)
-            }
-            LogicalOperator::Projection { predicate, .. } => {
-                self.estimate_output_cardinality_from_logical(predicate)
-            }
-            LogicalOperator::Join { left, right } => {
-                let left_card = self.estimate_output_cardinality_from_logical(left);
-                let right_card = self.estimate_output_cardinality_from_logical(right);
-                let join_selectivity = self.estimate_join_selectivity(left, right);
-                ((left_card.min(right_card) as f64 * join_selectivity) as u64).max(1)
-            }
-            LogicalOperator::Buffer { .. } => 0,
-            LogicalOperator::Subquery { inner, .. } => {
-                self.estimate_output_cardinality_from_logical(inner)
-            }
-            LogicalOperator::Bind { input, .. } => {
-                self.estimate_output_cardinality_from_logical(input)
-            }
-            LogicalOperator::Values { values, .. } => {
-                values.len() as u64
-            }
-            LogicalOperator::MLPredict { input, .. } => {
-                // ML.PREDICT doesn't change cardinality, just adds a column
-                self.estimate_output_cardinality_from_logical(input)
             }
         }
     }
@@ -789,12 +905,30 @@ impl Streamertail {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use shared::dataset_index::GraphId;
     use shared::terms::Term;
 
     fn create_test_optimizer() -> Streamertail {
         // Create a mock database for testing
         let database = SparqlDatabase::new();
         Streamertail::new(&database)
+    }
+
+    fn var(name: &str) -> Term {
+        Term::Variable(name.to_string())
+    }
+
+    fn constant(id: u32) -> Term {
+        Term::Constant(id)
+    }
+
+    fn scan(subject: Term, predicate: Term, object: Term) -> LogicalOperator {
+        LogicalOperator::scan((subject, predicate, object))
+    }
+
+    fn join_all(mut plans: Vec<LogicalOperator>) -> LogicalOperator {
+        let first = plans.remove(0);
+        plans.into_iter().fold(first, LogicalOperator::join)
     }
 
     #[test]
@@ -824,5 +958,239 @@ mod tests {
         let optimizer = create_test_optimizer();
         let pattern = (Term::Constant(1), Term::Constant(2), Term::Constant(3));
         assert_eq!(optimizer.count_bound_variables(&pattern), 3);
+    }
+
+    #[test]
+    fn test_subject_centered_star_is_detected() {
+        let optimizer = create_test_optimizer();
+        let plan = join_all(vec![
+            scan(var("?segment"), constant(1), var("?sensor")),
+            scan(var("?segment"), constant(2), var("?length")),
+            scan(var("?segment"), constant(3), constant(4)),
+        ]);
+
+        let stars = optimizer
+            .is_star_query(&plan)
+            .expect("subject star should be detected");
+
+        assert_eq!(stars.len(), 1);
+        assert_eq!(stars[0].0, "?segment");
+        assert_eq!(stars[0].1.len(), 3);
+    }
+
+    #[test]
+    fn test_object_centered_repeated_variable_is_not_detected() {
+        let optimizer = create_test_optimizer();
+        let plan = join_all(vec![
+            scan(var("?segment1"), constant(1), var("?sensor")),
+            scan(var("?segment2"), constant(1), var("?sensor")),
+            scan(var("?segment3"), constant(1), var("?sensor")),
+            scan(var("?sensor"), constant(2), constant(3)),
+        ]);
+
+        let stars = optimizer.is_star_query(&plan).unwrap_or_default();
+
+        assert!(!stars.iter().any(|(var, _)| var == "?sensor"));
+    }
+
+    #[test]
+    fn named_graph_scans_never_become_a_default_graph_star_join() {
+        let optimizer = create_test_optimizer();
+        let graph = GraphTerm::Named(99);
+        let plan = join_all(vec![
+            LogicalOperator::quad_scan(QuadPattern {
+                subject: var("?s"),
+                predicate: constant(1),
+                object: var("?a"),
+                graph: graph.clone(),
+            }),
+            LogicalOperator::quad_scan(QuadPattern {
+                subject: var("?s"),
+                predicate: constant(2),
+                object: var("?b"),
+                graph: graph.clone(),
+            }),
+            LogicalOperator::quad_scan(QuadPattern {
+                subject: var("?s"),
+                predicate: constant(3),
+                object: var("?c"),
+                graph,
+            }),
+        ]);
+
+        assert!(
+            optimizer.is_star_query(&plan).is_none(),
+            "the TriplePattern-only star operator would discard graph scope"
+        );
+    }
+
+    #[test]
+    fn test_sensor_path_query_does_not_use_sensor_as_star_center() {
+        let optimizer = create_test_optimizer();
+        let plan = join_all(vec![
+            scan(var("?segment1"), constant(1), var("?segment2")),
+            scan(var("?segment2"), constant(1), var("?segment3")),
+            scan(var("?segment3"), constant(1), var("?segment4")),
+            scan(var("?segment4"), constant(1), var("?segment5")),
+            scan(var("?segment5"), constant(1), var("?segment6")),
+            scan(var("?sensor"), constant(2), constant(3)),
+            scan(var("?segment1"), constant(4), var("?sensor")),
+            scan(var("?segment2"), constant(4), var("?sensor")),
+            scan(var("?segment3"), constant(4), var("?sensor")),
+            scan(var("?segment4"), constant(4), var("?sensor")),
+            scan(var("?segment5"), constant(4), var("?sensor")),
+            scan(var("?segment6"), constant(4), var("?sensor")),
+            scan(var("?segment1"), constant(2), constant(5)),
+            scan(var("?segment2"), constant(2), constant(5)),
+            scan(var("?segment3"), constant(2), constant(5)),
+            scan(var("?segment4"), constant(2), constant(5)),
+            scan(var("?segment5"), constant(2), constant(5)),
+            scan(var("?segment6"), constant(2), constant(5)),
+        ]);
+
+        let stars = optimizer.is_star_query(&plan).unwrap_or_default();
+
+        assert!(!stars.iter().any(|(var, _)| var == "?sensor"));
+    }
+
+    const NEXT: u32 = 1;
+    const TYPE: u32 = 2;
+    const ANCHOR: u32 = 3;
+
+    /// A dataset with one rare anchor predicate and one high-fan-out edge predicate
+    fn chain_stats() -> Arc<DatabaseStats> {
+        let mut stats = DatabaseStats::new();
+        stats.total_triples = 100_000;
+        stats.distinct_subjects = 50_000;
+        stats.distinct_objects = 50_000;
+        stats.predicate_cardinalities.insert(NEXT, 90_000);
+        stats.predicate_cardinalities.insert(TYPE, 10);
+        stats.predicate_distinct_subjects.insert(NEXT, 45_000);
+        stats.predicate_distinct_objects.insert(NEXT, 45_000);
+        stats.predicate_distinct_subjects.insert(TYPE, 10);
+        stats.predicate_distinct_objects.insert(TYPE, 1);
+        stats
+            .graph_cardinalities
+            .insert(GraphId::Default, 100_000);
+        Arc::new(stats)
+    }
+
+    fn quad(subject: Term, predicate: Term, object: Term) -> QuadPattern {
+        QuadPattern {
+            subject,
+            predicate,
+            object,
+            graph: GraphTerm::Default,
+        }
+    }
+
+    /// The links of `?x0 -> ?x1 -> ... -> ?xn`, without the anchor
+    fn chain_links(links: usize) -> Vec<QuadPattern> {
+        (0..links)
+            .map(|i| {
+                quad(
+                    var(&format!("?x{}", i)),
+                    constant(NEXT),
+                    var(&format!("?x{}", i + 1)),
+                )
+            })
+            .collect()
+    }
+
+    #[test]
+    fn greedy_ordering_starts_from_the_anchor_wherever_it_appears() {
+        let optimizer = Streamertail::with_cached_stats(chain_stats());
+        let anchor = quad(var("?x0"), constant(TYPE), constant(ANCHOR));
+
+        for anchor_at in 0..=4 {
+            let mut patterns = chain_links(4);
+            patterns.insert(anchor_at, anchor.clone());
+
+            let ordered = optimizer.greedy_order_scans(patterns);
+
+            assert_eq!(
+                ordered[0], anchor,
+                "the selective anchor must run first when placed at {}",
+                anchor_at
+            );
+
+            let mut bound: HashSet<String> = HashSet::new();
+            collect_pattern_variables(&ordered[0], &mut bound);
+            for pattern in &ordered[1..] {
+                let mut variables = HashSet::new();
+                collect_pattern_variables(pattern, &mut variables);
+                assert!(
+                    !variables.is_disjoint(&bound),
+                    "every step after the anchor must join through a bound variable"
+                );
+                bound.extend(variables);
+            }
+        }
+    }
+
+    #[test]
+    fn greedy_ordering_keeps_source_order_without_distinguishing_statistics() {
+        let optimizer = Streamertail::with_cached_stats(Arc::new(DatabaseStats::new()));
+        let patterns = chain_links(4);
+
+        assert_eq!(optimizer.greedy_order_scans(patterns.clone()), patterns);
+    }
+
+    #[test]
+    fn reordering_never_crosses_a_graph_scope_boundary() {
+        let optimizer = Streamertail::with_cached_stats(chain_stats());
+        let named = QuadPattern {
+            graph: GraphTerm::Named(7),
+            ..quad(var("?x0"), constant(TYPE), constant(ANCHOR))
+        };
+        let plan = LogicalOperator::join(
+            LogicalOperator::quad_scan(chain_links(1).remove(0)),
+            LogicalOperator::quad_scan(named),
+        );
+
+        assert_eq!(
+            format!("{:?}", optimizer.reorder_logical(&plan)),
+            format!("{:?}", plan),
+            "scans in different graph scopes are not one reorderable group"
+        );
+    }
+
+    #[test]
+    fn sensor_path_plan_still_builds_a_star_that_is_not_sensor_centered() {
+        let mut optimizer = Streamertail::with_cached_stats(chain_stats());
+        let plan = join_all(vec![
+            scan(var("?segment1"), constant(NEXT), var("?segment2")),
+            scan(var("?segment2"), constant(NEXT), var("?segment3")),
+            scan(var("?sensor"), constant(TYPE), constant(ANCHOR)),
+            scan(var("?segment1"), constant(4), var("?sensor")),
+            scan(var("?segment2"), constant(4), var("?sensor")),
+            scan(var("?segment3"), constant(4), var("?sensor")),
+        ]);
+
+        let physical = optimizer.find_best_plan(&plan);
+
+        fn star_centers(plan: &PhysicalOperator, out: &mut Vec<String>) {
+            match plan {
+                PhysicalOperator::StarJoin { join_var, .. } => out.push(join_var.clone()),
+                PhysicalOperator::BindJoin { left, right }
+                | PhysicalOperator::HashJoin { left, right }
+                | PhysicalOperator::NestedLoopJoin { left, right } => {
+                    star_centers(left, out);
+                    star_centers(right, out);
+                }
+                PhysicalOperator::Filter { input, .. }
+                | PhysicalOperator::Projection { input, .. }
+                | PhysicalOperator::Graph { input, .. } => star_centers(input, out),
+                _ => {}
+            }
+        }
+
+        let mut centers = Vec::new();
+        star_centers(&physical, &mut centers);
+        assert!(
+            !centers.iter().any(|center| center == "?sensor"),
+            "?sensor is a path endpoint, not a star center: {:?}",
+            centers
+        );
     }
 }

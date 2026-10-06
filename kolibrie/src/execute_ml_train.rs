@@ -11,16 +11,18 @@
 use std::collections::HashMap;
 use std::error::Error;
 
-use datalog::reasoning::materialisation::sdd_seed_materialise::infer_new_facts_with_sdd_seed_specs;
+use datalog::reasoning::materialisation::hybrid_materialisation::materialize_lineage;
 use datalog::reasoning::Reasoner;
 use ml::{MlpNeuralPredicate, OutputType};
 use rand::seq::SliceRandom;
+use rand::SeedableRng;
 use shared::diff_sdd::wmc_gradient;
-use shared::provenance::Provenance;
+use shared::hybrid::{HybridConfig, SeedSnapshot};
 use shared::query::LossFn;
 use shared::rule::Rule;
 use shared::seed_spec::{ExclusiveChoice, SeedSpec};
 use shared::triple::Triple;
+use std::time::{Duration, Instant};
 
 use crate::ml_feature_loader::{build_feature_vec, query_training_rows, rdf_term_to_f64, RdfTerm};
 use crate::sparql_database::SparqlDatabase;
@@ -35,8 +37,13 @@ pub struct OwnedNeuralChoice {
 
 #[derive(Debug, Clone)]
 pub enum OwnedNeuralGroupType {
-    Exclusive { choices: Vec<OwnedNeuralChoice> },
-    Independent { fact_template: (String, String, String), prob_var: String },
+    Exclusive {
+        choices: Vec<OwnedNeuralChoice>,
+    },
+    Independent {
+        fact_template: (String, String, String),
+        prob_var: String,
+    },
 }
 
 #[derive(Debug, Clone)]
@@ -60,12 +67,76 @@ pub struct OwnedNeuralTrainingClause {
     pub save_path: Option<String>,
 }
 
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct NeuralTrainingTimings {
+    pub data_fetch: Duration,
+    pub learning: Duration,
+}
+
 pub fn execute_ml_training_owned(
     clause: &OwnedNeuralTrainingClause,
     base_reasoner: &Reasoner,
     db: &mut SparqlDatabase,
 ) -> TrainResult<MlpNeuralPredicate> {
-    let rows = query_training_rows(db, &clause.training_data_raw)?;
+    execute_ml_training_impl(clause, base_reasoner, db, None, None).map(|(model, _)| model)
+}
+
+pub fn execute_ml_training_owned_seeded(
+    clause: &OwnedNeuralTrainingClause,
+    base_reasoner: &Reasoner,
+    db: &mut SparqlDatabase,
+    seed: u64,
+) -> TrainResult<MlpNeuralPredicate> {
+    execute_ml_training_impl(clause, base_reasoner, db, Some(seed), None).map(|(model, _)| model)
+}
+
+pub fn execute_ml_training_owned_seeded_timed(
+    clause: &OwnedNeuralTrainingClause,
+    base_reasoner: &Reasoner,
+    db: &mut SparqlDatabase,
+    seed: u64,
+) -> TrainResult<(MlpNeuralPredicate, NeuralTrainingTimings)> {
+    execute_ml_training_impl(clause, base_reasoner, db, Some(seed), None)
+}
+
+pub fn execute_supervised_training(
+    clause: &OwnedNeuralTrainingClause,
+    hidden: &[usize],
+    db: &mut SparqlDatabase,
+    seed: Option<u64>,
+) -> TrainResult<(MlpNeuralPredicate, NeuralTrainingTimings)> {
+    if clause.neural_calls.len() != 1 {
+        return Err("supervised program training requires exactly one neural call".into());
+    }
+    if clause.save_path.is_some() {
+        return Err("supervised program training stages its artifact; save_path must be empty".into());
+    }
+    execute_ml_training_impl(clause, &Reasoner::new(), db, seed, Some(hidden))
+}
+
+fn execute_ml_training_impl(
+    clause: &OwnedNeuralTrainingClause,
+    base_reasoner: &Reasoner,
+    db: &mut SparqlDatabase,
+    seed: Option<u64>,
+    hidden_override: Option<&[usize]>,
+) -> TrainResult<(MlpNeuralPredicate, NeuralTrainingTimings)> {
+    db.ml_context.require_local()?;
+    if let Some(path) = &clause.save_path {
+        db.ml_context.local_artifact(path)?;
+    }
+    let mut timings = NeuralTrainingTimings::default();
+    let data_fetch_start = Instant::now();
+    let mut rows = query_training_rows(db, &clause.training_data_raw)?;
+    timings.data_fetch = data_fetch_start.elapsed();
+    if seed.is_some() {
+        rows.sort_by_cached_key(|row| {
+            let mut entries: Vec<_> = row.iter().map(|(k, v)| (k.clone(), v.clone())).collect();
+            entries.sort();
+            entries
+        });
+    }
+    let mut shuffle_rng = seed.map(rand::rngs::StdRng::seed_from_u64);
     if rows.is_empty() {
         return Err("training data query returned no rows".into());
     }
@@ -99,12 +170,28 @@ pub fn execute_ml_training_owned(
         }
     }
 
-    let model = MlpNeuralPredicate::new(expected_dim, &[64, 32], output_type)?;
+    let hidden = match hidden_override {
+        Some(hidden) => hidden,
+        None => db
+            .model_decls
+            .get(&clause.model_name)
+            .map(crate::neural_relations::model_hidden_layers)
+            .unwrap_or(&[64, 32]),
+    };
+    let model = match seed {
+        Some(seed) => MlpNeuralPredicate::new_seeded(expected_dim, hidden, output_type, seed)?,
+        None => MlpNeuralPredicate::new(expected_dim, hidden, output_type)?,
+    };
     let var_to_col = build_var_to_col_maps(clause, output_dim);
 
+    let learning_start = Instant::now();
     for _epoch in 0..clause.epochs {
         let mut epoch_rows = rows.clone();
-        epoch_rows.shuffle(&mut rand::rng());
+        if let Some(rng) = shuffle_rng.as_mut() {
+            epoch_rows.shuffle(rng);
+        } else {
+            epoch_rows.shuffle(&mut rand::rng());
+        }
 
         for batch in epoch_rows.chunks(clause.batch_size.max(1)) {
             model.zero_grads();
@@ -112,7 +199,8 @@ pub fn execute_ml_training_owned(
             let mut tracked_tensors = Vec::with_capacity(clause.neural_calls.len());
             let mut detached_probs = Vec::with_capacity(clause.neural_calls.len());
             for call in &clause.neural_calls {
-                let feature_refs: Vec<&str> = call.feature_vars.iter().map(String::as_str).collect();
+                let feature_refs: Vec<&str> =
+                    call.feature_vars.iter().map(String::as_str).collect();
                 let features: Vec<Vec<f64>> = batch
                     .iter()
                     .map(|row| build_feature_vec(row, &feature_refs))
@@ -123,12 +211,22 @@ pub fn execute_ml_training_owned(
             }
 
             let mut per_call_grad_batches: Vec<Vec<HashMap<u32, f64>>> =
-                (0..clause.neural_calls.len()).map(|_| vec![HashMap::new(); batch.len()]).collect();
+                (0..clause.neural_calls.len())
+                    .map(|_| vec![HashMap::new(); batch.len()])
+                    .collect();
 
             for (sample_idx, row) in batch.iter().enumerate() {
                 let mut local_reasoner = base_reasoner.clone();
-                let seeds = build_seed_specs_for_row(clause, &detached_probs, sample_idx, row, db, output_dim)?;
-                let (_facts, tag_store) = infer_new_facts_with_sdd_seed_specs(&mut local_reasoner, seeds);
+                let seeds = build_seed_specs_for_row(
+                    clause,
+                    &detached_probs,
+                    sample_idx,
+                    row,
+                    db,
+                    output_dim,
+                )?;
+                let snapshot = SeedSnapshot::from_seed_specs(&seeds)?;
+                let lineage = materialize_lineage(&mut local_reasoner, snapshot)?;
 
                 let target = instantiate_triple(
                     (
@@ -140,26 +238,39 @@ pub fn execute_ml_training_owned(
                     db,
                 )?;
                 let has_target = !local_reasoner
-                    .index_manager
-                    .query(Some(target.subject), Some(target.predicate), Some(target.object))
+                    .dataset_index
+                    .query(
+                        Some(target.subject),
+                        Some(target.predicate),
+                        Some(target.object),
+                    )
                     .is_empty();
 
-                let explicit_tag = if has_target && tag_store.has_explicit_tag(&target) {
-                    Some(tag_store.get_tag(&target))
+                let mut exact_config = HybridConfig::default();
+                exact_config.sdd_budget = Duration::from_secs(30);
+                exact_config.sdd_node_budget = 1_000_000;
+                let mut compiled = if has_target {
+                    Some(
+                        lineage
+                            .compile_exact(&target, &exact_config)
+                            .map_err(|reason| {
+                                format!(
+                                    "exact training lineage compilation failed: {}",
+                                    reason.as_str()
+                                )
+                            })?,
+                    )
                 } else {
                     None
                 };
-                let p_q = match explicit_tag {
-                    Some(tag) => tag_store.provenance().recover_probability(&tag),
-                    None if has_target => 1.0,
-                    None => 0.0,
-                };
+                let p_q = compiled
+                    .as_ref()
+                    .map(|compiled| compiled.manager.wmc(compiled.root).clamp(0.0, 1.0))
+                    .unwrap_or(0.0);
 
                 let d_loss_d_pq = loss_gradient(clause.loss, p_q, row, &clause.label_var)?;
-                if let Some(tag) = explicit_tag {
-                    let provenance = tag_store.provenance().clone();
-                    let mut manager = provenance.manager().lock().unwrap();
-                    let grads = wmc_gradient(&mut manager, tag);
+                if let Some(compiled) = compiled.as_mut() {
+                    let grads = wmc_gradient(&mut compiled.manager, compiled.root);
                     let scaled: HashMap<u32, f64> = grads
                         .into_iter()
                         .map(|(var, grad)| (var, grad * d_loss_d_pq))
@@ -171,17 +282,23 @@ pub fn execute_ml_training_owned(
             }
 
             for (call_idx, tracked) in tracked_tensors.iter().enumerate() {
-                model.surrogate_backward(tracked, &per_call_grad_batches[call_idx], &var_to_col[call_idx])?;
+                model.surrogate_backward(
+                    tracked,
+                    &per_call_grad_batches[call_idx],
+                    &var_to_col[call_idx],
+                )?;
             }
-            model.optimizer_step(clause.optimizer, clause.learning_rate);
+            model.optimizer_step(clause.optimizer, clause.learning_rate, batch.len());
         }
     }
+    timings.learning = learning_start.elapsed();
 
     if let Some(path) = &clause.save_path {
-        model.save(path)?;
+        db.ml_context
+            .save_local_artifact(path, &model.to_bytes()?)?;
     }
 
-    Ok(model)
+    Ok((model, timings))
 }
 
 fn build_var_to_col_maps(
@@ -246,19 +363,21 @@ fn build_seed_specs_for_row(
                         choices: choice_specs,
                     })
                 }
-                OwnedNeuralGroupType::Independent { fact_template, .. } => Ok(SeedSpec::Independent {
-                    triple: instantiate_triple(
-                        (
-                            fact_template.0.as_str(),
-                            fact_template.1.as_str(),
-                            fact_template.2.as_str(),
-                        ),
-                        row,
-                        db,
-                    )?,
-                    prob: detached_probs[call_idx][sample_idx][0],
-                    seed_id: base_var,
-                }),
+                OwnedNeuralGroupType::Independent { fact_template, .. } => {
+                    Ok(SeedSpec::Independent {
+                        triple: instantiate_triple(
+                            (
+                                fact_template.0.as_str(),
+                                fact_template.1.as_str(),
+                                fact_template.2.as_str(),
+                            ),
+                            row,
+                            db,
+                        )?,
+                        prob: detached_probs[call_idx][sample_idx][0],
+                        seed_id: base_var,
+                    })
+                }
             }
         })
         .collect()
@@ -291,7 +410,10 @@ fn instantiate_term(
             .or_else(|| row.get(term).cloned())
             .ok_or_else(|| format!("Missing row binding for variable {}", term).into())
     } else if term.starts_with('<') && term.ends_with('>') {
-        Ok(term.trim_start_matches('<').trim_end_matches('>').to_string())
+        Ok(term
+            .trim_start_matches('<')
+            .trim_end_matches('>')
+            .to_string())
     } else if term.contains(':') && !term.starts_with("http://") && !term.starts_with("https://") {
         let mut parts = term.splitn(2, ':');
         let prefix = parts.next().unwrap_or_default();
@@ -312,9 +434,8 @@ fn loss_gradient(
     row: &HashMap<String, RdfTerm>,
     label_var: &str,
 ) -> TrainResult<f64> {
-    let p = p_q.clamp(1e-15, 1.0 - 1e-15);
     match loss {
-        LossFn::CrossEntropy | LossFn::Nll => Ok(-1.0 / p.max(1e-15)),
+        LossFn::CrossEntropy | LossFn::Nll => Ok(-1.0 / p_q.max(f64::MIN_POSITIVE)),
         LossFn::Mse => {
             let label = row
                 .get(label_var.trim_start_matches('?'))
@@ -329,7 +450,9 @@ fn loss_gradient(
                 .or_else(|| row.get(label_var))
                 .ok_or_else(|| format!("Missing label variable {}", label_var))?;
             let label_f64 = rdf_term_to_f64(label)?;
-            Ok(-(label_f64 / p) + ((1.0 - label_f64) / (1.0 - p)))
+            let p = p_q.max(f64::MIN_POSITIVE);
+            let q = (1.0 - p_q).max(f64::MIN_POSITIVE);
+            Ok(-(label_f64 / p) + ((1.0 - label_f64) / q))
         }
     }
 }
@@ -337,8 +460,8 @@ fn loss_gradient(
 pub fn build_ground_reasoner_from_db(db: &SparqlDatabase, extra_rule: Option<Rule>) -> Reasoner {
     let mut reasoner = Reasoner::new();
     reasoner.dictionary = db.dictionary.clone();
-    for triple in &db.triples {
-        reasoner.index_manager.insert(triple);
+    for triple in db.query_default_triples(None, None, None) {
+        reasoner.dataset_index.insert(&triple);
     }
     if let Some(rule) = extra_rule {
         reasoner.add_rule(rule);
@@ -348,6 +471,12 @@ pub fn build_ground_reasoner_from_db(db: &SparqlDatabase, extra_rule: Option<Rul
 
 #[cfg(test)]
 mod tests {
+    mod ml_local {
+        include!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/tests/common/ml_local.rs"
+        ));
+    }
     use super::*;
     use shared::query::{LossFn, OptimizerKind};
     use shared::rule::FilterCondition;
@@ -380,7 +509,7 @@ mod tests {
 
     #[test]
     fn neural_train_exclusive_3class() {
-        let mut db = SparqlDatabase::new();
+        let mut db = ml_local::database();
         for (idx, label, features) in [
             ("s0", "A", [1.0, 0.0, 0.0]),
             ("s1", "A", [1.0, 0.0, 0.0]),
@@ -403,15 +532,27 @@ mod tests {
                 group_type: OwnedNeuralGroupType::Exclusive {
                     choices: vec![
                         OwnedNeuralChoice {
-                            triple_template: ("?sensor".to_string(), "http://example.org/pred".to_string(), "A".to_string()),
+                            triple_template: (
+                                "?sensor".to_string(),
+                                "http://example.org/pred".to_string(),
+                                "A".to_string(),
+                            ),
                             prob_var: "?p0".to_string(),
                         },
                         OwnedNeuralChoice {
-                            triple_template: ("?sensor".to_string(), "http://example.org/pred".to_string(), "B".to_string()),
+                            triple_template: (
+                                "?sensor".to_string(),
+                                "http://example.org/pred".to_string(),
+                                "B".to_string(),
+                            ),
                             prob_var: "?p1".to_string(),
                         },
                         OwnedNeuralChoice {
-                            triple_template: ("?sensor".to_string(), "http://example.org/pred".to_string(), "C".to_string()),
+                            triple_template: (
+                                "?sensor".to_string(),
+                                "http://example.org/pred".to_string(),
+                                "C".to_string(),
+                            ),
                             prob_var: "?p2".to_string(),
                         },
                     ],
@@ -423,6 +564,11 @@ mod tests {
 
         let base_reasoner = build_ground_reasoner_from_db(&db, None);
         let model = execute_ml_training_owned(&clause, &base_reasoner, &mut db).unwrap();
+
+        let seeded_a = execute_ml_training_owned_seeded(&clause, &base_reasoner, &mut db, 17).unwrap();
+        let seeded_b = execute_ml_training_owned_seeded(&clause, &base_reasoner, &mut db, 17).unwrap();
+        assert_eq!(seeded_a.to_bytes().unwrap(), seeded_b.to_bytes().unwrap(),
+            "seeded training must survive nondeterministic query row order");
 
         let eval_rows = query_training_rows(&mut db, query).unwrap();
         let mut correct_probs = Vec::new();
@@ -444,7 +590,7 @@ mod tests {
 
     #[test]
     fn neural_train_two_group_grad_flow() {
-        let mut db = SparqlDatabase::new();
+        let mut db = ml_local::database();
         for sample in ["g0", "g1", "g2", "g3"] {
             db.add_triple_parts(sample, "http://example.org/lx0", "0");
             db.add_triple_parts(sample, "http://example.org/lx1", "1");
@@ -482,11 +628,19 @@ mod tests {
                     group_type: OwnedNeuralGroupType::Exclusive {
                         choices: vec![
                             OwnedNeuralChoice {
-                                triple_template: ("?sample".to_string(), "http://example.org/left".to_string(), "L0".to_string()),
+                                triple_template: (
+                                    "?sample".to_string(),
+                                    "http://example.org/left".to_string(),
+                                    "L0".to_string(),
+                                ),
                                 prob_var: "?p0".to_string(),
                             },
                             OwnedNeuralChoice {
-                                triple_template: ("?sample".to_string(), "http://example.org/left".to_string(), "L1".to_string()),
+                                triple_template: (
+                                    "?sample".to_string(),
+                                    "http://example.org/left".to_string(),
+                                    "L1".to_string(),
+                                ),
                                 prob_var: "?p1".to_string(),
                             },
                         ],
@@ -497,11 +651,19 @@ mod tests {
                     group_type: OwnedNeuralGroupType::Exclusive {
                         choices: vec![
                             OwnedNeuralChoice {
-                                triple_template: ("?sample".to_string(), "http://example.org/right".to_string(), "R0".to_string()),
+                                triple_template: (
+                                    "?sample".to_string(),
+                                    "http://example.org/right".to_string(),
+                                    "R0".to_string(),
+                                ),
                                 prob_var: "?p0".to_string(),
                             },
                             OwnedNeuralChoice {
-                                triple_template: ("?sample".to_string(), "http://example.org/right".to_string(), "R1".to_string()),
+                                triple_template: (
+                                    "?sample".to_string(),
+                                    "http://example.org/right".to_string(),
+                                    "R1".to_string(),
+                                ),
                                 prob_var: "?p1".to_string(),
                             },
                         ],
@@ -521,7 +683,137 @@ mod tests {
         let (_tracked_right, right_probs) = model
             .forward_with_grads(&[build_feature_vec(row, &["?rx0", "?rx1"]).unwrap()])
             .unwrap();
-        assert!(left_probs[0][1] > 0.8, "left call did not receive useful gradient");
-        assert!(right_probs[0][1] > 0.8, "right call did not receive useful gradient");
+        assert!(
+            left_probs[0][1] > 0.8,
+            "left call did not receive useful gradient"
+        );
+        assert!(
+            right_probs[0][1] > 0.8,
+            "right call did not receive useful gradient"
+        );
+    }
+
+    #[test]
+    fn loss_gradients_match_their_declared_objectives() {
+        let row = |label: &str| HashMap::from([("label".to_string(), label.to_string())]);
+        let cross_entropy = |p: f64| -p.ln();
+        let binary = |y: f64, p: f64| -(y * p.ln() + (1.0 - y) * (-p).ln_1p());
+        for p in [1e-300, 1e-20, 1e-15, 0.3, 0.5, 0.999, 1.0 - 1e-12] {
+            let h = p * 1e-6;
+            let numeric = (cross_entropy(p + h) - cross_entropy(p - h)) / (2.0 * h);
+            for loss in [LossFn::CrossEntropy, LossFn::Nll] {
+                let analytic = loss_gradient(loss, p, &row("A"), "?label").unwrap();
+                assert!(((analytic - numeric) / numeric).abs() <= 1e-6, "{p}: {analytic} vs {numeric}");
+            }
+            if p > 0.9999 {
+                continue;
+            }
+            for y in [0.0, 1.0] {
+                let h = p.min(1.0 - p) * 1e-6;
+                let numeric = (binary(y, p + h) - binary(y, p - h)) / (2.0 * h);
+                let analytic =
+                    loss_gradient(LossFn::BinaryCrossEntropy, p, &row(&y.to_string()), "?label").unwrap();
+                assert!(((analytic - numeric) / numeric).abs() <= 1e-6, "{y} {p}: {analytic} vs {numeric}");
+            }
+        }
+        assert!(loss_gradient(LossFn::CrossEntropy, 0.0, &row("A"), "?label").unwrap().is_finite());
+        assert!(loss_gradient(LossFn::BinaryCrossEntropy, 1.0, &row("0"), "?label").unwrap().is_finite());
+    }
+
+    #[test]
+    fn mean_loss_counts_zero_gradient_examples_in_the_batch() {
+        let choice = |label: &str| OwnedNeuralChoice {
+            triple_template: (
+                "?sample".to_string(),
+                "http://example.org/pred".to_string(),
+                label.to_string(),
+            ),
+            prob_var: format!("?p{}", label),
+        };
+        let train = |samples: &[(&str, &str)]| {
+            let mut db = ml_local::database();
+            for (sample, label) in samples {
+                db.add_triple_parts(sample, "http://example.org/x", "1");
+                db.add_triple_parts(sample, "http://example.org/gold", label);
+            }
+            let query = "SELECT ?sample ?x ?label WHERE { ?sample <http://example.org/x> ?x . ?sample <http://example.org/gold> ?label . }";
+            let mut clause = make_clause(
+                query,
+                vec![OwnedNeuralCallSpec {
+                    feature_vars: vec!["?x".to_string()],
+                    group_type: OwnedNeuralGroupType::Exclusive {
+                        choices: vec![choice("A"), choice("B")],
+                    },
+                }],
+                ("?sample", "http://example.org/pred", "?label"),
+                "?label",
+            );
+            clause.optimizer = shared::query::OptimizerKind::Sgd;
+            clause.epochs = 1;
+            clause.batch_size = 2;
+            let initial = MlpNeuralPredicate::new_seeded(1, &[], OutputType::Categorical(2), 11).unwrap();
+            let (trained, _) = execute_supervised_training(&clause, &[], &mut db, Some(11)).unwrap();
+            let weights = |model: &MlpNeuralPredicate| -> Vec<f64> {
+                let saved: serde_json::Value = serde_json::from_slice(&model.to_bytes().unwrap()).unwrap();
+                saved["layers"][0]["weights"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .flat_map(|row| row.as_array().unwrap().iter().map(|v| v.as_f64().unwrap()))
+                    .chain(saved["layers"][0]["bias"].as_array().unwrap().iter().map(|v| v.as_f64().unwrap()))
+                    .collect()
+            };
+            weights(&trained)
+                .iter()
+                .zip(weights(&initial))
+                .map(|(after, before)| after - before)
+                .collect::<Vec<f64>>()
+        };
+        let alone = train(&[("s0", "A")]);
+        let with_unreachable_target = train(&[("s0", "A"), ("s1", "Z")]);
+        for (full, half) in alone.iter().zip(&with_unreachable_target) {
+            assert!(full.abs() > 0.0);
+            assert!((full - 2.0 * half).abs() <= 1e-12, "{full} vs {half}");
+        }
+    }
+
+    #[test]
+    fn timed_seeded_training_matches_seeded_training_and_accounts_phases() {
+        let mut db = ml_local::database();
+        for (sample, x, label) in [("t0", "0", "A"), ("t1", "1", "B"), ("t2", "0", "A")] {
+            db.add_triple_parts(sample, "http://example.org/x", x);
+            db.add_triple_parts(sample, "http://example.org/gold", label);
+        }
+        let query = "SELECT ?sample ?x ?label WHERE { ?sample <http://example.org/x> ?x . ?sample <http://example.org/gold> ?label . }";
+        let choice = |label: &str| OwnedNeuralChoice {
+            triple_template: (
+                "?sample".to_string(),
+                "http://example.org/pred".to_string(),
+                label.to_string(),
+            ),
+            prob_var: format!("?p{}", label),
+        };
+        let mut clause = make_clause(
+            query,
+            vec![OwnedNeuralCallSpec {
+                feature_vars: vec!["?x".to_string()],
+                group_type: OwnedNeuralGroupType::Exclusive {
+                    choices: vec![choice("A"), choice("B")],
+                },
+            }],
+            ("?sample", "http://example.org/pred", "?label"),
+            "?label",
+        );
+        clause.epochs = 2;
+        let base_reasoner = build_ground_reasoner_from_db(&db, None);
+
+        let seeded = execute_ml_training_owned_seeded(&clause, &base_reasoner, &mut db, 5).unwrap();
+        let start = Instant::now();
+        let (timed, timings) =
+            execute_ml_training_owned_seeded_timed(&clause, &base_reasoner, &mut db, 5).unwrap();
+        let total = start.elapsed();
+
+        assert_eq!(seeded.to_bytes().unwrap(), timed.to_bytes().unwrap());
+        assert!(timings.data_fetch + timings.learning <= total);
     }
 }
