@@ -1,8 +1,9 @@
 [package]
 name = "ml"
-version = "0.1.1"
-edition = "2021"
-license = "MPL-2.0"
+version.workspace      = true
+edition.workspace      = true
+license.workspace      = true
+rust-version.workspace = true
 description = "Machine Learning"
 
 [dependencies]
@@ -16,3 +17,6 @@ shared = { path = "../shared" }
 
 [build-dependencies]
 pyo3-build-config = "0.23.3"
+
+[lints]
+workspace = true

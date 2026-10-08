@@ -1,0 +1,4 @@
+# Deliberately minimal: defaults plus a wider line budget, because the codebase
+# already uses long generic signatures. Keeping the config small means `cargo fmt`
+# stays predictable and the one-off formatting commit stays reviewable.
+max_width = 100

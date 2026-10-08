@@ -1,6 +1,17 @@
 [workspace]
 resolver = "2"
-default-members = ["kolibrie", "shared", "datalog", "cli", "kolibrie-http-server"]
+# `python` is excluded from default-members because it is a cdylib and needs a
+# dedicated build; it has its own CI job. Everything else must be checked by a
+# bare `cargo build`/`clippy`.
+default-members = [
+  "kolibrie",
+  "shared",
+  "datalog",
+  "datalogmtl",
+  "ml",
+  "cli",
+  "kolibrie-http-server",
+]
 members = [
   "kolibrie",
   "shared",
@@ -15,6 +26,40 @@ members = [
 exclude = [
   "target/", # exclude bench testing
 ]
+
+[workspace.package]
+version      = "0.1.1"
+edition      = "2021"
+license      = "MPL-2.0"
+# Floor imposed by the dependency tree (hashbrown / indexmap / toml_edit all
+# declare 1.85). Enforced by a dedicated CI job, not merely declared.
+rust-version = "1.85"
+authors      = [
+  "Volodymyr Kadzhaia <vkadzhaia@gmail.com>",
+  "Pieter Bonte <pieter.bonte@kuleuven.be>",
+]
+repository   = "https://github.com/StreamIntelligenceLab/Kolibrie"
+
+# Everything starts at `warn`. Escalation to `deny` happens per crate, once that
+# crate's count reaches zero — see the architecture doc, §8.
+[workspace.lints.rust]
+# The workhorse for the surface-shrinking work: flags every `pub` item that is
+# not reachable from the crate root, i.e. exactly the set that should be
+# `pub(crate)`.
+unreachable_pub               = "warn"
+missing_docs                  = "warn"
+missing_debug_implementations = "warn"
+unused_qualifications         = "warn"
+unused_lifetimes              = "warn"
+unsafe_code                   = "warn"
+
+[workspace.lints.clippy]
+all = { level = "warn", priority = -1 }
+missing_errors_doc = "warn"
+missing_panics_doc = "warn"
+# Deliberately off: too noisy to be useful before the surface shrinks.
+must_use_candidate      = "allow"
+module_name_repetitions = "allow"
 
 [workspace.dependencies]
 quick-xml = "0.38.1"

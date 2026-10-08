@@ -1,7 +1,9 @@
 [package]
 name = "cli"
-version = "0.1.1"
-edition = "2021"
+version.workspace      = true
+edition.workspace      = true
+license.workspace      = true
+rust-version.workspace = true
 description = "A command-line interface for Kolibrie"
 
 [dependencies]
@@ -11,3 +13,6 @@ kolibrie = { path = "../kolibrie" }
 [features]
 default = []
 ml = ["kolibrie/ml"]
+
+[lints]
+workspace = true

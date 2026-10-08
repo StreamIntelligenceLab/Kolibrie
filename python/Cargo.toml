@@ -1,7 +1,9 @@
 [package]
 name = "kolibrie-python"
-version = "0.1.1"
-edition = "2021"
+version.workspace      = true
+edition.workspace      = true
+license.workspace      = true
+rust-version.workspace = true
 description = "Python Binding"
 
 [lib]
@@ -17,3 +19,6 @@ kolibrie_core = { package = "kolibrie", path = "../kolibrie" }
 [features]
 default = []
 ml = ["kolibrie_core/ml"]
+
+[lints]
+workspace = true

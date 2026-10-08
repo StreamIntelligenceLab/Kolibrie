@@ -1,0 +1,32 @@
+# cargo-deny configuration.
+#
+# Scope is deliberately narrow for now: licences and duplicate versions. The
+# advisories database is NOT a blocking gate yet — an unrelated RUSTSEC advisory
+# failing every build mid-refactor is pure cost. Revisit once the structural work
+# has landed.
+
+[licenses]
+# Permit the licences actually present in the tree today. Anything new has to be
+# added here deliberately, which is the point.
+allow = [
+  "MPL-2.0",
+  "MIT",
+  "Apache-2.0",
+  "Apache-2.0 WITH LLVM-exception",
+  "BSD-2-Clause",
+  "BSD-3-Clause",
+  "ISC",
+  "Unicode-3.0",
+  "Zlib",
+  "CC0-1.0",
+]
+confidence-threshold = 0.9
+
+[bans]
+# Catches the pyo3 0.23/0.25 split currently in Cargo.lock, and anything like it.
+multiple-versions = "warn"
+wildcards = "warn"
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"

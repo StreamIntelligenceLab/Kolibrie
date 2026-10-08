@@ -1,0 +1,6 @@
+# Pinned toolchain for day-to-day development and reproducible local builds.
+# This is NOT the MSRV — that is `rust-version` in [workspace.package] (1.85)
+# and is enforced separately by the `msrv` CI job.
+[toolchain]
+channel    = "1.96.0"
+components = ["rustfmt", "clippy"]

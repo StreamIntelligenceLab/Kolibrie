@@ -1,0 +1,149 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+
+jobs:
+  # ── Gates that must stay green ──────────────────────────────────────────────
+
+  test:
+    name: test (${{ matrix.features }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        features: [default, no-default]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Build
+        run: |
+          if [ "${{ matrix.features }}" = "no-default" ]; then
+            cargo build --workspace --all-targets --no-default-features
+          else
+            cargo build --workspace --all-targets
+          fi
+      - name: Test
+        run: |
+          if [ "${{ matrix.features }}" = "no-default" ]; then
+            cargo test --workspace --all-targets --no-default-features
+          else
+            cargo test --workspace --all-targets
+          fi
+
+  # Advisory until the one-off `cargo fmt --all` commit lands: the tree has never
+  # been formatted, so this currently reports ~1,590 hunks. That reformat needs a
+  # quiet merge window — it conflicts with every in-flight branch. Flip
+  # `continue-on-error` to false in the same commit.
+  fmt:
+    name: rustfmt (advisory)
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt
+      - run: cargo fmt --all --check
+
+  msrv:
+    name: MSRV (1.85)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      # Pin to the declared rust-version so the MSRV is enforced, not aspirational.
+      - uses: dtolnay/rust-toolchain@1.85.0
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo check --workspace --all-targets
+
+  docs:
+    name: rustdoc
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      # Broken intra-doc links are a hard failure even while `missing_docs` is
+      # still only a warning.
+      - run: cargo doc --workspace --no-deps
+        env:
+          RUSTDOCFLAGS: "-D rustdoc::broken_intra_doc_links"
+
+  # ── The ML / Python surface, which `default-members` does not cover ─────────
+
+  ml:
+    name: ml feature + python cdylib
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: "3.11" }
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo build -p kolibrie --features ml --all-targets
+      - run: cargo build -p kolibrie-python
+
+  # ── Advisory for now: reports, does not block ───────────────────────────────
+  #
+  # `clippy` and `missing_docs` currently produce ~3,000 warnings by design —
+  # that is the burn-down metric, not a regression. These jobs flip to blocking
+  # per crate as each reaches zero (architecture doc §8).
+
+  lint-report:
+    name: clippy + warning count (advisory)
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
+      - name: Clippy
+        run: cargo clippy --workspace --all-targets
+      - name: Warning count by lint
+        run: python3 scripts/warning_report.py --by-crate
+
+  supply-chain:
+    name: deny + unused deps (advisory)
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: "cargo-deny,cargo-machete"
+      - run: cargo deny check licenses bans sources
+      - run: cargo machete
+
+  public-api:
+    name: public API surface (advisory)
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+      # cargo-public-api needs a nightly rustdoc to emit its JSON.
+      - uses: dtolnay/rust-toolchain@nightly
+      - uses: Swatinem/rust-cache@v2
+      - uses: taiki-e/install-action@v2
+        with: { tool: cargo-public-api }
+      - name: Diff public API against the checked-in baselines
+        run: |
+          for c in shared datalog datalogmtl kolibrie ml; do
+            echo "::group::$c"
+            cargo public-api -p "$c" --simplified > "/tmp/$c.txt" || true
+            if [ -f "api-baseline/$c.txt" ]; then
+              diff -u "api-baseline/$c.txt" "/tmp/$c.txt" || true
+            else
+              echo "no baseline for $c yet"
+            fi
+            echo "::endgroup::"
+          done

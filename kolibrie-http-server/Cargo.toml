@@ -1,7 +1,9 @@
 [package]
 name = "kolibrie-http-server"
-version = "0.1.1"
-edition = "2021"
+version.workspace      = true
+edition.workspace      = true
+license.workspace      = true
+rust-version.workspace = true
 
 [dependencies]
 kolibrie = { path = "../kolibrie" }
@@ -14,3 +16,6 @@ serde_json = "1.0"
 [features]
 default = []
 ml = ["kolibrie/ml"]
+
+[lints]
+workspace = true
