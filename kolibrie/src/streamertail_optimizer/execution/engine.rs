@@ -355,14 +355,13 @@ mod tests {
         add(&mut database, c, predicate, c, GraphId::Default);
         add(&mut database, c, predicate, d, GraphId::Default);
 
+        // `candidates` yields the index's hash order, which varies per process, so
+        // this fixture can only be asserted on by content and never by position.
+        // It must contain both self-referential and non-self-referential quads for
+        // the conflict rejection below to be exercised at all.
         let all = candidates(&database, GraphId::Default, None, Some(predicate), None);
-        let last_valid = all
-            .iter()
-            .rposition(|(subject, _, object)| subject == object)
-            .unwrap();
-        assert!(all[..last_valid]
-            .iter()
-            .any(|(subject, _, object)| subject != object));
+        assert!(all.iter().any(|(subject, _, object)| subject == object));
+        assert!(all.iter().any(|(subject, _, object)| subject != object));
 
         let pattern = QuadPattern {
             subject: variable("?x"),
@@ -381,6 +380,9 @@ mod tests {
             ],
         );
 
+        // Unbound `row(&[])` matches both self-referential quads; `x = a` extends and
+        // keeps its other bindings; `x = d` is rejected because the only quad with
+        // object `d` has subject `c`, and `?x`/`$x` are the same variable.
         let mut expected: Bindings = all
             .iter()
             .filter(|(subject, _, object)| subject == object)
@@ -388,7 +390,9 @@ mod tests {
             .collect();
         assert_eq!(expected.len(), 2);
         expected.push(row(&[("x", a), ("keep", 7)]));
-        assert_eq!(results, expected);
+        // Compared as a multiset: scan makes no ordering guarantee (bag semantics,
+        // no ORDER BY) and its row order follows the hash order above.
+        assert_eq!(sorted(results), sorted(expected));
     }
 
     #[test]
