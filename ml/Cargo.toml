@@ -9,14 +9,14 @@ description = "Machine Learning"
 [dependencies]
 serde = { workspace = true }
 serde_json = { workspace = true }
-pyo3 = { workspace = true }
+pyo3 = { workspace = true, features = ["auto-initialize"] }
 rand = { workspace = true }
 candle-core = { version = "0.8", default-features = false }
 candle-nn = { version = "0.8", default-features = false }
 shared = { path = "../shared" }
 
 [build-dependencies]
-pyo3-build-config = "0.23.3"
+pyo3-build-config = "0.25"
 
 [lints]
 workspace = true

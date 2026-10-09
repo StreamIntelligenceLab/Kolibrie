@@ -73,7 +73,10 @@ url = "2.5.2"
 percent-encoding = "2.3.1"
 httparse = "1.9.4"
 crossbeam = "0.8.4"
-pyo3 = { version = "0.25.1", features = ["extension-module", "auto-initialize", "abi3-py310"] }
+# Features are declared per-consumer: `extension-module` is correct only for the
+# cdylib and actively breaks crates that EMBED Python (it suppresses libpython
+# linking). See python/ and ml/.
+pyo3 = { version = "0.25.1" }
 clap = { version = "4.5.45", features = ["derive"] }
 
 [profile.bench]
