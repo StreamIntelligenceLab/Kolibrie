@@ -92,6 +92,31 @@ name = "optimizer_hotpath"
 path = "benches/optimizer_hotpath.rs"
 harness = false
 
+[[bench]]
+name = "micro_dictionary"
+path = "benches/micro_dictionary.rs"
+harness = false
+
+[[bench]]
+name = "micro_pattern"
+path = "benches/micro_pattern.rs"
+harness = false
+
+[[bench]]
+name = "micro_scan"
+path = "benches/micro_scan.rs"
+harness = false
+
+[[bench]]
+name = "micro_join"
+path = "benches/micro_join.rs"
+harness = false
+
+[[bench]]
+name = "micro_field_access"
+path = "benches/micro_field_access.rs"
+harness = false
+
 [[example]]
 name = "replay_profile"
 path = "examples/replay_profile/replay_profile.rs"

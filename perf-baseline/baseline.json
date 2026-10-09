@@ -1,0 +1,164 @@
+{
+  "benchmarks": {
+    "execution_hot_paths/filter_numeric": {
+      "mad_ns": 22619.957752019833,
+      "median_ns": 2161031.668691299,
+      "noise_pct": 0.2168223567097303
+    },
+    "execution_hot_paths/graph_fixed_scan": {
+      "mad_ns": 17464.613614064536,
+      "median_ns": 1722372.9883413462,
+      "noise_pct": 1.251174265689546
+    },
+    "execution_hot_paths/graph_variable_scan": {
+      "mad_ns": 304459.9603437616,
+      "median_ns": 9171983.402279202,
+      "noise_pct": 8.670778513697226
+    },
+    "execution_hot_paths/join_two_patterns": {
+      "mad_ns": 129729.69519221186,
+      "median_ns": 11762492.515463458,
+      "noise_pct": 2.7186946729333688
+    },
+    "execution_hot_paths/union_branches": {
+      "mad_ns": 377111.8436818391,
+      "median_ns": 21180731.701811977,
+      "noise_pct": 1.7917039736630664
+    },
+    "hybrid_escalated_exact": {
+      "mad_ns": 1049.778442327739,
+      "median_ns": 103958.94729803926,
+      "noise_pct": 1.6670213571891825
+    },
+    "hybrid_full_sdd": {
+      "mad_ns": 522.0458300507711,
+      "median_ns": 50154.56849369216,
+      "noise_pct": 1.5026853224571608
+    },
+    "hybrid_topk_only": {
+      "mad_ns": 425.6051619284559,
+      "median_ns": 51284.28008075712,
+      "noise_pct": 0.2755541927930574
+    },
+    "micro_dictionary/decode": {
+      "mad_ns": 2164.608006487841,
+      "median_ns": 71725.38532906721,
+      "noise_pct": 0.947154362969177
+    },
+    "micro_dictionary/encode_cold": {
+      "mad_ns": 12444.04678400476,
+      "median_ns": 996553.3643394648,
+      "noise_pct": 0.0215031312128929
+    },
+    "micro_dictionary/encode_warm": {
+      "mad_ns": 5489.949708405875,
+      "median_ns": 180461.22069798154,
+      "noise_pct": 1.4927342505956656
+    },
+    "micro_field_access/direct_field": {
+      "mad_ns": 47.06297023937855,
+      "median_ns": 5371.375011126101,
+      "noise_pct": 0.37802315639087714
+    },
+    "micro_field_access/inline_accessor": {
+      "mad_ns": 60.69775603882901,
+      "median_ns": 5348.187985629034,
+      "noise_pct": 0.1465019311816682
+    },
+    "micro_field_access/outlined_accessor": {
+      "mad_ns": 54.960221473240736,
+      "median_ns": 5366.36312487982,
+      "noise_pct": 0.027831793523242318
+    },
+    "micro_join/schema_plus_tuples": {
+      "mad_ns": 308337.5026059155,
+      "median_ns": 11616364.6,
+      "noise_pct": 1.2027375253584764
+    },
+    "micro_join/vec_hashmap_string_keys": {
+      "mad_ns": 948740.1860564947,
+      "median_ns": 52013312.5,
+      "noise_pct": 0.1826526318609139
+    },
+    "micro_pattern_construct_triple": {
+      "mad_ns": 566.556667900254,
+      "median_ns": 20565.794076055092,
+      "noise_pct": 4.455583297743425
+    },
+    "micro_pattern_matches_rule_pattern/all_variables": {
+      "mad_ns": 18691.959107825845,
+      "median_ns": 1116864.304190841,
+      "noise_pct": 0.32022372016506545
+    },
+    "micro_pattern_matches_rule_pattern/fully_bound": {
+      "mad_ns": 273.4427830033341,
+      "median_ns": 32677.501271929825,
+      "noise_pct": 0.5103419639539943
+    },
+    "micro_pattern_matches_rule_pattern/predicate_bound": {
+      "mad_ns": 6719.69466067488,
+      "median_ns": 514430.47894001484,
+      "noise_pct": 2.1971488422547685
+    },
+    "micro_scan_broad_all/direct": {
+      "mad_ns": 16986.629880636418,
+      "median_ns": 212670.44340925204,
+      "noise_pct": 1.5428350893484322
+    },
+    "micro_scan_broad_all/dyn_boxed_iter": {
+      "mad_ns": 22697.31126407595,
+      "median_ns": 252873.8277139261,
+      "noise_pct": 8.299867603492537
+    },
+    "micro_scan_broad_all/dyn_trait": {
+      "mad_ns": 14249.39294241824,
+      "median_ns": 218475.3266665174,
+      "noise_pct": 2.882159081574738
+    },
+    "micro_scan_broad_all/static_trait": {
+      "mad_ns": 11405.97820213783,
+      "median_ns": 212359.86188759626,
+      "noise_pct": 4.745785521514314
+    },
+    "micro_scan_medium_predicate/direct": {
+      "mad_ns": 156.6426586258272,
+      "median_ns": 12188.661601208547,
+      "noise_pct": 0.2972990928805334
+    },
+    "micro_scan_medium_predicate/dyn_boxed_iter": {
+      "mad_ns": 728.9603876001298,
+      "median_ns": 15490.603681299242,
+      "noise_pct": 5.148712422739859
+    },
+    "micro_scan_medium_predicate/dyn_trait": {
+      "mad_ns": 157.69386178415465,
+      "median_ns": 12140.09218211463,
+      "noise_pct": 0.3121341923528435
+    },
+    "micro_scan_medium_predicate/static_trait": {
+      "mad_ns": 132.02919833481977,
+      "median_ns": 12157.557802386804,
+      "noise_pct": 0.5003148146085926
+    },
+    "micro_scan_selective_subject/direct": {
+      "mad_ns": 1.2224834415550134,
+      "median_ns": 94.73972394643476,
+      "noise_pct": 1.8132212288873801
+    },
+    "micro_scan_selective_subject/dyn_boxed_iter": {
+      "mad_ns": 1.2396261164237288,
+      "median_ns": 116.98364330890227,
+      "noise_pct": 1.6840692982110435
+    },
+    "micro_scan_selective_subject/dyn_trait": {
+      "mad_ns": 0.972563643455786,
+      "median_ns": 93.36038395705125,
+      "noise_pct": 2.0473166658331636
+    },
+    "micro_scan_selective_subject/static_trait": {
+      "mad_ns": 0.981793343180438,
+      "median_ns": 93.64150995101141,
+      "noise_pct": 2.4850766593260696
+    }
+  }
+}
