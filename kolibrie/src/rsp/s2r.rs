@@ -366,7 +366,10 @@ where
     }
 }
 
-#[allow(dead_code)]
+// Test-only: drains a window's output channel on a background thread so a test can
+// assert on what the window emitted. Marked `#[cfg(test)]` rather than carrying an
+// `#[allow(dead_code)]`, which had hidden the fact that nothing in production uses it.
+#[cfg(test)]
 struct ConsumerInner<I>
 where
     I: Eq + PartialEq + Clone + Debug + Hash + Send,
@@ -374,7 +377,7 @@ where
     data: Mutex<Vec<ContentContainer<I>>>,
 }
 
-#[allow(dead_code)]
+#[cfg(test)]
 struct Consumer<I>
 where
     I: Eq + PartialEq + Clone + Debug + Hash + Send,
@@ -382,7 +385,7 @@ where
     inner: Arc<ConsumerInner<I>>,
 }
 
-#[allow(dead_code)]
+#[cfg(test)]
 impl<I> Consumer<I>
 where
     I: Eq + PartialEq + Clone + Debug + Hash + Send + 'static,
@@ -413,6 +416,7 @@ where
         self.inner.data.lock().unwrap().len()
     }
 }
+
 #[derive(Eq, PartialEq, Clone, Debug, Hash)]
 pub struct WindowTriple {
     pub s: String,

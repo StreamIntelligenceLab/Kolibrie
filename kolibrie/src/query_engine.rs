@@ -11,9 +11,6 @@
 use crate::execute_query::execute_query_rayon_parallel2_volcano;
 use crate::sparql_database::SparqlDatabase;
 
-#[derive(Debug, Clone, Default)]
-pub struct QueryEngineConfig;
-
 pub struct QueryEngine {
     database: SparqlDatabase,
 }
@@ -23,10 +20,6 @@ impl QueryEngine {
         Self {
             database: SparqlDatabase::new(),
         }
-    }
-
-    pub fn with_config(_config: QueryEngineConfig) -> Result<Self, String> {
-        Ok(Self::new())
     }
 
     pub fn load_ntriples_to_memory(&mut self, data: &str) -> Result<(), String> {
@@ -75,7 +68,7 @@ impl QueryEngine {
         };
 
         QueryExplanation {
-            will_use_volcano: matches!(storage_mode, StorageMode::Static | StorageMode::Hybrid),
+            will_use_volcano: matches!(storage_mode, StorageMode::Static),
             storage_mode,
             has_windowing,
             window_clauses: extract_window_clauses(sparql),
@@ -95,11 +88,16 @@ impl Default for QueryEngine {
     }
 }
 
+/// How a query will be served. `explain` derives this from the query text alone.
+//
+// `Hybrid` was removed with the rest of the step-3 dead code: nothing ever
+// constructed it, so the `Static | Hybrid` arm above was unreachable. Reinstate it
+// together with whatever first produces it, rather than leaving a variant callers
+// must match on but can never observe.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum StorageMode {
     Static,
     Streaming,
-    Hybrid,
 }
 
 #[derive(Debug, Clone)]

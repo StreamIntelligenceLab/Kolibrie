@@ -1717,7 +1717,7 @@ fn handle_dmtl_register(body: &str, dmtl_sessions: &DmtlSessions) -> String {
     let shape_ingester = if shapes.is_empty() {
         None
     } else {
-        Some(ShapeIngester::new(shapes, Arc::clone(&dict_arc)))
+        Some(ShapeIngester::new(shapes))
     };
 
     let store = IntervalFactStore::new(horizon_ms);

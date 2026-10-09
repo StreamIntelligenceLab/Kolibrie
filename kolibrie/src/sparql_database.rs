@@ -233,7 +233,6 @@ pub struct SparqlDatabase {
     pub implicit_neural_materialization: bool,
 }
 
-#[allow(dead_code)]
 impl SparqlDatabase {
     /// Initialize with host-selected ML authority
     pub fn with_ml_context(context: crate::ml_policy::MlExecutionContext) -> Self {

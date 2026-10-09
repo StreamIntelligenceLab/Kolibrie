@@ -786,28 +786,6 @@ impl<'a> CostEstimator<'a> {
         !variables_of(left).is_disjoint(&variables_of(right))
     }
 
-    /// Counts the number of bound variables in a triple pattern
-    #[allow(dead_code)]
-    fn count_bound_variables(&self, pattern: &TriplePattern) -> usize {
-        let mut count = 0;
-
-        match pattern.0 {
-            Term::Constant(_) => count += 1,
-            Term::Variable(_) | Term::QuotedTriple(_) => {}
-        }
-
-        match pattern.1 {
-            Term::Constant(_) => count += 1,
-            Term::Variable(_) | Term::QuotedTriple(_) => {}
-        }
-
-        match pattern.2 {
-            Term::Constant(_) => count += 1,
-            Term::Variable(_) | Term::QuotedTriple(_) => {}
-        }
-
-        count
-    }
 
 }
 
@@ -817,43 +795,10 @@ mod tests {
     use shared::terms::{Bindings, Term};
     use std::collections::HashMap;
 
-    fn create_test_stats() -> DatabaseStats {
-        let mut stats = DatabaseStats::new();
-        stats.total_triples = 1000;
-        stats
-    }
-
-    #[test]
-    fn test_count_bound_variables_all_vars() {
-        let stats = create_test_stats();
-        let estimator = CostEstimator::new(&stats);
-        let pattern = (
-            Term::Variable("s".to_string()),
-            Term::Variable("p".to_string()),
-            Term::Variable("o".to_string()),
-        );
-        assert_eq!(estimator.count_bound_variables(&pattern), 0);
-    }
-
-    #[test]
-    fn test_count_bound_variables_some_vars() {
-        let stats = create_test_stats();
-        let estimator = CostEstimator::new(&stats);
-        let pattern = (
-            Term::Constant(1),
-            Term::Variable("p".to_string()),
-            Term::Variable("o".to_string()),
-        );
-        assert_eq!(estimator.count_bound_variables(&pattern), 1);
-    }
-
-    #[test]
-    fn test_count_bound_variables_no_vars() {
-        let stats = create_test_stats();
-        let estimator = CostEstimator::new(&stats);
-        let pattern = (Term::Constant(1), Term::Constant(2), Term::Constant(3));
-        assert_eq!(estimator.count_bound_variables(&pattern), 3);
-    }
+    // Removed with `count_bound_variables` in step 3: three tests covering a method
+    // the cost model never called. The estimator does not use bound-variable counts
+    // for selectivity today; when it does, the method and its tests come back
+    // together. Keeping them meant the suite reported coverage of code that never ran.
 
     fn unbound_scan(graph: GraphTerm) -> PhysicalOperator {
         PhysicalOperator::quad_table_scan(QuadPattern {

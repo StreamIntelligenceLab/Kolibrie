@@ -91,13 +91,14 @@ pub struct ShapeIngester {
     shapes:     Vec<StreamShape>,
     /// Per (shape_index, sorted_key_pairs), the current channel state.
     channels:   HashMap<ChannelId, ChannelState>,
-    #[allow(dead_code)]
-    dictionary: Arc<RwLock<Dictionary>>,
 }
 
 impl ShapeIngester {
-    pub fn new(shapes: Vec<StreamShape>, dictionary: Arc<RwLock<Dictionary>>) -> Self {
-        Self { shapes, channels: HashMap::new(), dictionary }
+    // Took an `Arc<RwLock<Dictionary>>` until step 3. It was stored and never read:
+    // events arrive already encoded, so ingestion does no interning. Six call sites
+    // were threading a dictionary here for nothing.
+    pub fn new(shapes: Vec<StreamShape>) -> Self {
+        Self { shapes, channels: HashMap::new() }
     }
 
     /// Process an incoming event. Returns triples to insert into the store at

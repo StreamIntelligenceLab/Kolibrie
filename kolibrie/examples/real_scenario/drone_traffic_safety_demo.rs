@@ -319,7 +319,7 @@ fn start_demo_loop(
             .expect("default background facts must parse");
 
         let mut staleness_ticks = shape_staleness(&shapes);
-        let mut ingester = ShapeIngester::new(shapes, Arc::clone(&dictionary));
+        let mut ingester = ShapeIngester::new(shapes);
         let mut evaluator = DatalogMTLEvaluator::new(
             rules,
             IntervalFactStore::new(STORE_HORIZON_TICKS),
@@ -433,7 +433,7 @@ fn apply_config(
 
     *staleness_ticks = shape_staleness(&p.shapes);
     *static_facts = p.static_facts;
-    *ingester = ShapeIngester::new(p.shapes, Arc::clone(dictionary));
+    *ingester = ShapeIngester::new(p.shapes);
     *evaluator = DatalogMTLEvaluator::new(p.rules, store, Arc::clone(dictionary))?;
     *config.current.lock().unwrap() = p.text;
     Ok(())

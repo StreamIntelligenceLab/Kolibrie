@@ -37,9 +37,14 @@ impl std::fmt::Debug for SddId {
 type VTreeId = u32;
 
 #[derive(Debug, Clone)]
-#[allow(dead_code)]
 enum VTreeNode {
-    Leaf { var: u32 },
+    // Written when the leaf is created, never read back: lookups go through
+    // `var_to_vtree`, which holds the same mapping in the useful direction. Kept
+    // rather than deleted because a vtree leaf that does not record its variable
+    // is not a vtree leaf — the structure would no longer be interpretable on its
+    // own. The allow is narrowed to this field so anything else that dies in this
+    // enum still warns.
+    Leaf { #[allow(dead_code)] var: u32 },
     Internal { left: VTreeId, right: VTreeId },
 }
 

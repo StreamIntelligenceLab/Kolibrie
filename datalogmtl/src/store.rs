@@ -134,32 +134,6 @@ impl IntervalFactStore {
         intervals.push(ValidityInterval { start: t, end: t });
     }
 
-    /// Merge overlapping or adjacent intervals in a sorted list.
-    #[allow(dead_code)]
-    fn coalesce(intervals: &mut Vec<ValidityInterval>) {
-        if intervals.len() < 2 { return; }
-        intervals.sort_by_key(|iv| iv.start);
-        let mut merged: Vec<ValidityInterval> = Vec::new();
-        for iv in intervals.drain(..) {
-            if let Some(last) = merged.last_mut() {
-                if iv.start <= last.end + 1 {
-                    last.end = last.end.max(iv.end);
-                    continue;
-                }
-            }
-            merged.push(iv);
-        }
-        *intervals = merged;
-    }
-
-    /// Returns true if triple holds at every timestamp in timestamps.
-    /// Used for Box evaluation.
-    #[allow(dead_code)]
-    fn holds_at_all(&self, triple: &Triple, timestamps: &[u64]) -> bool {
-        if timestamps.is_empty() { return true; } // vacuously true
-        let Some(intervals) = self.facts.get(triple) else { return false; };
-        timestamps.iter().all(|t| intervals.iter().any(|iv| iv.contains(*t)))
-    }
 }
 
 impl TemporalStore for IntervalFactStore {

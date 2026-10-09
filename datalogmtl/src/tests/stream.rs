@@ -38,7 +38,7 @@ fn test_stream_single_sensor() {
         on_expiry:    Vec::new(),
     };
 
-    let mut ingester = ShapeIngester::new(vec![shape], dict.clone());
+    let mut ingester = ShapeIngester::new(vec![shape]);
 
     // Events at t=0, 1000, 2000 — same room, different obs IRIs, same val.
     for (t, obs) in [(0u64, obs1), (1000, obs2), (2000, obs3)] {
@@ -107,7 +107,7 @@ fn test_stream_composite_key() {
         on_expiry:   Vec::new(),
     };
 
-    let mut ingester = ShapeIngester::new(vec![shape], dict.clone());
+    let mut ingester = ShapeIngester::new(vec![shape]);
 
     // t=0: sensorA in room42, val=22
     ingester.process_event(&RdfEvent {
@@ -193,7 +193,7 @@ fn test_expiry_facts_repeat_while_stale() {
         )],
     };
 
-    let mut ingester = ShapeIngester::new(vec![shape], dict.clone());
+    let mut ingester = ShapeIngester::new(vec![shape]);
     ingester.process_event(&RdfEvent {
         stream_iri: "http://example.org/s".into(),
         timestamp: 0,
