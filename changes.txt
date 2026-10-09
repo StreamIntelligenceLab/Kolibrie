@@ -1,3 +1,18 @@
+0.3.0
+1. Add workspace-level package metadata ([workspace.package]: version, edition, license, rust-version, authors, repository) inherited by all 8 crates; shared, python, cli and kolibrie-http-server previously had no license field despite MPL headers in every source file
+2. Add [workspace.lints] with all lints at warn, opted into by every crate; establishes the burn-down baseline of 3022 warnings (2713 missing_docs, 144 unreachable_pub, 80 missing_debug_implementations, 50 unused_qualifications, 27 deprecated, 7 unsafe_code)
+3. Declare MSRV 1.85 (the floor imposed by hashbrown, indexmap and toml_edit) and enforce it with a dedicated CI job rather than only declaring it; pin 1.96 in rust-toolchain.toml for development
+4. Add GitHub Actions CI: test (default and --no-default-features), MSRV, rustdoc and the ml/python build are blocking; rustfmt, clippy, cargo-deny and cargo-public-api are advisory until the surface shrinks
+5. Add scripts/warning_report.py so the warning count is reproducible locally and not only in CI
+6. Add rustfmt.toml and deny.toml (licences and duplicate versions; the advisories database is deliberately not a blocking gate yet)
+7. Include datalogmtl and ml in default-members; a bare cargo build never checked them before
+8. Move rumqttc and chrono to dev-dependencies: both are used only by examples, so every consumer of kolibrie was pulling in tokio and rustls
+9. Declare pyo3 features per consumer instead of workspace-wide: extension-module is correct for the python cdylib but breaks ml, which embeds Python, by suppressing libpython linking; ml and kolibrie now use auto-initialize
+10. Align pyo3-build-config to 0.25 to match pyo3; Cargo.lock previously carried both 0.23 and 0.25, so the build script configured linkage with a different pyo3 generation than the one being compiled
+11. Remove datalog's dev-dependency on shared, which duplicated its normal dependency, and switch kolibrie-http-server to the workspace serde entries
+12. Fix an order-dependent flake in scan_rejects_repeated_variable_conflicts_before_extending_rows: it asserted a positional property of a hash-ordered query result and failed about 20% of the time; the fixture is now asserted by content and the result compared as a multiset
+13. Add CONTRIBUTING.md defining the commit message structure and the requirement that every commit updates changes.txt, with CLAUDE.md pointing to it
+
 0.2.0
 1. Add support multiple window + static data for RSP engine
 2. Modify webui to support stream ingestion for RSP
