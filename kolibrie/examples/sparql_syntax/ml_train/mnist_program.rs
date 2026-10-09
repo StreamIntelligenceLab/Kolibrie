@@ -1,4 +1,7 @@
-#[allow(dead_code)]
+// `unreachable_pub` is a false positive for an example binary: nothing can import
+// from this crate root, so every `pub` here is "unreachable" by construction, while
+// still being required for visibility between this module and the example's `main`.
+#[allow(dead_code, unreachable_pub)]
 mod mnist_program {
     use std::collections::BTreeMap;
 

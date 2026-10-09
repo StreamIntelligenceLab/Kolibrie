@@ -62,7 +62,7 @@ mod tests{
     use crate::rsp::r2s::Relation2StreamOperator;
     use crate::rsp::r2s::StreamOperator::{DSTREAM, ISTREAM, RSTREAM};
     #[derive(Debug, Eq, PartialEq, Hash, Clone)]
-    pub struct Binding{
+    pub(crate) struct Binding{
         pub var: String,
         pub val: String
     }

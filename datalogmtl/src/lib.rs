@@ -19,5 +19,9 @@ pub mod rdf_parser;
 pub mod meteor_fmt;
 pub mod automata;
 
+// The test modules share fixtures via `pub`, which `unreachable_pub` flags because
+// `tests` itself is private. That is the lint working correctly on code where it has
+// nothing useful to say.
 #[cfg(test)]
+#[allow(unreachable_pub)]
 mod tests;

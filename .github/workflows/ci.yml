@@ -90,6 +90,31 @@ jobs:
       - run: cargo build -p kolibrie --features ml --all-targets
       - run: cargo build -p kolibrie-python
 
+  # Blocking because this lint is at zero and must stay there (architecture doc §8,
+  # step 4b). It is kept at `warn` in [workspace.lints] on purpose: steps 5-6 and the
+  # crate splits repeatedly make modules private, which is exactly what produces this
+  # warning, and a local `deny` would stop the build halfway through a module move.
+  # The gate belongs at PR time instead.
+  #
+  # Checked under three feature configurations, not one. The default build cannot see
+  # items behind `#[cfg(feature = "ml")]`: eight were missed on the first pass of the
+  # step-4b burn-down for exactly that reason.
+  unreachable-pub:
+    name: unreachable_pub is zero
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: "3.11" }
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: default features
+        run: scripts/check_unreachable_pub.sh --workspace --all-targets
+      - name: ml feature
+        run: scripts/check_unreachable_pub.sh -p kolibrie --features ml --all-targets
+      - name: no default features
+        run: scripts/check_unreachable_pub.sh -p kolibrie --no-default-features --all-targets
+
   # ── Advisory for now: reports, does not block ───────────────────────────────
   #
   # `clippy` and `missing_docs` currently produce ~3,000 warnings by design —

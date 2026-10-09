@@ -11,7 +11,7 @@
 use annotate_snippets::{Level, Renderer, Snippet, AnnotationKind, Group, Annotation};
 use nom:: error::Error as NomError;
 
-pub fn format_parse_error(input: &str, err: nom::Err<NomError<&str>>) -> String {
+pub(crate) fn format_parse_error(input: &str, err: nom::Err<NomError<&str>>) -> String {
     match err {
         nom::Err::Error(e) | nom::Err::Failure(e) => {
             let error_pos = e.input;

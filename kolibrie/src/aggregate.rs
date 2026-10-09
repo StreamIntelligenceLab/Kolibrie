@@ -16,7 +16,7 @@ pub(crate) struct Aggregate<'a> {
     pub distinct: bool,
 }
 impl<'a> Aggregate<'a> {
-    pub fn parse(kind: &'a str) -> Self {
+    pub(crate) fn parse(kind: &'a str) -> Self {
         match kind.strip_suffix("_DISTINCT") {
             Some(kind) => Self {
                 kind,
@@ -28,7 +28,7 @@ impl<'a> Aggregate<'a> {
             },
         }
     }
-    pub fn star_count<V: Ord>(&self, rows: &[HashMap<String, V>]) -> String {
+    pub(crate) fn star_count<V: Ord>(&self, rows: &[HashMap<String, V>]) -> String {
         if !self.distinct {
             return rows.len().to_string();
         }

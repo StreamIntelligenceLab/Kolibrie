@@ -9,6 +9,10 @@
  */
 
 #![allow(dead_code)]
+// `unreachable_pub` cannot be satisfied here. These helpers must be `pub` so the test
+// files that declare `mod common;` can call them, but the crate root is a test binary
+// that nothing can import from, so the lint flags every one of them.
+#![allow(unreachable_pub)]
 
 use kolibrie::execute_query::{execute_query_rayon_parallel2_volcano, execute_sparql_query};
 use kolibrie::sparql_database::SparqlDatabase;

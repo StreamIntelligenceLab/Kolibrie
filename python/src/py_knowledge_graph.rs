@@ -327,7 +327,7 @@ fn convert_term_back(term: shared::terms::Term) -> Term {
 }
 
 /// Python module initialization
-pub fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
+pub(crate) fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyKnowledgeGraph>()?;
     m.add_class::<PyRule>()?;             
     m.add_class::<PyFilterCondition>()?;  

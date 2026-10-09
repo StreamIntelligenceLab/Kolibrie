@@ -811,7 +811,7 @@ impl PyQueryBuilder {
     }
 }
 
-pub fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
+pub(crate) fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     // Register classes
     m.add_class::<PySparqlDatabase>()?;
     m.add_class::<PyQueryBuilder>()?;

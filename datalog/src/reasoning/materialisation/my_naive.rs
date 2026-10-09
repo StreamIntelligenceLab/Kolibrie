@@ -7,7 +7,7 @@ use crate::reasoning::materialisation::infer_generic::{SolutionMapping, Inferenc
 use crate::reasoning::materialisation::replace_variables_with_bound_values;
 use crate::reasoning::rules::{evaluate_filters, join_premise_with_hash_join};
 
-pub struct NaiveStrategy;
+pub(crate) struct NaiveStrategy;
 
 impl NaiveStrategy {
 

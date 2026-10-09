@@ -1,4 +1,6 @@
-#[allow(dead_code)]
+// See the note in mnist_program.rs: `unreachable_pub` cannot be satisfied inside an
+// example binary, where `pub` is needed for visibility but nothing can import it.
+#[allow(dead_code, unreachable_pub)]
 mod mnist_oracle {
     use datalog::reasoning::{
         materialisation::sdd_seed_materialise::infer_new_facts_with_sdd_seed_specs, Reasoner,

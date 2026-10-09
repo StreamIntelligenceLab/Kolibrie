@@ -21,7 +21,7 @@ use crate::sparql_database::SparqlDatabase;
 type MlResult<T> = Result<T, Box<dyn Error>>;
 
 /// Predicted row with original INPUT bindings and decoded output
-pub struct PredictedRow {
+pub(crate) struct PredictedRow {
     pub bindings: HashMap<String, u32>,
     pub prediction_literal: String,
     pub probability: Option<f64>,
@@ -106,7 +106,7 @@ pub(crate) fn resolve_ml_conclusion_metadata(
 }
 
 /// Execute `ML.PREDICT` and materialize its conclusion triples
-pub fn execute_ml_predict_clause<'a>(
+pub(crate) fn execute_ml_predict_clause<'a>(
     ml_predict: &MLPredictClause<'_>,
     rule: &mut CombinedRule<'a>,
     database: &mut SparqlDatabase,
@@ -290,7 +290,7 @@ fn strip_ml_conclusions<'a>(rule: &mut CombinedRule<'a>, ml_output_var: &str) {
 
 /// Materialize predictions and strip consumed conclusion templates
 #[allow(clippy::too_many_arguments)]
-pub fn materialize_ml_conclusions<'a>(
+pub(crate) fn materialize_ml_conclusions<'a>(
     database: &mut SparqlDatabase,
     ml_output_var: &str,
     prob_var: Option<&str>,

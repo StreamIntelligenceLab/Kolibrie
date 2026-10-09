@@ -20,7 +20,7 @@ use crate::sparql_database::SparqlDatabase;
 type CandleResult<T> = Result<T, Box<dyn Error>>;
 
 /// Successful Candle `ML.PREDICT` dispatch with row-aligned outputs
-pub struct CandleDispatch {
+pub(crate) struct CandleDispatch {
     pub predictions: Vec<String>,
     pub probabilities: Vec<f64>,
     pub output_kind: NeuralOutputKind,
@@ -29,7 +29,7 @@ pub struct CandleDispatch {
 }
 
 /// Try Candle for an `ML.PREDICT` clause and resolve the target predicate
-pub fn try_candle_predict(
+pub(crate) fn try_candle_predict(
     database: &SparqlDatabase,
     ml_predict: &MLPredictClause<'_>,
     conclusion: &[(&str, &str, &str)],
@@ -124,7 +124,7 @@ pub fn try_candle_predict(
 /// Resolve by model name for the physical operator runtime path
 ///
 /// Requires exactly one relation for the model, otherwise callers fall back to Python
-pub fn try_candle_predict_by_model_name(
+pub(crate) fn try_candle_predict_by_model_name(
     database: &SparqlDatabase,
     model_name: &str,
     input_rows: &[HashMap<String, u32>],

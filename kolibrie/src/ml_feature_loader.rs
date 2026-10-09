@@ -21,7 +21,7 @@ use crate::parser::parse_sparql_query;
 #[cfg(feature = "ml")]
 use crate::sparql_database::SparqlDatabase;
 
-pub type RdfTerm = String;
+pub(crate) type RdfTerm = String;
 type LoaderResult<T> = Result<T, Box<dyn Error>>;
 
 // Only the ml-gated modules (execute_ml_train, neural_relations, ml_predict_runtime)
@@ -30,7 +30,7 @@ type LoaderResult<T> = Result<T, Box<dyn Error>>;
 // default build. Demoting this module to `pub(crate)` in step 4a is what surfaced the
 // distinction — while it was `pub`, everything here counted as reachable.
 #[cfg(feature = "ml")]
-pub fn query_training_rows(
+pub(crate) fn query_training_rows(
     db: &mut SparqlDatabase,
     select_query: &str,
 ) -> LoaderResult<Vec<HashMap<String, RdfTerm>>> {
@@ -66,7 +66,7 @@ pub fn query_training_rows(
         .collect())
 }
 
-pub fn rdf_term_to_f64(term: &RdfTerm) -> LoaderResult<f64> {
+pub(crate) fn rdf_term_to_f64(term: &RdfTerm) -> LoaderResult<f64> {
     let trimmed = term.trim();
     if let Ok(value) = trimmed.parse::<f64>() {
         return Ok(value);
@@ -98,7 +98,7 @@ pub fn rdf_term_to_f64(term: &RdfTerm) -> LoaderResult<f64> {
 }
 
 #[cfg(feature = "ml")]
-pub fn build_feature_vec(
+pub(crate) fn build_feature_vec(
     row: &HashMap<String, RdfTerm>,
     feature_vars: &[&str],
 ) -> LoaderResult<Vec<f64>> {
