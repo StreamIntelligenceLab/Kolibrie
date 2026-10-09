@@ -85,13 +85,37 @@ and are latently exposed to the same variation.
 
 ## Before you commit
 
-1. `cargo build --workspace --all-targets`
-2. `cargo test --workspace --all-targets` — compare against the known-good
-   baseline rather than against zero, and name any pre-existing failure you are
-   not fixing.
-3. `python3 scripts/warning_report.py` — the warning count is a tracked metric
+1. `scripts/verify.sh` — runs tests, `cargo check --all-targets`, examples,
+   benches, and both feature configurations, then prints a summary. Compare the
+   test count against the known-good baseline rather than against zero, and name
+   any pre-existing failure you are not fixing.
+2. `python3 scripts/warning_report.py` — the warning count is a tracked metric
    and should not go up.
-4. Update `changes.txt`.
+3. Update `changes.txt`.
+
+Do not use `cargo test --workspace --all-targets`: `--all-targets` pulls the four
+heavy benchmark sweeps into the test run in debug mode, where
+`citybench_cross_window_compare` does not finish — it ran over 36 minutes without
+completing. `verify.sh` runs the tests without `--all-targets` and compile-checks
+the benches separately with `--no-run`.
+
+Summarise test output only while also keeping it. A pipeline that counted passes
+through `awk` once reported "642 passed, 1 failed" and discarded the failing
+test's name, which cost an afternoon to recover. `verify.sh` writes full logs.
+
+### When a test fails intermittently
+
+`scripts/flakehunt.sh [passes] [name filters]` stresses the prebuilt test binaries
+directly and reports the name of anything that fails, with full logs.
+
+```bash
+scripts/flakehunt.sh 40          # 40 passes over every test binary
+scripts/flakehunt.sh 40 ml       # only binaries matching "ml"
+```
+
+Prefer it over looping `cargo test`: a full workspace run takes ~3 minutes, and
+eight of them once failed to reproduce a 1-in-25 flake that this found on its
+first pass. Exits non-zero if anything failed.
 
 On macOS, anything linking `ml`/`python` needs the Python dylib on the library
 path:

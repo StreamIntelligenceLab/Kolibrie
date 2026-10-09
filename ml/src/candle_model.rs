@@ -572,10 +572,26 @@ mod tests {
             MlpNeuralPredicate::from_bytes(2, &[3], OutputType::Categorical(2), &bytes).is_err()
         );
         let loaded = MlpNeuralPredicate::from_bytes(2, &[3], OutputType::Binary, &bytes).unwrap();
-        assert_eq!(
-            model.forward_with_grads(&[vec![1.0, 2.0]]).unwrap().1,
-            loaded.forward_with_grads(&[vec![1.0, 2.0]]).unwrap().1
-        );
+
+        // Serialisation fidelity is asserted on the bytes, which is both exact and
+        // deterministic — and a stronger claim than matching forward outputs.
+        assert_eq!(loaded.to_bytes().unwrap(), bytes);
+
+        // Forward outputs get a tolerance rather than equality. candle's CPU matmul
+        // reduces in an order that depends on how rayon partitions the work, so two
+        // calls with byte-identical weights can disagree in the last bit when the
+        // machine is busy. Asserting equality here failed about 1 run in 25 under the
+        // default parallel test harness, and never with --test-threads=1, on exactly
+        // that: left [[0.3958277324801351]] vs right [[0.39582773248013514]].
+        let expected = model.forward_with_grads(&[vec![1.0, 2.0]]).unwrap().1;
+        let actual = loaded.forward_with_grads(&[vec![1.0, 2.0]]).unwrap().1;
+        assert_eq!(expected.len(), actual.len());
+        for (expected_row, actual_row) in expected.iter().zip(&actual) {
+            assert_eq!(expected_row.len(), actual_row.len());
+            for (e, a) in expected_row.iter().zip(actual_row) {
+                assert!((e - a).abs() < 1e-12, "forward outputs diverged: {e} vs {a}");
+            }
+        }
     }
 
     #[test]
