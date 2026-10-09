@@ -8,7 +8,10 @@
  * you can obtain one at https://mozilla.org/MPL/2.0/.
  */
 
-pub mod error_handler;
+// Modules with no consumer outside this crate are `pub(crate)`. Keeping them `pub`
+// put them on the documentation ledger and let future callers couple to paths we do
+// not intend to support. Promote one back the moment something outside needs it.
+pub(crate) mod error_handler;
 mod aggregate;
 pub mod ml_policy;
 mod ml_syntax;
@@ -19,11 +22,11 @@ pub mod execute_ml;
 #[cfg(feature = "ml")]
 pub mod execute_ml_train;
 pub mod execute_query;
-pub mod ml_feature_loader;
+pub(crate) mod ml_feature_loader;
 #[cfg(feature = "ml")]
-pub mod ml_predict_candle;
+pub(crate) mod ml_predict_candle;
 #[cfg(feature = "ml")]
-pub mod ml_predict_runtime;
+pub(crate) mod ml_predict_runtime;
 #[cfg(feature = "ml")]
 pub mod neural_relations;
 #[cfg(not(feature = "ml"))]
@@ -34,8 +37,7 @@ pub mod program;
 pub mod query_builder;
 pub mod rsp_engine;
 pub mod sparql_database;
-pub mod term_order;
+pub(crate) mod term_order;
 pub mod utils;
 pub mod streamertail_optimizer;
 pub mod rsp;
-pub mod query_engine;

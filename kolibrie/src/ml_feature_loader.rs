@@ -8,16 +8,28 @@
  * you can obtain one at https://mozilla.org/MPL/2.0/.
  */
 
-use std::collections::HashMap;
 use std::error::Error;
 
+// Needed only by the ml-gated functions below; `rdf_term_to_f64`, which the default
+// build uses, needs nothing but `Error`.
+#[cfg(feature = "ml")]
+use std::collections::HashMap;
+#[cfg(feature = "ml")]
 use crate::execute_query::execute_query_rayon_parallel2_volcano;
+#[cfg(feature = "ml")]
 use crate::parser::parse_sparql_query;
+#[cfg(feature = "ml")]
 use crate::sparql_database::SparqlDatabase;
 
 pub type RdfTerm = String;
 type LoaderResult<T> = Result<T, Box<dyn Error>>;
 
+// Only the ml-gated modules (execute_ml_train, neural_relations, ml_predict_runtime)
+// load training rows or build feature vectors, so these two are gated to match. Their
+// sibling `rdf_term_to_f64` is NOT gated: program.rs and execute_query.rs use it in the
+// default build. Demoting this module to `pub(crate)` in step 4a is what surfaced the
+// distinction — while it was `pub`, everything here counted as reachable.
+#[cfg(feature = "ml")]
 pub fn query_training_rows(
     db: &mut SparqlDatabase,
     select_query: &str,
@@ -85,6 +97,7 @@ pub fn rdf_term_to_f64(term: &RdfTerm) -> LoaderResult<f64> {
     Err(format!("Non-numeric RDF term in neural feature vector: {}", term).into())
 }
 
+#[cfg(feature = "ml")]
 pub fn build_feature_vec(
     row: &HashMap<String, RdfTerm>,
     feature_vars: &[&str],

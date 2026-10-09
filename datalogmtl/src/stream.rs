@@ -11,9 +11,7 @@
 use std::collections::HashMap;
 use shared::terms::TriplePattern;
 use shared::triple::Triple;
-use shared::dictionary::Dictionary;
 use datalog::reasoning::matches_rule_pattern;
-use std::sync::{Arc, RwLock};
 
 /// IRI identifying a named stream.
 pub type StreamIri = String;

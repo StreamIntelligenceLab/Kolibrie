@@ -18,7 +18,10 @@ use std::hash::Hash;
 use shared::hybrid::{EventKey, SeedId};
 use std::sync::mpsc::Receiver;
 use std::sync::mpsc::{channel, Sender};
+// Only the `#[cfg(test)]` Consumer harness below needs these.
+#[cfg(test)]
 use std::sync::{Arc, Mutex};
+#[cfg(test)]
 use std::thread;
 use std::{f64, mem};
 #[cfg(test)]

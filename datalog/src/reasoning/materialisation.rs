@@ -3,11 +3,18 @@ use shared::terms::{Term, TriplePattern};
 use shared::triple::Triple;
 use std::collections::HashMap;
 
+// These four contain only `impl Reasoner` blocks. Inherent impls are not namespaced
+// by their module, so demoting the module does NOT hide the methods — callers reach
+// `reasoner.infer_new_facts_semi_naive()` through the type, and 43 external call sites
+// keep working. What this does buy: nothing outside can couple to these paths, and the
+// modules leave the documentation ledger. Anything exporting a type or free function
+// by path stays `pub` below.
+pub(crate) mod semi_naive;
+pub(crate) mod my_naive;
+pub(crate) mod semi_naive_parallel;
+pub(crate) mod semi_naive_with_repairs;
+
 pub mod infer_generic;
-pub mod semi_naive;
-pub mod my_naive;
-pub mod semi_naive_parallel;
-pub mod semi_naive_with_repairs;
 pub mod provenance_infer_generic;
 pub mod provenance_semi_naive;
 pub mod hybrid_materialisation;
