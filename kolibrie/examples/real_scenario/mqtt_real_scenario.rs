@@ -742,7 +742,7 @@ fn main() {
 
                 // Parse the RDF data into the database
                 database.parse_rdf(&rdf_xml_data);
-                println!("Database loaded with {} triples", database.dataset_index.len_default());
+                println!("Database loaded with {} triples", database.default_triple_count());
 
                 // FIXED: Load data into knowledge graph with proper lock handling
                 // Collect triples first to avoid holding lock

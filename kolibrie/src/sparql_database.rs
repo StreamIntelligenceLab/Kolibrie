@@ -278,7 +278,7 @@ impl std::ops::DerefMut for QuotedTriplesMut<'_> {
 pub struct SparqlDatabase {
     /// Host-selected ML authority
     pub(crate) ml_context: crate::ml_policy::MlExecutionContext,
-    pub dataset_index: DatasetIndex,
+    pub(crate) dataset_index: DatasetIndex,
     pub(crate) dictionary: Arc<RwLock<Dictionary>>,
     pub(crate) prefixes: HashMap<String, String>,
     udfs: HashMap<String, ClonableFn>,
@@ -2347,6 +2347,67 @@ impl SparqlDatabase {
         self.udfs.insert(name.to_string(), ClonableFn::new(f));
     }
 
+    // ── Dataset index ───────────────────────────────────────────────────────────
+    //
+    // The last field to leave the public API. These are deliberately named
+    // operations rather than a `dataset_index()` getter: §4 has this surface becoming
+    // `QuadSource` (scan / insert / graphs / len), so the shape callers depend on
+    // should already be that rather than a borrow of `DatasetIndex`, which would
+    // freeze the representation the storage trait is supposed to abstract.
+    //
+    // Most of them are thin, and that is the point — 33 of the 46 external call sites
+    // only wanted a triple count.
+    //
+    // The mutating ones deliberately do NOT call `invalidate_stats_cache`, matching
+    // `add_triple`/`add_quad`/`delete_*` above. Statistics detect a changed index
+    // through `DatasetIndex::generation`, not through being told — the two tests at
+    // the bottom of this file exist to prove exactly that. Invalidating here would
+    // force a rebuild the generation check avoids, and would change the behaviour the
+    // rewritten call sites had when they wrote to the field directly.
+
+    /// Number of triples in the default graph.
+    pub fn default_triple_count(&self) -> usize {
+        self.dataset_index.len_default()
+    }
+
+    /// Number of quads across every graph, including named ones.
+    pub fn quad_count(&self) -> usize {
+        self.dataset_index.count_quads()
+    }
+
+    /// Every quad in the store, across all graphs.
+    pub fn all_quads(&self) -> Vec<Quad> {
+        self.dataset_index.all_quads()
+    }
+
+    /// Every graph in the store, including the default graph.
+    pub fn graphs(&self) -> Vec<GraphId> {
+        self.dataset_index.graphs()
+    }
+
+    /// The named graphs, excluding the default graph.
+    pub fn named_graphs(&self) -> Vec<GraphId> {
+        self.dataset_index.named_graphs()
+    }
+
+    /// Creates `graph` if it does not exist. Returns whether it was created.
+    pub fn create_graph(&mut self, graph: GraphId) -> bool {
+        self.dataset_index.create_graph(graph)
+    }
+
+    /// Inserts a triple into the default graph, reporting whether it was new.
+    ///
+    /// [`Self::add_triple`] does the same without the answer; this exists because a
+    /// caller deduplicating derived facts needs to know.
+    pub fn insert_triple(&mut self, triple: &Triple) -> bool {
+        self.dataset_index.insert_triple(triple)
+    }
+
+    /// Removes every quad and graph, leaving the dictionary intact.
+    pub fn clear_dataset(&mut self) {
+        self.dataset_index.clear();
+    }
+
     // ── Term dictionary ─────────────────────────────────────────────────────────
 
     /// Read access to the term dictionary.
@@ -2577,5 +2638,77 @@ impl SparqlDatabase {
             predicate.unwrap(),
             object.unwrap()
         )
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // These two tests live inside the crate because they deliberately write to
+    // `dataset_index` without going through the public helpers, and the field is now
+    // private. Both assert that statistics detect a change they were never told
+    // about — which is a property of the generation check in
+    // `planning_snapshot_is_usable`, not of the invalidation call.
+    //
+    // Rewriting them to use `replace_dataset_index` would have kept them compiling
+    // and silently stopped testing that: it calls `invalidate_stats_cache` itself, so
+    // the generation path would never be exercised. They were moved here instead.
+
+    fn insert(database: &mut SparqlDatabase, index: u32) {
+        database.add_triple_parts(&format!("urn:s{index}"), "urn:p", &format!("{index}"));
+    }
+
+    #[test]
+    fn exact_statistics_notice_a_write_that_bypassed_the_helpers() {
+        let mut database = SparqlDatabase::new();
+        for index in 0..3 {
+            insert(&mut database, index);
+        }
+        assert_eq!(database.get_or_build_stats().total_triples, 3);
+
+        // Insert straight into the index; one lock guard avoids a self-deadlock.
+        let quad = {
+            let mut dictionary = database.dictionary_mut();
+            Quad {
+                subject: dictionary.encode("urn:d"),
+                predicate: dictionary.encode("urn:p"),
+                object: dictionary.encode("4"),
+                graph: GraphId::Default,
+            }
+        };
+        assert!(database.dataset_index.insert_quad(&quad));
+
+        assert_eq!(database.get_or_build_stats().total_triples, 4);
+    }
+
+    #[test]
+    fn a_replacement_index_with_a_lower_generation_is_not_mistaken_for_fresh() {
+        let mut database = SparqlDatabase::new();
+        for index in 0..200 {
+            insert(&mut database, index);
+        }
+        database.set_planning_stats_policy(PlanningStatsPolicy::Bounded {
+            minimum_batch: 1_000,
+            refresh_fraction: 0.90,
+        });
+        let first = database.get_or_build_planning_stats();
+        assert_eq!(first.total_triples, 200);
+
+        let mut replacement = DatasetIndex::new();
+        replacement.insert_quad(&Quad {
+            subject: 1,
+            predicate: 2,
+            object: 3,
+            graph: GraphId::Default,
+        });
+        // Generation 1, lower than the original 200: direct assignment, bypassing
+        // replace_dataset_index so no invalidation is signalled.
+        database.dataset_index = replacement;
+
+        let refreshed = database.get_or_build_planning_stats();
+        assert!(!Arc::ptr_eq(&first, &refreshed));
+        assert_eq!(refreshed.total_triples, 1);
+        assert_eq!(database.get_or_build_stats().total_triples, 1);
     }
 }

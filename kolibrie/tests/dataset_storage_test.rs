@@ -14,14 +14,11 @@ use std::collections::BTreeSet;
 
 fn create_empty_named_graph(database: &mut SparqlDatabase, name: &str) {
     let graph_id = database.dictionary_mut().encode(name);
-    assert!(database
-        .dataset_index
-        .create_graph(GraphId::Named(graph_id)));
+    assert!(database.create_graph(GraphId::Named(graph_id)));
 }
 
 fn decoded_graph_names(database: &SparqlDatabase) -> BTreeSet<String> {
     database
-        .dataset_index
         .named_graphs()
         .into_iter()
         .filter_map(|graph| match graph {
@@ -83,7 +80,6 @@ fn database_union_reencodes_and_preserves_the_complete_dataset() {
     );
 
     let quoted_subjects: BTreeSet<_> = merged
-        .dataset_index
         .named_graphs()
         .into_iter()
         .flat_map(|graph| merged.query_graph_quads(graph, None, None, None))

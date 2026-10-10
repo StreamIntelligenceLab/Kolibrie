@@ -486,7 +486,7 @@ impl DynamicRuleManager {
                     object: object_id,
                 };
 
-                if self.database.dataset_index.insert_triple(&enhanced_triple) {
+                if self.database.insert_triple(&enhanced_triple) {
                     facts.push(enhanced_triple.clone());
 
                     // Acquire read lock for printing

@@ -134,7 +134,7 @@ fn main() {
         insert_member(&mut database, member);
     }
     let ingest = started.elapsed();
-    let quads = database.dataset_index.count_quads();
+    let quads = database.quad_count();
     println!("store: {quads} quads from {members} members");
     println!("ingest total            : {ingest:?}");
     println!("ingest per quad         : {:?}", ingest / quads.max(1) as u32);

@@ -1204,7 +1204,7 @@ fn execute_sparql_with_policy(
                     // Sync the enriched dictionary back so SPARQL can decode the new terms
                     database.set_dictionary_handle(kg.dictionary.clone());
 
-                    if database.dataset_index.len_default() > 0 {
+                    if database.default_triple_count() > 0 {
                         database.invalidate_stats_cache();
                         database.get_or_build_stats();
                         database.build_all_indexes();

@@ -16,7 +16,7 @@ use shared::dataset_index::GraphId;
 
 /// Reference implementation over a materialized snapshot; exact only below the sampling threshold
 fn reference_stats(database: &SparqlDatabase) -> DatabaseStats {
-    let quads = database.dataset_index.all_quads();
+    let quads = database.all_quads();
 
     let mut predicate_cardinalities = TermMap::<u64>::default();
     let mut subject_cardinalities = TermMap::<u64>::default();
@@ -46,7 +46,7 @@ fn reference_stats(database: &SparqlDatabase) -> DatabaseStats {
     let cap = |observed: usize, cardinality: u64| (observed as u64).min(cardinality).max(1);
 
     let mut graph_cardinalities = GraphMap::default();
-    for graph in database.dataset_index.graphs() {
+    for graph in database.graphs() {
         let size = quads.iter().filter(|quad| quad.graph == graph).count() as u64;
         graph_cardinalities.insert(graph, size);
     }
@@ -54,7 +54,7 @@ fn reference_stats(database: &SparqlDatabase) -> DatabaseStats {
     DatabaseStats {
         total_triples,
         quoted_triple_count: database.quoted_triples().len() as u64,
-        named_graph_count: database.dataset_index.named_graphs().len() as u64,
+        named_graph_count: database.named_graphs().len() as u64,
         graph_cardinalities,
         predicate_distinct_subjects: predicate_subjects
             .iter()
@@ -136,7 +136,7 @@ fn one_quad_and_its_duplicate_collect_the_same_statistics() {
     assert_matches_reference(&database, "one quad");
 
     common::load(&mut database, r#"<urn:a> <urn:p> "1" ."#);
-    assert_eq!(database.dataset_index.count_quads(), 1, "duplicate stored");
+    assert_eq!(database.quad_count(), 1, "duplicate stored");
     assert_matches_reference(&database, "duplicate quad");
 }
 
@@ -166,7 +166,7 @@ fn named_graphs_including_empty_ones_collect_the_same_statistics() {
 
     // Empty named graph
     let empty = database.dictionary_mut().encode("urn:g3");
-    database.dataset_index.create_graph(GraphId::Named(empty));
+    database.create_graph(GraphId::Named(empty));
 
     assert_matches_reference(&database, "named graphs");
     let stats = DatabaseStats::gather_stats_fast(&database);

@@ -56,7 +56,7 @@ fn main() {
     let mut database = SparqlDatabase::new();
     database.parse_rdf(rdf_xml_data);
     println!("Database RDF triples: {:#?}", database.query_default_triples(None, None, None));
-    println!("Total triples loaded: {}", database.dataset_index.len_default());
+    println!("Total triples loaded: {}", database.default_triple_count());
 
     // Basic RSP rule with RSTREAM and sliding window
     println!("\n=== Basic RSP Windowing Rule ===");
@@ -78,7 +78,7 @@ WHERE {
 
     println!("Processing RSP rule with RSTREAM and sliding window...");
     // DEBUG: Track database state before windowing
-    let triples_before_rsp = database.dataset_index.len_default();
+    let triples_before_rsp = database.default_triple_count();
     println!(
         "DEBUG: Database has {} triples before RSP processing",
         triples_before_rsp
@@ -87,7 +87,7 @@ WHERE {
     let rule_result = process_rule_definition(rsp_rule_basic, &mut database);
 
     // DEBUG: Track database state after windowing
-    let triples_after_rsp = database.dataset_index.len_default();
+    let triples_after_rsp = database.default_triple_count();
     println!(
         "DEBUG: Database has {} triples after RSP processing (+{})",
         triples_after_rsp,
@@ -149,7 +149,7 @@ WHERE {
 
     println!("Processing ISTREAM rule with tumbling window...");
     // DEBUG: Track ISTREAM behavior
-    let triples_before_istream = database.dataset_index.len_default();
+    let triples_before_istream = database.default_triple_count();
     println!(
         "DEBUG: Database has {} triples before ISTREAM processing",
         triples_before_istream
@@ -157,7 +157,7 @@ WHERE {
 
     let rule_result2 = process_rule_definition(rsp_rule_istream, &mut database);
 
-    let triples_after_istream = database.dataset_index.len_default();
+    let triples_after_istream = database.default_triple_count();
     println!(
         "DEBUG: Database has {} triples after ISTREAM processing (+{})",
         triples_after_istream,
@@ -234,7 +234,7 @@ ML.PREDICT(
 
     println!("Processing DSTREAM rule with range window and ML.PREDICT...");
     // DEBUG: Track DSTREAM behavior
-    let triples_before_dstream = database.dataset_index.len_default();
+    let triples_before_dstream = database.default_triple_count();
     println!(
         "DEBUG: Database has {} triples before DSTREAM processing",
         triples_before_dstream
@@ -242,7 +242,7 @@ ML.PREDICT(
 
     let rule_result3 = process_rule_definition(rsp_rule_ml, &mut database);
 
-    let triples_after_dstream = database.dataset_index.len_default();
+    let triples_after_dstream = database.default_triple_count();
     println!(
         "DEBUG: Database has {} triples after DSTREAM processing (+{})",
         triples_after_dstream,
@@ -440,13 +440,13 @@ WHERE {
     }
 
     println!("\n=== RSP Windowing Demo Complete ===");
-    println!("Total triples in database: {}", database.dataset_index.len_default());
+    println!("Total triples in database: {}", database.default_triple_count());
     println!("Parser successfully handled all RSP windowing syntax!");
 
     // DEBUG: Final database state
     println!("DEBUG: Final database state:");
-    println!("   - Started with: {} triples", database.dataset_index.len_default());
-    println!("   - Final count: {} triples", database.dataset_index.len_default());
-    println!("   - Total added: {} triples", database.dataset_index.len_default() - 15); // 15 original triples
+    println!("   - Started with: {} triples", database.default_triple_count());
+    println!("   - Final count: {} triples", database.default_triple_count());
+    println!("   - Total added: {} triples", database.default_triple_count() - 15); // 15 original triples
 }
 

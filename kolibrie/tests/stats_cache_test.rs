@@ -11,7 +11,7 @@
 mod common;
 
 use kolibrie::sparql_database::{PlanningStatsPolicy, SparqlDatabase};
-use shared::dataset_index::{DatasetIndex, GraphId, Quad};
+use shared::dataset_index::DatasetIndex;
 
 fn seeded() -> SparqlDatabase {
     common::database_with(
@@ -37,6 +37,11 @@ fn rebuilds(database: &SparqlDatabase) -> u64 {
 }
 
 // Exact statistics
+//
+// `exact_statistics_notice_a_write_that_bypassed_the_helpers` and
+// `a_replacement_index_with_a_lower_generation_is_not_mistaken_for_fresh` moved
+// into sparql_database.rs: both write to `dataset_index` without going through the
+// public helpers, which is no longer possible from outside the crate.
 
 #[test]
 fn exact_statistics_are_fresh_after_every_successful_mutation() {
@@ -53,25 +58,6 @@ fn exact_statistics_are_fresh_after_every_successful_mutation() {
     }
 }
 
-#[test]
-fn exact_statistics_notice_a_write_that_bypassed_the_helpers() {
-    let mut database = seeded();
-    assert_eq!(database.get_or_build_stats().total_triples, 3);
-
-    // Insert directly into the index; a single lock guard avoids a self-deadlock
-    let quad = {
-        let mut dictionary = database.dictionary_mut();
-        Quad {
-            subject: dictionary.encode("urn:d"),
-            predicate: dictionary.encode("urn:p"),
-            object: dictionary.encode("4"),
-            graph: GraphId::Default,
-        }
-    };
-    assert!(database.dataset_index.insert_quad(&quad));
-
-    assert_eq!(database.get_or_build_stats().total_triples, 4);
-}
 
 #[test]
 fn a_mutation_that_changed_nothing_does_not_force_a_rebuild() {
@@ -276,32 +262,6 @@ fn replacing_the_dataset_index_retires_every_snapshot() {
 }
 
 /// A replacement index with a lower generation invalidates the snapshot
-#[test]
-fn a_replacement_index_with_a_lower_generation_is_not_mistaken_for_fresh() {
-    let mut database = SparqlDatabase::new();
-    for index in 0..200 {
-        insert(&mut database, index);
-    }
-    database.set_planning_stats_policy(bounded(1_000, 0.90));
-    let first = database.get_or_build_planning_stats();
-    assert_eq!(first.total_triples, 200);
-
-    // Generation 1, lower than the original 200
-    let mut replacement = DatasetIndex::new();
-    replacement.insert_quad(&Quad {
-        subject: 1,
-        predicate: 2,
-        object: 3,
-        graph: GraphId::Default,
-    });
-    // Direct assignment, bypassing replace_dataset_index
-    database.dataset_index = replacement;
-
-    let refreshed = database.get_or_build_planning_stats();
-    assert!(!std::sync::Arc::ptr_eq(&first, &refreshed));
-    assert_eq!(refreshed.total_triples, 1);
-    assert_eq!(database.get_or_build_stats().total_triples, 1);
-}
 
 #[test]
 fn clearing_the_dataset_refreshes_planning_statistics() {
@@ -313,7 +273,7 @@ fn clearing_the_dataset_refreshes_planning_statistics() {
     let first = database.get_or_build_planning_stats();
     assert_eq!(first.total_triples, 200);
 
-    database.dataset_index.clear();
+    database.clear_dataset();
 
     let refreshed = database.get_or_build_planning_stats();
     assert!(!std::sync::Arc::ptr_eq(&first, &refreshed));

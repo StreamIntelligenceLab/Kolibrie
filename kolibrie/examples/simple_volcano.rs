@@ -114,7 +114,7 @@ fn add_sample_data(database: &mut SparqlDatabase) {
 
     println!(
         "Added {} triples to the database.\n",
-        database.dataset_index.len_default()
+        database.default_triple_count()
     );
 }
 

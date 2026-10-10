@@ -21,7 +21,7 @@ fn main() {
         .expect(&format!("Failed to read {}", taxonomy_path));
     database.parse_turtle(&taxonomy_data);
     let load_time = load_start.elapsed();
-    println!("Loaded {} taxonomy triples in {:?}", database.dataset_index.len_default(), load_time);
+    println!("Loaded {} taxonomy triples in {:?}", database.default_triple_count(), load_time);
     
     // Step 2: Load the facts (initial instances)
     let facts_path = format!("{}/test-facts.ttl", base_path);
@@ -29,7 +29,7 @@ fn main() {
     let facts_data = fs::read_to_string(&facts_path)
         .expect(&format!("Failed to read {}", facts_path));
     database.parse_turtle(&facts_data);
-    println!("Total triples after facts: {}", database.dataset_index.len_default());
+    println!("Total triples after facts: {}", database.default_triple_count());
     
     // Step 3: Create KnowledgeGraph and populate it (One-time)
     println!("\n=== Populating KnowledgeGraph (One-time) ===");

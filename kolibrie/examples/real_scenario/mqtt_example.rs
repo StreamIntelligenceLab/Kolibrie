@@ -434,7 +434,7 @@ fn main() {
                 
                 // Parse the RDF data into the database
                 database.parse_rdf(&rdf_xml_data);
-                println!("Updated RDF triples: {} triples", database.dataset_index.len_default());
+                println!("Updated RDF triples: {} triples", database.default_triple_count());
                 
                 // Load data into knowledge graph - FIXED: Proper lock handling
                 // Collect triples first to avoid holding lock during iteration
@@ -452,7 +452,7 @@ fn main() {
                     }
                 }
                 
-                println!("KnowledgeGraph ABox loaded with {} triples", database.dataset_index.len_default());
+                println!("KnowledgeGraph ABox loaded with {} triples", database.default_triple_count());
                 
                 // Rule 1: If it's quiet (noise level < 30), use noise for detection
                 let rule1 = r#"PREFIX ex: <http://example.org#>

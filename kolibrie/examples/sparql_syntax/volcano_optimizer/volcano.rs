@@ -133,7 +133,7 @@ fn streamertail_optimizer_multiple_triples() {
         });
     }
 
-    println!("Added {} triples to the database", database.dataset_index.len_default());
+    println!("Added {} triples to the database", database.default_triple_count());
 
     // Step 3: Create the logical plan with joins
     let type_id = database.dictionary_mut().encode("rdf:type");
@@ -210,7 +210,7 @@ fn streamertail_optimizer_rdf() {
         });
     }
 
-    println!("Added {} triples to the database", database.dataset_index.len_default());
+    println!("Added {} triples to the database", database.default_triple_count());
 
     // Step 3: Create logical plan using build_logical_plan utility
     let variables = vec![("VAR", "person"), ("VAR", "location")];
@@ -274,7 +274,7 @@ fn streamertail_optimizer_index_patterns() {
         });
     }
 
-    println!("Added {} triples to the database", database.dataset_index.len_default());
+    println!("Added {} triples to the database", database.default_triple_count());
 
     let age_id = database.dictionary_mut().encode("foaf:age");
     let person_50_id = database.dictionary_mut().encode("http://example.org/person50");
@@ -405,7 +405,7 @@ fn streamertail_optimizer_performance_test() {
 
     let data_load_time = start.elapsed();
     println!("Data loading time: {:?}", data_load_time);
-    println!("Added {} triples to the database", database.dataset_index.len_default());
+    println!("Added {} triples to the database", database.default_triple_count());
 
     // Test different query types
     let name_id = database.dictionary_mut().encode("foaf:name");
