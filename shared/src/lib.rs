@@ -44,13 +44,10 @@ pub mod dictionary;
 pub mod diff_sdd;
 /// Join algorithms shared by the query engine and the reasoners.
 pub mod join_algorithm;
-/// Matching a triple pattern against a fact, and building a fact from a pattern.
 pub mod pattern;
-/// Hybrid exact/approximate probabilistic inference.
 pub mod hybrid;
 /// Provenance semirings: how a derived fact's annotation is computed.
 pub mod provenance;
-/// The parsed shape of a query: patterns, filters, modifiers and ML clauses.
 pub mod query;
 /// Storage for RDF-star quoted triples, which live in a tagged id range.
 pub mod quoted_triple_store;
