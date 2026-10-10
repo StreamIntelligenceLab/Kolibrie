@@ -9,33 +9,46 @@ to `perf-baseline/`, and compares a later run against it.
 Usage:
     scripts/perf_report.py collect                       # summarise the last run
     scripts/perf_report.py collect -o /tmp/after.json
-    scripts/perf_report.py baseline RUN1 RUN2 -o perf-baseline/baseline.json
+    scripts/perf_report.py baseline RUN1 RUN2 RUN3 RUN4 -o perf-baseline/baseline.json
     scripts/perf_report.py compare perf-baseline/baseline.json
     scripts/perf_report.py compare BASE --current /tmp/after.json
     scripts/perf_report.py noise RUN1 RUN2               # measure the floor
 
 How much to trust a delta (measured on this repo, Oct 2026, M-series laptop)
 ---------------------------------------------------------------------------
-Two kinds of variation were measured, and they differ by ~4x:
+Three kinds of variation, each larger than the last:
 
-    within-session  (two passes back-to-back)     median 1.5%   max  8.7%
-    cross-session   (hot machine vs cooled)       median 3.0%   max 12.5%
+    two passes back-to-back        median 1.5%   max  8.7%
+    across sessions, same code     median 3.0%   max 12.5%
+    repeated runs, one benchmark                 up to ~9-12%
 
-The cross-session figure is the one that bites. A baseline taken weeks ago on a
-differently-loaded machine can disagree with an unmodified checkout by ~10% on
-individual benchmarks; this was observed here, where `micro_pattern/all_variables`
-read 1.244 ms in one session and 1.119 ms in the next with identical source. Two
-back-to-back passes measure short-term REPEATABILITY, not reproducibility.
+The third row is the one that matters and the one that was missed at first. Noise
+was originally derived from two back-to-back passes, which measures short-term
+REPEATABILITY — and two samples cannot estimate a spread at all. That produced two
+false positives:
+
+    micro_scan_selective_subject/dyn_trait   recorded 2.0%,  actual ~10%
+    execution_hot_paths/filter_numeric       recorded 0.22%, actual ~9%
+
+Four runs of one unchanged `filter_numeric` binary spanned 2.056-2.242 ms, so a
+single before/after pair reported a 5.7% "regression" that four runs in each state
+showed to be absent. `baseline` now takes N runs and records the full observed
+range; it warns when given fewer than four.
 
 So:
 
-  * To judge a change, run before AND after in the SAME session, back-to-back,
-    and compare the two collected files. This is the authoritative procedure.
-  * The committed `perf-baseline/baseline.json` is a historical reference for
-    catching gross drift, not a precision instrument. Treat sub-12% differences
-    against it as unproven.
-  * Always compare like-for-like: the same tier, run the same way. A single-bench
-    run is not comparable to a full-tier baseline.
+  * Build the baseline from 4+ runs. `compare` labels results from a thinner one
+    `[thin baseline]`, and flags deltas under 1.5x their limit as borderline.
+  * To judge a change, run before AND after in the SAME session. If a delta is
+    near its limit, repeat both states 3-4 times before believing it — that is
+    what distinguished a real regression from noise in every case so far.
+  * `compare` against a `collect` summary silently falls back to the flat floor,
+    because a collect file carries no noise data. It now warns; prefer a baseline.
+  * Always compare like-for-like: the same tier, same filter, run the same way.
+    Noise depends on the invocation, not just the benchmark — `filter_numeric`
+    spreads 1.9% across full tier passes and 9.0% when run as a filtered single
+    case after a rebuild. A 4-run baseline fixes the arithmetic; it cannot
+    anticipate an invocation pattern it never saw.
 """
 from __future__ import annotations
 
@@ -53,6 +66,9 @@ DEFAULT_THRESHOLD_PCT = 5.0
 # judgement call, not a statistic: it keeps the quiet benchmarks sensitive while
 # not flagging the allocation-heavy ones on every run.
 DEFAULT_NOISE_MARGIN = 2.0
+# Below this many runs, a baseline's noise figures are not worth trusting: two
+# samples cannot estimate a spread at all, and three barely can.
+MIN_USEFUL_RUNS = 4
 
 
 def _iter_estimates() -> list[tuple[str, float, float]]:
@@ -111,45 +127,82 @@ def cmd_collect(args: argparse.Namespace) -> int:
 
 
 def cmd_baseline(args: argparse.Namespace) -> int:
-    """Build a baseline from two unchanged runs, recording per-benchmark noise.
+    """Build a baseline from N unchanged runs, recording per-benchmark noise.
 
-    Two runs are required rather than one because a baseline without a noise
-    figure cannot answer "is this delta real?". Benchmarks here differ in noise by
-    more than an order of magnitude (0.1% to 10.7%), so a single global threshold
-    is either blind to real regressions in the quiet ones or cries wolf on the
-    noisy ones.
+    Why N and not 2
+    ---------------
+    This took two runs and derived noise from the gap between them. That measures
+    short-term *repeatability*, not the variance a real before/after comparison has
+    to survive, and it produced two false positives that each cost an afternoon:
+
+        micro_scan_selective_subject/dyn_trait   recorded 2.0%, actual ~10%
+        execution_hot_paths/filter_numeric       recorded 0.22%, actual ~9%
+
+    The second is the clearest case: four runs of one unchanged binary spanned
+    2.056-2.242 ms, so a single before/after pair reported a 5.7% "regression"
+    against a baseline claiming 0.22% noise. Two samples cannot estimate a spread.
+
+    Noise is the full observed range, (max - min) / min, which is deliberately
+    conservative: it is better to miss a marginal regression than to cry wolf, since
+    a harness that reports phantom regressions stops being read. If that makes a
+    benchmark too insensitive to be useful, the fix is to make the benchmark quieter
+    — `micro_scan` dropped SUBJECTS from 20k to 5k for exactly this reason — not to
+    narrow the threshold until it fires.
     """
-    a = json.loads(pathlib.Path(args.first).read_text())["benchmarks"]
-    b = json.loads(pathlib.Path(args.second).read_text())["benchmarks"]
+    runs = []
+    for path in args.runs:
+        data = json.loads(pathlib.Path(path).read_text())["benchmarks"]
+        runs.append((path, data))
 
-    shared = sorted(set(a) & set(b))
-    if not shared:
-        sys.exit("the two runs share no benchmarks")
+    if len(runs) < 2:
+        sys.exit("need at least 2 runs; 4 or more gives a usable spread")
+    if len(runs) < MIN_USEFUL_RUNS:
+        print(f"warning: {len(runs)} runs is thin. Two samples cannot estimate a "
+              f"spread, and three barely can; prefer {MIN_USEFUL_RUNS} or more.")
 
-    benchmarks = {}
-    for bench in shared:
-        m_a, m_b = a[bench]["median_ns"], b[bench]["median_ns"]
-        lo = min(m_a, m_b)
+    # Keys only: Counter.update on a dict-of-dicts tries to add the values.
+    seen: set[str] = set()
+    for _, data in runs:
+        seen.update(data.keys())
+
+    benchmarks, thin = {}, []
+    for bench in sorted(seen):
+        medians = [d[bench]["median_ns"] for _, d in runs if bench in d]
+        if len(medians) < 2:
+            thin.append(bench)
+            continue
+        mads = [d[bench].get("mad_ns", 0.0) for _, d in runs if bench in d]
+        lo, hi = min(medians), max(medians)
         benchmarks[bench] = {
-            # Mean of the two medians: a single run's median is itself a sample.
-            "median_ns": (m_a + m_b) / 2,
-            "mad_ns": (a[bench].get("mad_ns", 0.0) + b[bench].get("mad_ns", 0.0)) / 2,
-            "noise_pct": (abs(m_a - m_b) / lo * 100) if lo > 0 else 0.0,
+            # Median of the run medians: more robust than a mean once N > 2, and it
+            # does not let one slow run drag the reference point.
+            "median_ns": statistics.median(medians),
+            "mad_ns": statistics.median(mads),
+            # Full range, not a deviation: see the note above.
+            "noise_pct": ((hi - lo) / lo * 100) if lo > 0 else 0.0,
+            # Recorded so `compare` can say how much to trust each figure.
+            "runs": len(medians),
         }
 
-    only_a, only_b = sorted(set(a) - set(b)), sorted(set(b) - set(a))
-    if only_a or only_b:
-        print(f"warning: {len(only_a) + len(only_b)} benchmarks appeared in only one "
-              f"run and were excluded")
+    if not benchmarks:
+        sys.exit("the runs share no benchmarks")
+    if thin:
+        print(f"warning: {len(thin)} benchmarks appeared in only one run and were "
+              f"excluded (no spread can be computed from one sample)")
 
-    summary = {"benchmarks": benchmarks}
     path = pathlib.Path(args.output)
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(summary, indent=2, sort_keys=True) + "\n")
+    path.write_text(json.dumps(
+        {"runs": len(runs), "benchmarks": benchmarks}, indent=2, sort_keys=True) + "\n")
 
-    noises = [v["noise_pct"] for v in benchmarks.values()]
-    print(f"wrote {len(benchmarks)} benchmarks to {path}")
-    print(f"noise: median {statistics.median(noises):.1f}%  max {max(noises):.1f}%")
+    noises = sorted(v["noise_pct"] for v in benchmarks.values())
+    print(f"wrote {len(benchmarks)} benchmarks from {len(runs)} runs to {path}")
+    print(f"noise: median {statistics.median(noises):.1f}%  "
+          f"p90 {noises[int(len(noises) * 0.9)]:.1f}%  max {max(noises):.1f}%")
+    worst = sorted(benchmarks.items(), key=lambda kv: -kv[1]["noise_pct"])[:5]
+    print("\nnoisiest, which are the ones least able to detect a regression:")
+    for bench, v in worst:
+        print(f"  {v['noise_pct']:5.1f}%  ({v['runs']} runs)  {bench}")
     return 0
 
 
@@ -157,7 +210,22 @@ def cmd_compare(args: argparse.Namespace) -> int:
     base_path = pathlib.Path(args.baseline)
     if not base_path.is_file():
         sys.exit(f"baseline not found: {base_path}")
-    base = json.loads(base_path.read_text())["benchmarks"]
+    base_doc = json.loads(base_path.read_text())
+    base = base_doc["benchmarks"]
+
+    # A `collect` summary has no noise data, so every comparison against one silently
+    # falls back to the flat floor. That is how filter_numeric's phantom +5.7% got
+    # through: it was compared against a collect file, not a baseline.
+    if not any("noise_pct" in v for v in base.values()):
+        print(f"warning: {base_path} carries no noise data — it looks like a "
+              f"`collect` summary rather than a `baseline`.\n"
+              f"         Falling back to the flat ±{args.threshold:g}% floor, which "
+              f"over-reports on noisy benchmarks.\n"
+              f"         Build a real baseline with: perf_report.py baseline RUN1 "
+              f"RUN2 RUN3 RUN4 -o {base_path}\n")
+    elif base_doc.get("runs", 0) and base_doc["runs"] < MIN_USEFUL_RUNS:
+        print(f"warning: baseline was built from only {base_doc['runs']} runs, so its "
+              f"noise figures likely understate the real spread.\n")
 
     if args.current:
         # Comparing two saved summaries: lets you re-check an old comparison, or
@@ -189,10 +257,11 @@ def cmd_compare(args: argparse.Namespace) -> int:
         if noise is not None and not args.flat_threshold:
             limit = max(limit, noise * args.noise_margin)
 
+        runs = ref.get("runs")
         if delta > limit:
-            regressions.append((bench, before, after, delta, limit))
+            regressions.append((bench, before, after, delta, limit, runs))
         elif delta < -limit:
-            improvements.append((bench, before, after, delta, limit))
+            improvements.append((bench, before, after, delta, limit, runs))
 
     added = sorted(set(current) - set(base))
 
@@ -200,9 +269,13 @@ def cmd_compare(args: argparse.Namespace) -> int:
         if not rows:
             return
         print(f"\n{title}")
-        for bench, before, after, delta, limit in rows:
+        for bench, before, after, delta, limit, runs in rows:
+            # A delta that only just clears a limit derived from few runs is the
+            # shape both past false positives had; say so at the point of reporting.
+            weak = " [thin baseline]" if runs and runs < MIN_USEFUL_RUNS else ""
+            close = " [within 1.5x of the limit]" if abs(delta) < limit * 1.5 else ""
             print(f"  {delta:+6.1f}%  (>{limit:4.1f}%)  "
-                  f"{_fmt(before)} -> {_fmt(after):<12}  {bench}")
+                  f"{_fmt(before)} -> {_fmt(after):<12}  {bench}{weak}{close}")
 
     show(f"REGRESSIONS (floor +{args.threshold:g}%, noise-aware)", regressions)
     show(f"improvements (floor -{args.threshold:g}%, noise-aware)", improvements)
@@ -277,9 +350,10 @@ def main() -> int:
     p.set_defaults(func=cmd_compare)
 
     bl = sub.add_parser("baseline",
-                        help="build a noise-aware baseline from two unchanged runs")
-    bl.add_argument("first")
-    bl.add_argument("second")
+                        help="build a noise-aware baseline from N unchanged runs")
+    bl.add_argument("runs", nargs="+", metavar="RUN",
+                    help=f"two or more collect summaries of unchanged code; "
+                         f"{MIN_USEFUL_RUNS}+ recommended")
     bl.add_argument("-o", "--output", required=True)
     bl.set_defaults(func=cmd_baseline)
 
