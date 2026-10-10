@@ -626,8 +626,8 @@ fn run_ml_predict_from_clause(
 fn setup_knowledge_base() -> SparqlDatabase {
     let mut db = SparqlDatabase::with_ml_context(local_ml::trusted_context());
 
-    db.prefixes.insert("ex".into(),  "http://fraud.example.org/".into());
-    db.prefixes.insert("rdf".into(), "http://www.w3.org/1999/02/22-rdf-syntax-ns#".into());
+    db.add_prefix("ex", "http://fraud.example.org/");
+    db.add_prefix("rdf", "http://www.w3.org/1999/02/22-rdf-syntax-ns#");
 
     for (acct, country, tier) in &[
         ("ACC001", "US", "premium"),

@@ -117,8 +117,8 @@ fn setup_knowledge_base() -> SparqlDatabase {
     let mut database = SparqlDatabase::with_ml_context(local_ml::trusted_context());
     
     // Register prefixes
-    database.prefixes.insert("ex".to_string(), "http://example.org/".to_string());
-    database.prefixes.insert("rdf".to_string(), "http://www.w3.org/1999/02/22-rdf-syntax-ns#".to_string());
+    database.add_prefix("ex".to_string(), "http://example.org/".to_string());
+    database.add_prefix("rdf".to_string(), "http://www.w3.org/1999/02/22-rdf-syntax-ns#".to_string());
     
     // Add initial ontology - room definitions
     database.add_triple_parts("http://example.org/Office1", "http://www.w3.org/1999/02/22-rdf-syntax-ns#type", "http://example.org/Room");

@@ -432,7 +432,7 @@ WHERE {
                         
                         if let Some(idx) = expanded.rfind('#') {
                             let local = &expanded[idx + 1..];
-                            database.rule_map.insert(local.to_lowercase(), expanded.clone());
+                            database.add_rule_mapping(local.to_lowercase(), expanded.clone());
                         }
                     }
                 }

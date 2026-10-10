@@ -156,7 +156,7 @@ ORDER BY ?sensor"#
 
 fn execute_sdd_rule_batch(db: &mut SparqlDatabase, rule_inputs: &[String]) -> usize {
     let mut reasoner = build_ground_reasoner_from_db(db, None);
-    reasoner.probability_seeds = db.probability_seeds.clone();
+    reasoner.probability_seeds = db.probability_seeds().clone();
 
     for rule_input in rule_inputs {
         db.register_prefixes_from_query(rule_input);
@@ -164,7 +164,7 @@ fn execute_sdd_rule_batch(db: &mut SparqlDatabase, rule_inputs: &[String]) -> us
             .expect("failed to parse provenance rule");
 
         for (prefix, uri) in &combined.prefixes {
-            db.prefixes.insert(prefix.clone(), uri.clone());
+            db.add_prefix(prefix.clone(), uri.clone());
         }
 
         let mut prefixes = combined.prefixes.clone();
@@ -184,7 +184,7 @@ fn execute_sdd_rule_batch(db: &mut SparqlDatabase, rule_inputs: &[String]) -> us
     let (derived_facts, tag_store) = reasoner.infer_new_facts_with_provenance(SddProvenance::new());
 
     let mut dict = reasoner.dictionary.write().unwrap();
-    let mut qt_store = db.quoted_triple_store.write().unwrap();
+    let mut qt_store = db.quoted_triples_mut();
     let rdf_star = tag_store.encode_as_rdf_star_with_explanation(&mut dict, &mut qt_store);
     drop(qt_store);
     drop(dict);

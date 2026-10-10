@@ -504,10 +504,7 @@ fn reruns_read_only_asserted_input() {
     assert_eq!(first.hypothesis_count(), second.hypothesis_count());
     assert!(!Arc::ptr_eq(&db.dictionary, &first.dataset().dictionary));
     assert!(!Arc::ptr_eq(&first.dataset().dictionary, &second.dataset().dictionary));
-    assert!(!Arc::ptr_eq(
-        &db.quoted_triple_store,
-        &first.dataset().quoted_triple_store
-    ));
+    assert!(!db.shares_quoted_triples_with(first.dataset()));
 }
 
 #[test]

@@ -140,7 +140,7 @@ fn train(req: &Request, output_dir: &Path) -> Result<Value> {
     let parse_start = Instant::now();
     let program = compile_program(
         &neural_program(req.learning_rate, req.epochs, req.batch_size, ARTIFACT, "eval"),
-        &db.ml_context,
+        &db.ml_context(),
     )?;
     let parse_s = seconds(parse_start.elapsed());
     let prepare_s = seconds(train_population) + parse_s;

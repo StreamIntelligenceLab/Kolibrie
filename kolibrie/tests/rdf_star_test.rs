@@ -66,7 +66,7 @@ fn test_ntriples_star_basic_quoted_triple() {
     assert!(!default_is_empty(&db), "Should have parsed the outer triple");
 
     // The quoted triple store should have one entry
-    let qt = db.quoted_triple_store.read().unwrap();
+    let qt = db.quoted_triples();
     assert_eq!(qt.len(), 1, "Should have one quoted triple");
 }
 
@@ -78,7 +78,7 @@ fn test_ntriples_star_multiple_quoted_triples() {
 "#;
     db.parse_ntriples_and_add(ntriples);
     assert_eq!(default_len(&db), 2, "Should have two outer triples");
-    let qt = db.quoted_triple_store.read().unwrap();
+    let qt = db.quoted_triples();
     assert_eq!(qt.len(), 2, "Should have two quoted triples");
 }
 
@@ -93,7 +93,7 @@ fn test_ntriples_star_literal_in_quoted_triple() {
     db.parse_ntriples_and_add(ntriples);
 
     assert_eq!(default_len(&db), 2, "Should have two outer triples (literal-in-qt bug)");
-    let qt = db.quoted_triple_store.read().unwrap();
+    let qt = db.quoted_triples();
     assert_eq!(qt.len(), 2, "Should have two quoted triples");
 }
 
@@ -105,7 +105,7 @@ fn test_turtle_star_basic() {
     db.parse_turtle(turtle);
 
     assert!(!default_is_empty(&db), "Should have parsed at least one triple");
-    let qt = db.quoted_triple_store.read().unwrap();
+    let qt = db.quoted_triples();
     assert_eq!(qt.len(), 1, "Should have one quoted triple");
 }
 
@@ -118,7 +118,7 @@ fn test_dictionary_decode_term_with_quoted_triple() {
     db.parse_ntriples_and_add(ntriples);
 
     // Get the quoted triple ID
-    let qt = db.quoted_triple_store.read().unwrap();
+    let qt = db.quoted_triples();
     let qt_id = *qt.components_to_id.values().next().unwrap();
     let dict = db.dictionary.read().unwrap();
     let decoded = dict.decode_term(qt_id, &qt).unwrap();
@@ -258,7 +258,7 @@ fn test_encode_term_star_quoted_triple() {
     let id = db.encode_term_star("<< http://a http://b http://c >>");
     assert!(is_quoted_triple_id(id));
 
-    let qt = db.quoted_triple_store.read().unwrap();
+    let qt = db.quoted_triples();
     let (s, p, o) = qt.decode(id).unwrap();
     let dict = db.dictionary.read().unwrap();
     assert_eq!(dict.decode(s).unwrap(), "http://a");
@@ -365,7 +365,7 @@ fn test_insert_quoted_triple() {
     assert!(!default_is_empty(&db), "Triple should have been inserted");
 
     // Verify the quoted triple store has an entry
-    let qt_store = db.quoted_triple_store.read().unwrap();
+    let qt_store = db.quoted_triples();
     assert!(!qt_store.is_empty(), "QuotedTripleStore should have an entry");
 }
 
@@ -510,7 +510,7 @@ fn test_handle_update_insert_quoted_triple() {
     let result = db.handle_update(r#"INSERT { << <http://example.org/a> <http://example.org/b> <http://example.org/c> >> <http://example.org/src> <http://example.org/d> . }"#);
     assert_eq!(result, "Update Successful");
     assert_eq!(default_len(&db), 1);
-    let qt_store = db.quoted_triple_store.read().unwrap();
+    let qt_store = db.quoted_triples();
     assert!(!qt_store.is_empty(), "QuotedTripleStore should have entry");
 }
 

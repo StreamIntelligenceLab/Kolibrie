@@ -1095,7 +1095,7 @@ fn execute_sparql_with_policy(
     );
 
     let mut database = SparqlDatabase::new();
-    database.ml_context = context.clone();
+    database.set_ml_context(context.clone());
     // Validate the full request before changing database state
     for text in queries.iter().chain(rules.iter()) {
         if let Err(error) =
@@ -1188,9 +1188,7 @@ fn execute_sparql_with_policy(
 
                     // **IMPORTANT**: Register N3 prefixes with the database so SPARQL rules can use them
                     for (prefix, uri) in prefixes {
-                        database
-                            .prefixes
-                            .insert(prefix.to_string(), uri.to_string());
+                        database.add_prefix(prefix.to_string(), uri.to_string());
                     }
 
                     // Register the rule and infer new facts

@@ -70,8 +70,7 @@ TRAIN NEURAL RELATION ex:predictedDigit {{
     );
     execute_neural_program(&mut database, &program).expect("training failed");
     if let Some(triples) = database
-        .neural_materialized_triples
-        .remove("http://example.org/predictedDigit")
+        .take_neural_materialized("http://example.org/predictedDigit")
     {
         for triple in triples {
             database.delete_triple(&triple);

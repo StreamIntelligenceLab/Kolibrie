@@ -461,7 +461,7 @@ impl DynamicRuleManager {
             if *subject_str == "?road" {
                 let expanded_predicate = self
                     .database
-                    .resolve_query_term(predicate_str, &self.database.prefixes.clone());
+                    .resolve_query_term(predicate_str, &self.database.prefixes().clone());
                 
                 // Acquire write lock for encoding
                 let mut dict = self.database.dictionary.write().unwrap();

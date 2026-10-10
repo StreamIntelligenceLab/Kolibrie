@@ -53,7 +53,7 @@ fn reference_stats(database: &SparqlDatabase) -> DatabaseStats {
 
     DatabaseStats {
         total_triples,
-        quoted_triple_count: database.quoted_triple_store.read().unwrap().len() as u64,
+        quoted_triple_count: database.quoted_triples().len() as u64,
         named_graph_count: database.dataset_index.named_graphs().len() as u64,
         graph_cardinalities,
         predicate_distinct_subjects: predicate_subjects

@@ -29,14 +29,14 @@ fn artifact_names_are_portable_single_components() {
 #[test]
 fn denied_declaration_does_not_register_prefixes_or_models() {
     let mut db = SparqlDatabase::new();
-    let before = db.prefixes.clone();
+    let before = db.prefixes().clone();
     let query = r#"PREFIX secret: <urn:secret:> MODEL "m" { ARCH MLP { HIDDEN [4] } OUTPUT BINARY { true } }"#;
     let (remaining, _) = kolibrie::parser::parse_combined_query(query).unwrap();
     assert!(remaining.trim().is_empty());
     let error = execute_sparql_query(query, &mut db).unwrap_err();
     assert!(error.starts_with("ML_"), "{error}");
-    assert_eq!(before, db.prefixes);
-    assert!(db.model_decls.is_empty());
+    assert_eq!(&before, db.prefixes());
+    assert!(db.model_decls().is_empty());
 }
 
 #[test]
@@ -59,8 +59,8 @@ RULE :Predict :- CONSTRUCT { ?s ex:p ?prediction } WHERE { ?s ex:x ?x }
 ML.PREDICT(MODEL "unapproved", INPUT { SELECT ?x WHERE { ?s ex:x ?x } }, OUTPUT ?prediction)"#;
     let error = kolibrie::parser::process_rule_definition(request, &mut db).unwrap_err();
     assert!(error.starts_with("ML_"), "{error}");
-    assert!(db.prefixes.is_empty());
-    assert!(db.model_decls.is_empty());
+    assert!(db.prefixes().is_empty());
+    assert!(db.model_decls().is_empty());
 }
 
 #[test]
@@ -92,9 +92,9 @@ fn default_policy_rejects_prediction_relation_and_training_routes() {
                 "ML_FEATURE_DISABLED"
             }
         );
-        assert!(db.prefixes.is_empty());
-        assert!(db.model_decls.is_empty());
-        assert!(db.neural_relation_decls.is_empty());
+        assert!(db.prefixes().is_empty());
+        assert!(db.model_decls().is_empty());
+        assert!(db.neural_relation_decls().is_empty());
     }
 }
 
@@ -155,9 +155,9 @@ mod enabled {
         let response = db.handle_http_request(&request);
         assert!(response.contains("403 Forbidden"), "{response}");
         assert!(!response.contains("urn:secret:"));
-        assert!(db.prefixes.is_empty());
-        assert!(db.model_decls.is_empty());
-        assert!(db.ml_context.require_local().is_ok());
+        assert!(db.prefixes().is_empty());
+        assert!(db.model_decls().is_empty());
+        assert!(db.ml_context().require_local().is_ok());
         assert_eq!(
             execute_sparql_query("SELECT ?x WHERE { VALUES ?x { 7 } }", &mut db).unwrap(),
             vec![vec!["7"]]

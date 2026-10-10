@@ -61,7 +61,7 @@ fn streamertail_optimizer_sparql() {
         let prefixes = parsed.prefixes;
 
         // Merge prefixes into the database
-        database.prefixes.extend(prefixes.clone());
+        database.extend_prefixes(prefixes.clone());
 
         // Build the logical plan
         let logical_plan =

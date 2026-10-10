@@ -55,7 +55,7 @@ fn populate_binary_db(db: &mut SparqlDatabase) {
 }
 
 fn clear_materialized_predicate(db: &mut SparqlDatabase, predicate: &str) {
-    if let Some(triples) = db.neural_materialized_triples.remove(predicate) {
+    if let Some(triples) = db.take_neural_materialized(predicate) {
         for triple in triples {
             db.delete_triple(&triple);
         }

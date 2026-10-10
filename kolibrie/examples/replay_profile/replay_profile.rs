@@ -85,7 +85,7 @@ struct Replay {
 /// Inserts every member, evaluating the query once every `every` members
 fn replay(members: usize, every: usize, policy: PlanningStatsPolicy, query: &str) -> Replay {
     let mut database = SparqlDatabase::new();
-    database.planning_stats_policy = policy;
+    database.set_planning_stats_policy(policy);
 
     let started = Instant::now();
     let mut query_time = Duration::ZERO;

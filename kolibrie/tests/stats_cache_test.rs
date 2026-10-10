@@ -33,7 +33,7 @@ fn insert(database: &mut SparqlDatabase, index: u32) {
 }
 
 fn rebuilds(database: &SparqlDatabase) -> u64 {
-    database.stats_rebuild_count
+    database.stats_rebuild_count()
 }
 
 // Exact statistics
@@ -101,7 +101,7 @@ fn a_mutation_that_changed_nothing_does_not_force_a_rebuild() {
 #[test]
 fn the_default_policy_is_bounded() {
     assert_eq!(
-        SparqlDatabase::new().planning_stats_policy,
+        SparqlDatabase::new().planning_stats_policy(),
         PlanningStatsPolicy::DEFAULT_BOUNDED
     );
 }
@@ -109,7 +109,7 @@ fn the_default_policy_is_bounded() {
 #[test]
 fn always_fresh_planning_statistics_match_the_exact_ones() {
     let mut database = seeded();
-    database.planning_stats_policy = PlanningStatsPolicy::AlwaysFresh;
+    database.set_planning_stats_policy(PlanningStatsPolicy::AlwaysFresh);
 
     for index in 0..5 {
         insert(&mut database, index);
@@ -125,7 +125,7 @@ fn always_fresh_planning_statistics_match_the_exact_ones() {
 #[test]
 fn bounded_planning_statistics_are_reused_below_the_boundary() {
     let mut database = seeded();
-    database.planning_stats_policy = bounded(10, 0.10);
+    database.set_planning_stats_policy(bounded(10, 0.10));
     let first = database.get_or_build_planning_stats();
     let after_first = rebuilds(&database);
 
@@ -146,7 +146,7 @@ fn bounded_planning_statistics_are_reused_below_the_boundary() {
 #[test]
 fn bounded_planning_statistics_rebuild_at_the_boundary() {
     let mut database = seeded();
-    database.planning_stats_policy = bounded(10, 0.10);
+    database.set_planning_stats_policy(bounded(10, 0.10));
     let first = database.get_or_build_planning_stats();
 
     for index in 0..9 {
@@ -170,7 +170,7 @@ fn the_boundary_is_proportional_once_it_exceeds_the_minimum_batch() {
     for index in 0..1_000 {
         insert(&mut database, index);
     }
-    database.planning_stats_policy = bounded(10, 0.10);
+    database.set_planning_stats_policy(bounded(10, 0.10));
     let first = database.get_or_build_planning_stats();
     assert_eq!(first.total_triples, 1_000);
 
@@ -199,7 +199,7 @@ fn a_constant_size_replacement_still_reaches_the_boundary() {
     for index in 0..100 {
         insert(&mut database, index);
     }
-    database.planning_stats_policy = bounded(10, 0.10);
+    database.set_planning_stats_policy(bounded(10, 0.10));
     let first = database.get_or_build_planning_stats();
 
     for index in 0..10 {
@@ -227,7 +227,7 @@ fn a_constant_size_replacement_still_reaches_the_boundary() {
 #[test]
 fn an_empty_dataset_that_gains_data_refreshes_immediately() {
     let mut database = SparqlDatabase::new();
-    database.planning_stats_policy = bounded(1_000, 0.90);
+    database.set_planning_stats_policy(bounded(1_000, 0.90));
     let first = database.get_or_build_planning_stats();
     assert_eq!(first.total_triples, 0);
 
@@ -241,7 +241,7 @@ fn an_empty_dataset_that_gains_data_refreshes_immediately() {
 fn a_hard_invalidation_retires_every_snapshot_under_any_policy() {
     for policy in [PlanningStatsPolicy::AlwaysFresh, bounded(1_000, 0.90)] {
         let mut database = seeded();
-        database.planning_stats_policy = policy;
+        database.set_planning_stats_policy(policy);
         let first = database.get_or_build_planning_stats();
         let exact = database.get_or_build_stats();
 
@@ -264,7 +264,7 @@ fn replacing_the_dataset_index_retires_every_snapshot() {
     for index in 0..200 {
         insert(&mut database, index);
     }
-    database.planning_stats_policy = bounded(1_000, 0.90);
+    database.set_planning_stats_policy(bounded(1_000, 0.90));
     let first = database.get_or_build_planning_stats();
     assert_eq!(first.total_triples, 200);
 
@@ -282,7 +282,7 @@ fn a_replacement_index_with_a_lower_generation_is_not_mistaken_for_fresh() {
     for index in 0..200 {
         insert(&mut database, index);
     }
-    database.planning_stats_policy = bounded(1_000, 0.90);
+    database.set_planning_stats_policy(bounded(1_000, 0.90));
     let first = database.get_or_build_planning_stats();
     assert_eq!(first.total_triples, 200);
 
@@ -309,7 +309,7 @@ fn clearing_the_dataset_refreshes_planning_statistics() {
     for index in 0..200 {
         insert(&mut database, index);
     }
-    database.planning_stats_policy = bounded(10, 0.50);
+    database.set_planning_stats_policy(bounded(10, 0.50));
     let first = database.get_or_build_planning_stats();
     assert_eq!(first.total_triples, 200);
 
@@ -346,7 +346,7 @@ fn interleaved_writes_and_queries_do_not_rebuild_per_query() {
     for index in 0..500 {
         insert(&mut database, index);
     }
-    database.planning_stats_policy = bounded(25, 0.10);
+    database.set_planning_stats_policy(bounded(25, 0.10));
 
     let queries = 100;
     for index in 500..500 + queries {

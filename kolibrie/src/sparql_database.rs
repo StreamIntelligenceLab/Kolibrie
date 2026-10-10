@@ -26,7 +26,7 @@ use shared::quoted_triple_store::{is_quoted_triple_id, QuotedTripleStore};
 use shared::triple::Triple;
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::sync::Arc;
-use std::sync::{Mutex, RwLock};
+use std::sync::{Mutex, RwLock, RwLockReadGuard, RwLockWriteGuard};
 use url::Url;
 
 fn looks_like_absolute_iri(value: &str) -> bool {
@@ -206,30 +206,65 @@ pub struct PlanningStatsSnapshot {
     pub resets: u64,
 }
 
+/// Read guard over the quoted-triple store, from [`SparqlDatabase::quoted_triples`].
+///
+/// Exists so the public API never names `Arc<RwLock<_>>` (P5). It derefs to
+/// [`QuotedTripleStore`], so call sites read `db.quoted_triples().len()` where they
+/// previously read `db.quoted_triple_store.read().unwrap().len()`. Holding the
+/// binding holds the lock, exactly as before — callers that need several operations
+/// under one lock keep working unchanged.
+#[derive(Debug)]
+pub struct QuotedTriplesRef<'a>(RwLockReadGuard<'a, QuotedTripleStore>);
+
+impl std::ops::Deref for QuotedTriplesRef<'_> {
+    type Target = QuotedTripleStore;
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
+/// Write guard over the quoted-triple store, from
+/// [`SparqlDatabase::quoted_triples_mut`]. See [`QuotedTriplesRef`].
+#[derive(Debug)]
+pub struct QuotedTriplesMut<'a>(RwLockWriteGuard<'a, QuotedTripleStore>);
+
+impl std::ops::Deref for QuotedTriplesMut<'_> {
+    type Target = QuotedTripleStore;
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
+impl std::ops::DerefMut for QuotedTriplesMut<'_> {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.0
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct SparqlDatabase {
     /// Host-selected ML authority
-    pub ml_context: crate::ml_policy::MlExecutionContext,
+    pub(crate) ml_context: crate::ml_policy::MlExecutionContext,
     pub dataset_index: DatasetIndex,
     pub dictionary: Arc<RwLock<Dictionary>>,
-    pub prefixes: HashMap<String, String>,
+    pub(crate) prefixes: HashMap<String, String>,
     udfs: HashMap<String, ClonableFn>,
-    pub rule_map: HashMap<String, String>,
-    pub model_decls: HashMap<String, ModelDecl>,
-    pub neural_relation_decls: HashMap<String, NeuralRelationDecl>,
-    pub train_neural_relation_decls: HashMap<String, TrainNeuralRelationDecl>,
-    pub neural_model_artifacts: HashMap<String, String>,
-    pub neural_materialized_triples: HashMap<String, Vec<Triple>>,
+    pub(crate) rule_map: HashMap<String, String>,
+    pub(crate) model_decls: HashMap<String, ModelDecl>,
+    pub(crate) neural_relation_decls: HashMap<String, NeuralRelationDecl>,
+    pub(crate) train_neural_relation_decls: HashMap<String, TrainNeuralRelationDecl>,
+    pub(crate) neural_model_artifacts: HashMap<String, String>,
+    pub(crate) neural_materialized_triples: HashMap<String, Vec<Triple>>,
     ml_predict_materialized_triples: HashMap<String, Vec<Triple>>,
-    pub probability_seeds: HashMap<Triple, f64>,
+    pub(crate) probability_seeds: HashMap<Triple, f64>,
     cached_stats: Option<Arc<DatabaseStats>>,
     exact_stats_generation: u64,
     planning_stats: Option<PlanningStatsSnapshot>,
-    pub planning_stats_policy: PlanningStatsPolicy,
+    pub(crate) planning_stats_policy: PlanningStatsPolicy,
     stats_epoch: u64,
-    pub stats_rebuild_count: u64,
+    pub(crate) stats_rebuild_count: u64,
     stats_rebuild_nanos: u64,
-    pub quoted_triple_store: Arc<RwLock<QuotedTripleStore>>,
+    pub(crate) quoted_triple_store: Arc<RwLock<QuotedTripleStore>>,
     implicit_neural_materialization: bool,
 }
 
@@ -2277,6 +2312,124 @@ impl SparqlDatabase {
         F: Fn(Vec<&str>) -> String + Send + Sync + 'static,
     {
         self.udfs.insert(name.to_string(), ClonableFn::new(f));
+    }
+
+    // ── Accessors for fields sealed in stage 2a ─────────────────────────────────
+    //
+    // Twelve fields left the public API here. They stay `pub(crate)` rather than
+    // becoming fully private: the goal is that no *consumer* depends on the layout,
+    // and changing the representation later is then a within-crate refactor. Making
+    // them private as well would mean accessors for ~250 internal sites, which buys
+    // nothing a consumer can observe.
+    //
+    // Each accessor below matches what the 79 external call sites actually did —
+    // measured by sealing the fields and reading the compiler's E0616 list, not by
+    // grepping for field names. Grep over-counted by up to 2x, because `model_decls`,
+    // `probability_seeds` and friends are also fields on CombinedQuery, Rule,
+    // CompiledProgram and Reasoner.
+
+    /// The ML execution policy: which models are approved, and where artifacts live.
+    pub fn ml_context(&self) -> &crate::ml_policy::MlExecutionContext {
+        &self.ml_context
+    }
+
+    /// Replaces the ML execution policy.
+    pub fn set_ml_context(&mut self, context: crate::ml_policy::MlExecutionContext) {
+        self.ml_context = context;
+    }
+
+    /// When planning statistics are rebuilt rather than reused.
+    pub fn planning_stats_policy(&self) -> PlanningStatsPolicy {
+        self.planning_stats_policy
+    }
+
+    /// Sets when planning statistics are rebuilt.
+    pub fn set_planning_stats_policy(&mut self, policy: PlanningStatsPolicy) {
+        self.planning_stats_policy = policy;
+    }
+
+    /// How many times planning statistics have been rebuilt. Used by tests to assert
+    /// that a policy actually avoided work.
+    pub fn stats_rebuild_count(&self) -> u64 {
+        self.stats_rebuild_count
+    }
+
+    /// Prefix bindings, for resolving abbreviated terms.
+    pub fn prefixes(&self) -> &HashMap<String, String> {
+        &self.prefixes
+    }
+
+    /// Binds `prefix` to `uri`, replacing any existing binding.
+    pub fn add_prefix(&mut self, prefix: impl Into<String>, uri: impl Into<String>) {
+        self.prefixes.insert(prefix.into(), uri.into());
+    }
+
+    /// Merges a set of prefix bindings in, replacing any that collide.
+    ///
+    /// The parsers produce prefixes as a map, so callers had been reaching for
+    /// `prefixes.extend(..)` on the field directly.
+    pub fn extend_prefixes(&mut self, bindings: impl IntoIterator<Item = (String, String)>) {
+        self.prefixes.extend(bindings);
+    }
+
+    /// Declared ML models, by name.
+    pub fn model_decls(&self) -> &HashMap<String, ModelDecl> {
+        &self.model_decls
+    }
+
+    /// Declared neural relations, by predicate.
+    pub fn neural_relation_decls(&self) -> &HashMap<String, NeuralRelationDecl> {
+        &self.neural_relation_decls
+    }
+
+    /// Resolved artifact paths for trained models, by model name.
+    pub fn neural_model_artifacts(&self) -> &HashMap<String, String> {
+        &self.neural_model_artifacts
+    }
+
+    /// Triples materialised by neural relations, by predicate.
+    pub fn neural_materialized_triples(&self) -> &HashMap<String, Vec<Triple>> {
+        &self.neural_materialized_triples
+    }
+
+    /// Takes the triples materialised for `predicate`, so they can be retracted.
+    pub fn take_neural_materialized(&mut self, predicate: &str) -> Option<Vec<Triple>> {
+        self.neural_materialized_triples.remove(predicate)
+    }
+
+    /// Per-triple prior probabilities seeded into probabilistic reasoning.
+    pub fn probability_seeds(&self) -> &HashMap<Triple, f64> {
+        &self.probability_seeds
+    }
+
+    /// Maps a short rule name to its expanded IRI.
+    pub fn add_rule_mapping(&mut self, name: impl Into<String>, expanded: impl Into<String>) {
+        self.rule_map.insert(name.into(), expanded.into());
+    }
+
+    /// Read access to the quoted-triple store.
+    ///
+    /// Returns a guard rather than the `Arc<RwLock<_>>` itself. P5 forbids
+    /// `Arc<RwLock<_>>` in public signatures, and a getter handing back the `Arc`
+    /// would seal the field while freezing both the representation and the locking
+    /// strategy — the same encapsulation-in-name-only that stage 1 avoided.
+    pub fn quoted_triples(&self) -> QuotedTriplesRef<'_> {
+        QuotedTriplesRef(self.quoted_triple_store.read().unwrap())
+    }
+
+    /// Write access to the quoted-triple store. See [`Self::quoted_triples`].
+    pub fn quoted_triples_mut(&self) -> QuotedTriplesMut<'_> {
+        QuotedTriplesMut(self.quoted_triple_store.write().unwrap())
+    }
+
+    /// Whether `self` and `other` share one quoted-triple store, as opposed to
+    /// holding separate ones.
+    ///
+    /// Replaces `Arc::ptr_eq` on the raw field: it states the property a caller
+    /// actually cares about — whether two databases are isolated — without the
+    /// handle having to be public.
+    pub fn shares_quoted_triples_with(&self, other: &SparqlDatabase) -> bool {
+        Arc::ptr_eq(&self.quoted_triple_store, &other.quoted_triple_store)
     }
 
     // ── Accessors for fields sealed in stage 1 ──────────────────────────────────

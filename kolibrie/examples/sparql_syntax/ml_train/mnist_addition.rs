@@ -108,7 +108,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     excerpt(&text);
 
     let started = Instant::now();
-    let program = compile_program(&text, &db.ml_context)?;
+    let program = compile_program(&text, &db.ml_context())?;
     let options = ProgramOptions {
         training_seed: Some(0),
         required_choices: Some((0..TEST_COUNT).map(|i| (DIGIT.to_string(), image_term(i))).collect()),

@@ -23,7 +23,7 @@ fn frozen() -> PlanningStatsPolicy {
 /// Builds a store with a frozen planning snapshot
 fn with_frozen_statistics(triples: &str) -> SparqlDatabase {
     let mut database = common::database_with(triples);
-    database.planning_stats_policy = frozen();
+    database.set_planning_stats_policy(frozen());
     database.get_or_build_planning_stats();
     database
 }
@@ -160,9 +160,9 @@ fn stale_statistics_never_change_a_result() {
 
 /// Returns the number of rebuilds triggered by one query
 fn rebuilds_for(database: &mut SparqlDatabase, query: &str) -> u64 {
-    let before = database.stats_rebuild_count;
+    let before = database.stats_rebuild_count();
     common::query(database, query);
-    database.stats_rebuild_count - before
+    database.stats_rebuild_count() - before
 }
 
 #[test]
@@ -223,7 +223,7 @@ fn the_shortcut_agrees_with_always_building_statistics() {
     ] {
         let mut shortcut = common::database_with(triples);
         let mut always = common::database_with(triples);
-        always.planning_stats_policy = PlanningStatsPolicy::AlwaysFresh;
+        always.set_planning_stats_policy(PlanningStatsPolicy::AlwaysFresh);
 
         assert_eq!(
             common::query(&mut shortcut, query),
