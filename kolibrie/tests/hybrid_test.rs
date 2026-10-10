@@ -26,14 +26,10 @@ fn hybrid_rule_emits_typed_status_annotations() {
     assert_eq!(inferred.len(), 1);
 
     let status = database
-        .dictionary
-        .write()
-        .unwrap()
+        .dictionary_mut()
         .encode("http://www.w3.org/ns/prob#status");
     let value = database
-        .dictionary
-        .write()
-        .unwrap()
+        .dictionary_mut()
         .encode("http://www.w3.org/ns/prob#value");
     assert!(!database
         .query_default_triples(None, Some(status), None)
@@ -76,23 +72,17 @@ fn cost_ratio_threshold_is_recorded_in_rdf_metadata() {
     "#;
     process_rule_definition(rule, &mut database).expect("cost policy should execute");
     let threshold = database
-        .dictionary
-        .write()
-        .unwrap()
+        .dictionary_mut()
         .encode("http://www.w3.org/ns/prob#effectiveThreshold");
     let policy = database
-        .dictionary
-        .write()
-        .unwrap()
+        .dictionary_mut()
         .encode("http://www.w3.org/ns/prob#thresholdPolicy");
     let threshold_object = database
         .query_default_triples(None, Some(threshold), None)
         .first()
         .and_then(|triple| {
             database
-                .dictionary
-                .read()
-                .unwrap()
+                .dictionary()
                 .decode(triple.object)
                 .map(str::to_string)
         })
@@ -102,9 +92,7 @@ fn cost_ratio_threshold_is_recorded_in_rdf_metadata() {
         .first()
         .and_then(|triple| {
             database
-                .dictionary
-                .read()
-                .unwrap()
+                .dictionary()
                 .decode(triple.object)
                 .map(str::to_string)
         })

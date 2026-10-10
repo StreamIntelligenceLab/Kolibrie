@@ -140,7 +140,7 @@ TRAIN NEURAL RELATION ex:isFraud {{
 
 /// Decode the first object for a matching subject and predicate
 fn lookup_object(db: &SparqlDatabase, subject_iri: &str, predicate_iri: &str) -> Option<String> {
-    let dict = db.dictionary.read().unwrap();
+    let dict = db.dictionary();
     let s = *dict.string_to_id.get(subject_iri)?;
     let p = *dict.string_to_id.get(predicate_iri)?;
     let triples = db.query_default_triples(Some(s), Some(p), None);
@@ -153,7 +153,7 @@ fn lookup_object(db: &SparqlDatabase, subject_iri: &str, predicate_iri: &str) ->
 }
 
 fn count_triples_with_predicate(db: &SparqlDatabase, predicate_iri: &str) -> usize {
-    let dict = db.dictionary.read().unwrap();
+    let dict = db.dictionary();
     let Some(&pred_id) = dict.string_to_id.get(predicate_iri) else { return 0; };
     db.query_default_triples(None, Some(pred_id), None).len()
 }

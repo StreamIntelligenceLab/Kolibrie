@@ -8,78 +8,78 @@
  * you can obtain one at https://mozilla.org/MPL/2.0/.
  */
 
-//! Does sealing `SparqlDatabase` cost anything?
+//! Reaching the term dictionary: what the sealed accessors cost.
 //!
-//! The proposal makes all 23 public fields private behind accessors. Received
-//! wisdom says a `#[inline]` accessor compiles to the same code as a field read —
-//! but that is a claim about this codebase's call sites and optimisation settings,
-//! not a law. Measuring it on *one* field now is far cheaper than discovering a
-//! regression after converting twenty-three and nineteen dependent modules.
+//! **The question this was written for is answered.** It originally compared a direct
+//! `db.dictionary` field read against an `#[inline]` accessor and an
+//! `#[inline(never)]` one, to find out whether sealing `SparqlDatabase`'s fields
+//! would cost anything before converting twenty-odd fields and their call sites. The
+//! three arms landed within 1.3% of each other — inside the noise floor even for the
+//! outlined version — so sealing went ahead on measured rather than assumed grounds.
+//! That comparison is no longer expressible here: `dictionary` is private, so a bench
+//! outside the crate cannot read the field. The original is in the history at the
+//! commit that sealed it.
 //!
-//! `dictionary` is the field to measure: it is read 36 times across the crate, more
-//! than any other, and it is read inside query execution rather than at setup.
+//! What it guards now is the two paths a caller actually has:
 //!
-//! If the two columns here are indistinguishable, sealing is free and the
-//! encapsulation work proceeds without a performance argument against it.
+//!   * `dictionary()` — the guard accessor, which is what essentially all 96
+//!     rewritten call sites use.
+//!   * `dictionary_handle()` — the documented escape hatch for sharing the encoding
+//!     with another engine, which costs an `Arc` clone before the lock.
+//!
+//! The outlined arm stays as the pessimistic bound: if the guard ever stops being
+//! inlined, the gap between it and `guard_accessor` is where that shows up.
 
 extern crate criterion;
 
 use criterion::{black_box, criterion_group, criterion_main, Criterion};
 use kolibrie::sparql_database::SparqlDatabase;
-use shared::dictionary::Dictionary;
-use std::sync::{Arc, RwLock};
 
-/// Stand-in for the accessor that sealing would introduce.
-#[inline]
-fn dictionary_of(db: &SparqlDatabase) -> &Arc<RwLock<Dictionary>> {
-    &db.dictionary
-}
-
-/// Deliberately not inlinable — the pessimistic bound. If the gap between this and
-/// the field read is large, sealing needs `#[inline]` discipline rather than being
-/// automatically free, and that is worth knowing up front.
+/// Deliberately not inlinable, as the pessimistic bound on the guard accessor.
 #[inline(never)]
-fn dictionary_of_never(db: &SparqlDatabase) -> &Arc<RwLock<Dictionary>> {
-    &db.dictionary
+fn next_id_outlined(db: &SparqlDatabase) -> u32 {
+    db.dictionary().next_id
 }
 
 fn bench_access(c: &mut Criterion) {
-    let mut database = SparqlDatabase::new();
+    let database = SparqlDatabase::new();
     for i in 0..1_000 {
         database
-            .dictionary
-            .write()
-            .unwrap()
+            .dictionary_mut()
             .encode(&format!("http://example.org/e{i}"));
     }
 
     let mut group = c.benchmark_group("micro_field_access");
 
-    group.bench_function("direct_field", |b| {
+    group.bench_function("guard_accessor", |b| {
         b.iter(|| {
             let mut n = 0usize;
             for _ in 0..1_000 {
-                n += black_box(&database).dictionary.read().unwrap().next_id as usize;
+                n += black_box(&database).dictionary().next_id as usize;
             }
             black_box(n)
         })
     });
 
-    group.bench_function("inline_accessor", |b| {
+    group.bench_function("handle_then_lock", |b| {
         b.iter(|| {
             let mut n = 0usize;
             for _ in 0..1_000 {
-                n += dictionary_of(black_box(&database)).read().unwrap().next_id as usize;
+                n += black_box(&database)
+                    .dictionary_handle()
+                    .read()
+                    .unwrap()
+                    .next_id as usize;
             }
             black_box(n)
         })
     });
 
-    group.bench_function("outlined_accessor", |b| {
+    group.bench_function("outlined_guard", |b| {
         b.iter(|| {
             let mut n = 0usize;
             for _ in 0..1_000 {
-                n += dictionary_of_never(black_box(&database)).read().unwrap().next_id as usize;
+                n += next_id_outlined(black_box(&database)) as usize;
             }
             black_box(n)
         })

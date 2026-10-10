@@ -34,7 +34,7 @@ fn main() {
     // Step 3: Create KnowledgeGraph and populate it (One-time)
     println!("\n=== Populating KnowledgeGraph (One-time) ===");
     let mut kg = Reasoner::new();
-    kg.dictionary = database.dictionary.clone();
+    kg.dictionary = database.dictionary_handle();
     
     let populate_start = Instant::now();
     let triples = database.query_default_triples(None, None, None);

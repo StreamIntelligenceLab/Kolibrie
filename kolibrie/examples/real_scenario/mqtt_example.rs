@@ -441,7 +441,7 @@ fn main() {
                 let triples_to_add = database.query_default_triples(None, None, None);
                 
                 for triple in triples_to_add {
-                    let dict = database.dictionary.read().unwrap();
+                    let dict = database.dictionary();
                     let subject = dict.decode(triple.subject).map(|s| s.to_string());
                     let predicate = dict.decode(triple.predicate).map(|p| p.to_string());
                     let object = dict.decode(triple.object).map(|o| o.to_string());
@@ -550,7 +550,7 @@ WHERE {
                                 println!("Rule #{} - Successfully parsed", idx+1);
                                 
                                 // FIXED: Acquire write lock for conversion
-                                let mut dict = database.dictionary.write().unwrap();
+                                let mut dict = database.dictionary_mut();
                                 let dynamic_rule = convert_combined_rule(rule_def, &mut dict, &combined_query.prefixes);
                                 drop(dict); // Release lock
                                 
@@ -560,7 +560,7 @@ WHERE {
                                 // FIXED: Handle mapping the rule name with proper lock
                                 if let Some(first_conclusion) = &dynamic_rule.conclusion.first() {
                                     if let Term::Constant(code) = first_conclusion.1 {
-                                        let dict = database.dictionary.read().unwrap();
+                                        let dict = database.dictionary();
                                         if let Some(expanded) = dict.decode(code) {
                                             let expanded = expanded.to_string();
                                             drop(dict); // Release lock
@@ -588,7 +588,7 @@ WHERE {
                 println!("Inferred {} new fact(s):", inferred_facts.len());
                 
                 // FIXED: Proper lock handling for decoding inferred facts
-                let dict = database.dictionary.read().unwrap();
+                let dict = database.dictionary();
                 for triple in inferred_facts.iter() {
                     let s = dict.decode(triple.subject).unwrap_or_default();
                     let p = dict.decode(triple.predicate).unwrap_or_default();

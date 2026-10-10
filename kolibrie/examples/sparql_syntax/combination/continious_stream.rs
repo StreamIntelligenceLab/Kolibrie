@@ -177,7 +177,7 @@ WHERE {
                 
                 // Show what alerts were generated
                 for (i, triple) in inferred_facts.iter().enumerate() {
-                    let dict = database.dictionary.read().unwrap();
+                    let dict = database.dictionary();
                     let s = dict.decode(triple.subject).unwrap_or("unknown");
                     let p = dict.decode(triple.predicate).unwrap_or("unknown");
                     let o = dict.decode(triple.object).unwrap_or("unknown");
@@ -213,7 +213,7 @@ WHERE {
                 
                 // Show what new readings were detected
                 for (i, triple) in inferred_facts.iter().enumerate() {
-                    let dict = database.dictionary.read().unwrap();
+                    let dict = database.dictionary();
                     let s = dict.decode(triple.subject).unwrap_or("unknown");
                     let p = dict.decode(triple.predicate).unwrap_or("unknown");
                     let o = dict.decode(triple.object).unwrap_or("unknown");
@@ -250,7 +250,7 @@ WHERE {
                 
                 // Show what extreme conditions were found
                 for (i, triple) in inferred_facts.iter().enumerate() {
-                    let dict = database.dictionary.read().unwrap();
+                    let dict = database.dictionary();
                     let s = dict.decode(triple.subject).unwrap_or("unknown");
                     let p = dict.decode(triple.predicate).unwrap_or("unknown");
                     let o = dict.decode(triple.object).unwrap_or("unknown");

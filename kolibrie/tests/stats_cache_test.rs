@@ -60,7 +60,7 @@ fn exact_statistics_notice_a_write_that_bypassed_the_helpers() {
 
     // Insert directly into the index; a single lock guard avoids a self-deadlock
     let quad = {
-        let mut dictionary = database.dictionary.write().unwrap();
+        let mut dictionary = database.dictionary_mut();
         Quad {
             subject: dictionary.encode("urn:d"),
             predicate: dictionary.encode("urn:p"),

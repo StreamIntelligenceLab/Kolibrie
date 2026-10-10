@@ -25,7 +25,7 @@ mod tests {
         let mut db = SparqlDatabase::new();
         
         // Acquire write lock once for all encoding
-        let mut dict = db.dictionary.write().unwrap();
+        let mut dict = db.dictionary_mut();
         
         // Create common IDs
         let person1 = dict.encode("http://example.org/person1");
@@ -89,7 +89,7 @@ mod tests {
         assert_eq!(initial_count, 11);
         
         // Create a triple to delete
-        let mut dict = db.dictionary.write().unwrap();
+        let mut dict = db.dictionary_mut();
         let person1 = dict.encode("http://example.org/person1");
         let pred_name = dict.encode("ex:name");
         let obj_john = dict.encode("John Smith");
@@ -264,7 +264,7 @@ mod tests {
         assert_eq!(pred_end.len(), 2);
         
         // Test custom filter - collect numeric objects first
-        let dict = db.dictionary.read().unwrap();
+        let dict = db.dictionary();
         let numeric_objects: Vec<_> = default_triples(&db).iter()
             .filter(|t| dict.decode(t.object).unwrap_or("").parse::<i32>().is_ok())
             .cloned()
@@ -334,7 +334,7 @@ mod tests {
         assert_eq!(age_triples.len(), 2);
         
         // Check that we got both ages
-        let dict = db.dictionary.read().unwrap();
+        let dict = db.dictionary();
         let mut age_values: Vec<_> = age_triples.iter()
             .map(|t| dict.decode(t.object).unwrap_or("").to_string())
             .collect();
@@ -354,7 +354,7 @@ mod tests {
         assert_eq!(offset[0], all[2]);
         
         // Test grouping
-        let dict = db.dictionary.read().unwrap();
+        let dict = db.dictionary();
         let groups = db.query().group_by(|t| 
             dict.decode(t.predicate).unwrap_or("").to_string()
         );
@@ -373,7 +373,7 @@ mod tests {
         assert_eq!(orig_count, 11);
         
         // Add a second email for Person1
-        let mut dict = db.dictionary.write().unwrap();
+        let mut dict = db.dictionary_mut();
         let subject1 = dict.encode("http://example.org/person1");
         let pred_email = dict.encode("ex:email");
         let new_email = dict.encode("john.smith@example.com");
@@ -419,7 +419,7 @@ mod tests {
             .get_triples();
         
         // Filter young employees - collect subject IDs first
-        let dict = db.dictionary.read().unwrap();
+        let dict = db.dictionary();
         let triples = default_triples(&db);
         let young_subject_ids: Vec<u32> = employees.iter()
             .filter_map(|t| {

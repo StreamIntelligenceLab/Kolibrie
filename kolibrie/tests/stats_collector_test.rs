@@ -165,7 +165,7 @@ fn named_graphs_including_empty_ones_collect_the_same_statistics() {
     .unwrap();
 
     // Empty named graph
-    let empty = database.dictionary.write().unwrap().encode("urn:g3");
+    let empty = database.dictionary_mut().encode("urn:g3");
     database.dataset_index.create_graph(GraphId::Named(empty));
 
     assert_matches_reference(&database, "named graphs");
@@ -201,7 +201,7 @@ fn a_skewed_predicate_distribution_collects_the_same_statistics() {
 
     assert_matches_reference(&database, "skewed");
     let stats = DatabaseStats::gather_stats_fast(&database);
-    let rare = database.dictionary.write().unwrap().encode("urn:rare");
+    let rare = database.dictionary_mut().encode("urn:rare");
     assert_eq!(
         stats.get_predicate_cardinality(rare),
         1,

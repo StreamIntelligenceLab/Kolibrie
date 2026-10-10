@@ -41,7 +41,7 @@ fn add_sample_data(database: &mut SparqlDatabase) {
     println!("Adding sample data...");
 
     // Acquire write lock on dictionary for all encoding operations
-    let mut dict = database.dictionary.write().unwrap();
+    let mut dict = database.dictionary_mut();
     
     // Add some triples about people
     let alice_id = dict.encode("http://example.org/alice");
@@ -121,7 +121,7 @@ fn add_sample_data(database: &mut SparqlDatabase) {
 fn simple_scan_example(database: &mut SparqlDatabase) {
     println!("=== Example 1: Simple Scan ===");
 
-    let mut dict = database.dictionary.write().unwrap();
+    let mut dict = database.dictionary_mut();
     let name_id = dict.encode("http://example.org/name");
     drop(dict);
 
@@ -157,7 +157,7 @@ fn simple_scan_example(database: &mut SparqlDatabase) {
 fn join_example(database: &mut SparqlDatabase) {
     println!("=== Example 2: Join Query ===");
 
-    let mut dict = database.dictionary.write().unwrap();
+    let mut dict = database.dictionary_mut();
     let name_id = dict.encode("http://example.org/name");
     let age_id = dict.encode("http://example.org/age");
     drop(dict);
@@ -202,7 +202,7 @@ fn join_example(database: &mut SparqlDatabase) {
 fn filter_example(database: &mut SparqlDatabase) {
     println!("=== Example 3: Filter Query ===");
 
-    let mut dict = database.dictionary.write().unwrap();
+    let mut dict = database.dictionary_mut();
     let name_id = dict.encode("http://example.org/name");
     drop(dict);
 

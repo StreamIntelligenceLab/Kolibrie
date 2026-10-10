@@ -69,7 +69,7 @@ RULE :OverheatingAlert :-
       println!("Rule details: {:#?}", rule);
       
       println!("Inferred {} new fact(s):", inferred_facts.len());
-      let dict = database.dictionary.read().unwrap();
+      let dict = database.dictionary();
       for triple in inferred_facts.iter() {
           println!("{}", database.triple_to_string(triple, &dict));
       }

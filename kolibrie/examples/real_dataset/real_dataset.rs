@@ -30,7 +30,7 @@ fn filter_example() {
     // Use the full predicate ending to be more flexible with namespaces
     let high_salary_triples = database.query()
         .filter(|triple| {
-            let dict = database.dictionary.read().unwrap();
+            let dict = database.dictionary();
             // First check if this is a salary predicate
             if let Some(predicate) = dict.decode(triple.predicate) {
                 if predicate.ends_with("annual_salary") {
@@ -50,7 +50,7 @@ fn filter_example() {
     let mut high_salary_subjects = HashSet::new();
     let mut subject_to_salary = HashMap::new();
     
-    let dict = database.dictionary.read().unwrap();
+    let dict = database.dictionary();
     for triple in &high_salary_triples {
         let subject = triple.subject;
         let salary = dict.decode(triple.object).unwrap_or("0.0");
@@ -62,7 +62,7 @@ fn filter_example() {
     // Find the names associated with the high-salary subjects
     let name_triples = database.query()
         .filter(|triple| {
-            let dict = database.dictionary.read().unwrap();
+            let dict = database.dictionary();
             // Check if this is a name predicate for a high-salary subject
             if let Some(predicate) = dict.decode(triple.predicate) {
                 if predicate.ends_with("name") && high_salary_subjects.contains(&triple.subject) {
@@ -75,7 +75,7 @@ fn filter_example() {
     
     // Print name and salary
     println!("Employees with salary > 80000:");
-    let dict = database.dictionary.read().unwrap();
+    let dict = database.dictionary();
     for triple in name_triples.clone() {
         let subject = triple.subject;
         let name = dict.decode(triple.object).unwrap_or("");

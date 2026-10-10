@@ -496,7 +496,7 @@ fn extract_data_for_ml_fraud(
     ];
 
     let (tx_id, pred_ids): (Option<u32>, Vec<Option<u32>>) = {
-        let dict = database.dictionary.read().unwrap();
+        let dict = database.dictionary();
         let tx_id = dict.string_to_id.get(tx_uri).copied();
         let pred_ids = feature_predicates
             .iter()
@@ -557,7 +557,7 @@ fn run_ml_predict_from_clause(
         if rows.is_empty() {
             return Ok(vec![]);
         }
-        let dict = db.dictionary.read().unwrap();
+        let dict = db.dictionary();
         let decoded: Vec<HashMap<String, f64>> = rows.iter()
             .map(|row| {
                 row.iter()
@@ -1076,7 +1076,7 @@ fn run_reasoning(
     tx_uri:   &str,
 ) -> Vec<String> {
     let decoded_triples: Vec<(String, String, String)> = {
-        let dict = database.dictionary.read().unwrap();
+        let dict = database.dictionary();
         database
             .query_default_triples(None, None, None)
             .iter()
@@ -1089,7 +1089,7 @@ fn run_reasoning(
     };
 
     let mut reasoner = Reasoner::new();
-    reasoner.dictionary = database.dictionary.clone();
+    reasoner.dictionary = database.dictionary_handle();
     for (s, p, o) in decoded_triples {
         reasoner.add_abox_triple(&s, &p, &o);
     }
@@ -1117,14 +1117,14 @@ fn run_reasoning(
     let mut flags       = Vec::new();
 
     {
-        let dict      = database.dictionary.read().unwrap();
+        let dict      = database.dictionary();
         let tx_id_opt = dict.string_to_id.get(tx_uri).copied();
         let sflag_opt = dict.string_to_id.get(suspicious_pred).copied();
         let risk_opt  = dict.string_to_id.get(risk_pred).copied();
         drop(dict);
 
         if let (Some(tx_id), Some(sflag_id)) = (tx_id_opt, sflag_opt) {
-            let dict = database.dictionary.read().unwrap();
+            let dict = database.dictionary();
             for t in database.query_default_triples(Some(tx_id), Some(sflag_id), None) {
                 if let Some(val) = dict.decode(t.object) {
                     let local = val.rsplit('/').next().unwrap_or(val);
@@ -1134,7 +1134,7 @@ fn run_reasoning(
         }
 
         if let (Some(tx_id), Some(risk_id)) = (tx_id_opt, risk_opt) {
-            let dict = database.dictionary.read().unwrap();
+            let dict = database.dictionary();
             for t in database.query_default_triples(Some(tx_id), Some(risk_id), None) {
                 if let Some(val) = dict.decode(t.object) {
                     let local = val.rsplit('/').next().unwrap_or(val);

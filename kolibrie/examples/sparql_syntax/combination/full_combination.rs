@@ -195,7 +195,7 @@ fn run_combined_workflow(
             
             // Decode all triples FIRST with proper scoping
             let decoded_triples: Vec<(String, String, String)> = {
-                let dict = database.dictionary.read().unwrap();
+                let dict = database.dictionary();
                 database
                     .query_default_triples(None, None, None)
                     .iter()
@@ -268,7 +268,7 @@ fn run_combined_workflow(
 fn query_comfort_level(database: &SparqlDatabase, sensor_uri: &str) -> String {
     // Proper lock scoping
     let (comfort_pred_id, sensor_id) = {
-        let dict = database.dictionary.read().unwrap();
+        let dict = database.dictionary();
         let comfort = dict.string_to_id.get("http://example.org/comfortLevel").copied();
         let sensor = dict.string_to_id.get(sensor_uri).copied();
         (comfort, sensor)
@@ -279,7 +279,7 @@ fn query_comfort_level(database: &SparqlDatabase, sensor_uri: &str) -> String {
             .query_default_triples(Some(sensor_id), Some(comfort_pred_id), None)
             .first()
         {
-            let dict = database.dictionary.read().unwrap();
+            let dict = database.dictionary();
             if let Some(value) = dict.decode(triple.object) {
                 return value.to_string();
             }

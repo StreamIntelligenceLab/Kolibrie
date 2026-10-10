@@ -24,7 +24,7 @@ fn seeded() -> SparqlDatabase {
 }
 
 fn encode(database: &SparqlDatabase, term: &str) -> u32 {
-    database.dictionary.write().unwrap().encode(term)
+    database.dictionary_mut().encode(term)
 }
 
 #[test]

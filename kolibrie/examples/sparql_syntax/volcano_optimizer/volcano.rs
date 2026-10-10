@@ -24,14 +24,14 @@ fn simple_streamertail_optimizer() {
     let mut database = SparqlDatabase::new();
 
     // Add some sample data
-    let alice_id = database.dictionary.write().unwrap().encode("http://example.org/alice");
-    let bob_id = database.dictionary.write().unwrap().encode("http://example.org/bob");
-    let name_id = database.dictionary.write().unwrap().encode("foaf:name");
-    let age_id = database.dictionary.write().unwrap().encode("foaf:age");
-    let alice_name = database.dictionary.write().unwrap().encode("Alice");
-    let bob_name = database.dictionary.write().unwrap().encode("Bob");
-    let age_30 = database.dictionary.write().unwrap().encode("30");
-    let age_25 = database.dictionary.write().unwrap().encode("25");
+    let alice_id = database.dictionary_mut().encode("http://example.org/alice");
+    let bob_id = database.dictionary_mut().encode("http://example.org/bob");
+    let name_id = database.dictionary_mut().encode("foaf:name");
+    let age_id = database.dictionary_mut().encode("foaf:age");
+    let alice_name = database.dictionary_mut().encode("Alice");
+    let bob_name = database.dictionary_mut().encode("Bob");
+    let age_30 = database.dictionary_mut().encode("30");
+    let age_25 = database.dictionary_mut().encode("25");
 
     database.add_triple(Triple {
         subject: alice_id,
@@ -103,13 +103,13 @@ fn streamertail_optimizer_multiple_triples() {
         let person_uri = format!("http://example.org/person{}", i);
         let age_value = format!("{}", 20 + i);
 
-        let person_id = database.dictionary.write().unwrap().encode(&person_uri);
-        let name_id = database.dictionary.write().unwrap().encode("foaf:name");
-        let age_id = database.dictionary.write().unwrap().encode("foaf:age");
-        let type_id = database.dictionary.write().unwrap().encode("rdf:type");
-        let person_type = database.dictionary.write().unwrap().encode("foaf:Person");
-        let name_value = database.dictionary.write().unwrap().encode(&format!("Person{}", i));
-        let age_value_id = database.dictionary.write().unwrap().encode(&age_value);
+        let person_id = database.dictionary_mut().encode(&person_uri);
+        let name_id = database.dictionary_mut().encode("foaf:name");
+        let age_id = database.dictionary_mut().encode("foaf:age");
+        let type_id = database.dictionary_mut().encode("rdf:type");
+        let person_type = database.dictionary_mut().encode("foaf:Person");
+        let name_value = database.dictionary_mut().encode(&format!("Person{}", i));
+        let age_value_id = database.dictionary_mut().encode(&age_value);
 
         // Add name triple
         database.add_triple(Triple {
@@ -136,9 +136,9 @@ fn streamertail_optimizer_multiple_triples() {
     println!("Added {} triples to the database", database.dataset_index.len_default());
 
     // Step 3: Create the logical plan with joins
-    let type_id = database.dictionary.write().unwrap().encode("rdf:type");
-    let person_type = database.dictionary.write().unwrap().encode("foaf:Person");
-    let age_id = database.dictionary.write().unwrap().encode("foaf:age");
+    let type_id = database.dictionary_mut().encode("rdf:type");
+    let person_type = database.dictionary_mut().encode("foaf:Person");
+    let age_id = database.dictionary_mut().encode("foaf:age");
 
     let type_scan = LogicalOperator::scan((
         Term::Variable("person".to_string()),
@@ -189,11 +189,11 @@ fn streamertail_optimizer_rdf() {
         let person_uri = format!("http://example.org/person{}", i);
         let company_uri = format!("http://example.org/company{}", i % 3);
 
-        let person_id = database.dictionary.write().unwrap().encode(&person_uri);
-        let works_at_id = database.dictionary.write().unwrap().encode("http://example.org/worksAt");
-        let located_id = database.dictionary.write().unwrap().encode("http://example.org/located");
-        let company_id = database.dictionary.write().unwrap().encode(&company_uri);
-        let location = database.dictionary.write().unwrap().encode(&format!("City{}", i % 3));
+        let person_id = database.dictionary_mut().encode(&person_uri);
+        let works_at_id = database.dictionary_mut().encode("http://example.org/worksAt");
+        let located_id = database.dictionary_mut().encode("http://example.org/located");
+        let company_id = database.dictionary_mut().encode(&company_uri);
+        let location = database.dictionary_mut().encode(&format!("City{}", i % 3));
 
         // Person works at company
         database.add_triple(Triple {
@@ -255,11 +255,11 @@ fn streamertail_optimizer_index_patterns() {
         let person_uri = format!("http://example.org/person{}", i);
         let age_value = format!("{}", i);
 
-        let person_id = database.dictionary.write().unwrap().encode(&person_uri);
-        let age_id = database.dictionary.write().unwrap().encode("foaf:age");
-        let type_id = database.dictionary.write().unwrap().encode("rdf:type");
-        let person_type = database.dictionary.write().unwrap().encode("foaf:Person");
-        let age_value_id = database.dictionary.write().unwrap().encode(&age_value);
+        let person_id = database.dictionary_mut().encode(&person_uri);
+        let age_id = database.dictionary_mut().encode("foaf:age");
+        let type_id = database.dictionary_mut().encode("rdf:type");
+        let person_type = database.dictionary_mut().encode("foaf:Person");
+        let age_value_id = database.dictionary_mut().encode(&age_value);
 
         database.add_triple(Triple {
             subject: person_id,
@@ -276,10 +276,10 @@ fn streamertail_optimizer_index_patterns() {
 
     println!("Added {} triples to the database", database.dataset_index.len_default());
 
-    let age_id = database.dictionary.write().unwrap().encode("foaf:age");
-    let person_50_id = database.dictionary.write().unwrap().encode("http://example.org/person50");
-    let age_42_id = database.dictionary.write().unwrap().encode("42");
-    let age_69_id = database.dictionary.write().unwrap().encode("69");
+    let age_id = database.dictionary_mut().encode("foaf:age");
+    let person_50_id = database.dictionary_mut().encode("http://example.org/person50");
+    let age_42_id = database.dictionary_mut().encode("42");
+    let age_69_id = database.dictionary_mut().encode("69");
 
     // Define different triple patterns to test various index strategies
     let patterns = vec![
@@ -376,13 +376,13 @@ fn streamertail_optimizer_performance_test() {
         let person_uri = format!("http://example.org/person{}", i);
         let company_uri = format!("http://example.org/company{}", i % 10);
 
-        let person_id = database.dictionary.write().unwrap().encode(&person_uri);
-        let name_id = database.dictionary.write().unwrap().encode("foaf:name");
-        let age_id = database.dictionary.write().unwrap().encode("foaf:age");
-        let works_at_id = database.dictionary.write().unwrap().encode("ex:worksAt");
-        let company_id = database.dictionary.write().unwrap().encode(&company_uri);
-        let name_value = database.dictionary.write().unwrap().encode(&format!("Person{}", i));
-        let age_value = database.dictionary.write().unwrap().encode(&format!("{}", 20 + (i % 50)));
+        let person_id = database.dictionary_mut().encode(&person_uri);
+        let name_id = database.dictionary_mut().encode("foaf:name");
+        let age_id = database.dictionary_mut().encode("foaf:age");
+        let works_at_id = database.dictionary_mut().encode("ex:worksAt");
+        let company_id = database.dictionary_mut().encode(&company_uri);
+        let name_value = database.dictionary_mut().encode(&format!("Person{}", i));
+        let age_value = database.dictionary_mut().encode(&format!("{}", 20 + (i % 50)));
 
         database.add_triple(Triple {
             subject: person_id,
@@ -408,9 +408,9 @@ fn streamertail_optimizer_performance_test() {
     println!("Added {} triples to the database", database.dataset_index.len_default());
 
     // Test different query types
-    let name_id = database.dictionary.write().unwrap().encode("foaf:name");
-    let age_id = database.dictionary.write().unwrap().encode("foaf:age");
-    let works_at_id = database.dictionary.write().unwrap().encode("ex:worksAt");
+    let name_id = database.dictionary_mut().encode("foaf:name");
+    let age_id = database.dictionary_mut().encode("foaf:age");
+    let works_at_id = database.dictionary_mut().encode("ex:worksAt");
 
     // Query 1: Simple scan
     println!("\n--- Query 1: Simple Scan ---");

@@ -120,7 +120,7 @@ fn test_dictionary_decode_term_with_quoted_triple() {
     // Get the quoted triple ID
     let qt = db.quoted_triples();
     let qt_id = *qt.components_to_id.values().next().unwrap();
-    let dict = db.dictionary.read().unwrap();
+    let dict = db.dictionary();
     let decoded = dict.decode_term(qt_id, &qt).unwrap();
     assert!(decoded.starts_with("<<"), "Decoded should start with <<: {}", decoded);
     assert!(decoded.ends_with(">>"), "Decoded should end with >>: {}", decoded);
@@ -260,7 +260,7 @@ fn test_encode_term_star_quoted_triple() {
 
     let qt = db.quoted_triples();
     let (s, p, o) = qt.decode(id).unwrap();
-    let dict = db.dictionary.read().unwrap();
+    let dict = db.dictionary();
     assert_eq!(dict.decode(s).unwrap(), "http://a");
     assert_eq!(dict.decode(p).unwrap(), "http://b");
     assert_eq!(dict.decode(o).unwrap(), "http://c");

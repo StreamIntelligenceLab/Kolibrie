@@ -80,7 +80,7 @@ RULE :OverheatingAlert :-
           println!("Inferred {} new fact(s):", inferred_facts.len());
           
           // Acquire read lock on dictionary
-          let dict = database.dictionary.read().unwrap();
+          let dict = database.dictionary();
           for triple in inferred_facts.iter() {
               // Dereference the RwLockReadGuard to get &Dictionary
               println!("  {}", database.triple_to_string(triple, &*dict));

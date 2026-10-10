@@ -106,7 +106,7 @@ WHERE {
 
             // DEBUG: Analyze inferred facts for windowing evidence
             for (i, triple) in inferred_facts.iter().enumerate() {
-                let dict = database.dictionary.read().unwrap();
+                let dict = database.dictionary();
                 let s = dict.decode(triple.subject).unwrap_or("unknown");
                 let p = dict.decode(triple.predicate).unwrap_or("unknown");
                 let o = dict.decode(triple.object).unwrap_or("unknown");
@@ -120,7 +120,7 @@ WHERE {
             println!("Rule structure: {:#?}", rule);
             println!("Inferred {} new fact(s):", inferred_facts.len());
             for triple in inferred_facts.iter() {
-                let dict = database.dictionary.read().unwrap();
+                let dict = database.dictionary();
                 println!(
                     "  {}",
                     database.triple_to_string(triple, &*dict)
@@ -192,7 +192,7 @@ WHERE {
             println!("Rule has windowing: {}", rule.premise.len() > 0);
             println!("Inferred {} new fact(s):", inferred_facts.len());
             for triple in inferred_facts.iter() {
-                let dict = database.dictionary.read().unwrap();
+                let dict = database.dictionary();
                 println!(
                     "  {}",
                     database.triple_to_string(triple, &*dict)
@@ -283,7 +283,7 @@ ML.PREDICT(
             println!("Rule has {} filter conditions", rule.filters.len());
             println!("Inferred {} new fact(s):", inferred_facts.len());
             for triple in inferred_facts.iter() {
-                let dict = database.dictionary.read().unwrap();
+                let dict = database.dictionary();
                 println!(
                     "  {}",
                     database.triple_to_string(triple, &*dict)

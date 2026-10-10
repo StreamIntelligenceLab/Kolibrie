@@ -1,4 +1,3 @@
-use std::sync::Arc;
 use std::time::Duration;
 
 use datalog::reasoning::materialisation::hybrid_materialisation::validate_hybrid_rules;
@@ -502,8 +501,8 @@ fn reruns_read_only_asserted_input() {
     assert_eq!(db.query_default_triples(None, None, None).len(), before);
     assert_eq!(answers(&first), answers(&second));
     assert_eq!(first.hypothesis_count(), second.hypothesis_count());
-    assert!(!Arc::ptr_eq(&db.dictionary, &first.dataset().dictionary));
-    assert!(!Arc::ptr_eq(&first.dataset().dictionary, &second.dataset().dictionary));
+    assert!(!db.shares_dictionary_with(first.dataset()));
+    assert!(!first.dataset().shares_dictionary_with(second.dataset()));
     assert!(!db.shares_quoted_triples_with(first.dataset()));
 }
 
@@ -677,14 +676,12 @@ fn result_dictionary_remaps_input_ids_and_literals_round_trip() {
     let left = fixtures()[3].clone();
     let mut result = execute_program(&mut db, &program, &pair_options(&left, Some(&one_hot(6)))).unwrap();
 
-    let input_terms = db.dictionary.read().unwrap().string_to_id.len();
-    let result_terms = result.dataset().dictionary.read().unwrap().string_to_id.len();
+    let input_terms = db.dictionary().string_to_id.len();
+    let result_terms = result.dataset().dictionary().string_to_id.len();
     assert!(result_terms < input_terms);
     assert!(result
         .dataset()
-        .dictionary
-        .read()
-        .unwrap()
+        .dictionary()
         .string_to_id
         .get(&ex("noise0"))
         .is_none());

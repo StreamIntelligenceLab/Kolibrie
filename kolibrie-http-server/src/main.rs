@@ -256,7 +256,7 @@ fn term_to_ntriples_token(term: &str) -> String {
 
 /// Export every triple in `db` as an N-Triples string.
 fn db_to_ntriples(db: &SparqlDatabase) -> String {
-    let dict = db.dictionary.read().unwrap();
+    let dict = db.dictionary();
     let mut out = String::new();
     let triples = db.query_default_triples(None, None, None);
     for triple in &triples {
@@ -1147,7 +1147,7 @@ fn execute_sparql_with_policy(
 
             // Mirror the database dictionary so term encodings are shared
             let mut kg = Reasoner::new();
-            kg.dictionary = database.dictionary.clone();
+            kg.dictionary = database.dictionary_handle();
 
             // Decode all triples to owned strings using database.dictionary BEFORE
             // creating kg's mutable borrow — avoids the RwLockReadGuard conflict.
@@ -1202,7 +1202,7 @@ fn execute_sparql_with_policy(
                     }
 
                     // Sync the enriched dictionary back so SPARQL can decode the new terms
-                    database.dictionary = kg.dictionary.clone();
+                    database.set_dictionary_handle(kg.dictionary.clone());
 
                     if database.dataset_index.len_default() > 0 {
                         database.invalidate_stats_cache();

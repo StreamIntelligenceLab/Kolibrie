@@ -96,7 +96,7 @@ ML.PREDICT(MODEL "digit_model",
 
     execute_neural_program(&mut database, predict).expect("top-level ML.PREDICT failed");
 
-    let dict = database.dictionary.read().unwrap();
+    let dict = database.dictionary();
     let pred_id = dict
         .string_to_id
         .get("http://example.org/predictedDigit")

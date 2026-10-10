@@ -243,8 +243,8 @@ fn statistics_include_terms_that_exist_only_in_named_graphs() {
     )
     .unwrap();
 
-    let predicate = database.dictionary.write().unwrap().encode("urn:p");
-    let graph = database.dictionary.write().unwrap().encode("urn:g");
+    let predicate = database.dictionary_mut().encode("urn:p");
+    let graph = database.dictionary_mut().encode("urn:g");
     let stats = DatabaseStats::gather_stats_fast(&database);
 
     assert_eq!(stats.total_triples, 1);

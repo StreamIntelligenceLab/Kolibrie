@@ -13,7 +13,7 @@ use shared::dataset_index::GraphId;
 use std::collections::BTreeSet;
 
 fn create_empty_named_graph(database: &mut SparqlDatabase, name: &str) {
-    let graph_id = database.dictionary.write().unwrap().encode(name);
+    let graph_id = database.dictionary_mut().encode(name);
     assert!(database
         .dataset_index
         .create_graph(GraphId::Named(graph_id)));

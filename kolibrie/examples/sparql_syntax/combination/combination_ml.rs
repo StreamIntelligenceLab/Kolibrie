@@ -102,7 +102,7 @@ RULE :TemperatureAlert :-
 
             println!("Inferred {} new fact(s):", inferred_facts.len());
             for triple in inferred_facts.iter() {
-                let dict = database.dictionary.read().unwrap();
+                let dict = database.dictionary();
                 println!("  {}", database.triple_to_string(triple, &*dict));
             }
             
@@ -205,20 +205,20 @@ fn build_ml_predict_logical_plan(
 fn extract_data_for_ml(database: &mut SparqlDatabase) -> Result<Vec<HashMap<String, u32>>, Box<dyn Error>> {
     let mut results = Vec::new();
     
-    let dict = database.dictionary.read().unwrap();
+    let dict = database.dictionary();
     let temp_pred = dict.string_to_id.get("http://example.org/sensor#temperature").copied();
     let humidity_pred = dict.string_to_id.get("http://example.org/sensor#humidity").copied();
     let occupancy_pred = dict.string_to_id.get("http://example.org/sensor#occupancy").copied();
     drop(dict);
     
     let temp_pred = temp_pred.unwrap_or_else(|| {
-        database.dictionary.write().unwrap().encode("http://example.org/sensor#temperature")
+        database.dictionary_mut().encode("http://example.org/sensor#temperature")
     });
     let humidity_pred = humidity_pred.unwrap_or_else(|| {
-        database.dictionary.write().unwrap().encode("http://example.org/sensor#humidity")
+        database.dictionary_mut().encode("http://example.org/sensor#humidity")
     });
     let occupancy_pred = occupancy_pred.unwrap_or_else(|| {
-        database.dictionary.write().unwrap().encode("http://example.org/sensor#occupancy")
+        database.dictionary_mut().encode("http://example.org/sensor#occupancy")
     });
     
     let subjects: std::collections::HashSet<u32> = database
@@ -289,7 +289,7 @@ fn add_prediction_to_database(prediction: &Prediction, database: &mut SparqlData
     let subject = format!("http://example.org#{}", prediction.room_id);
     let predicate = "http://example.org/sensor#predictedTemperature";
     
-    let mut dict = database.dictionary.write().unwrap();
+    let mut dict = database.dictionary_mut();
     let subject_id = dict.encode(&subject);
     let predicate_id = dict.encode(predicate);
     let object_id = dict.encode(&prediction.predicted_temperature.to_string());
@@ -302,7 +302,7 @@ fn add_prediction_to_database(prediction: &Prediction, database: &mut SparqlData
     });
     
     let confidence_predicate = "http://example.org/sensor#predictionConfidence";
-    let mut dict = database.dictionary.write().unwrap();
+    let mut dict = database.dictionary_mut();
     let confidence_predicate_id = dict.encode(confidence_predicate);
     let confidence_object_id = dict.encode(&prediction.confidence.to_string());
     drop(dict);
@@ -318,7 +318,7 @@ fn add_prediction_to_database(prediction: &Prediction, database: &mut SparqlData
         chrono::DateTime::<chrono::Utc>::from(prediction.timestamp)
             .format("%Y-%m-%d %H:%M:%S"));
     
-    let mut dict = database.dictionary.write().unwrap();
+    let mut dict = database.dictionary_mut();
     let timestamp_predicate_id = dict.encode(timestamp_predicate);
     let timestamp_object_id = dict.encode(&timestamp_str);
     drop(dict);

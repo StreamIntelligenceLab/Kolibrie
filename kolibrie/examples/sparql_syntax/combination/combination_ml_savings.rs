@@ -40,7 +40,7 @@ fn extract_financial_data_from_database(
     database: &SparqlDatabase,
 ) -> Result<Vec<FinancialData>, Box<dyn Error>> {
     // Acquire read lock once at the start
-    let dict = database.dictionary.read().unwrap();
+    let dict = database.dictionary();
     let default_triples = database.query_default_triples(None, None, None);
 
     // Extract data from database
@@ -297,7 +297,7 @@ RULE :SavingsAlert :-
             println!("Inferred {} new fact(s):", inferred_facts.len());
             
             // Acquire read lock for printing triples
-            let dict = database.dictionary.read().unwrap();
+            let dict = database.dictionary();
             for triple in inferred_facts.iter() {
                 println!("  {}", database.triple_to_string(triple, &*dict));
             }
@@ -324,7 +324,7 @@ RULE :SavingsAlert :-
                                 );
 
                                 // Acquire write lock for encoding and adding triples
-                                let mut dict = database.dictionary.write().unwrap();
+                                let mut dict = database.dictionary_mut();
                                 
                                 // Add predictions to database
                                 let subject = format!("http://example.org#{}", prediction.user_id);
@@ -342,7 +342,7 @@ RULE :SavingsAlert :-
                                 });
                                 
                                 // Re-acquire lock for confidence score
-                                let mut dict = database.dictionary.write().unwrap();
+                                let mut dict = database.dictionary_mut();
                                 
                                 // Also add confidence score to the database
                                 let confidence_predicate = "http://example.org/finance#predictionConfidence";
@@ -358,7 +358,7 @@ RULE :SavingsAlert :-
                                 });
                                 
                                 // Re-acquire lock for timestamp
-                                let mut dict = database.dictionary.write().unwrap();
+                                let mut dict = database.dictionary_mut();
                                 
                                 // Add timestamp to the database
                                 let timestamp_predicate = "http://example.org/finance#predictionTimestamp";
@@ -378,7 +378,7 @@ RULE :SavingsAlert :-
                             }
                             
                             // Acquire lock for metadata triple
-                            let mut dict = database.dictionary.write().unwrap();
+                            let mut dict = database.dictionary_mut();
                             
                             // Add an execution metadata triple with current timestamp
                             let metadata_subject = "http://example.org#predictionExecution";

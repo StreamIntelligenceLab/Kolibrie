@@ -206,6 +206,39 @@ pub struct PlanningStatsSnapshot {
     pub resets: u64,
 }
 
+/// Read guard over the term dictionary, from [`SparqlDatabase::dictionary`].
+///
+/// Derefs to [`Dictionary`], so `db.dictionary().decode(id)` replaces
+/// `db.dictionary.read().unwrap().decode(id)`. Holding the binding holds the lock, so
+/// callers performing several lookups under one lock keep working unchanged.
+#[derive(Debug)]
+pub struct DictionaryRef<'a>(RwLockReadGuard<'a, Dictionary>);
+
+impl std::ops::Deref for DictionaryRef<'_> {
+    type Target = Dictionary;
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
+/// Write guard over the term dictionary, from [`SparqlDatabase::dictionary_mut`].
+/// See [`DictionaryRef`].
+#[derive(Debug)]
+pub struct DictionaryMut<'a>(RwLockWriteGuard<'a, Dictionary>);
+
+impl std::ops::Deref for DictionaryMut<'_> {
+    type Target = Dictionary;
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
+impl std::ops::DerefMut for DictionaryMut<'_> {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.0
+    }
+}
+
 /// Read guard over the quoted-triple store, from [`SparqlDatabase::quoted_triples`].
 ///
 /// Exists so the public API never names `Arc<RwLock<_>>` (P5). It derefs to
@@ -246,7 +279,7 @@ pub struct SparqlDatabase {
     /// Host-selected ML authority
     pub(crate) ml_context: crate::ml_policy::MlExecutionContext,
     pub dataset_index: DatasetIndex,
-    pub dictionary: Arc<RwLock<Dictionary>>,
+    pub(crate) dictionary: Arc<RwLock<Dictionary>>,
     pub(crate) prefixes: HashMap<String, String>,
     udfs: HashMap<String, ClonableFn>,
     pub(crate) rule_map: HashMap<String, String>,
@@ -2312,6 +2345,53 @@ impl SparqlDatabase {
         F: Fn(Vec<&str>) -> String + Send + Sync + 'static,
     {
         self.udfs.insert(name.to_string(), ClonableFn::new(f));
+    }
+
+    // ── Term dictionary ─────────────────────────────────────────────────────────
+
+    /// Read access to the term dictionary.
+    pub fn dictionary(&self) -> DictionaryRef<'_> {
+        DictionaryRef(self.dictionary.read().unwrap())
+    }
+
+    /// Write access to the term dictionary, for interning new terms.
+    pub fn dictionary_mut(&self) -> DictionaryMut<'_> {
+        DictionaryMut(self.dictionary.write().unwrap())
+    }
+
+    /// Whether `self` and `other` encode terms through the same dictionary, as
+    /// opposed to holding separate ones.
+    ///
+    /// Replaces `Arc::ptr_eq` on the raw field: it states the property callers
+    /// actually test — whether two databases are isolated — without the handle
+    /// having to be public.
+    pub fn shares_dictionary_with(&self, other: &SparqlDatabase) -> bool {
+        Arc::ptr_eq(&self.dictionary, &other.dictionary)
+    }
+
+    /// The dictionary handle, for sharing one term encoding across engines.
+    ///
+    /// This is the one place `Arc<RwLock<_>>` still reaches the public API, and it is
+    /// a deliberate, named escape hatch rather than an oversight. Sharing an encoding
+    /// is a real capability: the HTTP server and two examples hand the database's
+    /// dictionary to a `Reasoner` so derived terms decode consistently, and
+    /// `Reasoner::dictionary` is itself typed `Arc<RwLock<Dictionary>>` in another
+    /// crate, so no guard-based signature can express it.
+    ///
+    /// P5 says `Arc<RwLock<_>>` must not appear in public signatures. Confining the
+    /// violation to two documented methods leaves one place to change when §4 moves
+    /// encoding behind `TermEncoder` and makes sharing a storage concern — against
+    /// 96 call sites if the field had stayed public. Prefer [`Self::dictionary`] and
+    /// [`Self::dictionary_mut`] for everything else.
+    pub fn dictionary_handle(&self) -> Arc<RwLock<Dictionary>> {
+        Arc::clone(&self.dictionary)
+    }
+
+    /// Adopts `handle` as this database's dictionary, replacing its own.
+    ///
+    /// See [`Self::dictionary_handle`] for why this takes the raw handle.
+    pub fn set_dictionary_handle(&mut self, handle: Arc<RwLock<Dictionary>>) {
+        self.dictionary = handle;
     }
 
     // ── Accessors for fields sealed in stage 2a ─────────────────────────────────
