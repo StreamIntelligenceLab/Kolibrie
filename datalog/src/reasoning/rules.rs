@@ -1,75 +1,14 @@
 use crate::reasoning::Reasoner;
 use shared::dictionary::Dictionary;
 use shared::join_algorithm::perform_hash_join_for_rules;
+// Moved to `shared` in step 6: these are vocabulary operations, and they were the
+// only thing `datalogmtl` needed from this crate. Re-exported below so
+// `datalog::reasoning::{matches_rule_pattern, construct_triple}` keeps working.
+pub use shared::pattern::{construct_triple, matches_rule_pattern};
 use shared::rule::{FilterCondition, Rule};
-use shared::terms::{Term, TriplePattern};
+use shared::terms::TriplePattern;
 use shared::triple::Triple;
 use std::collections::{BTreeMap, HashMap, HashSet};
-
-pub fn matches_rule_pattern(
-    pattern: &TriplePattern,
-    fact: &Triple,
-    variable_bindings: &mut HashMap<String, u32>,
-) -> bool {
-    // Create a copy of bindings to test against (rollback on failure)
-    let mut temp_bindings = variable_bindings.clone();
-
-    // Subject
-    let s_ok = match &pattern.0 {
-        Term::Variable(v) => {
-            if let Some(&bound) = temp_bindings.get(v) {
-                bound == fact.subject
-            } else {
-                temp_bindings.insert(v.clone(), fact.subject);
-                true
-            }
-        }
-        Term::Constant(c) => *c == fact.subject,
-        Term::QuotedTriple(_) => false,
-    };
-    if !s_ok {
-        return false;
-    }
-
-    // Predicate
-    let p_ok = match &pattern.1 {
-        Term::Variable(v) => {
-            if let Some(&bound) = temp_bindings.get(v) {
-                bound == fact.predicate
-            } else {
-                temp_bindings.insert(v.clone(), fact.predicate);
-                true
-            }
-        }
-        Term::Constant(c) => *c == fact.predicate,
-        Term::QuotedTriple(_) => false,
-    };
-    if !p_ok {
-        return false;
-    }
-
-    // Object
-    let o_ok = match &pattern.2 {
-        Term::Variable(v) => {
-            if let Some(&bound) = temp_bindings.get(v) {
-                bound == fact.object
-            } else {
-                temp_bindings.insert(v.clone(), fact.object);
-                true
-            }
-        }
-        Term::Constant(c) => *c == fact.object,
-        Term::QuotedTriple(_) => false,
-    };
-
-    // Only if ALL parts match, commit the bindings
-    if s_ok && p_ok && o_ok {
-        *variable_bindings = temp_bindings;
-        true
-    } else {
-        false
-    }
-}
 
 /// Given a rule, a set of all facts, and a set of "changed" facts (delta)
 pub fn join_rule(
@@ -94,26 +33,6 @@ pub fn join_rule(
         }
     }
     results
-}
-
-/// Construct a new Triple from a conclusion pattern and bound variables.
-pub fn construct_triple(
-    conclusion: &TriplePattern,
-    vars: &HashMap<String, u32>,
-    _dict: &mut Dictionary,
-) -> Triple {
-    fn resolve(term: &Term, vars: &HashMap<String, u32>) -> u32 {
-        match term {
-            Term::Variable(v) => vars.get(v).copied().unwrap_or(0),
-            Term::Constant(c) => *c,
-            Term::QuotedTriple(_) => 0,
-        }
-    }
-    Triple {
-        subject:   resolve(&conclusion.0, vars),
-        predicate: resolve(&conclusion.1, vars),
-        object:    resolve(&conclusion.2, vars),
-    }
 }
 
 /// Given a rule, a set of all facts, and a binding that matches some premise

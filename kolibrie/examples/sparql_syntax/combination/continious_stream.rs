@@ -1,5 +1,5 @@
-use kolibrie::execute_query::*;
-use kolibrie::parser::*;
+use kolibrie::prelude::*;
+use kolibrie::parser::process_rule_definition;
 use kolibrie::sparql_database::SparqlDatabase;
 use std::thread;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};

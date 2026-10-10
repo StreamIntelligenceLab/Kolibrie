@@ -12,7 +12,7 @@ use std::collections::{BTreeMap, HashMap, HashSet};
 use shared::dataset_index::DatasetIndex;
 use shared::triple::Triple;
 use shared::terms::TriplePattern;
-use datalog::reasoning::matches_rule_pattern;
+use shared::pattern::matches_rule_pattern;
 
 /// The stable store interface. Both Phase 1 and Phase 2 implement this.
 /// Define as a trait so the evaluator is generic over the store.

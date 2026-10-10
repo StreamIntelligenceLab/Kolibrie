@@ -8,7 +8,7 @@
  * you can obtain one at https://mozilla.org/MPL/2.0/.
  */
 
-use kolibrie::parser::*;
+use kolibrie::prelude::*;
 
 fn main() {
     let query = r#"RETRIEVE SOME ACTIVE STREAM ?s FROM <http://my.org/catalog>

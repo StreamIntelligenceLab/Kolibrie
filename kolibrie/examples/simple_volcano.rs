@@ -9,7 +9,9 @@
  */
 
 use kolibrie::sparql_database::SparqlDatabase;
-use kolibrie::streamertail_optimizer::*;
+use kolibrie::streamertail_optimizer::operators::logical::LogicalOperator;
+use kolibrie::streamertail_optimizer::optimizer::Streamertail;
+use kolibrie::streamertail_optimizer::types::Condition;
 use shared::terms::Term;
 use shared::triple::Triple;
 use std::time::Instant;

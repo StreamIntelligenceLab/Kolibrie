@@ -11,7 +11,7 @@
 extern crate kolibrie;
 use std::fs::File;
 use std::io::Read;
-use kolibrie::sparql_database::*;
+use kolibrie::prelude::*;
 
 fn filter_example() {
     use std::collections::{HashSet, HashMap};

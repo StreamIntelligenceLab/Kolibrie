@@ -1,6 +1,6 @@
 use kolibrie::execute_ml::execute_ml_prediction_from_clause;
 use kolibrie::execute_query::execute_query_rayon_parallel2_volcano;
-use kolibrie::parser::*;
+use kolibrie::parser::{parse_standalone_rule, process_rule_definition};
 use kolibrie::sparql_database::SparqlDatabase;
 use ml::MLHandler;
 use pyo3::prepare_freethreaded_python;

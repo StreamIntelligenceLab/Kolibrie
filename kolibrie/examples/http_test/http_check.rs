@@ -8,7 +8,7 @@
  * you can obtain one at https://mozilla.org/MPL/2.0/.
  */
 
-use kolibrie::utils::*;
+use kolibrie::utils::run_server;
 
 /*
  * Example of POST INSERT: curl -X POST -H "Content-Type: application/sparql-update" --data "INSERT { s p o }" http://localhost:7878/

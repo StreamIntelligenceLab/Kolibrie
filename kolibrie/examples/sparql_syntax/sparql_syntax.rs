@@ -8,10 +8,10 @@
  * you can obtain one at https://mozilla.org/MPL/2.0/.
  */
 
-use kolibrie::parser::*;
-use kolibrie::sparql_database::*;
+use kolibrie::prelude::*;
+use kolibrie::streamertail_optimizer::optimizer::Streamertail;
+use kolibrie::streamertail_optimizer::utils::build_logical_plan_from_group;
 use std::time::Instant;
-use kolibrie::streamertail_optimizer::*;
 use shared::query::SparqlOperation;
 
 

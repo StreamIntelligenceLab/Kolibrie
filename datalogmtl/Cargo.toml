@@ -6,8 +6,12 @@ license.workspace      = true
 rust-version.workspace = true
 
 [dependencies]
+# No dependency on `datalog`. The whole coupling was two functions, which step 6
+# moved to `shared::pattern`; the two reasoners are siblings over a shared
+# vocabulary, not one layered on the other. Keep it that way — a temporal engine
+# that needs something from the Datalog reasoner is a sign the thing belongs in
+# `shared`.
 shared  = { path = "../shared" }
-datalog = { path = "../datalog" }
 serde   = { workspace = true }
 rayon   = { workspace = true }
 

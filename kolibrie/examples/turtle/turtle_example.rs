@@ -9,7 +9,7 @@
  */
 
 extern crate kolibrie;
-use kolibrie::sparql_database::*;
+use kolibrie::prelude::*;
 
 fn main() {
     let mut db = SparqlDatabase::new();

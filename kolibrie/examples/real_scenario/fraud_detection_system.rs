@@ -32,7 +32,7 @@
 */ 
 
 use kolibrie::execute_ml::{execute_ml_prediction_with_handler, setup_ml_handler, MLPredictTiming};
-use kolibrie::parser::*;
+use kolibrie::parser::{parse_standalone_rule, process_rule_definition};
 use kolibrie::sparql_database::SparqlDatabase;
 use kolibrie::rsp_engine::{RSPBuilder, SimpleR2R, ResultConsumer, QueryExecutionMode};
 use datalog::reasoning::Reasoner;

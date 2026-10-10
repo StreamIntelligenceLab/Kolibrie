@@ -16,7 +16,7 @@
 use std::collections::HashMap;
 use shared::terms::{Term, TriplePattern};
 use shared::triple::Triple;
-use datalog::reasoning::matches_rule_pattern;
+use shared::pattern::matches_rule_pattern;
 use crate::syntax::TemporalAtom;
 use super::interval::{coalesce, intersect_lists, TInterval};
 use super::transducer;

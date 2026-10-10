@@ -10,20 +10,25 @@
 
 //! Pattern matching and triple construction — the reasoner's inner loop.
 //!
-//! **Why this bench lives in `kolibrie` and not in `datalog`.** `matches_rule_pattern`
-//! and `construct_triple` are planned to move into `shared`, which turns every call
-//! site into a cross-crate call. Cross-crate calls can only be inlined through LTO,
-//! and `lto = "thin"` reduces that loss without eliminating it. Benching from a
-//! *different crate than the one defining the function* is therefore the measurement
-//! that matters; a bench inside `datalog` would inline freely and tell us nothing.
+//! **Why this bench lives in `kolibrie` and not in `datalog`.** Benching from a crate
+//! other than the one defining the function is the measurement that matters: a bench
+//! inside the defining crate inlines freely and tells us nothing about what callers
+//! actually pay. Cross-crate calls are inlined only through LTO, and `lto = "thin"`
+//! reduces that loss without eliminating it. (`[profile.bench]` inherits `release`,
+//! so thin LTO is in effect here.)
 //!
-//! Keep this file calling through whatever path currently exports these functions, so
-//! the before/after comparison stays honest when they move.
+//! Step 6 moved both functions to `shared::pattern`, and this file now imports from
+//! there. Be clear about what that before/after comparison can and cannot show: this
+//! call site was *already* cross-crate, `kolibrie -> datalog`, and is now
+//! `kolibrie -> shared`, so it is close to unchanged by construction. The boundary the
+//! move actually introduces is `datalog -> shared` inside the reasoner's own loops,
+//! which this bench does not exercise — `family_tree_cross_window_compare` is the
+//! probe for that, since it drives `cross_window_incremental` through the reasoner.
 
 extern crate criterion;
 
 use criterion::{black_box, criterion_group, criterion_main, BatchSize, Criterion};
-use datalog::reasoning::{construct_triple, matches_rule_pattern};
+use shared::pattern::{construct_triple, matches_rule_pattern};
 use shared::dictionary::Dictionary;
 use shared::terms::{Term, TriplePattern};
 use shared::triple::Triple;

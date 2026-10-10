@@ -8,8 +8,11 @@
  * you can obtain one at https://mozilla.org/MPL/2.0/.
  */
 
-use kolibrie::sparql_database::*;
-use kolibrie::streamertail_optimizer::*;
+use kolibrie::prelude::*;
+use kolibrie::streamertail_optimizer::operators::logical::LogicalOperator;
+use kolibrie::streamertail_optimizer::optimizer::Streamertail;
+use kolibrie::streamertail_optimizer::types::Condition;
+use kolibrie::streamertail_optimizer::utils::build_logical_plan;
 use shared::terms::Term;
 use shared::triple::*;
 use std::time::Instant;

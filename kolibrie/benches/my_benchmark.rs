@@ -12,8 +12,7 @@ extern crate criterion;
 extern crate kolibrie;
 
 use criterion::*;
-use kolibrie::execute_query::*;
-use kolibrie::sparql_database::*;
+use kolibrie::prelude::*;
 
 // Simple query
 fn setup_database() -> SparqlDatabase {

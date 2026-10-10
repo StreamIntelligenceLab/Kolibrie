@@ -7,7 +7,7 @@
  * you can obtain one at https://mozilla.org/MPL/2.0/.
  */
 
-use kolibrie::parser::*;
+use kolibrie::parser::{parse_standalone_rule, process_rule_definition};
 use kolibrie::sparql_database::SparqlDatabase;
 use kolibrie::execute_query::execute_query_rayon_parallel2_volcano;
 use kolibrie::streamertail_optimizer::operators::LogicalOperator;

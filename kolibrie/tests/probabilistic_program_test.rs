@@ -4,7 +4,20 @@ use std::time::Duration;
 use datalog::reasoning::materialisation::hybrid_materialisation::validate_hybrid_rules;
 use kolibrie::ml_policy::MlExecutionContext;
 use kolibrie::parser::{parse_combined_query, process_rule_definition};
-use kolibrie::program::*;
+use kolibrie::program::{
+    CompiledProgram,
+    PredictionSnapshot,
+    ProgramError,
+    ProgramOptions,
+    ProgramResult,
+    PublishedProgramResult,
+    ResourceError,
+    RuleMode,
+    compile_program,
+    execute_program,
+    parse_probability_literal,
+    query_program_result,
+};
 use kolibrie::sparql_database::SparqlDatabase;
 use shared::dictionary::Dictionary;
 

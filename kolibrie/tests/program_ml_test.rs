@@ -4,7 +4,14 @@ mod ml_local {
     include!(concat!(env!("CARGO_MANIFEST_DIR"), "/tests/common/ml_local.rs"));
 }
 
-use kolibrie::program::*;
+use kolibrie::program::{
+    ProgramError,
+    ProgramOptions,
+    PublishedProgramResult,
+    compile_program,
+    execute_program,
+    query_program_result,
+};
 use kolibrie::sparql_database::SparqlDatabase;
 use ml::{MlpNeuralPredicate, OutputType};
 

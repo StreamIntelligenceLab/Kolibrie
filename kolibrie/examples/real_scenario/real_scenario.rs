@@ -9,7 +9,8 @@
  */
 
 use kolibrie::execute_query::execute_query_rayon_parallel2_volcano;
-use kolibrie::parser::*;
+use kolibrie::prelude::*;
+use kolibrie::parser::convert_combined_rule;
 use kolibrie::sparql_database::SparqlDatabase;
 use datalog::reasoning::Reasoner;
 use shared::terms::Term;

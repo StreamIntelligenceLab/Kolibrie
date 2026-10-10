@@ -8,8 +8,13 @@
  * you can obtain one at https://mozilla.org/MPL/2.0/.
  */
 
-use kolibrie::execute_query::*;
-use kolibrie::parser::*;
+use kolibrie::prelude::*;
+use kolibrie::parser::{
+    parse_from_named_window,
+    parse_stream_type,
+    parse_window_spec,
+    process_rule_definition,
+};
 use kolibrie::sparql_database::SparqlDatabase;
 
 fn main() {

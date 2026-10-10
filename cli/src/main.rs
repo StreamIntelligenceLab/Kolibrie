@@ -9,7 +9,7 @@
  */
 
 use clap::Parser;
-use kolibrie::execute_query::*;
+use kolibrie::prelude::*;
 use kolibrie::sparql_database::SparqlDatabase;
 
 #[derive(Parser)]

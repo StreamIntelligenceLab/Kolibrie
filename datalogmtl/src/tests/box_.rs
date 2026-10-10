@@ -9,7 +9,7 @@
  */
 
 use crate::syntax::{DatalogMTLRule, TemporalAtom, Interval};
-use crate::store::{TemporalSnapshotStore, TemporalStore};
+use crate::store::TemporalSnapshotStore;
 use crate::evaluator::DatalogMTLEvaluator;
 use super::{make_dict, enc, triple, c, v};
 

@@ -14,7 +14,7 @@ use std::time::Instant;
 use shared::dictionary::Dictionary;
 use shared::triple::Triple;
 use shared::terms::{Term, TriplePattern};
-use datalog::reasoning::construct_triple;
+use shared::pattern::construct_triple;
 use crate::syntax::{DatalogMTLRule, TemporalAtom, Interval};
 use crate::store::TemporalStore;
 use crate::metrics::TickMetrics;
