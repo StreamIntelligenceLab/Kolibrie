@@ -26,6 +26,7 @@ pub struct TagStore<P: Provenance> {
 }
 
 impl<P: Provenance> TagStore<P> {
+    /// An empty store: every triple initially carries `provenance.one()`.
     pub fn new(provenance: P) -> Self {
         Self {
             tags: HashMap::new(),
@@ -35,6 +36,7 @@ impl<P: Provenance> TagStore<P> {
     }
 
     /// Get the provenance reference.
+    /// The semiring this store annotates with.
     pub fn provenance(&self) -> &P {
         &self.provenance
     }
@@ -76,6 +78,8 @@ impl<P: Provenance> TagStore<P> {
         self.tags.len()
     }
 
+    /// Whether no triple carries an explicit tag. Note that this is the state in
+    /// which every fact is certain, not the state in which there are no facts.
     pub fn is_empty(&self) -> bool {
         self.tags.is_empty()
     }
@@ -116,7 +120,7 @@ use crate::provenance::WmcProvenance;
 impl TagStore<WmcProvenance> {
     /// Export tags as RDF-star triples enriched with proof-path explanation.
     ///
-    /// Superset of [`encode_as_rdf_star`]; also emits `prob:proofCount`,
+    /// Superset of [`Self::encode_as_rdf_star`]; also emits `prob:proofCount`,
     /// `prob:hasProof`, `prob:formula`, `prob:hasSeed`, and `prob:hasNegatedSeed` triples.
     pub fn encode_as_rdf_star_with_explanation(
         &self,

@@ -12,15 +12,28 @@ use std::collections::HashMap;
 use crate::triple::Triple;
 use crate::quoted_triple_store::{QuotedTripleStore, is_quoted_triple_id, QUOTED_TRIPLE_ID_BIT};
 
-// Dictionary for encoding and decoding strings
+/// Interns RDF terms to `u32` ids, and decodes them back.
+///
+/// Ids are assigned sequentially from 0 and are only meaningful relative to this
+/// dictionary: the same term gets different ids in two dictionaries built in
+/// different orders. Anything that compares or joins encoded data must therefore
+/// share one dictionary, which is why it is normally held behind a shared handle.
+///
+/// Ids stop below `0x8000_0000`; the top bit is reserved to tag quoted triples, which
+/// [`QuotedTripleStore`](crate::quoted_triple_store::QuotedTripleStore) owns.
+/// [`Self::encode`] asserts rather than silently colliding with that range.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct Dictionary {
+    /// Term text to id. The authority for whether a term is already interned.
     pub string_to_id: HashMap<String, u32>,
+    /// Id back to term text, kept in step with `string_to_id`.
     pub id_to_string: HashMap<u32, String>,
+    /// The next id to hand out. Monotonic; ids are never reused.
     pub next_id: u32,
 }
 
 impl Dictionary {
+    /// An empty dictionary, assigning ids from 0.
     pub fn new() -> Self {
         Dictionary {
             string_to_id: HashMap::new(),
@@ -29,6 +42,13 @@ impl Dictionary {
         }
     }
 
+    /// Returns `value`'s id, interning it if this is the first time it is seen.
+    ///
+    /// # Panics
+    ///
+    /// If the id space is exhausted — that is, if the next id would reach
+    /// `0x8000_0000` and collide with the quoted-triple range. At that point ids
+    /// would silently alias quoted triples, so this fails loudly instead.
     pub fn encode(&mut self, value: &str) -> u32 {
         if let Some(&id) = self.string_to_id.get(value) {
             id
@@ -46,10 +66,18 @@ impl Dictionary {
         }
     }
 
+    /// The term text for `id`, or `None` if this dictionary never assigned it.
+    ///
+    /// Returns `None` for quoted-triple ids: use [`Self::decode_term`] for those.
     pub fn decode(&self, id: u32) -> Option<&str> {
         self.id_to_string.get(&id).map(|s| s.as_str())
     }
 
+    /// Renders `triple` as N-Triples, substituting `unknown` for any id this
+    /// dictionary cannot resolve.
+    ///
+    /// Quoted-triple ids will render as `unknown`; use [`Self::decode_triple_star`]
+    /// where RDF-star terms are possible.
     pub fn decode_triple(&self, triple: &Triple) -> String {
         let s = self.decode(triple.subject).unwrap_or("unknown");
         let p = self.decode(triple.predicate).unwrap_or("unknown");
@@ -79,6 +107,14 @@ impl Dictionary {
         format!("{} {} {} .", s, p, o)
     }
 
+    /// Folds `other`'s entries in, keeping this dictionary's mapping wherever both
+    /// have one, and advances `next_id` past both.
+    ///
+    /// Existing entries win, so merging is only sound when the two dictionaries
+    /// agree on the ids they share — typically because one grew from the other. Two
+    /// independently built dictionaries will have assigned the same ids to different
+    /// terms, and merging them produces a mapping that resolves those ids to the
+    /// wrong terms rather than reporting a conflict.
     pub fn merge(&mut self, other: &Dictionary) {
         for (key, value) in other.string_to_id.iter() {
             self.string_to_id.entry(key.clone()).or_insert(*value);

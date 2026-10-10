@@ -12,6 +12,15 @@ use std::collections::HashMap;
 
 use crate::sdd::{SddId, SddManager, VarKind};
 
+/// Partial derivative of the weighted model count of `id` with respect to each
+/// variable's positive weight.
+///
+/// Computed by perturbing one weight at a time and recounting, so the cost is one
+/// weighted model count per variable. The gradient is what lets a probability
+/// attached to a fact be learned from an observed query answer.
+///
+/// Takes `&mut SddManager` because weights are set on the manager; they are restored
+/// before returning.
 pub fn wmc_gradient(manager: &mut SddManager, id: SddId) -> HashMap<u32, f64> {
     let vars: Vec<u32> = manager.variable_ids().collect();
     let mut grads = HashMap::new();

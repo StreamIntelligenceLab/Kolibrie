@@ -12,20 +12,44 @@ use std::collections::{HashMap, HashSet};
 use crate::terms::*;
 use crate::terms::Term::*;
 
+/// Index of a rule in the reasoner's rule list.
 pub type RuleId = usize;
+/// Stands in for a variable position when a pattern is indexed.
+///
+/// A premise with a variable subject is filed under this key, so a lookup for a
+/// concrete subject must consult both the concrete key and this one. It therefore
+/// collides with a real term whose id is `u32::MAX` — unreachable in practice,
+/// since [`Dictionary`](crate::dictionary::Dictionary) stops below `0x8000_0000`.
 pub const WILDCARD: u32 = u32::MAX;
 
 #[derive(Debug, Clone)]
+/// Maps a fact to the rules whose premises could match it.
+///
+/// This is the reverse of the usual direction: rather than scanning every rule
+/// against every new fact, semi-naive evaluation asks which rules a fact could
+/// possibly fire, which is what keeps a derivation round proportional to the delta
+/// rather than to the program size.
+///
+/// Every premise is filed under all six two-position orderings, with [`WILDCARD`]
+/// standing in for variable positions. Six maps make any binding pattern a direct
+/// lookup; the cost is that each premise is stored six times.
 pub struct RuleIndex {
+    /// Subject then predicate.
     pub spo: HashMap<u32, HashMap<u32, HashSet<RuleId>>>,
+    /// Predicate then object.
     pub pos: HashMap<u32, HashMap<u32, HashSet<RuleId>>>,
+    /// Object then subject.
     pub osp: HashMap<u32, HashMap<u32, HashSet<RuleId>>>,
+    /// Predicate then subject.
     pub pso: HashMap<u32, HashMap<u32, HashSet<RuleId>>>,
+    /// Object then predicate.
     pub ops: HashMap<u32, HashMap<u32, HashSet<RuleId>>>,
+    /// Subject then object.
     pub sop: HashMap<u32, HashMap<u32, HashSet<RuleId>>>,
 }
 
 impl RuleIndex {
+    /// An empty index.
     pub fn new() -> Self {
         Self {
             spo: HashMap::new(),
@@ -37,6 +61,7 @@ impl RuleIndex {
         }
     }
 
+    /// Drops every indexed premise, keeping the allocation.
     pub fn clear(&mut self) {
         self.spo.clear();
         self.pos.clear();
@@ -46,6 +71,8 @@ impl RuleIndex {
         self.sop.clear();
     }
 
+    /// Files one premise of `rule_id`, so a matching fact will list that rule as a
+    /// candidate. Call once per premise.
     pub fn insert_premise_pattern(&mut self, pattern: &TriplePattern, rule_id: RuleId) {
         let (s_val, p_val, o_val) = triple_pattern_to_keys(pattern);
 
@@ -58,6 +85,11 @@ impl RuleIndex {
         self.sop.entry(s_val).or_default().entry(o_val).or_default().insert(rule_id);
     }
 
+    /// Rules that might fire for a fact with the given bound positions.
+    ///
+    /// Over-approximates: the result is a superset of the rules that actually
+    /// match, because indexing keys on at most two positions and ignores repeated
+    /// variables. Callers still have to run the full match.
     pub fn query_candidate_rules(
         &self,
         s: Option<u32>,

@@ -57,6 +57,12 @@ pub trait Provenance: Clone + 'static {
     /// Returns `true` if the tag is considered stable.
     fn is_saturated(&self, old: &Self::Tag, new: &Self::Tag) -> bool;
 
+    /// Whether this semiring has given up on exactness and its tags should be
+    /// treated as a bound rather than a value.
+    ///
+    /// Defaults to `false`. An approximate semiring such as [`TopKProofs`] reports
+    /// `true` once it has discarded proofs, which lets a caller decide whether to
+    /// escalate to an exact method.
     fn is_exhausted(&self) -> bool {
         false
     }
@@ -205,11 +211,18 @@ pub type TopKTag = Vec<Proof>;
 /// most use cases. `k` must be in `[1, 63]`.
 #[derive(Debug, Clone)]
 pub struct TopKProofs {
+    /// How many proofs to retain per fact. Must be in `[1, 63]`.
     pub k: usize,
     prob_table: Arc<Mutex<Vec<f64>>>,
 }
 
 impl TopKProofs {
+    /// Retains at most `k` proofs per fact.
+    ///
+    /// # Panics
+    ///
+    /// If `k` is outside `[1, 63]`: `recover_probability` enumerates proof subsets
+    /// through a `u64` bitmask, so 63 is the hard ceiling.
     pub fn new(k: usize) -> Self {
         assert!(k >= 1 && k <= 63, "k must be in [1, 63]: u64 bitmask limit in recover_probability");
         Self { k, prob_table: Arc::new(Mutex::new(Vec::new())) }
@@ -342,6 +355,7 @@ pub struct DnfWmcProvenance {
 }
 
 impl DnfWmcProvenance {
+    /// A semiring that keeps the full DNF formula and counts it exactly.
     pub fn new() -> Self {
         Self { prob_table: Arc::new(Mutex::new(Vec::new())) }
     }

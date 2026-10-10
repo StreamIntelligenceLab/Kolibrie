@@ -16,6 +16,7 @@ use serde::{Serialize, Deserialize};
 /// Quoted triple IDs have bit 31 set (0x8000_0000 and above).
 pub const QUOTED_TRIPLE_ID_BIT: u32 = 0x8000_0000;
 
+/// Whether `id` denotes a quoted triple rather than an ordinary interned term.
 #[inline]
 pub fn is_quoted_triple_id(id: u32) -> bool {
     id & QUOTED_TRIPLE_ID_BIT != 0
@@ -25,13 +26,22 @@ pub fn is_quoted_triple_id(id: u32) -> bool {
 /// Each quoted triple `<< s p o >>` gets a unique ID with the high bit set.
 /// Component IDs (s, p, o) may themselves be quoted triple IDs for nesting.
 #[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
+/// Interns RDF-star quoted triples, in an id range disjoint from the dictionary's.
+///
+/// Components are themselves encoded ids, and may be quoted triples in turn, so
+/// nesting is representable. Ids start at [`QUOTED_TRIPLE_ID_BIT`] and climb, which
+/// is what keeps them distinguishable from ordinary terms by a single bit test.
 pub struct QuotedTripleStore {
+    /// Id to its three component ids.
     pub id_to_components: HashMap<u32, (u32, u32, u32)>,
+    /// Components back to their id, so re-encoding is idempotent.
     pub components_to_id: HashMap<(u32, u32, u32), u32>,
+    /// Next id to hand out. Starts at [`QUOTED_TRIPLE_ID_BIT`].
     pub next_qt_id: u32,
 }
 
 impl QuotedTripleStore {
+    /// An empty store, assigning ids from [`QUOTED_TRIPLE_ID_BIT`].
     pub fn new() -> Self {
         Self {
             id_to_components: HashMap::new(),
@@ -60,11 +70,13 @@ impl QuotedTripleStore {
     }
 
     /// Returns the number of quoted triples stored.
+    /// Number of distinct quoted triples interned.
     pub fn len(&self) -> usize {
         self.id_to_components.len()
     }
 
     /// Returns true if the store is empty.
+    /// Whether no quoted triple has been interned.
     pub fn is_empty(&self) -> bool {
         self.id_to_components.is_empty()
     }

@@ -11,20 +11,39 @@
 use crate::terms::{Term, TriplePattern};
 use std::collections::HashSet;
 
+/// A comparison a candidate binding must satisfy for a rule to fire.
+///
+/// Operator and value are held as text and interpreted at evaluation time, so an
+/// unrecognised operator is ignored rather than rejected at parse time. `value` is
+/// compared numerically when both sides parse as numbers and by dictionary id when it
+/// names another bound variable.
 #[derive(Debug, Clone)]
 pub struct FilterCondition {
+    /// Name of the variable being constrained, without the leading `?`.
     pub variable: String,
+    /// Comparison operator, as written: `=`, `!=`, `<`, `>`, `<=`, `>=`.
     pub operator: String,
+    /// Right-hand side: a literal, or the name of another bound variable.
     pub value: String,
 }
 
+/// A Datalog rule: if every premise matches and the filters hold, derive the
+/// conclusion.
+///
+/// Variables are shared by name across premises and conclusion, so repeating a name
+/// is what expresses a join. Negation is single-stratum and must be *safe* — see
+/// [`check_rule_safety`], which callers are expected to run before using a rule.
 #[derive(Debug, Clone)]
 pub struct Rule {
+    /// Body atoms that must all match. Shared variable names join them.
     pub premise: Vec<TriplePattern>,
     /// Negated body atoms (NOT X) for single-stratum negation-as-failure.
     /// Every variable appearing here must also appear in `premise` (rule safety).
     pub negative_premise: Vec<TriplePattern>,
+    /// Comparisons that must hold for a binding produced by the premises.
     pub filters: Vec<FilterCondition>,
+    /// Atoms derived when the body matches. Every variable here should be bound by
+    /// `premise`; one that is not resolves to term id 0 rather than being rejected.
     pub conclusion: Vec<TriplePattern>,
 }
 

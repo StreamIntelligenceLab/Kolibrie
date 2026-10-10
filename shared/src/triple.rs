@@ -10,10 +10,28 @@
 use serde::{Serialize, Deserialize};
 use crate::terms::{Term, TriplePattern};
 
+/// An RDF triple with all three positions already encoded to dictionary ids.
+///
+/// The ids are only meaningful relative to the [`Dictionary`] that produced them, so
+/// a `Triple` cannot be decoded — or compared against one from another store —
+/// without that dictionary. Two engines exchanging triples must share one.
+///
+/// An id in `subject` or `object` may be a quoted triple rather than an ordinary
+/// term, which the top bit indicates; see
+/// [`is_quoted_triple_id`](crate::quoted_triple_store::is_quoted_triple_id).
+///
+/// `Ord` is derived, so triples sort by `(subject, predicate, object)` as integers.
+/// That ordering has no relationship to the lexical order of the terms, and the
+/// indexes in [`dataset_index`](crate::dataset_index) rely on it.
+///
+/// [`Dictionary`]: crate::dictionary::Dictionary
 #[derive(PartialEq, Debug, Clone, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 pub struct Triple {
+    /// Encoded subject.
     pub subject: u32,
+    /// Encoded predicate.
     pub predicate: u32,
+    /// Encoded object.
     pub object: u32,
 }
 
