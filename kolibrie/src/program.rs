@@ -1262,9 +1262,9 @@ pub fn execute_program(
     program: &CompiledProgram,
     options: &ProgramOptions,
 ) -> Result<ProgramResult, ProgramError> {
-    let previous = std::mem::replace(&mut asserted_input.implicit_neural_materialization, false);
+    let previous = asserted_input.set_implicit_neural_materialization(false);
     let outcome = run_program(asserted_input, program, options);
-    asserted_input.implicit_neural_materialization = previous;
+    asserted_input.set_implicit_neural_materialization(previous);
     outcome
 }
 
@@ -1438,7 +1438,7 @@ fn run_program(
     dataset.dictionary = Arc::clone(&dictionary);
     dataset.quoted_triple_store = Arc::clone(&quoted);
     dataset.prefixes = program.prefixes.clone();
-    dataset.implicit_neural_materialization = false;
+    dataset.set_implicit_neural_materialization(false);
     {
         let mut dict = dictionary.write().unwrap();
         let mut qt = quoted.write().unwrap();

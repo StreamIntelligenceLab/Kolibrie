@@ -24,8 +24,6 @@ pub(crate) struct CandleDispatch {
     pub predictions: Vec<String>,
     pub probabilities: Vec<f64>,
     pub output_kind: NeuralOutputKind,
-    pub normalized_predicate: String,
-    pub relation: NeuralRelationDecl,
 }
 
 /// Try Candle for an `ML.PREDICT` clause and resolve the target predicate
@@ -116,8 +114,6 @@ pub(crate) fn try_candle_predict(
         predictions,
         probabilities,
         output_kind: model_decl.output_kind.clone(),
-        normalized_predicate,
-        relation,
     }))
 }
 
@@ -140,8 +136,6 @@ pub(crate) fn try_candle_predict_by_model_name(
         1 => matching[0].clone(),
         _ => return Ok(None),
     };
-    let normalized_predicate = relation.predicate.clone();
-
     let model_decl = match database.model_decls.get(&relation.model_name).cloned() {
         Some(m) => m,
         None => return Ok(None),
@@ -181,8 +175,6 @@ pub(crate) fn try_candle_predict_by_model_name(
         predictions,
         probabilities,
         output_kind: model_decl.output_kind.clone(),
-        normalized_predicate,
-        relation,
     }))
 }
 

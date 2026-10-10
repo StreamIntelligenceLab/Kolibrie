@@ -604,7 +604,7 @@ pub fn materialize_neural_relations_for_patterns(
     patterns: &[(&str, &str, &str)],
     prefixes: &HashMap<String, String>,
 ) -> Result<(), String> {
-    if !database.implicit_neural_materialization {
+    if !database.implicit_neural_materialization() {
         return Ok(());
     }
     for (_, predicate, _) in patterns {

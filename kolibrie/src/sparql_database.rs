@@ -213,24 +213,24 @@ pub struct SparqlDatabase {
     pub dataset_index: DatasetIndex,
     pub dictionary: Arc<RwLock<Dictionary>>,
     pub prefixes: HashMap<String, String>,
-    pub udfs: HashMap<String, ClonableFn>,
+    udfs: HashMap<String, ClonableFn>,
     pub rule_map: HashMap<String, String>,
     pub model_decls: HashMap<String, ModelDecl>,
     pub neural_relation_decls: HashMap<String, NeuralRelationDecl>,
     pub train_neural_relation_decls: HashMap<String, TrainNeuralRelationDecl>,
     pub neural_model_artifacts: HashMap<String, String>,
     pub neural_materialized_triples: HashMap<String, Vec<Triple>>,
-    pub ml_predict_materialized_triples: HashMap<String, Vec<Triple>>,
+    ml_predict_materialized_triples: HashMap<String, Vec<Triple>>,
     pub probability_seeds: HashMap<Triple, f64>,
-    pub cached_stats: Option<Arc<DatabaseStats>>,
-    pub exact_stats_generation: u64,
-    pub planning_stats: Option<PlanningStatsSnapshot>,
+    cached_stats: Option<Arc<DatabaseStats>>,
+    exact_stats_generation: u64,
+    planning_stats: Option<PlanningStatsSnapshot>,
     pub planning_stats_policy: PlanningStatsPolicy,
-    pub stats_epoch: u64,
+    stats_epoch: u64,
     pub stats_rebuild_count: u64,
-    pub stats_rebuild_nanos: u64,
+    stats_rebuild_nanos: u64,
     pub quoted_triple_store: Arc<RwLock<QuotedTripleStore>>,
-    pub implicit_neural_materialization: bool,
+    implicit_neural_materialization: bool,
 }
 
 impl SparqlDatabase {
@@ -2277,6 +2277,46 @@ impl SparqlDatabase {
         F: Fn(Vec<&str>) -> String + Send + Sync + 'static,
     {
         self.udfs.insert(name.to_string(), ClonableFn::new(f));
+    }
+
+    // ── Accessors for fields sealed in stage 1 ──────────────────────────────────
+    //
+    // These three fields had no consumer outside this crate, so they are private and
+    // reached through the operations below. The operations are deliberately specific
+    // rather than `&mut` getters: handing out `&mut HashMap` would seal the field in
+    // name only and still freeze the representation, which is the thing P4 exists to
+    // avoid. Five further fields were used only inside this file and needed no
+    // accessor at all.
+
+    /// Looks up a registered user-defined function.
+    pub(crate) fn udf(&self, name: &str) -> Option<&ClonableFn> {
+        self.udfs.get(name)
+    }
+
+    /// Records the triples materialised for `cache_key`, so a rerun can undo them.
+    //
+    // Gated to match its only caller, `ml_predict_runtime`. Without this the default
+    // build reports both methods dead — the same thing the step-4a demotions surfaced
+    // for `ml_feature_loader`.
+    #[cfg(feature = "ml")]
+    pub(crate) fn set_ml_materialized(&mut self, cache_key: String, triples: Vec<Triple>) {
+        self.ml_predict_materialized_triples.insert(cache_key, triples);
+    }
+
+    /// Takes the triples previously materialised for `cache_key`, if any.
+    #[cfg(feature = "ml")]
+    pub(crate) fn take_ml_materialized(&mut self, cache_key: &str) -> Option<Vec<Triple>> {
+        self.ml_predict_materialized_triples.remove(cache_key)
+    }
+
+    /// Whether neural relations are materialised implicitly during query execution.
+    pub(crate) fn implicit_neural_materialization(&self) -> bool {
+        self.implicit_neural_materialization
+    }
+
+    /// Sets the flag and returns its previous value, so a caller can restore it.
+    pub(crate) fn set_implicit_neural_materialization(&mut self, enabled: bool) -> bool {
+        std::mem::replace(&mut self.implicit_neural_materialization, enabled)
     }
 
     /// Rebuilds every graph-scoped index, keeping named graphs distinct from the default

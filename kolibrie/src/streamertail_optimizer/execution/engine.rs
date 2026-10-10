@@ -1022,7 +1022,7 @@ impl ExecutionEngine {
                     drop(dict_write);
 
                     input_results
-                } else if let Some(func) = database.udfs.get(function_name.as_str()) {
+                } else if let Some(func) = database.udf(function_name.as_str()) {
                     // Similar fix for UDF
                     let dict = database.dictionary.read().unwrap();
                     let decoded_args: Vec<Vec<String>> = input_results

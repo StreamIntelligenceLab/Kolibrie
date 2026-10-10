@@ -126,9 +126,7 @@ pub(crate) fn execute_ml_predict_clause<'a>(
     if input_rows.is_empty() {
         purge_previous_materialization(database, &meta.cache_key);
         strip_ml_conclusions(rule, out_var);
-        database
-            .ml_predict_materialized_triples
-            .insert(meta.cache_key, Vec::new());
+        database.set_ml_materialized(meta.cache_key, Vec::new());
         return Ok(Vec::new());
     }
 
@@ -271,7 +269,7 @@ fn run_input_query(
 
 /// Remove old materialized triples for this cache key
 fn purge_previous_materialization(database: &mut SparqlDatabase, cache_key: &str) {
-    if let Some(old) = database.ml_predict_materialized_triples.remove(cache_key) {
+    if let Some(old) = database.take_ml_materialized(cache_key) {
         for triple in old {
             database.delete_triple(&triple);
         }
@@ -373,9 +371,7 @@ pub(crate) fn materialize_ml_conclusions<'a>(
     }
 
     // Track triples for rerun cleanup
-    database
-        .ml_predict_materialized_triples
-        .insert(cache_key.to_string(), inserted.clone());
+    database.set_ml_materialized(cache_key.to_string(), inserted.clone());
 
     // Strip ML templates from the rule
     conclusion.retain(|(s, p, o)| {
