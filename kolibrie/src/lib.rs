@@ -84,7 +84,6 @@ pub mod neural_relations;
 #[cfg(not(feature = "ml"))]
 #[path = "neural_relations_disabled.rs"]
 pub mod neural_relations;
-/// Parsing SPARQL, RSP-QL, and the rule and ML extensions.
 pub mod parser;
 pub mod prelude;
 /// Probabilistic programs: compile a rule set, run it, query the answers.

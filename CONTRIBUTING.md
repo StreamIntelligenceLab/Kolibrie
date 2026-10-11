@@ -124,6 +124,26 @@ path:
 export DYLD_LIBRARY_PATH=/opt/homebrew/Cellar/python@3.11/<version>/Frameworks/Python.framework/Versions/3.11/lib
 ```
 
+## Writing documentation
+
+`missing_docs` is being burned down per crate, and each crate that reaches zero gets
+a blocking gate (see `scripts/check_lint.sh`). Two rules are worth knowing before you
+start, because both have cost real debugging time:
+
+- **A module with its own `//!` must not also carry an outer `///` on its `pub mod`
+  declaration.** The two concatenate, and rustdoc then resolves the module file's
+  bare intra-doc links in `lib.rs`'s scope, where that module's own items are not
+  visible. It looks like the links are wrong; they are not. Put the summary in one
+  place — the module file — and rustdoc uses its first line.
+- **Bracketed notation in a doc comment is read as a link.** `Box[a,b]` and friends
+  need backticks, or `cargo doc` fails. The `docs` CI job is blocking and runs with
+  `-D rustdoc::broken_intra_doc_links`.
+
+A doc comment that restates the item's name passes the lint and tells a reader
+nothing, which is worse than the warning because it looks like documentation. Prefer
+writing down the invariant, the unit, the panic, or the thing a caller would
+otherwise discover by experiment.
+
 ## Notes for AI coding assistants
 
 - Do not commit, push, or create branches unless explicitly asked.

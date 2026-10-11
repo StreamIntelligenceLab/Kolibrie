@@ -8,6 +8,37 @@
  * you can obtain one at https://mozilla.org/MPL/2.0/.
  */
 
+//! Parsing SPARQL, RSP-QL, and the rule and ML extensions.
+//!
+//! Produces the lexical syntax tree defined in [`shared::query`]: terms keep their
+//! source spelling and nothing is prefix-expanded or interned here. See that module
+//! for why the two stages are separate.
+//!
+//! # What to call
+//!
+//! | entry point | for |
+//! |---|---|
+//! | [`parse_combined_query`] | anything — standard SPARQL plus every extension, with the prefix map |
+//! | [`parse_sparql_query`] | a standalone SELECT, when the prefix map is not needed |
+//! | [`parse_standalone_rule`] | one `RULE` block |
+//! | [`process_rule_definition`] | parse *and* run a rule against a store |
+//! | [`convert_combined_rule`] | lower a parsed rule to a [`Rule`] bound to a dictionary |
+//!
+//! Everything else here is a grammar fragment. They are public because
+//! `tests/parser_test.rs` is an integration test and therefore outside the crate, so
+//! exercising a combinator directly requires exporting it — not because callers are
+//! expected to assemble their own grammar. Moving those cases to unit tests inside
+//! this module would let the fragments become `pub(crate)`.
+//!
+//! # `nom` is in the signatures
+//!
+//! Every function here returns `nom::IResult`, so a `nom` major-version bump is a
+//! breaking change for anyone who names one of these types. That violates P5 of the
+//! architecture proposal ("nothing leaks"), and §4 resolves it by giving the parser
+//! crate its own error type and keeping the combinators internal. Until then, prefer
+//! the entry points above, which at least confine the exposure to a return type you
+//! can discard.
+
 use crate::neural_relations::{
     execute_train_decl, materialize_neural_relations_for_patterns,
 };
@@ -42,17 +73,17 @@ use crate::rsp::s2r::{
 use std::collections::HashMap;
 use std::time::Duration;
 
-// Helper function to recognize identifiers
+/// One or more alphanumerics, `_` or `-`. The bare name part of a prefixed term.
 pub fn identifier(input: &str) -> IResult<&str, &str> {
     take_while1(|c: char| c.is_alphanumeric() || c == '_' || c == '-').parse(input)
 }
 
-// Parser for a prefixed identifier like ex:worksAt
+/// A prefixed name such as `ex:worksAt`, returned unexpanded.
 pub fn prefixed_identifier(input: &str) -> IResult<&str, &str> {
     sparql_prefixed_name(input)
 }
 
-// Parser for a predicate (either prefixed or unprefixed)
+/// A predicate position: a full IRI, a variable, or a prefixed name.
 pub fn predicate(input: &str) -> IResult<&str, &str> {
     alt((
         parse_uri,
@@ -64,12 +95,14 @@ pub fn predicate(input: &str) -> IResult<&str, &str> {
     .parse(input)
 }
 
-// Parser for SPARQL variables (e.g., ?person or $person)
+/// A variable, with its `?` or `$` sigil retained.
 pub fn variable(input: &str) -> IResult<&str, &str> {
     sparql_variable(input)
 }
 
-// Parser for a literal value within double quotes
+/// A double-quoted literal, rejecting the triple-quoted form.
+///
+/// The quotes and any datatype or language suffix stay in the returned slice.
 pub fn parse_literal(input: &str) -> IResult<&str, &str> {
     let (remaining, literal) = sparql_quoted_literal(input)?;
     if !literal.starts_with('"') || literal.starts_with("\"\"\"") {
@@ -88,17 +121,17 @@ pub fn parse_literal(input: &str) -> IResult<&str, &str> {
     sparql_error(literal, nom::error::ErrorKind::Escaped)
 }
 
-// Parser for a URI within angle brackets
+/// An IRI in angle brackets, or a prefixed name. Brackets are retained.
 pub fn parse_uri(input: &str) -> IResult<&str, &str> {
     sparql_iri(input).map(|(remaining, iri)| (remaining, &iri[1..iri.len() - 1]))
 }
 
-// Parser for a full URI including angle brackets (e.g., `<http://...>`)
+/// An IRI in angle brackets only, rejecting prefixed names.
 pub fn parse_full_uri(input: &str) -> IResult<&str, &str> {
     sparql_iri(input)
 }
 
-// Parser for a full literal including quotes and optional lang/datatype
+/// A literal including any language tag or `^^<datatype>` suffix.
 pub fn parse_full_literal(input: &str) -> IResult<&str, &str> {
     sparql_quoted_literal(input)
 }
@@ -141,7 +174,7 @@ pub fn parse_annotation(input: &str) -> IResult<&str, Vec<(&str, &str)>> {
     Ok((input, pairs))
 }
 
-// Helper parser to parse a single predicate-object pair.
+/// One `predicate object` pair inside a triple block.
 pub fn parse_predicate_object(input: &str) -> IResult<&str, (&str, &str)> {
     let (input, p) = predicate(input)?;
     let (input, _) = multispace1.parse(input)?;
@@ -158,6 +191,8 @@ pub fn parse_predicate_object(input: &str) -> IResult<&str, (&str, &str)> {
     Ok((input, (p, o)))
 }
 
+/// A `{ ... }` block of triple patterns, expanding the `;` and `,`
+/// abbreviations into separate patterns.
 pub fn parse_triple_block(input: &str) -> IResult<&str, Vec<(&str, &str, &str)>> {
     let (input, subject) = alt((
         parse_quoted_triple,                // << s p o >> (RDF-star)
@@ -200,20 +235,23 @@ pub fn parse_triple_block(input: &str) -> IResult<&str, Vec<(&str, &str, &str)>>
     Ok((input, triples))
 }
 
-// Parser for values in the VALUES clause
+/// One cell of a `VALUES` row: a term, or `UNDEF`.
 pub fn parse_value_term(input: &str) -> IResult<&str, Value> {
     sparql_value(input)
 }
 
-// Parser for the VALUES clause
+/// A `VALUES` block: the variable list and its rows.
 pub fn parse_values(input: &str) -> IResult<&str, ValuesClause<'_>> {
     sparql_values_clause(input)
 }
 
+/// An aggregate in a projection, as `(function, variable, alias)`.
 pub fn parse_aggregate(input: &str) -> IResult<&str, (&str, &str, Option<&str>)> {
     sparql_aggregate(input)
 }
 
+/// A `SELECT` projection, as `(kind, variable, alias)` triples where `kind`
+/// is `"VAR"` or an aggregate's uppercase name.
 pub fn parse_select(input: &str) -> IResult<&str, Vec<(&str, &str, Option<&str>)>> {
     let (mut input, _) = sparql_keyword(input, "SELECT")?;
     if let Ok((remaining, _)) = sparql_keyword(input, "DISTINCT") {
@@ -222,30 +260,34 @@ pub fn parse_select(input: &str) -> IResult<&str, Vec<(&str, &str, Option<&str>)
     sparql_projection_items(input)
 }
 
+/// An arithmetic expression over variables and numeric literals.
 pub fn parse_arithmetic_expression(input: &str) -> IResult<&str, ArithmeticExpression<'_>> {
     sparql_filter_arithmetic(input)
 }
 
-// Parse a single comparison expression like ?var > 10
+/// A single comparison, such as `?x > 5`.
 pub fn parse_comparison(input: &str) -> IResult<&str, FilterExpression<'_>> {
     sparql_filter_comparison(input)
 }
 
-// Parse a complete FILTER clause
+/// A `FILTER` expression, including the boolean connectives.
 pub fn parse_filter(input: &str) -> IResult<&str, FilterExpression<'_>> {
     sparql_filter_clause(input)
 }
 
-// Parser for BIND clauses: BIND(funcName(?var, "literal") AS ?newVar)
+/// A `BIND` clause, as `(expression, arguments, target variable)`.
+///
+/// For example `BIND(funcName(?var, "literal") AS ?newVar)`.
 pub fn parse_bind(input: &str) -> IResult<&str, (&str, Vec<&str>, &str)> {
     sparql_bind_clause(input)
 }
 
+/// A `{ SELECT ... }` subquery nested in a graph pattern.
 pub fn parse_subquery<'a>(input: &'a str) -> IResult<&'a str, SubQuery<'a>> {
     sparql_subquery(input)
 }
 
-// Parser for WINDOW block inside WHERE clause
+/// A `WINDOW ?w { ... }` block scoping patterns to one named window.
 pub fn parse_window_block(input: &str) -> IResult<&str, WindowBlock<'_>> {
     let (input, _) = multispace0.parse(input)?;
     let (input, _) = tag("WINDOW").parse(input)?;
@@ -290,6 +332,8 @@ fn parse_not_triple_block(input: &str) -> IResult<&str, Vec<(&str, &str, &str)>>
     parse_triple_block(input)
 }
 
+/// A `WHERE` clause, returning the five-tuple of triple patterns, filters,
+/// `VALUES`, `BIND` clauses and subqueries that `shared::query` uses.
 pub fn parse_where(
     input: &str,
 ) -> IResult<
@@ -385,7 +429,7 @@ pub fn parse_where(
     ))
 }
 
-// Parser for REGISTER clause
+/// A `REGISTER` clause declaring a standing query over streams.
 pub fn parse_register_clause(input: &str) -> IResult<&str, RegisterClause<'_>> {
     let (input, _) = multispace0.parse(input)?;
     let (input, _) = tag("REGISTER").parse(input)?;
@@ -431,11 +475,12 @@ pub fn parse_register_clause(input: &str) -> IResult<&str, RegisterClause<'_>> {
     ))
 }
 
+/// A `GROUP BY` clause: the grouping variables.
 pub fn parse_group_by(input: &str) -> IResult<&str, Vec<&str>> {
     sparql_group_by_clause(input)
 }
 
-// Parser for sort direction (ASC/DESC)
+/// `ASC` or `DESC`.
 pub fn parse_sort_direction(input: &str) -> IResult<&str, SortDirection> {
     if let Ok((remaining, _)) = sparql_keyword(input, "ASC") {
         Ok((remaining, SortDirection::Asc))
@@ -446,22 +491,28 @@ pub fn parse_sort_direction(input: &str) -> IResult<&str, SortDirection> {
     }
 }
 
-// Parser for a single ORDER BY condition
+/// One `ORDER BY` key with an explicit direction.
 pub fn parse_order_condition(input: &str) -> IResult<&str, OrderCondition<'_>> {
     sparql_order_condition(input)
 }
 
-// Alternative simpler parser for ORDER BY condition (variable with optional direction)
+/// One `ORDER BY` key, direction optional, defaulting to ascending.
+///
+/// The simpler alternative to [`parse_order_condition`], which requires an
+/// explicit `ASC` or `DESC`.
 pub fn parse_simple_order_condition(input: &str) -> IResult<&str, OrderCondition<'_>> {
     sparql_order_condition(input)
 }
 
-// Main ORDER BY parser
+/// An `ORDER BY` clause, in precedence order.
 pub fn parse_order_by(input: &str) -> IResult<&str, Vec<OrderCondition<'_>>> {
     sparql_order_by_clause(input)
 }
 
-// Public PREFIX primitive backed by the same token-aware parser as requests.
+/// A `PREFIX` declaration, as `(short name, expansion)`.
+///
+/// Backed by the same token-aware parser the request path uses, so a declaration
+/// accepted here is accepted in a full query.
 pub fn parse_prefix(input: &str) -> IResult<&str, (&str, &str)> {
     sparql_prefix_declaration(input)
 }
@@ -497,6 +548,7 @@ pub fn parse_delete(input: &str) -> IResult<&str, DeleteClause<'_>> {
     Ok((remaining, DeleteClause { quads }))
 }
 
+/// A `CONSTRUCT { ... }` template, which becomes a rule's conclusion.
 pub fn parse_construct_clause(input: &str) -> IResult<&str, Vec<(&str, &str, &str)>> {
     let (input, _) = multispace0.parse(input)?;
     let (input, _) = tag("CONSTRUCT").parse(input)?;
@@ -516,7 +568,9 @@ pub fn parse_construct_clause(input: &str) -> IResult<&str, Vec<(&str, &str, &st
     Ok((input, conclusions))
 }
 
-// Public LIMIT primitive backed by the same parser as SELECT.
+/// A `LIMIT` clause.
+///
+/// Backed by the same parser `SELECT` uses.
 pub fn parse_limit(input: &str) -> IResult<&str, usize> {
     sparql_limit_clause(input)
 }
@@ -1981,6 +2035,10 @@ pub fn parse_sparql_query(input: &str) -> IResult<&str, SelectQuery<'_>> {
     Ok((remaining, query))
 }
 
+/// One `RULE` block together with the prefix map its prologue declared.
+///
+/// Fails unless the whole input is consumed, so trailing text is an error rather
+/// than silently ignored.
 pub fn parse_standalone_rule<'a>(
     input: &'a str,
 ) -> IResult<&'a str, (CombinedRule<'a>, HashMap<String, String>)> {
@@ -2010,6 +2068,7 @@ pub fn parse_standalone_rule<'a>(
     Ok((input, (rule, prefixes)))
 }
 
+/// A reference to a rule by name.
 pub fn parse_rule_call(input: &str) -> IResult<&str, RuleHead<'_>> {
     let (input, _) = multispace0.parse(input)?;
 
@@ -2035,6 +2094,7 @@ pub fn parse_rule_call(input: &str) -> IResult<&str, RuleHead<'_>> {
     Ok((input, RuleHead { predicate: pred }))
 }
 
+/// A rule's name, as written after `RULE`.
 pub fn parse_rule_head(input: &str) -> IResult<&str, RuleHead<'_>> {
     let (input, pred) = predicate(input)?;
     Ok((input, RuleHead { predicate: pred }))
@@ -2239,6 +2299,7 @@ fn infer_anchor_var(patterns: &[(String, String, String)]) -> Result<String, Str
     Err("NEURAL RELATION INPUT must contain at least one anchor variable".to_string())
 }
 
+/// A `MODEL` declaration: name, architecture and output interpretation.
 pub fn parse_model_decl(input: &str) -> IResult<&str, ModelDecl> {
     let (input, _) = multispace0.parse(input)?;
     let (input, _) = tag("MODEL").parse(input)?;
@@ -2311,6 +2372,7 @@ pub fn parse_model_decl(input: &str) -> IResult<&str, ModelDecl> {
     ))
 }
 
+/// A declaration that a predicate's facts come from a model.
 pub fn parse_neural_relation_decl(input: &str) -> IResult<&str, NeuralRelationDecl> {
     let (input, _) = multispace0.parse(input)?;
     let (input, _) = tag("NEURAL").parse(input)?;
@@ -2411,6 +2473,7 @@ fn parse_top_level_neural_decls(
     ))
 }
 
+/// A `TRAIN` declaration: data source, loss, optimiser and hyperparameters.
 pub fn parse_train_neural_relation_decl(input: &str) -> IResult<&str, TrainNeuralRelationDecl> {
     let (input, _) = multispace0.parse(input)?;
     let (input, _) = tag("TRAIN").parse(input)?;
@@ -2524,6 +2587,7 @@ fn parse_single_triple_template(input: &str) -> Result<(&str, &str, &str), Strin
     Ok(triples[0])
 }
 
+/// An `ML.PREDICT` clause, keeping the input query both as text and parsed.
 pub fn parse_ml_predict(input: &str) -> IResult<&str, MLPredictClause<'_>> {
     let (input, _) = multispace0.parse(input)?;
     let (input, _) = tag("ML.PREDICT").parse(input)?;
@@ -2603,7 +2667,7 @@ pub fn parse_ml_predict(input: &str) -> IResult<&str, MLPredictClause<'_>> {
     ))
 }
 
-// Parser for stream type
+/// An output stream operator: `RSTREAM`, `ISTREAM`, `DSTREAM` or a custom name.
 pub fn parse_stream_type(input: &str) -> IResult<&str, StreamType<'_>> {
     let (input, _) = multispace0.parse(input)?;
     let (input, stream_type) = alt((
@@ -2616,7 +2680,9 @@ pub fn parse_stream_type(input: &str) -> IResult<&str, StreamType<'_>> {
     Ok((input, stream_type))
 }
 
-// Parser for window specification
+/// A window's width, slide and reporting behaviour.
+///
+/// Bounds are half-open: `RANGE n` holds `n` timestamps.
 pub fn parse_window_spec(input: &str) -> IResult<&str, WindowSpec<'_>> {
     let (input, _) = multispace0.parse(input)?;
     let (input, _) = char('[').parse(input)?;
@@ -2817,7 +2883,7 @@ fn parse_duration_to_seconds(duration: &str) -> usize {
     }
 }
 
-// Parser for FROM NAMED WINDOW clause
+/// A `FROM NAMED WINDOW` clause binding one window over one stream.
 pub fn parse_from_named_window(input: &str) -> IResult<&str, WindowClause<'_>> {
     let (input, _) = multispace0.parse(input)?;
     let (input, _) = tag("FROM").parse(input)?;
@@ -3202,7 +3268,7 @@ pub fn parse_rule(input: &str) -> IResult<&str, CombinedRule<'_>> {
     ))
 }
 
-// Parser for RetrieveMode
+/// `SOME` or `EVERY` in a `RETRIEVE` clause.
 pub fn parse_retrieve_mode(input: &str) -> IResult<&str, RetrieveMode> {
     let (input, _) = multispace0.parse(input)?;
     let (input, mode) = alt((
@@ -3213,7 +3279,7 @@ pub fn parse_retrieve_mode(input: &str) -> IResult<&str, RetrieveMode> {
     Ok((input, mode))
 }
 
-// Parser for StreamState
+/// `LATENT` or `ACTIVE` in a `RETRIEVE` clause.
 pub fn parse_stream_state(input: &str) -> IResult<&str, StreamState> {
     let (input, _) = multispace0.parse(input)?;
     let (input, state) = alt((
@@ -3224,7 +3290,7 @@ pub fn parse_stream_state(input: &str) -> IResult<&str, StreamState> {
     Ok((input, state))
 }
 
-// Parser for the complete RETRIEVE clause
+/// A `RETRIEVE` clause discovering streams from a catalogue.
 pub fn parse_retrieve_clause(input: &str) -> IResult<&str, RetrieveClause<'_>> {
     let (input, _) = multispace0.parse(input)?;
     let (input, _) = tag("RETRIEVE").parse(input)?;
@@ -3450,6 +3516,13 @@ pub fn convert_triple_pattern(
     )
 }
 
+/// Lowers a parsed rule into a [`Rule`] bound to `dict`.
+///
+/// This is the prepare step: lexical terms are prefix-expanded using `prefixes` and
+/// then interned, so the result is only meaningful against that dictionary. A rule
+/// lowered against the wrong one parses and validates but matches nothing.
+///
+/// Takes `&mut Dictionary` because interning allocates new ids.
 pub fn convert_combined_rule<'a>(
     cr: CombinedRule<'a>,
     dict: &mut Dictionary,
@@ -3588,6 +3661,15 @@ pub fn convert_combined_rule<'a>(
     }
 }
 
+/// Parses a rule and runs it against `database`, returning the rule and the facts
+/// it derived.
+///
+/// The whole pipeline in one call: policy check, prefix registration, parse, lower
+/// against the store's dictionary, then derive. Prefixes declared in `rule_input`
+/// are registered on the store as a side effect, so later queries can use them.
+///
+/// The ML policy is enforced first: a rule naming a model the host has not approved
+/// is refused before anything is parsed or derived.
 pub fn process_rule_definition(
     rule_input: &str,
     database: &mut SparqlDatabase,
@@ -3944,6 +4026,8 @@ pub fn process_rule_definition(
 }
 
 // Add this function to handle RETRIEVE clause processing
+/// Resolves a `RETRIEVE` clause against `database`, returning the triples that
+/// describe the matching streams.
 pub fn process_retrieve_clause(
     retrieve_clause: &RetrieveClause,
     database: &mut SparqlDatabase,
