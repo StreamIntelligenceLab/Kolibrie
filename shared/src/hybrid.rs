@@ -26,9 +26,12 @@ use std::time::{Duration, Instant};
 
 /// Clock abstraction used to make latency-budget behavior deterministic in tests.
 pub trait HybridClock: Send + Sync {
+    /// The current instant. A test clock returns a value it controls, so a latency
+    /// budget can be driven past its deadline without sleeping.
     fn now(&self) -> Instant;
 }
 
+/// The real clock, reading [`Instant::now`].
 #[derive(Debug, Default)]
 pub struct SystemHybridClock;
 
@@ -44,6 +47,7 @@ impl HybridClock for SystemHybridClock {
 pub struct SeedId(u32);
 
 impl SeedId {
+    /// The raw identifier, for use as a variable index in a formula.
     pub fn get(self) -> u32 {
         self.0
     }
@@ -52,35 +56,66 @@ impl SeedId {
 /// Identity of one arrival before it is fanned out to overlapping windows.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct EventKey {
+    /// Stream the event arrived on, normalised by [`normalize_stream_iri`].
     pub stream_iri: String,
+    /// The event's own timestamp, not the time it was processed.
     pub event_time: usize,
+    /// Arrival order, breaking ties between events sharing a timestamp.
+    ///
+    /// Needed because two events can carry the same `event_time` and must still be
+    /// distinguishable: one arrival is one seed, however many overlapping windows
+    /// it later appears in.
     pub sequence: u64,
 }
 
+/// Whether a seed stands alone or competes with others.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SeedKind {
+    /// Independent of every other seed.
     Independent,
+    /// One alternative in a mutually exclusive group, by group id. At most one
+    /// member of a group holds, so members must not be multiplied as if
+    /// independent.
     ExclusiveGroup(u32),
 }
 
+/// One registered seed: a fact, its prior, and its identity.
 #[derive(Debug, Clone)]
 pub struct SeedRecord {
+    /// Stable identifier, also this seed's variable index in a formula.
     pub id: SeedId,
+    /// The fact the probability attaches to.
     pub triple: Triple,
+    /// Prior probability, in `[0, 1]`.
     pub probability: f64,
+    /// Independent, or a member of an exclusive group.
     pub kind: SeedKind,
+    /// The arrival this seed came from, for streaming seeds. `None` for a static
+    /// one declared against the dataset.
     pub event: Option<EventKey>,
 }
 
+/// Why a hybrid evaluation could not proceed.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum HybridError {
+    /// A probability was not finite, or fell outside `[0, 1]`.
     InvalidProbability,
+    /// The configuration is internally inconsistent; the message says how.
     InvalidConfig(String),
+    /// The seed id space is used up. Ids are never recycled, so a long-running
+    /// process registering per-event seeds will eventually reach this.
     SeedIdExhausted,
+    /// A caller supplied an id already registered.
     DuplicateSeedId(SeedId),
+    /// A formula referenced a seed that was never registered.
     UnknownSeed(SeedId),
+    /// The lineage is cyclic. Recursion is not supported, so a recursive rule is
+    /// rejected rather than evaluated to a fixpoint.
     UnsupportedRecursion(String),
+    /// The rule cannot be expressed as probabilistic lineage; the message says why.
     UnsupportedRule(String),
+    /// A shared lock was poisoned by a panic in another thread, so the state can no
+    /// longer be trusted.
     PoisonedState,
 }
 
@@ -104,6 +139,12 @@ impl std::fmt::Display for HybridError {
 impl std::error::Error for HybridError {}
 
 /// Process-lifetime registry for stable seed identities.
+///
+/// Identity is the point. One arrival becomes one seed, even when it is fanned out
+/// to several overlapping windows — otherwise the same uncertainty would be counted
+/// twice and a derived probability would come out too high. Ids are allocated
+/// monotonically and never recycled, so an id remains valid for as long as the
+/// process lives.
 #[derive(Debug, Default)]
 pub struct SeedRegistry {
     next_id: u64,
@@ -115,6 +156,7 @@ pub struct SeedRegistry {
 }
 
 impl SeedRegistry {
+    /// An empty registry.
     pub fn new() -> Self {
         Self::default()
     }
@@ -136,6 +178,10 @@ impl SeedRegistry {
         Ok(id)
     }
 
+    /// Mints a key for a new arrival, taking the next sequence number.
+    ///
+    /// Call once per arrival. Calling twice for the same event yields two keys and
+    /// therefore two seeds, which double-counts the uncertainty.
     pub fn next_event_key(&mut self, stream_iri: &str, event_time: usize) -> EventKey {
         let key = EventKey {
             stream_iri: normalize_stream_iri(stream_iri),
@@ -146,6 +192,11 @@ impl SeedRegistry {
         key
     }
 
+    /// Registers a streaming seed, or returns the existing id if this event is
+    /// already registered.
+    ///
+    /// Idempotent per [`EventKey`], which is what keeps one arrival to one seed
+    /// across overlapping windows.
     pub fn register_occurrence(
         &mut self,
         event: EventKey,
@@ -198,6 +249,11 @@ impl SeedRegistry {
         Ok(id)
     }
 
+    /// Registers one alternative of a mutually exclusive group.
+    ///
+    /// Unlike [`Self::register_static`] this always allocates a fresh id: two
+    /// alternatives may assert the same triple, and collapsing them would lose the
+    /// distinction the group exists to express.
     pub fn register_exclusive(
         &mut self,
         group_id: u32,
@@ -249,10 +305,16 @@ impl SeedRegistry {
         Ok(id)
     }
 
+    /// An immutable view of every registered seed, for one evaluation.
+    ///
+    /// Evaluation reads a snapshot rather than the live registry so that seeds
+    /// arriving mid-evaluation cannot change the answer underneath it.
     pub fn snapshot_all(&self) -> SeedSnapshot {
         SeedSnapshot::from_records(self.records.values().cloned())
     }
 
+    /// A snapshot restricted to `ids`, failing with
+    /// [`HybridError::UnknownSeed`] if any is unregistered.
     pub fn snapshot_for_ids<I>(&self, ids: I) -> Result<SeedSnapshot, HybridError>
     where
         I: IntoIterator<Item = SeedId>,
@@ -275,6 +337,11 @@ impl SeedRegistry {
     }
 }
 
+/// Canonical form of a stream IRI, so the same stream written two ways yields one
+/// identity.
+///
+/// [`EventKey`] holds the normalised form; comparing raw spellings would let one
+/// arrival register as two seeds.
 pub fn normalize_stream_iri(value: &str) -> String {
     let trimmed = value.trim().trim_start_matches('<').trim_end_matches('>');
     trimmed.strip_prefix(':').unwrap_or(trimmed).to_string()
@@ -311,6 +378,8 @@ impl SeedSnapshot {
         snapshot
     }
 
+    /// A snapshot from a plain fact-to-probability map, treating every seed as
+    /// independent.
     pub fn from_probability_seeds(seeds: &HashMap<Triple, f64>) -> Result<Self, HybridError> {
         let mut registry = SeedRegistry::new();
         let mut sorted: Vec<_> = seeds.iter().collect();
@@ -321,6 +390,10 @@ impl SeedSnapshot {
         Ok(registry.snapshot_all())
     }
 
+    /// A snapshot from declarations, preserving exclusive groups.
+    ///
+    /// Prefer this over [`Self::from_probability_seeds`] where the seeds include a
+    /// distribution over labels: the map form cannot express exclusivity.
     pub fn from_seed_specs(specs: &[SeedSpec]) -> Result<Self, HybridError> {
         let mut registry = SeedRegistry::new();
         for spec in specs {
@@ -352,51 +425,82 @@ impl SeedSnapshot {
         Ok(registry.snapshot_all())
     }
 
+    /// The record for `id`, or `None` if it is not in this snapshot.
     pub fn record(&self, id: SeedId) -> Option<&SeedRecord> {
         self.records.get(&id)
     }
+    /// Every seed asserting `triple`. More than one is normal: separate arrivals,
+    /// or competing alternatives in an exclusive group.
     pub fn ids_for_triple(&self, triple: &Triple) -> &[SeedId] {
         self.by_triple.get(triple).map(Vec::as_slice).unwrap_or(&[])
     }
+    /// Every record, in id order.
     pub fn records(&self) -> impl Iterator<Item = &SeedRecord> {
         self.records.values()
     }
+    /// Each distinct fact with the seeds asserting it.
     pub fn triples(&self) -> impl Iterator<Item = (&Triple, &[SeedId])> {
         self.by_triple
             .iter()
             .map(|(triple, ids)| (triple, ids.as_slice()))
     }
+    /// Members of an exclusive group, or `None` if no such group exists.
     pub fn group(&self, group: u32) -> Option<&[SeedId]> {
         self.groups.get(&group).map(Vec::as_slice)
     }
 }
 
+/// Handle to a node in a [`LineageStore`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct LineageId(u32);
 
 impl LineageId {
+    /// The constant false node, always id 0.
     pub const FALSE: Self = Self(0);
+    /// The constant true node, always id 1.
     pub const TRUE: Self = Self(1);
+    /// The raw index.
     pub fn get(self) -> u32 {
         self.0
     }
 }
 
+/// One node of the lineage DAG: how a fact was derived, in terms of seeds.
+///
+/// `And` and `Or` take a list rather than two operands, so a conjunction of several
+/// premises is a single node. That keeps the DAG shallow and the unique table
+/// effective.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum LineageNode {
+    /// Cannot hold.
     False,
+    /// Holds unconditionally — a fact with no probabilistic dependency.
     True,
+    /// Holds exactly when this seed does.
     Literal(SeedId),
+    /// Holds when every operand does.
     And(Vec<LineageId>),
+    /// Holds when at least one operand does. This is where alternative derivations
+    /// of the same fact meet.
     Or(Vec<LineageId>),
+    /// Holds when the operand does not. Negation makes the lineage non-monotone,
+    /// which rules out the top-k lower bound.
     Not(LineageId),
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+/// Structural properties of a lineage DAG that decide which evaluator may run.
 pub struct LineageMetadata {
+    /// Whether every connective is positive, so adding a proof can only raise the
+    /// probability. Required for the top-k lower bound to be sound.
     pub monotone: bool,
+    /// Whether any `Not` appears.
     pub has_negation: bool,
+    /// Whether any seed belongs to an exclusive group, which rules out treating
+    /// seeds as independent.
     pub has_exclusive_group: bool,
+    /// Whether the lineage is cyclic. Recursion is unsupported, so this means the
+    /// evaluation must be refused rather than attempted.
     pub has_cycle: bool,
 }
 
@@ -414,6 +518,7 @@ impl Default for LineageStore {
 }
 
 impl LineageStore {
+    /// A store holding only the two constant nodes.
     pub fn new() -> Self {
         let nodes = vec![LineageNode::False, LineageNode::True];
         let unique = nodes
@@ -425,12 +530,20 @@ impl LineageStore {
         Self { nodes, unique }
     }
 
+    /// The node `id` refers to.
+    ///
+    /// # Panics
+    ///
+    /// If `id` did not come from this store.
     pub fn node(&self, id: LineageId) -> &LineageNode {
         &self.nodes[id.0 as usize]
     }
+    /// Number of nodes, including the two constants.
     pub fn len(&self) -> usize {
         self.nodes.len()
     }
+    /// Whether the store holds no nodes. A store built by [`Self::new`] is not
+    /// empty: it already contains the constants.
     pub fn is_empty(&self) -> bool {
         self.nodes.is_empty()
     }
@@ -445,10 +558,13 @@ impl LineageStore {
         id
     }
 
+    /// The node for `seed`, interning it if new.
     pub fn literal(&mut self, seed: SeedId) -> LineageId {
         self.intern(LineageNode::Literal(seed))
     }
 
+    /// Negation of `id`, folding double negation and the constants rather than
+    /// building a node for them.
     pub fn not(&mut self, id: LineageId) -> LineageId {
         match self.node(id).clone() {
             LineageNode::False => LineageId::TRUE,
@@ -458,10 +574,12 @@ impl LineageStore {
         }
     }
 
+    /// Conjunction of `items`. An empty conjunction is [`LineageId::TRUE`].
     pub fn and<I: IntoIterator<Item = LineageId>>(&mut self, items: I) -> LineageId {
         self.canonical_nary(true, items)
     }
 
+    /// Disjunction of `items`. An empty disjunction is [`LineageId::FALSE`].
     pub fn or<I: IntoIterator<Item = LineageId>>(&mut self, items: I) -> LineageId {
         self.canonical_nary(false, items)
     }
@@ -518,6 +636,8 @@ impl LineageStore {
         }
     }
 
+    /// Properties of the DAG rooted at `root`, which decide which evaluator may
+    /// run: top-k needs monotone lineage, and a cycle must be refused.
     pub fn metadata(&self, root: LineageId, seeds: &SeedSnapshot) -> LineageMetadata {
         fn visit(
             store: &LineageStore,
@@ -590,18 +710,26 @@ impl std::fmt::Debug for LineageProvenance {
 }
 
 impl LineageProvenance {
+    /// A provenance semiring that records lineage instead of computing a number.
+    ///
+    /// Its `Tag` is a [`LineageId`], so derivation builds a DAG and the probability
+    /// is only computed later by [`evaluate_hybrid`]. That is what lets one
+    /// derivation be evaluated exactly or approximately without re-deriving.
     pub fn new(seeds: Arc<SeedSnapshot>) -> Self {
         Self {
             store: Arc::new(Mutex::new(LineageStore::new())),
             seeds,
         }
     }
+    /// The shared DAG this semiring writes into.
     pub fn store(&self) -> &Arc<Mutex<LineageStore>> {
         &self.store
     }
+    /// The seeds its literals refer to.
     pub fn seeds(&self) -> &Arc<SeedSnapshot> {
         &self.seeds
     }
+    /// The lineage node for `seed`.
     pub fn literal(&self, seed: SeedId) -> LineageId {
         self.store.lock().unwrap().literal(seed)
     }
@@ -658,16 +786,35 @@ impl Provenance for LineageProvenance {
 }
 
 #[derive(Debug, Clone, PartialEq)]
+/// Thresholds and budgets governing the escalation from approximate to exact.
+///
+/// The defaults aim at interactive latency: top-k gets 25 ms, exact compilation
+/// 250 ms. Validate with [`Self::validate`] before use.
 pub struct HybridConfig {
+    /// Probability a fact must reach to be reported. The point of a threshold is
+    /// that a lower bound above it, or an upper bound below it, settles the question
+    /// without an exact count.
     pub threshold: f64,
+    /// Whether `threshold` is taken literally or derived from cost.
     pub threshold_policy: ThresholdPolicyKind,
+    /// Half-width of the band around `threshold` within which an approximate answer
+    /// is considered too close to call, forcing escalation to exact evaluation.
     pub band_epsilon: f64,
+    /// Smallest improvement a further proof must promise for the top-k search to
+    /// continue. Stops the search spending its budget on negligible terms.
     pub marginal_gain_floor: f64,
+    /// Proofs to enumerate on the first top-k attempt.
     pub k_initial: usize,
+    /// Ceiling on proofs enumerated before giving up on top-k.
     pub k_max: usize,
+    /// Factor `k` grows by between attempts.
     pub k_growth: usize,
+    /// Wall-clock budget for top-k search.
     pub topk_budget: Duration,
+    /// Wall-clock budget for SDD compilation.
     pub sdd_budget: Duration,
+    /// Node budget for SDD compilation. Compilation can blow up
+    /// combinatorially, so both a time and a size limit apply.
     pub sdd_node_budget: usize,
 }
 
@@ -688,14 +835,19 @@ impl Default for HybridConfig {
     }
 }
 
+/// How the reporting threshold is decided.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum ThresholdPolicyKind {
+    /// Use [`HybridConfig::threshold`] as given.
     #[default]
     Explicit,
+    /// Derive it from the relative cost of approximate and exact evaluation, so
+    /// cheap questions get a tighter threshold than expensive ones.
     CostRatio,
 }
 
 impl ThresholdPolicyKind {
+    /// The policy's name as it appears in a `PROB(...)` annotation.
     pub fn as_str(self) -> &'static str {
         match self {
             Self::Explicit => "explicit",
@@ -704,13 +856,21 @@ impl ThresholdPolicyKind {
     }
 }
 
+/// A closed interval known to contain the true probability.
+///
+/// Returned when neither bound settles the question against the threshold: the
+/// answer is somewhere inside, and the caller decides whether that is good enough.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct ProbabilityInterval {
+    /// Greatest lower bound established.
     pub lower: f64,
+    /// Least upper bound established.
     pub upper: f64,
 }
 
 impl ProbabilityInterval {
+    /// An interval, rejecting bounds that are not finite, not in `[0, 1]`, or
+    /// inverted.
     pub fn new(lower: f64, upper: f64) -> Result<Self, HybridError> {
         if !lower.is_finite()
             || !upper.is_finite()
@@ -725,16 +885,22 @@ impl ProbabilityInterval {
         Ok(Self { lower, upper })
     }
 
+    /// How much uncertainty remains.
     pub fn width(self) -> f64 {
         self.upper - self.lower
     }
 
+    /// Whether `probability` lies in the interval, inclusive.
     pub fn contains(self, probability: f64) -> bool {
         self.lower <= probability && probability <= self.upper
     }
 }
 
 impl HybridConfig {
+    /// Checks the configuration is internally consistent.
+    ///
+    /// Call before evaluating: an inconsistent configuration would otherwise
+    /// surface as a wrong answer rather than an error.
     pub fn validate(&self) -> Result<(), HybridError> {
         if !self.threshold.is_finite() || !(0.0..=1.0).contains(&self.threshold) {
             return Err(HybridError::InvalidConfig(
@@ -770,31 +936,62 @@ impl HybridConfig {
     }
 }
 
+/// Whether a fact clears the reporting threshold.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AlertDecision {
+    /// Established at or above the threshold.
     Alert,
+    /// Established below it.
     NoAlert,
+    /// Neither could be established within budget. Distinct from `NoAlert`: the
+    /// question is open, not answered in the negative, and a caller that conflates
+    /// them silently turns "do not know" into "no".
     Indeterminate,
 }
 
+/// Why evaluation produced the result it did.
+///
+/// This is the audit trail for the escalation policy: it records which rule decided
+/// the outcome, so an answer that looks surprising can be explained without
+/// re-running it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum HybridReason {
+    /// Every proof was enumerated, so the lower bound is in fact exact.
     TopKExhausted,
+    /// The lower bound reached the threshold, which settles the decision upward
+    /// regardless of how much probability remains unaccounted for.
     LowerBoundCrossedThreshold,
+    /// The upper bound fell below the threshold, settling it downward.
     UpperBoundBelowThreshold,
+    /// Answered by exact SDD compilation.
     ExactSdd,
+    /// Negation makes the lineage non-monotone, so the top-k bound is not valid and
+    /// exact evaluation is required.
     NegationRequiresExact,
+    /// Seeds in an exclusive group cannot be combined as independent, so exact
+    /// evaluation is required.
     ExclusivityRequiresExact,
+    /// The bounds straddle the threshold within `band_epsilon`, so approximation
+    /// cannot decide it.
     NearThreshold,
+    /// Further proofs promised less than `marginal_gain_floor`, so the search
+    /// stopped rather than spend its budget on negligible terms.
     MarginalGain,
+    /// Top-k ran out of time.
     TopKBudget,
+    /// SDD compilation ran out of time.
     SddBudget,
+    /// SDD compilation ran out of nodes.
     SddNodeBudget,
+    /// The lineage referenced a seed absent from the snapshot, so no probability
+    /// could be assigned.
     MissingSeed,
+    /// Produced for explanation only; not a decision.
     DiagnosticOnly,
 }
 
 impl HybridReason {
+    /// The reason as a stable kebab-case string, for logs and RDF output.
     pub fn as_str(&self) -> &'static str {
         match self {
             Self::TopKExhausted => "top-k-exhausted",
@@ -814,61 +1011,119 @@ impl HybridReason {
     }
 }
 
+/// What one evaluation cost and how far it got.
 #[derive(Debug, Clone, Default)]
 pub struct HybridMetrics {
+    /// Proofs actually enumerated.
     pub k_used: usize,
+    /// Whether exact SDD evaluation ran.
     pub exact_used: bool,
+    /// Whether the proof search exhausted the frontier, which makes the lower bound
+    /// exact.
     pub frontier_exhausted: bool,
+    /// Whether `k_max` was reached before the frontier was exhausted.
     pub cap_hit: bool,
+    /// Improvement the last enumerated proof contributed, for comparison against
+    /// `marginal_gain_floor`.
     pub marginal_gain: f64,
+    /// Time spent in top-k search.
     pub topk_latency: Duration,
+    /// Time spent in SDD compilation.
     pub sdd_latency: Duration,
+    /// Nodes the SDD reached.
     pub sdd_nodes: usize,
+    /// Threshold actually applied, which differs from the configured one under
+    /// [`ThresholdPolicyKind::CostRatio`].
     pub effective_threshold: Option<f64>,
+    /// Which policy produced that threshold.
     pub threshold_policy: Option<ThresholdPolicyKind>,
+    /// Width of the final interval; 0 for an exact answer.
     pub interval_width: f64,
 }
 
 impl HybridMetrics {
+    /// Time spent across both evaluators.
     pub fn total_latency(&self) -> Duration {
         self.topk_latency + self.sdd_latency
     }
 }
 
+/// The outcome of evaluating one fact's probability.
+///
+/// The variants differ in what was *established*, not merely in precision, and a
+/// caller that collapses them to a number loses the distinction between a proven
+/// probability and a guess. Only the first three carry a decision; the other two
+/// mean the question is open.
 #[derive(Debug, Clone)]
 pub enum HybridProbabilityResult {
+    /// The probability is known exactly.
     Exact {
+        /// The probability.
         probability: f64,
+        /// Whether it clears the threshold.
         decision: AlertDecision,
+        /// Which rule produced this outcome.
         reason: HybridReason,
+        /// Cost and progress.
         metrics: HybridMetrics,
     },
+    /// Only a lower bound was established, and it was enough to decide.
+    ///
+    /// Sound because the lineage is monotone: unenumerated proofs can only raise
+    /// the probability, so a lower bound above the threshold settles it.
     LowerBound {
+        /// Greatest lower bound established.
         lower_bound: f64,
+        /// Whether it clears the threshold.
         decision: AlertDecision,
+        /// Which rule produced this outcome.
         reason: HybridReason,
+        /// Cost and progress.
         metrics: HybridMetrics,
     },
+    /// Both bounds were established and together they decide the question.
     Bounded {
+        /// The interval containing the true probability.
         interval: ProbabilityInterval,
+        /// Whether it clears the threshold.
         decision: AlertDecision,
+        /// Which rule produced this outcome.
         reason: HybridReason,
+        /// Cost and progress.
         metrics: HybridMetrics,
     },
+    /// Approximation could not decide, and exact evaluation has not run.
+    ///
+    /// Either it was never attempted or it exhausted its budget. Whatever bounds
+    /// were reached are reported, but they do not settle the threshold — the
+    /// decision is [`AlertDecision::Indeterminate`].
     NeedsExact {
+        /// Lower bound reached, if any.
         lower_bound: Option<f64>,
+        /// Upper bound reached, if any.
         upper_bound: Option<f64>,
+        /// Which rule produced this outcome.
         reason: HybridReason,
+        /// Cost and progress.
         metrics: HybridMetrics,
     },
+    /// A number was produced, but under conditions that make it unsound as a bound.
+    ///
+    /// Non-monotone lineage or exclusive groups invalidate the top-k argument, so
+    /// this is an estimate with no guaranteed direction of error. Treat it as a
+    /// diagnostic, not an answer.
     UnsafeApproximation {
+        /// The estimate.
         estimate: f64,
+        /// Which rule produced this outcome.
         reason: HybridReason,
+        /// Cost and progress.
         metrics: HybridMetrics,
     },
 }
 
 impl HybridProbabilityResult {
+    /// The variant's name, for logs and RDF output.
     pub fn status(&self) -> &'static str {
         match self {
             Self::Exact { .. } => "Exact",
@@ -878,6 +1133,9 @@ impl HybridProbabilityResult {
             Self::UnsafeApproximation { .. } => "UnsafeApproximation",
         }
     }
+    /// The threshold decision, which is
+    /// [`AlertDecision::Indeterminate`] for the two variants that establish
+    /// nothing.
     pub fn decision(&self) -> AlertDecision {
         match self {
             Self::Exact { decision, .. }
@@ -888,6 +1146,7 @@ impl HybridProbabilityResult {
             }
         }
     }
+    /// Which rule produced this outcome.
     pub fn reason(&self) -> &HybridReason {
         match self {
             Self::Exact { reason, .. }
@@ -897,6 +1156,7 @@ impl HybridProbabilityResult {
             | Self::UnsafeApproximation { reason, .. } => reason,
         }
     }
+    /// Cost and progress of the evaluation that produced this result.
     pub fn metrics(&self) -> &HybridMetrics {
         match self {
             Self::Exact { metrics, .. }
@@ -907,6 +1167,9 @@ impl HybridProbabilityResult {
         }
     }
 
+    /// The bounds established, where that is meaningful.
+    ///
+    /// `None` for a result that bounded nothing.
     pub fn interval(&self) -> Option<ProbabilityInterval> {
         match self {
             Self::Exact { probability, .. } => Some(ProbabilityInterval {
@@ -1154,12 +1417,20 @@ fn map_hybrid_budget_error(error: SddBudgetError) -> HybridReason {
 }
 
 #[derive(Debug, Clone)]
+/// What the top-k proof search established.
 pub struct TopKEvaluation {
+    /// Probability accounted for by the proofs enumerated. A lower bound on the
+    /// truth, because the lineage is monotone.
     pub lower_bound: f64,
+    /// Bounds on the true probability.
     pub interval: ProbabilityInterval,
+    /// Proofs enumerated.
     pub k_used: usize,
+    /// Whether every proof was found, which makes `lower_bound` exact.
     pub frontier_exhausted: bool,
+    /// Whether `k_max` stopped the search first.
     pub cap_hit: bool,
+    /// Contribution of the last proof, against `marginal_gain_floor`.
     pub marginal_gain: f64,
 }
 
@@ -1225,8 +1496,11 @@ pub fn evaluate_topk(
     })
 }
 
+/// A lineage DAG compiled to an SDD, ready for exact weighted model counting.
 pub struct CompiledSdd {
+    /// The manager owning the compiled nodes.
     pub manager: SddManager,
+    /// Root node corresponding to the lineage root.
     pub root: SddId,
 }
 
@@ -1245,6 +1519,10 @@ fn collect_seed_ids(store: &LineageStore, root: LineageId, output: &mut BTreeSet
     }
 }
 
+/// Compiles lineage to an SDD, within a time and node budget.
+///
+/// Returns the reason on failure rather than an error type, so the caller can record
+/// why exact evaluation was unavailable alongside whatever bound it already had.
 pub fn compile_lineage_to_sdd(
     store: &LineageStore,
     seeds: &SeedSnapshot,
@@ -1255,6 +1533,8 @@ pub fn compile_lineage_to_sdd(
     compile_lineage_to_sdd_with_clock(store, seeds, root, budget, node_budget, &SystemHybridClock)
 }
 
+/// [`compile_lineage_to_sdd`] against a caller-supplied clock, so a budget can be
+/// driven past its deadline deterministically in tests.
 pub fn compile_lineage_to_sdd_with_clock(
     store: &LineageStore,
     seeds: &SeedSnapshot,
@@ -1374,6 +1654,16 @@ pub fn compile_lineage_to_sdd_with_clock(
     })
 }
 
+/// Evaluates the probability of the fact at `root`, escalating as needed.
+///
+/// Tries the cheap path first and only compiles exactly when it must: top-k gives a
+/// certified lower bound for monotone lineage, and that settles the threshold
+/// whenever the bound lands clear of it. Negation, exclusive groups, and a result too
+/// near the threshold all force exact compilation.
+///
+/// Always returns a result rather than failing: a budget that runs out yields
+/// [`HybridProbabilityResult::NeedsExact`] carrying whatever bounds were reached, so
+/// the caller can distinguish "below threshold" from "could not determine".
 pub fn evaluate_hybrid(
     store: &Arc<Mutex<LineageStore>>,
     seeds: &Arc<SeedSnapshot>,
@@ -1383,6 +1673,8 @@ pub fn evaluate_hybrid(
     evaluate_hybrid_with_clock(store, seeds, root, config, &SystemHybridClock)
 }
 
+/// [`evaluate_hybrid`] against a caller-supplied clock, for deterministic tests of
+/// budget expiry.
 pub fn evaluate_hybrid_with_clock(
     store: &Arc<Mutex<LineageStore>>,
     seeds: &Arc<SeedSnapshot>,

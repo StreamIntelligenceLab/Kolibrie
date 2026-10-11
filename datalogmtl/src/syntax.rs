@@ -40,17 +40,17 @@ pub enum TemporalAtom {
     /// Base(?s, ?p, ?o): plain triple pattern at current time t.
     Base(TriplePattern),
 
-    /// Diamond[a,b] phi: phi holds at SOME t' in [t-b, t-a].
+    /// `Diamond[a,b]` phi: phi holds at SOME t' in [t-b, t-a].
     Diamond { interval: Interval, inner: Box<TemporalAtom> },
 
-    /// Box[a,b] phi: phi holds at EVERY integer point t' in [t-b, t-a]
+    /// `Box[a,b]` phi: phi holds at EVERY integer point t' in [t-b, t-a]
     /// (dense semantics — an integer point with no supporting fact fails Box).
     Box_ { interval: Interval, inner: Box<TemporalAtom> },
 
-    /// Prev[a,b] phi: phi holds at the MOST RECENT t' in [t-b, t-a].
+    /// `Prev[a,b]` phi: phi holds at the MOST RECENT t' in [t-b, t-a].
     Prev { interval: Interval, inner: Box<TemporalAtom> },
 
-    /// phi Since[a,b] psi:
+    /// phi `Since[a,b]` psi:
     ///   EXISTS t' in [t-b, t-a]: psi holds at t'
     ///   AND FORALL t'' in (t', t]: phi holds at t''
     Since {
@@ -61,13 +61,13 @@ pub enum TemporalAtom {
 
     // ── Future operators (static data only — see `Mode`) ──
 
-    /// DiamondPlus[a,b] phi: phi holds at SOME t' in [t+a, t+b].
+    /// `DiamondPlus[a,b]` phi: phi holds at SOME t' in [t+a, t+b].
     DiamondPlus { interval: Interval, inner: Box<TemporalAtom> },
 
-    /// BoxPlus[a,b] phi: phi holds at EVERY integer point t' in [t+a, t+b].
+    /// `BoxPlus[a,b]` phi: phi holds at EVERY integer point t' in [t+a, t+b].
     BoxPlus { interval: Interval, inner: Box<TemporalAtom> },
 
-    /// phi Until[a,b] psi:
+    /// phi `Until[a,b]` psi:
     ///   EXISTS t' in [t+a, t+b]: psi holds at t'
     ///   AND FORALL t'' in [t, t'): phi holds at t''
     Until {

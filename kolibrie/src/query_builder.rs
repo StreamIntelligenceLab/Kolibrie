@@ -17,6 +17,11 @@ use std::collections::{BTreeMap, BTreeSet, HashSet};
 use std::fmt;
 use std::sync::{Arc, Mutex};
 
+/// Builds and runs a query against a store without writing SPARQL text.
+///
+/// Borrows the database, so the builder cannot outlive it. Filters and joins
+/// accumulate and apply when the query is run; building one has no effect on its
+/// own.
 pub struct QueryBuilder<'a> {
     db: &'a SparqlDatabase,
     subject_filter: Option<TripleFilter>,
@@ -73,10 +78,19 @@ impl<'a> Clone for QueryBuilder<'a> {
 
 /// Defines different ways to filter triple components
 pub enum TripleFilter {
+    /// Matches the decoded term exactly.
     Exact(String),
+    /// Matches when the decoded term contains this substring.
     Contains(String),
+    /// Matches when the decoded term starts with this prefix.
     StartsWith(String),
+    /// Matches when the decoded term ends with this suffix.
     EndsWith(String),
+    /// Matches when the predicate returns `true`.
+    ///
+    /// Note that [`Clone`] **panics** on this variant: a closure cannot be cloned,
+    /// and the impl chose to panic rather than silently drop the filter. Avoid
+    /// cloning a builder that carries one.
     Custom(Box<dyn Fn(&str) -> bool>),
 }
 
@@ -109,9 +123,14 @@ impl Clone for TripleFilter {
 
 /// Defines conditions for joining two SPARQL databases
 pub enum JoinCondition {
+    /// Join where both triples share a subject.
     OnSubject,
+    /// Join where both share a predicate.
     OnPredicate,
+    /// Join where both share an object.
     OnObject,
+    /// Join where the predicate accepts the pair. Compares encoded ids, so a
+    /// closure wanting term text must decode them first.
     Custom(Box<dyn Fn(&Triple, &Triple) -> bool>),
 }
 
@@ -143,7 +162,9 @@ impl Clone for JoinCondition {
 /// Defines sort direction for query results
 #[derive(Debug, Clone, Copy)]
 pub enum SortDirection {
+    /// Smallest first.
     Ascending,
+    /// Largest first.
     Descending,
 }
 

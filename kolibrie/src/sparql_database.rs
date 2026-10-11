@@ -171,9 +171,15 @@ pub(crate) fn reencode_term_id(
 /// Staleness policy for planning statistics
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum PlanningStatsPolicy {
+    /// Rebuild on every mutation. Exact, and the planner never sees stale
+    /// cardinalities, but it pays a full statistics pass per write.
     AlwaysFresh,
+    /// Reuse a snapshot until the store has changed enough to matter.
     Bounded {
+        /// Mutations to tolerate before rebuilding, however small the store.
         minimum_batch: u64,
+        /// Fraction of the store that must change to force a rebuild, so the
+        /// tolerance grows with size instead of being a fixed count.
         refresh_fraction: f64,
     },
 }
@@ -195,6 +201,7 @@ impl Default for PlanningStatsPolicy {
 /// A planning statistics snapshot
 #[derive(Debug, Clone)]
 pub struct PlanningStatsSnapshot {
+    /// The cardinalities themselves, shared so reusing a snapshot is free.
     pub stats: Arc<DatabaseStats>,
     /// `DatasetIndex::generation` at build time
     pub generation: u64,
@@ -274,6 +281,23 @@ impl std::ops::DerefMut for QuotedTriplesMut<'_> {
     }
 }
 
+/// The RDF store: encoded triples, the dictionary that encodes them, indexes over
+/// several orderings, and the statistics the planner costs with.
+///
+/// # No public fields
+///
+/// Every field is private, reached through accessors. Terms are interned, indexes
+/// are maintained in step with writes, and statistics are cached against the
+/// index's generation — invariants a caller writing to a field directly would
+/// break. Lock-held state is reached through guards rather than handles, so
+/// `Arc<RwLock<_>>` does not appear in the public API; the one exception is
+/// [`Self::dictionary_handle`], documented there.
+///
+/// # Encoding
+///
+/// Triples are stored as `u32` ids, not strings, and those ids mean nothing without
+/// this store's dictionary. Two databases cannot exchange encoded data unless they
+/// share one — see [`Self::shares_dictionary_with`] and [`Self::union`].
 #[derive(Debug, Clone)]
 pub struct SparqlDatabase {
     /// Host-selected ML authority
@@ -308,6 +332,7 @@ impl SparqlDatabase {
         database.ml_context = context;
         database
     }
+    /// An empty store with ML disabled and the default statistics policy.
     pub fn new() -> Self {
         Self {
             ml_context: crate::ml_policy::MlExecutionContext::disabled(),
@@ -442,6 +467,7 @@ impl SparqlDatabase {
         }
     }
 
+    /// Replaces every prefix binding. See [`Self::add_prefix`] to add one.
     pub fn set_prefixes(&mut self, prefixes: HashMap<String, String>) {
         self.prefixes = prefixes;
     }
@@ -551,26 +577,36 @@ impl SparqlDatabase {
         )
     }
 
+    /// Starts a programmatic query. See [`crate::query_builder`].
     pub fn query(&self) -> QueryBuilder<'_> {
         QueryBuilder::new(self)
     }
 
+    /// Adds an already-encoded triple to the default graph.
+    ///
+    /// Ids must come from this store's dictionary. Use
+    /// [`Self::add_triple_parts`] to add one from text.
     pub fn add_triple(&mut self, triple: Triple) {
         self.dataset_index.insert_triple(&triple);
     }
 
+    /// Removes a triple from the default graph. Returns whether it was present.
     pub fn delete_triple(&mut self, triple: &Triple) -> bool {
         self.dataset_index.delete_triple(triple)
     }
 
+    /// Adds an encoded quad, creating its graph if needed. Returns whether it was
+    /// new.
     pub fn add_quad(&mut self, quad: Quad) -> bool {
         self.dataset_index.insert_quad(&quad)
     }
 
+    /// Removes a quad. Returns whether it was present.
     pub fn delete_quad(&mut self, quad: &Quad) -> bool {
         self.dataset_index.delete_quad(quad)
     }
 
+    /// Interns the given terms and adds the resulting quad.
     pub fn add_quad_parts(
         &mut self,
         subject: &str,
@@ -594,6 +630,7 @@ impl SparqlDatabase {
         })
     }
 
+    /// Default-graph triples matching the bound positions; `None` is a wildcard.
     pub fn query_default_triples(
         &self,
         s: Option<u32>,
@@ -603,6 +640,7 @@ impl SparqlDatabase {
         self.dataset_index.query_default(s, p, o)
     }
 
+    /// Quads in one graph matching the bound positions; `None` is a wildcard.
     pub fn query_graph_quads(
         &self,
         graph: GraphId,
@@ -629,6 +667,8 @@ impl SparqlDatabase {
         self.add_triple(triple);
     }
 
+    /// Adds a triple carrying a provenance annotation, for probabilistic
+    /// reasoning.
     pub fn add_tagged_triple(
         &mut self,
         subject: &str,
@@ -667,6 +707,7 @@ impl SparqlDatabase {
         self.delete_triple(&triple)
     }
 
+    /// Serialises the default graph as RDF/XML.
     pub fn generate_rdf_xml(&mut self) -> String {
         let mut xml = String::new();
         xml.push_str("<?xml version=\"1.0\"?>\n");
@@ -739,6 +780,8 @@ impl SparqlDatabase {
         output
     }
 
+    /// Serialises every graph as N-Quads, which unlike N-Triples preserves named
+    /// graphs.
     pub fn generate_nquads(&self) -> String {
         let mut output = String::new();
         for quad in self.dataset_index.all_quads() {
@@ -840,6 +883,10 @@ impl SparqlDatabase {
         output
     }
 
+    /// Parses RDF/XML and adds the triples.
+    ///
+    /// Malformed input is skipped rather than reported, so a partial parse looks
+    /// like a successful one with fewer triples.
     pub fn parse_rdf(&mut self, rdf_xml: &str) {
         let mut reader = Reader::from_str(rdf_xml);
 
@@ -1016,6 +1063,11 @@ impl SparqlDatabase {
         }
     }
 
+    /// Reads RDF/XML from a file and adds the triples.
+    ///
+    /// # Panics
+    ///
+    /// If the file cannot be read.
     pub fn parse_rdf_from_file(&mut self, filename: &str) {
         let file = std::fs::File::open(filename).expect("Cannot open file");
         let reader = std::io::BufReader::new(file);
@@ -1175,6 +1227,8 @@ impl SparqlDatabase {
         }
     }
 
+    /// Parses Turtle and adds the triples, honouring `@prefix` declarations and
+    /// the `;` and `,` abbreviations.
     pub fn parse_turtle(&mut self, turtle_data: &str) {
         for raw_line in turtle_data.lines() {
             let line = raw_line.trim();
@@ -1474,6 +1528,9 @@ impl SparqlDatabase {
     }
 
     // New parse_n3 function
+    /// Parses the N3 subset this engine supports and adds the triples.
+    ///
+    /// Only the Datalog-expressible fragment; a full N3 reasoner is future work.
     pub fn parse_n3(&mut self, n3_data: &str) {
         let lines: Vec<String> = n3_data.lines().map(|l| l.trim().to_string()).collect();
         let chunk_size = 1000;
@@ -1545,6 +1602,10 @@ impl SparqlDatabase {
     }
 
     // Parse_ntriples and add to DB function
+    /// Parses N-Triples and adds them. This is the usual entry point.
+    ///
+    /// [`Self::parse_ntriples`] parses without adding, which is only useful when
+    /// the caller wants to inspect or filter first.
     pub fn parse_ntriples_and_add(&mut self, ntriples_data: &str) {
         let partial_results = self.parse_ntriples(ntriples_data);
 
@@ -1554,7 +1615,11 @@ impl SparqlDatabase {
         }
     }
 
-    // Parses ntriples
+    /// Parses N-Triples into lexical triples **without** adding them, in parallel
+    /// chunks of 1000 lines.
+    ///
+    /// Returns one group per chunk. The `a` shorthand is expanded to the full RDF
+    /// type IRI in predicate position.
     pub fn parse_ntriples(&mut self, ntriples_data: &str) -> Vec<Vec<(String, String, String)>> {
         let lines: Vec<&str> = ntriples_data.lines().collect();
         let chunk_size = 1000;
@@ -1597,6 +1662,7 @@ impl SparqlDatabase {
     }
 
     // Encode triples
+    /// Interns lexical triples into encoded ones.
     pub fn encode_triples(
         &mut self,
         non_encoded_triples: Vec<Vec<(String, String, String)>>,
@@ -1615,12 +1681,14 @@ impl SparqlDatabase {
         encoded_triples
     }
 
+    /// Parses and encodes N-Triples without adding them to the store.
     pub fn parse_and_encode_ntriples(&mut self, ntriples_data: &str) -> Vec<Triple> {
         let partial_results = self.parse_ntriples(ntriples_data);
 
         self.encode_triples(partial_results)
     }
 
+    /// Parses N-Quads and adds them, preserving named graphs.
     pub fn parse_nquads_and_add(&mut self, nquads_data: &str) {
         for raw_line in nquads_data.lines() {
             let line = raw_line.trim();
@@ -1966,6 +2034,8 @@ impl SparqlDatabase {
     }
 
     // Method to automatically extract and register prefixes from a query string
+    /// Adopts the `PREFIX` declarations from a query, so later queries and rules
+    /// can use them without repeating them.
     pub fn register_prefixes_from_query(&mut self, query: &str) {
         // Simple regex to extract PREFIX declarations
         let prefix_pattern = regex::Regex::new(r"PREFIX\s+([a-zA-Z0-9_]+):\s*<([^>]+)>").unwrap();
@@ -1980,12 +2050,16 @@ impl SparqlDatabase {
     }
 
     // Method to ensure prefixes are properly shared between components
+    /// Copies this store's prefixes into `prefixes`, leaving existing entries
+    /// alone.
     pub fn share_prefixes_with(&self, prefixes: &mut HashMap<String, String>) {
         for (prefix, uri) in &self.prefixes {
             prefixes.insert(prefix.clone(), uri.clone());
         }
     }
 
+    /// Expands a lexical term to its full IRI using `prefixes`, then this store's
+    /// own. Returns the term unchanged when no prefix applies.
     pub fn resolve_query_term(&self, term: &str, prefixes: &HashMap<String, String>) -> String {
         if term.starts_with("<<") && term.ends_with(">>") {
             // Keep quoted triple patterns as-is (they'll be handled downstream)
@@ -2021,6 +2095,11 @@ impl SparqlDatabase {
         }
     }
 
+    /// A new store containing both stores' data.
+    ///
+    /// The two dictionaries assigned ids independently, so `other`'s ids are
+    /// translated into the merged dictionary rather than assumed compatible —
+    /// which is why this returns a third store instead of mutating either.
     pub fn union(&mut self, other: &SparqlDatabase) -> Self {
         let self_dict = self.dictionary.read().unwrap();
         let other_dict = other.dictionary.read().unwrap();
@@ -2192,6 +2271,7 @@ impl SparqlDatabase {
         }
     }
 
+    /// Runs a query and renders the result as text, for the demo server.
     pub fn handle_query(&mut self, query: &str) -> String {
         // Assume the query string is in a basic format like "subject predicate object"
         let parts: Vec<&str> = query.split_whitespace().collect();
@@ -2261,6 +2341,7 @@ impl SparqlDatabase {
         crate::execute_query::execute_sparql_update(update, self)
     }
 
+    /// Applies an update and renders the outcome as text, for the demo server.
     pub fn handle_update(&mut self, update: &str) -> String {
         if let Ok(summary) = self.execute_update(update) {
             return format!(
@@ -2276,6 +2357,10 @@ impl SparqlDatabase {
         "Update Failed".to_string()
     }
 
+    /// Answers one HTTP request against this store, for [`crate::utils::run_server`].
+    ///
+    /// Enforces the ML policy: a request naming a model the host has not approved
+    /// is refused rather than run.
     pub fn handle_http_request(&mut self, request: &str) -> String {
         let context = self.ml_context.for_http();
         crate::execute_query::with_ml_context(self, &context, |db| {
@@ -2340,6 +2425,10 @@ impl SparqlDatabase {
     }
 
     // Create user defined function
+    /// Registers a user-defined function callable from `FILTER` expressions.
+    ///
+    /// Receives arguments as decoded text and returns text. Re-registering a name
+    /// replaces the previous function.
     pub fn register_udf<F>(&mut self, name: &str, f: F)
     where
         F: Fn(Vec<&str>) -> String + Send + Sync + 'static,

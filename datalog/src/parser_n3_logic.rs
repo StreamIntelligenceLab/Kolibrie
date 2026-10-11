@@ -31,7 +31,7 @@ pub struct WindowContext {
     /// Maps window IRI → window width α (in the same time unit as event timestamps)
     pub window_widths: HashMap<String, u64>,
     /// All component IRIs found in the rules (windows + output-only components),
-    /// sorted longest-first for [`strip_window_prefix`]
+    /// sorted longest-first for [`crate::cross_window_sds::strip_window_prefix`]
     pub all_component_iris: Vec<String>,
 }
 

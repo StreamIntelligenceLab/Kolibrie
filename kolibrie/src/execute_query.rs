@@ -71,7 +71,10 @@ pub(crate) fn with_ml_context<R>(
 /// Summary returned by the error-preserving update entry point
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct UpdateSummary {
+    /// Quads added. Counts only genuinely new ones: re-inserting an existing quad
+    /// does not increment this.
     pub inserted_quads: usize,
+    /// Quads removed. Counts only ones that were present.
     pub deleted_quads: usize,
 }
 

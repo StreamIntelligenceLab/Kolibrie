@@ -21,19 +21,19 @@ fn bound(op: &OpInterval) -> TInterval {
     TInterval::closed(op.start as i64, op.end as i64)
 }
 
-/// Diamondminus[a,b]: dilate each interval `[s,e] -> [s+a, e+b]`.
+/// `Diamondminus[a,b]`: dilate each interval `[s,e] -> [s+a, e+b]`.
 pub fn diamond(inner: &[TInterval], op: &OpInterval) -> Vec<TInterval> {
     let b = bound(op);
     coalesce(inner.iter().map(|&iv| TInterval::add(iv, b)).collect())
 }
 
-/// Boxminus[a,b]: erode each interval `[s,e] -> [s+b, e+a]`, dropping invalid.
+/// `Boxminus[a,b]`: erode each interval `[s,e] -> [s+b, e+a]`, dropping invalid.
 pub fn box_(inner: &[TInterval], op: &OpInterval) -> Vec<TInterval> {
     let b = bound(op);
     coalesce(inner.iter().filter_map(|&iv| TInterval::circle_add(iv, b)).collect())
 }
 
-/// phi Since[a,b] psi (MeTeoR `since_deduce`), combined over all interval pairs.
+/// phi `Since[a,b]` psi (MeTeoR `since_deduce`), combined over all interval pairs.
 pub fn since(phi: &[TInterval], psi: &[TInterval], op: &OpInterval) -> Vec<TInterval> {
     let b = bound(op);
     let mut out = Vec::new();
@@ -61,19 +61,19 @@ fn since_deduce(op: &TInterval, phi: TInterval, psi: TInterval) -> Option<TInter
 
 // ── Future operators (static data only) ──
 
-/// Diamondplus[a,b]: `[s,e] -> [s-b, e-a]`.
+/// `Diamondplus[a,b]`: `[s,e] -> [s-b, e-a]`.
 pub fn diamond_plus(inner: &[TInterval], op: &OpInterval) -> Vec<TInterval> {
     let b = bound(op);
     coalesce(inner.iter().map(|&iv| TInterval::sub(iv, b)).collect())
 }
 
-/// Boxplus[a,b]: `[s,e] -> [s-a, e-b]`, dropping invalid (future erosion).
+/// `Boxplus[a,b]`: `[s,e] -> [s-a, e-b]`, dropping invalid (future erosion).
 pub fn box_plus(inner: &[TInterval], op: &OpInterval) -> Vec<TInterval> {
     let b = bound(op);
     coalesce(inner.iter().filter_map(|&iv| TInterval::circle_sub(iv, b)).collect())
 }
 
-/// phi Until[a,b] psi (MeTeoR `until_deduce`), combined over all interval pairs.
+/// phi `Until[a,b]` psi (MeTeoR `until_deduce`), combined over all interval pairs.
 pub fn until(phi: &[TInterval], psi: &[TInterval], op: &OpInterval) -> Vec<TInterval> {
     let b = bound(op);
     let mut out = Vec::new();

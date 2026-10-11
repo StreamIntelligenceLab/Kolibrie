@@ -7,8 +7,13 @@ rust-version.workspace = true
 description = "Python Binding"
 
 [lib]
+# Must be `kolibrie` so Python imports it under that name; it therefore
+# collides with the `kolibrie` crate's rustdoc output, which made
+# `cargo doc --workspace` fail outright. The interesting documentation for this
+# crate is the Python API, not its Rust surface, so it is excluded.
 name = "kolibrie"
 crate-type = ["cdylib"]
+doc = false
 
 [dependencies]
 pyo3 = { workspace = true, features = ["extension-module", "abi3-py310"] }

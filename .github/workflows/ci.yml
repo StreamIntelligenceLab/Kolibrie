@@ -90,17 +90,17 @@ jobs:
       - run: cargo build -p kolibrie --features ml --all-targets
       - run: cargo build -p kolibrie-python
 
-  # Blocking because this lint is at zero and must stay there (architecture doc §8,
-  # step 4b). It is kept at `warn` in [workspace.lints] on purpose: steps 5-6 and the
-  # crate splits repeatedly make modules private, which is exactly what produces this
-  # warning, and a local `deny` would stop the build halfway through a module move.
-  # The gate belongs at PR time instead.
+  # Blocking because these lints have reached zero in the scopes listed below and
+  # must stay there. Both stay at `warn` in [workspace.lints] on purpose: making a
+  # module private, or adding a public item mid-change, is exactly what trips them,
+  # and a local `deny` would stop the build halfway through an edit. The gate belongs
+  # at PR time instead.
   #
   # Checked under three feature configurations, not one. The default build cannot see
-  # items behind `#[cfg(feature = "ml")]`: eight were missed on the first pass of the
-  # step-4b burn-down for exactly that reason.
-  unreachable-pub:
-    name: unreachable_pub is zero
+  # items behind `#[cfg(feature = "ml")]`: eight unreachable-pub items were missed on
+  # the first pass of the step-4b burn-down for exactly that reason.
+  lint-gates:
+    name: lints held at zero
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -108,18 +108,24 @@ jobs:
         with: { python-version: "3.11" }
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
-      - name: default features
-        run: scripts/check_unreachable_pub.sh --workspace --all-targets
-      - name: ml feature
-        run: scripts/check_unreachable_pub.sh -p kolibrie --features ml --all-targets
-      - name: no default features
-        run: scripts/check_unreachable_pub.sh -p kolibrie --no-default-features --all-targets
+      # unreachable_pub reached zero workspace-wide in step 4b.
+      - name: unreachable_pub, default features
+        run: scripts/check_lint.sh unreachable_pub -- --workspace --all-targets
+      - name: unreachable_pub, ml feature
+        run: scripts/check_lint.sh unreachable_pub -- -p kolibrie --features ml --all-targets
+      - name: unreachable_pub, no default features
+        run: scripts/check_lint.sh unreachable_pub -- -p kolibrie --no-default-features --all-targets
+      # missing_docs is gated per crate as each reaches zero; `shared` is the first.
+      # The rest of the workspace still has ~1,900, so a workspace-wide gate would
+      # only fail. Add a line here when the next crate lands.
+      - name: missing_docs in shared
+        run: scripts/check_lint.sh missing_docs --only shared/src -- -p shared --all-targets
 
   # ── Advisory for now: reports, does not block ───────────────────────────────
   #
-  # `clippy` and `missing_docs` currently produce ~3,000 warnings by design —
-  # that is the burn-down metric, not a regression. These jobs flip to blocking
-  # per crate as each reaches zero (architecture doc §8).
+  # `clippy` and `missing_docs` still produce ~1,900 warnings outside `shared` by
+  # design — that is the burn-down metric, not a regression. Each crate moves to the
+  # blocking `lint-gates` job above as it reaches zero (architecture doc §8).
 
   lint-report:
     name: clippy + warning count (advisory)
