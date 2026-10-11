@@ -98,5 +98,4 @@ pub(crate) mod term_order;
 pub mod utils;
 /// Cost-based query optimisation, Volcano-style.
 pub mod streamertail_optimizer;
-/// Stream-to-relation, relation-to-relation and relation-to-stream operators.
 pub mod rsp;

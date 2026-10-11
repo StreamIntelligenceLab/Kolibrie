@@ -8,6 +8,18 @@
  * you can obtain one at https://mozilla.org/MPL/2.0/.
  */
 
+//! S2R: cutting a stream into finite relations.
+//!
+//! The stream-to-relation stage, implemented by [`CSPARQLWindow`]. A window
+//! accumulates arriving triples and, when it fires, hands its content to the R2R
+//! stage.
+//!
+//! Bounds are half-open: a `RANGE n` window holds `n` timestamps, not `n + 1`.
+//!
+//! [`ReportStrategy`] decides *when* a window fires and [`Tick`] decides what makes
+//! time advance — arriving data or the wall clock. Those two together, not the width
+//! alone, determine what a consumer sees.
+
 #[cfg(not(test))]
 use log::{debug, warn}; // Use log crate when building application
 use std::collections::hash_map::{IntoKeys, Keys};
@@ -27,11 +39,20 @@ use std::{f64, mem};
 #[cfg(test)]
 use std::{println as warn, println as debug};
 
+/// When a window reports its content downstream.
+///
+/// Several strategies combine with **AND**, not OR: a window with both
+/// `NonEmptyContent` and `OnWindowClose` reports only when both hold. Adding a
+/// strategy therefore makes a window report less often, never more.
 #[derive(Clone, Debug)]
 pub enum ReportStrategy {
+    /// Only when the window holds something.
     NonEmptyContent,
+    /// Only when the content differs from the last report.
     OnContentChange,
+    /// Only once the window's close time has passed. The default.
     OnWindowClose,
+    /// Every `n` time units, regardless of content.
     Periodic(usize),
 }
 impl Default for ReportStrategy {
@@ -39,10 +60,18 @@ impl Default for ReportStrategy {
         ReportStrategy::OnWindowClose
     }
 }
+/// What makes the window's clock advance.
+///
+/// Together with [`ReportStrategy`] this decides what a consumer sees; the width
+/// alone does not. A time-driven window can fire with nothing in it, while a
+/// tuple-driven one cannot advance at all until data arrives.
 #[derive(Clone, Debug)]
 pub enum Tick {
+    /// Time advances with the clock. The default.
     TimeDriven,
+    /// Time advances only as tuples arrive.
     TupleDriven,
+    /// Time advances per batch of arrivals.
     BatchDriven,
 }
 impl Default for Tick {
@@ -51,6 +80,7 @@ impl Default for Tick {
     }
 }
 
+/// The set of [`ReportStrategy`] conditions a window must satisfy to fire.
 pub struct Report<I>
 where
     I: Eq + PartialEq + Clone + Debug + Hash + Send,
@@ -63,15 +93,23 @@ impl<I> Report<I>
 where
     I: Eq + PartialEq + Clone + Debug + Hash + Send,
 {
+    /// A report with no strategies, which reports unconditionally — the `all`
+    /// over an empty set is true.
     pub fn new() -> Report<I> {
         Report {
             strategies: Vec::new(),
             last_change: ContentContainer::new(),
         }
     }
+    /// Adds a condition. Conditions combine with AND, so each one added can only
+    /// make the window report less often.
     pub fn add(&mut self, strategy: ReportStrategy) {
         self.strategies.push(strategy);
     }
+    /// Whether every condition holds for this window and content.
+    ///
+    /// Not a pure predicate: `OnContentChange` records the content it saw, so
+    /// calling this twice with the same content gives different answers.
     pub fn report(&mut self, window: &Window, content: &ContentContainer<I>, ts: usize) -> bool {
         self.strategies.iter().all(|strategy| match strategy {
             ReportStrategy::NonEmptyContent => content.len() > 0,
@@ -86,19 +124,36 @@ where
     }
 }
 
+/// One window's extent, half-open as `[open, close)`.
+///
+/// Half-open is why a `RANGE n` window holds `n` timestamps rather than `n + 1`.
 #[derive(Eq, Hash, PartialEq, Debug, Clone)]
 pub struct Window {
     open: usize,
     close: usize,
 }
 
+/// One arrival of an uncertain item, carrying the seed identity it was registered
+/// under.
+///
+/// The seed id travels with the occurrence because the same arrival may land in
+/// several overlapping windows, and it must stay one seed — counting the same
+/// uncertainty twice would inflate every probability derived from it.
 #[derive(Eq, PartialEq, Clone, Debug)]
 pub struct ProbabilisticOccurrence<I> {
+    /// The item itself.
     pub item: I,
+    /// Which arrival this was.
     pub event: EventKey,
+    /// The seed registered for that arrival.
     pub seed_id: SeedId,
 }
 
+/// A window's content: the items in it and when each was last seen.
+///
+/// Deterministic and probabilistic items are tracked separately, because a
+/// probabilistic one needs its seed identity preserved and a deterministic one does
+/// not. An item re-added at a later timestamp keeps the later one.
 #[derive(Eq, PartialEq, Clone, Debug)]
 pub struct ContentContainer<I>
 where
@@ -133,6 +188,8 @@ where
             origin: origin.to_string()
         }
     }
+    /// Number of distinct items, counting an item re-added at several timestamps
+    /// once.
     pub fn len(&self) -> usize {
         self.elements.len()
     }
@@ -153,28 +210,39 @@ where
             self.probabilistic_occurrences.push(occurrence);
         }
     }
+    /// Timestamp of the most recent addition.
     pub fn get_last_timestamp_changed(&self) -> usize {
         self.last_timestamp_changed
     }
 
+    /// The items, without their timestamps.
     pub fn iter(&self) -> Keys<'_, I, usize> {
         self.elements.keys()
     }
+    /// The items paired with the last timestamp each was seen at.
     pub fn iter_with_timestamps(&self) -> impl Iterator<Item = (&I, usize)> {
         self.elements.iter().map(|(item, ts)| (item, *ts))
     }
+    /// The uncertain arrivals in this window, with their seed identities.
     pub fn probabilistic_occurrences(&self) -> &[ProbabilisticOccurrence<I>] {
         &self.probabilistic_occurrences
     }
+    /// Whether `item` arrived as a certain fact rather than a probabilistic one.
     pub fn is_deterministic(&self, item: &I) -> bool {
         self.deterministic_items.contains(item)
     }
+    /// Consumes the container, yielding its items.
     pub fn into_iter(mut self) -> IntoKeys<I, usize> {
         let map = mem::take(&mut self.elements);
         map.into_keys()
     }
 }
 
+/// A sliding window over a stream: the S2R implementation.
+///
+/// Holds every currently-active window, so one arrival can be added to several at
+/// once when they overlap. Reports through either a channel or a callback, whichever
+/// the caller installed.
 pub struct CSPARQLWindow<I>
 where
     I: Eq + PartialEq + Clone + Debug + Hash + Send,
@@ -196,6 +264,10 @@ impl<I> CSPARQLWindow<I>
 where
     I: Eq + PartialEq + Clone + Debug + Hash + Send,
 {
+    /// A window of `width`, advancing by `slide`.
+    ///
+    /// `slide == width` makes it tumbling; a smaller slide makes it overlap, so an
+    /// arrival will appear in more than one window.
     pub fn new(width: usize, slide: usize, report: Report<I>, tick: Tick, uri: String) -> CSPARQLWindow<I> {
         CSPARQLWindow {
             slide,
@@ -210,6 +282,8 @@ where
             uri
         }
     }
+    /// Adds a certain item at `ts`, to every active window whose extent contains
+    /// it.
     pub fn add_to_window(&mut self, event_item: I, ts: usize) {
         let event_time = ts;
         self.scope(&event_time);
@@ -270,6 +344,8 @@ where
 
         self.active_windows = test;
     }
+    /// Adds an uncertain arrival, preserving its seed identity across every
+    /// overlapping window it lands in.
     pub fn add_probabilistic_to_window(&mut self, occurrence: ProbabilisticOccurrence<I>) {
         let event_time = occurrence.event.event_time;
         self.scope(&event_time);
@@ -331,17 +407,29 @@ where
             }
         }
     }
+    /// Returns a channel receiving this window's reports.
+    ///
+    /// Replaces any previously registered channel. [`Self::stop`] drops it.
     pub fn register(&mut self) -> Receiver<ContentContainer<I>> {
         let (send, recv) = channel::<ContentContainer<I>>();
         self.consumer.replace(send);
         recv
     }
+    /// Installs a callback invoked on each report, as an alternative to
+    /// [`Self::register`]. Both may be active at once.
     pub fn register_callback(
         &mut self,
         function: Box<dyn FnMut(ContentContainer<I>) -> () + Send + 'static>,
     ) {
         self.call_back.replace(function);
     }
+    /// Reports the merged content of every active window immediately, ignoring the
+    /// report strategies.
+    ///
+    /// This is how a single-threaded engine gets results out without waiting for
+    /// windows to close. Merging means an overlapping arrival appears once, but the
+    /// result mixes windows that would normally have fired separately.
+    /// Emits nothing when the merged content is empty.
     pub fn flush(&mut self) {
         let mut merged = ContentContainer::new_with_origin(&self.uri);
         for content in self.active_windows.values() {
@@ -364,6 +452,9 @@ where
             }
         }
     }
+    /// Drops the output channel, so the receiver sees the stream end.
+    ///
+    /// Does not stop a registered callback.
     pub fn stop(&mut self) {
         self.consumer.take();
     }
@@ -420,10 +511,17 @@ where
     }
 }
 
+/// A triple as it travels through a window, in decoded text form.
+///
+/// Text rather than dictionary ids because a window is not bound to any one
+/// store's dictionary.
 #[derive(Eq, PartialEq, Clone, Debug, Hash)]
 pub struct WindowTriple {
+    /// Subject.
     pub s: String,
+    /// Predicate.
     pub p: String,
+    /// Object.
     pub o: String,
 }
 #[cfg(test)]

@@ -49,55 +49,90 @@ use std::sync::RwLock;
 pub use crate::rsp::builder::{RSPBuilder, RSPQueryConfig};
 pub use crate::rsp::simple_r2r::SimpleR2R;
 
+/// How the engine runs its windows.
 #[derive(Clone, Copy)]
 pub enum OperationMode {
+    /// Everything in the caller's thread. Results are produced only when the
+    /// caller drives the engine, so [`RSPEngine::stop`] must be called to flush
+    /// them — otherwise a test or a short-lived program sees nothing.
     SingleThread,
+    /// One thread per window, with a coordinator joining their results. Started
+    /// only when there is something to join: more than one window, or static
+    /// patterns alongside a window.
     MultiThread,
 }
 
+/// Which evaluation path a window's query takes.
 #[derive(Clone, Copy, Debug)]
 pub enum QueryExecutionMode {
+    /// Direct evaluation, without cost-based planning.
     Standard,
+    /// Through the [`streamertail_optimizer`](crate::streamertail_optimizer),
+    /// which costs alternative plans first.
     Volcano,
 }
 
+/// How derived facts are maintained as windows advance.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum CrossWindowReasoningMode {
+    /// Maintain the derivation across firings, reusing what still holds.
     Incremental,
+    /// Re-derive from scratch each firing. Simpler, and the reference the
+    /// incremental path is benchmarked against.
     Naive,
 }
 
 /// Window configuration extracted from parsed RSP-QL query
 #[derive(Debug, Clone)]
 pub struct RSPWindow {
+    /// Name the query refers to this window by.
     pub window_iri: String,
+    /// Stream it observes.
     pub stream_iri: String,
+    /// Width in time units; bounds are half-open.
     pub width: usize,
+    /// How far it advances each step.
     pub slide: usize,
+    /// What advances its clock.
     pub tick: Tick,
+    /// When it reports.
     pub report_strategy: ReportStrategy,
-    pub query: LogicalOperator, // The SPARQL query to execute on this window
+    /// The query evaluated over this window's content, before planning.
+    pub query: LogicalOperator,
 }
 
 /// RSP-QL Query Plan using Volcano optimizer
 #[derive(Debug, Clone)]
 pub struct RSPQueryPlan {
+    /// One costed plan per window, in the same order as the window configs.
     pub window_plans: Vec<PhysicalOperator>,
+    /// Plan for patterns outside any window, if the query has them. Its presence
+    /// is one of the two conditions that require cross-window coordination.
     pub static_data_plan: Option<PhysicalOperator>,
 }
 
 /// Result from a single window execution
 #[derive(Debug, Clone)]
 pub struct WindowResult {
+    /// Which window produced this.
     pub window_iri: String,
-    pub results: Vec<HashMap<String, String>>, // Variable bindings
+    /// Solutions, as decoded variable bindings — text, not dictionary ids, because
+    /// a result crossing between windows cannot assume one dictionary.
+    pub results: Vec<HashMap<String, String>>,
+    /// When the window fired.
     pub timestamp: usize,
+    /// The window's content with per-triple timestamps, for cross-window reasoning.
     pub raw_triples: Vec<(Triple, u64)>,
 }
 
 const CROSS_WINDOW_STATIC_IRI: &str = "urn:kolibrie:static:";
 
+/// The callback the output stream is delivered to.
+///
+/// `Send + Sync` because a multi-threaded engine invokes it from a window's own
+/// thread.
 pub struct ResultConsumer<I> {
+    /// Invoked once per published solution.
     pub function: Arc<dyn Fn(I) -> () + Send + Sync>,
 }
 
@@ -235,6 +270,25 @@ macro_rules! register_window {
     }};
 }
 
+/// The RSP engine: windows over streams, a query over each, and one output stream.
+///
+/// # Getting results out
+///
+/// Under [`OperationMode::MultiThread`] results arrive at the consumer as windows
+/// fire. Under [`OperationMode::SingleThread`] nothing is delivered until the caller
+/// drives the engine and then calls [`Self::stop`], which flushes the windows — a
+/// single-threaded engine that is never stopped appears to produce nothing.
+///
+/// # Coordination
+///
+/// A coordinator is needed only when results must be joined across sources: more
+/// than one window, or static patterns alongside a window. With a single window and
+/// no static data each firing is independently complete, and the engine skips the
+/// join path entirely.
+///
+/// When coordination is needed, [`SyncPolicy`](shared::query::SyncPolicy) decides how
+/// long to wait for the other windows — a correctness choice, since the impatient
+/// settings publish results mixing data from different cycles.
 pub struct RSPEngine<I, O>
 where
     I: Eq + PartialEq + Clone + Debug + Hash + Send,
@@ -277,6 +331,10 @@ where
     O: Clone + Hash + Eq + Send + 'static + From<Vec<(String, String)>>,
     I: Eq + PartialEq + Clone + Debug + Hash + Send + 'static,
 {
+    /// An engine over the given windows and plan.
+    ///
+    /// Prefer [`RSPBuilder`](crate::rsp::builder::RSPBuilder), which assembles one
+    /// from a parsed RSP-QL query and validates it.
     pub fn new(
         query_config: RSPQueryConfig,
         triples: &str,
@@ -809,6 +867,11 @@ where
         }
     }
 
+    /// Evaluates and publishes whatever the windows currently hold, for
+    /// [`OperationMode::SingleThread`].
+    ///
+    /// Called by [`Self::stop`]; a caller wanting results mid-run can call it
+    /// directly.
     pub fn process_single_thread_window_results(&mut self)
     where
         O: From<Vec<(String, String)>>,
@@ -902,6 +965,11 @@ where
         }
     }
 
+    /// Flushes every window and closes the output.
+    ///
+    /// Required under [`OperationMode::SingleThread`]: it is what delivers the
+    /// results. Flushing ignores the report strategies, so content that had not
+    /// yet met its reporting condition is published too.
     pub fn stop(&mut self) {
         for window in &mut self.windows {
             window.flush();
@@ -912,6 +980,7 @@ where
         }
     }
 
+    /// Parses stream text into items, through the configured R2R operator.
     pub fn parse_data(&mut self, data: &str) -> Vec<I> {
         self.r2r.lock().unwrap().parse_data(data)
     }
@@ -997,6 +1066,7 @@ where
         Ok(seed_id)
     }
 
+    /// Probabilities from the most recent probabilistic evaluation, by fact.
     pub fn latest_hybrid_results(
         &self,
         window_iri: &str,

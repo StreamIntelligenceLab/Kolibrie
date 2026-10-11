@@ -8,12 +8,24 @@
  * you can obtain one at https://mozilla.org/MPL/2.0/.
  */
 
+//! R2S: choosing which solutions reach the output stream.
+//!
+//! The relation-to-stream stage. Evaluating a window yields the full solution set
+//! every time it fires, which is rarely what a consumer wants: most want to hear
+//! about changes. The operator compares each firing against the previous one.
+
 use std::collections::HashSet;
 use std::hash::Hash;
 
 #[derive(Clone, Debug)]
+/// Which solutions of each firing reach the output stream.
 pub enum StreamOperator{
-    RSTREAM, ISTREAM, DSTREAM
+    /// Every solution, every firing. The default.
+    RSTREAM,
+    /// Only solutions absent from the previous firing — insertions.
+    ISTREAM,
+    /// Only solutions present previously and now gone — deletions.
+    DSTREAM
 }
 
 impl Default  for StreamOperator{
@@ -21,12 +33,18 @@ impl Default  for StreamOperator{
         StreamOperator::RSTREAM
     }
 }
+/// Applies a [`StreamOperator`] by comparing each firing against the last.
+///
+/// Stateful: `ISTREAM` and `DSTREAM` are defined relative to the previous firing,
+/// so one instance must see every firing of its query in order.
 pub struct Relation2StreamOperator<O> {
     stream_operator: StreamOperator,
     last_result: HashSet<O>,
 }
 
 impl <O> Relation2StreamOperator <O> where O: Clone + Hash + Eq {
+    /// An operator with no previous firing recorded, so the first `ISTREAM`
+    /// evaluation reports everything as new.
     pub fn new(stream_operator: StreamOperator, _start_time: usize) -> Relation2StreamOperator<O> {
         Relation2StreamOperator {
             stream_operator,
@@ -34,6 +52,7 @@ impl <O> Relation2StreamOperator <O> where O: Clone + Hash + Eq {
         }
     }
 
+    /// The solutions to publish for this firing, updating the remembered state.
     pub fn eval(&mut self, new_response: Vec<O>, _ts: usize) -> Vec<O> {
         match self.stream_operator {
             StreamOperator::RSTREAM => new_response,

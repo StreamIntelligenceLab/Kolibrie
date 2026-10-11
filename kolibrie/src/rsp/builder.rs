@@ -7,6 +7,12 @@
 * you can obtain one at https://mozilla.org/MPL/2.0/.
 */
 
+//! Assembling an engine from a parsed RSP-QL query.
+//!
+//! Turns the windows, query and output-stream operator that a
+//! [`RegisterClause`](shared::query::RegisterClause) declares into a running
+//! [`RSPEngine`](crate::rsp_engine::RSPEngine).
+
 use crate::parser::parse_combined_query;
 use crate::rsp::r2r::R2ROperator;
 use crate::rsp::r2s::StreamOperator;
@@ -32,15 +38,26 @@ use std::sync::Arc;
 /// RSP Query configuration extracted from parsed RSP-QL
 #[derive(Debug)]
 pub struct RSPQueryConfig<'a> {
+    /// One entry per `FROM NAMED WINDOW` clause.
     pub windows: Vec<RSPWindow>,
+    /// IRI the answers are published under.
     pub output_stream: String,
+    /// Which solutions reach that stream.
     pub stream_type: StreamOperator,
-    pub static_patterns: Vec<(&'a str, &'a str, &'a str)>, // Static graph patterns outside windows
-    pub database: SparqlDatabase,                           // used prefixes
+    /// Patterns outside any window, matched against background data rather than
+    /// the stream. Their presence is one of the two things that forces cross-window
+    /// coordination, the other being more than one window.
+    pub static_patterns: Vec<(&'a str, &'a str, &'a str)>,
+    /// Store supplying the prefix bindings the query was written against.
+    pub database: SparqlDatabase,
     /// Effective synchronization policy for multi-window coordination.
     pub sync_policy: SyncPolicy,
 }
 
+/// Assembles an [`RSPEngine`] step by step.
+///
+/// Each method returns the builder, so configuration chains; [`Self::build`]
+/// validates the result and fails rather than producing a half-configured engine.
 pub struct RSPBuilder<'a, I, O> {
     rsp_ql_query: Option<&'a str>,
     triples: Option<&'a str>,
@@ -63,6 +80,7 @@ where
     O: Clone + Eq + Send + Debug + Hash + 'static + From<Vec<(String, String)>>,
     I: Eq + PartialEq + Clone + Debug + Hash + Send + 'static,
 {
+    /// A builder with nothing configured.
     pub fn new() -> RSPBuilder<'a, I, O> {
         RSPBuilder {
             rsp_ql_query: None,
@@ -122,21 +140,25 @@ where
         self
     }
 
+    /// Adds background data, available to patterns outside any window.
     pub fn add_triples(mut self, triples: &'a str) -> RSPBuilder<'a, I, O> {
         self.triples = Some(triples);
         self
     }
 
+    /// Adds reasoning rules applied to each window's content.
     pub fn add_rules(mut self, rules: &'a str) -> RSPBuilder<'a, I, O> {
         self.rules = Some(rules);
         self
     }
 
+    /// Sets the callback receiving the output stream.
     pub fn add_consumer(mut self, consumer: ResultConsumer<O>) -> RSPBuilder<'a, I, O> {
         self.result_consumer = Some(consumer);
         self
     }
 
+    /// Supplies the operator that evaluates the query over each window.
     pub fn add_r2r(
         mut self,
         r2r: Box<dyn R2ROperator<I, Vec<PhysicalOperator>, O>>,
@@ -145,11 +167,13 @@ where
         self
     }
 
+    /// Chooses single- or multi-threaded operation. See [`OperationMode`].
     pub fn set_operation_mode(mut self, operation_mode: OperationMode) -> RSPBuilder<'a, I, O> {
         self.operation_mode = operation_mode;
         self
     }
 
+    /// Chooses whether queries run through the standard path or the optimizer.
     pub fn set_query_execution_mode(mut self, mode: QueryExecutionMode) -> RSPBuilder<'a, I, O> {
         self.query_execution_mode = mode;
         self
@@ -317,6 +341,10 @@ where
         })
     }
 
+    /// Validates the configuration and constructs the engine.
+    ///
+    /// Fails if something required was never supplied, rather than returning an
+    /// engine that would misbehave at the first firing.
     pub fn build(mut self) -> Result<RSPEngine<I, O>, String> {
         let rsp_ql_query = self
             .rsp_ql_query

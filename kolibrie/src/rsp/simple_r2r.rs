@@ -7,6 +7,12 @@
 * you can obtain one at https://mozilla.org/MPL/2.0/.
 */
 
+//! A straightforward [`R2ROperator`](super::r2r::R2ROperator) backed by a
+//! [`SparqlDatabase`](crate::sparql_database::SparqlDatabase).
+//!
+//! Loads each window's content into a store and evaluates the query against it:
+//! correct, and enough for a window whose content fits in memory.
+
 use crate::rsp::r2r::{AsAnyMut, R2ROperator};
 use crate::rsp_engine::QueryExecutionMode;
 use crate::sparql_database::SparqlDatabase;
@@ -27,9 +33,13 @@ use log::{debug, error};
 #[cfg(test)]
 use std::{println as debug, println as error};
 
+/// An [`R2ROperator`] that loads each window's content into a store and queries it.
 pub struct SimpleR2R {
+    /// The store holding the current window's content plus any background data.
     pub item: SparqlDatabase,
+    /// Whether queries run through the standard path or the Volcano optimizer.
     pub execution_mode: QueryExecutionMode,
+    /// Reasoning rules applied to each window's content.
     pub rules: Vec<Rule>,
     derived_triples: Vec<Triple>,
     hybrid_config: Option<HybridConfig>,
@@ -39,6 +49,7 @@ pub struct SimpleR2R {
 }
 
 impl SimpleR2R {
+    /// An operator with an empty store and no rules.
     pub fn new() -> Self {
         SimpleR2R {
             item: SparqlDatabase::new(),
@@ -52,6 +63,7 @@ impl SimpleR2R {
         }
     }
 
+    /// As [`Self::new`], choosing how queries are executed.
     pub fn with_execution_mode(execution_mode: QueryExecutionMode) -> Self {
         SimpleR2R {
             item: SparqlDatabase::new(),
@@ -65,10 +77,12 @@ impl SimpleR2R {
         }
     }
 
+    /// Replaces the rules applied to each window's content.
     pub fn add_reasoning_rules(&mut self, rules: Vec<Rule>) {
         self.rules.extend(rules);
     }
 
+    /// Enables probabilistic evaluation with this configuration.
     pub fn set_hybrid_config(&mut self, config: HybridConfig) -> Result<(), HybridError> {
         config.validate()?;
         if self.hybrid_config.as_ref().is_some_and(|existing| existing != &config) {
@@ -80,16 +94,22 @@ impl SimpleR2R {
         Ok(())
     }
 
+    /// Supplies the seeds the current window's uncertain items were registered
+    /// under, which probabilistic evaluation needs to resolve its literals.
     pub fn set_live_seed_snapshot(&mut self, snapshot: SeedSnapshot) {
         self.live_seed_snapshot = snapshot;
     }
 
+    /// Probabilities from the most recent evaluation, by fact.
     pub fn last_hybrid_results(&self) -> &HashMap<Triple, HybridProbabilityResult> {
         &self.last_hybrid_results
     }
 
+    /// Why the most recent probabilistic evaluation failed, if it did. Evaluation
+    /// failing does not stop the window from reporting its deterministic results.
     pub fn last_hybrid_error(&self) -> Option<&str> { self.last_hybrid_error.as_deref() }
 
+    /// Whether probabilistic evaluation is configured.
     pub fn hybrid_enabled(&self) -> bool { self.hybrid_config.is_some() }
 }
 
