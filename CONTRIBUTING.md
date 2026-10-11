@@ -135,6 +135,9 @@ start, because both have cost real debugging time:
   bare intra-doc links in `lib.rs`'s scope, where that module's own items are not
   visible. It looks like the links are wrong; they are not. Put the summary in one
   place — the module file — and rustdoc uses its first line.
+  **In practice:** when you add a `//!` to a module, delete the outer `///` from its
+  `pub mod` line in the same change. Doing one without the other is what breaks it,
+  and it has happened three times in this burn-down.
 - **Bracketed notation in a doc comment is read as a link.** `Box[a,b]` and friends
   need backticks, or `cargo doc` fails. The `docs` CI job is blocking and runs with
   `-D rustdoc::broken_intra_doc_links`.

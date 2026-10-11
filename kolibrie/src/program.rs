@@ -8,6 +8,45 @@
  * you can obtain one at https://mozilla.org/MPL/2.0/.
  */
 
+//! Probabilistic programs: compile a rule set once, run it, query the answers.
+//!
+//! The alternative to [`process_rule_definition`](crate::parser::process_rule_definition)
+//! for anything beyond a single rule. The split matters because compiling validates
+//! and costs nothing to repeat, while executing consumes a dataset:
+//!
+//! ```text
+//! text ──compile_program──▶ CompiledProgram ──execute_program──▶ ProgramResult
+//!         (validate, check            (reusable)        (owns a dataset)
+//!          the ML policy)
+//! ```
+//!
+//! A [`CompiledProgram`] holds its terms as text, not dictionary ids, and encodes
+//! them against a store's dictionary only when it runs — see
+//! [`CompiledProgram::datalog_rules`]. One compiled program can therefore run
+//! against several stores.
+//!
+//! # Determinism
+//!
+//! Model outputs vary between runs, which would make a program's answers
+//! irreproducible. [`ProgramOptions::frozen_predictions`] takes a
+//! [`PredictionSnapshot`] and uses it instead of invoking the models, so a result can
+//! be reproduced exactly — and a snapshot records the artifact hash it came from, so
+//! a mismatch is detectable rather than silent.
+//!
+//! # Exclusivity and coverage
+//!
+//! A distribution over labels is mutually exclusive: at most one label holds. A
+//! program that needs every such choice decided states them in
+//! [`ProgramOptions::required_choices`], and [`Coverage::confirmed`] reports whether
+//! the predictions actually covered them. An uncovered choice is a gap in the
+//! answer, not a zero.
+//!
+//! # Resource limits
+//!
+//! Exact probabilistic inference can blow up combinatorially, so [`ProgramLimits`]
+//! caps seed variables, SDD nodes and wall-clock time. Exceeding one is
+//! [`ProgramError::Resource`], distinct from a wrong program.
+
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fmt;
 use std::sync::{Arc, RwLock};
@@ -34,26 +73,52 @@ use crate::ml_policy::MlExecutionContext;
 use crate::parser::parse_combined_query;
 use crate::sparql_database::{reencode_term_id, SparqlDatabase};
 
+/// How far a distribution's probabilities may sum from 1.0 and still be accepted.
 pub const DISTRIBUTION_TOLERANCE: f64 = 1e-7;
+/// Predicate carrying a derived probability when results are published as RDF.
 pub const PROB_VALUE_IRI: &str = "http://www.w3.org/ns/prob#value";
 const XSD_DOUBLE_IRI: &str = "http://www.w3.org/2001/XMLSchema#double";
 
+/// Why a program could not be compiled or run.
+///
+/// Each variant renders with a stable `PROGRAM_*` prefix through [`fmt::Display`];
+/// those strings reach callers over the HTTP API, so they are part of the contract
+/// rather than diagnostics.
 #[derive(Debug, Clone, PartialEq)]
 pub enum ProgramError {
+    /// The text is not a valid program.
     Parse(String),
+    /// Valid syntax this engine does not implement — recursion, for instance.
     Unsupported(String),
+    /// Refused by the host's ML policy, such as naming an unapproved model.
     Policy(String),
+    /// A supplied [`PredictionSnapshot`] does not match the program or its
+    /// artifacts.
     Snapshot(String),
+    /// Predictions did not cover every required choice; see [`Coverage`].
     Coverage(String),
+    /// A limit in [`ProgramLimits`] was reached. Says nothing about correctness —
+    /// the same program may succeed with a larger budget.
     Resource(ResourceError),
+    /// Inference started and then failed.
     Execution(String),
 }
 
+/// Which resource ceiling stopped the run.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ResourceError {
-    SeedLimit { requested: usize, limit: usize },
+    /// More probabilistic seeds than [`ProgramLimits::max_seed_variables`].
+    SeedLimit {
+        /// Seeds the program needed.
+        requested: usize,
+        /// The configured ceiling.
+        limit: usize,
+    },
+    /// The seed id space is used up. Ids are never recycled.
     IdOverflow,
+    /// SDD compilation exceeded [`ProgramLimits::max_sdd_nodes`].
     NodeBudgetExceeded,
+    /// The run exceeded [`ProgramLimits::deadline`].
     DeadlineExceeded,
 }
 
@@ -82,10 +147,18 @@ impl From<SddBudgetError> for ProgramError {
     }
 }
 
+/// Ceilings that stop a program rather than letting it run unbounded.
+///
+/// Defaults are deliberately generous — a million seeds, 16 million SDD nodes, ten
+/// minutes — so they act as a backstop against combinatorial blow-up, not as a
+/// performance budget.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct ProgramLimits {
+    /// Most probabilistic seeds allowed. Each is one variable in the formula.
     pub max_seed_variables: usize,
+    /// Most SDD nodes allowed during exact inference.
     pub max_sdd_nodes: usize,
+    /// Wall-clock ceiling. `None` means no deadline.
     pub deadline: Option<Duration>,
 }
 
@@ -99,20 +172,35 @@ impl Default for ProgramLimits {
     }
 }
 
+/// How to run a program.
 #[derive(Debug, Clone, Default)]
 pub struct ProgramOptions {
+    /// Seed for training randomness, making a fitted model reproducible. `None`
+    /// leaves training nondeterministic.
     pub training_seed: Option<u64>,
+    /// Use these predictions instead of invoking the models, so the run is
+    /// reproducible. See the module documentation on determinism.
     pub frozen_predictions: Option<PredictionSnapshot>,
+    /// Exclusive choices the answer must decide, as `(relation, subject)`. Reported
+    /// against by [`Coverage`].
     pub required_choices: Option<Vec<(String, String)>>,
+    /// Keep the provenance formula, which [`ProgramResult::prepare_answers`] needs
+    /// to recompute probabilities without re-deriving. Costs memory.
     pub retain_provenance: bool,
+    /// Emit explanation output alongside the answers.
     pub explain: bool,
+    /// Rows per model invocation. `None` uses the engine default.
     pub prediction_batch_size: Option<usize>,
+    /// Resource ceilings.
     pub limits: ProgramLimits,
 }
 
+/// How a rule's conclusions are derived.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RuleMode {
+    /// Ordinary Datalog: facts are certain and carry no probability.
     Deterministic,
+    /// Probabilistic, with exact weighted model counting over an SDD.
     Sdd,
 }
 
@@ -124,8 +212,10 @@ enum LexTerm {
 
 type LexPattern = (LexTerm, LexTerm, LexTerm);
 
+/// One validated rule, with its terms still as text.
 #[derive(Debug, Clone)]
 pub struct CompiledRule {
+    /// The rule's name, as written after `RULE`.
     pub name: String,
     premise: Vec<LexPattern>,
     filters: Vec<FilterCondition>,
@@ -166,6 +256,12 @@ struct CompiledPrediction {
     columns: Vec<String>,
 }
 
+/// A validated program, ready to run against any store.
+///
+/// Terms are held as text rather than dictionary ids, so one compiled program can be
+/// executed against several stores; [`Self::datalog_rules`] does the interning.
+/// Compiling has already checked the ML policy, so a program that compiles names
+/// only models the host approved.
 #[derive(Debug, Clone)]
 pub struct CompiledProgram {
     prefixes: HashMap<String, String>,
@@ -178,31 +274,46 @@ pub struct CompiledProgram {
 }
 
 impl CompiledProgram {
+    /// The validated rules, in source order.
     pub fn rules(&self) -> &[CompiledRule] {
         &self.rules
     }
 
+    /// Whether the program is deterministic or probabilistic. `None` when it has
+    /// no rules.
     pub fn mode(&self) -> Option<RuleMode> {
         self.mode
     }
 
+    /// Prefix bindings the program declared.
     pub fn prefixes(&self) -> &HashMap<String, String> {
         &self.prefixes
     }
 
+    /// Whether running this program invokes a model.
     pub fn has_prediction(&self) -> bool {
         self.prediction.is_some()
     }
 
+    /// Whether running this program trains a model, which writes an artifact.
     pub fn has_training(&self) -> bool {
         !self.train_decls.is_empty()
     }
 
+    /// Interns the rules against `dictionary`, producing rules the reasoner can
+    /// evaluate.
+    ///
+    /// This is the prepare step: the result is only valid against that dictionary.
     pub fn datalog_rules(&self, dictionary: &mut Dictionary) -> Vec<Rule> {
         self.rules.iter().map(|rule| rule.encode(dictionary)).collect()
     }
 }
 
+/// Validates `text` into a runnable program.
+///
+/// Checks syntax, rejects constructs the engine cannot represent, and enforces
+/// `policy` — so a program that compiles names only approved models. Nothing is
+/// executed and no dataset is touched.
 pub fn compile_program(
     text: &str,
     policy: &MlExecutionContext,
@@ -690,18 +801,38 @@ struct ChoiceRow {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+/// Provenance of one relation's frozen predictions.
+///
+/// Records which artifact produced them and its hash, so replaying a snapshot
+/// against a changed model is detected rather than silently accepted.
 pub struct NeuralSnapshotMetadata {
+    /// Relation these predictions are for.
     pub relation: String,
+    /// Model that produced them.
     pub model: String,
+    /// Artifact path the weights were loaded from.
     pub artifact: String,
+    /// SHA-256 of that artifact. A mismatch means the snapshot no longer
+    /// corresponds to the model on disk.
     pub artifact_sha256: String,
+    /// Feature variables, in model input order.
     pub feature_vars: Vec<String>,
+    /// Output labels, in model output order.
     pub labels: Vec<String>,
+    /// Expected feature-vector length.
     pub input_dim: usize,
+    /// Rows predicted.
     pub rows: usize,
 }
 
 #[derive(Debug, Clone, Default, PartialEq)]
+/// Model outputs captured so a run can be reproduced without re-invoking anything.
+///
+/// Holds two kinds of prediction, which are not interchangeable: exclusive groups,
+/// where at most one label holds, and independent facts. A relation cannot carry
+/// both — [`Self::declare_exclusive_relation`] rejects that, because treating
+/// competing labels as independent assigns probability to two of them holding at
+/// once.
 pub struct PredictionSnapshot {
     domains: BTreeMap<String, Vec<String>>,
     groups: BTreeMap<(String, String), ChoiceRow>,
@@ -710,32 +841,40 @@ pub struct PredictionSnapshot {
 }
 
 impl PredictionSnapshot {
+    /// An empty snapshot.
     pub fn new() -> Self {
         Self::default()
     }
 
+    /// Whether the snapshot holds no predictions. Declared relations with no rows
+    /// still count as empty.
     pub fn is_empty(&self) -> bool {
         self.groups.is_empty() && self.independent.is_empty()
     }
 
+    /// Number of exclusive groups captured.
     pub fn choice_groups(&self) -> usize {
         self.groups.len()
     }
 
+    /// Number of independent facts captured.
     pub fn independent_facts(&self) -> usize {
         self.independent.len()
     }
 
+    /// A relation's label domain, in model output order.
     pub fn labels(&self, relation: &str) -> Option<&[String]> {
         self.domains.get(relation).map(Vec::as_slice)
     }
 
+    /// The distribution captured for one subject of one relation.
     pub fn distribution(&self, relation: &str, anchor: &str) -> Option<&[f64]> {
         self.groups
             .get(&(relation.to_string(), anchor.to_string()))
             .map(|row| row.probabilities.as_slice())
     }
 
+    /// Subjects for which this relation has a captured distribution.
     pub fn anchors(&self, relation: &str) -> Vec<&str> {
         self.groups
             .keys()
@@ -744,10 +883,18 @@ impl PredictionSnapshot {
             .collect()
     }
 
+    /// Which artifacts produced these predictions. See
+    /// [`NeuralSnapshotMetadata`].
     pub fn neural_metadata(&self) -> &[NeuralSnapshotMetadata] {
         &self.neural
     }
 
+    /// Declares a relation's labels, fixing their order.
+    ///
+    /// Order is part of the identity: it maps model outputs to labels, so
+    /// re-declaring with a different order is an error rather than an update.
+    /// Fails if the relation already carries independent facts, since a relation
+    /// cannot be both exclusive and independent.
     pub fn declare_exclusive_relation(
         &mut self,
         relation: &str,
@@ -783,6 +930,10 @@ impl PredictionSnapshot {
         }
     }
 
+    /// Captures a distribution over a declared relation's labels for one subject.
+    ///
+    /// Probabilities must align with the declared label order and sum to 1 within
+    /// [`DISTRIBUTION_TOLERANCE`].
     pub fn add_distribution(
         &mut self,
         relation: &str,
@@ -832,6 +983,9 @@ impl PredictionSnapshot {
         }
     }
 
+    /// Captures a single fact's probability, independent of every other.
+    ///
+    /// Fails if the predicate was declared exclusive.
     pub fn add_independent(
         &mut self,
         subject: &str,
@@ -861,6 +1015,11 @@ impl PredictionSnapshot {
         }
     }
 
+    /// Folds `other` in, rejecting any conflict.
+    ///
+    /// Replays `other`'s contents through the same checks rather than copying, so
+    /// incompatible label orders or an exclusive/independent clash fail here instead
+    /// of producing a snapshot that is wrong later.
     pub fn merge(&mut self, other: &PredictionSnapshot) -> Result<(), ProgramError> {
         for (relation, labels) in &other.domains {
             self.declare_exclusive_relation(relation, labels)?;
@@ -979,39 +1138,74 @@ fn allocate_seed_specs(
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+/// Whether the predictions decided every choice the caller required.
 pub struct Coverage {
+    /// Rows the models were run over.
     pub prediction_rows: usize,
+    /// Exclusive choices the predictions actually decided.
     pub predicted_choices: usize,
+    /// Choices [`ProgramOptions::required_choices`] demanded.
     pub required_choices: usize,
+    /// Whether every required choice was covered. When false the answer has gaps,
+    /// which is not the same as those facts being improbable.
     pub confirmed: bool,
 }
 
 #[derive(Debug, Clone, PartialEq)]
+/// What one training run produced.
 pub struct TrainingReport {
+    /// Model trained.
     pub model: String,
+    /// Relation it serves.
     pub relation: String,
+    /// Where the weights were written.
     pub artifact: String,
+    /// SHA-256 of the written artifact, so a later snapshot can be matched to it.
     pub artifact_sha256: String,
+    /// Seed used, if the run was made reproducible.
     pub seed: Option<u64>,
+    /// Time spent fetching training data.
     pub data_fetch: Duration,
+    /// Time spent fitting.
     pub learning: Duration,
 }
 
 #[derive(Debug, Clone, Default, PartialEq)]
+/// Where a run spent its time, phase by phase.
+///
+/// The phases do not necessarily sum to `total`: a phase that did not run is zero,
+/// and `total` includes whatever is not attributed to one.
 pub struct ProgramTimings {
+    /// Checking the program and any supplied snapshot.
     pub validation: Duration,
+    /// Fitting models.
     pub training: Duration,
+    /// Selecting the rows to predict over.
     pub prediction_input: Duration,
+    /// Running the models.
     pub neural_inference: Duration,
+    /// Turning predictions into seeded facts.
     pub prediction_publication: Duration,
+    /// Loading data and building indexes.
     pub data_preparation: Duration,
+    /// Datalog derivation.
     pub logical_inference: Duration,
+    /// Recovering probabilities from provenance.
     pub probability_recovery: Duration,
+    /// Publishing the answers.
     pub result_publication: Duration,
+    /// Writing model artifacts.
     pub artifact_publication: Duration,
+    /// Wall-clock time for the whole run.
     pub total: Duration,
 }
 
+/// The outcome of a run: the resulting dataset, the derived probabilities, and how
+/// the run went.
+///
+/// Owns its dataset, so the input store is untouched. Probabilities are available
+/// without provenance, but recomputing them under different assumptions needs
+/// [`ProgramOptions::retain_provenance`] — see [`Self::prepare_answers`].
 pub struct ProgramResult {
     dataset: SparqlDatabase,
     hypotheses: HashMap<Triple, f64>,
@@ -1036,12 +1230,21 @@ impl fmt::Debug for ProgramResult {
     }
 }
 
+/// Answer formulas held ready so probabilities can be recovered repeatedly without
+/// re-deriving.
+///
+/// Obtained from [`ProgramResult::prepare_answers`], which needs the run to have
+/// retained provenance.
 pub struct PreparedAnswers {
     provenance: SddProvenance,
     tags: Vec<Option<SddId>>,
 }
 
 impl PreparedAnswers {
+    /// Probabilities for the prepared answers, in the order they were prepared.
+    ///
+    /// An answer with no formula recovers as `0.0`, meaning it was never derived
+    /// rather than derived and found impossible.
     pub fn recover(&self) -> Vec<f64> {
         self.tags
             .iter()
@@ -1054,34 +1257,45 @@ impl PreparedAnswers {
 }
 
 impl ProgramResult {
+    /// The resulting store, including every derived fact.
     pub fn dataset(&self) -> &SparqlDatabase {
         &self.dataset
     }
 
+    /// Predictions this run used, suitable for reproducing it via
+    /// [`ProgramOptions::frozen_predictions`].
     pub fn snapshot(&self) -> &PredictionSnapshot {
         &self.snapshot
     }
 
+    /// Whether every required choice was decided. Check before trusting a zero
+    /// probability.
     pub fn coverage(&self) -> &Coverage {
         &self.coverage
     }
 
+    /// Reports for any models trained, one each.
     pub fn training(&self) -> &[TrainingReport] {
         &self.training
     }
 
+    /// Where the run spent its time.
     pub fn timings(&self) -> &ProgramTimings {
         &self.timings
     }
 
+    /// Whether this ran deterministically or probabilistically.
     pub fn mode(&self) -> Option<RuleMode> {
         self.mode
     }
 
+    /// How many facts derivation added.
     pub fn derived_facts(&self) -> usize {
         self.derived
     }
 
+    /// How many facts carry a probability below 1, as opposed to being asserted
+    /// outright.
     pub fn hypothesis_count(&self) -> usize {
         self.hypotheses.len()
     }
@@ -1095,6 +1309,12 @@ impl ProgramResult {
         })
     }
 
+    /// The probability of one fact, or `None` if it was never derived.
+    ///
+    /// An asserted fact is `Some(1.0)`. `None` and `Some(0.0)` are different:
+    /// the first means the fact is absent from the result, the second that it was
+    /// derived and found impossible. Use [`Self::answer_probability`] to collapse
+    /// that distinction safely.
     pub fn fact_probability(&self, subject: &str, predicate: &str, object: &str) -> Option<f64> {
         let triple = self.lookup(subject, predicate, object)?;
         if let Some(probability) = self.hypotheses.get(&triple) {
@@ -1106,6 +1326,12 @@ impl ProgramResult {
         }
     }
 
+    /// The probability of one fact, treating absence as zero **only when coverage
+    /// was confirmed**.
+    ///
+    /// If a fact is missing and coverage was not confirmed, this errors rather than
+    /// returning `0.0`: the run did not decide the question, and reporting zero
+    /// would turn "not determined" into "will not happen".
     pub fn answer_probability(
         &self,
         subject: &str,
@@ -1121,6 +1347,7 @@ impl ProgramResult {
         }
     }
 
+    /// Every derived fact for `predicate`, with its probability.
     pub fn answer_set(&self, predicate: &str) -> Vec<(String, String, f64)> {
         let Some(predicate_id) = self
             .dataset
@@ -1151,6 +1378,11 @@ impl ProgramResult {
         answers
     }
 
+    /// Holds the answers' formulas so probabilities can be recovered repeatedly
+    /// without re-deriving.
+    ///
+    /// Requires the run to have set [`ProgramOptions::retain_provenance`]; without
+    /// it the formulas were discarded and there is nothing to prepare.
     pub fn prepare_answers(
         &self,
         answers: &[(String, String, String)],
@@ -1181,23 +1413,35 @@ impl ProgramResult {
 }
 
 #[derive(Default)]
+/// Holds the most recent run so later queries can be answered against it.
+///
+/// A program's answers live in its [`ProgramResult`], not in the input store, so
+/// something has to own that result between executing and querying. Publishing a
+/// new run replaces the previous one.
 pub struct PublishedProgramResult {
     current: Option<ProgramResult>,
 }
 
 impl PublishedProgramResult {
+    /// With nothing published yet.
     pub fn new() -> Self {
         Self::default()
     }
 
+    /// The published result, or `None` if nothing has run.
     pub fn current(&self) -> Option<&ProgramResult> {
         self.current.as_ref()
     }
 
+    /// Mutable access to the published result, which querying needs.
     pub fn current_mut(&mut self) -> Option<&mut ProgramResult> {
         self.current.as_mut()
     }
 
+    /// Publishes a run's outcome, replacing any previous one.
+    ///
+    /// Takes the `Result` so a failed run propagates its error instead of silently
+    /// leaving the previous result in place.
     pub fn publish(
         &mut self,
         outcome: Result<ProgramResult, ProgramError>,
@@ -1207,6 +1451,10 @@ impl PublishedProgramResult {
     }
 }
 
+/// Runs a SELECT against a published result rather than against a store.
+///
+/// Needed because a program's derived facts and their probabilities live in the
+/// [`ProgramResult`], so an ordinary query over the input store would not see them.
 pub fn query_program_result(
     result: &mut ProgramResult,
     select: &str,
@@ -1231,6 +1479,10 @@ pub fn query_program_result(
         .map_err(ProgramError::Execution)
 }
 
+/// Reads a probability from a literal, accepting a bare number or an
+/// `xsd:double`-typed form.
+///
+/// `None` when the term is not a number or falls outside `[0, 1]`.
 pub fn parse_probability_literal(term: &str) -> Option<f64> {
     let lexical = term.strip_prefix('"')?;
     let (value, datatype) = lexical.split_once('"')?;
@@ -1257,6 +1509,12 @@ impl Deadline {
     }
 }
 
+/// Runs a compiled program against a store, returning the result.
+///
+/// `asserted_input` is read, not modified: the derived facts land in the returned
+/// [`ProgramResult`]'s own dataset. Implicit neural materialisation is disabled for
+/// the duration and restored afterwards, so the program's own declarations are the
+/// only thing that invokes a model.
 pub fn execute_program(
     asserted_input: &mut SparqlDatabase,
     program: &CompiledProgram,

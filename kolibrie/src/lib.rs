@@ -86,7 +86,6 @@ pub mod neural_relations;
 pub mod neural_relations;
 pub mod parser;
 pub mod prelude;
-/// Probabilistic programs: compile a rule set, run it, query the answers.
 pub mod program;
 /// Building a query programmatically instead of writing SPARQL text.
 pub mod query_builder;
