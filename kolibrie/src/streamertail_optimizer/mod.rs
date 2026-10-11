@@ -8,6 +8,45 @@
  * you can obtain one at https://mozilla.org/MPL/2.0/.
  */
 
+//! Cost-based query optimisation, Volcano-style.
+//!
+//! A query has many possible execution strategies with wildly different costs. This
+//! module picks one by enumerating alternatives and costing each against statistics
+//! about the data, rather than following the order the query was written in.
+//!
+//! ```text
+//! LogicalOperator ──optimizer──▶ PhysicalOperator ──ExecutionEngine──▶ solutions
+//!   (what to compute)   │          (how to compute it)
+//!                       └── CostEstimator over DatabaseStats
+//! ```
+//!
+//! | module | role |
+//! |---|---|
+//! | [`operators`] | the two plan representations: logical *what*, physical *how* |
+//! | [`cost`] | cardinality and cost estimates that rank the alternatives |
+//! | [`stats`] | the data statistics those estimates read |
+//! | [`optimizer`] | [`Streamertail`], which does the enumeration and selection |
+//! | [`execution`] | runs a chosen physical plan |
+//! | [`types`] | filter conditions and subquery descriptions shared by both plans |
+//! | [`utils`] | building a logical plan from a parsed query |
+//!
+//! # The logical/physical split
+//!
+//! One logical operator usually has several physical realisations, and choosing
+//! between them is the whole point. A [`LogicalOperator::Join`] can become a hash
+//! join, a nested-loop join, a star join, or a bind join that pushes the left side's
+//! bindings into the right side's index probes — and which is fastest depends on
+//! cardinalities the query text cannot express.
+//!
+//! # Estimates are estimates
+//!
+//! The cost model reads [`DatabaseStats`], which are cached and refreshed according
+//! to the store's
+//! [`PlanningStatsPolicy`](crate::sparql_database::PlanningStatsPolicy). Under the
+//! default bounded policy they may lag the data, so a plan can be costed against
+//! slightly stale cardinalities. That trades planning accuracy for not rebuilding
+//! statistics on every write.
+
 pub mod cost;
 pub mod execution;
 pub mod operators;

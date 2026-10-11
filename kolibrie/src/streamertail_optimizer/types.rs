@@ -8,6 +8,11 @@
  * you can obtain one at https://mozilla.org/MPL/2.0/.
  */
 
+//! Filter conditions and subquery descriptions, shared by both plan representations.
+//!
+//! These survive the logical-to-physical translation unchanged, which is why they
+//! live here rather than in either operator module.
+
 use shared::{
     dictionary::Dictionary,
     query::{ArithmeticExpression, FilterExpression, SortDirection},
@@ -17,28 +22,42 @@ use std::collections::HashMap;
 /// Owned execution representation of Kolibrie's existing arithmetic syntax
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ConditionArithmetic {
+    /// A variable or a numeric literal. Owned, unlike the borrowed parsed form.
     Operand(String),
+    /// Sum.
     Add(Box<ConditionArithmetic>, Box<ConditionArithmetic>),
+    /// Difference.
     Subtract(Box<ConditionArithmetic>, Box<ConditionArithmetic>),
+    /// Product.
     Multiply(Box<ConditionArithmetic>, Box<ConditionArithmetic>),
+    /// Quotient. Division by zero is an evaluation error, not an infinity.
     Divide(Box<ConditionArithmetic>, Box<ConditionArithmetic>),
 }
 
 /// Owned execution representation of the existing parsed `FilterExpression`
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ConditionExpression {
+    /// `(left, operator, right)`, compared as terms.
     Comparison(String, String, String),
+    /// Two arithmetic expressions compared numerically.
     ArithmeticComparison(ConditionArithmetic, String, ConditionArithmetic),
+    /// Both operands must hold.
     And(Box<ConditionExpression>, Box<ConditionExpression>),
+    /// Either operand may hold.
     Or(Box<ConditionExpression>, Box<ConditionExpression>),
+    /// Negation.
     Not(Box<ConditionExpression>),
+    /// An arithmetic expression used where a truth value is expected.
     ArithmeticExpr(Box<ConditionArithmetic>),
+    /// `(function name, arguments)`, resolved against the store's registered
+    /// user-defined functions at execution time.
     FunctionCall(String, Vec<String>),
 }
 
 /// Represents a condition for filtering operations
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Condition {
+    /// The expression a solution must satisfy.
     pub expression: ConditionExpression,
 }
 
@@ -100,14 +119,19 @@ impl Truth {
 /// ID-based result type for performance optimization
 #[derive(Debug, Clone)]
 pub struct IdResult {
+    /// Variable name to encoded term id. Ids rather than text, which is the
+    /// point: comparisons and joins stay integer work.
     pub bindings: HashMap<String, u32>,
 }
 
 /// One owned projection item for a subquery
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SubqueryProjection {
+    /// `"VAR"` for an ordinary variable, or an aggregate's uppercase name.
     pub kind: String,
+    /// The variable projected.
     pub variable: String,
+    /// Name it is exposed under, if renamed.
     pub alias: Option<String>,
 }
 
@@ -116,9 +140,15 @@ pub struct SubqueryProjection {
 pub struct SubquerySpec {
     /// `None` represents `SELECT *`; `Some` is an explicit projection list
     pub projection: Option<Vec<SubqueryProjection>>,
+    /// Whether duplicates are removed before the rows join the outer query.
     pub distinct: bool,
+    /// `GROUP BY` keys.
     pub group_vars: Vec<String>,
+    /// `ORDER BY` keys, in precedence order. Only observable in combination with
+    /// `limit`, since the join that follows does not preserve order.
     pub order_conditions: Vec<(String, SortDirection)>,
+    /// `LIMIT` applied inside the subquery, before the join — which is what makes
+    /// it different from limiting the outer query.
     pub limit: Option<usize>,
 }
 
@@ -294,16 +324,25 @@ impl Condition {
         }
     }
 
+    /// A single comparison between a variable and a value.
     pub fn new(variable: String, operator: String, value: String) -> Self {
         Self {
             expression: ConditionExpression::Comparison(variable, operator, value),
         }
     }
 
+    /// Converts a parsed filter into the owned execution form.
+    ///
+    /// Terms are kept as text; use [`Self::from_filter_with_resolver`] to resolve
+    /// them against a dictionary at the same time.
     pub fn from_filter(filter: FilterExpression<'_>) -> Self {
         Self::from_filter_with_resolver(&filter, |value| value.to_string())
     }
 
+    /// As [`Self::from_filter`], expanding each term through `resolver` first.
+    ///
+    /// Used where prefixed names in a filter must be resolved against the query's
+    /// prefix map before the condition is evaluated.
     pub fn from_filter_with_resolver<F>(filter: &FilterExpression<'_>, resolve_constant: F) -> Self
     where
         F: Fn(&str) -> String,
@@ -523,32 +562,39 @@ impl Condition {
 }
 
 impl IdResult {
+    /// An empty binding set.
     pub fn new() -> Self {
         Self {
             bindings: HashMap::new(),
         }
     }
 
+    /// A binding set from an existing map.
     pub fn with_bindings(bindings: HashMap<String, u32>) -> Self {
         Self { bindings }
     }
 
+    /// Binds `variable` to `id`, replacing any existing binding.
     pub fn insert(&mut self, variable: String, id: u32) {
         self.bindings.insert(variable, id);
     }
 
+    /// The id bound to `variable`, if any.
     pub fn get(&self, variable: &str) -> Option<&u32> {
         self.bindings.get(variable)
     }
 
+    /// Whether `variable` is bound.
     pub fn contains(&self, variable: &str) -> bool {
         self.bindings.contains_key(variable)
     }
 
+    /// Number of bound variables.
     pub fn len(&self) -> usize {
         self.bindings.len()
     }
 
+    /// Whether nothing is bound. The unit solution is empty but still a solution.
     pub fn is_empty(&self) -> bool {
         self.bindings.is_empty()
     }

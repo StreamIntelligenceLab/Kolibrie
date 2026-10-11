@@ -8,6 +8,12 @@
  * you can obtain one at https://mozilla.org/MPL/2.0/.
  */
 
+//! [`Streamertail`]: enumerating candidate plans and selecting the cheapest.
+//!
+//! Translates a logical plan into a physical one, choosing a join algorithm and scan
+//! strategy per operator from what the cost model predicts rather than from the order
+//! the query was written in.
+
 use super::cost::{collect_pattern_variables, CostEstimator};
 use super::execution::{DatasetView, ExecutionEngine};
 use super::operators::{LogicalOperator, PhysicalOperator};
@@ -22,8 +28,13 @@ use std::sync::Arc;
 
 /// Volcano-style query optimizer with cost-based optimization
 pub struct Streamertail {
+    /// Plans already costed, keyed by a canonical form of the logical subplan, so
+    /// a repeated subexpression is not re-optimised.
     pub memo: HashMap<String, PhysicalOperator>,
+    /// Variables the query projects, which decides what may be dropped early.
     pub selected_variables: Vec<String>,
+    /// Statistics the cost model reads. Shared, and possibly slightly stale under
+    /// the store's bounded statistics policy.
     pub stats: Arc<DatabaseStats>,
     dataset: Option<DatasetView>,
 }
@@ -67,6 +78,10 @@ impl Streamertail {
         }
     }
 
+    /// An optimizer reusing an existing statistics snapshot.
+    ///
+    /// Preferred over rebuilding: collecting statistics scans the store, so a
+    /// per-query rebuild would cost more than the planning it informs.
     pub fn with_cached_stats(stats: Arc<DatabaseStats>) -> Self {
         Self {
             memo: HashMap::new(),

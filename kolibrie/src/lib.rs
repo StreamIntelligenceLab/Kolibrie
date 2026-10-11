@@ -96,6 +96,5 @@ pub mod sparql_database;
 pub(crate) mod term_order;
 /// Small helpers: user-defined function wrappers, timestamps, a demo server.
 pub mod utils;
-/// Cost-based query optimisation, Volcano-style.
 pub mod streamertail_optimizer;
 pub mod rsp;

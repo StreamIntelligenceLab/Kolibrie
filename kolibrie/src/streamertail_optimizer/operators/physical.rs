@@ -8,6 +8,12 @@
  * you can obtain one at https://mozilla.org/MPL/2.0/.
  */
 
+//! [`PhysicalOperator`]: how a query is executed.
+//!
+//! The optimizer's output. Each node names a concrete algorithm — which join, which
+//! index, whether a side is materialised — so running a physical plan involves no
+//! further choices.
+
 use super::super::types::SubquerySpec;
 use super::super::Condition;
 use shared::dataset_index::{GraphTerm, QuadPattern};
@@ -15,74 +21,127 @@ use shared::terms::{Bindings, TriplePattern};
 
 /// Physical operators represent the actual execution plan after optimization
 #[derive(Debug, Clone)]
+/// How a query is executed: a concrete algorithm per node.
+///
+/// The optimizer's output. Nothing here is left to choose at run time, which is why
+/// the join variants name their algorithm rather than saying "join".
 pub enum PhysicalOperator {
     /// The SPARQL unit table: one empty solution mapping.
     Unit,
+    /// Scan without an index, examining every candidate quad.
+    ///
+    /// Dispatches to the same executor as [`IndexScan`](Self::IndexScan); the two
+    /// are distinguished for costing, not execution.
     TableScan {
+        /// Pattern to match.
         pattern: QuadPattern,
     },
+    /// Scan through an index, visiting only quads that can match.
     IndexScan {
+        /// Pattern to match; its bound positions select the index.
         pattern: QuadPattern,
     },
     /// Multiset union. No duplicate elimination is performed.
     Union {
+        /// Branches, concatenated in order.
         branches: Vec<PhysicalOperator>,
     },
     /// Evaluate an input plan under a fixed or variable named graph.
     Graph {
+        /// Plan evaluated inside that graph.
         input: Box<PhysicalOperator>,
+        /// Which graph: fixed, or a variable bound to each in turn.
         graph: GraphTerm,
     },
+    /// Drop solutions failing a condition.
     Filter {
+        /// Plan whose solutions are filtered.
         input: Box<PhysicalOperator>,
+        /// Condition each surviving solution satisfies.
         condition: Condition,
     },
     /// Pipelined dependent join whose left solutions feed the right side, so its scans probe indexes with bound values
     BindJoin {
+                /// Executed first; each of its solutions drives the right side.
         left: Box<PhysicalOperator>,
+                /// Re-entered once per left solution, with those bindings pushed in.
         right: Box<PhysicalOperator>,
     },
     /// Build/probe join over the shared-variable key of two independently executed sides
     HashJoin {
+                /// Build side.
         left: Box<PhysicalOperator>,
+                /// Probe side.
         right: Box<PhysicalOperator>,
     },
     /// Materialized pairwise join over both sides, and the algorithm for Cartesian products
     NestedLoopJoin {
+                /// Outer side.
         left: Box<PhysicalOperator>,
+                /// Inner side, re-scanned per outer solution.
         right: Box<PhysicalOperator>,
     },
+    /// Join several patterns that all share one variable, in a single pass.
+    ///
+    /// Cheaper than a chain of pairwise joins when the shared variable is the only
+    /// link, because no intermediate result is materialised per pair.
     StarJoin {
+        /// The variable every pattern shares.
         join_var: String,
+        /// Patterns joined on it.
         patterns: Vec<TriplePattern>,
     },
+    /// Restrict each solution to a set of variables, keeping duplicates.
     Projection {
+        /// Plan being projected.
         input: Box<PhysicalOperator>,
+        /// Variables retained.
         variables: Vec<String>,
     },
+    /// Solutions supplied directly rather than computed.
     InMemoryBuffer {
+        /// The solutions.
         content: Bindings,
+        /// Where they came from, for diagnostics.
         origin: String,
     },
+    /// A nested plan evaluated independently, then joined on its projection.
     Subquery {
+        /// The nested plan.
         inner: Box<PhysicalOperator>,
+        /// What it projects and how its modifiers apply.
         spec: SubquerySpec,
     },
+    /// Extend each solution with a value computed by a registered function.
     Bind {
+        /// Plan being extended.
         input: Box<PhysicalOperator>,
+        /// Function resolved against the store's UDFs at execution time.
         function_name: String,
+        /// Variables passed as arguments.
         arguments: Vec<String>,
+        /// Variable the result binds to.
         output_variable: String,
     },
+    /// An inline table of candidate solutions.
     Values {
+        /// Column variables, in order.
         variables: Vec<String>,
+        /// Rows; `None` is `UNDEF` and leaves the variable unbound.
         values: Vec<Vec<Option<u32>>>,
     },
+    /// Bind a variable from a model's prediction over each input solution.
     MLPredict {
+        /// Solutions to predict over.
         input: Box<PhysicalOperator>,
+        /// Model name, as declared.
         model_name: String,
+        /// Artifact resolved at planning time, so execution does not re-consult the
+        /// ML policy.
         model_path: String,
+        /// Feature variables, in model input order.
         input_variables: Vec<String>,
+        /// Variable the prediction binds to.
         output_variable: String,
     },
 }
@@ -176,6 +235,7 @@ impl PhysicalOperator {
         }
     }
 
+    /// A plan node supplying solutions directly.
     pub fn buffer(content: Bindings, origin: String) -> Self {
         Self::InMemoryBuffer { content, origin }
     }

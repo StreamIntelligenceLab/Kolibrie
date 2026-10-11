@@ -8,6 +8,11 @@
  * you can obtain one at https://mozilla.org/MPL/2.0/.
  */
 
+//! [`ExecutionEngine`]: running a physical plan against a store.
+//!
+//! Walks the chosen plan and produces solutions. Every algorithmic decision was
+//! already made during optimisation, so this makes none.
+
 use super::super::operators::PhysicalOperator;
 use super::exec_stats::exec_count;
 use super::super::types::{SubqueryProjection, SubquerySpec};
@@ -33,7 +38,11 @@ const FILTER_LOCK_CHUNK: usize = 1024;
 /// The RDF dataset visible to one query execution
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DatasetView {
+    /// Graphs forming the default graph. `FROM` replaces it, so this is not always
+    /// just [`GraphId::Default`].
     pub default_graphs: Vec<GraphId>,
+    /// Graphs `GRAPH` can address. A graph in the store but absent here is
+    /// invisible to this query.
     pub named_graphs: HashSet<GraphId>,
 }
 
@@ -677,6 +686,7 @@ impl DatasetView {
         Self::new(std::iter::empty(), named_graphs)
     }
 
+    /// Whether `GRAPH` may address this graph in the current dataset.
     pub fn is_named_visible(&self, graph: GraphId) -> bool {
         matches!(graph, GraphId::Named(_)) && self.named_graphs.contains(&graph)
     }
@@ -687,10 +697,13 @@ impl DatasetView {
 pub struct ExecutionContext {
     /// Shared, so deriving a child context per `GRAPH` scope does not rebuild the graph sets
     pub dataset: Arc<DatasetView>,
+    /// Graph established by an enclosing `GRAPH` clause, or `None` at the top
+    /// level, where patterns match the default graph.
     pub active_graph: Option<GraphId>,
 }
 
 impl ExecutionContext {
+    /// A top-level context over `dataset`, with no active graph.
     pub fn new(dataset: DatasetView) -> Self {
         Self {
             dataset: Arc::new(dataset),

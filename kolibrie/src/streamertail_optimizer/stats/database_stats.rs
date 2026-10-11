@@ -8,6 +8,13 @@
  * you can obtain one at https://mozilla.org/MPL/2.0/.
  */
 
+//! [`DatabaseStats`]: the cardinalities the cost model reads.
+//!
+//! Collected by scanning the store, so building them is proportional to its size —
+//! which is why the store caches them and refreshes according to its
+//! [`PlanningStatsPolicy`](crate::sparql_database::PlanningStatsPolicy) rather than
+//! on every write.
+
 use crate::sparql_database::SparqlDatabase;
 use shared::dataset_index::GraphId;
 use std::collections::{HashMap, HashSet};
@@ -69,6 +76,8 @@ impl Hasher for TermHasher {
     }
 }
 
+/// Hasher builder for term-id keys, avoiding the default hasher's overhead on
+/// integers that are already well distributed.
 pub type TermBuildHasher = BuildHasherDefault<TermHasher>;
 /// A map keyed by dictionary id
 pub type TermMap<V> = HashMap<u32, V, TermBuildHasher>;
@@ -164,18 +173,29 @@ impl SampleScale {
 /// Database statistics for cost-based optimization
 #[derive(Debug)]
 pub struct DatabaseStats {
+    /// Quads across every graph. The denominator for most selectivity estimates.
     pub total_triples: u64,
+    /// Distinct quoted triples interned.
     pub quoted_triple_count: u64,
+    /// Named graphs, excluding the default graph.
     pub named_graph_count: u64,
+    /// Quads per graph.
     pub graph_cardinalities: GraphMap<u64>,
+    /// Quads per predicate — the most useful figure, since a bound predicate is
+    /// the common case.
     pub predicate_cardinalities: TermMap<u64>,
+    /// Quads per subject.
     pub subject_cardinalities: TermMap<u64>,
+    /// Quads per object.
     pub object_cardinalities: TermMap<u64>,
     /// Join-key domain sizes: a join through predicate `p` fans out by roughly `cardinality(p) / distinct(p)` rows per binding
     pub predicate_distinct_subjects: TermMap<u64>,
+    /// Distinct objects per predicate; the object-side counterpart of the
+    /// fan-out estimate above.
     pub predicate_distinct_objects: TermMap<u64>,
     /// Dataset-wide domain sizes, used when a pattern leaves its predicate unbound
     pub distinct_subjects: u64,
+    /// Distinct objects across the dataset.
     pub distinct_objects: u64,
 }
 
@@ -336,6 +356,9 @@ impl DatabaseStats {
         self.object_cardinalities.get(&object).copied().unwrap_or(0)
     }
 
+    /// Quads in `graph`, or the unmeasured-graph default when it is absent from
+    /// the statistics — which is why an empty or newly created graph does not make
+    /// a plan look free.
     pub fn get_graph_cardinality(&self, graph: GraphId) -> u64 {
         self.graph_cardinalities.get(&graph).copied().unwrap_or(0)
     }

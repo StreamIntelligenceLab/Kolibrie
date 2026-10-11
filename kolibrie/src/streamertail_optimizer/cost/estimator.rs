@@ -8,6 +8,12 @@
  * you can obtain one at https://mozilla.org/MPL/2.0/.
  */
 
+//! [`CostEstimator`]: predicting cardinality and work for a candidate plan.
+//!
+//! Estimates only have to rank plans correctly; absolute accuracy is not the goal.
+//! They read [`DatabaseStats`](crate::streamertail_optimizer::DatabaseStats), which
+//! may lag the data under the store's default statistics policy.
+
 use super::super::operators::PhysicalOperator;
 use super::super::stats::DatabaseStats;
 use super::super::types::{Condition, ConditionExpression};
@@ -54,17 +60,25 @@ pub struct CostConstants;
 impl CostConstants {
     /// Retained for source compatibility
     pub const COST_PER_ROW_SCAN: u64 = 100;
+    /// Per row returned by an index scan.
     pub const COST_PER_ROW_INDEX_SCAN: u64 = 1;
     /// Fixed overhead of opening one index scan, so a ground pattern is never free
     pub const COST_PER_SCAN_PROBE: u64 = 1;
     /// Cardinality assumed for a graph absent from the statistics
     pub const UNMEASURED_GRAPH_CARDINALITY: u64 = 1;
+    /// Per row a filter examines, whether or not it survives.
     pub const COST_PER_FILTER: u64 = 1;
+    /// Per row built, probed or emitted by a hash join.
     pub const COST_PER_ROW_JOIN: u64 = 2;
+    /// Per row pair a nested-loop join considers. Deliberately far above the hash
+    /// join's figure, which is what makes the optimizer prefer hashing unless the
+    /// inner side is tiny.
     pub const COST_PER_ROW_NESTED_LOOP: u64 = 10;
+    /// Per row projected.
     pub const COST_PER_PROJECTION: u64 = 1;
     /// One index probe of a dependent plan's right side
     pub const COST_PER_PROBE: u64 = 2;
+    /// Baseline cost of handling one tuple.
     pub const TUPLE_COST: u64 = 1;
 }
 

@@ -8,6 +8,12 @@
  * you can obtain one at https://mozilla.org/MPL/2.0/.
  */
 
+//! Building a logical plan from a parsed query.
+//!
+//! The bridge from the lexical syntax tree in [`shared::query`] to
+//! [`LogicalOperator`](super::LogicalOperator): terms are resolved against a
+//! dictionary and graph patterns become plan nodes.
+
 use super::operators::{LogicalOperator, PhysicalOperator};
 use super::types::{Condition, SubqueryProjection, SubquerySpec};
 use crate::sparql_database::SparqlDatabase;

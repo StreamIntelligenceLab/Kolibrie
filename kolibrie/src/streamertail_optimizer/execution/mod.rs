@@ -8,6 +8,8 @@
  * you can obtain one at https://mozilla.org/MPL/2.0/.
  */
 
+//! Running a chosen physical plan.
+
 pub mod exec_stats;
 pub mod engine;
 
