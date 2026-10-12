@@ -8,6 +8,20 @@
  * you can obtain one at https://mozilla.org/MPL/2.0/.
  */
 
+//! Predicates whose facts come from a model rather than from data.
+//!
+//! A neural relation declares that querying some predicate should run a model over
+//! the rows a pattern selects. Declaring one is not authority to run it — every entry
+//! point here checks the [`MlExecutionContext`](crate::ml_policy::MlExecutionContext)
+//! first, and an unapproved model is refused before anything executes.
+//!
+//! # Argmax here, distributions in `program`
+//!
+//! These entry points bind the single most likely label. A full distribution needs
+//! the probabilistic machinery in [`program`](crate::program), which can represent
+//! competing labels as a mutually exclusive group; see
+//! [`DISTRIBUTION_REQUIRES_PROGRAM`].
+
 use std::collections::HashMap;
 use std::error::Error;
 
@@ -28,9 +42,17 @@ use crate::sparql_database::SparqlDatabase;
 
 type NeuralResult<T> = Result<T, Box<dyn Error>>;
 
+/// Message explaining that `OUTPUT ?v DISTRIBUTION` is only supported through
+/// [`program`](crate::program), because representing competing labels as mutually
+/// exclusive needs the probabilistic machinery these entry points do not have.
 pub const DISTRIBUTION_REQUIRES_PROGRAM: &str =
     "ML.PREDICT ... OUTPUT ?v DISTRIBUTION runs only through kolibrie::program; legacy entry points predict the argmax";
 
+/// The default artifact filename for a model.
+///
+/// Every non-alphanumeric character becomes `_`, so the result is a safe filename
+/// — but two model names differing only in punctuation collide. A host that cares
+/// should name artifacts explicitly.
 pub fn default_model_artifact_path(model_name: &str) -> String {
     let sanitized: String = model_name
         .chars()
@@ -63,6 +85,10 @@ fn normalize_triple(
     )
 }
 
+/// Registers model, relation and training declarations on a store.
+///
+/// Reports failures to stderr. Prefer
+/// [`register_neural_declarations_checked`] where the caller can handle an error.
 pub fn register_neural_declarations(
     database: &mut SparqlDatabase,
     prefixes: &HashMap<String, String>,
@@ -83,6 +109,10 @@ pub fn register_neural_declarations(
     }
 }
 
+/// Registers declarations, returning an error rather than reporting it.
+///
+/// Checks the ML policy for every model named, so a set containing one unapproved
+/// model registers none of them.
 pub fn register_neural_declarations_checked(
     database: &mut SparqlDatabase,
     prefixes: &HashMap<String, String>,
@@ -212,6 +242,7 @@ fn resolve_model_components(
     Ok((relation, model))
 }
 
+/// Resolves a parsed training declaration into owned, prefix-expanded form.
 pub fn lower_train_decl_to_owned(
     database: &SparqlDatabase,
     train_decl: &TrainNeuralRelationDecl,
@@ -295,6 +326,11 @@ pub fn lower_train_decl_to_owned(
     })
 }
 
+/// Trains the model behind a neural relation and writes its artifact.
+///
+/// Requires trusted-local authority: the artifact path is resolved through the ML
+/// context, so a declaration naming a path cannot write outside the directory the
+/// host granted.
 pub fn execute_train_decl(
     database: &mut SparqlDatabase,
     train_decl: &TrainNeuralRelationDecl,
@@ -373,6 +409,8 @@ fn resolve_unique_relation_for_model(
     }
 }
 
+/// Runs an `ML.PREDICT` that appears at the top level of a request rather than
+/// attached to a rule.
 pub fn execute_top_level_ml_predict(
     database: &mut SparqlDatabase,
     ml_predict: &MLPredictClause<'_>,
@@ -426,6 +464,7 @@ pub fn execute_top_level_ml_predict(
     Ok(())
 }
 
+/// Parses and runs a program's neural declarations against a store.
 pub fn execute_neural_program(database: &mut SparqlDatabase, program: &str) -> Result<(), String> {
     crate::execute_query::validate_query_policy(program, database)?;
     database.register_prefixes_from_query(program);
@@ -502,6 +541,7 @@ fn remove_materialized_triples(database: &mut SparqlDatabase, predicate: &str) {
     }
 }
 
+/// Runs one neural relation's model and adds the predicted facts to the store.
 pub fn materialize_neural_relation(
     database: &mut SparqlDatabase,
     predicate: &str,
@@ -599,6 +639,12 @@ pub fn materialize_neural_relation(
     Ok(())
 }
 
+/// Materialises whichever neural relations the given patterns could match.
+///
+/// This is the implicit path: querying a neural predicate runs its model without
+/// the query saying so. [`SparqlDatabase`](crate::sparql_database::SparqlDatabase)
+/// can switch it off, and [`execute_program`](crate::program::execute_program) does
+/// exactly that so a program's own declarations are the only thing invoking a model.
 pub fn materialize_neural_relations_for_patterns(
     database: &mut SparqlDatabase,
     patterns: &[(&str, &str, &str)],

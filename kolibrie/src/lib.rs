@@ -59,13 +59,14 @@
 // not intend to support. Promote one back the moment something outside needs it.
 pub(crate) mod error_handler;
 mod aggregate;
-/// Which models may run, and where their artifacts may live.
 pub mod ml_policy;
 mod ml_syntax;
 #[cfg(test)]
 extern crate self as kolibrie;
+/// Running an `ML.PREDICT` clause through the Python backend.
 #[cfg(feature = "ml")]
 pub mod execute_ml;
+/// Training a model declared by a `TRAIN` clause.
 #[cfg(feature = "ml")]
 pub mod execute_ml_train;
 /// Query evaluation, including the SIMD and Rayon-parallel variants.

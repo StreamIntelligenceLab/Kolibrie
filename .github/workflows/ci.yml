@@ -115,11 +115,25 @@ jobs:
         run: scripts/check_lint.sh unreachable_pub -- -p kolibrie --features ml --all-targets
       - name: unreachable_pub, no default features
         run: scripts/check_lint.sh unreachable_pub -- -p kolibrie --no-default-features --all-targets
-      # missing_docs is gated per crate as each reaches zero; `shared` is the first.
-      # The rest of the workspace still has ~1,900, so a workspace-wide gate would
-      # only fail. Add a line here when the next crate lands.
+      # missing_docs is gated per crate as each reaches zero; `shared` was the first,
+      # `kolibrie/src` the second. `datalog` and `datalogmtl` still have ~130 between
+      # them, so a workspace-wide gate would only fail. Add a line here when the next
+      # crate lands.
+      #
+      # The scopes are `<crate>/src` rather than the whole crate on purpose: tests,
+      # examples and benches each want a crate-level doc comment of their own, which
+      # is ~130 items of no value to a reader and not part of the public surface.
       - name: missing_docs in shared
         run: scripts/check_lint.sh missing_docs --only shared/src -- -p shared --all-targets
+      # Three configurations, for the same reason as unreachable_pub above: the ml
+      # modules account for 52 of kolibrie's items and the default build cannot see
+      # them.
+      - name: missing_docs in kolibrie, default features
+        run: scripts/check_lint.sh missing_docs --only kolibrie/src -- -p kolibrie --all-targets
+      - name: missing_docs in kolibrie, ml feature
+        run: scripts/check_lint.sh missing_docs --only kolibrie/src -- -p kolibrie --features ml --all-targets
+      - name: missing_docs in kolibrie, no default features
+        run: scripts/check_lint.sh missing_docs --only kolibrie/src -- -p kolibrie --no-default-features --all-targets
 
   # ── Advisory for now: reports, does not block ───────────────────────────────
   #

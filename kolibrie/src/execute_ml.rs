@@ -8,6 +8,12 @@
  * you can obtain one at https://mozilla.org/MPL/2.0/.
  */
 
+//! Running an `ML.PREDICT` clause through the Python backend.
+//!
+//! Crosses into Python via the `ml` crate, so the interesting cost is the boundary
+//! itself rather than the model: [`MLPredictTiming`] breaks it down because the
+//! marshalling usually dominates inference on small batches.
+
 use crate::sparql_database::SparqlDatabase;
 use ml::MLHandler;
 use shared::query::MLPredictClause;
@@ -15,17 +21,30 @@ use std::error::Error;
 use std::time::Instant;
 
 #[derive(Debug)]
+/// Where the time went in one `ML.PREDICT`, in seconds.
+///
+/// Split around the language boundary on purpose: the crossing and marshalling are
+/// often larger than the inference, and only a breakdown shows that.
 pub struct MLPredictTiming {
+    /// Wall-clock time for the whole clause.
     pub total_time: f64,
+    /// Handing the input across to Python.
     pub rust_to_python_time: f64,
+    /// Python-side preparation before inference.
     pub python_preprocessing_time: f64,
+    /// The model call itself.
     pub actual_prediction_time: f64,
+    /// Python-side work on the results.
     pub python_postprocessing_time: f64,
+    /// Bringing the results back.
     pub python_to_rust_time: f64,
 }
 
 impl MLPredictTiming {
-/// Return local timing diagnostics without model or input details
+    /// Prints the timing to stdout.
+    ///
+    /// Deliberately omits the model name and the input: a breakdown may be logged
+    /// where the data it was computed from should not be.
     pub fn print_breakdown(&self) {
         println!(
             "ML_TIMING total_seconds={:.6} prediction_seconds={:.6}",
@@ -34,6 +53,10 @@ impl MLPredictTiming {
     }
 }
 
+/// Runs an `ML.PREDICT` clause and returns its predictions with timing.
+///
+/// Binds the argmax label. A distribution over labels requires
+/// [`program`](crate::program).
 pub fn execute_ml_prediction_from_clause<F, G, T, U>(
     ml_predict: &MLPredictClause,
     database: &SparqlDatabase,

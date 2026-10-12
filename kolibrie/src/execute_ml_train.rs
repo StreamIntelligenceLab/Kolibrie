@@ -8,6 +8,16 @@
  * you can obtain one at https://mozilla.org/MPL/2.0/.
  */
 
+//! Training a model declared by a `TRAIN` clause.
+//!
+//! The `Owned*` types here mirror the borrowed declarations in
+//! [`shared::query`] with their terms resolved and owned, because training outlives
+//! the query text it was requested by.
+//!
+//! Writing an artifact requires trusted-local authority from the
+//! [`MlExecutionContext`](crate::ml_policy::MlExecutionContext); a `save_path` in a
+//! declaration is a request, not permission.
+
 use std::collections::HashMap;
 use std::error::Error;
 
@@ -30,49 +40,83 @@ use crate::sparql_database::SparqlDatabase;
 type TrainResult<T> = Result<T, Box<dyn Error>>;
 
 #[derive(Debug, Clone)]
+/// One alternative a model can predict, as an owned fact template.
 pub struct OwnedNeuralChoice {
+    /// Fact asserted when this alternative is chosen; variables are filled from
+    /// the prediction's row.
     pub triple_template: (String, String, String),
+    /// Variable carrying this alternative's probability.
     pub prob_var: String,
 }
 
 #[derive(Debug, Clone)]
+/// Whether a model's outputs compete or stand alone.
 pub enum OwnedNeuralGroupType {
+    /// At most one alternative holds. Represented downstream as a mutually
+    /// exclusive seed group, so two labels can never both be true.
     Exclusive {
+        /// The competing alternatives.
         choices: Vec<OwnedNeuralChoice>,
     },
+    /// A single fact with its own probability, independent of everything else.
     Independent {
+        /// Fact asserted, with variables filled from the row.
         fact_template: (String, String, String),
+        /// Variable carrying its probability.
         prob_var: String,
     },
 }
 
 #[derive(Debug, Clone)]
+/// One invocation of a model within a training clause.
 pub struct OwnedNeuralCallSpec {
+    /// Variables forming the feature vector, in model input order.
     pub feature_vars: Vec<String>,
+    /// How to interpret the outputs.
     pub group_type: OwnedNeuralGroupType,
 }
 
 #[derive(Debug, Clone)]
+/// A resolved `TRAIN` declaration, owning everything training needs.
 pub struct OwnedNeuralTrainingClause {
+    /// Model to fit.
     pub model_name: String,
+    /// Invocations whose outputs the loss is computed against.
     pub neural_calls: Vec<OwnedNeuralCallSpec>,
+    /// Query selecting the training examples, as text.
     pub training_data_raw: String,
+    /// Variable holding each example's ground-truth label.
     pub label_var: String,
+    /// Pattern identifying what is predicted about each example.
     pub target_triple: (String, String, String),
+    /// Objective to minimise.
     pub loss: LossFn,
+    /// Optimiser to use.
     pub optimizer: shared::query::OptimizerKind,
+    /// Step size.
     pub learning_rate: f64,
+    /// Passes over the training data.
     pub epochs: usize,
+    /// Examples per gradient step.
     pub batch_size: usize,
+    /// Where the weights should be written. Resolved through the ML context, so a
+    /// path here is a request rather than permission to write it.
     pub save_path: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+/// Where a training run spent its time.
 pub struct NeuralTrainingTimings {
+    /// Running the query that selects the examples.
     pub data_fetch: Duration,
+    /// Fitting the model.
     pub learning: Duration,
 }
 
+/// Trains a model from a resolved clause.
+///
+/// Randomness is unseeded, so two runs differ; use
+/// [`execute_ml_training_owned_seeded`] where reproducibility matters.
 pub fn execute_ml_training_owned(
     clause: &OwnedNeuralTrainingClause,
     base_reasoner: &Reasoner,
@@ -81,6 +125,8 @@ pub fn execute_ml_training_owned(
     execute_ml_training_impl(clause, base_reasoner, db, None, None).map(|(model, _)| model)
 }
 
+/// As [`execute_ml_training_owned`], with training randomness seeded so the run
+/// is reproducible.
 pub fn execute_ml_training_owned_seeded(
     clause: &OwnedNeuralTrainingClause,
     base_reasoner: &Reasoner,
@@ -90,6 +136,7 @@ pub fn execute_ml_training_owned_seeded(
     execute_ml_training_impl(clause, base_reasoner, db, Some(seed), None).map(|(model, _)| model)
 }
 
+/// As [`execute_ml_training_owned_seeded`], also returning where the time went.
 pub fn execute_ml_training_owned_seeded_timed(
     clause: &OwnedNeuralTrainingClause,
     base_reasoner: &Reasoner,
@@ -99,6 +146,8 @@ pub fn execute_ml_training_owned_seeded_timed(
     execute_ml_training_impl(clause, base_reasoner, db, Some(seed), None)
 }
 
+/// Trains with an explicit hidden-layer shape rather than the model
+/// declaration's.
 pub fn execute_supervised_training(
     clause: &OwnedNeuralTrainingClause,
     hidden: &[usize],
@@ -457,6 +506,8 @@ fn loss_gradient(
     }
 }
 
+/// A reasoner seeded with the store's current facts, for deriving the context a
+/// training example sits in.
 pub fn build_ground_reasoner_from_db(db: &SparqlDatabase, extra_rule: Option<Rule>) -> Reasoner {
     let mut reasoner = Reasoner::new();
     reasoner.dictionary = db.dictionary.clone();
