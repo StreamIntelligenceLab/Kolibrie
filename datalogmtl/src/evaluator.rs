@@ -8,6 +8,36 @@
  * you can obtain one at https://mozilla.org/MPL/2.0/.
  */
 
+//! The tick evaluator: one bottom-up fixpoint per time point, over a stream.
+//!
+//! [`DatalogMTLEvaluator::advance`] ingests the facts arriving at `t`, derives
+//! everything the rules entail at `t`, and evicts what can no longer matter.
+//!
+//! # The time unit is not a free choice
+//!
+//! `Box` is decided by stepping one integer at a time across its window, so a
+//! point in that window with no supporting fact fails it. Two consequences, both
+//! of which have cost real debugging time:
+//!
+//! - Cost is proportional to the window's width *in whatever unit the timestamps
+//!   use*, not to the number of facts in it.
+//! - With millisecond timestamps and a sampling period of one second,
+//!   `Box[0,5000]` asks for a fact at 5001 consecutive milliseconds and finds one
+//!   at every thousandth, so it derives nothing — silently, because deriving
+//!   nothing is also what a correctly unsatisfied rule does.
+//!
+//! Express time in units of the sampling period, so consecutive integers are
+//! consecutive observations. The interval engine in
+//! [`automata`](crate::automata) does not have this property at all, because it
+//! reasons over real intervals instead of integer points.
+//!
+//! # Eviction
+//!
+//! Each tick drops everything older than `t - w_max`, where `w_max` is the
+//! furthest back any single body atom can reach. Nesting adds, so
+//! `Box[0,5]Diamond[0,3]` reaches back 8; separate rules take the maximum rather
+//! than the sum, since each reaches back independently of the others.
+
 use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, RwLock};
 use std::time::Instant;
@@ -20,15 +50,31 @@ use crate::store::TemporalStore;
 use crate::metrics::TickMetrics;
 use crate::validate::validate_rules;
 
+/// A validated rule set together with the store it reads and writes.
+///
+/// Generic over the store so the representation can be chosen per workload
+/// without the evaluator knowing which it got.
 pub struct DatalogMTLEvaluator<S: TemporalStore> {
+    /// Rules, validated at construction. Mutating this afterwards bypasses that
+    /// check and leaves `w_max` stale, so eviction may then drop facts a rule
+    /// still needs; rebuild the evaluator instead.
     pub rules:      Vec<DatalogMTLRule>,
+    /// Facts, both ingested and derived.
     pub store:      S,
+    /// Term interning, shared with the caller: ids in the rules and the store
+    /// have to mean the same thing outside.
     pub dictionary: Arc<RwLock<Dictionary>>,
     /// Maximum interval width across all rules. Used for eviction cutoff.
     w_max:          u64,
 }
 
 impl<S: TemporalStore> DatalogMTLEvaluator<S> {
+    /// Validates `rules` and computes the eviction horizon from them.
+    ///
+    /// # Errors
+    ///
+    /// The message from [`validate_rules`](crate::validate::validate_rules):
+    /// an interval with `start > end`, or a head variable no body atom can bind.
     pub fn new(
         rules: Vec<DatalogMTLRule>,
         store: S,

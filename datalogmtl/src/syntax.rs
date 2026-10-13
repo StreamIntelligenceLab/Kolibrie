@@ -8,6 +8,19 @@
  * you can obtain one at https://mozilla.org/MPL/2.0/.
  */
 
+//! The rule and operator vocabulary: what a DatalogMTL program can say.
+//!
+//! Every [`Interval`] here is a *relative* offset and not an absolute time, and
+//! which direction it runs in is the operator's business, not the interval's. The
+//! past operators ([`TemporalAtom::Box_`], [`Diamond`](TemporalAtom::Diamond),
+//! [`Prev`](TemporalAtom::Prev), [`Since`](TemporalAtom::Since)) read it
+//! backwards from the point being evaluated; the future operators read it forwards
+//! and are only legal in [`Mode::Static`], because looking forward on a stream
+//! means looking at data that has not arrived.
+//!
+//! The unit is whatever the data uses. That sounds free and is not: see
+//! [`evaluator`](crate::evaluator) for what the tick engine does with it.
+
 use shared::terms::TriplePattern;
 
 /// Interval [start, end] in milliseconds, representing a range into the past.
@@ -15,7 +28,12 @@ use shared::terms::TriplePattern;
 /// start=1000, end=5000 means "between 1 and 5 seconds ago."
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct Interval {
+    /// Inclusive bound nearer the evaluation point.
     pub start: u64,   // inclusive lower bound, ms into past
+    /// Inclusive bound further from it. Must be `>= start`; [`validate`] rejects
+    /// a rule where it is not, rather than silently matching nothing.
+    ///
+    /// [`validate`]: crate::validate
     pub end:   u64,   // inclusive upper bound, ms into past
 }
 
@@ -41,38 +59,70 @@ pub enum TemporalAtom {
     Base(TriplePattern),
 
     /// `Diamond[a,b]` phi: phi holds at SOME t' in [t-b, t-a].
-    Diamond { interval: Interval, inner: Box<TemporalAtom> },
+    Diamond {
+        /// How far back to look.
+        interval: Interval,
+        /// What to look for.
+        inner: Box<TemporalAtom>,
+    },
 
     /// `Box[a,b]` phi: phi holds at EVERY integer point t' in [t-b, t-a]
     /// (dense semantics — an integer point with no supporting fact fails Box).
-    Box_ { interval: Interval, inner: Box<TemporalAtom> },
+    Box_ {
+        /// Window that must be satisfied throughout.
+        interval: Interval,
+        /// What must hold at every point of it.
+        inner: Box<TemporalAtom>,
+    },
 
     /// `Prev[a,b]` phi: phi holds at the MOST RECENT t' in [t-b, t-a].
-    Prev { interval: Interval, inner: Box<TemporalAtom> },
+    Prev {
+        /// Window to search backwards through.
+        interval: Interval,
+        /// What to find the most recent occurrence of.
+        inner: Box<TemporalAtom>,
+    },
 
     /// phi `Since[a,b]` psi:
     ///   EXISTS t' in [t-b, t-a]: psi holds at t'
     ///   AND FORALL t'' in (t', t]: phi holds at t''
     Since {
+        /// Window in which the trigger must have occurred.
         interval: Interval,
+        /// Continuation condition, required at every point since the trigger.
+        /// Universal, so it binds no variables — see [`validate`](crate::validate).
         phi: Box<TemporalAtom>,   // continuation condition (holds after reset)
+        /// Trigger condition, whose occurrence starts the interval.
         psi: Box<TemporalAtom>,   // reset/trigger condition
     },
 
     // ── Future operators (static data only — see `Mode`) ──
 
     /// `DiamondPlus[a,b]` phi: phi holds at SOME t' in [t+a, t+b].
-    DiamondPlus { interval: Interval, inner: Box<TemporalAtom> },
+    DiamondPlus {
+        /// How far forward to look.
+        interval: Interval,
+        /// What to look for.
+        inner: Box<TemporalAtom>,
+    },
 
     /// `BoxPlus[a,b]` phi: phi holds at EVERY integer point t' in [t+a, t+b].
-    BoxPlus { interval: Interval, inner: Box<TemporalAtom> },
+    BoxPlus {
+        /// Forward window that must be satisfied throughout.
+        interval: Interval,
+        /// What must hold at every point of it.
+        inner: Box<TemporalAtom>,
+    },
 
     /// phi `Until[a,b]` psi:
     ///   EXISTS t' in [t+a, t+b]: psi holds at t'
     ///   AND FORALL t'' in [t, t'): phi holds at t''
     Until {
+        /// Window in which the trigger must occur.
         interval: Interval,
+        /// Continuation condition, required at every point until the trigger.
         phi: Box<TemporalAtom>,   // continuation condition (holds until reset)
+        /// Trigger condition, whose occurrence ends the interval.
         psi: Box<TemporalAtom>,   // reset/trigger condition
     },
 
@@ -108,7 +158,13 @@ impl Default for Mode {
 /// Body is a conjunction of TemporalAtoms evaluated left to right.
 #[derive(Debug, Clone)]
 pub struct DatalogMTLRule {
+    /// Identifier used in validation errors and metrics. Not checked for
+    /// uniqueness, so two rules may share one.
     pub id:   String,
+    /// Conclusion, derived at the time point being evaluated. Always plain: a
+    /// temporal operator in head position is not part of this fragment.
     pub head: TriplePattern,
+    /// Premises, evaluated left to right with bindings threaded through, so a
+    /// later atom sees what the earlier ones bound.
     pub body: Vec<TemporalAtom>,
 }

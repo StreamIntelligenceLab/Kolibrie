@@ -29,9 +29,13 @@ fn is_inf(v: i64) -> bool { v == NEG_INF || v == POS_INF }
 /// with `NEG_INF`/`POS_INF` sentinels for unbounded tails (ω-materialization).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct TInterval {
+    /// Left endpoint, or [`NEG_INF`].
     pub start: i64,
+    /// Right endpoint, or [`POS_INF`].
     pub end: i64,
+    /// Whether the left endpoint is excluded. Always true for [`NEG_INF`].
     pub start_open: bool,
+    /// Whether the right endpoint is excluded. Always true for [`POS_INF`].
     pub end_open: bool,
 }
 
@@ -51,6 +55,7 @@ impl TInterval {
         TInterval { start: NEG_INF, end, start_open: true, end_open }
     }
 
+    /// Whether both endpoints are real values rather than infinity sentinels.
     pub fn is_finite(&self) -> bool {
         !is_inf(self.start) && !is_inf(self.end)
     }

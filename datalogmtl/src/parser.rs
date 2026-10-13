@@ -38,8 +38,12 @@ pub const RDF_TYPE: &str = "http://www.w3.org/1999/02/22-rdf-syntax-ns#type";
 /// A grounded temporal fact with a closed integer validity interval `[start, end]`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TemporalFact {
+    /// The fact, with terms already interned.
     pub triple: Triple,
+    /// First time it holds, inclusive.
     pub start: u64,
+    /// Last time it holds, inclusive. Equal to `start` for a single-point fact,
+    /// which is how the surface syntax's `[a]` form parses.
     pub end: u64,
 }
 

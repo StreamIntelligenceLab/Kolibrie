@@ -23,12 +23,16 @@ use super::transducer;
 
 /// The interval-valued fact base, indexed for pattern matching.
 pub struct Database {
+    /// When each fact holds. Canonical — non-overlapping and ascending — only
+    /// after [`coalesce_all`](Self::coalesce_all); [`add_raw`](Self::add_raw)
+    /// deliberately leaves it unmerged.
     pub facts: HashMap<Triple, Vec<TInterval>>,
     by_pred: HashMap<u32, Vec<Triple>>,
     by_pred_obj: HashMap<(u32, u32), Vec<Triple>>,
 }
 
 impl Database {
+    /// An empty fact base.
     pub fn new() -> Self {
         Database { facts: HashMap::new(), by_pred: HashMap::new(), by_pred_obj: HashMap::new() }
     }
@@ -85,7 +89,12 @@ fn as_const(term: &Term) -> Option<u32> {
 
 /// A relation over some variables with an interval list per binding tuple.
 pub struct BindingRelation {
+    /// The variables this relation binds, sorted and distinct. The order defines
+    /// the tuple layout in [`rows`](Self::rows), so the two must be read together.
     pub vars: Vec<String>,                        // sorted, distinct
+    /// One entry per binding tuple, positionally aligned to
+    /// [`vars`](Self::vars), mapped to the intervals over which that tuple
+    /// holds.
     pub rows: HashMap<Vec<u32>, Vec<TInterval>>,  // values aligned to `vars`
 }
 

@@ -38,13 +38,17 @@ pub struct PeriodicModel {
     pub db: Database,
     /// Period `P` — the pattern repeats every `P` beyond each tail.
     pub period: i64,
-    /// Right (future) regime start `R` and materialization bound `H = R+3P`.
+    /// Right (future) regime start `R`: beyond this the model is `P`-periodic.
     pub right_start: i64,
+    /// Materialization bound `H = R+3P`. Three periods, so periodicity can be
+    /// checked by comparing repetitions rather than assumed.
     pub right_horizon: i64,
     /// A genuinely gappy right period was observed.
     pub right_periodic: bool,
-    /// Left (past) regime start `L` and materialization bound `Lb = L−3P`.
+    /// Left (past) regime start `L`: before this the model is `P`-periodic.
     pub left_start: i64,
+    /// Materialization bound `Lb = L−3P`, the past-facing counterpart of
+    /// [`right_horizon`](Self::right_horizon).
     pub left_horizon: i64,
     /// A genuinely gappy left period was observed.
     pub left_periodic: bool,

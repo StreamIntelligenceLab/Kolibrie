@@ -116,9 +116,9 @@ jobs:
       - name: unreachable_pub, no default features
         run: scripts/check_lint.sh unreachable_pub -- -p kolibrie --no-default-features --all-targets
       # missing_docs is gated per crate as each reaches zero; `shared` was the first,
-      # `kolibrie/src` the second, `datalog/src` the third. `datalogmtl` and `ml`
-      # still have ~130 between them, so a workspace-wide gate would only fail. Add a
-      # line here when the next crate lands.
+      # `kolibrie/src` the second, `datalog/src` the third, `datalogmtl/src` the
+      # fourth. Only `ml` is left, so the next line here makes the whole workspace
+      # gateable.
       #
       # The scopes are `<crate>/src` rather than the whole crate on purpose: tests,
       # examples and benches each want a crate-level doc comment of their own, which
@@ -138,6 +138,9 @@ jobs:
       # one configuration to check.
       - name: missing_docs in datalog
         run: scripts/check_lint.sh missing_docs --only datalog/src -- -p datalog --all-targets
+      # Also one line: datalogmtl declares no features either.
+      - name: missing_docs in datalogmtl
+        run: scripts/check_lint.sh missing_docs --only datalogmtl/src -- -p datalogmtl --all-targets
 
   # ── Advisory for now: reports, does not block ───────────────────────────────
   #

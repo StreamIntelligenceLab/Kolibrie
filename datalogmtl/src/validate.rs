@@ -8,6 +8,22 @@
  * you can obtain one at https://mozilla.org/MPL/2.0/.
  */
 
+//! What a program must satisfy before it can be evaluated.
+//!
+//! Two checks, both of which reject a rule rather than let it quietly derive
+//! nothing: every interval must have `start <= end`, and every head variable must
+//! be bound somewhere in the body that can actually witness a value.
+//!
+//! # Why `Box` does not bind
+//!
+//! Only [`Base`](crate::syntax::TemporalAtom::Base) and
+//! [`Diamond`](crate::syntax::TemporalAtom::Diamond) atoms make a variable safe.
+//! The universal operators have no witness to take a value from — `Box` asserts
+//! something about every point in a window rather than finding a point — and the
+//! `phi` side of `Since` is universal for the same reason. A rule whose head
+//! variable occurs only there could never bind it, so it is an error at
+//! construction instead of an empty result at every tick.
+
 use crate::syntax::{DatalogMTLRule, TemporalAtom};
 use shared::terms::Term;
 use std::collections::HashSet;

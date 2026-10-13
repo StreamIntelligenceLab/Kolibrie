@@ -8,6 +8,24 @@
  * you can obtain one at https://mozilla.org/MPL/2.0/.
  */
 
+//! Turning RDF events into temporal facts: stream shapes, channels and staleness.
+//!
+//! An event is a small graph of triples arriving at a timestamp. A
+//! [`StreamShape`] says which events belong to a stream, which variables identify
+//! one logical channel — a particular sensor, say — and how long a reading from
+//! that channel stays valid.
+//!
+//! # Readings are step functions, and silence is an event
+//!
+//! A channel's latest reading holds until the next one arrives or until
+//! `max_gap_ms` has passed, so [`ShapeIngester`] produces intervals of validity
+//! rather than instants. When a channel does go stale,
+//! [`StreamShape::on_expiry`] facts are emitted on its behalf, because a rule
+//! cannot observe the absence of an event: without them, a source that has stopped
+//! reporting looks exactly like one reporting normally. Only
+//! [`ChannelKey`] variables can appear in those patterns, since the key binding is
+//! all that is still known about a channel whose reading has expired.
+
 use std::collections::HashMap;
 use shared::terms::TriplePattern;
 use shared::triple::Triple;
@@ -37,9 +55,15 @@ pub struct StalenessPolicy {
 /// A stream shape declaration.
 #[derive(Debug, Clone)]
 pub struct StreamShape {
+    /// Stream this shape applies to. An event from another stream is ignored.
     pub stream_iri:    StreamIri,
+    /// Patterns that must all match within one event for it to count.
     pub event_pattern: EventPattern,
+    /// Variables whose bindings identify a channel. Two events agreeing on these
+    /// are successive readings from the same source; the later replaces the
+    /// earlier.
     pub channel_key:   ChannelKey,
+    /// How long a reading survives without a successor.
     pub staleness:     StalenessPolicy,
     /// Facts transmitted on behalf of a channel that has gone stale, produced by
     /// [`ShapeIngester::expiry_facts`]. Silence is not itself an event, so
@@ -67,8 +91,12 @@ pub struct ChannelState {
 /// An incoming RDF event: a small graph of triples arriving together at time t.
 #[derive(Debug, Clone)]
 pub struct RdfEvent {
+    /// Stream the event arrived on.
     pub stream_iri: StreamIri,
+    /// Arrival time, absolute, in the unit the rules are written in.
     pub timestamp:  u64,
+    /// The event's graph. Matched as a whole: a shape's patterns must all find a
+    /// triple here, so a partial event matches nothing.
     pub triples:    Vec<Triple>,
 }
 
@@ -95,6 +123,10 @@ impl ShapeIngester {
     // Took an `Arc<RwLock<Dictionary>>` until step 3. It was stored and never read:
     // events arrive already encoded, so ingestion does no interning. Six call sites
     // were threading a dictionary here for nothing.
+    /// An ingester for `shapes`, with no channels yet.
+    ///
+    /// Shape order is the index used internally to identify a channel, so it is
+    /// fixed for the ingester's lifetime.
     pub fn new(shapes: Vec<StreamShape>) -> Self {
         Self { shapes, channels: HashMap::new() }
     }
