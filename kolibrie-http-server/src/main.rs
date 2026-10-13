@@ -8,6 +8,29 @@
  * you can obtain one at https://mozilla.org/MPL/2.0/.
  */
 
+//! The Kolibrie HTTP server: a REST surface and the browser playground, on port 8080.
+//!
+//! A hand-rolled server over [`TcpListener`](std::net::TcpListener) with a thread
+//! per connection — no framework. Three families of endpoint, each keyed by a
+//! session the client creates first:
+//!
+//! | endpoint | purpose |
+//! |---|---|
+//! | `POST /query` | one-shot SPARQL over posted data |
+//! | `POST /rsp-query`, `/rsp/register`, `/rsp/push`, `GET /rsp/events/<id>` | RSP-QL streaming, results delivered as server-sent events |
+//! | `POST /datalogmtl/register`, `/datalogmtl/push`, `/datalogmtl/static`, `GET /datalogmtl/events/<id>` | DatalogMTL, streaming or whole-timeline |
+//!
+//! # Trust
+//!
+//! The ML context is resolved once at startup and the process **exits** if it is
+//! invalid, rather than starting and refusing requests later. Over HTTP that
+//! context never carries trusted-local authority: the server does not train, does
+//! not write artifacts, and does not accept model declarations from a query. See
+//! `kolibrie`'s `ml_policy` for what the modes mean.
+//!
+//! Binds `0.0.0.0`, so it is reachable from outside the host. There is no
+//! authentication of any kind.
+
 use datalog::parser_n3_logic::parse_n3_rule;
 use datalog::reasoning::Reasoner;
 use kolibrie::parser::process_rule_definition;

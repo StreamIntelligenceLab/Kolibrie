@@ -8,6 +8,20 @@
  * you can obtain one at https://mozilla.org/MPL/2.0/.
  */
 
+//! Finds the host Python and tells the linker how to reach it.
+//!
+//! Unlike the extension module in `python/`, this crate *embeds* Python, so the
+//! interpreter has to be linked rather than deferred. Everything below is the
+//! consequence of that: Linux links `libpython` from a versioned config
+//! directory, while macOS has to distinguish a framework install from a plain
+//! one and falls back through several library locations, since `sysconfig` on
+//! macOS can report a framework path through `LDLIBRARY` even when the prefix
+//! does not look like one.
+//!
+//! The `add_extension_module_link_args` call at the top is likely vestigial —
+//! this crate is not an extension module — but removing it needs a Linux build to
+//! confirm, so it stays.
+
 fn main() {
     // Use pyo3 build config
     pyo3_build_config::add_extension_module_link_args();

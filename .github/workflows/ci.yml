@@ -115,44 +115,37 @@ jobs:
         run: scripts/check_lint.sh unreachable_pub -- -p kolibrie --features ml --all-targets
       - name: unreachable_pub, no default features
         run: scripts/check_lint.sh unreachable_pub -- -p kolibrie --no-default-features --all-targets
-      # missing_docs is gated per crate as each reaches zero. All five library
-      # crates are now at zero under their `src`, so these five lines together are
-      # the whole library surface. They stay separate rather than becoming one
-      # workspace check because the three binary/binding crates (cli,
-      # kolibrie-http-server, python) still hold six items between them, and
-      # because the per-crate form names which crate regressed when one does.
+      # missing_docs is now held at zero across every crate's `src`, so one check
+      # replaces the six per-crate lines this job used to carry. `--crate-src`
+      # covers `<crate>/src/**` everywhere at once, which means a crate added
+      # tomorrow is gated the day it lands; a per-crate list silently would not
+      # cover it. The failure output names every offending path, so it still says
+      # which crate regressed.
       #
-      # The scopes are `<crate>/src` rather than the whole crate on purpose: tests,
-      # examples and benches each want a crate-level doc comment of their own, which
-      # is ~130 items of no value to a reader and not part of the public surface.
-      - name: missing_docs in shared
-        run: scripts/check_lint.sh missing_docs --only shared/src -- -p shared --all-targets
-      # Three configurations, for the same reason as unreachable_pub above: the ml
-      # modules account for 52 of kolibrie's items and the default build cannot see
-      # them.
-      - name: missing_docs in kolibrie, default features
-        run: scripts/check_lint.sh missing_docs --only kolibrie/src -- -p kolibrie --all-targets
-      - name: missing_docs in kolibrie, ml feature
-        run: scripts/check_lint.sh missing_docs --only kolibrie/src -- -p kolibrie --features ml --all-targets
-      - name: missing_docs in kolibrie, no default features
-        run: scripts/check_lint.sh missing_docs --only kolibrie/src -- -p kolibrie --no-default-features --all-targets
-      # One line, not three: `datalog` declares no features at all, so there is only
-      # one configuration to check.
-      - name: missing_docs in datalog
-        run: scripts/check_lint.sh missing_docs --only datalog/src -- -p datalog --all-targets
-      # Also one line: datalogmtl declares no features either.
-      - name: missing_docs in datalogmtl
-        run: scripts/check_lint.sh missing_docs --only datalogmtl/src -- -p datalogmtl --all-targets
-      # ml/build.rs is deliberately outside the scope: the gates cover `<crate>/src`,
-      # and a build script is not part of any crate's public surface.
-      - name: missing_docs in ml
-        run: scripts/check_lint.sh missing_docs --only ml/src -- -p ml --all-targets
+      # Scoped to `src` rather than whole crates on purpose. Tests, examples and
+      # benches each want a crate-level doc comment of their own — ~110 items that
+      # tell a reader nothing and are not part of any public surface — and twelve of
+      # those come from criterion's own macros expanding in our benches, which
+      # cannot be fixed here. A gate on the whole workspace is therefore not
+      # reachable, and this is the part that is.
+      - name: missing_docs under every crate's src
+        run: scripts/check_lint.sh missing_docs --crate-src -- --workspace --all-targets
+      # Two more configurations, for the same reason as unreachable_pub above: the
+      # default build cannot see items behind `#[cfg(feature = "ml")]`, and 52 of
+      # kolibrie's items live there. cli, kolibrie-http-server and python also have
+      # an `ml` feature, but it gates no items they document, so the workspace run
+      # above covers them.
+      - name: missing_docs under src, ml feature
+        run: scripts/check_lint.sh missing_docs --crate-src -- -p kolibrie --features ml --all-targets
+      - name: missing_docs under src, no default features
+        run: scripts/check_lint.sh missing_docs --crate-src -- -p kolibrie --no-default-features --all-targets
 
   # ── Advisory for now: reports, does not block ───────────────────────────────
   #
-  # `clippy` and `missing_docs` still produce ~1,900 warnings outside `shared` by
-  # design — that is the burn-down metric, not a regression. Each crate moves to the
-  # blocking `lint-gates` job above as it reaches zero (architecture doc §8).
+  # `clippy` still reports freely here, and `missing_docs` reports the ~115 that
+  # remain outside every crate's `src` — one crate-level comment per test, example
+  # and bench, plus twelve from criterion's macros. That is the tail of the
+  # burn-down, not a regression; the library surface itself is gated above.
 
   lint-report:
     name: clippy + warning count (advisory)
