@@ -8,6 +8,27 @@
  * you can obtain one at https://mozilla.org/MPL/2.0/.
  */
 
+//! Model execution for Kolibrie: a Python bridge and a native MLP.
+//!
+//! Two unrelated paths live here, and which one a query takes is decided in
+//! `kolibrie`, not here:
+//!
+//! - [`MLHandler`] hosts predictors written in Python — scikit-learn and the like
+//!   — over PyO3. The model is a Python object; this crate marshals rows across
+//!   and marshals predictions back.
+//! - [`candle_model`] is a small feed-forward network implemented in Rust, used
+//!   by neural-relation training where the gradient comes from outside the
+//!   network rather than from a loss over labels.
+//!
+//! # This crate grants no authority
+//!
+//! Nothing here checks whether a model is allowed to run. Loading a model by path
+//! loads it, and the path is taken at face value. The trust decisions — which
+//! models are approved, which artifacts match their pinned digest, whether
+//! training may write at all — belong to
+//! `kolibrie`'s `ml_policy`, and every caller is expected to have been through
+//! it. Treat the entry points here as the mechanism, not the gate.
+
 use pyo3::{
     prelude::*,
     types::{PyBytes, PyDict, PyList},
@@ -32,43 +53,87 @@ fn validate_py_module_name(name: &str) -> PyResult<()> {
     Ok(())
 }
 
+/// A small feed-forward network, for gradients that arrive from outside it.
 pub mod candle_model;
 pub use candle_model::{MlpNeuralPredicate, OutputType};
 
 #[derive(Debug, Serialize, Deserialize)]
+/// What one Python-hosted prediction call returned.
 pub struct MLPredictionResult {
+    /// One prediction per input row, in input order.
     pub predictions: Vec<f64>,
+    /// Class probabilities, when the model exposes them. A model without a
+    /// `predict_proba` equivalent yields `None`, which is not an error.
     pub probabilities: Option<Vec<f64>>,
+    /// Per-feature importances, when the model exposes them.
     pub feature_importance: Option<Vec<f64>>,
+    /// Metrics for the model used, read from its schema file rather than
+    /// measured here — so they describe how it was trained, not this call.
     pub performance_metrics: ModelPerformanceMetrics,
+    /// Where this call's time went.
     pub timing: PredictionTiming,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone, Default)]
+/// Where one prediction call spent its time, in seconds.
+///
+/// Split around the model call because marshalling rows into Python and results
+/// back out often costs more than the inference on a small batch.
 pub struct PredictionTiming {
+    /// Preparing the input, up to the model call.
     pub preprocessing_time: f64,
+    /// The model call itself.
     pub actual_prediction_time: f64,
+    /// Converting the results back.
     pub postprocessing_time: f64,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone, Default)]
+/// A model's own account of itself, as declared in its schema file.
+///
+/// These are read from the model's Turtle sidecar, not measured by this crate, so
+/// they are claims about past training runs. [`Default`] is all zeros and no
+/// scores, which is also what a model whose schema could not be parsed ends up
+/// with — see [`MLHandler::compare_models`] for why that matters.
 pub struct ModelPerformanceMetrics {
+    /// Seconds spent training.
     pub training_time: f64,
+    /// Seconds per prediction call.
     pub prediction_time: f64,
+    /// Resident memory in megabytes.
     pub memory_usage_mb: f64,
+    /// CPU utilisation as a percentage.
     pub cpu_usage_percent: f64,
+    /// Classification accuracy, if the schema declares one.
     pub accuracy: Option<f64>,
+    /// Coefficient of determination, for regressors.
     pub r2_score: Option<f64>,
+    /// Mean squared error, for regressors.
     pub mse: Option<f64>,
 }
 
+/// Python-hosted predictors, loaded once and kept.
+///
+/// The two caches are populated independently, which is the point:
+/// [`load_model_with_schema`](Self::load_model_with_schema) records a model's
+/// declared metrics without importing it, so several candidates can be compared
+/// before any Python is executed. Only [`load_model`](Self::load_model) imports.
 pub struct MLHandler {
+    /// Imported Python predictor objects, by model name. Holding a `PyObject`
+    /// means this cache keeps the interpreter's objects alive.
     pub model_cache: BTreeMap<String, PyObject>,
+    /// Declared metrics by model name, including for models never imported.
     pub schema_cache: BTreeMap<String, ModelPerformanceMetrics>,
+    /// Model chosen by the last [`compare_models`](Self::compare_models) call.
+    ///
+    /// Once set, this **overrides the model name passed to**
+    /// [`predict`](Self::predict). Nothing clears it.
     pub best_model: Option<String>,
 }
 
 impl MLHandler {
+    /// An empty handler. Does not initialise Python; the first call that needs
+    /// the interpreter acquires the GIL itself.
     pub fn new() -> PyResult<Self> {
         Ok(MLHandler {
             model_cache: BTreeMap::new(),
@@ -154,6 +219,17 @@ impl MLHandler {
         })
     }
 
+    /// Records a model's declared metrics without importing it.
+    ///
+    /// The schema path is derived from `model_path` by replacing `.pkl` with
+    /// `.ttl` — every occurrence, so a path with `.pkl` in a directory name is
+    /// rewritten there too.
+    ///
+    /// A schema that cannot be parsed is **not** an error: it logs
+    /// `KOLIBRIE_OPERATION_FAILED` to stderr and caches
+    /// [`ModelPerformanceMetrics::default`] instead. The model is then recorded as
+    /// costing nothing, which [`compare_models`](Self::compare_models) reads as
+    /// the cheapest possible candidate.
     pub fn load_model_with_schema(
         &mut self,
         model_name: &str,
@@ -179,6 +255,16 @@ impl MLHandler {
         Ok(metrics)
     }
 
+    /// Imports a Python predictor and caches the resulting object.
+    ///
+    /// Both `model_name` and `module_name` must be ASCII identifiers of at most
+    /// 64 characters, because they are interpolated into a Python import: the
+    /// model directory's parent is prepended to `sys.path`, so an unchecked name
+    /// would choose what gets imported.
+    ///
+    /// Grants no authority of its own — see the crate documentation. A caller that
+    /// has not been through `kolibrie`'s `ml_policy` is importing whatever the
+    /// path points at.
     pub fn load_model(
         &mut self,
         model_name: &str,
@@ -312,6 +398,26 @@ impl MLHandler {
     }
 
     // Modified to prioritize lowest resource usage
+    /// Picks the cheapest of `model_names` and remembers it.
+    ///
+    /// "Best" means least resource-hungry, not most accurate: the score is
+    /// `0.5 * cpu_usage_percent + 0.4 * memory_usage_mb + 0.1 * prediction_time`,
+    /// and no accuracy field enters it. Note also that the two terms that dominate
+    /// are in different units, so the weights are not comparable across models
+    /// measured on different machines.
+    ///
+    /// Two consequences worth knowing before relying on it:
+    ///
+    /// - A model whose schema failed to parse scores zero on every term and
+    ///   therefore always wins. See
+    ///   [`load_model_with_schema`](Self::load_model_with_schema).
+    /// - The winner is stored in [`best_model`](Self::best_model) and from then on
+    ///   overrides the model name given to [`predict`](Self::predict). Calling
+    ///   this is not a read-only comparison.
+    ///
+    /// Models absent from the schema cache are skipped; if none of them is
+    /// present, the first name is returned unchanged. `None` only for an empty
+    /// slice.
     pub fn compare_models<'a>(&mut self, model_names: &[&'a str]) -> Option<&'a str> {
         if model_names.is_empty() {
             return None;
@@ -345,6 +451,17 @@ impl MLHandler {
         Some(best_model)
     }
 
+    /// Runs a cached predictor over `input_data`.
+    ///
+    /// `model_name` is **ignored** when
+    /// [`best_model`](Self::best_model) is set, which
+    /// [`compare_models`](Self::compare_models) does as a side effect. On a
+    /// handler that has compared models, this always predicts with the winner.
+    ///
+    /// # Errors
+    ///
+    /// If the model that would be used has not been imported by
+    /// [`load_model`](Self::load_model). A cached schema is not enough.
     pub fn predict(
         &self,
         model_name: &str,
@@ -429,6 +546,15 @@ impl MLHandler {
     }
 
     // Utility function to discover and load all models and their TTL schemas at once
+    /// Scans `model_dir` for predictors and records their schemas.
+    ///
+    /// Picks up files named `<prefix>_predictor.pkl` only, and names each model
+    /// `<prefix>_model` after the text before the first underscore — so
+    /// `rf_predictor.pkl` becomes `rf_model`, and two files sharing a prefix
+    /// collide on one name.
+    ///
+    /// Schemas only: nothing is imported, and a directory that cannot be read
+    /// yields an empty list rather than an error.
     pub fn discover_and_load_models(
         &mut self,
         model_dir: &Path,

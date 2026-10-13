@@ -115,10 +115,12 @@ jobs:
         run: scripts/check_lint.sh unreachable_pub -- -p kolibrie --features ml --all-targets
       - name: unreachable_pub, no default features
         run: scripts/check_lint.sh unreachable_pub -- -p kolibrie --no-default-features --all-targets
-      # missing_docs is gated per crate as each reaches zero; `shared` was the first,
-      # `kolibrie/src` the second, `datalog/src` the third, `datalogmtl/src` the
-      # fourth. Only `ml` is left, so the next line here makes the whole workspace
-      # gateable.
+      # missing_docs is gated per crate as each reaches zero. All five library
+      # crates are now at zero under their `src`, so these five lines together are
+      # the whole library surface. They stay separate rather than becoming one
+      # workspace check because the three binary/binding crates (cli,
+      # kolibrie-http-server, python) still hold six items between them, and
+      # because the per-crate form names which crate regressed when one does.
       #
       # The scopes are `<crate>/src` rather than the whole crate on purpose: tests,
       # examples and benches each want a crate-level doc comment of their own, which
@@ -141,6 +143,10 @@ jobs:
       # Also one line: datalogmtl declares no features either.
       - name: missing_docs in datalogmtl
         run: scripts/check_lint.sh missing_docs --only datalogmtl/src -- -p datalogmtl --all-targets
+      # ml/build.rs is deliberately outside the scope: the gates cover `<crate>/src`,
+      # and a build script is not part of any crate's public surface.
+      - name: missing_docs in ml
+        run: scripts/check_lint.sh missing_docs --only ml/src -- -p ml --all-targets
 
   # ── Advisory for now: reports, does not block ───────────────────────────────
   #

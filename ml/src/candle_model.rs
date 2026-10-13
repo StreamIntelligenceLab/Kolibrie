@@ -8,6 +8,30 @@
  * you can obtain one at https://mozilla.org/MPL/2.0/.
  */
 
+//! A small feed-forward network, for gradients that arrive from outside it.
+//!
+//! Ordinary training differentiates a loss over labels. Neural relations do not:
+//! the signal is a weighted-model-count gradient computed over a probabilistic
+//! program, one partial derivative per output variable, which
+//! [`MlpNeuralPredicate::surrogate_backward`] accepts in place of a loss.
+//!
+//! # Forward and backward are a queue, not a pair of calls
+//!
+//! [`forward_with_grads`](MlpNeuralPredicate::forward_with_grads) pushes its
+//! activations onto an internal queue and
+//! [`surrogate_backward`](MlpNeuralPredicate::surrogate_backward) pops the oldest,
+//! so the two must be called in matching FIFO order. Gradients then *accumulate*
+//! until [`zero_grads`](MlpNeuralPredicate::zero_grads) clears them, which is what
+//! lets one optimiser step cover several forward passes.
+//! [`predict`](MlpNeuralPredicate::predict) caches nothing and so cannot be
+//! followed by a backward pass.
+//!
+//! # Implementation note
+//!
+//! Despite the name and the `candle` dependency, the arithmetic is plain Rust over
+//! `Vec<Vec<f64>>`; candle supplies the `Tensor` the forward pass hands back and
+//! nothing else. There is no GPU path here.
+
 use std::cell::RefCell;
 use std::collections::{HashMap, VecDeque};
 use std::error::Error;
@@ -24,8 +48,11 @@ use shared::query::OptimizerKind;
 type MlResult<T> = Result<T, Box<dyn Error>>;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+/// What the output layer means, which decides its width and its activation.
 pub enum OutputType {
+    /// One output, squashed to a probability.
     Binary,
+    /// One output per class, normalised across them, so they sum to 1.
     Categorical(usize),
 }
 
@@ -69,7 +96,17 @@ struct SavedModel {
     output_type: OutputType,
 }
 
+/// A feed-forward network with ReLU hidden layers.
+///
+/// Interior-mutable throughout: a forward pass records activations and a backward
+/// pass accumulates gradients, both through `&self`, so one of these can be shared
+/// where a `&mut` would not fit. The cost is that the forward/backward pairing is
+/// a runtime contract rather than a borrow-checked one — see the module
+/// documentation.
 pub struct MlpNeuralPredicate {
+    /// Unused. A candle `VarMap` is constructed here and never read or written:
+    /// the parameters live in a private `Vec<Vec<f64>>` and the arithmetic does
+    /// not go through candle. Kept only because it is public API.
     pub varmap: VarMap,
     layers: RefCell<Vec<DenseLayer>>,
     hidden_act: Activation,
@@ -80,10 +117,21 @@ pub struct MlpNeuralPredicate {
 }
 
 impl MlpNeuralPredicate {
+    /// A network with randomly initialised weights and zero biases.
+    ///
+    /// `hidden` gives the width of each hidden layer in order, and may be empty
+    /// for a network with no hidden layer. Weights are drawn uniformly from
+    /// `-sqrt(2/in_dim)..sqrt(2/in_dim)`, scaled per layer to keep activations
+    /// from vanishing as depth grows.
+    ///
+    /// Unseeded, so two networks built from the same arguments differ. Use
+    /// [`new_seeded`](Self::new_seeded) where that matters.
     pub fn new(input_dim: usize, hidden: &[usize], output_type: OutputType) -> MlResult<Self> {
         Self::new_with_rng(input_dim, hidden, output_type, &mut rand::rng())
     }
 
+    /// As [`new`](Self::new), with initialisation drawn from `seed` so the
+    /// network is reproducible.
     pub fn new_seeded(input_dim: usize, hidden: &[usize], output_type: OutputType, seed: u64) -> MlResult<Self> {
         Self::new_with_rng(input_dim, hidden, output_type, &mut rand::rngs::StdRng::seed_from_u64(seed))
     }
@@ -128,10 +176,22 @@ impl MlpNeuralPredicate {
         })
     }
 
+    /// A forward pass that keeps what a backward pass will need.
+    ///
+    /// Returns the outputs twice over: as a `Tensor` for callers threading one
+    /// through candle, and as rows of `f64` for everything else. Queues the
+    /// activations for exactly one
+    /// [`surrogate_backward`](Self::surrogate_backward), so calling this twice
+    /// without a backward pass in between leaves two entries queued and they are
+    /// consumed oldest first.
     pub fn forward_with_grads(&self, rows: &[Vec<f64>]) -> MlResult<(Tensor, Vec<Vec<f64>>)> {
         self.forward_impl(rows, true)
     }
 
+    /// A forward pass that keeps nothing.
+    ///
+    /// One row of outputs per input row. Cannot be followed by
+    /// [`surrogate_backward`](Self::surrogate_backward), which has nothing to pop.
     pub fn predict(&self, rows: &[Vec<f64>]) -> MlResult<Vec<Vec<f64>>> {
         Ok(self.forward_impl(rows, false)?.1)
     }
@@ -192,6 +252,26 @@ impl MlpNeuralPredicate {
         Ok((tensor, activations))
     }
 
+    /// Backpropagates a gradient supplied by the caller instead of one derived
+    /// from a loss.
+    ///
+    /// `wmc_grads` carries one map per sample, from probabilistic-program variable
+    /// to that variable's partial derivative, and `var_to_col` says which output
+    /// column each variable corresponds to. Samples whose gradients are all
+    /// effectively zero are skipped rather than propagated.
+    ///
+    /// Gradients **accumulate** into internal state; they do not replace what is
+    /// there. [`zero_grads`](Self::zero_grads) between batches, or one batch's
+    /// gradients leak into the next.
+    ///
+    /// `tracked` is not read. It is accepted so callers can pass the tensor from
+    /// [`forward_with_grads`](Self::forward_with_grads), but the pass uses the
+    /// queued activations, not this argument.
+    ///
+    /// # Errors
+    ///
+    /// If no queued forward pass is available, or if the queued one covered a
+    /// different number of samples than `wmc_grads` does.
     pub fn surrogate_backward(
         &self,
         tracked: &Tensor,
@@ -276,12 +356,27 @@ impl MlpNeuralPredicate {
         Ok(())
     }
 
+    /// Clears accumulated gradients **and** discards any queued forward passes.
+    ///
+    /// The second half matters: this is also how to recover after an aborted
+    /// batch, since a queued activation set with no backward pass would otherwise
+    /// be consumed by the next one and silently mismatch.
     pub fn zero_grads(&self) {
         let layers = self.layers.borrow();
         *self.grad_state.borrow_mut() = zero_grads_for_layers(&layers);
         self.forward_queue.borrow_mut().clear();
     }
 
+    /// Applies the accumulated gradients and updates the weights.
+    ///
+    /// Gradients are divided by `example_count`, so that value must be the number
+    /// of samples that actually contributed since the last
+    /// [`zero_grads`](Self::zero_grads) — not the batch size, which differs
+    /// whenever a sample was skipped for having no gradient. An
+    /// `example_count` of 0 is a no-op rather than a division by zero.
+    ///
+    /// Does not clear the gradients; call
+    /// [`zero_grads`](Self::zero_grads) before the next batch.
     pub fn optimizer_step(&self, optimizer: OptimizerKind, learning_rate: f64, example_count: usize) {
         let mut layers = self.layers.borrow_mut();
         let grads = self.grad_state.borrow_mut();
@@ -354,6 +449,12 @@ impl MlpNeuralPredicate {
     }
 
     /// Serialize without filesystem side effects
+    ///
+    /// JSON, and the float round-trip through
+    /// [`from_bytes`](Self::from_bytes) is bit-exact — but only because
+    /// `serde_json` is built with `float_roundtrip`. Without that feature its
+    /// parser can land one ULP off while serialisation stays exact, which made
+    /// save-then-load lossy and produced a 1-in-25 test flake.
     pub fn to_bytes(&self) -> MlResult<Vec<u8>> {
         let payload = SavedModel {
             layers: self.layers.borrow().clone(),
@@ -363,6 +464,13 @@ impl MlpNeuralPredicate {
         Ok(serde_json::to_vec_pretty(&payload)?)
     }
 
+    /// Reads a model from `path`.
+    ///
+    /// Verifies only that the file's shape matches the arguments, which is what
+    /// [`from_bytes`](Self::from_bytes) checks. It does not verify *which* file it
+    /// read: the digest pinning that makes a swapped artifact fail rather than
+    /// silently change behaviour lives in `kolibrie`'s `ml_policy`, so prefer the
+    /// policy path and reserve this for a file the caller already trusts.
     pub fn load(
         input_dim: usize,
         hidden: &[usize],
