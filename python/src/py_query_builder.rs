@@ -408,7 +408,7 @@ impl PyStreamingQuery {
             
             Ok(current_results)
         } else {
-            Err(PyErr::new::<pyo3::exceptions::PyRuntimeError, _>("Failed to acquire results lock"))
+            Err(PyErr::new::<PyRuntimeError, _>("Failed to acquire results lock"))
         }
     }
 
@@ -423,7 +423,7 @@ impl PyStreamingQuery {
             results.clear();
             Ok(())
         } else {
-            Err(PyErr::new::<pyo3::exceptions::PyRuntimeError, _>("Failed to acquire results lock"))
+            Err(PyErr::new::<PyRuntimeError, _>("Failed to acquire results lock"))
         }
     }
 

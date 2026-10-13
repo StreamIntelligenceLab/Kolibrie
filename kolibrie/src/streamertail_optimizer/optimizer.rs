@@ -327,7 +327,7 @@ impl Streamertail {
         }
 
         // Count subject-centered stars only. Object-position "stars" can explode
-        let mut var_counts: std::collections::BTreeMap<String, Vec<usize>> = BTreeMap::new();
+        let mut var_counts: BTreeMap<String, Vec<usize>> = BTreeMap::new();
 
         for (idx, pattern) in patterns.iter().enumerate() {
             if let Term::Variable(var) = &pattern.0 {

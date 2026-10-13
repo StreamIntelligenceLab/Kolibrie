@@ -833,10 +833,10 @@ impl SparqlDatabase {
         }
 
         // Group triples by subject, then by predicate
-        let mut subjects: std::collections::BTreeMap<
+        let mut subjects: BTreeMap<
             String,
-            std::collections::BTreeMap<String, Vec<String>>,
-        > = std::collections::BTreeMap::new();
+            BTreeMap<String, Vec<String>>,
+        > = BTreeMap::new();
         for triple in self.query_default_triples(None, None, None) {
             let s = self.decode_any(triple.subject).unwrap_or_default();
             let p = self.decode_any(triple.predicate).unwrap_or_default();

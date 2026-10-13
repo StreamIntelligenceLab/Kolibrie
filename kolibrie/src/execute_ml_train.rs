@@ -799,7 +799,7 @@ mod tests {
                 ("?sample", "http://example.org/pred", "?label"),
                 "?label",
             );
-            clause.optimizer = shared::query::OptimizerKind::Sgd;
+            clause.optimizer = OptimizerKind::Sgd;
             clause.epochs = 1;
             clause.batch_size = 2;
             let initial = MlpNeuralPredicate::new_seeded(1, &[], OutputType::Categorical(2), 11).unwrap();

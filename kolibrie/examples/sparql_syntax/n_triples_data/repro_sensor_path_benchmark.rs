@@ -79,7 +79,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut optimized_db = db.clone();
 
     let legacy = measure_query("execute_query_rayon_parallel2_volcano (warmup)", || {
-        kolibrie::execute_query::execute_query_rayon_parallel2_volcano(REPRO_QUERY, &mut legacy_db)
+        execute_query_rayon_parallel2_volcano(REPRO_QUERY, &mut legacy_db)
     });
     print_measurement("execute_query_rayon_parallel2_volcano (warmup)", &legacy);
 

@@ -323,7 +323,7 @@ impl DemoAccount {
 
 type DemoState = Arc<Mutex<DemoAccount>>;
 
-fn main() -> Result<(), Box<dyn std::error::Error>> {
+fn main() -> Result<(), Box<dyn Error>> {
     prepare_freethreaded_python();
 
     let sep = "=".repeat(70);
@@ -849,7 +849,7 @@ fn run_simulation(
     events:          EventLog,
     ml_handler:      &MLHandler,
     best_model_name: &str,
-) -> Result<(), Box<dyn std::error::Error>> {
+) -> Result<(), Box<dyn Error>> {
 
     let ml_rule_str = rule_ml_fraud_predict();
 

@@ -149,6 +149,17 @@ jobs:
         run: scripts/check_lint.sh missing_debug_implementations --crate-src -- -p kolibrie --features ml --all-targets
       - name: missing_debug_implementations under src, no default features
         run: scripts/check_lint.sh missing_debug_implementations --crate-src -- -p kolibrie --no-default-features --all-targets
+      # unused_qualifications reached zero across the whole workspace, not only under
+      # src: unlike missing_docs it had nothing to say about tests, examples or
+      # benches that was not worth fixing, so this needs no `--crate-src`. Three of
+      # the 29 sites were visible only with the ml feature, two of them in an
+      # example, which is why the feature configurations are checked here too.
+      - name: unused_qualifications, default features
+        run: scripts/check_lint.sh unused_qualifications -- --workspace --all-targets
+      - name: unused_qualifications, ml feature
+        run: scripts/check_lint.sh unused_qualifications -- -p kolibrie --features ml --all-targets
+      - name: unused_qualifications, no default features
+        run: scripts/check_lint.sh unused_qualifications -- -p kolibrie --no-default-features --all-targets
 
   # ── Advisory for now: reports, does not block ───────────────────────────────
   #

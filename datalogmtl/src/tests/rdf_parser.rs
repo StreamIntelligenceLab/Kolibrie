@@ -481,7 +481,7 @@ fn test_demo_defaults_parse() {
 
     // Background facts must be valid N-Triples and dual-classify every zone:
     // the generic class feeds the geofence rules, the numbered one zoneTour.
-    let facts = crate::rdf_parser::parse_facts(DEMO_STATIC, &mut dict)
+    let facts = parse_facts(DEMO_STATIC, &mut dict)
         .expect("demo background facts must parse");
     assert_eq!(facts.len(), 6, "three zones x (generic + numbered) class");
 
