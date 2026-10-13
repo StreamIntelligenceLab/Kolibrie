@@ -131,6 +131,20 @@ pub struct MLHandler {
     pub best_model: Option<String>,
 }
 
+
+// Summarised rather than derived: the cache holds Python objects whose `Debug` would
+// call back into the interpreter, which needs the GIL and can fail. Counting them
+// needs neither.
+impl std::fmt::Debug for MLHandler {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("MLHandler")
+            .field("loaded", &self.model_cache.len())
+            .field("schemas", &self.schema_cache.len())
+            .field("best_model", &self.best_model)
+            .finish()
+    }
+}
+
 impl MLHandler {
     /// An empty handler. Does not initialise Python; the first call that needs
     /// the interpreter acquires the GIL itself.

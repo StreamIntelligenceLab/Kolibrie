@@ -54,6 +54,21 @@ pub struct PeriodicModel {
     pub left_periodic: bool,
 }
 
+
+// Summarised rather than derived: the embedded `Database` is the whole materialised
+// prefix. The regime bounds are what a reader is usually checking, so those print in
+// full.
+impl std::fmt::Debug for PeriodicModel {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("PeriodicModel")
+            .field("facts", &self.db.facts.len())
+            .field("period", &self.period)
+            .field("right", &(self.right_start, self.right_horizon, self.right_periodic))
+            .field("left", &(self.left_start, self.left_horizon, self.left_periodic))
+            .finish_non_exhaustive()
+    }
+}
+
 /// Build the ω-model of `rules` over `facts`.
 pub fn materialize_omega(
     rules: &[DatalogMTLRule],

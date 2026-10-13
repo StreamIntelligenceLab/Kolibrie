@@ -81,6 +81,7 @@ impl Default for Tick {
 }
 
 /// The set of [`ReportStrategy`] conditions a window must satisfy to fire.
+#[derive(Debug)]
 pub struct Report<I>
 where
     I: Eq + PartialEq + Clone + Debug + Hash + Send,
@@ -258,6 +259,28 @@ where
     // Make callbacks Send so they can be safely transferred to worker threads
     call_back: Option<Box<dyn FnMut(ContentContainer<I>) -> () + Send + 'static>>,
     uri: String
+}
+
+
+// Cannot derive: `call_back` is a `dyn FnMut`. Summarised besides, since the active
+// windows hold the buffered stream content.
+impl<I> Debug for CSPARQLWindow<I>
+where
+    I: Eq + PartialEq + Clone + Debug + Hash + Send,
+{
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("CSPARQLWindow")
+            .field("uri", &self.uri)
+            .field("width", &self.width)
+            .field("slide", &self.slide)
+            .field("t_0", &self.t_0)
+            .field("app_time", &self.app_time)
+            .field("active_windows", &self.active_windows.len())
+            .field("tick", &self.tick)
+            .field("has_consumer", &self.consumer.is_some())
+            .field("has_callback", &self.call_back.is_some())
+            .finish_non_exhaustive()
+    }
 }
 
 impl<I> CSPARQLWindow<I>

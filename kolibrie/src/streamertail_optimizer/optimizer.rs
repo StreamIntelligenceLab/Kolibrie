@@ -39,6 +39,19 @@ pub struct Streamertail {
     dataset: Option<DatasetView>,
 }
 
+
+// Summarised rather than derived: the memo holds a physical plan per costed
+// subexpression, so the derived form prints every plan considered.
+impl std::fmt::Debug for Streamertail {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Streamertail")
+            .field("memoised_plans", &self.memo.len())
+            .field("selected_variables", &self.selected_variables)
+            .field("has_dataset", &self.dataset.is_some())
+            .finish_non_exhaustive()
+    }
+}
+
 fn serialize_arith_expr(expr: &ConditionArithmetic) -> String {
     use ConditionArithmetic as AE;
     match expr {

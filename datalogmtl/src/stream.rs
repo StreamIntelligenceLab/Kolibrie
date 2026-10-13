@@ -119,6 +119,18 @@ pub struct ShapeIngester {
     channels:   HashMap<ChannelId, ChannelState>,
 }
 
+
+// Summarised rather than derived: each live channel holds the triples of its most
+// recent event, so the derived form grows with the stream.
+impl std::fmt::Debug for ShapeIngester {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ShapeIngester")
+            .field("shapes", &self.shapes.len())
+            .field("channels", &self.channels.len())
+            .finish_non_exhaustive()
+    }
+}
+
 impl ShapeIngester {
     // Took an `Arc<RwLock<Dictionary>>` until step 3. It was stored and never read:
     // events arrive already encoded, so ingestion does no interning. Six call sites

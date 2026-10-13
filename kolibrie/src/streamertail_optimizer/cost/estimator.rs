@@ -55,6 +55,7 @@ pub fn collect_pattern_variables(pattern: &QuadPattern, out: &mut HashSet<String
 }
 
 /// Cost estimation constants for different operators
+#[derive(Debug)]
 pub struct CostConstants;
 
 impl CostConstants {
@@ -83,6 +84,7 @@ impl CostConstants {
 }
 
 /// Cost estimator for query optimization
+#[derive(Debug)]
 pub struct CostEstimator<'a> {
     stats: &'a DatabaseStats,
     dataset: Option<&'a DatasetView>,

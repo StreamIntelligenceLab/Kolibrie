@@ -50,7 +50,7 @@ pub use crate::rsp::builder::{RSPBuilder, RSPQueryConfig};
 pub use crate::rsp::simple_r2r::SimpleR2R;
 
 /// How the engine runs its windows.
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug)]
 pub enum OperationMode {
     /// Everything in the caller's thread. Results are produced only when the
     /// caller drives the engine, so [`RSPEngine::stop`] must be called to flush
@@ -134,6 +134,17 @@ const CROSS_WINDOW_STATIC_IRI: &str = "urn:kolibrie:static:";
 pub struct ResultConsumer<I> {
     /// Invoked once per published solution.
     pub function: Arc<dyn Fn(I) -> () + Send + Sync>,
+}
+
+
+// Cannot derive: the callback is a `dyn Fn`. Its identity is not observable and
+// calling it would publish a solution, so it is named and not invoked.
+impl<I> Debug for ResultConsumer<I> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ResultConsumer")
+            .field("function", &"<callback>")
+            .finish()
+    }
 }
 
 /// Macro to generate the window processing logic
@@ -324,6 +335,30 @@ where
     cross_window_reasoning_mode: CrossWindowReasoningMode,
     hybrid_seed_registry: Arc<Mutex<SeedRegistry>>,
     latest_hybrid_results: Arc<Mutex<HashMap<String, HashMap<Triple, HybridProbabilityResult>>>>,
+}
+
+
+// Cannot derive: `r2r` is a trait object behind a mutex. Summarised besides, and
+// nothing here takes a lock: a `Debug` impl that blocks on a mutex can deadlock
+// against the thread already holding it, which for an engine being inspected mid-run
+// is the likely case.
+impl<I, O> Debug for RSPEngine<I, O>
+where
+    I: Eq + PartialEq + Clone + Debug + Hash + Send,
+    O: Hash,
+{
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("RSPEngine")
+            .field("windows", &self.windows.len())
+            .field("window_configs", &self.window_configs.len())
+            .field("query_execution_mode", &self.query_execution_mode)
+            .field("operation_mode", &self.operation_mode)
+            .field("sync_policy", &self.sync_policy)
+            .field("cross_window_enabled", &self.cross_window_enabled)
+            .field("cross_window_rules", &self.cross_window_rules.len())
+            .field("cross_window_reasoning_mode", &self.cross_window_reasoning_mode)
+            .finish_non_exhaustive()
+    }
 }
 
 impl<I, O> RSPEngine<I, O>

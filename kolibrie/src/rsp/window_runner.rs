@@ -53,6 +53,21 @@ where
     receiver: Option<Receiver<ContentContainer<I>>>,
 }
 
+
+// Summarised rather than derived: the wrapped window holds the buffered content, and
+// whether a receiver is still attached is the state a reader is usually after.
+impl<I> Debug for WindowRunner<I>
+where
+    I: Eq + PartialEq + Clone + Debug + Hash + Send,
+{
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("WindowRunner")
+            .field("inner", &self.inner)
+            .field("attached", &self.receiver.is_some())
+            .finish()
+    }
+}
+
 impl<I> WindowRunner<I>
 where
     I: Eq + PartialEq + Clone + Debug + Hash + Send,

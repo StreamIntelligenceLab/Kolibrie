@@ -1235,6 +1235,7 @@ impl fmt::Debug for ProgramResult {
 ///
 /// Obtained from [`ProgramResult::prepare_answers`], which needs the run to have
 /// retained provenance.
+#[derive(Debug)]
 pub struct PreparedAnswers {
     provenance: SddProvenance,
     tags: Vec<Option<SddId>>,
@@ -1418,6 +1419,7 @@ impl ProgramResult {
 /// A program's answers live in its [`ProgramResult`], not in the input store, so
 /// something has to own that result between executing and querying. Publishing a
 /// new run replaces the previous one.
+#[derive(Debug)]
 pub struct PublishedProgramResult {
     current: Option<ProgramResult>,
 }

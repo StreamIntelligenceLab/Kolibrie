@@ -31,6 +31,19 @@ pub struct Database {
     by_pred_obj: HashMap<(u32, u32), Vec<Triple>>,
 }
 
+
+// Summarised rather than derived: this is the fact base, so the derived form would
+// print every fact and both indexes over them.
+impl std::fmt::Debug for Database {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let intervals: usize = self.facts.values().map(Vec::len).sum();
+        f.debug_struct("Database")
+            .field("facts", &self.facts.len())
+            .field("intervals", &intervals)
+            .finish_non_exhaustive()
+    }
+}
+
 impl Database {
     /// An empty fact base.
     pub fn new() -> Self {
@@ -88,6 +101,7 @@ fn as_const(term: &Term) -> Option<u32> {
 }
 
 /// A relation over some variables with an interval list per binding tuple.
+#[derive(Debug)]
 pub struct BindingRelation {
     /// The variables this relation binds, sorted and distinct. The order defines
     /// the tuple layout in [`rows`](Self::rows), so the two must be read together.

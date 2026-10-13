@@ -69,6 +69,20 @@ pub struct TemporalSnapshotStore {
     pub horizon: u64,
 }
 
+
+// Summarised rather than derived: one index per timestamp, so the derived form would
+// print every fact at every time point. Counting snapshots is O(1); counting the
+// facts in them is not, and a `Debug` impl should not be the expensive call in a log
+// line.
+impl std::fmt::Debug for TemporalSnapshotStore {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("TemporalSnapshotStore")
+            .field("snapshots", &self.snapshots.len())
+            .field("horizon", &self.horizon)
+            .finish_non_exhaustive()
+    }
+}
+
 impl TemporalSnapshotStore {
     /// An empty store keeping facts for `horizon` time units.
     pub fn new(horizon: u64) -> Self {
@@ -151,6 +165,22 @@ pub struct IntervalFactStore {
     /// How far back to keep facts, with the same advisory meaning as on
     /// [`TemporalSnapshotStore::horizon`].
     pub horizon: u64,
+}
+
+
+// Summarised rather than derived, for the same reason as
+// [`TemporalSnapshotStore`]. The segment count is the interesting number here, since
+// it is what this representation exists to keep small.
+impl std::fmt::Debug for IntervalFactStore {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let segments: usize = self.facts.values().map(Vec::len).sum();
+        f.debug_struct("IntervalFactStore")
+            .field("facts", &self.facts.len())
+            .field("segments", &segments)
+            .field("current_tick", &self.current_tick)
+            .field("horizon", &self.horizon)
+            .finish_non_exhaustive()
+    }
 }
 
 impl IntervalFactStore {

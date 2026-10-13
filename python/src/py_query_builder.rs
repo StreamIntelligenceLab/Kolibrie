@@ -53,6 +53,21 @@ pub struct PySparqlDatabase {
     db: Arc<Mutex<SparqlDatabase>>,
 }
 
+
+// Summarised rather than derived: this wraps a whole store. `try_lock` because a
+// `Debug` impl must not block — Python can reach this from any thread, including one
+// that already holds the lock.
+impl std::fmt::Debug for PySparqlDatabase {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let mut s = f.debug_struct("SparqlDatabase");
+        match self.db.try_lock() {
+            Ok(db) => s.field("quads", &db.quad_count()),
+            Err(_) => s.field("quads", &"<locked>"),
+        }
+        .finish()
+    }
+}
+
 #[pymethods]
 impl PySparqlDatabase {
     #[new]
@@ -165,14 +180,14 @@ impl PySparqlDatabase {
 }
 
 #[pyclass(name = "SortDirection")]
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub enum PySortDirection {
     Ascending,
     Descending,
 }
 
 #[pyclass(name = "StreamOperator")]
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub enum PyStreamOperator {
     RSTREAM,
     ISTREAM,
@@ -181,7 +196,7 @@ pub enum PyStreamOperator {
 
 // Simple enum for report strategies
 #[pyclass(name = "ReportStrategy")]
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub enum PyReportStrategy {
     NonEmptyContent(),
     OnContentChange(),
@@ -190,7 +205,7 @@ pub enum PyReportStrategy {
 }
 
 #[pyclass(name = "PeriodicReportStrategy")]
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct PyPeriodicReportStrategy {
     period: usize,
 }
@@ -209,7 +224,7 @@ impl PyPeriodicReportStrategy {
 }
 
 #[pyclass(name = "Tick")]
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub enum PyTick {
     TimeDriven,
     TupleDriven,
@@ -222,6 +237,20 @@ pub struct PyStreamingQuery {
     config: StreamingConfig,
     // Store accumulated results
     results: Arc<Mutex<Vec<Vec<(String, String, String)>>>>,
+}
+
+
+// Summarised rather than derived: `results` accumulates every solution the stream has
+// produced. Not locked, for the reason given on [`PySparqlDatabase`].
+impl std::fmt::Debug for PyStreamingQuery {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let mut s = f.debug_struct("StreamingQuery");
+        match self.results.try_lock() {
+            Ok(r) => s.field("results", &r.len()),
+            Err(_) => s.field("results", &"<locked>"),
+        }
+        .finish_non_exhaustive()
+    }
 }
 
 #[derive(Clone)]
@@ -465,6 +494,40 @@ pub struct PyQueryBuilder {
     tick_strategy: PyTick,
     stream_operator: Option<PyStreamOperator>,
     periodic_periods: Vec<usize>, // Store periodic periods separately
+}
+
+
+// Summarised rather than derived: `db` is a whole store, and the filter fields are
+// numerous enough that printing only the ones that are set is more readable than
+// twenty `None`s.
+impl std::fmt::Debug for PyQueryBuilder {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let set: Vec<&str> = [
+            ("subject", self.subject.is_some()),
+            ("subject_like", self.subject_like.is_some()),
+            ("subject_starting", self.subject_starting.is_some()),
+            ("subject_ending", self.subject_ending.is_some()),
+            ("predicate", self.predicate.is_some()),
+            ("predicate_like", self.predicate_like.is_some()),
+            ("predicate_starting", self.predicate_starting.is_some()),
+            ("predicate_ending", self.predicate_ending.is_some()),
+            ("object", self.object.is_some()),
+            ("object_like", self.object_like.is_some()),
+            ("object_starting", self.object_starting.is_some()),
+            ("object_ending", self.object_ending.is_some()),
+        ]
+        .iter()
+        .filter(|(_, present)| *present)
+        .map(|(name, _)| *name)
+        .collect();
+        f.debug_struct("QueryBuilder")
+            .field("filters", &set)
+            .field("distinct", &self.distinct)
+            .field("limit", &self.limit)
+            .field("offset", &self.offset)
+            .field("sort_direction", &self.sort_direction)
+            .finish_non_exhaustive()
+    }
 }
 
 #[pymethods]

@@ -114,6 +114,32 @@ pub struct MlpNeuralPredicate {
     adam_state: RefCell<AdamState>,
 }
 
+
+// Summarised rather than derived: the parameters are the bulk of this type, and a
+// layer-shape list is what a reader is checking. `try_borrow` because a `Debug` impl
+// must not panic, and the layers are borrowed during a forward pass.
+impl std::fmt::Debug for MlpNeuralPredicate {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let mut s = f.debug_struct("MlpNeuralPredicate");
+        match self.layers.try_borrow() {
+            Ok(layers) => {
+                let shape: Vec<(usize, usize)> = layers
+                    .iter()
+                    .map(|l| (l.weights.first().map_or(0, Vec::len), l.weights.len()))
+                    .collect();
+                s.field("layers", &shape);
+            }
+            Err(_) => {
+                s.field("layers", &"<in use>");
+            }
+        }
+        s.field("hidden_act", &self.hidden_act)
+            .field("output_type", &self.output_type)
+            .field("queued_forwards", &self.forward_queue.try_borrow().map_or(None, |q| Some(q.len())))
+            .finish_non_exhaustive()
+    }
+}
+
 impl MlpNeuralPredicate {
     /// A network with randomly initialised weights and zero biases.
     ///

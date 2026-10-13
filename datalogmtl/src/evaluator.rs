@@ -68,6 +68,21 @@ pub struct DatalogMTLEvaluator<S: TemporalStore> {
     w_max:          u64,
 }
 
+
+// Summarised rather than derived, and deliberately not bounded on `S: Debug`: the
+// store is the fact base, and requiring it to be printable would push that
+// obligation onto every store implementation for no benefit. `snapshot_count` is the
+// cheap question to ask one.
+impl<S: TemporalStore> std::fmt::Debug for DatalogMTLEvaluator<S> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("DatalogMTLEvaluator")
+            .field("rules", &self.rules.len())
+            .field("snapshots", &self.store.snapshot_count())
+            .field("w_max", &self.w_max)
+            .finish_non_exhaustive()
+    }
+}
+
 impl<S: TemporalStore> DatalogMTLEvaluator<S> {
     /// Validates `rules` and computes the eviction horizon from them.
     ///

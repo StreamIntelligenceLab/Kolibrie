@@ -48,6 +48,22 @@ pub struct SimpleR2R {
     last_hybrid_error: Option<String>,
 }
 
+
+// Summarised rather than derived: `item` is a whole store, so the derived form would
+// print the window's content plus any background data on every log line.
+impl std::fmt::Debug for SimpleR2R {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("SimpleR2R")
+            .field("quads", &self.item.quad_count())
+            .field("execution_mode", &self.execution_mode)
+            .field("rules", &self.rules.len())
+            .field("derived_triples", &self.derived_triples.len())
+            .field("hybrid", &self.hybrid_config.is_some())
+            .field("last_hybrid_error", &self.last_hybrid_error)
+            .finish_non_exhaustive()
+    }
+}
+
 impl SimpleR2R {
     /// An operator with an empty store and no rules.
     pub fn new() -> Self {

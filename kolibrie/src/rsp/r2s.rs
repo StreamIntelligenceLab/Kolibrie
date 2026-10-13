@@ -37,6 +37,7 @@ impl Default  for StreamOperator{
 ///
 /// Stateful: `ISTREAM` and `DSTREAM` are defined relative to the previous firing,
 /// so one instance must see every firing of its query in order.
+#[derive(Debug)]
 pub struct Relation2StreamOperator<O> {
     stream_operator: StreamOperator,
     last_result: HashSet<O>,

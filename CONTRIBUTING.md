@@ -147,6 +147,34 @@ nothing, which is worse than the warning because it looks like documentation. Pr
 writing down the invariant, the unit, the panic, or the thing a caller would
 otherwise discover by experiment.
 
+## Scripted edits must preserve line endings
+
+The tree has mixed line endings — 15 CRLF `.rs` files against 221 LF, with
+`kolibrie/src/rsp/simple_r2r.rs` mixed *within* the file — and `.gitattributes`
+carries no `text` or `eol` rule, so nothing normalises them.
+
+A script that reads a file as text and writes it back will silently convert the
+whole file, because Python's `read_text()` and most equivalents apply universal
+newlines on the way in and a single ending on the way out. The result compiles,
+passes tests, and shows up as every line deleted and re-added, which buries the
+real change and destroys `git blame` on the file.
+
+This has happened twice, to these same two files. Read bytes, and either leave
+existing lines untouched or re-apply each line's original ending:
+
+```python
+raw = path.read_bytes()
+lines = raw.splitlines(keepends=True)   # keeps \r\n per line
+# insert whole lines; do not round-trip the rest through str
+```
+
+Check it before committing: `git diff --numstat` on a comment-only change should
+show additions and no deletions. If it shows the whole file rewritten, the endings
+moved.
+
+Normalising the tree to one ending is a reasonable thing to want, but as its own
+commit with a `.gitattributes` rule, not as a side effect.
+
 ## Notes for AI coding assistants
 
 - Do not commit, push, or create branches unless explicitly asked.

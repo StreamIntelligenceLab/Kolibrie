@@ -21,7 +21,7 @@ use std::collections::{HashMap, HashSet};
 use std::hash::{BuildHasherDefault, Hasher};
 
 /// Non-cryptographic hasher for dictionary ids (sequential, not user-controlled)
-#[derive(Default, Clone, Copy)]
+#[derive(Default, Clone, Copy, Debug)]
 pub struct TermHasher(u64);
 
 impl TermHasher {

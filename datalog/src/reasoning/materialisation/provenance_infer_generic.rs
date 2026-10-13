@@ -25,6 +25,7 @@ use std::collections::HashSet;
 use crate::reasoning::Reasoner;
 
 /// Result of a single provenance inference round.
+#[derive(Debug)]
 pub struct ProvenanceInferResult {
     /// Newly derived triples (not previously in known_facts).
     pub new_facts: HashSet<Triple>,

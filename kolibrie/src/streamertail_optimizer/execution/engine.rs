@@ -784,6 +784,7 @@ impl<'p> RowExtender<'p> {
 }
 
 /// Execution engine for physical operators
+#[derive(Debug)]
 pub struct ExecutionEngine;
 
 impl ExecutionEngine {

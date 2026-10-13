@@ -139,6 +139,16 @@ jobs:
         run: scripts/check_lint.sh missing_docs --crate-src -- -p kolibrie --features ml --all-targets
       - name: missing_docs under src, no default features
         run: scripts/check_lint.sh missing_docs --crate-src -- -p kolibrie --no-default-features --all-targets
+      # missing_debug_implementations reached zero under every crate's src in the
+      # same way. Satisfied with summarising hand-written impls wherever the type
+      # holds a dataset, so `{:?}` on a store or an engine prints counts rather than
+      # its contents, and none of those impls takes a lock or can panic.
+      - name: missing_debug_implementations under every crate's src
+        run: scripts/check_lint.sh missing_debug_implementations --crate-src -- --workspace --all-targets
+      - name: missing_debug_implementations under src, ml feature
+        run: scripts/check_lint.sh missing_debug_implementations --crate-src -- -p kolibrie --features ml --all-targets
+      - name: missing_debug_implementations under src, no default features
+        run: scripts/check_lint.sh missing_debug_implementations --crate-src -- -p kolibrie --no-default-features --all-targets
 
   # ── Advisory for now: reports, does not block ───────────────────────────────
   #

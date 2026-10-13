@@ -75,6 +75,29 @@ pub struct RSPBuilder<'a, I, O> {
     cross_window_reasoning_mode: CrossWindowReasoningMode,
 }
 
+
+// Cannot derive: `r2r` is a trait object. Summarised besides — the query, rules and
+// triples are source text whose length is more informative than its content at this
+// stage.
+impl<I, O> Debug for RSPBuilder<'_, I, O> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("RSPBuilder")
+            .field("has_query", &self.rsp_ql_query.is_some())
+            .field("has_triples", &self.triples.is_some())
+            .field("has_rules", &self.rules.is_some())
+            .field("has_result_consumer", &self.result_consumer.is_some())
+            .field("has_r2r", &self.r2r.is_some())
+            .field("operation_mode", &self.operation_mode)
+            .field("query_execution_mode", &self.query_execution_mode)
+            .field("syntax", &self.syntax)
+            .field("sync_policy", &self.sync_policy)
+            .field("reasoning_rules", &self.reasoning_rules.len())
+            .field("sparql_rules", &self.sparql_rules.len())
+            .field("cross_window_reasoning_mode", &self.cross_window_reasoning_mode)
+            .finish_non_exhaustive()
+    }
+}
+
 impl<'a, I, O> RSPBuilder<'a, I, O>
 where
     O: Clone + Eq + Send + Debug + Hash + 'static + From<Vec<(String, String)>>,

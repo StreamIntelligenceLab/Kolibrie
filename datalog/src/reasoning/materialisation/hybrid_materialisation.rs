@@ -43,6 +43,18 @@ pub struct LineageMaterialization {
     pub tags: TagStore<LineageProvenance>,
 }
 
+
+// Summarised rather than derived: a materialisation holds every derived fact and a
+// tag per fact, so the derived form would print the whole result set.
+impl std::fmt::Debug for LineageMaterialization {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("LineageMaterialization")
+            .field("new_facts", &self.new_facts.len())
+            .field("tagged", &self.tags.len())
+            .finish_non_exhaustive()
+    }
+}
+
 impl LineageMaterialization {
     /// The lineage of a fact: a handle to the Boolean formula over seed variables
     /// that says how it could have been derived.

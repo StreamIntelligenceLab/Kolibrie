@@ -46,6 +46,29 @@ pub struct QueryBuilder<'a> {
     is_streaming: bool,
 }
 
+
+// Cannot derive: the custom filter and sort key are `dyn Fn`. Summarised besides,
+// since `db` is a whole store. Whether a closure is present is the part that matters,
+// because `Clone` drops both and a cloned builder therefore behaves differently.
+impl fmt::Debug for QueryBuilder<'_> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("QueryBuilder")
+            .field("subject_filter", &self.subject_filter)
+            .field("predicate_filter", &self.predicate_filter)
+            .field("object_filter", &self.object_filter)
+            .field("has_custom_filter", &self.custom_filter.is_some())
+            .field("join_conditions", &self.join_conditions.len())
+            .field("has_join_db", &self.join_db.is_some())
+            .field("distinct_results", &self.distinct_results)
+            .field("has_sort_key", &self.sort_key.is_some())
+            .field("sort_direction", &self.sort_direction)
+            .field("limit", &self.limit)
+            .field("offset", &self.offset)
+            .field("is_streaming", &self.is_streaming)
+            .finish_non_exhaustive()
+    }
+}
+
 impl<'a> Clone for QueryBuilder<'a> {
     fn clone(&self) -> Self {
         QueryBuilder {

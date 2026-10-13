@@ -1504,6 +1504,19 @@ pub struct CompiledSdd {
     pub root: SddId,
 }
 
+
+// Cannot derive: `SddManager` has no `Debug`, and would not want one — it owns every
+// compiled node. The node count is the figure that matters, since it is what the
+// compilation budget is spent on.
+impl std::fmt::Debug for CompiledSdd {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("CompiledSdd")
+            .field("nodes", &self.manager.node_count())
+            .field("root", &self.root)
+            .finish()
+    }
+}
+
 fn collect_seed_ids(store: &LineageStore, root: LineageId, output: &mut BTreeSet<SeedId>) {
     match store.node(root) {
         LineageNode::Literal(seed) => {

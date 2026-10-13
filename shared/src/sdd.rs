@@ -110,6 +110,19 @@ pub struct SddOperationBudget<'a> {
     deadline_available: &'a mut dyn FnMut() -> bool,
 }
 
+
+// Cannot derive: the deadline is a `&mut dyn FnMut`, which has no `Debug`. Calling it
+// here would consume part of the budget being reported on, so it is named and not
+// invoked.
+impl std::fmt::Debug for SddOperationBudget<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("SddOperationBudget")
+            .field("max_nodes", &self.max_nodes)
+            .field("deadline_available", &"<closure>")
+            .finish()
+    }
+}
+
 impl<'a> SddOperationBudget<'a> {
     /// A budget of `max_nodes`, abandoned early once `deadline_available` returns
     /// `false`.
