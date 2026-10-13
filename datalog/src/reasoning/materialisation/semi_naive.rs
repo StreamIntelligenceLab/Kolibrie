@@ -1,3 +1,9 @@
+//! Semi-naive forward chaining: each round joins against only what the last one derived.
+//!
+//! A derivation is new only if it uses at least one fact from the previous round, so
+//! for each rule this tries each premise position in turn against the delta and
+//! joins the remaining premises against everything. The default strategy.
+
 use shared::dictionary::Dictionary;
 use shared::rule::Rule;
 use shared::triple::Triple;
@@ -86,6 +92,12 @@ impl InferenceStrategy for SemiNaiveStrategy {
 }
 
 impl Reasoner {
+    /// Derives every entailed fact by semi-naive forward chaining, returning the
+    /// new ones and leaving them in [`dataset_index`](Reasoner::dataset_index).
+    ///
+    /// The default choice: same fixpoint as
+    /// [`infer_new_facts_naive`](Reasoner::infer_new_facts_naive) without
+    /// re-deriving what it already knows.
     pub fn infer_new_facts_semi_naive(&mut self) -> Vec<Triple> {
         self.infer_with_strategy(SemiNaiveStrategy { start_idx_for_delta: 0 })
     }

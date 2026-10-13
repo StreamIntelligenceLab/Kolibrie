@@ -1,3 +1,14 @@
+//! Query answering when the facts violate the constraints.
+//!
+//! A repair is a maximal subset of the facts satisfying every constraint, and an
+//! inconsistent fact base generally has more than one.
+//! [`Reasoner::query_with_repairs`] returns only the answers holding in *every*
+//! repair, which is IAR semantics: an answer resting on a contested fact is not
+//! returned at all, so a caller never has to ask which repair it came from.
+//!
+//! The cost is that repairs are enumerated, so this is exponential in the number of
+//! conflicting facts rather than merely expensive.
+
 use std::collections::{HashMap, HashSet};
 use shared::terms::TriplePattern;
 use shared::triple::Triple;

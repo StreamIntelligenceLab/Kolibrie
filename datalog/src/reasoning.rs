@@ -7,6 +7,19 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this file,
  * you can obtain one at https://mozilla.org/MPL/2.0/.
  */
+//! The [`Reasoner`]: rules, facts, and the strategies that derive one from the other.
+//!
+//! A [`Reasoner`] owns its rule set and a [`DatasetIndex`] of facts, and shares its
+//! [`Dictionary`] with whoever created it — an `Arc<RwLock<_>>`, not a private copy,
+//! because the ids in its facts have to mean the same thing to the caller.
+//!
+//! Forward chaining lives in [`materialisation`] and is chosen by calling the
+//! matching method on the reasoner rather than by naming a strategy type: several of
+//! those submodules are `pub(crate)`, and their methods are reachable through
+//! [`Reasoner`] regardless. [`backward_chaining`] proves a single goal without
+//! materialising anything, [`repairs`] answers queries over an inconsistent fact
+//! base, and [`to_dot`] renders the whole thing for inspection.
+
 pub mod materialisation;
 pub mod to_dot;
 pub mod backward_chaining;
@@ -29,18 +42,43 @@ use std::sync::RwLock;
 
 // Logic part: Knowledge Graph
 
+/// A rule set, a fact base, and the dictionary the two are encoded against.
+///
+/// The fields are public, which means a caller can insert facts directly into
+/// [`dataset_index`](Self::dataset_index) or swap the dictionary for a shared one
+/// without going through a method, and the cross-window strategies do exactly that.
+/// Nothing here is cached or derived from anything else, so there is no invariant
+/// between the fields to break — except that every id in `dataset_index` and
+/// `rules` must be meaningful in `dictionary`, which is why replacing the
+/// dictionary wholesale is only safe before any facts are inserted.
 #[derive(Debug, Clone)]
 // Are there RDF connections here or not?
 pub struct Reasoner {
+    /// Term interning, shared with the caller rather than owned: a fact inserted
+    /// here has to decode to the same string on the other side.
     pub dictionary: Arc<RwLock<Dictionary>>,
+    /// Rules to evaluate. Order does not affect the fixpoint.
     pub rules: Vec<Rule>, // List of dynamic rules
 
+    /// The fact base, base and derived facts alike. Materialisation inserts into
+    /// this as it goes, so after a run it holds both.
     pub dataset_index: DatasetIndex,
+    /// Predicate-to-rule lookup, so a fact only tries rules that could match it.
     pub rule_index: RuleIndex,
+    /// Constraints for the repair-based strategies. These are not evaluated as
+    /// rules: a violated constraint means the fact base needs repairing.
     pub constraints: Vec<Rule>,
+    /// Input probabilities for provenance seeding. Only the provenance strategies
+    /// read this; the plain ones ignore it entirely.
     pub probability_seeds: HashMap<Triple, f64>, // Input probabilities for provenance seeding
 }
 
+/// Interns a string binding against an existing dictionary, without extending it.
+///
+/// A variable whose value is not already in the dictionary is **dropped**, so the
+/// result can be smaller than the input. That is deliberate — a value absent from
+/// the dictionary cannot appear in any fact, so a binding mentioning it cannot
+/// match — but it means the result's length is not a count of the input's.
 pub fn convert_string_binding_to_u32(
     binding: &BTreeMap<String, String>,
     dict: &Dictionary
@@ -55,6 +93,10 @@ pub fn convert_string_binding_to_u32(
 }
 
 impl Reasoner {
+    /// An empty reasoner with a fresh dictionary of its own.
+    ///
+    /// To share a caller's dictionary instead, assign to
+    /// [`dictionary`](Self::dictionary) before inserting anything.
     pub fn new() -> Self {
         Self {
             dictionary: Arc::new(RwLock::new(Dictionary::new())),

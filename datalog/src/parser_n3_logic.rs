@@ -8,6 +8,17 @@
  * you can obtain one at https://mozilla.org/MPL/2.0/.
  */
 
+//! Parser for N3 logic rules, including the window annotations RSP-QL needs.
+//!
+//! Reads `{ premise } => { conclusion }` under `@prefix` declarations and produces
+//! [`shared::rule::Rule`] values whose terms are already interned, which is why
+//! parsing needs a dictionary rather than only a string.
+//!
+//! [`parse_n3_rules_for_sds`] additionally returns a [`WindowContext`]. A rule
+//! mentioning two windows is indistinguishable from one mentioning two predicates
+//! unless the window each predicate came from is recorded, and the cross-window
+//! materialisation needs exactly that to decide when a derived fact expires.
+
 use crate::reasoning::*;
 use shared::terms::{Term, TriplePattern, UnresolvedTerm, UnresolvedTriple};
 use shared::rule::Rule;

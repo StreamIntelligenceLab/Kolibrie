@@ -1,3 +1,9 @@
+//! Naive forward chaining: every rule against every fact, every round.
+//!
+//! Re-derives everything it already knows on each pass, so it is the slowest
+//! strategy and the one whose result is easiest to trust. Kept as a reference for
+//! the others.
+
 use shared::dictionary::Dictionary;
 use shared::rule::Rule;
 use shared::triple::Triple;
@@ -71,6 +77,11 @@ impl InferenceStrategy for NaiveStrategy {
 }
 
 impl Reasoner {
+    /// Derives every entailed fact by naive forward chaining, returning the new
+    /// ones and leaving them in [`dataset_index`](Reasoner::dataset_index).
+    ///
+    /// Prefer [`infer_new_facts_semi_naive`](Reasoner::infer_new_facts_semi_naive)
+    /// unless the point is to check it against something.
     pub fn infer_new_facts_naive(&mut self) -> Vec<Triple> {
         self.infer_with_strategy(NaiveStrategy)
     }

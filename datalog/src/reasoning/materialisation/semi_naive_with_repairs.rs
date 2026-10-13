@@ -1,3 +1,11 @@
+//! Semi-naive forward chaining over an inconsistent fact base.
+//!
+//! Repairs before it derives, and again whenever a round introduces a constraint
+//! violation, keeping the largest repair each time. Unlike
+//! [`repairs`](crate::reasoning::repairs), which leaves the facts alone and answers
+//! across all repairs, this commits to one: the reasoner's fact base is rewritten,
+//! and facts dropped by the repair are gone.
+
 use std::collections::HashSet;
 use shared::dataset_index::DatasetIndex;
 use shared::triple::Triple;

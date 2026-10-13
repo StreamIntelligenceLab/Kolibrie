@@ -1,3 +1,16 @@
+//! Goal-directed evaluation: proving one query without materialising everything.
+//!
+//! Unification works over [`Term`](shared::terms::Term) rather than over dictionary
+//! ids alone, because a goal can carry unbound variables where a fact never does.
+//! Quoted triples unify component-wise.
+//!
+//! # Depth limit
+//!
+//! There is no loop check. Recursion is bounded by a hard-coded depth of 10, and
+//! exceeding it yields no bindings, which is indistinguishable from the goal having
+//! no proof. A recursive rule set deeper than that silently answers nothing, so
+//! forward chaining is the safer choice when the rules are known to recurse.
+
 use std::collections::HashMap;
 use shared::rule::Rule;
 use shared::terms::{Term, TriplePattern};
@@ -54,6 +67,12 @@ fn unify_terms(term1: &Term, term2: &Term, bindings: &mut HashMap<String, Term>)
     }
 }
 
+/// Follows a variable through the binding chain to whatever it ultimately stands for.
+///
+/// Chains, because unification can bind one variable to another: resolving `?x`
+/// where `?x` is bound to `?y` and `?y` to a constant yields the constant. An
+/// unbound variable resolves to itself, so the result is a `Term` and not an
+/// `Option`.
 pub fn resolve_term<'a>(term: &'a Term, bindings: &'a HashMap<String, Term>) -> Term {
     match term {
         Term::Variable(v) => {

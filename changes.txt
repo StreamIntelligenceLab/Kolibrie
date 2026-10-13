@@ -151,6 +151,7 @@
 150. Check both feature configurations before starting rather than after, which is what the previous six misses in this burn-down failed to do: the default build showed 37 items for this step while the real figure was 89, since 52 live behind #[cfg(feature = "ml")]
 151. Gate missing_docs on kolibrie/src in CI across the same three feature configurations as unreachable_pub, making it the second crate scope held at zero after shared; the gate is scoped to <crate>/src on purpose, because the remaining ~130 items outside src are one crate-level doc comment per test, example and bench, which are not part of the public surface
 152. Reduce workspace missing_docs to 481 of the original 2713, with the remainder concentrated in datalogmtl/src (170), datalog/src (110) and ml/src (86); total warnings 641
+153. Restore the original line endings in kolibrie/src/rsp/builder.rs and simple_r2r.rs, which the documentation commit c8b04a3 flipped from CRLF to LF across 374 and 127 lines while changing nothing else on them; the content is byte-identical, so the only effect was to make git blame on both files attribute every line to that commit. Restored per line rather than by converting the file, because simple_r2r.rs was already mixed at 127 CRLF to 93 LF and a blanket conversion would have changed lines the commit never touched
 
 0.2.0
 1. Add support multiple window + static data for RSP engine

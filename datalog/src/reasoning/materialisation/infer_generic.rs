@@ -1,11 +1,23 @@
+//! The driver loop shared by the forward-chaining strategies that carry no provenance.
+//!
+//! A strategy supplies one round ([`InferenceStrategy::infer_round`]) and the driver
+//! repeats it until a round derives nothing new, inserting each round's facts into
+//! the reasoner as it goes. The strategies themselves are `pub(crate)`; the loop is
+//! public because it is also what a new strategy would plug into.
+
 use shared::dictionary::Dictionary;
 use shared::rule::Rule;
 use shared::triple::Triple;
 use std::collections::{HashMap, HashSet};
 use crate::reasoning::Reasoner;
 
+/// One way of satisfying a rule's premises: variable name to term id.
 pub type SolutionMapping = HashMap<String, u32>;
 
+/// One round of forward chaining, which [`Reasoner::infer_with_strategy`] repeats.
+///
+/// A strategy decides which facts a round considers; it does not decide when to
+/// stop, since the driver stops as soon as a round derives nothing new.
 pub trait InferenceStrategy {
 
     /// Applies a single round of inference within the materialisation algorithm.

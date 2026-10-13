@@ -7,6 +7,20 @@
  * License, v. 2.0.
  */
 
+//! Materialisation that records each fact's lineage and leaves evaluation to the caller.
+//!
+//! Deriving the lineage of every fact is cheap; turning one into a probability means
+//! compiling it to an SDD, which is not. Splitting the two lets a caller materialise
+//! once and then compile only the hypotheses a decision actually rests on — see
+//! [`LineageMaterialization`].
+//!
+//! # Rules this rejects
+//!
+//! [`materialize_lineage`] validates the rule set first and refuses two things a
+//! lineage formula cannot represent: a variable in predicate position, which makes
+//! the dependency graph unknowable before evaluation, and a cycle in that graph,
+//! because a recursive derivation has no finite Boolean lineage.
+
 use crate::reasoning::materialisation::provenance_semi_naive::semi_naive_with_initial_tags;
 use crate::reasoning::Reasoner;
 use shared::hybrid::{
@@ -23,15 +37,25 @@ use std::sync::Arc;
 /// Full lineage result. Evaluation is intentionally separate so callers can
 /// compile only the hypotheses that matter to a decision.
 pub struct LineageMaterialization {
+    /// Facts derived by this run, in derivation order. Base facts are not included.
     pub new_facts: Vec<Triple>,
+    /// Lineage formula per fact, as a handle into the shared formula store.
     pub tags: TagStore<LineageProvenance>,
 }
 
 impl LineageMaterialization {
+    /// The lineage of a fact: a handle to the Boolean formula over seed variables
+    /// that says how it could have been derived.
     pub fn lineage(&self, triple: &Triple) -> LineageId {
         self.tags.get_tag(triple)
     }
 
+    /// Turns one fact's lineage into a probability, under the escalation policy in
+    /// `config`.
+    ///
+    /// Always answers, which is the point: when exact compilation would exceed the
+    /// configured budget the result carries bounds and the reason instead of
+    /// failing, so a caller gets something to decide on either way.
     pub fn evaluate(&self, triple: &Triple, config: &HybridConfig) -> HybridProbabilityResult {
         let provenance = self.tags.provenance();
         evaluate_hybrid(
@@ -42,6 +66,11 @@ impl LineageMaterialization {
         )
     }
 
+    /// Compiles one fact's lineage to an SDD, for a caller that needs the diagram
+    /// rather than a number.
+    ///
+    /// Unlike [`evaluate`](Self::evaluate), this reports a budget overrun as an
+    /// error rather than degrading to bounds.
     pub fn compile_exact(
         &self,
         triple: &Triple,
@@ -133,6 +162,16 @@ pub fn validate_hybrid_rules(rules: &[Rule]) -> Result<(), HybridError> {
     Ok(())
 }
 
+/// Derives every fact the rules entail, recording each one's lineage.
+///
+/// Inserts the snapshot's seed facts into `reasoner` as it goes, so the reasoner is
+/// left holding both the seeds and the derived facts.
+///
+/// # Errors
+///
+/// Rejects the rule set before deriving anything if it has a variable in predicate
+/// position or a cycle in its predicate dependency graph, neither of which has a
+/// finite Boolean lineage.
 pub fn materialize_lineage(
     reasoner: &mut Reasoner,
     snapshot: SeedSnapshot,
@@ -174,6 +213,16 @@ pub fn materialize_lineage(
 }
 
 impl Reasoner {
+    /// Materialises with lineage and evaluates **every** derived fact.
+    ///
+    /// The convenient path, and the expensive one: compiling one lineage is the
+    /// costly step, and this does it once per fact. Prefer
+    /// [`materialize_lineage`] plus
+    /// [`LineageMaterialization::evaluate`] on the facts that matter when the
+    /// answer is only needed for a few of them.
+    ///
+    /// The returned [`LineageMaterialization`] is the same one the probabilities
+    /// came from, so further facts can be evaluated without materialising again.
     pub fn infer_new_facts_with_hybrid(
         &mut self,
         snapshot: SeedSnapshot,

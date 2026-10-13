@@ -8,6 +8,23 @@
  * you can obtain one at https://mozilla.org/MPL/2.0/.
  */
 
+//! An RSP-QL streaming dataset (SDS), and its translation to and from plain Datalog.
+//!
+//! Datalog has no notion of a window, so a rule spanning several windows is
+//! evaluated by flattening the SDS into ordinary triples with the originating window
+//! encoded into the predicate as `window_iri + local_name` — see
+//! [`annotate_predicate`]. [`strip_window_prefix`] reverses it, and
+//! [`all_component_iris`] sorts longest-first because one component IRI can be a
+//! prefix of another, where the shorter one would otherwise match first and strip
+//! too little.
+//!
+//! # Time
+//!
+//! A fact carries the timestamp it arrived at and a window carries a width `alpha`
+//! in the same unit. A fact is alive at `current_time` when
+//! `event_time + alpha > current_time`, so the interval is half-open and a fact
+//! expiring exactly now has already gone.
+
 use shared::dictionary::Dictionary;
 use shared::triple::Triple;
 use std::collections::{HashMap, HashSet};
@@ -34,9 +51,11 @@ pub fn strip_window_prefix<'a, 'b>(
 /// A single RDF triple from a streaming window, carrying its stream-level timestamp
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct WindowedTriple {
+    /// Subject IRI, as a string: not yet interned.
     pub subject: String,
     /// Local predicate name under the owning window IRI.  NOT a full IRI
     pub predicate: String,
+    /// Object IRI or literal, as a string.
     pub object: String,
     /// `t_d`: the timestamp at which this triple arrived in the stream
     pub event_time: u64,
@@ -47,18 +66,25 @@ pub struct WindowedTriple {
 pub struct WindowData {
     /// Window width α (in the same time unit as event_time)
     pub alpha: u64,
+    /// Contents of the window, including triples that have already expired:
+    /// liveness is decided per fact at translation time, not on arrival.
     pub triples: Vec<WindowedTriple>,
 }
 
 /// An RSP-QL Streaming Dataset (SDS) at a point in time
 #[derive(Clone, Debug, Default)]
 pub struct Sds {
+    /// Sliding windows, by window IRI.
     pub windows: HashMap<String, WindowData>,
+    /// Non-streaming graphs, by graph IRI. These never expire.
     pub static_graphs: HashMap<String, Vec<(String, String, String)>>,
+    /// IRIs that only ever appear in rule conclusions. They hold no input facts
+    /// but their prefixes still have to be strippable, so they are listed.
     pub output_iris: HashSet<String>,
 }
 
 impl Sds {
+    /// An empty streaming dataset: no windows, no static graphs, no outputs.
     pub fn new() -> Self {
         Self::default()
     }

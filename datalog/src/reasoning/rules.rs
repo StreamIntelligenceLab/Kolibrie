@@ -1,3 +1,13 @@
+//! Matching rule premises against facts, and joining the bindings that result.
+//!
+//! This is the inner loop every forward-chaining strategy shares. Premises are
+//! joined one at a time, left to right, through
+//! [`shared::join_algorithm::perform_hash_join_for_rules`]; an empty intermediate
+//! result ends the rule early.
+//!
+//! Rule filters are not SPARQL filters: see [`evaluate_filters`] for where the two
+//! semantics part company.
+
 use crate::reasoning::Reasoner;
 use shared::dictionary::Dictionary;
 use shared::join_algorithm::perform_hash_join_for_rules;
@@ -69,6 +79,21 @@ pub fn join_remaining(
     results
 }
 
+/// Tests a candidate binding against a rule's filters.
+///
+/// # Not SPARQL FILTER semantics
+///
+/// Two deliberate differences from the SPARQL evaluation in `kolibrie`, both of
+/// which make a filter here more permissive:
+///
+/// - A filter on a variable the binding does not contain is **skipped**, not
+///   failed. In SPARQL an unbound variable makes the filter error and the row is
+///   dropped.
+/// - A comparison against a non-numeric value parses as `0.0` rather than
+///   erroring, so `?x > 5` on the value `"abc"` is false while `?x < 5` is true.
+///
+/// A rule relying on either behaviour will not translate to a SPARQL FILTER
+/// unchanged.
 pub fn evaluate_filters(
     bindings: &HashMap<String, u32>,
     filters: &Vec<FilterCondition>,
@@ -103,6 +128,11 @@ pub fn evaluate_filters(
     true
 }
 
+/// Extends each binding with the ways one premise can match the facts.
+///
+/// Returns the empty vector when the premise matches nothing, which the callers
+/// treat as the rule having failed and stop early rather than continuing with
+/// nothing to join against.
 pub fn join_premise_with_hash_join(
     premise: &TriplePattern,
     all_facts: &[Triple],

@@ -8,6 +8,13 @@
  * you can obtain one at https://mozilla.org/MPL/2.0/.
  */
 
+//! Recomputing a materialised streaming dataset from scratch at each time point.
+//!
+//! The reference implementation for cross-window reasoning: flatten the SDS, derive
+//! everything, translate back. Correct by construction and the oracle the
+//! incremental version in [`cross_window_incremental`](super::cross_window_incremental)
+//! is checked against, but it repeats all the work on every tick.
+
 use crate::cross_window_sds::{Sds, translate_sds_to_datalog, translate_datalog_back};
 use crate::reasoning::Reasoner;
 use shared::dictionary::Dictionary;

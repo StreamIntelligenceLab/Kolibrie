@@ -1,3 +1,11 @@
+//! Rendering a reasoner as a DOT graph, for looking at rather than querying.
+//!
+//! Facts become edges between subject and object nodes labelled by predicate, and
+//! each rule becomes a premise node pointing at a conclusion node, so a rule that
+//! has not fired is still visible. Everything is decoded back to strings, which
+//! makes this the one place where a dictionary id missing from the dictionary
+//! panics rather than degrading.
+
 use shared::dictionary::Dictionary;
 use shared::terms::{Term, TriplePattern};
 use shared::triple::Triple;
@@ -7,6 +15,7 @@ use crate::reasoning::Reasoner;
 /// Contains a method to convert a specific data structure into a representation in the DOT language
 /// For better visualisation
 pub trait ToDot {
+    /// Renders as a complete DOT `digraph`, ready to hand to Graphviz.
     fn to_dot(&self) -> String;
 }
 

@@ -8,6 +8,24 @@
  * you can obtain one at https://mozilla.org/MPL/2.0/.
  */
 
+//! Semi-naive materialisation that tags every derived fact with its provenance.
+//!
+//! # Stratification
+//!
+//! Rules with a negative premise are evaluated in a second stratum, after the
+//! positive rules have reached their fixpoint, and that stratum is a *single pass*
+//! rather than a fixpoint. Negation is therefore not recursive here: a fact derived
+//! by a negative rule cannot feed another negative rule.
+//!
+//! # Seed identity
+//!
+//! Seed probabilities are assigned ids by position in the triple-sorted order of
+//! [`Reasoner::probability_seeds`](crate::reasoning::Reasoner), and
+//! [`TagStore::seed_triples`](shared::tag_store::TagStore) records that order so an
+//! explanation can map an id back to the triple it came from. The ordering is part
+//! of the contract between the two: a tag is only interpretable alongside the
+//! `seed_triples` it was built with.
+
 use shared::dictionary::Dictionary;
 use shared::provenance::Provenance;
 use shared::rule::Rule;
@@ -241,6 +259,14 @@ impl Reasoner {
     }
 }
 
+/// Runs the two strata to a fixpoint, starting from tags the caller has already set.
+///
+/// Positive rules first, to a fixpoint, then one pass of the rules with a negative
+/// premise. The negative stratum is a single pass and not a fixpoint, so a fact
+/// derived through negation cannot feed another negated premise.
+///
+/// Returns the derived facts and the tag store, which the caller needs to keep: a
+/// tag is a handle into that store and is meaningless without it.
 pub fn semi_naive_with_initial_tags<P: Provenance>(
     reasoner: &mut Reasoner,
     provenance: P,
@@ -277,6 +303,15 @@ pub fn semi_naive_with_initial_tags<P: Provenance>(
     (new_facts, initial_tags)
 }
 
+/// As [`semi_naive_with_initial_tags`], seeded with an explicit delta for the first
+/// round, so a run can continue from a previous one instead of rediscovering it.
+///
+/// Two differences from that function, both of which matter to a caller:
+/// **negative rules are ignored entirely** rather than run as a second stratum, and
+/// `_provenance` is unused — the tags come from `initial_tags`, which carries its
+/// own provenance. This is the entry point
+/// [`cross_window_incremental`](super::cross_window_incremental) uses, where rules
+/// are positive and the delta is the facts that arrived this tick.
 pub fn semi_naive_with_initial_tags_and_delta<P: Provenance>(
     reasoner: &mut Reasoner,
     _provenance: P,

@@ -8,6 +8,14 @@
  * you can obtain one at https://mozilla.org/MPL/2.0/.
  */
 
+//! The driver loop for strategies that carry a provenance tag per fact.
+//!
+//! Separate from [`infer_generic`](super::infer_generic) because of its termination
+//! condition. Deriving no new fact is not enough: a round can leave the set of facts
+//! unchanged while improving the tag on one of them — a second derivation of a known
+//! fact is a second way of proving it, which the tag has to absorb — so the loop
+//! runs again whenever either the facts or a tag changed.
+
 use shared::dictionary::Dictionary;
 use shared::provenance::Provenance;
 use shared::rule::Rule;
@@ -29,6 +37,11 @@ pub struct ProvenanceInferResult {
 /// Implementors define how a single inference round works (e.g. naive, semi-naive).
 /// The driver loop calls `infer_round` repeatedly until fixpoint.
 pub trait ProvenanceInferenceStrategy<P: Provenance> {
+    /// Runs one round, updating `tag_store` in place for facts it derives or
+    /// re-derives, and reporting through
+    /// [`ProvenanceInferResult::tag_changed`] whether any tag moved. Reporting
+    /// that wrongly as `false` terminates the loop early and leaves tags that are
+    /// not at their fixpoint.
     fn infer_round(
         &mut self,
         dictionary: &mut Dictionary,

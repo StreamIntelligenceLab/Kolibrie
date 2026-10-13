@@ -1,3 +1,10 @@
+//! Semi-naive forward chaining with the delta scanned in parallel.
+//!
+//! Unfinished, and currently has no callers; retained because the approach is worth
+//! keeping rather than because it is ready. It takes the dictionary write lock for
+//! the whole fixpoint, which serialises anything else holding the same dictionary,
+//! so the parallelism it adds inside the loop is paid for outside it.
+
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use shared::triple::Triple;
@@ -8,6 +15,12 @@ use crate::reasoning::rules::matches_rule_pattern;
 
 impl Reasoner {
 
+    /// Semi-naive forward chaining with each round's delta scanned across rayon's
+    /// thread pool.
+    ///
+    /// Unfinished and currently unused. It holds the dictionary write lock for the
+    /// whole fixpoint, so no other holder of that dictionary makes progress while
+    /// it runs.
     pub fn infer_new_facts_semi_naive_parallel(&mut self) -> Vec<Triple> {
         // Collect all known facts
         let all_initial = self.dataset_index.query(None, None, None);
