@@ -12,7 +12,6 @@ serde_json = { workspace = true }
 pyo3 = { workspace = true, features = ["auto-initialize"] }
 rand = { workspace = true }
 candle-core = { version = "0.8", default-features = false }
-candle-nn = { version = "0.8", default-features = false }
 shared = { path = "../shared" }
 
 [build-dependencies]

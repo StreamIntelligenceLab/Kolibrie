@@ -39,7 +39,6 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use candle_core::{Device, Tensor};
-use candle_nn::VarMap;
 use rand::{Rng, SeedableRng};
 use serde::{Deserialize, Serialize};
 
@@ -103,11 +102,10 @@ struct SavedModel {
 /// where a `&mut` would not fit. The cost is that the forward/backward pairing is
 /// a runtime contract rather than a borrow-checked one — see the module
 /// documentation.
+///
+/// No public fields: the parameters are reachable only through the methods here,
+/// so their representation stays a private matter.
 pub struct MlpNeuralPredicate {
-    /// Unused. A candle `VarMap` is constructed here and never read or written:
-    /// the parameters live in a private `Vec<Vec<f64>>` and the arithmetic does
-    /// not go through candle. Kept only because it is public API.
-    pub varmap: VarMap,
     layers: RefCell<Vec<DenseLayer>>,
     hidden_act: Activation,
     output_type: OutputType,
@@ -166,7 +164,6 @@ impl MlpNeuralPredicate {
         let adam_state = zero_adam_for_layers(&layers);
 
         Ok(Self {
-            varmap: VarMap::new(),
             layers: RefCell::new(layers),
             hidden_act: Activation::Relu,
             output_type,

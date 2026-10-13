@@ -202,6 +202,10 @@
 201. Verify the new mode rather than assuming it, since a gate that cannot fail is worse than none: an undocumented pub item added to shared/src was reported with its path and exited non-zero, and the same item added to kolibrie/tests was correctly ignored
 202. Supersede the rationale recorded one commit earlier for keeping the gate lines per crate: the blocker named there was the six remaining items in cli, kolibrie-http-server and python, and those are now documented
 203. Reduce workspace missing_docs to 107 of the original 2713. Every crate's src and every build script is now at zero, so the whole remainder is one crate-level comment per kolibrie example (55), test (31) and bench (7) plus 2 datalog tests, and 12 from criterion's own macros that cannot be fixed here; total warnings 267
+204. Remove MlpNeuralPredicate::varmap, a public field holding a candle VarMap that was constructed in the one place and never read or written anywhere in the workspace; the parameters live in a private Vec<Vec<f64>> and the arithmetic never went through candle, so the field was public API and nothing else. Found while documenting ml/src, where writing down what it did made clear it did nothing
+205. Drop the candle-nn dependency with it, since VarMap was its only use; candle-core stays for the Tensor the forward pass returns. Cargo.lock loses the candle-nn entry and nothing else, so its transitive dependencies were all reachable through candle-core already
+206. Record that this unblocks a Debug derive on MlpNeuralPredicate, which VarMap had prevented: adding one now compiles. Left for the missing_debug_implementations burn-down rather than taken here, so that axis stays one change rather than a scattering
+207. Note in the struct's documentation that it now has no public fields, so the parameter representation is a private matter and can change without an API break
 
 0.2.0
 1. Add support multiple window + static data for RSP engine
