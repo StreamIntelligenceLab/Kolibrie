@@ -20,57 +20,57 @@ use shared::terms::Term;
 /// Generates RDF/XML data with random sensor values but fixed grid positions
 fn generate_rdf_xml() -> String {
     // Create random number generator
-    let mut rng = rand::thread_rng();
+    let mut rng = rand::rng();
 
     // Get current timestamp
     let now = Utc::now();
     let current_datetime = now.format("%Y-%m-%d %H:%M:%S").to_string();
 
     // Random light and noise levels for room
-    let room_light_level = rng.gen_range(60..95);
-    let room_noise_level = rng.gen_range(20..35);
+    let room_light_level = rng.random_range(60..95);
+    let room_noise_level = rng.random_range(20..35);
 
     // Generate random motion detection status and other sensor attributes
-    let camera1_motion = rng.gen_bool(0.7);
-    let camera2_motion = rng.gen_bool(0.4);
-    let motion1_detection = rng.gen_bool(0.8);
-    let motion2_detection = rng.gen_bool(0.5);
-    let motion3_detection = rng.gen_bool(0.7);
-    let noise1_detection = rng.gen_bool(0.3);
-    let noise2_detection = rng.gen_bool(0.4);
+    let camera1_motion = rng.random_bool(0.7);
+    let camera2_motion = rng.random_bool(0.4);
+    let motion1_detection = rng.random_bool(0.8);
+    let motion2_detection = rng.random_bool(0.5);
+    let motion3_detection = rng.random_bool(0.7);
+    let noise1_detection = rng.random_bool(0.3);
+    let noise2_detection = rng.random_bool(0.4);
 
     // Random noise levels for noise sensors
-    let noise1_level = rng.gen_range(5..20);
-    let noise2_level = rng.gen_range(8..25);
+    let noise1_level = rng.random_range(5..20);
+    let noise2_level = rng.random_range(8..25);
 
     // Random camera attributes
-    let camera1_coverage = match rng.gen_range(0..3) {
+    let camera1_coverage = match rng.random_range(0..3) {
         0 => "Narrow",
         1 => "Medium",
         2 => "Wide",
         _ => "Standard",
     };
 
-    let camera2_angle = rng.gen_range(0..360);
+    let camera2_angle = rng.random_range(0..360);
 
     // Generate random time for an event
-    let random_hour = rng.gen_range(0..24);
-    let random_minute = rng.gen_range(0..60);
+    let random_hour = rng.random_range(0..24);
+    let random_minute = rng.random_range(0..60);
     let random_event_time = format!("{:02}:{:02}", random_hour, random_minute);
 
     // System user identifier (anonymous)
     let system_user = "system";
 
     // Generate random time slots for allowed access
-    let cat_a_slot1_start = format!("{:02}:00", rng.gen_range(7..10));
-    let cat_a_slot1_end = format!("{:02}:00", rng.gen_range(11..14));
-    let cat_a_slot2_start = format!("{:02}:00", rng.gen_range(13..16));
-    let cat_a_slot2_end = format!("{:02}:00", rng.gen_range(17..20));
+    let cat_a_slot1_start = format!("{:02}:00", rng.random_range(7..10));
+    let cat_a_slot1_end = format!("{:02}:00", rng.random_range(11..14));
+    let cat_a_slot2_start = format!("{:02}:00", rng.random_range(13..16));
+    let cat_a_slot2_end = format!("{:02}:00", rng.random_range(17..20));
 
-    let cat_b_slot1_start = format!("{:02}:00", rng.gen_range(8..11));
-    let cat_b_slot1_end = format!("{:02}:00", rng.gen_range(12..15));
-    let cat_b_slot2_start = format!("{:02}:00", rng.gen_range(14..17));
-    let cat_b_slot2_end = format!("{:02}:00", rng.gen_range(18..21));
+    let cat_b_slot1_start = format!("{:02}:00", rng.random_range(8..11));
+    let cat_b_slot1_end = format!("{:02}:00", rng.random_range(12..15));
+    let cat_b_slot2_start = format!("{:02}:00", rng.random_range(14..17));
+    let cat_b_slot2_end = format!("{:02}:00", rng.random_range(18..21));
 
     // Shared time slot
     let shared_slot_start = "10:00";
@@ -245,15 +245,27 @@ fn generate_rdf_xml() -> String {
         current_datetime,
         // MotionSensor1 attributes
         motion1_detection,
-        if rng.gen_bool(0.5) { "High" } else { "Medium" },
+        if rng.random_bool(0.5) {
+            "High"
+        } else {
+            "Medium"
+        },
         current_datetime,
         // MotionSensor2 attributes
         motion2_detection,
-        if rng.gen_bool(0.5) { "High" } else { "Medium" },
+        if rng.random_bool(0.5) {
+            "High"
+        } else {
+            "Medium"
+        },
         current_datetime,
         // MotionSensor3 attributes
         motion3_detection,
-        if rng.gen_bool(0.5) { "High" } else { "Medium" },
+        if rng.random_bool(0.5) {
+            "High"
+        } else {
+            "Medium"
+        },
         current_datetime,
         // NoiseSensor1 attributes
         noise1_detection,
