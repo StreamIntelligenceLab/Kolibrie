@@ -35,16 +35,29 @@ pub use crate::sparql_database::SparqlDatabase;
 /// Parses a combined SPARQL/RSP-QL query, including rule and prefix sections.
 pub use crate::parser::parse_combined_query;
 
-/// Executes a query against a store.
+/// Runs a request and returns its rows, or says why it could not.
+///
+/// The entry point to reach for.
+pub use crate::execute_query::execute;
+
+/// Why a request could not be answered.
+pub use crate::execute_query::QueryError;
+
+/// Executes a query against a store, reporting failure by returning no rows.
 //
-// The name describes the implementation it happened to land on rather than what it
-// does. It is re-exported verbatim on purpose: renaming it is the facade step's job
-// (architecture doc §4, "one entry point").
+// Superseded by `execute` and kept only so its callers can move one at a time. The
+// name describes an implementation it happened to land on — and no longer has, since
+// the "2" is vestigial — but the reason to replace it is the contract, not the name:
+// it prints `SPARQL_EXECUTION_FAILED` and returns an empty vector, which a caller
+// cannot tell from a query that correctly matched nothing.
 //
-// To be precise about what this buys, since it is easy to overstate: the prelude
-// removes dependence on module *paths*, not on names. 47 files now import via the
-// prelude, so moving this function to another crate edits this line rather than 47
-// files — which is what step 6 and the crate splits do. Renaming the function itself
-// still touches all 61 call sites that spell it out in their bodies, and will need a
-// deprecated alias to stay incremental.
+// What the prelude buys, stated precisely because it is easy to overstate: it removes
+// dependence on module *paths*, not on names. 48 files import through this glob, so
+// moving a function to another crate edits a line here rather than 48 files — which
+// is what the crate splits do. The name itself is still spelled out at 115 call sites
+// in bodies, and in 25 explicit imports, which is the work the migration step does.
+//
+// It cannot be marked `#[deprecated]` while those call sites exist: the lint fires at
+// the *use* site, and `deprecated` is held at zero by a blocking CI gate, so marking
+// it would turn the build red at 115 places at once. Migrate first, deprecate after.
 pub use crate::execute_query::execute_query_rayon_parallel2_volcano;

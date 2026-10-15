@@ -25,9 +25,115 @@ use shared::query::{
 use shared::quoted_triple_store::is_quoted_triple_id;
 use shared::terms::{Bindings, Term};
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
+use std::fmt;
 use std::sync::atomic::{AtomicU64, Ordering as AtomicOrdering};
 
 type StringBinding = HashMap<String, String>;
+
+/// Why a request could not be answered.
+///
+/// # Rendering
+///
+/// `Display` prefixes a stable `QUERY_*` code, as
+/// [`ProgramError`](crate::program::ProgramError) does. A [`Parse`](Self::Parse)
+/// message is **multi-line**: it carries the annotated snippet the parser produced,
+/// pointing at the offending token. It contains no terminal escapes, so it is safe to
+/// log or serialise.
+///
+/// # The older entry points render differently
+///
+/// [`execute_sparql_query`] and [`execute_sparql_with_ml_context`] still return
+/// `String`, and still return the bare message or bare `ML_*` code they always did,
+/// because the HTTP surface passes those to clients as a documented contract. So the
+/// same failure reads as `QUERY_POLICY: ML_FORBIDDEN` through [`execute`] and as
+/// `ML_FORBIDDEN` through those two. That is deliberate and temporary: match on the
+/// variant rather than on either string.
+#[derive(Debug)]
+pub enum QueryError {
+    /// The request did not parse as SPARQL or as one of the Kolibrie extensions.
+    ///
+    /// Carries the parser's message, which names a position in the input.
+    Parse(String),
+    /// It parsed, but is not a form this entry point accepts — an Update where a
+    /// query was required, or more than one rule in a single request.
+    Unsupported(String),
+    /// The ML policy refused it. The request may be well-formed; the caller simply
+    /// lacks the authority. See [`ml_policy`](crate::ml_policy).
+    Ml(crate::ml_policy::MlError),
+    /// Parsing and policy both passed, and evaluation failed. Covers an unresolvable
+    /// dataset clause, an unsupported update template, and failure inside the plan.
+    Execution(String),
+}
+
+impl fmt::Display for QueryError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Parse(message) => write!(f, "QUERY_PARSE_ERROR: {message}"),
+            Self::Unsupported(message) => write!(f, "QUERY_UNSUPPORTED: {message}"),
+            Self::Ml(error) => write!(f, "QUERY_POLICY: {error}"),
+            Self::Execution(message) => write!(f, "QUERY_EXECUTION_FAILED: {message}"),
+        }
+    }
+}
+
+impl QueryError {
+    /// The message the `String`-returning entry points produced before this type
+    /// existed: the bare message, or the bare `ML_*` code for a policy refusal.
+    ///
+    /// Only [`execute_sparql_query`] and [`execute_sparql_with_ml_context`] use it,
+    /// and only because the HTTP surface returns their error strings to clients as a
+    /// documented contract. [`Display`](fmt::Display) is the one to use otherwise —
+    /// it carries a `QUERY_*` code, matching
+    /// [`ProgramError`](crate::program::ProgramError). This goes away with its two
+    /// callers.
+    pub(crate) fn legacy_string(&self) -> String {
+        match self {
+            Self::Parse(message) | Self::Unsupported(message) | Self::Execution(message) => {
+                message.clone()
+            }
+            Self::Ml(error) => error.to_string(),
+        }
+    }
+}
+
+impl std::error::Error for QueryError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::Ml(error) => Some(error),
+            _ => None,
+        }
+    }
+}
+
+impl From<crate::ml_policy::MlError> for QueryError {
+    fn from(error: crate::ml_policy::MlError) -> Self {
+        Self::Ml(error)
+    }
+}
+
+/// Runs a SPARQL request and returns its solution rows.
+///
+/// The entry point to prefer. One row per solution, one string per projected
+/// variable, in the order the `SELECT` names them. An Update returns no rows, and so
+/// does a request that only declares prefixes or rules.
+///
+/// # Errors
+///
+/// A [`QueryError`] saying which stage refused it. Note the contrast with
+/// [`execute_query_rayon_parallel2_volcano`], which reports failure by returning no
+/// rows — indistinguishable from a query that correctly matched nothing.
+///
+/// # Accepts Update syntax
+///
+/// For compatibility with the older entry point this accepts Update forms as well as
+/// queries. [`execute_sparql_query`] rejects them, and
+/// [`execute_sparql_update`] returns an [`UpdateSummary`] rather than rows.
+pub fn execute(
+    sparql: &str,
+    database: &mut SparqlDatabase,
+) -> Result<Vec<Vec<String>>, QueryError> {
+    execute_request(sparql, database, true)
+}
 
 /// Validate a request without changing the database
 pub fn validate_query_policy(sparql: &str, database: &SparqlDatabase) -> Result<(), String> {
@@ -45,7 +151,7 @@ pub fn execute_sparql_with_ml_context(
     context: &crate::ml_policy::MlExecutionContext,
 ) -> Result<Vec<Vec<String>>, String> {
     with_ml_context(database, context, |database| {
-        execute_request(sparql, database, true)
+        execute_request(sparql, database, true).map_err(|error| error.legacy_string())
     })
 }
 
@@ -83,15 +189,15 @@ pub fn execute_query_rayon_parallel2_volcano(
     sparql: &str,
     database: &mut SparqlDatabase,
 ) -> Vec<Vec<String>> {
-    match execute_request(sparql, database, true) {
+    match execute(sparql, database) {
         Ok(results) => results,
         Err(error) => {
-            match error.as_str() {
-                "ML_FEATURE_DISABLED"
-                | "ML_FORBIDDEN"
-                | "ML_INVALID_CONFIGURATION"
-                | "ML_INVALID_ARTIFACT"
-                | "ML_EXECUTION_FAILED" => eprintln!("{error}"),
+            // Behaviour preserved exactly: an ML refusal prints its code, anything
+            // else prints `SPARQL_EXECUTION_FAILED` and the real message is lost.
+            // That is the reason to prefer `execute`, and the reason this wrapper is
+            // kept only until its callers move.
+            match error {
+                QueryError::Ml(code) => eprintln!("{code}"),
                 _ => eprintln!("SPARQL_EXECUTION_FAILED"),
             }
             Vec::new()
@@ -149,31 +255,40 @@ pub(crate) fn execute_sparql_update_compat(
     execute_update_request(sparql, database, true)
 }
 
+// Each stage's failure is classified here, where it is known which stage failed.
+// Everything this calls still reports failure as a `String`; threading `QueryError`
+// further down is a separate change, and doing it here keeps the distinction a caller
+// can act on — a request that did not parse, versus one refused by policy, versus one
+// that failed while running — without rewriting the pipeline underneath.
 fn execute_request(
     sparql: &str,
     database: &mut SparqlDatabase,
     allow_data_aliases: bool,
-) -> Result<Vec<Vec<String>>, String> {
-    let combined = parse_request(sparql, allow_data_aliases)?;
-    combined.single_rule()?;
+) -> Result<Vec<Vec<String>>, QueryError> {
+    let combined = parse_request(sparql, allow_data_aliases).map_err(QueryError::Parse)?;
+    combined.single_rule().map_err(QueryError::Unsupported)?;
     database
         .ml_context
         .validate_request(&combined, database)
-        .map_err(|e| e.to_string())?;
+        .map_err(QueryError::Ml)?;
     if let Some(predict) = &combined.ml_predict {
         #[cfg(feature = "ml")]
         if database.ml_context.require_local().is_ok() {
-            crate::neural_relations::execute_neural_program(database, sparql)?;
+            crate::neural_relations::execute_neural_program(database, sparql)
+                .map_err(QueryError::Execution)?;
             return Ok(Vec::new());
         }
-        return execute_approved_prediction(predict, &combined.prefixes, database);
+        return execute_approved_prediction(predict, &combined.prefixes, database)
+            .map_err(QueryError::Execution);
     }
-    let prefixes = prepare_extensions(&combined, database)?;
+    let prefixes = prepare_extensions(&combined, database).map_err(QueryError::Execution)?;
 
     match combined.sparql.as_ref() {
-        Some(SparqlOperation::Select(query)) => execute_select(query, &prefixes, database),
+        Some(SparqlOperation::Select(query)) => {
+            execute_select(query, &prefixes, database).map_err(QueryError::Execution)
+        }
         Some(SparqlOperation::Update(update)) => {
-            execute_update_operation(update, &prefixes, database)?;
+            execute_update_operation(update, &prefixes, database).map_err(QueryError::Execution)?;
             Ok(Vec::new())
         }
         None => Ok(Vec::new()),

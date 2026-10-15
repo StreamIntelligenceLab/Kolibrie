@@ -101,7 +101,11 @@ pub(crate) fn format_parse_error(input: &str, err: nom::Err<NomError<&str>>) -> 
                 };
 
             // Create the annotated snippet
-            let renderer = Renderer::styled();
+            // Plain, not styled: every caller puts this string into an error value
+            // rather than printing it, so ANSI escapes would travel into logs, JSON
+            // responses and test comparisons. `styled()` put 26 control characters
+            // into a one-token parse failure.
+            let renderer = Renderer::plain();
 
             let mut report = vec![Level::ERROR.primary_title(&final_title).element(
                 Snippet::source(input)
@@ -121,10 +125,14 @@ pub(crate) fn format_parse_error(input: &str, err: nom::Err<NomError<&str>>) -> 
             }
 
             let message = renderer.render(&report);
-            format!("\n{}", message)
+            message
         }
         nom::Err::Incomplete(_) => {
-            let renderer = Renderer::styled();
+            // Plain, not styled: every caller puts this string into an error value
+            // rather than printing it, so ANSI escapes would travel into logs, JSON
+            // responses and test comparisons. `styled()` put 26 control characters
+            // into a one-token parse failure.
+            let renderer = Renderer::plain();
             let report = &[
                 Level::ERROR
                     .primary_title("Incomplete SPARQL query")
@@ -139,7 +147,7 @@ pub(crate) fn format_parse_error(input: &str, err: nom::Err<NomError<&str>>) -> 
                 ),
             ];
 
-            format!("\n{}", renderer.render(report))
+            renderer.render(report)
         }
     }
 }
