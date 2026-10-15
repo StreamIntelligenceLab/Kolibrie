@@ -85,10 +85,11 @@ and are latently exposed to the same variation.
 
 ## Before you commit
 
-1. `scripts/verify.sh` — runs tests, `cargo check --all-targets`, examples,
-   benches, and both feature configurations, then prints a summary. Compare the
-   test count against the known-good baseline rather than against zero, and name
-   any pre-existing failure you are not fixing.
+1. `scripts/verify.sh` — runs tests, `cargo check --all-targets`, both feature
+   configurations, the benches with `--no-run`, and the examples both compiled and
+   *run*, then prints a summary. Compare the test count against the known-good
+   baseline rather than against zero, and name any pre-existing failure you are not
+   fixing.
 2. `python3 scripts/warning_report.py` — the warning count is a tracked metric
    and should not go up.
 3. Update `changes.txt`.
@@ -102,6 +103,30 @@ the benches separately with `--no-run`.
 Summarise test output only while also keeping it. A pipeline that counted passes
 through `awk` once reported "642 passed, 1 failed" and discarded the failing
 test's name, which cost an afternoon to recover. `verify.sh` writes full logs.
+
+### Examples are run, not just compiled
+
+`scripts/smoke_examples.py` runs every example that can finish on its own, and
+`verify.sh` calls it. It exists because compiling an example proves very little:
+three were broken for months while compiling cleanly — one used a rule syntax the
+parser does not accept, one read an absolute path into a personal directory, and one
+read a dataset that `.gitignore` excludes.
+
+```bash
+scripts/smoke_examples.py --list      # what runs, what is skipped and why
+scripts/smoke_examples.py             # run them; non-zero names each failure
+```
+
+Four are skipped, listed in `SKIP` in that script with a reason each: two need an
+MQTT broker, one serves HTTP until interrupted, one expects that server running.
+The eleven behind the `ml` feature are not run either — they need a trusted-local
+training directory, a model allowlist, or the MNIST corpus, so running them here
+would report environment setup as failure.
+
+Adds about a minute, almost all of it two streaming demos sleeping through timed
+windows. If you add an example, it is picked up automatically: the list comes from
+`cargo metadata`, not from a list in the script. An example that cannot finish
+unattended belongs in `SKIP` with a reason, not left to time out.
 
 ### When a test fails intermittently
 

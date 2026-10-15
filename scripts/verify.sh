@@ -6,6 +6,11 @@
 # "642 passed, 1 failed" and discarded the failing test's NAME, making a real flake
 # unidentifiable. Never summarise test output without retaining it.
 #
+# The example smoke run is here for the same reason in a different form: for months
+# this script only compiled the examples, and three of them were broken anyway -- a
+# rule syntax the parser does not accept, an absolute path into a personal directory,
+# and a gitignored dataset. None is visible to `cargo build`.
+#
 # Usage: scripts/verify.sh [outdir]      (default: /tmp/kolibrie-verify)
 set -u
 
@@ -43,6 +48,17 @@ do
   echo "   errors: $n"
   [ "$n" -gt 0 ] && { grep -E '^[^ ]+: error|^error' "$OUT/$name.log" | head -5 | sed 's/^/     /'; fail=1; }
 done
+
+# Runs the examples, which the compile check above cannot speak for: three examples
+# were broken for months while compiling cleanly. Adds about a minute, most of it two
+# streaming demos sleeping through timed windows.
+echo "== example smoke run =="
+if scripts/smoke_examples.py "$OUT" > "$OUT/smoke.log" 2>&1; then
+  grep -E '^   ran:' "$OUT/smoke.log"
+else
+  cat "$OUT/smoke.log"
+  fail=1
+fi
 
 echo "== warnings (default features) =="
 grep -oE 'warning: [a-z].*' "$OUT/check.log" 2>/dev/null | wc -l | sed 's/^/   raw warning lines: /'
