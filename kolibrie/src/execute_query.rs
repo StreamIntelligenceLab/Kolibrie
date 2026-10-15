@@ -30,6 +30,107 @@ use std::sync::atomic::{AtomicU64, Ordering as AtomicOrdering};
 
 type StringBinding = HashMap<String, String>;
 
+/// The rows a request answered with, and the variables they are rows of.
+///
+/// Replaces the bare `Vec<Vec<String>>` the older entry points return, which loses
+/// two things the engine knew: which variable each column belongs to, and whether a
+/// value is absent because it was unbound.
+///
+/// # Unbound is not empty
+///
+/// A value is [`None`] when the solution did not bind that variable. SPARQL
+/// distinguishes that from a variable bound to the empty string, and
+/// `Vec<Vec<String>>` cannot: it renders both as `""`. [`From<Solutions>`] keeps that
+/// old flattening for callers that want the previous shape.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Solutions {
+    variables: Vec<String>,
+    rows: Vec<Vec<Option<String>>>,
+}
+
+impl Solutions {
+    /// The projected variables, in column order, without the leading `?` or `$`.
+    ///
+    /// Empty for a request that binds nothing, such as an Update.
+    pub fn variables(&self) -> &[String] {
+        &self.variables
+    }
+
+    /// Number of solutions.
+    pub fn len(&self) -> usize {
+        self.rows.len()
+    }
+
+    /// Whether there are no solutions.
+    ///
+    /// For a request that ran successfully this means the pattern matched nothing —
+    /// a failure is an `Err` and never an empty `Solutions`.
+    pub fn is_empty(&self) -> bool {
+        self.rows.is_empty()
+    }
+
+    /// Whether `variable` is one of the projected variables, with or without its
+    /// sigil. Distinguishes "not projected" from "projected but unbound", which
+    /// [`Solution::get`] cannot.
+    pub fn has_variable(&self, variable: &str) -> bool {
+        let name = normalize_variable(variable);
+        self.variables.iter().any(|v| v == name)
+    }
+
+    /// The solutions, in result order.
+    pub fn iter(&self) -> impl Iterator<Item = Solution<'_>> {
+        self.rows.iter().map(|values| Solution {
+            variables: &self.variables,
+            values,
+        })
+    }
+}
+
+impl<'a> IntoIterator for &'a Solutions {
+    type Item = Solution<'a>;
+    type IntoIter = Box<dyn Iterator<Item = Solution<'a>> + 'a>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        Box::new(self.iter())
+    }
+}
+
+impl From<Solutions> for Vec<Vec<String>> {
+    /// The shape the older entry points return. Renders an unbound value as `""`,
+    /// which is why it is lossy and why [`Solutions`] exists.
+    fn from(solutions: Solutions) -> Self {
+        solutions
+            .rows
+            .into_iter()
+            .map(|row| row.into_iter().map(Option::unwrap_or_default).collect())
+            .collect()
+    }
+}
+
+/// One solution: a value per projected variable.
+#[derive(Debug, Clone, Copy)]
+pub struct Solution<'a> {
+    variables: &'a [String],
+    values: &'a [Option<String>],
+}
+
+impl<'a> Solution<'a> {
+    /// The value bound to `variable`, with or without its leading `?` or `$`.
+    ///
+    /// [`None`] both when the variable is unbound in this solution and when it is not
+    /// projected at all; [`Solutions::has_variable`] separates those.
+    pub fn get(&self, variable: &str) -> Option<&'a str> {
+        let name = normalize_variable(variable);
+        let column = self.variables.iter().position(|v| v == name)?;
+        self.values.get(column)?.as_deref()
+    }
+
+    /// The values in column order, matching [`Solutions::variables`].
+    pub fn values(&self) -> &'a [Option<String>] {
+        self.values
+    }
+}
+
 /// Why a request could not be answered.
 ///
 /// # Rendering
@@ -128,10 +229,7 @@ impl From<crate::ml_policy::MlError> for QueryError {
 /// For compatibility with the older entry point this accepts Update forms as well as
 /// queries. [`execute_sparql_query`] rejects them, and
 /// [`execute_sparql_update`] returns an [`UpdateSummary`] rather than rows.
-pub fn execute(
-    sparql: &str,
-    database: &mut SparqlDatabase,
-) -> Result<Vec<Vec<String>>, QueryError> {
+pub fn execute(sparql: &str, database: &mut SparqlDatabase) -> Result<Solutions, QueryError> {
     execute_request(sparql, database, true)
 }
 
@@ -151,7 +249,9 @@ pub fn execute_sparql_with_ml_context(
     context: &crate::ml_policy::MlExecutionContext,
 ) -> Result<Vec<Vec<String>>, String> {
     with_ml_context(database, context, |database| {
-        execute_request(sparql, database, true).map_err(|error| error.legacy_string())
+        execute_request(sparql, database, true)
+            .map(Vec::from)
+            .map_err(|error| error.legacy_string())
     })
 }
 
@@ -190,7 +290,7 @@ pub fn execute_query_rayon_parallel2_volcano(
     database: &mut SparqlDatabase,
 ) -> Vec<Vec<String>> {
     match execute(sparql, database) {
-        Ok(results) => results,
+        Ok(results) => results.into(),
         Err(error) => {
             // Behaviour preserved exactly: an ML refusal prints its code, anything
             // else prints `SPARQL_EXECUTION_FAILED` and the real message is lost.
@@ -222,7 +322,7 @@ pub fn execute_sparql_query(
             crate::neural_relations::execute_neural_program(database, sparql)?;
             return Ok(Vec::new());
         }
-        return execute_approved_prediction(predict, &combined.prefixes, database);
+        return execute_approved_prediction(predict, &combined.prefixes, database).map(Vec::from);
     }
     match combined.sparql.as_ref() {
         Some(SparqlOperation::Update(_)) => {
@@ -230,7 +330,9 @@ pub fn execute_sparql_query(
         }
         Some(SparqlOperation::Select(query)) => {
             let prefixes = prepare_extensions(&combined, database)?;
-            execute_select(query, &prefixes, database)
+            // Flattened back to the published shape, losing the variable names and
+            // the unbound distinction. `execute` is the one that keeps them.
+            execute_select(query, &prefixes, database).map(Vec::from)
         }
         None => {
             prepare_extensions(&combined, database)?;
@@ -264,7 +366,7 @@ fn execute_request(
     sparql: &str,
     database: &mut SparqlDatabase,
     allow_data_aliases: bool,
-) -> Result<Vec<Vec<String>>, QueryError> {
+) -> Result<Solutions, QueryError> {
     let combined = parse_request(sparql, allow_data_aliases).map_err(QueryError::Parse)?;
     combined.single_rule().map_err(QueryError::Unsupported)?;
     database
@@ -276,7 +378,7 @@ fn execute_request(
         if database.ml_context.require_local().is_ok() {
             crate::neural_relations::execute_neural_program(database, sparql)
                 .map_err(QueryError::Execution)?;
-            return Ok(Vec::new());
+            return Ok(Solutions::default());
         }
         return execute_approved_prediction(predict, &combined.prefixes, database)
             .map_err(QueryError::Execution);
@@ -289,9 +391,9 @@ fn execute_request(
         }
         Some(SparqlOperation::Update(update)) => {
             execute_update_operation(update, &prefixes, database).map_err(QueryError::Execution)?;
-            Ok(Vec::new())
+            Ok(Solutions::default())
         }
-        None => Ok(Vec::new()),
+        None => Ok(Solutions::default()),
     }
 }
 
@@ -337,7 +439,7 @@ fn execute_approved_prediction(
     predict: &shared::query::MLPredictClause<'_>,
     prefixes: &HashMap<String, String>,
     database: &mut SparqlDatabase,
-) -> Result<Vec<Vec<String>>, String> {
+) -> Result<Solutions, String> {
     if predict.distribution {
         return Err(
             "ML.PREDICT ... OUTPUT ?v DISTRIBUTION runs only through kolibrie::program".to_string(),
@@ -368,14 +470,22 @@ fn execute_approved_prediction(
         .ml_context
         .predict(predict.model, &features)
         .map_err(|e| e.to_string())?;
-    Ok(rows
-        .into_iter()
-        .zip(predictions)
-        .map(|(mut row, prediction)| {
-            row.push(prediction);
-            row
-        })
-        .collect())
+    // The prediction is one more column, so it gets one more name: the variable the
+    // clause binds it to. Everything before it keeps the input query's own names.
+    let mut variables = predict_input_columns(predict);
+    variables.push(normalize_variable(predict.output).to_string());
+    Ok(Solutions {
+        variables,
+        rows: rows
+            .into_iter()
+            .zip(predictions)
+            .map(|(row, prediction)| {
+                let mut values: Vec<Option<String>> = row.into_iter().map(Some).collect();
+                values.push(Some(prediction));
+                values
+            })
+            .collect(),
+    })
 }
 
 fn prepare_extensions(
@@ -422,7 +532,7 @@ fn execute_select(
     query: &SelectQuery<'_>,
     prefixes: &HashMap<String, String>,
     database: &mut SparqlDatabase,
-) -> Result<Vec<Vec<String>>, String> {
+) -> Result<Solutions, String> {
     let mut lexical_patterns = Vec::new();
     collect_triple_patterns(&query.pattern, &mut lexical_patterns);
     materialize_neural_relations_for_patterns(database, &lexical_patterns, prefixes)?;
@@ -500,7 +610,7 @@ fn decode_bindings(bindings: Bindings, database: &SparqlDatabase) -> Vec<StringB
         .collect()
 }
 
-fn finalize_select(mut rows: Vec<StringBinding>, query: &SelectQuery<'_>) -> Vec<Vec<String>> {
+fn finalize_select(mut rows: Vec<StringBinding>, query: &SelectQuery<'_>) -> Solutions {
     let columns = projection_columns(query);
     if query
         .variables
@@ -527,16 +637,57 @@ fn finalize_select(mut rows: Vec<StringBinding>, query: &SelectQuery<'_>) -> Vec
         rows.truncate(limit);
     }
 
-    rows.into_iter()
+    // `None` where the binding has no entry for the column: that is an unbound
+    // variable, which used to be flattened to `""` here and so became
+    // indistinguishable from a variable bound to the empty string.
+    let values = rows
+        .into_iter()
         .map(|row| {
             columns
                 .iter()
-                .map(|column| {
-                    row.get(normalize_variable(column))
-                        .cloned()
-                        .unwrap_or_default()
-                })
+                .map(|column| row.get(normalize_variable(column)).cloned())
                 .collect()
+        })
+        .collect();
+    Solutions {
+        variables: columns
+            .iter()
+            .map(|column| normalize_variable(column).to_string())
+            .collect(),
+        rows: values,
+    }
+}
+
+/// Column names for an `ML.PREDICT` input query, mirroring [`projection_columns`].
+///
+/// The clause keeps the input query's projection and WHERE patterns as borrowed text
+/// rather than a parsed `SelectQuery`, so `*` is expanded from the pattern triples
+/// here instead of from a `GroupGraphPattern`.
+fn predict_input_columns(predict: &shared::query::MLPredictClause<'_>) -> Vec<String> {
+    if predict.input_select == vec![("*", "*", None)] {
+        let mut columns = Vec::new();
+        for (subject, predicate, object) in &predict.input_where {
+            for term in [subject, predicate, object] {
+                if is_variable(term) {
+                    let name = normalize_variable(term).to_string();
+                    if !columns.contains(&name) {
+                        columns.push(name);
+                    }
+                }
+            }
+        }
+        return columns;
+    }
+
+    predict
+        .input_select
+        .iter()
+        .map(|(kind, variable, alias)| {
+            if *kind == "VAR" {
+                (*variable).to_string()
+            } else {
+                alias.unwrap_or(variable).to_string()
+            }
         })
         .collect()
 }
