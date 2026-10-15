@@ -330,94 +330,64 @@ fn main() {
     // Rule 1: If it's quiet (noise level < 30), use noise for detection
     let rule1 = r#"PREFIX ex: <http://example.org#>
 RULE :UseNoiseSensor :-
-    WHERE {
-        ?room ex:noiseLevel ?level .
-        FILTER (?level < 30)
-    }
-    =>
-    {
-        ?room ex:detectionStrategy "NoiseBased" .
-    }.
-SELECT ?room
+CONSTRUCT {
+    ?room ex:detectionStrategy "NoiseBased" .
+}
 WHERE {
-    :UseNoiseSensor(?room)
+    ?room ex:noiseLevel ?level .
+    FILTER (?level < 30)
 }"#;
 
     // Rule 2: Universally define motion sensor for all rooms (will be superseded by noise-based if quiet)
     let rule2 = r#"PREFIX ex: <http://example.org#>
 RULE :DefaultMotionSensor :-
-    WHERE {
-        ?room ex:noiseLevel ?level .
-    }
-    =>
-    {
-        ?room ex:fallbackDetectionStrategy "MotionBased" .
-    }.
-SELECT ?room
+CONSTRUCT {
+    ?room ex:fallbackDetectionStrategy "MotionBased" .
+}
 WHERE {
-    :DefaultMotionSensor(?room)
+    ?room ex:noiseLevel ?level .
 }"#;
 
     // Rule 3a: If it's not dark (light level > 50), use cameras for detection
     let rule3a = r#"PREFIX ex: <http://example.org#>
 RULE :UseCameraDetection :-
-    WHERE {
-        ?room ex:lightLevel ?level .
-        FILTER (?level > 50)
-    }
-    =>
-    {
-        ?room ex:detectionStrategy "CameraBased" .
-    }.
-SELECT ?room
+CONSTRUCT {
+    ?room ex:detectionStrategy "CameraBased" .
+}
 WHERE {
-    :UseCameraDetection(?room)
+    ?room ex:lightLevel ?level .
+    FILTER (?level > 50)
 }"#;
 
     // Rule 3b: If it's not dark (light level > 50), use cameras for identification
     let rule3b = r#"PREFIX ex: <http://example.org#>
 RULE :UseCameraIdentification :-
-    WHERE {
-        ?room ex:lightLevel ?level .
-        FILTER (?level > 50)
-    }
-    =>
-    {
-        ?room ex:identificationMethod "CameraIdentification" .
-    }.
-SELECT ?room
+CONSTRUCT {
+    ?room ex:identificationMethod "CameraIdentification" .
+}
 WHERE {
-    :UseCameraIdentification(?room)
+    ?room ex:lightLevel ?level .
+    FILTER (?level > 50)
 }"#;
 
     // Mark all detection events as unauthorized:
     let rule_mark_all_unauthorized = r#"PREFIX ex: <http://example.org#>
 RULE :MarkAllEventsUnauthorized :-
-    WHERE {
-        ?event ex:detectedCategory ?person .
-    }
-    =>
-    {
-        ?event ex:unauthorized "true" .
-    }.
-SELECT ?event
+CONSTRUCT {
+    ?event ex:unauthorized "true" .
+}
 WHERE {
-    :MarkAllEventsUnauthorized(?event)
+    ?event ex:detectedCategory ?person .
 }"#;
 
     // Override to authorized if event is within the allowed time slot:
     let rule_mark_authorized_if_within_schedule = r#"PREFIX ex: <http://example.org#>
 RULE :MarkAllEventsUnauthorized :-
-    WHERE {
-        ?event ex:detectedCategory ?person .
-    }
-    =>
-    {
-        ?event ex:unauthorized "true" .
-    }.
-SELECT ?event
+CONSTRUCT {
+    ?event ex:unauthorized "true" .
+}
 WHERE {
-    :MarkAllEventsUnauthorized(?event)
+    ?event ex:detectedCategory ?person .
 }"#;
 
     // Execute rules

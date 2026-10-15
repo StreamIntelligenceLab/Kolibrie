@@ -6,19 +6,83 @@ use std::env;
 use std::fs;
 use std::time::Instant;
 
-fn main() {
-    let home_dir = env::var("HOME").expect("HOME environment variable not set");
-    let base_path = format!("{}/eye/reasoning/deep-taxonomy", home_dir);
+/// Depth of the generated chain, when no corpus directory is supplied.
+///
+/// Each level is one `rdfs:subClassOf` step, so the closure derives this many
+/// `rdf:type` facts per instance. Kept modest because the benchmark below reasons 20
+/// times over it.
+const GENERATED_DEPTH: usize = 1_000;
 
+/// `A1 subClassOf A2 … A(n-1) subClassOf An`, plus one instance of `A1`.
+///
+/// The same shape as the EYE deep-taxonomy corpus this benchmark was written
+/// against: a single chain whose transitive closure is the whole thing, which is what
+/// makes it a reasoning benchmark rather than a data-volume one.
+fn generated_corpus(depth: usize) -> (String, String) {
+    let mut taxonomy = String::from("@prefix : <http://example.org/deep#> .\n");
+    taxonomy.push_str("@prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .\n");
+    for level in 1..depth {
+        taxonomy.push_str(&format!(":A{} rdfs:subClassOf :A{} .\n", level, level + 1));
+    }
+    let facts = String::from(
+        "@prefix : <http://example.org/deep#> .\n\
+         @prefix rdf: <http://www.w3.org/1999/02/22-rdf-syntax-ns#> .\n\
+         :i rdf:type :A1 .\n",
+    );
+    (taxonomy, facts)
+}
+
+/// Where to read `test-dl.ttl` and `test-facts.ttl` from, if anywhere.
+///
+/// First argument, then `KOLIBRIE_DEEP_TAXONOMY_DIR`, then the EYE checkout this was
+/// originally written against. Returns `None` when none of them holds both files, in
+/// which case the corpus is generated instead — the example used to panic here, which
+/// made it unrunnable for anyone without that checkout.
+fn corpus_dir() -> Option<String> {
+    let mut candidates = env::args()
+        .nth(1)
+        .into_iter()
+        .chain(env::var("KOLIBRIE_DEEP_TAXONOMY_DIR").ok())
+        .chain(
+            env::var("HOME")
+                .ok()
+                .map(|home| format!("{}/eye/reasoning/deep-taxonomy", home)),
+        );
+    candidates.find(|dir| {
+        fs::metadata(format!("{}/test-dl.ttl", dir)).is_ok()
+            && fs::metadata(format!("{}/test-facts.ttl", dir)).is_ok()
+    })
+}
+
+fn main() {
     println!("=== Loading Data (One-time) ===");
     let mut database = SparqlDatabase::new();
 
-    // Step 1: Load the taxonomy (subClassOf relationships)
-    let taxonomy_path = format!("{}/test-dl.ttl", base_path);
-    println!("Loading taxonomy from: {}", taxonomy_path);
     let load_start = Instant::now();
-    let taxonomy_data =
-        fs::read_to_string(&taxonomy_path).expect(&format!("Failed to read {}", taxonomy_path));
+    let (taxonomy_data, facts_data) = match corpus_dir() {
+        Some(dir) => {
+            println!("Loading corpus from: {}", dir);
+            let read = |name: &str| {
+                let path = format!("{}/{}", dir, name);
+                fs::read_to_string(&path)
+                    .unwrap_or_else(|error| panic!("failed to read {}: {}", path, error))
+            };
+            (read("test-dl.ttl"), read("test-facts.ttl"))
+        }
+        None => {
+            println!(
+                "No corpus directory found, so generating a {}-level chain instead.",
+                GENERATED_DEPTH
+            );
+            println!(
+                "Pass a directory holding test-dl.ttl and test-facts.ttl, or set \
+                 KOLIBRIE_DEEP_TAXONOMY_DIR, to benchmark against the EYE corpus."
+            );
+            generated_corpus(GENERATED_DEPTH)
+        }
+    };
+
+    // Step 1: the taxonomy (subClassOf relationships)
     database.parse_turtle(&taxonomy_data);
     let load_time = load_start.elapsed();
     println!(
@@ -27,11 +91,7 @@ fn main() {
         load_time
     );
 
-    // Step 2: Load the facts (initial instances)
-    let facts_path = format!("{}/test-facts.ttl", base_path);
-    println!("\nLoading facts from: {}", facts_path);
-    let facts_data =
-        fs::read_to_string(&facts_path).expect(&format!("Failed to read {}", facts_path));
+    // Step 2: the facts (initial instances)
     database.parse_turtle(&facts_data);
     println!(
         "Total triples after facts: {}",

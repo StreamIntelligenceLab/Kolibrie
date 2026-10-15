@@ -3181,9 +3181,14 @@ fn parse_prob_annotation(input: &str) -> IResult<&str, ProbAnnotation<'_>> {
 }
 
 /// Parse a complete rule:
-///   RULE :OverheatingAlert(?room) :- WHERE { ... } => { ... } .
+///   RULE :Name :- CONSTRUCT { ... } WHERE { ... }
 ///   RULE :Name PROB(combination=independent, threshold=0.3) :- CONSTRUCT { ... } WHERE { ... } .
 ///   RULE :Name PROB(provenance=minmax, threshold=0.3) :- CONSTRUCT { ... } WHERE { ... } .
+///
+/// The body is always a `CONSTRUCT` block followed by `WHERE`; see
+/// [`parse_construct_clause`], which requires that keyword. A `WHERE { ... } => { ... }`
+/// form was advertised here until the real_scenario example was found to panic on it,
+/// and no parser has ever accepted it.
 pub fn parse_rule(input: &str) -> IResult<&str, CombinedRule<'_>> {
     let (input, _) = tag("RULE").parse(input)?;
     let (input, _) = space1.parse(input)?;
