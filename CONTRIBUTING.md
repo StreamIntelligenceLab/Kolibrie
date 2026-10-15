@@ -175,6 +175,28 @@ moved.
 Normalising the tree to one ending is a reasonable thing to want, but as its own
 commit with a `.gitattributes` rule, not as a side effect.
 
+## Public API surface is not tracked automatically
+
+There was a `public-api` CI job that diffed each crate's public surface against a
+checked-in `api-baseline/`. It is gone, and the baseline was never created, so it
+never reported anything.
+
+It was dropped for one reason: `cargo-public-api` works by asking rustdoc for JSON,
+which is unstable and nightly-only. That made nightly a requirement for the job and
+for anyone refreshing a baseline, and the format shifting between nightly releases
+would have produced diffs that are not API changes. The repository now has no
+reference to nightly at all — `rust-toolchain.toml` pins 1.96.0 and the MSRV job
+enforces 1.85.
+
+What this costs: nothing warns when a `pub` item is added, removed or changed shape.
+That matters most when crates are split or merged, since a lot of surface moves at
+once. Until something replaces it, a change to the public API is something a reviewer
+has to notice, so say so in the commit message when you change one — the `unreachable_pub`
+gate catches a module becoming reachable, but nothing catches a signature changing.
+
+If this is picked up again, the thing to check first is whether rustdoc JSON has
+stabilised, which removes the only real objection.
+
 ## Notes for AI coding assistants
 
 - Do not commit, push, or create branches unless explicitly asked.

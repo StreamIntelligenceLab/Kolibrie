@@ -192,10 +192,12 @@ jobs:
 
   # ── Advisory for now: reports, does not block ───────────────────────────────
   #
-  # `clippy` still reports freely here, and `missing_docs` reports the ~115 that
-  # remain outside every crate's `src` — one crate-level comment per test, example
-  # and bench, plus twelve from criterion's macros. That is the tail of the
-  # burn-down, not a regression; the library surface itself is gated above.
+  # `clippy` still reports freely here. `missing_docs` reports the 107 that remain
+  # outside every crate's `src`: 95 are one crate-level comment per test, example and
+  # bench, and 12 come from criterion's own macros and cannot be fixed here. That is
+  # all that is left of the 3,022-warning baseline from step 1 — six lints are held at
+  # zero by the blocking job above, so anything this job reports beyond those 107 is
+  # new.
 
   lint-report:
     name: clippy + warning count (advisory)
@@ -224,27 +226,3 @@ jobs:
           tool: "cargo-deny,cargo-machete"
       - run: cargo deny check licenses bans sources
       - run: cargo machete
-
-  public-api:
-    name: public API surface (advisory)
-    runs-on: ubuntu-latest
-    continue-on-error: true
-    steps:
-      - uses: actions/checkout@v4
-      # cargo-public-api needs a nightly rustdoc to emit its JSON.
-      - uses: dtolnay/rust-toolchain@nightly
-      - uses: Swatinem/rust-cache@v2
-      - uses: taiki-e/install-action@v2
-        with: { tool: cargo-public-api }
-      - name: Diff public API against the checked-in baselines
-        run: |
-          for c in shared datalog datalogmtl kolibrie ml; do
-            echo "::group::$c"
-            cargo public-api -p "$c" --simplified > "/tmp/$c.txt" || true
-            if [ -f "api-baseline/$c.txt" ]; then
-              diff -u "api-baseline/$c.txt" "/tmp/$c.txt" || true
-            else
-              echo "no baseline for $c yet"
-            fi
-            echo "::endgroup::"
-          done
