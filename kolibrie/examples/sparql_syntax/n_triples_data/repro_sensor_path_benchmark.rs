@@ -50,16 +50,97 @@ struct QueryMeasurement {
     end_rss_bytes: Option<u64>,
 }
 
+/// Sensors in the generated stand-in corpus, each monitoring one chain.
+const GENERATED_SENSORS: usize = 2_000;
+
+/// Segments per chain. Six is the query's window, so a chain of this length yields
+/// `GENERATED_CHAIN - 5` matches, and anything shorter yields none.
+const GENERATED_CHAIN: usize = 10;
+
+/// One chain in this many is left unmatched, by having its middle segment monitored
+/// by nobody. Without that the query matches every window it looks at, which makes
+/// the join cheaper than the corpus this was written against.
+const GENERATED_BROKEN_IN: usize = 4;
+
+/// N-Triples in the shape [`REPRO_QUERY`] looks for: chains of `base:connectsTo`
+/// segments, all `base:monitoredBy` one `base:Sensor`, everything typed.
+///
+/// A stand-in for the Train Benchmark corpus, not a reproduction of it. Timings taken
+/// against this are comparable with each other and with nothing else.
+fn generated_dataset() -> String {
+    const BASE: &str = "http://www.semanticweb.org/ontologies/2015/trainbenchmark#";
+    const RDF_TYPE: &str = "http://www.w3.org/1999/02/22-rdf-syntax-ns#type";
+    let mut out = String::new();
+    for sensor in 0..GENERATED_SENSORS {
+        let broken = sensor % GENERATED_BROKEN_IN == 0;
+        out.push_str(&format!(
+            "<{BASE}sensor{sensor}> <{RDF_TYPE}> <{BASE}Sensor> .\n"
+        ));
+        for segment in 0..GENERATED_CHAIN {
+            let id = format!("{BASE}segment{sensor}_{segment}");
+            out.push_str(&format!("<{id}> <{RDF_TYPE}> <{BASE}Segment> .\n"));
+            // The break leaves one segment unmonitored, so no window containing it
+            // can satisfy the query's six `monitoredBy` patterns.
+            if !(broken && segment == GENERATED_CHAIN / 2) {
+                out.push_str(&format!(
+                    "<{id}> <{BASE}monitoredBy> <{BASE}sensor{sensor}> .\n"
+                ));
+            }
+            if segment + 1 < GENERATED_CHAIN {
+                out.push_str(&format!(
+                    "<{id}> <{BASE}connectsTo> <{BASE}segment{sensor}_{}> .\n",
+                    segment + 1
+                ));
+            }
+        }
+    }
+    out
+}
+
+/// The corpus file, if one is to be found.
+///
+/// First argument, then `KOLIBRIE_REPRO_DATASET`, then the path this example was
+/// written against — which `.gitignore` excludes, so a fresh checkout never has it.
+/// Returns `None` when none of them is readable, and the corpus is generated instead;
+/// the example used to fail with a bare `No such file or directory` here.
+fn dataset_path() -> Option<String> {
+    let mut candidates = std::env::args()
+        .nth(1)
+        .into_iter()
+        .chain(std::env::var("KOLIBRIE_REPRO_DATASET").ok())
+        .chain(std::iter::once(
+            "../benchmark_dataset/repro-data.nt".to_string(),
+        ));
+    candidates.find(|path| fs::metadata(path).is_ok())
+}
+
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     std::env::set_current_dir(std::path::Path::new(env!("CARGO_MANIFEST_DIR")))?;
 
-    let file_path = "../benchmark_dataset/repro-data.nt";
-    let metadata = fs::metadata(file_path)?;
-    let data = fs::read_to_string(file_path)?;
+    let data = match dataset_path() {
+        Some(path) => {
+            let bytes = fs::metadata(&path)?.len();
+            let data = fs::read_to_string(&path)?;
+            println!("Dataset: {}", path);
+            println!("File size: {:.2} MB", bytes as f64 / 1_048_576.0);
+            data
+        }
+        None => {
+            let data = generated_dataset();
+            println!(
+                "Dataset: generated ({} sensors, chains of {})",
+                GENERATED_SENSORS, GENERATED_CHAIN
+            );
+            println!("Size: {:.2} MB", data.len() as f64 / 1_048_576.0);
+            println!(
+                "NOTE: this is a stand-in, not the Train Benchmark corpus. Timings are \
+                 comparable with each other and with nothing else. Pass a path to an \
+                 N-Triples file, or set KOLIBRIE_REPRO_DATASET, to measure the real one."
+            );
+            data
+        }
+    };
     let line_count = data.lines().count();
-
-    println!("Dataset: {}", file_path);
-    println!("File size: {:.2} MB", metadata.len() as f64 / 1_048_576.0);
     println!("Input lines: {}", line_count);
 
     let load_start = Instant::now();
