@@ -29,12 +29,12 @@ use shared::terms::TriplePattern;
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct Interval {
     /// Inclusive bound nearer the evaluation point.
-    pub start: u64,   // inclusive lower bound, ms into past
+    pub start: u64, // inclusive lower bound, ms into past
     /// Inclusive bound further from it. Must be `>= start`; [`validate`] rejects
     /// a rule where it is not, rather than silently matching nothing.
     ///
     /// [`validate`]: crate::validate
-    pub end:   u64,   // inclusive upper bound, ms into past
+    pub end: u64, // inclusive upper bound, ms into past
 }
 
 impl Interval {
@@ -91,13 +91,12 @@ pub enum TemporalAtom {
         interval: Interval,
         /// Continuation condition, required at every point since the trigger.
         /// Universal, so it binds no variables — see [`validate`](crate::validate).
-        phi: Box<TemporalAtom>,   // continuation condition (holds after reset)
+        phi: Box<TemporalAtom>, // continuation condition (holds after reset)
         /// Trigger condition, whose occurrence starts the interval.
-        psi: Box<TemporalAtom>,   // reset/trigger condition
+        psi: Box<TemporalAtom>, // reset/trigger condition
     },
 
     // ── Future operators (static data only — see `Mode`) ──
-
     /// `DiamondPlus[a,b]` phi: phi holds at SOME t' in [t+a, t+b].
     DiamondPlus {
         /// How far forward to look.
@@ -121,9 +120,9 @@ pub enum TemporalAtom {
         /// Window in which the trigger must occur.
         interval: Interval,
         /// Continuation condition, required at every point until the trigger.
-        phi: Box<TemporalAtom>,   // continuation condition (holds until reset)
+        phi: Box<TemporalAtom>, // continuation condition (holds until reset)
         /// Trigger condition, whose occurrence ends the interval.
-        psi: Box<TemporalAtom>,   // reset/trigger condition
+        psi: Box<TemporalAtom>, // reset/trigger condition
     },
 
     /// Conjunction of atoms, all evaluated at the SAME time point.
@@ -151,7 +150,9 @@ pub enum Mode {
 }
 
 impl Default for Mode {
-    fn default() -> Self { Mode::Streaming }
+    fn default() -> Self {
+        Mode::Streaming
+    }
 }
 
 /// A DatalogMTL^RDF rule. Head is always a plain triple pattern.
@@ -160,7 +161,7 @@ impl Default for Mode {
 pub struct DatalogMTLRule {
     /// Identifier used in validation errors and metrics. Not checked for
     /// uniqueness, so two rules may share one.
-    pub id:   String,
+    pub id: String,
     /// Conclusion, derived at the time point being evaluated. Always plain: a
     /// temporal operator in head position is not part of this fragment.
     pub head: TriplePattern,

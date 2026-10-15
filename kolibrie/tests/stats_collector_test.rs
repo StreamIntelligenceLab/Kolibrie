@@ -82,7 +82,10 @@ fn assert_matches_reference(database: &SparqlDatabase, case: &str) {
     let actual = DatabaseStats::gather_stats_fast(database);
     let expected = reference_stats(database);
 
-    assert_eq!(actual.total_triples, expected.total_triples, "{case}: total");
+    assert_eq!(
+        actual.total_triples, expected.total_triples,
+        "{case}: total"
+    );
     assert_eq!(
         actual.named_graph_count, expected.named_graph_count,
         "{case}: named graph count"

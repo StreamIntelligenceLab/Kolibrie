@@ -26,11 +26,11 @@
 //! Future operators (`Boxplus`/`Diamondplus`/`Until`) and openness are outside the
 //! fragment and produce a descriptive error.
 
-use std::sync::{Arc, RwLock};
+use crate::syntax::{DatalogMTLRule, Interval, Mode, TemporalAtom};
 use shared::dictionary::Dictionary;
-use shared::triple::Triple;
 use shared::terms::{Term, TriplePattern};
-use crate::syntax::{DatalogMTLRule, TemporalAtom, Interval, Mode};
+use shared::triple::Triple;
+use std::sync::{Arc, RwLock};
 
 /// Full IRI for the `rdf:type` predicate used to encode unary atoms.
 pub const RDF_TYPE: &str = "http://www.w3.org/1999/02/22-rdf-syntax-ns#type";
@@ -62,7 +62,9 @@ pub fn parse_program(
     let mut rules = Vec::new();
     for (i, raw) in text.lines().enumerate() {
         let line = strip_line(raw);
-        if line.is_empty() { continue; }
+        if line.is_empty() {
+            continue;
+        }
         let rule = parse_rule(&line, i + 1, dict, mode)
             .map_err(|e| format!("program line {}: {}: {}", i + 1, raw.trim(), e))?;
         rules.push(rule);
@@ -71,14 +73,13 @@ pub fn parse_program(
 }
 
 /// Parse a data file (one fact per non-empty, non-comment line).
-pub fn parse_data(
-    text: &str,
-    dict: &Arc<RwLock<Dictionary>>,
-) -> Result<Vec<TemporalFact>, String> {
+pub fn parse_data(text: &str, dict: &Arc<RwLock<Dictionary>>) -> Result<Vec<TemporalFact>, String> {
     let mut facts = Vec::new();
     for (i, raw) in text.lines().enumerate() {
         let line = strip_line(raw);
-        if line.is_empty() { continue; }
+        if line.is_empty() {
+            continue;
+        }
         let fact = parse_fact(&line, dict)
             .map_err(|e| format!("data line {}: {}: {}", i + 1, raw.trim(), e))?;
         facts.push(fact);
@@ -114,18 +115,28 @@ fn parse_rule(
 
     let mut body = Vec::new();
     for lit in split_top_commas(body_str) {
-        if lit.is_empty() { continue; }
+        if lit.is_empty() {
+            continue;
+        }
         body.push(parse_literal(&lit, dict, mode)?);
     }
     if body.is_empty() {
         return Err("rule has empty body".into());
     }
 
-    Ok(DatalogMTLRule { id: head_str.to_string(), head, body })
+    Ok(DatalogMTLRule {
+        id: head_str.to_string(),
+        head,
+        body,
+    })
 }
 
 /// Parse a single body literal into a (possibly nested) `TemporalAtom`.
-fn parse_literal(s: &str, dict: &Arc<RwLock<Dictionary>>, mode: Mode) -> Result<TemporalAtom, String> {
+fn parse_literal(
+    s: &str,
+    dict: &Arc<RwLock<Dictionary>>,
+    mode: Mode,
+) -> Result<TemporalAtom, String> {
     // Binary Since (past): `L Since[a,b] R` (whitespace already stripped).
     if let Some(idx) = find_kw_depth0(s, "Since") {
         let (interval, phi, psi) = parse_binary(s, idx, "Since", dict, mode)?;
@@ -145,9 +156,14 @@ fn parse_literal(s: &str, dict: &Arc<RwLock<Dictionary>>, mode: Mode) -> Result<
     let mut rest = s;
     loop {
         if let Some(bad) = disallowed_operator(rest, mode) {
-            return Err(format!("operator '{}' is not allowed in {:?} mode", bad, mode));
+            return Err(format!(
+                "operator '{}' is not allowed in {:?} mode",
+                bad, mode
+            ));
         }
-        let Some(kind) = leading_operator(rest, mode) else { break };
+        let Some(kind) = leading_operator(rest, mode) else {
+            break;
+        };
         let after = &rest[kind.name().len()..];
         let (interval, tail) = read_operator_interval(after)?;
         ops.push((kind, interval));
@@ -187,7 +203,12 @@ fn parse_binary(
 }
 
 #[derive(Clone, Copy)]
-enum OpKind { Box, Diamond, BoxPlus, DiamondPlus }
+enum OpKind {
+    Box,
+    Diamond,
+    BoxPlus,
+    DiamondPlus,
+}
 impl OpKind {
     fn name(self) -> &'static str {
         match self {
@@ -201,22 +222,32 @@ impl OpKind {
 
 /// A supported leading operator keyword (past always; future only in `Static`).
 fn leading_operator(s: &str, mode: Mode) -> Option<OpKind> {
-    if s.starts_with("Boxminus") { Some(OpKind::Box) }
-    else if s.starts_with("Diamondminus") { Some(OpKind::Diamond) }
-    else if mode == Mode::Static && s.starts_with("Boxplus") { Some(OpKind::BoxPlus) }
-    else if mode == Mode::Static && s.starts_with("Diamondplus") { Some(OpKind::DiamondPlus) }
-    else { None }
+    if s.starts_with("Boxminus") {
+        Some(OpKind::Box)
+    } else if s.starts_with("Diamondminus") {
+        Some(OpKind::Diamond)
+    } else if mode == Mode::Static && s.starts_with("Boxplus") {
+        Some(OpKind::BoxPlus)
+    } else if mode == Mode::Static && s.starts_with("Diamondplus") {
+        Some(OpKind::DiamondPlus)
+    } else {
+        None
+    }
 }
 
 /// A leading operator that is NOT allowed here: the `SOMETIME`/`ALWAYS` aliases
 /// (unsupported), and future operators when in `Streaming` mode.
 fn disallowed_operator(s: &str, mode: Mode) -> Option<&'static str> {
     for kw in ["SOMETIME", "ALWAYS"] {
-        if s.starts_with(kw) { return Some(kw); }
+        if s.starts_with(kw) {
+            return Some(kw);
+        }
     }
     if mode != Mode::Static {
         for kw in ["Boxplus", "Diamondplus"] {
-            if s.starts_with(kw) { return Some(kw); }
+            if s.starts_with(kw) {
+                return Some(kw);
+            }
         }
     }
     None
@@ -224,8 +255,16 @@ fn disallowed_operator(s: &str, mode: Mode) -> Option<&'static str> {
 
 /// Whether `s` starts with any temporal operator keyword (mode-agnostic; for head check).
 fn any_operator_prefix(s: &str) -> bool {
-    ["Boxminus", "Diamondminus", "Boxplus", "Diamondplus", "SOMETIME", "ALWAYS"]
-        .iter().any(|kw| s.starts_with(kw))
+    [
+        "Boxminus",
+        "Diamondminus",
+        "Boxplus",
+        "Diamondplus",
+        "SOMETIME",
+        "ALWAYS",
+    ]
+    .iter()
+    .any(|kw| s.starts_with(kw))
 }
 
 // ────────────────────────────────────────────────────────────────
@@ -254,10 +293,15 @@ fn parse_span(span: &str) -> Result<(u64, u64), String> {
         }
         let parts: Vec<&str> = inner.split(',').collect();
         match parts.as_slice() {
-            [p] => { let v = parse_int(p)?; Ok((v, v)) }
+            [p] => {
+                let v = parse_int(p)?;
+                Ok((v, v))
+            }
             [l, r] => {
                 let (l, r) = (parse_int(l)?, parse_int(r)?);
-                if l > r { return Err(format!("interval start {} > end {}", l, r)); }
+                if l > r {
+                    return Err(format!("interval start {} > end {}", l, r));
+                }
                 Ok((l, r))
             }
             _ => Err("interval must have one or two endpoints".into()),
@@ -298,7 +342,10 @@ fn atom_to_pattern(
         return Err("empty predicate name".into());
     }
     match args.len() {
-        0 => Err(format!("arity-0 (propositional) atom '{}' cannot be represented as an RDF triple", functor)),
+        0 => Err(format!(
+            "arity-0 (propositional) atom '{}' cannot be represented as an RDF triple",
+            functor
+        )),
         1 => {
             let subj = term_of(args[0], dict)?;
             let typ = Term::Constant(encode(dict, RDF_TYPE));
@@ -311,7 +358,10 @@ fn atom_to_pattern(
             let obj = term_of(args[1], dict)?;
             Ok((subj, pred, obj))
         }
-        n => Err(format!("arity-{} atom '{}' is outside the supported fragment (max 2)", n, functor)),
+        n => Err(format!(
+            "arity-{} atom '{}' is outside the supported fragment (max 2)",
+            n, functor
+        )),
     }
 }
 
@@ -322,12 +372,34 @@ fn atom_to_ground_triple(s: &str, dict: &Arc<RwLock<Dictionary>>) -> Result<Trip
         return Err("empty predicate name".into());
     }
     let (subj, pred, obj) = match args.len() {
-        0 => return Err(format!("arity-0 (propositional) fact '{}' cannot be represented as an RDF triple", functor)),
-        1 => (encode(dict, args[0]), encode(dict, RDF_TYPE), encode(dict, functor)),
-        2 => (encode(dict, args[0]), encode(dict, functor), encode(dict, args[1])),
-        n => return Err(format!("arity-{} fact '{}' is outside the supported fragment (max 2)", n, functor)),
+        0 => {
+            return Err(format!(
+                "arity-0 (propositional) fact '{}' cannot be represented as an RDF triple",
+                functor
+            ))
+        }
+        1 => (
+            encode(dict, args[0]),
+            encode(dict, RDF_TYPE),
+            encode(dict, functor),
+        ),
+        2 => (
+            encode(dict, args[0]),
+            encode(dict, functor),
+            encode(dict, args[1]),
+        ),
+        n => {
+            return Err(format!(
+                "arity-{} fact '{}' is outside the supported fragment (max 2)",
+                n, functor
+            ))
+        }
     };
-    Ok(Triple { subject: subj, predicate: pred, object: obj })
+    Ok(Triple {
+        subject: subj,
+        predicate: pred,
+        object: obj,
+    })
 }
 
 /// A rule-context term: uppercase first letter => variable, else constant.
@@ -354,8 +426,12 @@ fn encode(dict: &Arc<RwLock<Dictionary>>, s: &str) -> u32 {
 /// Strip comments (`#`/`//`) and all whitespace, mirroring MeTeoR's `replace(" ","")`.
 fn strip_line(raw: &str) -> String {
     let mut s = raw;
-    if let Some(i) = s.find('#') { s = &s[..i]; }
-    if let Some(i) = s.find("//") { s = &s[..i]; }
+    if let Some(i) = s.find('#') {
+        s = &s[..i];
+    }
+    if let Some(i) = s.find("//") {
+        s = &s[..i];
+    }
     s.chars().filter(|c| !c.is_whitespace()).collect()
 }
 
@@ -406,7 +482,10 @@ fn read_operator_interval(s: &str) -> Result<(Interval, &str), String> {
     }
     let parts: Vec<&str> = inner.split(',').collect();
     let (start, end) = match parts.as_slice() {
-        [p] => { let v = parse_int(p)?; (v, v) }
+        [p] => {
+            let v = parse_int(p)?;
+            (v, v)
+        }
         [l, r] => (parse_int(l)?, parse_int(r)?),
         _ => return Err("operator interval must have one or two endpoints".into()),
     };
@@ -442,9 +521,17 @@ fn split_top_commas(s: &str) -> Vec<String> {
     let mut cur = String::new();
     for ch in s.chars() {
         match ch {
-            '[' | '(' => { depth += 1; cur.push(ch); }
-            ']' | ')' => { depth -= 1; cur.push(ch); }
-            ',' if depth == 0 => { out.push(std::mem::take(&mut cur)); }
+            '[' | '(' => {
+                depth += 1;
+                cur.push(ch);
+            }
+            ']' | ')' => {
+                depth -= 1;
+                cur.push(ch);
+            }
+            ',' if depth == 0 => {
+                out.push(std::mem::take(&mut cur));
+            }
             _ => cur.push(ch),
         }
     }

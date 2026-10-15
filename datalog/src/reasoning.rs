@@ -20,23 +20,23 @@
 //! materialising anything, [`repairs`] answers queries over an inconsistent fact
 //! base, and [`to_dot`] renders the whole thing for inspection.
 
-pub mod materialisation;
-pub mod to_dot;
 pub mod backward_chaining;
-pub mod rules;
-pub mod repairs;
 pub mod helpers;
+pub mod materialisation;
+pub mod repairs;
+pub mod rules;
+pub mod to_dot;
 
-pub use rules::{matches_rule_pattern, construct_triple, join_rule, join_remaining};
+pub use rules::{construct_triple, join_remaining, join_rule, matches_rule_pattern};
 
-use shared::dictionary::Dictionary;
 use shared::dataset_index::DatasetIndex;
+use shared::dictionary::Dictionary;
+use shared::provenance::Provenance;
+use shared::rule::Rule;
+use shared::rule_index::RuleIndex;
+use shared::tag_store::TagStore;
 use shared::triple::Triple;
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
-use shared::rule_index::RuleIndex;
-use shared::rule::Rule;
-use shared::provenance::Provenance;
-use shared::tag_store::TagStore;
 use std::sync::Arc;
 use std::sync::RwLock;
 
@@ -81,7 +81,7 @@ pub struct Reasoner {
 /// match — but it means the result's length is not a count of the input's.
 pub fn convert_string_binding_to_u32(
     binding: &BTreeMap<String, String>,
-    dict: &Dictionary
+    dict: &Dictionary,
 ) -> HashMap<String, u32> {
     let mut result = HashMap::new();
     for (var, value) in binding {
@@ -110,14 +110,24 @@ impl Reasoner {
 
     /// Add a triple with an associated probability value.
     /// The triple is added to the index; the probability is stored for provenance seeding.
-    pub fn add_tagged_triple(&mut self, subject: &str, predicate: &str, object: &str, probability: f64) {
+    pub fn add_tagged_triple(
+        &mut self,
+        subject: &str,
+        predicate: &str,
+        object: &str,
+        probability: f64,
+    ) {
         let mut dict = self.dictionary.write().unwrap();
         let s = dict.encode(subject);
         let p = dict.encode(predicate);
         let o = dict.encode(object);
         drop(dict);
 
-        let triple = Triple { subject: s, predicate: p, object: o };
+        let triple = Triple {
+            subject: s,
+            predicate: p,
+            object: o,
+        };
         self.dataset_index.insert(&triple);
         self.probability_seeds.insert(triple, probability);
     }
@@ -141,7 +151,7 @@ impl Reasoner {
         let s = dict.encode(subject);
         let p = dict.encode(predicate);
         let o = dict.encode(object);
-        drop(dict);  // Release lock early
+        drop(dict); // Release lock early
 
         self.dataset_index.insert(&Triple {
             subject: s,
@@ -166,7 +176,7 @@ impl Reasoner {
         let s = subject.map(|s| dict.encode(s));
         let p = predicate.map(|p| dict.encode(p));
         let o = object.map(|o| dict.encode(o));
-        drop(dict);  // Release lock early
+        drop(dict); // Release lock early
 
         self.dataset_index.query(s, p, o)
     }
@@ -228,4 +238,3 @@ impl Reasoner {
         repairs
     }
 }
-

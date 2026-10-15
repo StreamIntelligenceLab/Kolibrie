@@ -16,13 +16,13 @@
 //! fact is a second way of proving it, which the tag has to absorb — so the loop
 //! runs again whenever either the facts or a tag changed.
 
+use crate::reasoning::Reasoner;
 use shared::dictionary::Dictionary;
 use shared::provenance::Provenance;
 use shared::rule::Rule;
 use shared::tag_store::TagStore;
 use shared::triple::Triple;
 use std::collections::HashSet;
-use crate::reasoning::Reasoner;
 
 /// Result of a single provenance inference round.
 #[derive(Debug)]
@@ -86,13 +86,7 @@ impl Reasoner {
 
         loop {
             let mut dict = self.dictionary.write().unwrap();
-            let result = strat.infer_round(
-                &mut dict,
-                rules,
-                &all_facts,
-                &known_facts,
-                tag_store,
-            );
+            let result = strat.infer_round(&mut dict, rules, &all_facts, &known_facts, tag_store);
             drop(dict);
 
             let has_new_facts = !result.new_facts.is_empty();
@@ -114,4 +108,3 @@ impl Reasoner {
         all_facts.split_off(idx_before_inference)
     }
 }
-

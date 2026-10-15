@@ -2,7 +2,7 @@
  * Copyright © 2025 Volodymyr Kadzhaia
  * Copyright © 2025 Pieter Bonte
  * KU Leuven — Stream Intelligence Lab, Belgium
- * 
+ *
  * This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this file,
  * you can obtain one at https://mozilla.org/MPL/2.0/.
@@ -42,7 +42,7 @@ WHERE {
             println!("Query parsed successfully!");
             println!("Remaining input: '{}'", remaining.trim());
             println!();
-            
+
             // Print RETRIEVE clause details
             if let Some(retrieve) = &parsed_query.retrieve_clause {
                 println!("RETRIEVE Clause:");
@@ -50,19 +50,25 @@ WHERE {
                 println!("  State: {:?}", retrieve.state);
                 println!("  Variable: {}", retrieve.variable);
                 println!("  From IRI: {}", retrieve.from_iri);
-                println!("  Graph patterns ({} triples):", retrieve.graph_pattern.len());
+                println!(
+                    "  Graph patterns ({} triples):",
+                    retrieve.graph_pattern.len()
+                );
                 for (i, (s, p, o)) in retrieve.graph_pattern.iter().enumerate() {
                     println!("    {}: {} {} {}", i + 1, s, p, o);
                 }
                 println!();
             }
-            
+
             // Print REGISTER clause details
             if let Some(register) = &parsed_query.register_clause {
                 println!("REGISTER Clause:");
                 println!("  Stream Type: {:?}", register.stream_type);
                 println!("  Output Stream IRI: {}", register.output_stream_iri);
-                println!("  Window Clauses ({} windows):", register.query.window_clause.len());
+                println!(
+                    "  Window Clauses ({} windows):",
+                    register.query.window_clause.len()
+                );
                 for (i, window) in register.query.window_clause.iter().enumerate() {
                     println!("    Window {}:", i + 1);
                     println!("      Window IRI: {}", window.window_iri);
@@ -82,19 +88,26 @@ WHERE {
                 println!();
 
                 // Print window-specific queries
-                println!("  Window Queries ({} blocks):", register.query.window_blocks.len());
+                println!(
+                    "  Window Queries ({} blocks):",
+                    register.query.window_blocks.len()
+                );
                 for (i, window_block) in register.query.window_blocks.iter().enumerate() {
-                    println!("    Window Block {} ({}): {} triples", 
-                        i + 1, window_block.window_name, window_block.patterns.len());
+                    println!(
+                        "    Window Block {} ({}): {} triples",
+                        i + 1,
+                        window_block.window_name,
+                        window_block.patterns.len()
+                    );
                     for (j, (s, p, o)) in window_block.patterns.iter().enumerate() {
                         println!("      {}: {} {} {}", j + 1, s, p, o);
                     }
                     println!();
                 }
             }
-            
+
             println!("All components parsed successfully!");
-        },
+        }
         Err(e) => {
             println!("Error: {:?}", e);
         }

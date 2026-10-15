@@ -27,8 +27,8 @@ fn udf() {
     database.parse_rdf(rdf_data);
 
     database.register_udf("concatValues", |args: Vec<&str>| {
-		args.join("_") // Concatenates arguments with an underscore
-	});
+        args.join("_") // Concatenates arguments with an underscore
+    });
 
     let sparql = r#"
     PREFIX ex: <http://example.com/>
@@ -45,5 +45,5 @@ fn udf() {
 }
 
 fn main() {
-	udf();
+    udf();
 }

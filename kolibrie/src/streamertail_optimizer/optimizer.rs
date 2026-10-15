@@ -39,7 +39,6 @@ pub struct Streamertail {
     dataset: Option<DatasetView>,
 }
 
-
 // Summarised rather than derived: the memo holds a physical plan per costed
 // subexpression, so the derived form prints every plan considered.
 impl std::fmt::Debug for Streamertail {
@@ -268,8 +267,7 @@ impl Streamertail {
             order.push(next);
         }
 
-        let mut ordered: Vec<Option<QuadPattern>> =
-            patterns.into_iter().map(Some).collect();
+        let mut ordered: Vec<Option<QuadPattern>> = patterns.into_iter().map(Some).collect();
         order
             .into_iter()
             .map(|index| ordered[index].take().expect("each pattern is used once"))
@@ -753,9 +751,7 @@ impl Streamertail {
         match plan {
             LogicalOperator::Buffer { .. } | LogicalOperator::Values { .. } => true,
             LogicalOperator::Unit | LogicalOperator::Scan { .. } => false,
-            LogicalOperator::Union { branches } => {
-                branches.iter().any(Self::carries_inline_data)
-            }
+            LogicalOperator::Union { branches } => branches.iter().any(Self::carries_inline_data),
             LogicalOperator::Graph { input, .. }
             | LogicalOperator::Selection {
                 predicate: input, ..
@@ -1097,9 +1093,7 @@ mod tests {
         stats.predicate_distinct_objects.insert(NEXT, 45_000);
         stats.predicate_distinct_subjects.insert(TYPE, 10);
         stats.predicate_distinct_objects.insert(TYPE, 1);
-        stats
-            .graph_cardinalities
-            .insert(GraphId::Default, 100_000);
+        stats.graph_cardinalities.insert(GraphId::Default, 100_000);
         Arc::new(stats)
     }
 

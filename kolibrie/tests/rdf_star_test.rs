@@ -10,7 +10,7 @@
 
 use kolibrie::execute_query::execute_query_rayon_parallel2_volcano;
 use kolibrie::sparql_database::SparqlDatabase;
-use shared::quoted_triple_store::{QuotedTripleStore, is_quoted_triple_id};
+use shared::quoted_triple_store::{is_quoted_triple_id, QuotedTripleStore};
 
 fn default_triples(db: &SparqlDatabase) -> Vec<shared::triple::Triple> {
     db.query_default_triples(None, None, None)
@@ -63,7 +63,10 @@ fn test_ntriples_star_basic_quoted_triple() {
     db.parse_ntriples_and_add(ntriples);
 
     // The outer triple should exist: qt_id :statedBy :emp22
-    assert!(!default_is_empty(&db), "Should have parsed the outer triple");
+    assert!(
+        !default_is_empty(&db),
+        "Should have parsed the outer triple"
+    );
 
     // The quoted triple store should have one entry
     let qt = db.quoted_triples();
@@ -92,7 +95,11 @@ fn test_ntriples_star_literal_in_quoted_triple() {
 "#;
     db.parse_ntriples_and_add(ntriples);
 
-    assert_eq!(default_len(&db), 2, "Should have two outer triples (literal-in-qt bug)");
+    assert_eq!(
+        default_len(&db),
+        2,
+        "Should have two outer triples (literal-in-qt bug)"
+    );
     let qt = db.quoted_triples();
     assert_eq!(qt.len(), 2, "Should have two quoted triples");
 }
@@ -104,7 +111,10 @@ fn test_turtle_star_basic() {
     let turtle = r#"<< <http://example.org/emp38> <http://example.org/jobTitle> <http://example.org/AssistantDesigner> >> <http://example.org/statedBy> <http://example.org/emp22> ."#;
     db.parse_turtle(turtle);
 
-    assert!(!default_is_empty(&db), "Should have parsed at least one triple");
+    assert!(
+        !default_is_empty(&db),
+        "Should have parsed at least one triple"
+    );
     let qt = db.quoted_triples();
     assert_eq!(qt.len(), 1, "Should have one quoted triple");
 }
@@ -122,11 +132,31 @@ fn test_dictionary_decode_term_with_quoted_triple() {
     let qt_id = *qt.components_to_id.values().next().unwrap();
     let dict = db.dictionary();
     let decoded = dict.decode_term(qt_id, &qt).unwrap();
-    assert!(decoded.starts_with("<<"), "Decoded should start with <<: {}", decoded);
-    assert!(decoded.ends_with(">>"), "Decoded should end with >>: {}", decoded);
-    assert!(decoded.contains("http://example.org/a"), "Should contain subject: {}", decoded);
-    assert!(decoded.contains("http://example.org/b"), "Should contain predicate: {}", decoded);
-    assert!(decoded.contains("http://example.org/c"), "Should contain object: {}", decoded);
+    assert!(
+        decoded.starts_with("<<"),
+        "Decoded should start with <<: {}",
+        decoded
+    );
+    assert!(
+        decoded.ends_with(">>"),
+        "Decoded should end with >>: {}",
+        decoded
+    );
+    assert!(
+        decoded.contains("http://example.org/a"),
+        "Should contain subject: {}",
+        decoded
+    );
+    assert!(
+        decoded.contains("http://example.org/b"),
+        "Should contain predicate: {}",
+        decoded
+    );
+    assert!(
+        decoded.contains("http://example.org/c"),
+        "Should contain object: {}",
+        decoded
+    );
 }
 
 // SPARQL-star query tests (via Streamertail optimizer)
@@ -145,7 +175,11 @@ fn test_sparql_star_query_constant_quoted_triple() {
     "#;
 
     let results = execute_query_rayon_parallel2_volcano(query, &mut db);
-    assert!(!results.is_empty(), "Should return at least one result, got: {:?}", results);
+    assert!(
+        !results.is_empty(),
+        "Should return at least one result, got: {:?}",
+        results
+    );
     assert_eq!(results[0][0], "http://example.org/emp22");
 }
 
@@ -166,7 +200,12 @@ fn test_sparql_star_query_variable_in_quoted_triple() {
     "#;
 
     let results = execute_query_rayon_parallel2_volcano(query, &mut db);
-    assert_eq!(results.len(), 2, "Should return two results, got: {:?}", results);
+    assert_eq!(
+        results.len(),
+        2,
+        "Should return two results, got: {:?}",
+        results
+    );
 }
 
 // Debug: verify parser output for quoted triples in WHERE
@@ -175,7 +214,11 @@ fn test_sparql_parser_quoted_triple_pattern() {
     use kolibrie::parser::parse_where;
     let input = r#"WHERE { << <http://example.org/emp38> <http://example.org/jobTitle> <http://example.org/AssistantDesigner> >> <http://example.org/statedBy> ?who . }"#;
     let result = parse_where(input);
-    assert!(result.is_ok(), "Should parse WHERE with quoted triple: {:?}", result);
+    assert!(
+        result.is_ok(),
+        "Should parse WHERE with quoted triple: {:?}",
+        result
+    );
     let (_, (patterns, _, _, _, _, _, _)) = result.unwrap();
     assert_eq!(patterns.len(), 1, "Should have one pattern");
     let (s, p, o) = &patterns[0];
@@ -204,7 +247,11 @@ fn test_parse_quoted_triple_with_variable() {
     use kolibrie::parser::parse_quoted_triple;
     let input = "<< ?s <http://example.org/p> ?o >>";
     let result = parse_quoted_triple(input);
-    assert!(result.is_ok(), "Should parse quoted triple with variables: {:?}", result);
+    assert!(
+        result.is_ok(),
+        "Should parse quoted triple with variables: {:?}",
+        result
+    );
 }
 
 #[test]
@@ -212,7 +259,11 @@ fn test_parse_quoted_triple_nested() {
     use kolibrie::parser::parse_quoted_triple;
     let input = "<< << <http://example.org/a> <http://example.org/b> <http://example.org/c> >> <http://example.org/d> <http://example.org/e> >>";
     let result = parse_quoted_triple(input);
-    assert!(result.is_ok(), "Should parse nested quoted triple: {:?}", result);
+    assert!(
+        result.is_ok(),
+        "Should parse nested quoted triple: {:?}",
+        result
+    );
 }
 
 #[test]
@@ -220,10 +271,17 @@ fn test_parse_triple_block_with_quoted_subject() {
     use kolibrie::parser::parse_triple_block;
     let input = "<< <http://example.org/a> <http://example.org/b> <http://example.org/c> >> <http://example.org/d> <http://example.org/e>";
     let result = parse_triple_block(input);
-    assert!(result.is_ok(), "Should parse triple block with quoted subject: {:?}", result);
+    assert!(
+        result.is_ok(),
+        "Should parse triple block with quoted subject: {:?}",
+        result
+    );
     let (_, triples) = result.unwrap();
     assert_eq!(triples.len(), 1);
-    assert!(triples[0].0.starts_with("<<"), "Subject should be a quoted triple");
+    assert!(
+        triples[0].0.starts_with("<<"),
+        "Subject should be a quoted triple"
+    );
 }
 
 // SparqlDatabase helper tests
@@ -349,7 +407,11 @@ fn test_bind_triple_constructor() {
     // The constructed triple should contain <<
     let row = &results[0];
     let has_qt = row.iter().any(|v| v.contains("<<"));
-    assert!(has_qt, "TRIPLE should construct a quoted triple, got: {:?}", row);
+    assert!(
+        has_qt,
+        "TRIPLE should construct a quoted triple, got: {:?}",
+        row
+    );
 }
 
 // INSERT/DELETE tests
@@ -366,7 +428,10 @@ fn test_insert_quoted_triple() {
 
     // Verify the quoted triple store has an entry
     let qt_store = db.quoted_triples();
-    assert!(!qt_store.is_empty(), "QuotedTripleStore should have an entry");
+    assert!(
+        !qt_store.is_empty(),
+        "QuotedTripleStore should have an entry"
+    );
 }
 
 #[test]
@@ -424,7 +489,12 @@ fn test_delete_where() {
         WHERE { ?s <http://example.org/knows> ?o . }
     "#;
     execute_query_rayon_parallel2_volcano(delete_query, &mut db);
-    assert_eq!(default_len(&db), 1, "Should have 1 triple after DELETE WHERE, got {}", default_len(&db));
+    assert_eq!(
+        default_len(&db),
+        1,
+        "Should have 1 triple after DELETE WHERE, got {}",
+        default_len(&db)
+    );
 }
 
 // Serialization tests
@@ -436,9 +506,18 @@ fn test_generate_ntriples_basic() {
     db.parse_ntriples_and_add(ntriples);
 
     let output = db.generate_ntriples();
-    assert!(output.contains("<http://example.org/alice>"), "Should contain subject URI");
-    assert!(output.contains("<http://example.org/knows>"), "Should contain predicate URI");
-    assert!(output.contains("http://example.org/bob"), "Should contain object URI");
+    assert!(
+        output.contains("<http://example.org/alice>"),
+        "Should contain subject URI"
+    );
+    assert!(
+        output.contains("<http://example.org/knows>"),
+        "Should contain predicate URI"
+    );
+    assert!(
+        output.contains("http://example.org/bob"),
+        "Should contain object URI"
+    );
     assert!(output.ends_with(".\n"), "Should end with dot-newline");
 }
 
@@ -450,10 +529,22 @@ fn test_generate_ntriples_star() {
     db.parse_ntriples_and_add(ntriples);
 
     let output = db.generate_ntriples();
-    assert!(output.contains("<<"), "Should contain quoted triple opening");
-    assert!(output.contains(">>"), "Should contain quoted triple closing");
-    assert!(output.contains("http://example.org/alice"), "Should contain inner subject");
-    assert!(output.contains("<http://example.org/source>"), "Should contain outer predicate");
+    assert!(
+        output.contains("<<"),
+        "Should contain quoted triple opening"
+    );
+    assert!(
+        output.contains(">>"),
+        "Should contain quoted triple closing"
+    );
+    assert!(
+        output.contains("http://example.org/alice"),
+        "Should contain inner subject"
+    );
+    assert!(
+        output.contains("<http://example.org/source>"),
+        "Should contain outer predicate"
+    );
 }
 
 #[test]
@@ -467,7 +558,11 @@ fn test_generate_turtle_basic() {
     let output = db.generate_turtle();
     // Should group by subject — alice appears once as subject, with ; separating predicates
     let alice_count = output.matches("<http://example.org/alice>").count();
-    assert_eq!(alice_count, 1, "Subject should appear once (grouped), got output:\n{}", output);
+    assert_eq!(
+        alice_count, 1,
+        "Subject should appear once (grouped), got output:\n{}",
+        output
+    );
     assert!(output.contains(";"), "Should use ; to separate predicates");
     assert!(output.contains("."), "Should end statements with .");
 }
@@ -488,7 +583,9 @@ fn test_generate_turtle_star() {
 #[test]
 fn test_handle_update_insert() {
     let mut db = SparqlDatabase::new();
-    let result = db.handle_update(r#"INSERT { <http://example.org/a> <http://example.org/b> <http://example.org/c> . }"#);
+    let result = db.handle_update(
+        r#"INSERT { <http://example.org/a> <http://example.org/b> <http://example.org/c> . }"#,
+    );
     assert_eq!(result, "Update Successful");
     assert_eq!(default_len(&db), 1);
 }
@@ -496,10 +593,14 @@ fn test_handle_update_insert() {
 #[test]
 fn test_handle_update_delete() {
     let mut db = SparqlDatabase::new();
-    db.handle_update(r#"INSERT { <http://example.org/a> <http://example.org/b> <http://example.org/c> . }"#);
+    db.handle_update(
+        r#"INSERT { <http://example.org/a> <http://example.org/b> <http://example.org/c> . }"#,
+    );
     assert_eq!(default_len(&db), 1);
 
-    let result = db.handle_update(r#"DELETE { <http://example.org/a> <http://example.org/b> <http://example.org/c> . }"#);
+    let result = db.handle_update(
+        r#"DELETE { <http://example.org/a> <http://example.org/b> <http://example.org/c> . }"#,
+    );
     assert_eq!(result, "Update Successful");
     assert_eq!(default_len(&db), 0);
 }
@@ -513,4 +614,3 @@ fn test_handle_update_insert_quoted_triple() {
     let qt_store = db.quoted_triples();
     assert!(!qt_store.is_empty(), "QuotedTripleStore should have entry");
 }
-

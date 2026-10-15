@@ -475,7 +475,11 @@ pub fn execute_neural_program(database: &mut SparqlDatabase, program: &str) -> R
     if !combined.rules.is_empty() {
         return Err("execute_neural_program only accepts MODEL / NEURAL RELATION / TRAIN NEURAL RELATION declarations and top-level ML.PREDICT".to_string());
     }
-    if combined.ml_predict.as_ref().is_some_and(|predict| predict.distribution) {
+    if combined
+        .ml_predict
+        .as_ref()
+        .is_some_and(|predict| predict.distribution)
+    {
         return Err(DISTRIBUTION_REQUIRES_PROGRAM.to_string());
     }
 

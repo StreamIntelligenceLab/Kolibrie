@@ -20,18 +20,18 @@
 //! materialisation needs exactly that to decide when a derived fact expires.
 
 use crate::reasoning::*;
-use shared::terms::{Term, TriplePattern, UnresolvedTerm, UnresolvedTriple};
-use shared::rule::Rule;
+use nom::combinator::{map, opt};
+use nom::error::{Error, ErrorKind};
 use nom::{
     branch::alt,
     bytes::complete::{tag, take_until},
     character::complete::{alphanumeric1, multispace0, multispace1},
+    multi::{many0, separated_list1},
     sequence::{delimited, preceded, separated_pair, terminated},
-    multi::{separated_list1, many0},
     IResult, Parser,
 };
-use nom::combinator::{map, opt};
-use nom::error::{Error, ErrorKind};
+use shared::rule::Rule;
+use shared::terms::{Term, TriplePattern, UnresolvedTerm, UnresolvedTriple};
 use std::collections::HashMap;
 
 /// Metadata linking parsed rule predicates to their owning SDS windows
@@ -64,14 +64,16 @@ fn parse_unresolved_term(input: &str) -> IResult<&str, UnresolvedTerm> {
         map(preceded(tag("?"), alphanumeric1), |var: &str| {
             UnresolvedTerm::Var(var.to_string())
         }),
-        map(delimited(tag("<"), take_until(">"), tag(">")), |iri: &str| {
-            UnresolvedTerm::Iri(iri.to_string())
-        }),
+        map(
+            delimited(tag("<"), take_until(">"), tag(">")),
+            |iri: &str| UnresolvedTerm::Iri(iri.to_string()),
+        ),
         map(
             separated_pair(alphanumeric1, tag(":"), alphanumeric1),
             |(prefix, term)| UnresolvedTerm::Prefixed(format!("{}:{}", prefix, term)),
         ),
-    )).parse(input)
+    ))
+    .parse(input)
 }
 
 fn parse_unresolved_triple(input: &str) -> IResult<&str, UnresolvedTriple> {
@@ -91,54 +93,59 @@ fn parse_nested_unresolved_rule(input: &str) -> IResult<&str, UnresolvedTriple> 
     let (input, _) = multispace0.parse(input)?;
     let (input, _) = tag("{").parse(input)?;
 
-    let (input, _) = take_until("}").parse(input)?; 
+    let (input, _) = take_until("}").parse(input)?;
     let (input, _) = tag("}").parse(input)?;
-    
+
     let (input, _) = multispace0.parse(input)?;
     let (input, _) = tag("=>").parse(input)?;
     let (input, _) = multispace0.parse(input)?;
-    
+
     let (input, _) = tag("{").parse(input)?;
     let (input, triple) = parse_unresolved_triple(input)?;
     let (input, _) = multispace0.parse(input)?;
     let (input, _) = tag("}").parse(input)?;
-    
+
     Ok((input, triple))
 }
 
 /// Parse a block that can contain either triple(s) or a nested rule
 fn parse_unresolved_clause_block(input: &str) -> IResult<&str, Vec<UnresolvedTriple>> {
     separated_list1(
-        multispace0, 
+        multispace0,
         alt((
             parse_nested_unresolved_rule, // if it's a nested rule
             parse_unresolved_triple,      // if it's just a triple
-        ))
-    ).parse(input)
+        )),
+    )
+    .parse(input)
 }
 
 // Updated to parse multiple conclusion triples
-fn parse_unresolved_rule(input: &str) -> IResult<&str, (Vec<UnresolvedTriple>, Vec<UnresolvedTriple>)> {
+fn parse_unresolved_rule(
+    input: &str,
+) -> IResult<&str, (Vec<UnresolvedTriple>, Vec<UnresolvedTriple>)> {
     let (input, _) = multispace0.parse(input)?;
-    
+
     // Parse premise
     let (input, premise_triples) = delimited(
         tag("{"),
         parse_unresolved_clause_block,
         preceded(multispace0, tag("}")),
-    ).parse(input)?;
-    
+    )
+    .parse(input)?;
+
     let (input, _) = multispace0.parse(input)?;
     let (input, _) = tag("=>").parse(input)?;
     let (input, _) = multispace0.parse(input)?;
-    
+
     // Parse multiple conclusions
     let (input, conclusion_triples) = delimited(
         tag("{"),
-        parse_unresolved_clause_block,  // Using the same parser for multiple triples
+        parse_unresolved_clause_block, // Using the same parser for multiple triples
         preceded(multispace0, tag("}")),
-    ).parse(input)?;
-    
+    )
+    .parse(input)?;
+
     Ok((input, (premise_triples, conclusion_triples)))
 }
 
@@ -157,7 +164,7 @@ pub fn parse_n3_rule<'a>(
 
     // Parse to an intermediate unresolved form with multiple conclusions
     let (input, (premise_triples, conclusion_triples)) = parse_unresolved_rule(input)?;
-    
+
     // Convert from unresolved string-based data to final `Term` with dictionary encoding
     let premise_parsed: Vec<TriplePattern> = premise_triples
         .into_iter()
@@ -218,7 +225,7 @@ fn expand_prefix(prefixed: &str, prefix_map: &HashMap<String, String>) -> String
     if let Some(colon_pos) = prefixed.find(':') {
         let prefix = &prefixed[..colon_pos];
         let local = &prefixed[colon_pos + 1..];
-        
+
         if let Some(base_uri) = prefix_map.get(prefix) {
             // Expand: prefix + local part
             format!("{}{}", base_uri, local)
@@ -239,8 +246,7 @@ pub fn parse_n3_document<'a>(
     input: &'a str,
     graph: &mut Reasoner,
 ) -> IResult<&'a str, (HashMap<String, String>, Vec<Rule>)> {
-    let (input, raw_prefixes) =
-        many0(preceded(multispace0, parse_prefix)).parse(input)?;
+    let (input, raw_prefixes) = many0(preceded(multispace0, parse_prefix)).parse(input)?;
 
     let prefix_map: HashMap<String, String> = raw_prefixes
         .iter()
@@ -248,8 +254,7 @@ pub fn parse_n3_document<'a>(
         .collect();
 
     let (input, first_rule) = preceded(multispace0, parse_unresolved_rule).parse(input)?;
-    let (input, rest_rules) =
-        many0(preceded(multispace0, parse_unresolved_rule)).parse(input)?;
+    let (input, rest_rules) = many0(preceded(multispace0, parse_unresolved_rule)).parse(input)?;
 
     let (input, _) = multispace0.parse(input)?;
     if !input.is_empty() {
@@ -299,8 +304,8 @@ pub fn parse_n3_rules_for_sds(
     graph: &mut Reasoner,
     window_widths: HashMap<String, u64>,
 ) -> Result<(Vec<Rule>, WindowContext), String> {
-    let (_, (prefix_map, rules)) = parse_n3_document(input, graph)
-        .map_err(|e| format!("N3 parse error: {:?}", e))?;
+    let (_, (prefix_map, rules)) =
+        parse_n3_document(input, graph).map_err(|e| format!("N3 parse error: {:?}", e))?;
 
     // Sort window IRIs longest-first for correct prefix matching.
     let mut sorted_window_iris: Vec<&String> = window_widths.keys().collect();

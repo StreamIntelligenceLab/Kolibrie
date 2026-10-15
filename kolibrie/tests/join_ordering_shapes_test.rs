@@ -38,11 +38,7 @@ fn chain_database() -> SparqlDatabase {
     }
     triples.push_str("<urn:n0> <urn:type> <urn:Anchor> .\n");
 
-    execute_sparql_update(
-        &format!("INSERT DATA {{\n{}}}", triples),
-        &mut database,
-    )
-    .unwrap();
+    execute_sparql_update(&format!("INSERT DATA {{\n{}}}", triples), &mut database).unwrap();
     database
 }
 
@@ -57,11 +53,7 @@ fn chain_patterns(links: usize) -> Vec<String> {
 fn chain_query(links: usize, anchor_at: usize) -> String {
     let mut patterns = chain_patterns(links);
     patterns.insert(anchor_at, "?x0 <urn:type> <urn:Anchor> .".to_string());
-    format!(
-        "SELECT ?x0 ?x{} WHERE {{ {} }}",
-        links,
-        patterns.join(" ")
-    )
+    format!("SELECT ?x0 ?x{} WHERE {{ {} }}", links, patterns.join(" "))
 }
 
 #[test]
@@ -205,10 +197,7 @@ fn repeated_variable_within_one_pattern_matches_only_self_loops() {
     .unwrap();
 
     assert_eq!(
-        query(
-            &mut database,
-            r#"SELECT ?x WHERE { ?x <urn:self> ?x . }"#,
-        ),
+        query(&mut database, r#"SELECT ?x WHERE { ?x <urn:self> ?x . }"#,),
         vec![vec!["urn:a".to_string()], vec!["urn:d".to_string()]]
     );
 }

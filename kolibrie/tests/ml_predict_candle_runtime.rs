@@ -154,7 +154,9 @@ fn lookup_object(db: &SparqlDatabase, subject_iri: &str, predicate_iri: &str) ->
 
 fn count_triples_with_predicate(db: &SparqlDatabase, predicate_iri: &str) -> usize {
     let dict = db.dictionary();
-    let Some(&pred_id) = dict.string_to_id.get(predicate_iri) else { return 0; };
+    let Some(&pred_id) = dict.string_to_id.get(predicate_iri) else {
+        return 0;
+    };
     db.query_default_triples(None, Some(pred_id), None).len()
 }
 
@@ -190,11 +192,7 @@ ML.PREDICT(MODEL "digit_model",
 
     process_rule_definition(rule, &mut db).expect("rule processing failed");
 
-    for (subject, expected_label) in [
-        ("s0", "A"),
-        ("s2", "B"),
-        ("s4", "C"),
-    ] {
+    for (subject, expected_label) in [("s0", "A"), ("s2", "B"), ("s4", "C")] {
         let got = lookup_object(&db, subject, "http://example.org/predictedDigit");
         assert_eq!(
             got.as_deref(),
@@ -356,7 +354,10 @@ ML.PREDICT(MODEL "fraud_model",
 
     // Every positive and negative row gets `isFraud true`
     let fraud_count = count_triples_with_predicate(&db, "http://example.org/isFraud");
-    assert_eq!(fraud_count, 4, "binary ML.PREDICT should emit for every row");
+    assert_eq!(
+        fraud_count, 4,
+        "binary ML.PREDICT should emit for every row"
+    );
 
     // Companion probability predicate appends _prob to the full IRI
     let prob_count = count_triples_with_predicate(&db, "http://example.org/isFraud_prob");

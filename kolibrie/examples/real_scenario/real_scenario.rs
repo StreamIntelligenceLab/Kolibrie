@@ -8,28 +8,28 @@
  * you can obtain one at https://mozilla.org/MPL/2.0/.
  */
 
-use kolibrie::execute_query::execute_query_rayon_parallel2_volcano;
-use kolibrie::prelude::*;
-use kolibrie::parser::convert_combined_rule;
-use kolibrie::sparql_database::SparqlDatabase;
-use datalog::reasoning::Reasoner;
-use shared::terms::Term;
-use rand::Rng;
 use chrono::Utc;
+use datalog::reasoning::Reasoner;
+use kolibrie::execute_query::execute_query_rayon_parallel2_volcano;
+use kolibrie::parser::convert_combined_rule;
+use kolibrie::prelude::*;
+use kolibrie::sparql_database::SparqlDatabase;
+use rand::Rng;
+use shared::terms::Term;
 
 /// Generates RDF/XML data with random sensor values but fixed grid positions
 fn generate_rdf_xml() -> String {
     // Create random number generator
     let mut rng = rand::thread_rng();
-    
+
     // Get current timestamp
     let now = Utc::now();
     let current_datetime = now.format("%Y-%m-%d %H:%M:%S").to_string();
-    
+
     // Random light and noise levels for room
     let room_light_level = rng.gen_range(60..95);
     let room_noise_level = rng.gen_range(20..35);
-    
+
     // Generate random motion detection status and other sensor attributes
     let camera1_motion = rng.gen_bool(0.7);
     let camera2_motion = rng.gen_bool(0.4);
@@ -38,46 +38,47 @@ fn generate_rdf_xml() -> String {
     let motion3_detection = rng.gen_bool(0.7);
     let noise1_detection = rng.gen_bool(0.3);
     let noise2_detection = rng.gen_bool(0.4);
-    
+
     // Random noise levels for noise sensors
     let noise1_level = rng.gen_range(5..20);
     let noise2_level = rng.gen_range(8..25);
-    
+
     // Random camera attributes
     let camera1_coverage = match rng.gen_range(0..3) {
         0 => "Narrow",
         1 => "Medium",
         2 => "Wide",
-        _ => "Standard"
+        _ => "Standard",
     };
-    
+
     let camera2_angle = rng.gen_range(0..360);
-    
+
     // Generate random time for an event
     let random_hour = rng.gen_range(0..24);
     let random_minute = rng.gen_range(0..60);
     let random_event_time = format!("{:02}:{:02}", random_hour, random_minute);
-    
+
     // System user identifier (anonymous)
     let system_user = "system";
-    
+
     // Generate random time slots for allowed access
     let cat_a_slot1_start = format!("{:02}:00", rng.gen_range(7..10));
     let cat_a_slot1_end = format!("{:02}:00", rng.gen_range(11..14));
     let cat_a_slot2_start = format!("{:02}:00", rng.gen_range(13..16));
     let cat_a_slot2_end = format!("{:02}:00", rng.gen_range(17..20));
-    
+
     let cat_b_slot1_start = format!("{:02}:00", rng.gen_range(8..11));
     let cat_b_slot1_end = format!("{:02}:00", rng.gen_range(12..15));
     let cat_b_slot2_start = format!("{:02}:00", rng.gen_range(14..17));
     let cat_b_slot2_end = format!("{:02}:00", rng.gen_range(18..21));
-    
+
     // Shared time slot
     let shared_slot_start = "10:00";
     let shared_slot_end = "10:30";
-    
+
     // Build the RDF/XML content
-    format!(r#"
+    format!(
+        r#"
         <?xml version="1.0"?>
         <rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#"
                   xmlns:ex="http://example.org#">
@@ -228,49 +229,57 @@ fn generate_rdf_xml() -> String {
           </rdf:Description>
 
         </rdf:RDF>
-    "#, 
-    // Room attributes
-    room_light_level, room_noise_level, current_datetime, system_user,
-    
-    // Camera1 attributes
-    camera1_motion, camera1_coverage, current_datetime,
-    
-    // Camera2 attributes
-    camera2_motion, camera2_angle, current_datetime,
-    
-    // MotionSensor1 attributes
-    motion1_detection, 
-    if rng.gen_bool(0.5) { "High" } else { "Medium" }, 
-    current_datetime,
-    
-    // MotionSensor2 attributes
-    motion2_detection, 
-    if rng.gen_bool(0.5) { "High" } else { "Medium" }, 
-    current_datetime,
-    
-    // MotionSensor3 attributes
-    motion3_detection, 
-    if rng.gen_bool(0.5) { "High" } else { "Medium" }, 
-    current_datetime,
-    
-    // NoiseSensor1 attributes
-    noise1_detection, noise1_level, current_datetime,
-    
-    // NoiseSensor2 attributes
-    noise2_detection, noise2_level, current_datetime,
-    
-    // CategoryA time slots
-    cat_a_slot1_start, cat_a_slot1_end,
-    cat_a_slot2_start, cat_a_slot2_end,
-    shared_slot_start, shared_slot_end,
-    
-    // CategoryB time slots
-    cat_b_slot1_start, cat_b_slot1_end,
-    cat_b_slot2_start, cat_b_slot2_end,
-    shared_slot_start, shared_slot_end,
-    
-    // Detection event time and timestamp
-    random_event_time, current_datetime
+    "#,
+        // Room attributes
+        room_light_level,
+        room_noise_level,
+        current_datetime,
+        system_user,
+        // Camera1 attributes
+        camera1_motion,
+        camera1_coverage,
+        current_datetime,
+        // Camera2 attributes
+        camera2_motion,
+        camera2_angle,
+        current_datetime,
+        // MotionSensor1 attributes
+        motion1_detection,
+        if rng.gen_bool(0.5) { "High" } else { "Medium" },
+        current_datetime,
+        // MotionSensor2 attributes
+        motion2_detection,
+        if rng.gen_bool(0.5) { "High" } else { "Medium" },
+        current_datetime,
+        // MotionSensor3 attributes
+        motion3_detection,
+        if rng.gen_bool(0.5) { "High" } else { "Medium" },
+        current_datetime,
+        // NoiseSensor1 attributes
+        noise1_detection,
+        noise1_level,
+        current_datetime,
+        // NoiseSensor2 attributes
+        noise2_detection,
+        noise2_level,
+        current_datetime,
+        // CategoryA time slots
+        cat_a_slot1_start,
+        cat_a_slot1_end,
+        cat_a_slot2_start,
+        cat_a_slot2_end,
+        shared_slot_start,
+        shared_slot_end,
+        // CategoryB time slots
+        cat_b_slot1_start,
+        cat_b_slot1_end,
+        cat_b_slot2_start,
+        cat_b_slot2_end,
+        shared_slot_start,
+        shared_slot_end,
+        // Detection event time and timestamp
+        random_event_time,
+        current_datetime
     )
 }
 
@@ -288,10 +297,10 @@ fn main() {
 
     // FIXED: Load data into knowledge graph with proper lock handling
     let mut kg = Reasoner::new();
-    
+
     // Collect triples first to avoid holding lock during iteration
     let triples_to_add = database.query_default_triples(None, None, None);
-    
+
     for triple in triples_to_add {
         // Acquire read lock, decode to owned strings, release lock
         let dict = database.dictionary();
@@ -299,7 +308,7 @@ fn main() {
         let predicate = dict.decode(triple.predicate).map(|p| p.to_string());
         let object = dict.decode(triple.object).map(|o| o.to_string());
         drop(dict); // Release lock before calling add_abox_triple
-        
+
         if let (Some(s), Some(p), Some(o)) = (subject, predicate, object) {
             kg.add_abox_triple(&s, &p, &o);
         }
@@ -401,27 +410,31 @@ WHERE {
 
     // Execute rules
     let rules = [
-        rule1, 
-        rule2, 
-        rule3a, 
-        rule3b, 
+        rule1,
+        rule2,
+        rule3a,
+        rule3b,
         rule_mark_all_unauthorized,
-        rule_mark_authorized_if_within_schedule
+        rule_mark_authorized_if_within_schedule,
     ];
-    
+
     for rule in rules.iter() {
-        let (_rest, combined_query) = parse_combined_query(rule)
-            .expect("Failed to parse combined query");
-        
-        if let Some(rule_def) = combined_query.single_rule().expect("expected at most one RULE block").cloned() {
+        let (_rest, combined_query) =
+            parse_combined_query(rule).expect("Failed to parse combined query");
+
+        if let Some(rule_def) = combined_query
+            .single_rule()
+            .expect("expected at most one RULE block")
+            .cloned()
+        {
             // FIXED: Acquire write lock for conversion
             let mut dict = database.dictionary_mut();
             let dynamic_rule = convert_combined_rule(rule_def, &mut dict, &combined_query.prefixes);
             drop(dict); // Release lock
-            
+
             println!("Dynamic rule: {:#?}", dynamic_rule);
             kg.add_rule(dynamic_rule.clone());
-            
+
             // FIXED: Handle mapping the rule name with proper lock
             if let Some(first_conclusion) = &dynamic_rule.conclusion.first() {
                 if let Term::Constant(code) = first_conclusion.1 {
@@ -429,7 +442,7 @@ WHERE {
                     if let Some(expanded) = dict.decode(code) {
                         let expanded = expanded.to_string();
                         drop(dict); // Release lock before inserting
-                        
+
                         if let Some(idx) = expanded.rfind('#') {
                             let local = &expanded[idx + 1..];
                             database.add_rule_mapping(local.to_lowercase(), expanded.clone());
@@ -439,11 +452,11 @@ WHERE {
             }
         }
     }
-    
+
     // Execute inference
     let inferred_facts = kg.infer_new_facts_semi_naive();
     println!("Inferred {} new fact(s):", inferred_facts.len());
-    
+
     // FIXED: Print inferred facts with proper lock handling
     {
         let dict = database.dictionary();
@@ -454,7 +467,7 @@ WHERE {
             println!("{} {} {}", s, p, o);
         }
     } // Lock released here
-    
+
     // Add inferred facts to database
     for triple in inferred_facts.iter() {
         database.add_triple(triple.clone());
@@ -469,7 +482,8 @@ WHERE {
                 ex:gridY ?y .
     }"#;
 
-    let grid_sensor_results = execute_query_rayon_parallel2_volcano(query_grid_sensors, &mut database);
+    let grid_sensor_results =
+        execute_query_rayon_parallel2_volcano(query_grid_sensors, &mut database);
     println!("\n==> Sensors in grid coordinates:");
     for row in grid_sensor_results {
         println!("{:?}", row);
@@ -483,7 +497,8 @@ WHERE {
                 ex:timeOfDetection ?time .
     }"#;
 
-    let unauthorized_results = execute_query_rayon_parallel2_volcano(query_unauthorized, &mut database);
+    let unauthorized_results =
+        execute_query_rayon_parallel2_volcano(query_unauthorized, &mut database);
     println!("\n==> Unauthorized detection events:");
     for row in unauthorized_results {
         println!("{:?}", row);

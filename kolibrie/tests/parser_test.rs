@@ -11,31 +11,14 @@
 #[cfg(test)]
 mod tests {
     use kolibrie::neural_relations::lower_ml_predict_alias;
-use kolibrie::prelude::*;
-use kolibrie::parser::{
-    identifier,
-    parse_arithmetic_expression,
-    parse_bind,
-    parse_combined_query_with_options,
-    parse_comparison,
-    parse_group_by,
-    parse_limit,
-    parse_literal,
-    parse_ml_predict,
-    parse_model_decl,
-    parse_neural_relation_decl,
-    parse_order_by,
-    parse_prefix,
-    parse_rule,
-    parse_select,
-    parse_sparql_query,
-    parse_train_neural_relation_decl,
-    parse_triple_block,
-    parse_uri,
-    parse_values,
-    predicate,
-    variable,
-};
+    use kolibrie::parser::{
+        identifier, parse_arithmetic_expression, parse_bind, parse_combined_query_with_options,
+        parse_comparison, parse_group_by, parse_limit, parse_literal, parse_ml_predict,
+        parse_model_decl, parse_neural_relation_decl, parse_order_by, parse_prefix, parse_rule,
+        parse_select, parse_sparql_query, parse_train_neural_relation_decl, parse_triple_block,
+        parse_uri, parse_values, predicate, variable,
+    };
+    use kolibrie::prelude::*;
     use shared::hybrid::ThresholdPolicyKind;
     use shared::query::{
         FilterExpression, GroupGraphPattern, ModelArch, NeuralOutputKind, SortDirection,

@@ -8,13 +8,13 @@
  * you can obtain one at https://mozilla.org/MPL/2.0/.
  */
 
-use kolibrie::prelude::*;
 use kolibrie::parser::process_rule_definition;
+use kolibrie::prelude::*;
 use kolibrie::sparql_database::SparqlDatabase;
 
 fn main() {
-  std::env::set_var("RUST_BACKTRACE", "1");
-  let rdf_xml_data = r#"
+    std::env::set_var("RUST_BACKTRACE", "1");
+    let rdf_xml_data = r#"
       <?xml version="1.0"?>
       <rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#"
                xmlns:ex="http://example.org#"
@@ -46,12 +46,12 @@ fn main() {
       </rdf:RDF>
   "#;
 
-  let mut database = SparqlDatabase::new();
-  database.parse_rdf(rdf_xml_data);
-  println!("Database RDF triples loaded.");
+    let mut database = SparqlDatabase::new();
+    database.parse_rdf(rdf_xml_data);
+    println!("Database RDF triples loaded.");
 
-  // Define the rule separately
-  let rule_definition = r#"PREFIX ex: <http://example.org#>
+    // Define the rule separately
+    let rule_definition = r#"PREFIX ex: <http://example.org#>
 PREFIX alert: <http://example.org/alerts#>
 RULE :OverheatingAlert :-
   CONSTRUCT { 
@@ -66,35 +66,35 @@ RULE :OverheatingAlert :-
       FILTER (?temp > 80)
   }"#;
 
-  // Process the rule definition
-  match process_rule_definition(rule_definition, &mut database) {
-      Ok((rule, inferred_facts)) => {
-          println!("Rule processed successfully.");
-          
-          // Print rule details
-          println!("Rule details:");
-          println!("  Premise patterns: {:?}", rule.premise);
-          println!("  Filters: {:?}", rule.filters);
-          println!("  Conclusion: {:?}", rule.conclusion);
+    // Process the rule definition
+    match process_rule_definition(rule_definition, &mut database) {
+        Ok((rule, inferred_facts)) => {
+            println!("Rule processed successfully.");
 
-          println!("Inferred {} new fact(s):", inferred_facts.len());
-          
-          // Acquire read lock on dictionary
-          let dict = database.dictionary();
-          for triple in inferred_facts.iter() {
-              // Dereference the RwLockReadGuard to get &Dictionary
-              println!("  {}", database.triple_to_string(triple, &*dict));
-          }
-          // Lock is automatically released when dict goes out of scope
-      }
-      Err(error) => {
-          eprintln!("Error processing rule definition: {}", error);
-          return; // Exit if rule processing failed
-      }
-  }
+            // Print rule details
+            println!("Rule details:");
+            println!("  Premise patterns: {:?}", rule.premise);
+            println!("  Filters: {:?}", rule.filters);
+            println!("  Conclusion: {:?}", rule.conclusion);
 
-  // Define the SELECT query separately
-  let select_query = r#"PREFIX ex: <http://example.org#>
+            println!("Inferred {} new fact(s):", inferred_facts.len());
+
+            // Acquire read lock on dictionary
+            let dict = database.dictionary();
+            for triple in inferred_facts.iter() {
+                // Dereference the RwLockReadGuard to get &Dictionary
+                println!("  {}", database.triple_to_string(triple, &*dict));
+            }
+            // Lock is automatically released when dict goes out of scope
+        }
+        Err(error) => {
+            eprintln!("Error processing rule definition: {}", error);
+            return; // Exit if rule processing failed
+        }
+    }
+
+    // Define the SELECT query separately
+    let select_query = r#"PREFIX ex: <http://example.org#>
 PREFIX alert: <http://example.org/alerts#>
 SELECT ?room ?temp ?status ?timestamp ?action
 WHERE { 
@@ -106,9 +106,9 @@ WHERE {
   ?reading ex:temperature ?temp .
 }"#;
 
-  // Execute the SELECT query
-  let query_results = execute_query_rayon_parallel2_volcano(select_query, &mut database);
-  
-  // Format and display the results nicely
-  println!("\nQuery results: {:?}", query_results);
+    // Execute the SELECT query
+    let query_results = execute_query_rayon_parallel2_volcano(select_query, &mut database);
+
+    // Format and display the results nicely
+    println!("\nQuery results: {:?}", query_results);
 }

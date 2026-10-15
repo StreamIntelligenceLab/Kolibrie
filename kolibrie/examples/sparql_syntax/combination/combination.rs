@@ -8,12 +8,12 @@
  * you can obtain one at https://mozilla.org/MPL/2.0/.
  */
 
-use kolibrie::prelude::*;
 use kolibrie::parser::process_rule_definition;
+use kolibrie::prelude::*;
 use kolibrie::sparql_database::SparqlDatabase;
 
 fn main() {
-  let rdf_xml_data = r#"
+    let rdf_xml_data = r#"
       <?xml version="1.0"?>
       <rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#"
                xmlns:ex="http://example.org#">
@@ -44,12 +44,15 @@ fn main() {
       </rdf:RDF>
   "#;
 
-  let mut database = SparqlDatabase::new();
-  database.parse_rdf(rdf_xml_data);
-  println!("Database RDF triples: {:#?}", database.query_default_triples(None, None, None));
+    let mut database = SparqlDatabase::new();
+    database.parse_rdf(rdf_xml_data);
+    println!(
+        "Database RDF triples: {:#?}",
+        database.query_default_triples(None, None, None)
+    );
 
-  // Process the rule definition separately
-  let rule_definition = r#"PREFIX ex: <http://example.org#>
+    // Process the rule definition separately
+    let rule_definition = r#"PREFIX ex: <http://example.org#>
 RULE :OverheatingAlert :-
 CONSTRUCT { 
     ?room ex:overheatingAlert true .
@@ -60,31 +63,34 @@ WHERE {
     FILTER (?temp > 80)
 }"#;
 
-  let rule_result = process_rule_definition(rule_definition, &mut database);
-  if let Ok((rule, inferred_facts)) = rule_result {
-      println!("Rule processed successfully.");
-      println!("Dynamic rule: {:#?}", rule);
-      println!("Rule automatically added to KnowledgeGraph.");
-      
-      println!("Automatically inferred {} new fact(s):", inferred_facts.len());
-      for triple in inferred_facts.iter() {
-          let dict = database.dictionary();
-          let subject = dict.decode(triple.subject).unwrap_or("");
-          let predicate = dict.decode(triple.predicate).unwrap_or("");
-          let object = dict.decode(triple.object).unwrap_or("");
-          println!("{} {} {}", subject, predicate, object);
-      }
-  } else {
-      println!("Failed to process rule: {:?}", rule_result.err());
-  }
-  
-  // Execute the separate SELECT query 
-  let select_query = r#"PREFIX ex: <http://example.org#>
+    let rule_result = process_rule_definition(rule_definition, &mut database);
+    if let Ok((rule, inferred_facts)) = rule_result {
+        println!("Rule processed successfully.");
+        println!("Dynamic rule: {:#?}", rule);
+        println!("Rule automatically added to KnowledgeGraph.");
+
+        println!(
+            "Automatically inferred {} new fact(s):",
+            inferred_facts.len()
+        );
+        for triple in inferred_facts.iter() {
+            let dict = database.dictionary();
+            let subject = dict.decode(triple.subject).unwrap_or("");
+            let predicate = dict.decode(triple.predicate).unwrap_or("");
+            let object = dict.decode(triple.object).unwrap_or("");
+            println!("{} {} {}", subject, predicate, object);
+        }
+    } else {
+        println!("Failed to process rule: {:?}", rule_result.err());
+    }
+
+    // Execute the separate SELECT query
+    let select_query = r#"PREFIX ex: <http://example.org#>
 SELECT ?room
 WHERE { 
   ?room ex:overheatingAlert true . 
 }"#;
-  
-  let query_results = execute_query_rayon_parallel2_volcano(select_query, &mut database);
-  println!("Query results: {:?}", query_results);
+
+    let query_results = execute_query_rayon_parallel2_volcano(select_query, &mut database);
+    println!("Query results: {:?}", query_results);
 }

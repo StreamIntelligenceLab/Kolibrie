@@ -7,9 +7,9 @@
  * you can obtain one at https://mozilla.org/MPL/2.0/.
  */
 
+use kolibrie::execute_query::execute_query_rayon_parallel2_volcano;
 use kolibrie::parser::{parse_standalone_rule, process_rule_definition};
 use kolibrie::sparql_database::SparqlDatabase;
-use kolibrie::execute_query::execute_query_rayon_parallel2_volcano;
 use kolibrie::streamertail_optimizer::operators::LogicalOperator;
 use kolibrie::streamertail_optimizer::optimizer::Streamertail;
 use pyo3::prepare_freethreaded_python;
@@ -62,7 +62,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     "#;
 
     let mut database = SparqlDatabase::with_ml_context(
-        kolibrie::ml_policy::MlExecutionContext::from_environment()?
+        kolibrie::ml_policy::MlExecutionContext::from_environment()?,
     );
     database.parse_rdf(rdf_xml_data);
     database.get_or_build_stats();
@@ -94,7 +94,7 @@ RULE :TemperatureAlert :-
     match process_rule_definition(rule_definition, &mut database) {
         Ok((rule, inferred_facts)) => {
             println!("Rule processed successfully.");
-            
+
             println!("Rule details:");
             println!("  Premise patterns: {:?}", rule.premise);
             println!("  Filters: {:?}", rule.filters);
@@ -105,27 +105,29 @@ RULE :TemperatureAlert :-
                 let dict = database.dictionary();
                 println!("  {}", database.triple_to_string(triple, &*dict));
             }
-            
+
             if let Ok((_rest, (parsed_rule, _))) = parse_standalone_rule(rule_definition) {
                 if let Some(ml_predict) = &parsed_rule.ml_predict {
                     println!("Using optimizer-based ML.PREDICT execution...");
-                    
+
                     let logical_plan = build_ml_predict_logical_plan(ml_predict, &mut database)?;
-                    
+
                     let mut optimizer = Streamertail::new(&database);
                     let physical_plan = optimizer.find_best_plan(&logical_plan);
-                    
+
                     println!("Physical plan optimized.");
-                    
+
                     let ml_results = optimizer.execute_plan(&physical_plan, &mut database);
-                    
+
                     let predictions = process_ml_results(ml_results);
-                    
+
                     println!("\nML Predictions:");
                     for prediction in &predictions {
                         println!(
                             "Room: {}, Predicted Temperature: {:.1}°C, Confidence: {:.2}",
-                            prediction.room_id, prediction.predicted_temperature, prediction.confidence
+                            prediction.room_id,
+                            prediction.predicted_temperature,
+                            prediction.confidence
                         );
 
                         add_prediction_to_database(&prediction, &mut database);
@@ -151,18 +153,22 @@ WHERE {
 }"#;
 
     let query_results = execute_query_rayon_parallel2_volcano(select_query, &mut database);
-    println!("Final query results (rooms with temperature alerts): {:?}", query_results);
-    
+    println!(
+        "Final query results (rooms with temperature alerts): {:?}",
+        query_results
+    );
+
     let predictions_query = r#"PREFIX sensor: <http://example.org/sensor#>
 SELECT ?room ?predicted_temp ?confidence
 WHERE {
     ?room sensor:predictedTemperature ?predicted_temp ;
           sensor:predictionConfidence ?confidence
 }"#;
-    
-    let predictions_results = execute_query_rayon_parallel2_volcano(predictions_query, &mut database);
+
+    let predictions_results =
+        execute_query_rayon_parallel2_volcano(predictions_query, &mut database);
     println!("ML Predictions in database: {:?}", predictions_results);
-    
+
     let all_rooms_query = r#"PREFIX sensor: <http://example.org/sensor#>
 SELECT ?room ?temp ?humidity ?occupancy
 WHERE {
@@ -170,7 +176,7 @@ WHERE {
           sensor:humidity ?humidity ;
           sensor:occupancy ?occupancy
 }"#;
-    
+
     let all_rooms_results = execute_query_rayon_parallel2_volcano(all_rooms_query, &mut database);
     println!("All room data: {:?}", all_rooms_results);
 
@@ -182,8 +188,9 @@ fn build_ml_predict_logical_plan(
     database: &mut SparqlDatabase,
 ) -> Result<LogicalOperator, Box<dyn Error>> {
     let room_data = extract_data_for_ml(database)?;
-    
-    let input_variables: Vec<String> = ml_predict.input_select
+
+    let input_variables: Vec<String> = ml_predict
+        .input_select
         .iter()
         .filter(|(var, _, _)| {
             let stripped = var.strip_prefix('?').unwrap_or(var);
@@ -191,9 +198,9 @@ fn build_ml_predict_logical_plan(
         })
         .map(|(var, _, _)| var.to_string())
         .collect();
-    
+
     let buffer_plan = LogicalOperator::buffer(room_data, "ML_INPUT".to_string());
-    
+
     Ok(LogicalOperator::ml_predict(
         buffer_plan,
         ml_predict.model.to_string(),
@@ -202,61 +209,78 @@ fn build_ml_predict_logical_plan(
     ))
 }
 
-fn extract_data_for_ml(database: &mut SparqlDatabase) -> Result<Vec<HashMap<String, u32>>, Box<dyn Error>> {
+fn extract_data_for_ml(
+    database: &mut SparqlDatabase,
+) -> Result<Vec<HashMap<String, u32>>, Box<dyn Error>> {
     let mut results = Vec::new();
-    
+
     let dict = database.dictionary();
-    let temp_pred = dict.string_to_id.get("http://example.org/sensor#temperature").copied();
-    let humidity_pred = dict.string_to_id.get("http://example.org/sensor#humidity").copied();
-    let occupancy_pred = dict.string_to_id.get("http://example.org/sensor#occupancy").copied();
+    let temp_pred = dict
+        .string_to_id
+        .get("http://example.org/sensor#temperature")
+        .copied();
+    let humidity_pred = dict
+        .string_to_id
+        .get("http://example.org/sensor#humidity")
+        .copied();
+    let occupancy_pred = dict
+        .string_to_id
+        .get("http://example.org/sensor#occupancy")
+        .copied();
     drop(dict);
-    
+
     let temp_pred = temp_pred.unwrap_or_else(|| {
-        database.dictionary_mut().encode("http://example.org/sensor#temperature")
+        database
+            .dictionary_mut()
+            .encode("http://example.org/sensor#temperature")
     });
     let humidity_pred = humidity_pred.unwrap_or_else(|| {
-        database.dictionary_mut().encode("http://example.org/sensor#humidity")
+        database
+            .dictionary_mut()
+            .encode("http://example.org/sensor#humidity")
     });
     let occupancy_pred = occupancy_pred.unwrap_or_else(|| {
-        database.dictionary_mut().encode("http://example.org/sensor#occupancy")
+        database
+            .dictionary_mut()
+            .encode("http://example.org/sensor#occupancy")
     });
-    
+
     let subjects: std::collections::HashSet<u32> = database
         .query_default_triples(None, Some(temp_pred), None)
         .into_iter()
         .map(|t| t.subject)
         .collect();
-    
+
     for &subject in &subjects {
         let mut row = HashMap::new();
         row.insert("room".to_string(), subject);
-        
+
         if let Some(triple) = database
             .query_default_triples(Some(subject), Some(temp_pred), None)
             .first()
         {
             row.insert("temp".to_string(), triple.object);
         }
-        
+
         if let Some(triple) = database
             .query_default_triples(Some(subject), Some(humidity_pred), None)
             .first()
         {
             row.insert("humidity".to_string(), triple.object);
         }
-        
+
         if let Some(triple) = database
             .query_default_triples(Some(subject), Some(occupancy_pred), None)
             .first()
         {
             row.insert("occupancy".to_string(), triple.object);
         }
-        
+
         if row.len() == 4 {
             results.push(row);
         }
     }
-    
+
     Ok(results)
 }
 
@@ -264,17 +288,19 @@ fn process_ml_results(ml_results: Vec<HashMap<String, String>>) -> Vec<Predictio
     ml_results
         .iter()
         .map(|row| {
-            let room_id = row.get("room")
+            let room_id = row
+                .get("room")
                 .and_then(|s| s.split('#').last())
                 .unwrap_or("unknown")
                 .to_string();
-            
-            let predicted_temperature = row.get("predicted_temp")
+
+            let predicted_temperature = row
+                .get("predicted_temp")
                 .and_then(|s| s.parse::<f64>().ok())
                 .unwrap_or(0.0);
-            
+
             let confidence = 0.95;
-            
+
             Prediction {
                 room_id,
                 predicted_temperature,
@@ -288,41 +314,42 @@ fn process_ml_results(ml_results: Vec<HashMap<String, String>>) -> Vec<Predictio
 fn add_prediction_to_database(prediction: &Prediction, database: &mut SparqlDatabase) {
     let subject = format!("http://example.org#{}", prediction.room_id);
     let predicate = "http://example.org/sensor#predictedTemperature";
-    
+
     let mut dict = database.dictionary_mut();
     let subject_id = dict.encode(&subject);
     let predicate_id = dict.encode(predicate);
     let object_id = dict.encode(&prediction.predicted_temperature.to_string());
     drop(dict);
-    
+
     database.add_triple(Triple {
         subject: subject_id,
         predicate: predicate_id,
         object: object_id,
     });
-    
+
     let confidence_predicate = "http://example.org/sensor#predictionConfidence";
     let mut dict = database.dictionary_mut();
     let confidence_predicate_id = dict.encode(confidence_predicate);
     let confidence_object_id = dict.encode(&prediction.confidence.to_string());
     drop(dict);
-    
+
     database.add_triple(Triple {
         subject: subject_id,
         predicate: confidence_predicate_id,
         object: confidence_object_id,
     });
-    
+
     let timestamp_predicate = "http://example.org/sensor#predictionTimestamp";
-    let timestamp_str = format!("{}", 
-        chrono::DateTime::<chrono::Utc>::from(prediction.timestamp)
-            .format("%Y-%m-%d %H:%M:%S"));
-    
+    let timestamp_str = format!(
+        "{}",
+        chrono::DateTime::<chrono::Utc>::from(prediction.timestamp).format("%Y-%m-%d %H:%M:%S")
+    );
+
     let mut dict = database.dictionary_mut();
     let timestamp_predicate_id = dict.encode(timestamp_predicate);
     let timestamp_object_id = dict.encode(&timestamp_str);
     drop(dict);
-    
+
     database.add_triple(Triple {
         subject: subject_id,
         predicate: timestamp_predicate_id,

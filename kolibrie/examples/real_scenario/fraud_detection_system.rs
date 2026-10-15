@@ -1,4 +1,4 @@
-/* 
+/*
   Pipeline (per transaction, per step):
     RSP-QL window  ->  Datalog Pass 1 (Symbolic -> ML)
                    ->  GradientBoosting ML
@@ -29,17 +29,17 @@
   Parser constraints:
     • SELECT variables must be on a single line (space1 does not match '\n').
     • FILTER thresholds must be integers (parser stops at '.').
-*/ 
+*/
 
+use datalog::reasoning::Reasoner;
 use kolibrie::execute_ml::{execute_ml_prediction_with_handler, setup_ml_handler, MLPredictTiming};
 use kolibrie::parser::{parse_standalone_rule, process_rule_definition};
+use kolibrie::rsp_engine::{QueryExecutionMode, RSPBuilder, ResultConsumer, SimpleR2R};
 use kolibrie::sparql_database::SparqlDatabase;
-use kolibrie::rsp_engine::{RSPBuilder, SimpleR2R, ResultConsumer, QueryExecutionMode};
-use datalog::reasoning::Reasoner;
 use ml::MLHandler;
 use pyo3::prepare_freethreaded_python;
-use shared::triple::Triple;
 use shared::rule::Rule;
+use shared::triple::Triple;
 
 use std::collections::HashMap;
 use std::error::Error;
@@ -57,14 +57,14 @@ fn push_event(events: &EventLog, kind: &str, json: &str) {
 }
 
 fn handle_sse_connection(
-    mut stream:  TcpStream,
-    events:      EventLog,
-    demo_state:  DemoState,
+    mut stream: TcpStream,
+    events: EventLog,
+    demo_state: DemoState,
     pass1_rules: Arc<Vec<Rule>>,
     pass2_rules: Arc<Vec<Rule>>,
-    ml_handler:  Arc<MLHandler>,
-    best_model:  Arc<String>,
-    demo_html:   Arc<String>,
+    ml_handler: Arc<MLHandler>,
+    best_model: Arc<String>,
+    demo_html: Arc<String>,
 ) {
     let mut buf = [0u8; 2048];
     let n = match stream.read(&mut buf) {
@@ -75,7 +75,8 @@ fn handle_sse_connection(
         Ok(s) => s,
         Err(_) => return,
     };
-    let path = req.lines()
+    let path = req
+        .lines()
         .next()
         .and_then(|line| line.split_whitespace().nth(1))
         .unwrap_or("/");
@@ -91,7 +92,9 @@ fn handle_sse_connection(
                 "Connection: keep-alive\r\n",
                 "\r\n",
             );
-            if stream.write_all(headers.as_bytes()).is_err() { return; }
+            if stream.write_all(headers.as_bytes()).is_err() {
+                return;
+            }
 
             let _ = stream.set_read_timeout(Some(Duration::from_millis(100)));
             let mut cursor = 0usize;
@@ -105,13 +108,17 @@ fn handle_sse_connection(
                     idle_ms += 100;
                     if idle_ms >= 15_000 {
                         // heartbeat every 15 s to keep connection alive
-                        if stream.write_all(b": heartbeat\n\n").is_err() { return; }
+                        if stream.write_all(b": heartbeat\n\n").is_err() {
+                            return;
+                        }
                         idle_ms = 0;
                     }
                     thread::sleep(Duration::from_millis(100));
                 } else {
                     for event in &batch {
-                        if stream.write_all(event.as_bytes()).is_err() { return; }
+                        if stream.write_all(event.as_bytes()).is_err() {
+                            return;
+                        }
                     }
                     cursor += batch.len();
                     idle_ms = 0;
@@ -130,7 +137,9 @@ fn handle_sse_connection(
                     let mut p = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
                     loop {
                         let candidate = p.join("fraud_detection_dashboard.html");
-                        if candidate.exists() { break candidate; }
+                        if candidate.exists() {
+                            break candidate;
+                        }
                         if !p.pop() {
                             break std::path::PathBuf::from("fraud_detection_dashboard.html");
                         }
@@ -147,7 +156,8 @@ fn handle_sse_connection(
                     let _ = stream.write_all(&body);
                 }
                 Err(_) => {
-                    let _ = stream.write_all(b"HTTP/1.1 404 Not Found\r\n\r\nDashboard HTML not found");
+                    let _ =
+                        stream.write_all(b"HTTP/1.1 404 Not Found\r\n\r\nDashboard HTML not found");
                 }
             }
         }
@@ -198,66 +208,79 @@ fn handle_sse_connection(
 }
 
 fn start_sse_server(
-    events:      EventLog,
-    port:        u16,
-    demo_state:  DemoState,
+    events: EventLog,
+    port: u16,
+    demo_state: DemoState,
     pass1_rules: Arc<Vec<Rule>>,
     pass2_rules: Arc<Vec<Rule>>,
-    ml_handler:  Arc<MLHandler>,
-    best_model:  Arc<String>,
-    demo_html:   Arc<String>,
+    ml_handler: Arc<MLHandler>,
+    best_model: Arc<String>,
+    demo_html: Arc<String>,
 ) {
     thread::spawn(move || {
         let listener = TcpListener::bind(format!("0.0.0.0:{}", port))
             .expect("SSE server: failed to bind port");
         for stream in listener.incoming().flatten() {
-            let events      = Arc::clone(&events);
-            let demo_state  = Arc::clone(&demo_state);
+            let events = Arc::clone(&events);
+            let demo_state = Arc::clone(&demo_state);
             let pass1_rules = Arc::clone(&pass1_rules);
             let pass2_rules = Arc::clone(&pass2_rules);
-            let ml_handler  = Arc::clone(&ml_handler);
-            let best_model  = Arc::clone(&best_model);
-            let demo_html   = Arc::clone(&demo_html);
-            thread::spawn(move || handle_sse_connection(
-                stream, events, demo_state, pass1_rules,
-                pass2_rules, ml_handler, best_model, demo_html,
-            ));
+            let ml_handler = Arc::clone(&ml_handler);
+            let best_model = Arc::clone(&best_model);
+            let demo_html = Arc::clone(&demo_html);
+            thread::spawn(move || {
+                handle_sse_connection(
+                    stream,
+                    events,
+                    demo_state,
+                    pass1_rules,
+                    pass2_rules,
+                    ml_handler,
+                    best_model,
+                    demo_html,
+                )
+            });
         }
     });
 }
 
 #[derive(Debug, Clone)]
 struct Transaction {
-    tx_id:         String,
-    account_id:    String,
+    tx_id: String,
+    account_id: String,
     /// USD
-    amount:        f64,
+    amount: f64,
     /// 0–23
-    hour_of_day:   u8,
+    hour_of_day: u8,
     /// 0 (Mon) – 6 (Sun)
-    day_of_week:   u8,
+    day_of_week: u8,
     /// 0–100; stored as integer to keep SPARQL FILTER thresholds parse-safe
     merchant_risk: u32,
     /// Transactions on this account in the last hour
-    velocity_1h:   u32,
+    velocity_1h: u32,
     /// km from account home location
-    distance_km:   f64,
+    distance_km: f64,
     /// 1 = cross-border
-    is_foreign:    u8,
+    is_foreign: u8,
     /// 1 = physical card present
-    card_present:  u8,
+    card_present: u8,
 }
 
 #[derive(Debug, Clone, PartialEq)]
-enum Verdict { Fraud, Suspicious, Review, Clear }
+enum Verdict {
+    Fraud,
+    Suspicious,
+    Review,
+    Clear,
+}
 
 impl std::fmt::Display for Verdict {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Verdict::Fraud      => write!(f, "FRAUD"),
+            Verdict::Fraud => write!(f, "FRAUD"),
             Verdict::Suspicious => write!(f, "SUSPICIOUS"),
-            Verdict::Review     => write!(f, "REVIEW"),
-            Verdict::Clear      => write!(f, "CLEAR"),
+            Verdict::Review => write!(f, "REVIEW"),
+            Verdict::Clear => write!(f, "CLEAR"),
         }
     }
 }
@@ -269,14 +292,17 @@ struct AccountHistory {
 
 impl AccountHistory {
     fn new() -> Self {
-        Self { recent_fraud_count: 0 }
+        Self {
+            recent_fraud_count: 0,
+        }
     }
 
     /// Increments on Fraud/Suspicious (cap 10), decrements otherwise (floor 0).
     fn update(&mut self, _score: f64, verdict: &Verdict) {
         match verdict {
-            Verdict::Fraud | Verdict::Suspicious =>
-                self.recent_fraud_count = (self.recent_fraud_count + 1).min(10),
+            Verdict::Fraud | Verdict::Suspicious => {
+                self.recent_fraud_count = (self.recent_fraud_count + 1).min(10)
+            }
             _ => self.recent_fraud_count = self.recent_fraud_count.saturating_sub(1),
         }
     }
@@ -284,18 +310,18 @@ impl AccountHistory {
 
 #[derive(Debug)]
 struct DemoAccount {
-    account_id:    String,
-    balance:       f64,
-    tx_count:      u32,
+    account_id: String,
+    balance: f64,
+    tx_count: u32,
     fraud_history: u32,
 }
 
 impl DemoAccount {
     fn new() -> Self {
         Self {
-            account_id:    "DEMO_ACC_001".to_string(),
-            balance:       10_000.0,
-            tx_count:      0,
+            account_id: "DEMO_ACC_001".to_string(),
+            balance: 10_000.0,
+            tx_count: 0,
             fraud_history: 0,
         }
     }
@@ -303,10 +329,10 @@ impl DemoAccount {
     fn update_after_verdict(&mut self, amount: f64, verdict: &Verdict) {
         self.tx_count += 1;
         match verdict {
-            Verdict::Fraud | Verdict::Suspicious =>
-                self.fraud_history = (self.fraud_history + 1).min(10),
-            _ =>
-                self.fraud_history = self.fraud_history.saturating_sub(1),
+            Verdict::Fraud | Verdict::Suspicious => {
+                self.fraud_history = (self.fraud_history + 1).min(10)
+            }
+            _ => self.fraud_history = self.fraud_history.saturating_sub(1),
         }
         if matches!(verdict, Verdict::Clear | Verdict::Review) {
             self.balance = (self.balance - amount).max(0.0);
@@ -332,32 +358,35 @@ fn main() -> Result<(), Box<dyn Error>> {
     println!("  SPARQL + RSP-QL + Datalog Reasoning + GradientBoosting ML");
     println!("{}\n", sep);
 
-    let mut database  = setup_knowledge_base();
+    let mut database = setup_knowledge_base();
 
     // Symbolic rules over raw transaction features
-    let (rule_velocity,   _) = process_rule_definition(&rule_suspicious_velocity(),  &mut database)?;
-    let (rule_amount,     _) = process_rule_definition(&rule_suspicious_amount(),    &mut database)?;
-    let (rule_merch_risk, _) = process_rule_definition(&rule_high_merchant_risk(),   &mut database)?;
-    let (rule_pattern,    _) = process_rule_definition(&rule_foreign_high_risk(),    &mut database)?;
-    let (rule_high_risk,  _) = process_rule_definition(&rule_high_risk_chained(),    &mut database)?;
-    
+    let (rule_velocity, _) = process_rule_definition(&rule_suspicious_velocity(), &mut database)?;
+    let (rule_amount, _) = process_rule_definition(&rule_suspicious_amount(), &mut database)?;
+    let (rule_merch_risk, _) = process_rule_definition(&rule_high_merchant_risk(), &mut database)?;
+    let (rule_pattern, _) = process_rule_definition(&rule_foreign_high_risk(), &mut database)?;
+    let (rule_high_risk, _) = process_rule_definition(&rule_high_risk_chained(), &mut database)?;
+
     // R1b reads ex:windowVelocity, which is written from the RSP snapshot
-    let (rule_win_vel,    _) = process_rule_definition(&rule_high_window_activity(), &mut database)?;
+    let (rule_win_vel, _) = process_rule_definition(&rule_high_window_activity(), &mut database)?;
 
     let pass1_rules = vec![
-        rule_velocity, rule_amount, rule_merch_risk, rule_pattern, rule_high_risk,
+        rule_velocity,
+        rule_amount,
+        rule_merch_risk,
+        rule_pattern,
+        rule_high_risk,
         rule_win_vel,
     ];
 
     // Rules that read the ML score written back to RDF
-    let (rule_ml_alert, _) = process_rule_definition(&rule_ml_assisted_alert(),  &mut database)?;
+    let (rule_ml_alert, _) = process_rule_definition(&rule_ml_assisted_alert(), &mut database)?;
     let (rule_hist_pat, _) = process_rule_definition(&rule_historical_pattern(), &mut database)?;
 
     let pass2_rules = vec![rule_ml_alert, rule_hist_pat];
 
     // Shared buffer: RSP window thread deposits bindings here
-    let window_results: Arc<Mutex<Vec<HashMap<String, String>>>> =
-        Arc::new(Mutex::new(Vec::new()));
+    let window_results: Arc<Mutex<Vec<HashMap<String, String>>>> = Arc::new(Mutex::new(Vec::new()));
     let window_results_clone = window_results.clone();
 
     let result_consumer = ResultConsumer {
@@ -407,8 +436,8 @@ fn main() -> Result<(), Box<dyn Error>> {
     println!("{}", "-".repeat(142));
 
     let (ml_handler, best_model_name) = setup_ml_handler("fraud_predictor")?;
-    let ml_handler_arc  = Arc::new(ml_handler);
-    let best_model_arc  = Arc::new(best_model_name.clone());
+    let ml_handler_arc = Arc::new(ml_handler);
+    let best_model_arc = Arc::new(best_model_name.clone());
     let pass1_rules_arc = Arc::new(pass1_rules.clone());
     let pass2_rules_arc = Arc::new(pass2_rules.clone());
     let demo_state: DemoState = Arc::new(Mutex::new(DemoAccount::new()));
@@ -419,13 +448,13 @@ fn main() -> Result<(), Box<dyn Error>> {
         .unwrap_or_else(|| get_lan_ip(7878));
     println!("  [Network]  LAN address : {}", server_base);
     try_open_firewall(7878);
-    let demo_html: Arc<String> = Arc::new(
-        load_demo_html().replace("{{SERVER_BASE}}", &server_base)
-    );
+    let demo_html: Arc<String> =
+        Arc::new(load_demo_html().replace("{{SERVER_BASE}}", &server_base));
 
     let events: EventLog = Arc::new(Mutex::new(Vec::new()));
     start_sse_server(
-        Arc::clone(&events), 7878,
+        Arc::clone(&events),
+        7878,
         Arc::clone(&demo_state),
         Arc::clone(&pass1_rules_arc),
         Arc::clone(&pass2_rules_arc),
@@ -438,31 +467,49 @@ fn main() -> Result<(), Box<dyn Error>> {
     println!("  -> If the phone shows 'loading', run as Administrator:");
     println!("     netsh advfirewall firewall add rule name=\"Kolibrie Demo\" protocol=TCP dir=in localport=7878 action=allow\n");
 
-    run_simulation(&mut engine, &mut database, &pass1_rules, &pass2_rules, window_results, events, &ml_handler_arc, &best_model_arc)?;
+    run_simulation(
+        &mut engine,
+        &mut database,
+        &pass1_rules,
+        &pass2_rules,
+        window_results,
+        events,
+        &ml_handler_arc,
+        &best_model_arc,
+    )?;
 
     engine.stop();
     thread::sleep(Duration::from_millis(500));
     Ok(())
 }
 
-
 /// Writes Pass-1 symbolic flags and account history count as numeric (0/1) RDF triples
 /// so the ML.PREDICT INPUT query can SELECT them as features.
 fn write_numeric_flags_to_db(
-    database:         &mut SparqlDatabase,
-    tx_uri:           &str,
-    flags_p1:         &[String],
+    database: &mut SparqlDatabase,
+    tx_uri: &str,
+    flags_p1: &[String],
     hist_fraud_count: u32,
 ) {
     let flag_pairs = [
-        ("highVelocity",    "http://fraud.example.org/flagHighVelocity"),
-        ("largeAmount",     "http://fraud.example.org/flagLargeAmount"),
-        ("highMerchantRisk","http://fraud.example.org/flagHighMerchantRisk"),
-        ("foreignHighRisk", "http://fraud.example.org/flagForeignHighRisk"),
-        ("risk:high",       "http://fraud.example.org/flagRiskHigh"),
+        ("highVelocity", "http://fraud.example.org/flagHighVelocity"),
+        ("largeAmount", "http://fraud.example.org/flagLargeAmount"),
+        (
+            "highMerchantRisk",
+            "http://fraud.example.org/flagHighMerchantRisk",
+        ),
+        (
+            "foreignHighRisk",
+            "http://fraud.example.org/flagForeignHighRisk",
+        ),
+        ("risk:high", "http://fraud.example.org/flagRiskHigh"),
     ];
     for (flag_name, predicate) in &flag_pairs {
-        let value = if flags_p1.iter().any(|f| f == flag_name) { "1" } else { "0" };
+        let value = if flags_p1.iter().any(|f| f == flag_name) {
+            "1"
+        } else {
+            "0"
+        };
         database.add_triple_parts(tx_uri, predicate, value);
     }
     database.add_triple_parts(
@@ -476,23 +523,23 @@ fn write_numeric_flags_to_db(
 /// Returns a single-row Vec<HashMap<String, u32>> (dictionary-encoded values).
 fn extract_data_for_ml_fraud(
     database: &SparqlDatabase,
-    tx_uri:   &str,
+    tx_uri: &str,
 ) -> Result<Vec<HashMap<String, u32>>, Box<dyn Error>> {
     let feature_predicates = [
-        ("amt",   "http://fraud.example.org/amount"),
-        ("hour",  "http://fraud.example.org/hourOfDay"),
-        ("dow",   "http://fraud.example.org/dayOfWeek"),
+        ("amt", "http://fraud.example.org/amount"),
+        ("hour", "http://fraud.example.org/hourOfDay"),
+        ("dow", "http://fraud.example.org/dayOfWeek"),
         ("mRisk", "http://fraud.example.org/merchantRisk"),
-        ("vel",   "http://fraud.example.org/velocity1h"),
-        ("dist",  "http://fraud.example.org/distanceKm"),
-        ("isF",   "http://fraud.example.org/isForeign"),
-        ("cp",    "http://fraud.example.org/cardPresent"),
-        ("fHv",   "http://fraud.example.org/flagHighVelocity"),
-        ("fLa",   "http://fraud.example.org/flagLargeAmount"),
-        ("fHmr",  "http://fraud.example.org/flagHighMerchantRisk"),
-        ("fFhr",  "http://fraud.example.org/flagForeignHighRisk"),
-        ("fRh",   "http://fraud.example.org/flagRiskHigh"),
-        ("cnt",   "http://fraud.example.org/recentFraudCount"),
+        ("vel", "http://fraud.example.org/velocity1h"),
+        ("dist", "http://fraud.example.org/distanceKm"),
+        ("isF", "http://fraud.example.org/isForeign"),
+        ("cp", "http://fraud.example.org/cardPresent"),
+        ("fHv", "http://fraud.example.org/flagHighVelocity"),
+        ("fLa", "http://fraud.example.org/flagLargeAmount"),
+        ("fHmr", "http://fraud.example.org/flagHighMerchantRisk"),
+        ("fFhr", "http://fraud.example.org/flagForeignHighRisk"),
+        ("fRh", "http://fraud.example.org/flagRiskHigh"),
+        ("cnt", "http://fraud.example.org/recentFraudCount"),
     ];
 
     let (tx_id, pred_ids): (Option<u32>, Vec<Option<u32>>) = {
@@ -538,16 +585,18 @@ fn extract_data_for_ml_fraud(
 /// input/output contract; `execute_ml_prediction_from_clause` handles model
 /// discovery and loading automatically.
 fn run_ml_predict_from_clause(
-    database:        &SparqlDatabase,
-    tx_uri:          &str,
-    rule_str:        &str,
-    ml_handler:      &MLHandler,
+    database: &SparqlDatabase,
+    tx_uri: &str,
+    rule_str: &str,
+    ml_handler: &MLHandler,
     best_model_name: &str,
 ) -> Result<(f64, Duration, Duration), Box<dyn Error>> {
     let (_, (combined_rule, _)) = parse_standalone_rule(rule_str)
         .map_err(|e| format!("ML.PREDICT rule parse error: {e:?}"))?;
 
-    let ml_predict = combined_rule.ml_predict.as_ref()
+    let ml_predict = combined_rule
+        .ml_predict
+        .as_ref()
         .ok_or("rule_ml_fraud_predict has no ML.PREDICT clause")?;
 
     // extract closure: decode feature dict IDs → f64 values for this transaction
@@ -558,7 +607,8 @@ fn run_ml_predict_from_clause(
             return Ok(vec![]);
         }
         let dict = db.dictionary();
-        let decoded: Vec<HashMap<String, f64>> = rows.iter()
+        let decoded: Vec<HashMap<String, f64>> = rows
+            .iter()
             .map(|row| {
                 row.iter()
                     .filter_map(|(k, &id)| {
@@ -581,9 +631,11 @@ fn run_ml_predict_from_clause(
      -> Result<(Vec<f64>, MLPredictTiming), Box<dyn Error>> {
         let t_rust_start = Instant::now();
 
-        let features: Vec<Vec<f64>> = data.iter()
+        let features: Vec<Vec<f64>> = data
+            .iter()
             .map(|row| {
-                feature_names.iter()
+                feature_names
+                    .iter()
                     .filter_map(|k| row.get(k.as_str()).copied())
                     .collect()
             })
@@ -591,9 +643,12 @@ fn run_ml_predict_from_clause(
 
         if features.is_empty() || features[0].is_empty() {
             let timing = MLPredictTiming {
-                total_time: 0.0, rust_to_python_time: 0.0,
-                python_preprocessing_time: 0.0, actual_prediction_time: 0.0,
-                python_postprocessing_time: 0.0, python_to_rust_time: 0.0,
+                total_time: 0.0,
+                rust_to_python_time: 0.0,
+                python_preprocessing_time: 0.0,
+                actual_prediction_time: 0.0,
+                python_postprocessing_time: 0.0,
+                python_to_rust_time: 0.0,
             };
             return Ok((vec![0.0], timing));
         }
@@ -604,18 +659,24 @@ fn run_ml_predict_from_clause(
         let t_r2p = t_before_call.duration_since(t_rust_start);
 
         let timing = MLPredictTiming {
-            total_time:                  (t_r2p + t_p2r).as_secs_f64(),
-            rust_to_python_time:         t_r2p.as_secs_f64(),
-            python_preprocessing_time:   0.0,
-            actual_prediction_time:      t_p2r.as_secs_f64(),
-            python_postprocessing_time:  0.0,
-            python_to_rust_time:         0.0,
+            total_time: (t_r2p + t_p2r).as_secs_f64(),
+            rust_to_python_time: t_r2p.as_secs_f64(),
+            python_preprocessing_time: 0.0,
+            actual_prediction_time: t_p2r.as_secs_f64(),
+            python_postprocessing_time: 0.0,
+            python_to_rust_time: 0.0,
         };
         Ok((result.predictions, timing))
     };
 
-    let (scores, timing) =
-        execute_ml_prediction_with_handler(ml_predict, database, ml_handler, best_model_name, extract_fn, predict_fn)?;
+    let (scores, timing) = execute_ml_prediction_with_handler(
+        ml_predict,
+        database,
+        ml_handler,
+        best_model_name,
+        extract_fn,
+        predict_fn,
+    )?;
 
     let score = scores.first().copied().unwrap_or(0.0);
     let t_r2p = Duration::from_secs_f64(timing.rust_to_python_time);
@@ -647,8 +708,13 @@ fn setup_knowledge_base() -> SparqlDatabase {
     }
 
     for flag in &[
-        "highVelocity", "largeAmount", "highMerchantRisk", "foreignHighRisk",
-        "highWindowActivity", "mlAssistedAlert", "historicalPattern",
+        "highVelocity",
+        "largeAmount",
+        "highMerchantRisk",
+        "foreignHighRisk",
+        "highWindowActivity",
+        "mlAssistedAlert",
+        "historicalPattern",
     ] {
         db.add_triple_parts(
             &format!("http://fraud.example.org/{}", flag),
@@ -686,7 +752,8 @@ WHERE {
     ?tx ex:velocity1h ?vel .
     FILTER(?vel > 5)
 }
-    "#.into()
+    "#
+    .into()
 }
 
 fn rule_suspicious_amount() -> String {
@@ -701,7 +768,8 @@ WHERE {
     ?tx ex:amount ?amt .
     FILTER(?amt > 1000)
 }
-    "#.into()
+    "#
+    .into()
 }
 
 fn rule_high_merchant_risk() -> String {
@@ -716,7 +784,8 @@ WHERE {
     ?tx ex:merchantRisk ?mr .
     FILTER(?mr > 70)
 }
-    "#.into()
+    "#
+    .into()
 }
 
 fn rule_foreign_high_risk() -> String {
@@ -733,7 +802,8 @@ WHERE {
     FILTER(?isF > 0)
     FILTER(?mr > 70)
 }
-    "#.into()
+    "#
+    .into()
 }
 
 fn rule_high_risk_chained() -> String {
@@ -750,7 +820,8 @@ WHERE {
     FILTER(?amt > 1000)
     FILTER(?vel > 5)
 }
-    "#.into()
+    "#
+    .into()
 }
 
 // R6: amplifies a weak ML signal (score > 40/100) when velocity is also
@@ -771,7 +842,8 @@ WHERE {
     FILTER(?score > 40)
     FILTER(?vel > 3)
 }
-    "#.into()
+    "#
+    .into()
 }
 
 fn rule_historical_pattern() -> String {
@@ -786,7 +858,8 @@ WHERE {
     ?tx ex:recentFraudCount ?cnt .
     FILTER(?cnt > 4)
 }
-    "#.into()
+    "#
+    .into()
 }
 
 fn rule_high_window_activity() -> String {
@@ -801,7 +874,8 @@ WHERE {
     ?tx ex:windowVelocity ?wvel .
     FILTER(?wvel > 7)
 }
-    "#.into()
+    "#
+    .into()
 }
 
 fn rule_ml_fraud_predict() -> String {
@@ -837,25 +911,25 @@ ML.PREDICT(MODEL "fraud_predictor",
     },
     OUTPUT ?score
 )
-    "#.into()
+    "#
+    .into()
 }
 
 fn run_simulation(
-    engine:          &mut kolibrie::rsp_engine::RSPEngine<Triple, Vec<(String, String)>>,
-    database:        &mut SparqlDatabase,
-    pass1_rules:     &[Rule],   // R1–R5, R1b: symbolic rules on raw features
-    pass2_rules:     &[Rule],   // R6–R7: rules that read ML output from RDF
-    window_results:  Arc<Mutex<Vec<HashMap<String, String>>>>,
-    events:          EventLog,
-    ml_handler:      &MLHandler,
+    engine: &mut kolibrie::rsp_engine::RSPEngine<Triple, Vec<(String, String)>>,
+    database: &mut SparqlDatabase,
+    pass1_rules: &[Rule], // R1–R5, R1b: symbolic rules on raw features
+    pass2_rules: &[Rule], // R6–R7: rules that read ML output from RDF
+    window_results: Arc<Mutex<Vec<HashMap<String, String>>>>,
+    events: EventLog,
+    ml_handler: &MLHandler,
     best_model_name: &str,
 ) -> Result<(), Box<dyn Error>> {
-
     let ml_rule_str = rule_ml_fraud_predict();
 
     let accounts = vec!["ACC001", "ACC002", "ACC003", "ACC004", "ACC005"];
-    let mut velocity_tracker: HashMap<String, u32>    = HashMap::new();
-    let mut account_history:  HashMap<String, AccountHistory> = HashMap::new();
+    let mut velocity_tracker: HashMap<String, u32> = HashMap::new();
+    let mut account_history: HashMap<String, AccountHistory> = HashMap::new();
 
     push_event(&events, "start", r#"{"accounts":5}"#);
 
@@ -867,7 +941,7 @@ fn run_simulation(
             let (tx, is_injected_fraud) =
                 synthesise_transaction(time_step, idx, account, &mut velocity_tracker);
 
-            let tx_uri   = format!("http://fraud.example.org/tx/{}", tx.tx_id);
+            let tx_uri = format!("http://fraud.example.org/tx/{}", tx.tx_id);
             let acct_uri = format!("http://fraud.example.org/account/{}", tx.account_id);
 
             let triples_ttl = format!(
@@ -880,16 +954,16 @@ fn run_simulation(
                    <{tx}> <http://fraud.example.org/distanceKm>   "{dist}" .
                    <{tx}> <http://fraud.example.org/isForeign>    "{isf}" .
                    <{tx}> <http://fraud.example.org/cardPresent>  "{cp}" ."#,
-                tx   = tx_uri,
+                tx = tx_uri,
                 acct = acct_uri,
-                amt  = tx.amount,
+                amt = tx.amount,
                 hour = tx.hour_of_day,
-                dow  = tx.day_of_week,
-                mr   = tx.merchant_risk,
-                vel  = tx.velocity_1h,
+                dow = tx.day_of_week,
+                mr = tx.merchant_risk,
+                vel = tx.velocity_1h,
                 dist = tx.distance_km,
-                isf  = tx.is_foreign,
-                cp   = tx.card_present,
+                isf = tx.is_foreign,
+                cp = tx.card_present,
             );
             for triple in engine.parse_data(&triples_ttl) {
                 engine.add_to_stream("transactionStream", triple, (time_step * 60) as usize);
@@ -903,9 +977,8 @@ fn run_simulation(
 
         // drain window snapshot, compute per-account
         // windowVelocity, then run the full reasoning pipeline
-        let current_window: Vec<HashMap<String, String>> = {
-            window_results.lock().unwrap().drain(..).collect()
-        };
+        let current_window: Vec<HashMap<String, String>> =
+            { window_results.lock().unwrap().drain(..).collect() };
 
         // Count transactions per account visible in the current window
         // Strip angle brackets from URIs that the RSP engine may include
@@ -925,28 +998,37 @@ fn run_simulation(
         let rsp_vel_str = if rsp_vel_map.is_empty() {
             "(window not fired yet)".to_string()
         } else {
-            rsp_vel_map.iter()
+            rsp_vel_map
+                .iter()
                 .map(|(k, v)| format!("{}:{}", k, v))
                 .collect::<Vec<_>>()
                 .join("  ")
         };
         println!(
             "  [RSP T={:<2}] window={:>3} bindings | wVel {}",
-            time_step, current_window.len(), rsp_vel_str,
+            time_step,
+            current_window.len(),
+            rsp_vel_str,
         );
         {
-            let vel_json: String = rsp_vel_map.iter()
+            let vel_json: String = rsp_vel_map
+                .iter()
                 .map(|(k, v)| format!("\"{}\":{}", k, v))
                 .collect::<Vec<_>>()
                 .join(",");
-            push_event(&events, "rsp", &format!(
-                r#"{{"time_step":{},"window":{},"vel_map":{{{}}}}}"#,
-                time_step, current_window.len(), vel_json
-            ));
+            push_event(
+                &events,
+                "rsp",
+                &format!(
+                    r#"{{"time_step":{},"window":{},"vel_map":{{{}}}}}"#,
+                    time_step,
+                    current_window.len(),
+                    vel_json
+                ),
+            );
         }
 
         for (tx, is_injected_fraud, tx_uri, acct_uri) in &step_txs {
-
             // windowVelocity: RSP-observed count, not the event-embedded velocity_1h
             let window_vel = rsp_vel_map
                 .get(tx.account_id.as_str())
@@ -954,19 +1036,53 @@ fn run_simulation(
                 .unwrap_or(0);
 
             // Write transaction features and RSP-derived window velocity to RDF
-            database.add_triple_parts(&tx_uri,
+            database.add_triple_parts(
+                &tx_uri,
                 "http://www.w3.org/1999/02/22-rdf-syntax-ns#type",
-                "http://fraud.example.org/Transaction");
-            database.add_triple_parts(&tx_uri, "http://fraud.example.org/account",      acct_uri);
-            database.add_triple_parts(&tx_uri, "http://fraud.example.org/amount",        &tx.amount.to_string());
-            database.add_triple_parts(&tx_uri, "http://fraud.example.org/hourOfDay",     &tx.hour_of_day.to_string());
-            database.add_triple_parts(&tx_uri, "http://fraud.example.org/dayOfWeek",     &tx.day_of_week.to_string());
-            database.add_triple_parts(&tx_uri, "http://fraud.example.org/merchantRisk",  &tx.merchant_risk.to_string());
-            database.add_triple_parts(&tx_uri, "http://fraud.example.org/velocity1h",    &tx.velocity_1h.to_string());
-            database.add_triple_parts(&tx_uri, "http://fraud.example.org/distanceKm",    &tx.distance_km.to_string());
-            database.add_triple_parts(&tx_uri, "http://fraud.example.org/isForeign",     &tx.is_foreign.to_string());
-            database.add_triple_parts(&tx_uri, "http://fraud.example.org/cardPresent",   &tx.card_present.to_string());
-            
+                "http://fraud.example.org/Transaction",
+            );
+            database.add_triple_parts(&tx_uri, "http://fraud.example.org/account", acct_uri);
+            database.add_triple_parts(
+                &tx_uri,
+                "http://fraud.example.org/amount",
+                &tx.amount.to_string(),
+            );
+            database.add_triple_parts(
+                &tx_uri,
+                "http://fraud.example.org/hourOfDay",
+                &tx.hour_of_day.to_string(),
+            );
+            database.add_triple_parts(
+                &tx_uri,
+                "http://fraud.example.org/dayOfWeek",
+                &tx.day_of_week.to_string(),
+            );
+            database.add_triple_parts(
+                &tx_uri,
+                "http://fraud.example.org/merchantRisk",
+                &tx.merchant_risk.to_string(),
+            );
+            database.add_triple_parts(
+                &tx_uri,
+                "http://fraud.example.org/velocity1h",
+                &tx.velocity_1h.to_string(),
+            );
+            database.add_triple_parts(
+                &tx_uri,
+                "http://fraud.example.org/distanceKm",
+                &tx.distance_km.to_string(),
+            );
+            database.add_triple_parts(
+                &tx_uri,
+                "http://fraud.example.org/isForeign",
+                &tx.is_foreign.to_string(),
+            );
+            database.add_triple_parts(
+                &tx_uri,
+                "http://fraud.example.org/cardPresent",
+                &tx.card_present.to_string(),
+            );
+
             // Bridge triple: connects RSP stream layer to Datalog (consumed by R1b)
             database.add_triple_parts(
                 &tx_uri,
@@ -987,16 +1103,23 @@ fn run_simulation(
             write_numeric_flags_to_db(database, &tx_uri, &flags_p1, hist_fraud_count);
 
             // ML.PREDICT — driven by rule_ml_fraud_predict() clause
-            let (fraud_score, t_r2p, t_p2r) =
-                run_ml_predict_from_clause(database, &tx_uri, &ml_rule_str, ml_handler, best_model_name)?;
+            let (fraud_score, t_r2p, t_p2r) = run_ml_predict_from_clause(
+                database,
+                &tx_uri,
+                &ml_rule_str,
+                ml_handler,
+                best_model_name,
+            )?;
             println!("  [Timing] Rust -> Python overhead: {:?}", t_r2p);
             println!("  [Timing] Python -> Rust overhead: {:?}", t_p2r);
 
             // Write ML score back to RDF for Pass-2 Datalog rules (R6, R7)
             let ml_score_int = (fraud_score * 100.0).round() as u32;
             database.add_triple_parts(
-                &tx_uri, "http://fraud.example.org/mlFraudScore",
-                &ml_score_int.to_string());
+                &tx_uri,
+                "http://fraud.example.org/mlFraudScore",
+                &ml_score_int.to_string(),
+            );
 
             let flags_p2_all = run_reasoning(database, pass2_rules, &tx_uri);
             let flags_p2_new: Vec<String> = flags_p2_all
@@ -1006,7 +1129,9 @@ fn run_simulation(
 
             let mut all_flags = flags_p1.clone();
             for f in &flags_p2_new {
-                if !all_flags.contains(f) { all_flags.push(f.clone()); }
+                if !all_flags.contains(f) {
+                    all_flags.push(f.clone());
+                }
             }
 
             let verdict = fuse_decision(fraud_score, &all_flags);
@@ -1016,10 +1141,16 @@ fn run_simulation(
                 .unwrap()
                 .update(fraud_score, &verdict);
 
-            let p1_str = if flags_p1.is_empty() { "-".to_string() }
-                         else { flags_p1.join(", ") };
-            let p2_str = if flags_p2_new.is_empty() { String::new() }
-                         else { format!(" -> {}", flags_p2_new.join(", ")) };
+            let p1_str = if flags_p1.is_empty() {
+                "-".to_string()
+            } else {
+                flags_p1.join(", ")
+            };
+            let p2_str = if flags_p2_new.is_empty() {
+                String::new()
+            } else {
+                format!(" -> {}", flags_p2_new.join(", "))
+            };
             let flag_str = format!("{}{}", p1_str, p2_str);
             let hist_str = format!("h:{}", hist_fraud_count);
 
@@ -1044,25 +1175,34 @@ fn run_simulation(
             );
 
             {
-                let p1_json = flags_p1.iter()
+                let p1_json = flags_p1
+                    .iter()
                     .map(|f| format!("\"{}\"", f.replace('"', "\\\"")))
-                    .collect::<Vec<_>>().join(",");
-                let p2_json = flags_p2_new.iter()
+                    .collect::<Vec<_>>()
+                    .join(",");
+                let p2_json = flags_p2_new
+                    .iter()
                     .map(|f| format!("\"{}\"", f.replace('"', "\\\"")))
-                    .collect::<Vec<_>>().join(",");
-                push_event(&events, "tx", &format!(
-                    r#"{{"time_step":{},"tx_id":"{}","account_id":"{}","amount":{:.2},"fraud_score":{:.6},"flags_p1":[{}],"flags_p2":[{}],"verdict":"{}","r2p_us":{},"p2r_us":{},"injected":{}}}"#,
-                    time_step,
-                    tx.tx_id.replace('"', "\\\""),
-                    tx.account_id,
-                    tx.amount,
-                    fraud_score,
-                    p1_json, p2_json,
-                    verdict,
-                    t_r2p.as_micros(),
-                    t_p2r.as_micros(),
-                    is_injected_fraud,
-                ));
+                    .collect::<Vec<_>>()
+                    .join(",");
+                push_event(
+                    &events,
+                    "tx",
+                    &format!(
+                        r#"{{"time_step":{},"tx_id":"{}","account_id":"{}","amount":{:.2},"fraud_score":{:.6},"flags_p1":[{}],"flags_p2":[{}],"verdict":"{}","r2p_us":{},"p2r_us":{},"injected":{}}}"#,
+                        time_step,
+                        tx.tx_id.replace('"', "\\\""),
+                        tx.account_id,
+                        tx.amount,
+                        fraud_score,
+                        p1_json,
+                        p2_json,
+                        verdict,
+                        t_r2p.as_micros(),
+                        t_p2r.as_micros(),
+                        is_injected_fraud,
+                    ),
+                );
             }
         }
 
@@ -1070,21 +1210,19 @@ fn run_simulation(
     }
 }
 
-fn run_reasoning(
-    database: &mut SparqlDatabase,
-    rules:    &[Rule],
-    tx_uri:   &str,
-) -> Vec<String> {
+fn run_reasoning(database: &mut SparqlDatabase, rules: &[Rule], tx_uri: &str) -> Vec<String> {
     let decoded_triples: Vec<(String, String, String)> = {
         let dict = database.dictionary();
         database
             .query_default_triples(None, None, None)
             .iter()
-            .filter_map(|t| Some((
-                dict.decode(t.subject)?.to_string(),
-                dict.decode(t.predicate)?.to_string(),
-                dict.decode(t.object)?.to_string(),
-            )))
+            .filter_map(|t| {
+                Some((
+                    dict.decode(t.subject)?.to_string(),
+                    dict.decode(t.predicate)?.to_string(),
+                    dict.decode(t.object)?.to_string(),
+                ))
+            })
             .collect()
     };
 
@@ -1102,7 +1240,11 @@ fn run_reasoning(
     for fact in &inferred {
         let decoded = {
             let d = reasoner.dictionary.read().unwrap();
-            match (d.decode(fact.subject), d.decode(fact.predicate), d.decode(fact.object)) {
+            match (
+                d.decode(fact.subject),
+                d.decode(fact.predicate),
+                d.decode(fact.object),
+            ) {
                 (Some(s), Some(p), Some(o)) => Some((s.to_string(), p.to_string(), o.to_string())),
                 _ => None,
             }
@@ -1113,14 +1255,14 @@ fn run_reasoning(
     }
 
     let suspicious_pred = "http://fraud.example.org/suspiciousFlag";
-    let risk_pred       = "http://fraud.example.org/riskLevel";
-    let mut flags       = Vec::new();
+    let risk_pred = "http://fraud.example.org/riskLevel";
+    let mut flags = Vec::new();
 
     {
-        let dict      = database.dictionary();
+        let dict = database.dictionary();
         let tx_id_opt = dict.string_to_id.get(tx_uri).copied();
         let sflag_opt = dict.string_to_id.get(suspicious_pred).copied();
-        let risk_opt  = dict.string_to_id.get(risk_pred).copied();
+        let risk_opt = dict.string_to_id.get(risk_pred).copied();
         drop(dict);
 
         if let (Some(tx_id), Some(sflag_id)) = (tx_id_opt, sflag_opt) {
@@ -1149,7 +1291,7 @@ fn run_reasoning(
 }
 
 fn fuse_decision(fraud_score: f64, symbolic_flags: &[String]) -> Verdict {
-    let high_risk      = symbolic_flags.iter().any(|f| f == "risk:high");
+    let high_risk = symbolic_flags.iter().any(|f| f == "risk:high");
     let any_suspicious = !symbolic_flags.is_empty();
 
     if fraud_score > 0.80 {
@@ -1177,7 +1319,9 @@ fn load_demo_html() -> String {
         if candidate.exists() {
             return std::fs::read_to_string(&candidate).unwrap_or_default();
         }
-        if !p.pop() { break; }
+        if !p.pop() {
+            break;
+        }
     }
     "<html><body><h1>Demo page not found</h1></body></html>".to_string()
 }
@@ -1197,12 +1341,20 @@ fn get_lan_ip(port: u16) -> String {
 fn try_open_firewall(port: u16) {
     let rule_name = format!("Kolibrie Demo Port {}", port);
     let _ = std::process::Command::new("netsh")
-        .args(["advfirewall", "firewall", "delete", "rule",
-               &format!("name={}", rule_name)])
+        .args([
+            "advfirewall",
+            "firewall",
+            "delete",
+            "rule",
+            &format!("name={}", rule_name),
+        ])
         .output();
     let result = std::process::Command::new("netsh")
         .args([
-            "advfirewall", "firewall", "add", "rule",
+            "advfirewall",
+            "firewall",
+            "add",
+            "rule",
             &format!("name={}", rule_name),
             "protocol=TCP",
             "dir=in",
@@ -1225,18 +1377,22 @@ fn try_open_firewall(port: u16) {
 fn compile_fraud_rules(
     database: &mut SparqlDatabase,
 ) -> Result<(Vec<Rule>, Vec<Rule>), Box<dyn Error>> {
-    let (rule_velocity,   _) = process_rule_definition(&rule_suspicious_velocity(),  database)?;
-    let (rule_amount,     _) = process_rule_definition(&rule_suspicious_amount(),    database)?;
-    let (rule_merch_risk, _) = process_rule_definition(&rule_high_merchant_risk(),   database)?;
-    let (rule_pattern,    _) = process_rule_definition(&rule_foreign_high_risk(),    database)?;
-    let (rule_high_risk,  _) = process_rule_definition(&rule_high_risk_chained(),    database)?;
-    let (rule_win_vel,    _) = process_rule_definition(&rule_high_window_activity(), database)?;
-    let (rule_ml_alert,   _) = process_rule_definition(&rule_ml_assisted_alert(),    database)?;
-    let (rule_hist_pat,   _) = process_rule_definition(&rule_historical_pattern(),   database)?;
+    let (rule_velocity, _) = process_rule_definition(&rule_suspicious_velocity(), database)?;
+    let (rule_amount, _) = process_rule_definition(&rule_suspicious_amount(), database)?;
+    let (rule_merch_risk, _) = process_rule_definition(&rule_high_merchant_risk(), database)?;
+    let (rule_pattern, _) = process_rule_definition(&rule_foreign_high_risk(), database)?;
+    let (rule_high_risk, _) = process_rule_definition(&rule_high_risk_chained(), database)?;
+    let (rule_win_vel, _) = process_rule_definition(&rule_high_window_activity(), database)?;
+    let (rule_ml_alert, _) = process_rule_definition(&rule_ml_assisted_alert(), database)?;
+    let (rule_hist_pat, _) = process_rule_definition(&rule_historical_pattern(), database)?;
 
     Ok((
         vec![
-            rule_velocity, rule_amount, rule_merch_risk, rule_pattern, rule_high_risk,
+            rule_velocity,
+            rule_amount,
+            rule_merch_risk,
+            rule_pattern,
+            rule_high_risk,
             rule_win_vel,
         ],
         vec![rule_ml_alert, rule_hist_pat],
@@ -1251,65 +1407,74 @@ enum DemoTransferScenario {
 }
 
 fn process_demo_transaction(
-    demo_state:        &DemoState,
-    _pass1_rules:      &[Rule],
-    _pass2_rules:      &[Rule],
-    events:            &EventLog,
-    ml_handler:        &MLHandler,
-    best_model_name:   &str,
-    scenario:          DemoTransferScenario,
+    demo_state: &DemoState,
+    _pass1_rules: &[Rule],
+    _pass2_rules: &[Rule],
+    events: &EventLog,
+    ml_handler: &MLHandler,
+    best_model_name: &str,
+    scenario: DemoTransferScenario,
 ) -> String {
     let (tx, scenario_label, hist_fraud_count) = {
         let state = demo_state.lock().unwrap();
         let count = state.tx_count;
-        let acct  = state.account_id.clone();
-        let hist  = state.fraud_history;
+        let acct = state.account_id.clone();
+        let hist = state.fraud_history;
         let (tx, label): (Transaction, &'static str) = match scenario {
-            DemoTransferScenario::Fraud => (Transaction {
-                tx_id:         format!("TX_DEMO_{:04}_FRAUD", count),
-                account_id:    acct,
-                amount:        5_000.0,
-                hour_of_day:   3,
-                day_of_week:   1,
-                merchant_risk: 95,
-                velocity_1h:   8,
-                distance_km:   500.0,
-                is_foreign:    1,
-                card_present:  0,
-            }, "FRAUD scenario"),
+            DemoTransferScenario::Fraud => (
+                Transaction {
+                    tx_id: format!("TX_DEMO_{:04}_FRAUD", count),
+                    account_id: acct,
+                    amount: 5_000.0,
+                    hour_of_day: 3,
+                    day_of_week: 1,
+                    merchant_risk: 95,
+                    velocity_1h: 8,
+                    distance_km: 500.0,
+                    is_foreign: 1,
+                    card_present: 0,
+                },
+                "FRAUD scenario",
+            ),
             DemoTransferScenario::Suspicious => {
                 // Generate a domestic high-amount/high-velocity profile; the verdict still comes from rules + ML.
                 let seed = count as u64 + 1;
-                (Transaction {
-                    tx_id:         format!("TX_DEMO_{:04}_SUSPICIOUS", count),
-                    account_id:    acct,
-                    amount:        1_250.0 + prng(seed, 901) * 1_750.0,
-                    hour_of_day:   9 + (prng(seed, 902) * 8.0) as u8,
-                    day_of_week:   (prng(seed, 903) * 5.0) as u8,
-                    merchant_risk: 15 + (prng(seed, 904) * 45.0) as u32,
-                    velocity_1h:   6 + (prng(seed, 905) * 5.0) as u32,
-                    distance_km:   2.0 + prng(seed, 906) * 30.0,
-                    is_foreign:    0,
-                    card_present:  1,
-                }, "SUSPICIOUS transfer")
-            },
-            DemoTransferScenario::Clear => (Transaction {
-                tx_id:         format!("TX_DEMO_{:04}_CLEAR", count),
-                account_id:    acct,
-                amount:        42.50,
-                hour_of_day:   14,
-                day_of_week:   3,
-                merchant_risk: 5,
-                velocity_1h:   1,
-                distance_km:   1.5,
-                is_foreign:    0,
-                card_present:  1,
-            }, "CLEAR transfer"),
+                (
+                    Transaction {
+                        tx_id: format!("TX_DEMO_{:04}_SUSPICIOUS", count),
+                        account_id: acct,
+                        amount: 1_250.0 + prng(seed, 901) * 1_750.0,
+                        hour_of_day: 9 + (prng(seed, 902) * 8.0) as u8,
+                        day_of_week: (prng(seed, 903) * 5.0) as u8,
+                        merchant_risk: 15 + (prng(seed, 904) * 45.0) as u32,
+                        velocity_1h: 6 + (prng(seed, 905) * 5.0) as u32,
+                        distance_km: 2.0 + prng(seed, 906) * 30.0,
+                        is_foreign: 0,
+                        card_present: 1,
+                    },
+                    "SUSPICIOUS transfer",
+                )
+            }
+            DemoTransferScenario::Clear => (
+                Transaction {
+                    tx_id: format!("TX_DEMO_{:04}_CLEAR", count),
+                    account_id: acct,
+                    amount: 42.50,
+                    hour_of_day: 14,
+                    day_of_week: 3,
+                    merchant_risk: 5,
+                    velocity_1h: 1,
+                    distance_km: 1.5,
+                    is_foreign: 0,
+                    card_present: 1,
+                },
+                "CLEAR transfer",
+            ),
         };
         (tx, label, hist)
     };
 
-    let tx_uri   = format!("http://fraud.example.org/tx/{}", tx.tx_id);
+    let tx_uri = format!("http://fraud.example.org/tx/{}", tx.tx_id);
     let acct_uri = format!("http://fraud.example.org/account/{}", tx.account_id);
     let ml_rule_str = rule_ml_fraud_predict();
 
@@ -1324,38 +1489,84 @@ fn process_demo_transaction(
         }
     };
 
-    database.add_triple_parts(&tx_uri,
+    database.add_triple_parts(
+        &tx_uri,
         "http://www.w3.org/1999/02/22-rdf-syntax-ns#type",
-        "http://fraud.example.org/Transaction");
-    database.add_triple_parts(&tx_uri, "http://fraud.example.org/account",       &acct_uri);
-    database.add_triple_parts(&tx_uri, "http://fraud.example.org/amount",         &tx.amount.to_string());
-    database.add_triple_parts(&tx_uri, "http://fraud.example.org/hourOfDay",      &tx.hour_of_day.to_string());
-    database.add_triple_parts(&tx_uri, "http://fraud.example.org/dayOfWeek",      &tx.day_of_week.to_string());
-    database.add_triple_parts(&tx_uri, "http://fraud.example.org/merchantRisk",   &tx.merchant_risk.to_string());
-    database.add_triple_parts(&tx_uri, "http://fraud.example.org/velocity1h",     &tx.velocity_1h.to_string());
-    database.add_triple_parts(&tx_uri, "http://fraud.example.org/distanceKm",     &tx.distance_km.to_string());
-    database.add_triple_parts(&tx_uri, "http://fraud.example.org/isForeign",      &tx.is_foreign.to_string());
-    database.add_triple_parts(&tx_uri, "http://fraud.example.org/cardPresent",    &tx.card_present.to_string());
+        "http://fraud.example.org/Transaction",
+    );
+    database.add_triple_parts(&tx_uri, "http://fraud.example.org/account", &acct_uri);
+    database.add_triple_parts(
+        &tx_uri,
+        "http://fraud.example.org/amount",
+        &tx.amount.to_string(),
+    );
+    database.add_triple_parts(
+        &tx_uri,
+        "http://fraud.example.org/hourOfDay",
+        &tx.hour_of_day.to_string(),
+    );
+    database.add_triple_parts(
+        &tx_uri,
+        "http://fraud.example.org/dayOfWeek",
+        &tx.day_of_week.to_string(),
+    );
+    database.add_triple_parts(
+        &tx_uri,
+        "http://fraud.example.org/merchantRisk",
+        &tx.merchant_risk.to_string(),
+    );
+    database.add_triple_parts(
+        &tx_uri,
+        "http://fraud.example.org/velocity1h",
+        &tx.velocity_1h.to_string(),
+    );
+    database.add_triple_parts(
+        &tx_uri,
+        "http://fraud.example.org/distanceKm",
+        &tx.distance_km.to_string(),
+    );
+    database.add_triple_parts(
+        &tx_uri,
+        "http://fraud.example.org/isForeign",
+        &tx.is_foreign.to_string(),
+    );
+    database.add_triple_parts(
+        &tx_uri,
+        "http://fraud.example.org/cardPresent",
+        &tx.card_present.to_string(),
+    );
     database.add_triple_parts(&tx_uri, "http://fraud.example.org/windowVelocity", "0");
 
     let flags_p1 = run_reasoning(&mut database, &demo_pass1_rules, &tx_uri);
     write_numeric_flags_to_db(&mut database, &tx_uri, &flags_p1, hist_fraud_count);
 
-    let (fraud_score, t_r2p, t_p2r) =
-        run_ml_predict_from_clause(&database, &tx_uri, &ml_rule_str, ml_handler, best_model_name)
-            .unwrap_or((0.0, Duration::from_micros(0), Duration::from_micros(0)));
+    let (fraud_score, t_r2p, t_p2r) = run_ml_predict_from_clause(
+        &database,
+        &tx_uri,
+        &ml_rule_str,
+        ml_handler,
+        best_model_name,
+    )
+    .unwrap_or((0.0, Duration::from_micros(0), Duration::from_micros(0)));
 
     let ml_score_int = (fraud_score * 100.0).round() as u32;
-    database.add_triple_parts(&tx_uri, "http://fraud.example.org/mlFraudScore",
-        &ml_score_int.to_string());
+    database.add_triple_parts(
+        &tx_uri,
+        "http://fraud.example.org/mlFraudScore",
+        &ml_score_int.to_string(),
+    );
 
     let flags_p2_all = run_reasoning(&mut database, &demo_pass2_rules, &tx_uri);
-    let flags_p2_new: Vec<String> = flags_p2_all.into_iter()
-        .filter(|f| !flags_p1.contains(f)).collect();
+    let flags_p2_new: Vec<String> = flags_p2_all
+        .into_iter()
+        .filter(|f| !flags_p1.contains(f))
+        .collect();
 
     let mut all_flags = flags_p1.clone();
     for f in &flags_p2_new {
-        if !all_flags.contains(f) { all_flags.push(f.clone()); }
+        if !all_flags.contains(f) {
+            all_flags.push(f.clone());
+        }
     }
 
     let verdict = fuse_decision(fraud_score, &all_flags);
@@ -1367,52 +1578,80 @@ fn process_demo_transaction(
 
     let time_step = demo_state.lock().unwrap().tx_count as u64;
 
-    let p1_json = flags_p1.iter()
+    let p1_json = flags_p1
+        .iter()
         .map(|f| format!("\"{}\"", f.replace('"', "\\\"")))
-        .collect::<Vec<_>>().join(",");
-    let p2_json = flags_p2_new.iter()
+        .collect::<Vec<_>>()
+        .join(",");
+    let p2_json = flags_p2_new
+        .iter()
         .map(|f| format!("\"{}\"", f.replace('"', "\\\"")))
-        .collect::<Vec<_>>().join(",");
-    push_event(events, "tx", &format!(
-        r#"{{"time_step":{},"tx_id":"{}","account_id":"{}","amount":{:.2},"fraud_score":{:.6},"flags_p1":[{}],"flags_p2":[{}],"verdict":"{}","r2p_us":{},"p2r_us":{},"injected":true}}"#,
-        time_step, tx.tx_id, tx.account_id, tx.amount, fraud_score,
-        p1_json, p2_json, verdict, t_r2p.as_micros(), t_p2r.as_micros(),
-    ));
+        .collect::<Vec<_>>()
+        .join(",");
+    push_event(
+        events,
+        "tx",
+        &format!(
+            r#"{{"time_step":{},"tx_id":"{}","account_id":"{}","amount":{:.2},"fraud_score":{:.6},"flags_p1":[{}],"flags_p2":[{}],"verdict":"{}","r2p_us":{},"p2r_us":{},"injected":true}}"#,
+            time_step,
+            tx.tx_id,
+            tx.account_id,
+            tx.amount,
+            fraud_score,
+            p1_json,
+            p2_json,
+            verdict,
+            t_r2p.as_micros(),
+            t_p2r.as_micros(),
+        ),
+    );
 
-    build_result_page(&tx, &verdict, fraud_score, &flags_p1, &flags_p2_new, scenario_label)
+    build_result_page(
+        &tx,
+        &verdict,
+        fraud_score,
+        &flags_p1,
+        &flags_p2_new,
+        scenario_label,
+    )
 }
 
 fn build_result_page(
-    tx:             &Transaction,
-    verdict:        &Verdict,
-    fraud_score:    f64,
-    flags_p1:       &[String],
-    flags_p2:       &[String],
+    tx: &Transaction,
+    verdict: &Verdict,
+    fraud_score: f64,
+    flags_p1: &[String],
+    flags_p2: &[String],
     scenario_label: &str,
 ) -> String {
     let (badge_bg, badge_text, page_bg) = match verdict {
-        Verdict::Fraud      => ("#c0392b", "FRAUD",      "#fff0f0"),
+        Verdict::Fraud => ("#c0392b", "FRAUD", "#fff0f0"),
         Verdict::Suspicious => ("#e67e22", "SUSPICIOUS", "#fff8f0"),
-        Verdict::Review     => ("#b8860b", "REVIEW",     "#fffdf0"),
-        Verdict::Clear      => ("#27ae60", "CLEAR",      "#f0fff4"),
+        Verdict::Review => ("#b8860b", "REVIEW", "#fffdf0"),
+        Verdict::Clear => ("#27ae60", "CLEAR", "#f0fff4"),
     };
     let score_pct = (fraud_score * 100.0).round() as u32;
     let p1_html = if flags_p1.is_empty() {
         "<em style='color:#999'>None triggered</em>".to_string()
     } else {
-        flags_p1.iter()
+        flags_p1
+            .iter()
             .map(|f| format!("<span class='flag'>{}</span>", f))
-            .collect::<Vec<_>>().join(" ")
+            .collect::<Vec<_>>()
+            .join(" ")
     };
     let p2_html = if flags_p2.is_empty() {
         "<em style='color:#999'>None triggered</em>".to_string()
     } else {
-        flags_p2.iter()
+        flags_p2
+            .iter()
             .map(|f| format!("<span class='flag flag-p2'>{}</span>", f))
-            .collect::<Vec<_>>().join(" ")
+            .collect::<Vec<_>>()
+            .join(" ")
     };
 
-    format!(r#"<!DOCTYPE html>
+    format!(
+        r#"<!DOCTYPE html>
 <html lang="en">
 <head>
 <meta charset="UTF-8">
@@ -1471,21 +1710,25 @@ a.back{{display:block;text-align:center;margin-top:22px;font-size:14px;color:#1a
 <a class="back" href="/demo/bank">&#8592; Back to Account</a>
 </body>
 </html>"#,
-        page_bg        = page_bg,
-        badge_bg       = badge_bg,
-        badge_text     = badge_text,
-        score_pct      = score_pct,
-        tx_id          = tx.tx_id,
-        account_id     = tx.account_id,
-        amount         = tx.amount,
-        hour           = tx.hour_of_day,
-        risk           = tx.merchant_risk,
-        vel            = tx.velocity_1h,
-        dist           = tx.distance_km,
-        foreign        = if tx.is_foreign == 1 { "Yes" } else { "No" },
-        card           = if tx.card_present == 1 { "Yes (physical)" } else { "No (CNP)" },
-        p1_html        = p1_html,
-        p2_html        = p2_html,
+        page_bg = page_bg,
+        badge_bg = badge_bg,
+        badge_text = badge_text,
+        score_pct = score_pct,
+        tx_id = tx.tx_id,
+        account_id = tx.account_id,
+        amount = tx.amount,
+        hour = tx.hour_of_day,
+        risk = tx.merchant_risk,
+        vel = tx.velocity_1h,
+        dist = tx.distance_km,
+        foreign = if tx.is_foreign == 1 { "Yes" } else { "No" },
+        card = if tx.card_present == 1 {
+            "Yes (physical)"
+        } else {
+            "No (CNP)"
+        },
+        p1_html = p1_html,
+        p2_html = p2_html,
         scenario_label = scenario_label,
     )
 }
@@ -1500,14 +1743,14 @@ fn prng(a: u64, b: u64) -> f64 {
         .wrapping_mul(0x9e3779b97f4a7c15)
         .wrapping_add(b.wrapping_mul(0x6c62272e07bb0142));
     x ^= x >> 30;
-    x  = x.wrapping_mul(0xbf58476d1ce4e5b9);
+    x = x.wrapping_mul(0xbf58476d1ce4e5b9);
     x ^= x >> 27;
-    x  = x.wrapping_mul(0x94d049bb133111eb);
+    x = x.wrapping_mul(0x94d049bb133111eb);
     x ^= x >> 31;
     (x >> 11) as f64 / (1u64 << 53) as f64
 }
 
-// 
+//
 // Stochastic transaction synthesis
 //
 // Scenario distribution (seed-determined, no hardcoded patterns):
@@ -1522,52 +1765,59 @@ fn prng(a: u64, b: u64) -> f64 {
 // is_injected_fraud is true only for the FRAUD scenario, keeping the console
 // marker "← injected fraud" unambiguous.
 fn synthesise_transaction(
-    time_step:        u64,
-    account_idx:      usize,
-    account:          &str,
+    time_step: u64,
+    account_idx: usize,
+    account: &str,
     velocity_tracker: &mut HashMap<String, u32>,
 ) -> (Transaction, bool) {
-
     let vel_entry = velocity_tracker.entry(account.to_string()).or_insert(0);
-    let scenario  = prng(time_step.wrapping_mul(31), account_idx as u64 + 1);
+    let scenario = prng(time_step.wrapping_mul(31), account_idx as u64 + 1);
 
     let (tx, is_fraud) = if scenario < 0.25 {
         // FRAUD: all signals active
         *vel_entry = (*vel_entry + 4).min(15);
         let vel = *vel_entry;
-        let amount      = 1_200.0 + prng(time_step, account_idx as u64 + 100) * 8_000.0;
-        let hour        = (prng(time_step, account_idx as u64 + 101) * 4.0) as u8;        // 0–3
-        let dow         = (prng(time_step, account_idx as u64 + 102) * 7.0) as u8;
-        let merch_risk  = 75 + (prng(time_step, account_idx as u64 + 103) * 20.0) as u32; // 75–95
+        let amount = 1_200.0 + prng(time_step, account_idx as u64 + 100) * 8_000.0;
+        let hour = (prng(time_step, account_idx as u64 + 101) * 4.0) as u8; // 0–3
+        let dow = (prng(time_step, account_idx as u64 + 102) * 7.0) as u8;
+        let merch_risk = 75 + (prng(time_step, account_idx as u64 + 103) * 20.0) as u32; // 75–95
         let distance_km = 1_000.0 + prng(time_step, account_idx as u64 + 104) * 9_000.0;
         let tx = Transaction {
-            tx_id:         format!("TX-{}-{}-FRAUD", account, time_step),
-            account_id:    account.to_string(),
-            amount, hour_of_day: hour, day_of_week: dow,
-            merchant_risk: merch_risk, velocity_1h: vel,
-            distance_km, is_foreign: 1, card_present: 0,
+            tx_id: format!("TX-{}-{}-FRAUD", account, time_step),
+            account_id: account.to_string(),
+            amount,
+            hour_of_day: hour,
+            day_of_week: dow,
+            merchant_risk: merch_risk,
+            velocity_1h: vel,
+            distance_km,
+            is_foreign: 1,
+            card_present: 0,
         };
         (tx, true)
-
     } else if scenario < 0.45 {
         // SUSPICIOUS: R5 fires (amount > 1000 ∧ vel > 5 -> risk:high),
         // but domestic context keeps ML ≈ 0.0 -> fuse: risk:high ∧ P ≤ 0.50.
         let vel = 6 + (prng(time_step, account_idx as u64 + 200) * 5.0) as u32; // 6–10
         *vel_entry = vel;
-        let amount      = 1_050.0 + prng(time_step, account_idx as u64 + 201) * 2_000.0;
-        let hour        = 9 + (prng(time_step, account_idx as u64 + 202) * 9.0) as u8;    // 9–17
-        let dow         = (prng(time_step, account_idx as u64 + 203) * 5.0) as u8;         // Mon–Fri
-        let merch_risk  = 15 + (prng(time_step, account_idx as u64 + 204) * 45.0) as u32; // 15–60
+        let amount = 1_050.0 + prng(time_step, account_idx as u64 + 201) * 2_000.0;
+        let hour = 9 + (prng(time_step, account_idx as u64 + 202) * 9.0) as u8; // 9–17
+        let dow = (prng(time_step, account_idx as u64 + 203) * 5.0) as u8; // Mon–Fri
+        let merch_risk = 15 + (prng(time_step, account_idx as u64 + 204) * 45.0) as u32; // 15–60
         let distance_km = 2.0 + prng(time_step, account_idx as u64 + 205) * 30.0;
         let tx = Transaction {
-            tx_id:         format!("TX-{}-{}-SUSP", account, time_step),
-            account_id:    account.to_string(),
-            amount, hour_of_day: hour, day_of_week: dow,
-            merchant_risk: merch_risk, velocity_1h: vel,
-            distance_km, is_foreign: 0, card_present: 1,
+            tx_id: format!("TX-{}-{}-SUSP", account, time_step),
+            account_id: account.to_string(),
+            amount,
+            hour_of_day: hour,
+            day_of_week: dow,
+            merchant_risk: merch_risk,
+            velocity_1h: vel,
+            distance_km,
+            is_foreign: 0,
+            card_present: 1,
         };
         (tx, false)
-
     } else if scenario < 0.65 {
         // REVIEW: one flag fires but amount < 1000 prevents R5 from chaining
         // Sub-variant a: highMerchantRisk only or Sub-variant b: highVelocity only
@@ -1577,40 +1827,53 @@ fn synthesise_transaction(
             let mr = 71 + (prng(time_step, account_idx as u64 + 301) * 24.0) as u32; // 71–95
             (mr, *vel_entry)
         } else {
-            let v = 6 + (prng(time_step, account_idx as u64 + 302) * 5.0) as u32;    // 6–10
+            let v = 6 + (prng(time_step, account_idx as u64 + 302) * 5.0) as u32; // 6–10
             *vel_entry = v;
             let mr = 10 + (prng(time_step, account_idx as u64 + 303) * 45.0) as u32; // 10–55
             (mr, v)
         };
-        let amount      = 20.0 + prng(time_step, account_idx as u64 + 304) * 920.0;  // < 1000
-        let hour        = 8 + (prng(time_step, account_idx as u64 + 305) * 12.0) as u8;
-        let dow         = (prng(time_step, account_idx as u64 + 306) * 7.0) as u8;
+        let amount = 20.0 + prng(time_step, account_idx as u64 + 304) * 920.0; // < 1000
+        let hour = 8 + (prng(time_step, account_idx as u64 + 305) * 12.0) as u8;
+        let dow = (prng(time_step, account_idx as u64 + 306) * 7.0) as u8;
         let distance_km = 1.0 + prng(time_step, account_idx as u64 + 307) * 40.0;
         let tx = Transaction {
-            tx_id:         format!("TX-{}-{}-REVIEW", account, time_step),
-            account_id:    account.to_string(),
-            amount, hour_of_day: hour, day_of_week: dow,
-            merchant_risk: merch_risk, velocity_1h: vel,
-            distance_km, is_foreign: 0, card_present: 1,
+            tx_id: format!("TX-{}-{}-REVIEW", account, time_step),
+            account_id: account.to_string(),
+            amount,
+            hour_of_day: hour,
+            day_of_week: dow,
+            merchant_risk: merch_risk,
+            velocity_1h: vel,
+            distance_km,
+            is_foreign: 0,
+            card_present: 1,
         };
         (tx, false)
-
     } else {
         // CLEAR: reset velocity to baseline so accumulated FRAUD velocity doesn't pollute this scenario
         *vel_entry = 1;
-        let vel         = 1u32;
-        let amount      = 10.0 + prng(time_step, account_idx as u64 + 400) * 600.0;  // < 1000
-        let hour        = 8 + (prng(time_step, account_idx as u64 + 401) * 13.0) as u8;
-        let dow         = (prng(time_step, account_idx as u64 + 402) * 7.0) as u8;
-        let merch_risk  = 5  + (prng(time_step, account_idx as u64 + 403) * 50.0) as u32;
+        let vel = 1u32;
+        let amount = 10.0 + prng(time_step, account_idx as u64 + 400) * 600.0; // < 1000
+        let hour = 8 + (prng(time_step, account_idx as u64 + 401) * 13.0) as u8;
+        let dow = (prng(time_step, account_idx as u64 + 402) * 7.0) as u8;
+        let merch_risk = 5 + (prng(time_step, account_idx as u64 + 403) * 50.0) as u32;
         let distance_km = 1.0 + prng(time_step, account_idx as u64 + 404) * 30.0;
-        let card_pres   = if prng(time_step, account_idx as u64 + 405) > 0.1 { 1 } else { 0 };
+        let card_pres = if prng(time_step, account_idx as u64 + 405) > 0.1 {
+            1
+        } else {
+            0
+        };
         let tx = Transaction {
-            tx_id:         format!("TX-{}-{}", account, time_step),
-            account_id:    account.to_string(),
-            amount, hour_of_day: hour, day_of_week: dow,
-            merchant_risk: merch_risk, velocity_1h: vel,
-            distance_km, is_foreign: 0, card_present: card_pres,
+            tx_id: format!("TX-{}-{}", account, time_step),
+            account_id: account.to_string(),
+            amount,
+            hour_of_day: hour,
+            day_of_week: dow,
+            merchant_risk: merch_risk,
+            velocity_1h: vel,
+            distance_km,
+            is_foreign: 0,
+            card_present: card_pres,
         };
         (tx, false)
     };
@@ -1618,4 +1881,9 @@ fn synthesise_transaction(
     (tx, is_fraud)
 }
 
-mod local_ml { include!(concat!(env!("CARGO_MANIFEST_DIR"), "/examples/support/ml_context.rs")); }
+mod local_ml {
+    include!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/examples/support/ml_context.rs"
+    ));
+}

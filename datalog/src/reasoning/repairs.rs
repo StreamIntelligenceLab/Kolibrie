@@ -9,14 +9,13 @@
 //! The cost is that repairs are enumerated, so this is exponential in the number of
 //! conflicting facts rather than merely expensive.
 
-use std::collections::{HashMap, HashSet};
+use crate::reasoning::rules::matches_rule_pattern;
+use crate::reasoning::Reasoner;
 use shared::terms::TriplePattern;
 use shared::triple::Triple;
-use crate::reasoning::Reasoner;
-use crate::reasoning::rules::matches_rule_pattern;
+use std::collections::{HashMap, HashSet};
 
 impl Reasoner {
-
     /// New method: Query with inconsistency-tolerant semantics
     pub fn query_with_repairs(&self, query: &TriplePattern) -> Vec<HashMap<String, u32>> {
         let all_facts: HashSet<Triple> = self
@@ -52,5 +51,4 @@ impl Reasoner {
 
         results
     }
-
 }

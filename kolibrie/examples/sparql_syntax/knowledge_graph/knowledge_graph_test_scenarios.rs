@@ -9,9 +9,9 @@
  */
 
 use datalog::reasoning::Reasoner;
+use shared::rule::Rule;
 use shared::terms::Term;
 use shared::terms::TriplePattern;
-use shared::rule::Rule;
 use std::time::Instant;
 
 // Test scenario 1: 100 facts, 2 rules
@@ -30,7 +30,7 @@ fn test1() {
         let mut dict = kg.dictionary.write().unwrap();
         dict.encode("likes")
     };
-    
+
     kg.add_rule(Rule {
         premise: vec![
             (
@@ -76,9 +76,9 @@ fn test1() {
     println!("Inference took: {:?}", duration);
 
     let results = kg.query_abox(
-        Some("person0"),                // subject
-        Some("likes"),                  // predicate
-        None,                           // object -> wildcard
+        Some("person0"), // subject
+        Some("likes"),   // predicate
+        None,            // object -> wildcard
     );
 
     println!("person0 likes these people:");
@@ -116,19 +116,17 @@ fn test2() {
             let class_next_id = dict.encode(&format!("Class{}", i + 1));
             (type_id, class_i_id, class_next_id)
         };
-        
+
         let premise_pattern: TriplePattern = (
             Term::Variable("x".to_string()),
             Term::Constant(type_id),
             Term::Constant(class_i_id),
         );
-        let conclusion_pattern: Vec<TriplePattern> = vec![
-            (
-                Term::Variable("x".to_string()),
-                Term::Constant(type_id),
-                Term::Constant(class_next_id),
-            ),
-        ];
+        let conclusion_pattern: Vec<TriplePattern> = vec![(
+            Term::Variable("x".to_string()),
+            Term::Constant(type_id),
+            Term::Constant(class_next_id),
+        )];
         let rule = Rule {
             premise: vec![premise_pattern],
             negative_premise: vec![],
@@ -142,9 +140,9 @@ fn test2() {
     let duration = start.elapsed();
     println!("Inference took: {:?}", duration);
     let results = kg.query_abox(
-        Some("myInstance"),    // subject
-        Some("type"),          // predicate
-        None,                  // object -> wildcard
+        Some("myInstance"), // subject
+        Some("type"),       // predicate
+        None,               // object -> wildcard
     );
 
     println!("myInstance has these types after inference:");
@@ -186,7 +184,7 @@ fn transitivity_benchmark() {
             let mut dict = kg.dictionary.write().unwrap();
             dict.encode("likes")
         };
-        
+
         kg.add_rule(Rule {
             premise: vec![
                 (

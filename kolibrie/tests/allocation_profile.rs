@@ -118,7 +118,10 @@ fn allocation_profile() {
         execute_query_rayon_parallel2_volcano(sparql, &mut database);
     }
 
-    println!("\n{:<22} {:>14} {:>16} {:>10}", "query", "allocations", "bytes", "rows");
+    println!(
+        "\n{:<22} {:>14} {:>16} {:>10}",
+        "query", "allocations", "bytes", "rows"
+    );
     println!("{}", "-".repeat(66));
 
     for (name, sparql) in QUERIES {

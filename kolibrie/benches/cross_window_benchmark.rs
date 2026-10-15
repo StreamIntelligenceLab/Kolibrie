@@ -123,15 +123,16 @@ fn assert_correctness(n: usize, update_ratio: usize) {
     let sds_initial = make_sds(n, 0);
     let sds_next = make_sds(n, update_ratio);
 
-    let old: SdsWithExpiry =
-        incremental_sds_plus(&rules, &sds_initial, &HashMap::new(), &dict, 0);
+    let old: SdsWithExpiry = incremental_sds_plus(&rules, &sds_initial, &HashMap::new(), &dict, 0);
     let incremental = incremental_sds_plus(&rules, &sds_next, &old, &dict, CURRENT_TIME);
     let component_iris = all_component_iris(&sds_next);
-    let incremental_external =
-        sds_with_expiry_to_external(&incremental, &dict, &component_iris);
+    let incremental_external = sds_with_expiry_to_external(&incremental, &dict, &component_iris);
     let naive = naive_sds_plus(&rules, &sds_next, &dict, CURRENT_TIME);
 
-    assert_eq!(signature(&naive, &dict), signature(&incremental_external, &dict));
+    assert_eq!(
+        signature(&naive, &dict),
+        signature(&incremental_external, &dict)
+    );
 }
 
 fn bench_naive(c: &mut Criterion) {

@@ -25,11 +25,11 @@
 //! about an evicted time does not fail, it simply finds nothing, so the horizon
 //! has to exceed the furthest any rule reaches back.
 
-use std::collections::{BTreeMap, HashMap, HashSet};
 use shared::dataset_index::DatasetIndex;
-use shared::triple::Triple;
-use shared::terms::TriplePattern;
 use shared::pattern::matches_rule_pattern;
+use shared::terms::TriplePattern;
+use shared::triple::Triple;
+use std::collections::{BTreeMap, HashMap, HashSet};
 
 /// The stable store interface. Both Phase 1 and Phase 2 implement this.
 /// Define as a trait so the evaluator is generic over the store.
@@ -69,7 +69,6 @@ pub struct TemporalSnapshotStore {
     pub horizon: u64,
 }
 
-
 // Summarised rather than derived: one index per timestamp, so the derived form would
 // print every fact at every time point. Counting snapshots is O(1); counting the
 // facts in them is not, and a `Debug` impl should not be the expensive call in a log
@@ -86,19 +85,27 @@ impl std::fmt::Debug for TemporalSnapshotStore {
 impl TemporalSnapshotStore {
     /// An empty store keeping facts for `horizon` time units.
     pub fn new(horizon: u64) -> Self {
-        Self { snapshots: BTreeMap::new(), horizon }
+        Self {
+            snapshots: BTreeMap::new(),
+            horizon,
+        }
     }
 }
 
 impl TemporalStore for TemporalSnapshotStore {
     fn insert(&mut self, triple: &Triple, t: u64) {
-        self.snapshots.entry(t).or_insert_with(DatasetIndex::new).insert(triple);
+        self.snapshots
+            .entry(t)
+            .or_insert_with(DatasetIndex::new)
+            .insert(triple);
     }
 
     fn query_at(&self, pattern: &TriplePattern, t: u64) -> Vec<HashMap<String, u32>> {
         // Use the index to fetch only triples whose constant positions match the
         // pattern, instead of scanning every fact at t.
-        let facts = self.snapshots.get(&t)
+        let facts = self
+            .snapshots
+            .get(&t)
             .map(|idx| idx.get_matching_triples(pattern))
             .unwrap_or_default();
         let mut results = Vec::new();
@@ -119,10 +126,13 @@ impl TemporalStore for TemporalSnapshotStore {
         self.snapshots.retain(|t, _| *t >= cutoff);
     }
 
-    fn snapshot_count(&self) -> usize { self.snapshots.len() }
+    fn snapshot_count(&self) -> usize {
+        self.snapshots.len()
+    }
 
     fn total_triple_count(&self) -> usize {
-        self.snapshots.values()
+        self.snapshots
+            .values()
             .map(|idx| idx.query(None, None, None).len())
             .sum()
     }
@@ -167,7 +177,6 @@ pub struct IntervalFactStore {
     pub horizon: u64,
 }
 
-
 // Summarised rather than derived, for the same reason as
 // [`TemporalSnapshotStore`]. The segment count is the interesting number here, since
 // it is what this representation exists to keep small.
@@ -206,7 +215,6 @@ impl IntervalFactStore {
         }
         intervals.push(ValidityInterval { start: t, end: t });
     }
-
 }
 
 impl TemporalStore for IntervalFactStore {
@@ -218,7 +226,9 @@ impl TemporalStore for IntervalFactStore {
 
     fn query_at(&self, pattern: &TriplePattern, t: u64) -> Vec<HashMap<String, u32>> {
         // Collect all triples valid at t, then match pattern against them.
-        let candidates: Vec<Triple> = self.facts.iter()
+        let candidates: Vec<Triple> = self
+            .facts
+            .iter()
             .filter(|(_, ivs)| ivs.iter().any(|iv| iv.contains(t)))
             .map(|(triple, _)| triple.clone())
             .collect();
@@ -255,8 +265,12 @@ impl TemporalStore for IntervalFactStore {
         for intervals in self.facts.values_mut() {
             // Clip interval starts to cutoff, drop fully expired intervals.
             intervals.retain_mut(|iv| {
-                if iv.end < cutoff { return false; }
-                if iv.start < cutoff { iv.start = cutoff; }
+                if iv.end < cutoff {
+                    return false;
+                }
+                if iv.start < cutoff {
+                    iv.start = cutoff;
+                }
                 true
             });
         }
@@ -274,4 +288,3 @@ impl TemporalStore for IntervalFactStore {
         self.facts.len()
     }
 }
-

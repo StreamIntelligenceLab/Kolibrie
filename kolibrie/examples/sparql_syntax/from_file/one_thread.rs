@@ -12,8 +12,7 @@ use kolibrie::prelude::*;
 use kolibrie::sparql_database::SparqlDatabase;
 
 fn simple_select_synth_data(file_path: &str) {
-    let file = std::fs::read_to_string(file_path)
-                                        .expect("Error of finding file");
+    let file = std::fs::read_to_string(file_path).expect("Error of finding file");
     let mut database = SparqlDatabase::new();
 
     database.parse_rdf(&file);
@@ -33,7 +32,10 @@ fn simple_select_synth_data(file_path: &str) {
     for result in results {
         if let [employee, workplace_homepage, salary] = &result[..] {
             // Process your results here
-            println!("?employee = {} ?workplaceHomepage = {} ?salary = {}", employee, workplace_homepage, salary);
+            println!(
+                "?employee = {} ?workplaceHomepage = {} ?salary = {}",
+                employee, workplace_homepage, salary
+            );
         }
     }
 }

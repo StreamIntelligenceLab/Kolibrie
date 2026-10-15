@@ -8,8 +8,8 @@
  * you can obtain one at https://mozilla.org/MPL/2.0/.
  */
 
-use pyo3::prelude::*;
 use datalog::reasoning::Reasoner;
+use pyo3::prelude::*;
 use std::collections::HashMap;
 
 /// Represents a condition to filter rules
@@ -18,10 +18,10 @@ use std::collections::HashMap;
 struct PyFilterCondition {
     #[pyo3(get, set)]
     variable: String,
-    
+
     #[pyo3(get, set)]
     operator: String,
-    
+
     #[pyo3(get, set)]
     value: String,
 }
@@ -30,7 +30,11 @@ struct PyFilterCondition {
 impl PyFilterCondition {
     #[new]
     fn new(variable: String, operator: String, value: String) -> Self {
-        Self { variable, operator, value }
+        Self {
+            variable,
+            operator,
+            value,
+        }
     }
 }
 
@@ -65,10 +69,10 @@ impl Term {
 struct PyTriplePattern {
     #[pyo3(get, set)]
     subject: Term,
-    
+
     #[pyo3(get, set)]
     predicate: Term,
-    
+
     #[pyo3(get, set)]
     object: Term,
 }
@@ -77,7 +81,11 @@ struct PyTriplePattern {
 impl PyTriplePattern {
     #[new]
     fn new(subject: Term, predicate: Term, object: Term) -> Self {
-        Self { subject, predicate, object }
+        Self {
+            subject,
+            predicate,
+            object,
+        }
     }
 }
 
@@ -87,10 +95,10 @@ impl PyTriplePattern {
 struct PyRule {
     #[pyo3(get, set)]
     premise: Vec<PyTriplePattern>,
-    
+
     #[pyo3(get, set)]
     filters: Vec<PyFilterCondition>,
-    
+
     #[pyo3(get, set)]
     conclusion: Vec<PyTriplePattern>,
 }
@@ -98,8 +106,16 @@ struct PyRule {
 #[pymethods]
 impl PyRule {
     #[new]
-    fn new(premise: Vec<PyTriplePattern>, filters: Vec<PyFilterCondition>, conclusion: Vec<PyTriplePattern>) -> Self {
-        Self { premise, filters, conclusion }
+    fn new(
+        premise: Vec<PyTriplePattern>,
+        filters: Vec<PyFilterCondition>,
+        conclusion: Vec<PyTriplePattern>,
+    ) -> Self {
+        Self {
+            premise,
+            filters,
+            conclusion,
+        }
     }
 }
 
@@ -129,31 +145,42 @@ impl PyKnowledgeGraph {
         object: Option<&str>,
     ) -> Vec<(String, String, String)> {
         let results = self.inner.query_abox(subject, predicate, object);
-        
+
         // Acquire read lock once for all decoding operations
         let dict = self.inner.dictionary.read().unwrap();
         let decoded_results: Vec<(String, String, String)> = results
             .into_iter()
             .map(|triple| {
                 let s = dict.decode(triple.subject).unwrap_or_default().to_string();
-                let p = dict.decode(triple.predicate).unwrap_or_default().to_string();
+                let p = dict
+                    .decode(triple.predicate)
+                    .unwrap_or_default()
+                    .to_string();
                 let o = dict.decode(triple.object).unwrap_or_default().to_string();
                 (s, p, o)
             })
             .collect();
         drop(dict); // Release lock
-        
+
         decoded_results
     }
 
     fn add_rule(&mut self, rule: PyRule) {
         let converted_rule = shared::rule::Rule {
-            premise: rule.premise
+            premise: rule
+                .premise
                 .into_iter()
-                .map(|p| (convert_term(p.subject), convert_term(p.predicate), convert_term(p.object)))
+                .map(|p| {
+                    (
+                        convert_term(p.subject),
+                        convert_term(p.predicate),
+                        convert_term(p.object),
+                    )
+                })
                 .collect(),
             negative_premise: vec![],
-            filters: rule.filters
+            filters: rule
+                .filters
                 .into_iter()
                 .map(|f| shared::rule::FilterCondition {
                     variable: f.variable,
@@ -162,9 +189,16 @@ impl PyKnowledgeGraph {
                 })
                 .collect(),
 
-            conclusion: rule.conclusion
+            conclusion: rule
+                .conclusion
                 .into_iter()
-                .map(|c| (convert_term(c.subject), convert_term(c.predicate), convert_term(c.object)))
+                .map(|c| {
+                    (
+                        convert_term(c.subject),
+                        convert_term(c.predicate),
+                        convert_term(c.object),
+                    )
+                })
                 .collect(),
         };
 
@@ -173,39 +207,45 @@ impl PyKnowledgeGraph {
 
     fn infer_new_facts(&mut self) -> Vec<(String, String, String)> {
         let inferred = self.inner.infer_new_facts();
-        
+
         // Acquire read lock once for all decoding operations
         let dict = self.inner.dictionary.read().unwrap();
         let decoded_results: Vec<(String, String, String)> = inferred
             .into_iter()
             .map(|triple| {
                 let s = dict.decode(triple.subject).unwrap_or_default().to_string();
-                let p = dict.decode(triple.predicate).unwrap_or_default().to_string();
+                let p = dict
+                    .decode(triple.predicate)
+                    .unwrap_or_default()
+                    .to_string();
                 let o = dict.decode(triple.object).unwrap_or_default().to_string();
                 (s, p, o)
             })
             .collect();
         drop(dict); // Release lock
-        
+
         decoded_results
     }
 
     fn infer_new_facts_semi_naive(&mut self) -> Vec<(String, String, String)> {
         let inferred = self.inner.infer_new_facts_semi_naive();
-        
+
         // Acquire read lock once for all decoding operations
         let dict = self.inner.dictionary.read().unwrap();
         let decoded_results: Vec<(String, String, String)> = inferred
             .into_iter()
             .map(|triple| {
                 let s = dict.decode(triple.subject).unwrap_or_default().to_string();
-                let p = dict.decode(triple.predicate).unwrap_or_default().to_string();
+                let p = dict
+                    .decode(triple.predicate)
+                    .unwrap_or_default()
+                    .to_string();
                 let o = dict.decode(triple.object).unwrap_or_default().to_string();
                 (s, p, o)
             })
             .collect();
         drop(dict); // Release lock
-        
+
         decoded_results
     }
 
@@ -239,14 +279,22 @@ impl PyKnowledgeGraph {
 
     fn add_constraint(&mut self, rule: PyRule) {
         let converted_rule = shared::rule::Rule {
-            premise: rule.premise
+            premise: rule
+                .premise
                 .into_iter()
-                .map(|p| (convert_term(p.subject), convert_term(p.predicate), convert_term(p.object)))
+                .map(|p| {
+                    (
+                        convert_term(p.subject),
+                        convert_term(p.predicate),
+                        convert_term(p.object),
+                    )
+                })
                 .collect(),
 
             negative_premise: vec![],
 
-            filters: rule.filters
+            filters: rule
+                .filters
                 .into_iter()
                 .map(|f| shared::rule::FilterCondition {
                     variable: f.variable,
@@ -255,9 +303,16 @@ impl PyKnowledgeGraph {
                 })
                 .collect(),
 
-            conclusion: rule.conclusion
+            conclusion: rule
+                .conclusion
                 .into_iter()
-                .map(|c| (convert_term(c.subject), convert_term(c.predicate), convert_term(c.object)))
+                .map(|c| {
+                    (
+                        convert_term(c.subject),
+                        convert_term(c.predicate),
+                        convert_term(c.object),
+                    )
+                })
                 .collect(),
         };
 
@@ -291,20 +346,23 @@ impl PyKnowledgeGraph {
 
     fn infer_new_facts_semi_naive_with_repairs(&mut self) -> Vec<(String, String, String)> {
         let inferred = self.inner.infer_new_facts_semi_naive_with_repairs();
-        
+
         // Acquire read lock once for all decoding operations
         let dict = self.inner.dictionary.read().unwrap();
         let decoded_results: Vec<(String, String, String)> = inferred
             .into_iter()
             .map(|triple| {
                 let s = dict.decode(triple.subject).unwrap_or_default().to_string();
-                let p = dict.decode(triple.predicate).unwrap_or_default().to_string();
+                let p = dict
+                    .decode(triple.predicate)
+                    .unwrap_or_default()
+                    .to_string();
                 let o = dict.decode(triple.object).unwrap_or_default().to_string();
                 (s, p, o)
             })
             .collect();
         drop(dict); // Release lock
-        
+
         decoded_results
     }
 }
@@ -329,9 +387,9 @@ fn convert_term_back(term: shared::terms::Term) -> Term {
 /// Python module initialization
 pub(crate) fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyKnowledgeGraph>()?;
-    m.add_class::<PyRule>()?;             
-    m.add_class::<PyFilterCondition>()?;  
-    m.add_class::<PyTriplePattern>()?;    
-    m.add_class::<Term>()?;             
+    m.add_class::<PyRule>()?;
+    m.add_class::<PyFilterCondition>()?;
+    m.add_class::<PyTriplePattern>()?;
+    m.add_class::<Term>()?;
     Ok(())
 }

@@ -283,14 +283,23 @@ impl DatabaseStats {
         let predicate_distinct_subjects = predicate_subjects
             .into_iter()
             .map(|(predicate, subjects)| {
-                let cardinality = predicate_cardinalities.get(&predicate).copied().unwrap_or(0);
-                (predicate, scale_distinct(subjects.len() as u64, cardinality))
+                let cardinality = predicate_cardinalities
+                    .get(&predicate)
+                    .copied()
+                    .unwrap_or(0);
+                (
+                    predicate,
+                    scale_distinct(subjects.len() as u64, cardinality),
+                )
             })
             .collect();
         let predicate_distinct_objects = predicate_objects
             .into_iter()
             .map(|(predicate, objects)| {
-                let cardinality = predicate_cardinalities.get(&predicate).copied().unwrap_or(0);
+                let cardinality = predicate_cardinalities
+                    .get(&predicate)
+                    .copied()
+                    .unwrap_or(0);
                 (predicate, scale_distinct(objects.len() as u64, cardinality))
             })
             .collect();

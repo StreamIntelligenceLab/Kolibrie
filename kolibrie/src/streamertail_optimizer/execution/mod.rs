@@ -10,7 +10,7 @@
 
 //! Running a chosen physical plan.
 
-pub mod exec_stats;
 pub mod engine;
+pub mod exec_stats;
 
 pub use engine::{DatasetView, ExecutionContext, ExecutionEngine};

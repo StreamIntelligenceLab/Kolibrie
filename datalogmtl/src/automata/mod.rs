@@ -17,11 +17,11 @@
 //! horizon and interval widths — and it matches MeTeoR's semantics exactly
 //! (dissolving the ℤ-vs-ℝ artifact of the tick engine).
 
-pub mod interval;
-pub mod transducer;
-pub mod relation;
 pub mod eval;
+pub mod interval;
 pub mod omega;
+pub mod relation;
+pub mod transducer;
 
 pub use eval::materialize;
 pub use interval::TInterval;

@@ -158,7 +158,9 @@ pub fn execute_supervised_training(
         return Err("supervised program training requires exactly one neural call".into());
     }
     if clause.save_path.is_some() {
-        return Err("supervised program training stages its artifact; save_path must be empty".into());
+        return Err(
+            "supervised program training stages its artifact; save_path must be empty".into(),
+        );
     }
     execute_ml_training_impl(clause, &Reasoner::new(), db, seed, Some(hidden))
 }
@@ -616,10 +618,15 @@ mod tests {
         let base_reasoner = build_ground_reasoner_from_db(&db, None);
         let model = execute_ml_training_owned(&clause, &base_reasoner, &mut db).unwrap();
 
-        let seeded_a = execute_ml_training_owned_seeded(&clause, &base_reasoner, &mut db, 17).unwrap();
-        let seeded_b = execute_ml_training_owned_seeded(&clause, &base_reasoner, &mut db, 17).unwrap();
-        assert_eq!(seeded_a.to_bytes().unwrap(), seeded_b.to_bytes().unwrap(),
-            "seeded training must survive nondeterministic query row order");
+        let seeded_a =
+            execute_ml_training_owned_seeded(&clause, &base_reasoner, &mut db, 17).unwrap();
+        let seeded_b =
+            execute_ml_training_owned_seeded(&clause, &base_reasoner, &mut db, 17).unwrap();
+        assert_eq!(
+            seeded_a.to_bytes().unwrap(),
+            seeded_b.to_bytes().unwrap(),
+            "seeded training must survive nondeterministic query row order"
+        );
 
         let eval_rows = query_training_rows(&mut db, query).unwrap();
         let mut correct_probs = Vec::new();
@@ -754,7 +761,10 @@ mod tests {
             let numeric = (cross_entropy(p + h) - cross_entropy(p - h)) / (2.0 * h);
             for loss in [LossFn::CrossEntropy, LossFn::Nll] {
                 let analytic = loss_gradient(loss, p, &row("A"), "?label").unwrap();
-                assert!(((analytic - numeric) / numeric).abs() <= 1e-6, "{p}: {analytic} vs {numeric}");
+                assert!(
+                    ((analytic - numeric) / numeric).abs() <= 1e-6,
+                    "{p}: {analytic} vs {numeric}"
+                );
             }
             if p > 0.9999 {
                 continue;
@@ -762,13 +772,29 @@ mod tests {
             for y in [0.0, 1.0] {
                 let h = p.min(1.0 - p) * 1e-6;
                 let numeric = (binary(y, p + h) - binary(y, p - h)) / (2.0 * h);
-                let analytic =
-                    loss_gradient(LossFn::BinaryCrossEntropy, p, &row(&y.to_string()), "?label").unwrap();
-                assert!(((analytic - numeric) / numeric).abs() <= 1e-6, "{y} {p}: {analytic} vs {numeric}");
+                let analytic = loss_gradient(
+                    LossFn::BinaryCrossEntropy,
+                    p,
+                    &row(&y.to_string()),
+                    "?label",
+                )
+                .unwrap();
+                assert!(
+                    ((analytic - numeric) / numeric).abs() <= 1e-6,
+                    "{y} {p}: {analytic} vs {numeric}"
+                );
             }
         }
-        assert!(loss_gradient(LossFn::CrossEntropy, 0.0, &row("A"), "?label").unwrap().is_finite());
-        assert!(loss_gradient(LossFn::BinaryCrossEntropy, 1.0, &row("0"), "?label").unwrap().is_finite());
+        assert!(
+            loss_gradient(LossFn::CrossEntropy, 0.0, &row("A"), "?label")
+                .unwrap()
+                .is_finite()
+        );
+        assert!(
+            loss_gradient(LossFn::BinaryCrossEntropy, 1.0, &row("0"), "?label")
+                .unwrap()
+                .is_finite()
+        );
     }
 
     #[test]
@@ -802,16 +828,25 @@ mod tests {
             clause.optimizer = OptimizerKind::Sgd;
             clause.epochs = 1;
             clause.batch_size = 2;
-            let initial = MlpNeuralPredicate::new_seeded(1, &[], OutputType::Categorical(2), 11).unwrap();
-            let (trained, _) = execute_supervised_training(&clause, &[], &mut db, Some(11)).unwrap();
+            let initial =
+                MlpNeuralPredicate::new_seeded(1, &[], OutputType::Categorical(2), 11).unwrap();
+            let (trained, _) =
+                execute_supervised_training(&clause, &[], &mut db, Some(11)).unwrap();
             let weights = |model: &MlpNeuralPredicate| -> Vec<f64> {
-                let saved: serde_json::Value = serde_json::from_slice(&model.to_bytes().unwrap()).unwrap();
+                let saved: serde_json::Value =
+                    serde_json::from_slice(&model.to_bytes().unwrap()).unwrap();
                 saved["layers"][0]["weights"]
                     .as_array()
                     .unwrap()
                     .iter()
                     .flat_map(|row| row.as_array().unwrap().iter().map(|v| v.as_f64().unwrap()))
-                    .chain(saved["layers"][0]["bias"].as_array().unwrap().iter().map(|v| v.as_f64().unwrap()))
+                    .chain(
+                        saved["layers"][0]["bias"]
+                            .as_array()
+                            .unwrap()
+                            .iter()
+                            .map(|v| v.as_f64().unwrap()),
+                    )
                     .collect()
             };
             weights(&trained)

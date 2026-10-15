@@ -133,7 +133,10 @@ fn streamertail_optimizer_multiple_triples() {
         });
     }
 
-    println!("Added {} triples to the database", database.default_triple_count());
+    println!(
+        "Added {} triples to the database",
+        database.default_triple_count()
+    );
 
     // Step 3: Create the logical plan with joins
     let type_id = database.dictionary_mut().encode("rdf:type");
@@ -190,8 +193,12 @@ fn streamertail_optimizer_rdf() {
         let company_uri = format!("http://example.org/company{}", i % 3);
 
         let person_id = database.dictionary_mut().encode(&person_uri);
-        let works_at_id = database.dictionary_mut().encode("http://example.org/worksAt");
-        let located_id = database.dictionary_mut().encode("http://example.org/located");
+        let works_at_id = database
+            .dictionary_mut()
+            .encode("http://example.org/worksAt");
+        let located_id = database
+            .dictionary_mut()
+            .encode("http://example.org/located");
         let company_id = database.dictionary_mut().encode(&company_uri);
         let location = database.dictionary_mut().encode(&format!("City{}", i % 3));
 
@@ -210,7 +217,10 @@ fn streamertail_optimizer_rdf() {
         });
     }
 
-    println!("Added {} triples to the database", database.default_triple_count());
+    println!(
+        "Added {} triples to the database",
+        database.default_triple_count()
+    );
 
     // Step 3: Create logical plan using build_logical_plan utility
     let variables = vec![("VAR", "person"), ("VAR", "location")];
@@ -222,7 +232,15 @@ fn streamertail_optimizer_rdf() {
     let mut prefixes = std::collections::HashMap::new();
     prefixes.insert("ex".to_string(), "http://example.org/".to_string());
 
-    let logical_plan = build_logical_plan(variables, patterns, filters, &prefixes, &mut database, &[], None);
+    let logical_plan = build_logical_plan(
+        variables,
+        patterns,
+        filters,
+        &prefixes,
+        &mut database,
+        &[],
+        None,
+    );
 
     // Step 4: Initialize the optimizer and optimize
     let mut optimizer = Streamertail::new(&database);
@@ -274,10 +292,15 @@ fn streamertail_optimizer_index_patterns() {
         });
     }
 
-    println!("Added {} triples to the database", database.default_triple_count());
+    println!(
+        "Added {} triples to the database",
+        database.default_triple_count()
+    );
 
     let age_id = database.dictionary_mut().encode("foaf:age");
-    let person_50_id = database.dictionary_mut().encode("http://example.org/person50");
+    let person_50_id = database
+        .dictionary_mut()
+        .encode("http://example.org/person50");
     let age_42_id = database.dictionary_mut().encode("42");
     let age_69_id = database.dictionary_mut().encode("69");
 
@@ -382,7 +405,9 @@ fn streamertail_optimizer_performance_test() {
         let works_at_id = database.dictionary_mut().encode("ex:worksAt");
         let company_id = database.dictionary_mut().encode(&company_uri);
         let name_value = database.dictionary_mut().encode(&format!("Person{}", i));
-        let age_value = database.dictionary_mut().encode(&format!("{}", 20 + (i % 50)));
+        let age_value = database
+            .dictionary_mut()
+            .encode(&format!("{}", 20 + (i % 50)));
 
         database.add_triple(Triple {
             subject: person_id,
@@ -405,7 +430,10 @@ fn streamertail_optimizer_performance_test() {
 
     let data_load_time = start.elapsed();
     println!("Data loading time: {:?}", data_load_time);
-    println!("Added {} triples to the database", database.default_triple_count());
+    println!(
+        "Added {} triples to the database",
+        database.default_triple_count()
+    );
 
     // Test different query types
     let name_id = database.dictionary_mut().encode("foaf:name");

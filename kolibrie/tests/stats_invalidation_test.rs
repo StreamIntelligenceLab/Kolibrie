@@ -105,9 +105,7 @@ fn loading_n_triples_refreshes_the_statistics() {
     let mut database = seeded();
     assert_eq!(database.get_or_build_stats().total_triples, 3);
 
-    database.parse_ntriples_and_add(
-        "<urn:d> <urn:p> \"4\" .\n<urn:e> <urn:p> \"5\" .\n",
-    );
+    database.parse_ntriples_and_add("<urn:d> <urn:p> \"4\" .\n<urn:e> <urn:p> \"5\" .\n");
 
     assert_eq!(database.get_or_build_stats().total_triples, 5);
 }
@@ -117,11 +115,7 @@ fn a_sparql_update_refreshes_the_statistics() {
     let mut database = seeded();
     assert_eq!(database.get_or_build_stats().total_triples, 3);
 
-    execute_sparql_update(
-        r#"INSERT DATA { <urn:d> <urn:p> "4" . }"#,
-        &mut database,
-    )
-    .unwrap();
+    execute_sparql_update(r#"INSERT DATA { <urn:d> <urn:p> "4" . }"#, &mut database).unwrap();
 
     assert_eq!(database.get_or_build_stats().total_triples, 4);
 }

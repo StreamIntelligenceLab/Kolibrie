@@ -87,8 +87,11 @@ pub fn execute_query_rayon_parallel2_volcano(
         Ok(results) => results,
         Err(error) => {
             match error.as_str() {
-                "ML_FEATURE_DISABLED" | "ML_FORBIDDEN" | "ML_INVALID_CONFIGURATION"
-                | "ML_INVALID_ARTIFACT" | "ML_EXECUTION_FAILED" => eprintln!("{error}"),
+                "ML_FEATURE_DISABLED"
+                | "ML_FORBIDDEN"
+                | "ML_INVALID_CONFIGURATION"
+                | "ML_INVALID_ARTIFACT"
+                | "ML_EXECUTION_FAILED" => eprintln!("{error}"),
                 _ => eprintln!("SPARQL_EXECUTION_FAILED"),
             }
             Vec::new()
@@ -221,7 +224,9 @@ fn execute_approved_prediction(
     database: &mut SparqlDatabase,
 ) -> Result<Vec<Vec<String>>, String> {
     if predict.distribution {
-        return Err("ML.PREDICT ... OUTPUT ?v DISTRIBUTION runs only through kolibrie::program".to_string());
+        return Err(
+            "ML.PREDICT ... OUTPUT ?v DISTRIBUTION runs only through kolibrie::program".to_string(),
+        );
     }
     database
         .ml_context

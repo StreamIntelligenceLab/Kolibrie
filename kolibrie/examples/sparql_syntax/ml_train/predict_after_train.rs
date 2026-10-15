@@ -16,7 +16,12 @@ fn tmp_model_path(name: &str) -> String {
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_nanos())
         .unwrap_or(0);
-    format!("kolibrie_example_{}_{}_{}.bin", name, std::process::id(), nanos)
+    format!(
+        "kolibrie_example_{}_{}_{}.bin",
+        name,
+        std::process::id(),
+        nanos
+    )
 }
 
 fn main() {
@@ -69,9 +74,7 @@ TRAIN NEURAL RELATION ex:predictedDigit {{
 "#
     );
     execute_neural_program(&mut database, &program).expect("training failed");
-    if let Some(triples) = database
-        .take_neural_materialized("http://example.org/predictedDigit")
-    {
+    if let Some(triples) = database.take_neural_materialized("http://example.org/predictedDigit") {
         for triple in triples {
             database.delete_triple(&triple);
         }
@@ -111,4 +114,9 @@ ML.PREDICT(MODEL "digit_model",
     }
 }
 
-mod local_ml { include!(concat!(env!("CARGO_MANIFEST_DIR"), "/examples/support/ml_context.rs")); }
+mod local_ml {
+    include!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/examples/support/ml_context.rs"
+    ));
+}

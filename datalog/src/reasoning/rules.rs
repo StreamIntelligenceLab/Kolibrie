@@ -137,14 +137,9 @@ pub fn join_premise_with_hash_join(
     premise: &TriplePattern,
     all_facts: &[Triple],
     current_bindings: Vec<BTreeMap<String, String>>,
-    dict: &Dictionary
+    dict: &Dictionary,
 ) -> Vec<BTreeMap<String, String>> {
-    perform_hash_join_for_rules(
-        premise,
-        all_facts,
-        &dict,
-        current_bindings,
-    )
+    perform_hash_join_for_rules(premise, all_facts, &dict, current_bindings)
 }
 
 impl Reasoner {

@@ -33,6 +33,19 @@
 
 use datalog::parser_n3_logic::parse_n3_rule;
 use datalog::reasoning::Reasoner;
+use datalogmtl::automata::{
+    self,
+    interval::{TInterval, NEG_INF, POS_INF},
+};
+use datalogmtl::evaluator::DatalogMTLEvaluator;
+use datalogmtl::meteor_fmt;
+use datalogmtl::parser::{parse_data, parse_program};
+use datalogmtl::rdf_parser::{
+    parse_interval as parse_dmtl_interval, parse_rules as parse_dmtl_rules, parse_stream_shapes,
+};
+use datalogmtl::store::IntervalFactStore;
+use datalogmtl::stream::{RdfEvent, ShapeIngester};
+use datalogmtl::syntax::{DatalogMTLRule, Mode};
 use kolibrie::parser::process_rule_definition;
 use kolibrie::rsp_engine::{
     OperationMode, QueryExecutionMode, RSPBuilder, ResultConsumer, SimpleR2R,
@@ -41,18 +54,6 @@ use kolibrie::sparql_database::SparqlDatabase;
 use serde::{Deserialize, Serialize};
 use shared::dictionary::Dictionary;
 use shared::triple::Triple;
-use datalogmtl::evaluator::DatalogMTLEvaluator;
-use datalogmtl::store::IntervalFactStore;
-use datalogmtl::syntax::{DatalogMTLRule, Mode};
-use datalogmtl::stream::{ShapeIngester, RdfEvent};
-use datalogmtl::parser::{parse_program, parse_data};
-use datalogmtl::rdf_parser::{
-    parse_rules as parse_dmtl_rules,
-    parse_stream_shapes,
-    parse_interval as parse_dmtl_interval,
-};
-use datalogmtl::automata::{self, interval::{TInterval, NEG_INF, POS_INF}};
-use datalogmtl::meteor_fmt;
 use std::collections::HashMap;
 use std::io::{self, Read, Write};
 use std::net::{TcpListener, TcpStream};
@@ -745,7 +746,11 @@ fn find_crlf(bytes: &[u8]) -> Option<usize> {
     bytes.windows(2).position(|window| window == b"\r\n")
 }
 
-fn handle_request(request: &HttpRequest, sessions: &Sessions, dmtl_sessions: &DmtlSessions) -> String {
+fn handle_request(
+    request: &HttpRequest,
+    sessions: &Sessions,
+    dmtl_sessions: &DmtlSessions,
+) -> String {
     let method = request.method.as_str();
     let path = request.path.as_str();
 
@@ -832,13 +837,10 @@ fn rsp_register(body: &str, sessions: &Sessions) -> String {
 
     // Validate RSP policy before creating a session
     let policy_db = SparqlDatabase::new();
-    for text in std::iter::once(&req.query)
-        .chain(req.sparql_rules.iter().flatten())
-    {
-        if let Err(error) = kolibrie::execute_query::validate_query_policy(
-            &strip_hash_comments(text),
-            &policy_db,
-        ) {
+    for text in std::iter::once(&req.query).chain(req.sparql_rules.iter().flatten()) {
+        if let Err(error) =
+            kolibrie::execute_query::validate_query_policy(&strip_hash_comments(text), &policy_db)
+        {
             return ml_error_response(&error);
         }
     }
@@ -1463,20 +1465,25 @@ mod tests {
 
     #[test]
     fn rsp_policy_rejection_precedes_session_creation() {
-        let declaration = r#"MODEL "unapproved" { ARCH MLP { HIDDEN [4] } OUTPUT BINARY { true } }"#;
+        let declaration =
+            r#"MODEL "unapproved" { ARCH MLP { HIDDEN [4] } OUTPUT BINARY { true } }"#;
         let expected = if cfg!(feature = "ml") { "403" } else { "503" };
         let body = serde_json::json!({"query":declaration}).to_string();
         assert!(super::execute_rsp_query(&body).starts_with(&format!("HTTP/1.1 {expected}")));
-        let sessions: super::Sessions = std::sync::Arc::new(std::sync::Mutex::new(
-            std::collections::HashMap::new(),
-        ));
+        let sessions: super::Sessions =
+            std::sync::Arc::new(std::sync::Mutex::new(std::collections::HashMap::new()));
         let query = "REGISTER RSTREAM <urn:out> AS SELECT * FROM NAMED WINDOW :w ON <urn:in> [RANGE 3 STEP 1] WHERE { WINDOW :w { ?s ?p ?o } }";
         let body = serde_json::json!({"query":query,"sparql_rules":[declaration]}).to_string();
         let response = super::rsp_register(&body, &sessions);
-        assert!(response.starts_with(&format!("HTTP/1.1 {expected}")), "{response}");
+        assert!(
+            response.starts_with(&format!("HTTP/1.1 {expected}")),
+            "{response}"
+        );
         assert!(sessions.lock().unwrap().is_empty());
-        assert!(super::execute_rsp_query(&serde_json::json!({"query":query}).to_string())
-            .starts_with("HTTP/1.1 200"));
+        assert!(
+            super::execute_rsp_query(&serde_json::json!({"query":query}).to_string())
+                .starts_with("HTTP/1.1 200")
+        );
     }
 
     #[cfg(feature = "ml")]
@@ -1754,7 +1761,10 @@ fn handle_dmtl_register(body: &str, dmtl_sessions: &DmtlSessions) -> String {
     if let Some(bg) = &req.background_ntriples {
         if !bg.trim().is_empty() {
             let triples = tokenize_and_encode_ntriples(bg, &dict_arc);
-            println!("DMTL register: {} background triple(s) at t=0", triples.len());
+            println!(
+                "DMTL register: {} background triple(s) at t=0",
+                triples.len()
+            );
             eval.advance(0, triples);
         }
     }
@@ -1768,9 +1778,16 @@ fn handle_dmtl_register(body: &str, dmtl_sessions: &DmtlSessions) -> String {
             sse_sender: Arc::new(Mutex::new(None)),
         },
     );
-    println!("DMTL register: session {} created, stream_iris: {:?}", session_id, stream_iris);
+    println!(
+        "DMTL register: session {} created, stream_iris: {:?}",
+        session_id, stream_iris
+    );
 
-    let json = serde_json::to_string(&DmtlRegisterResponse { session_id, stream_iris }).unwrap_or_default();
+    let json = serde_json::to_string(&DmtlRegisterResponse {
+        session_id,
+        stream_iris,
+    })
+    .unwrap_or_default();
     format!(
         "HTTP/1.1 200 OK\r\n\
          Content-Type: application/json\r\n\
@@ -1801,7 +1818,11 @@ fn handle_dmtl_push(body: &str, dmtl_sessions: &DmtlSessions) -> String {
     let triples = match (&mut session.shape_ingester, &req.stream_iri) {
         (Some(ingester), Some(iri)) => {
             let raw = tokenize_and_encode_ntriples(&req.ntriples, &dict_arc);
-            let event = RdfEvent { stream_iri: iri.clone(), timestamp: req.timestamp, triples: raw };
+            let event = RdfEvent {
+                stream_iri: iri.clone(),
+                timestamp: req.timestamp,
+                triples: raw,
+            };
             // Emit the shape's EXPIRY facts for channels that went quiet before
             // evicting them, otherwise a stale source disappears silently.
             let expired: Vec<Triple> = ingester
@@ -1818,18 +1839,25 @@ fn handle_dmtl_push(body: &str, dmtl_sessions: &DmtlSessions) -> String {
     };
     println!(
         "DMTL push: {} triple(s) at t={} (session {})",
-        triples.len(), req.timestamp, req.session_id
+        triples.len(),
+        req.timestamp,
+        req.session_id
     );
 
     let (derived, metrics) = session.evaluator.advance(req.timestamp, triples);
 
     let decoded: Vec<[String; 3]> = {
         let dict = session.evaluator.dictionary.read().unwrap();
-        derived.iter().map(|t| [
-            decode_dmtl_term(dict.decode(t.subject)),
-            decode_dmtl_term(dict.decode(t.predicate)),
-            decode_dmtl_term(dict.decode(t.object)),
-        ]).collect()
+        derived
+            .iter()
+            .map(|t| {
+                [
+                    decode_dmtl_term(dict.decode(t.subject)),
+                    decode_dmtl_term(dict.decode(t.predicate)),
+                    decode_dmtl_term(dict.decode(t.object)),
+                ]
+            })
+            .collect()
     };
 
     let tick_result = DmtlTickResult {
@@ -1917,10 +1945,7 @@ fn decode_dmtl_term(val: Option<&str>) -> String {
 }
 
 /// Tokenize N-Triples text and encode each term into the shared dictionary.
-fn tokenize_and_encode_ntriples(
-    ntriples: &str,
-    dict_arc: &Arc<RwLock<Dictionary>>,
-) -> Vec<Triple> {
+fn tokenize_and_encode_ntriples(ntriples: &str, dict_arc: &Arc<RwLock<Dictionary>>) -> Vec<Triple> {
     let mut triples = Vec::new();
     for line in ntriples.lines() {
         if let Some([s, p, o]) = tokenize_ntriples_line(line) {
@@ -1928,7 +1953,11 @@ fn tokenize_and_encode_ntriples(
             let s_id = dict.encode(&s);
             let p_id = dict.encode(&p);
             let o_id = dict.encode(&o);
-            triples.push(Triple { subject: s_id, predicate: p_id, object: o_id });
+            triples.push(Triple {
+                subject: s_id,
+                predicate: p_id,
+                object: o_id,
+            });
         }
     }
     triples
@@ -1951,50 +1980,66 @@ fn tokenize_ntriples_line(line: &str) -> Option<[String; 3]> {
         while i < bytes.len() && (bytes[i] == b' ' || bytes[i] == b'\t') {
             i += 1;
         }
-        if i >= bytes.len() { break; }
+        if i >= bytes.len() {
+            break;
+        }
 
         match bytes[i] {
             b'<' => {
                 i += 1;
                 let start = i;
-                while i < bytes.len() && bytes[i] != b'>' { i += 1; }
+                while i < bytes.len() && bytes[i] != b'>' {
+                    i += 1;
+                }
                 tokens.push(String::from_utf8_lossy(&bytes[start..i]).into_owned());
-                if i < bytes.len() { i += 1; } // skip '>'
+                if i < bytes.len() {
+                    i += 1;
+                } // skip '>'
             }
             b'"' => {
                 let start = i;
                 i += 1;
                 while i < bytes.len() {
-                    if bytes[i] == b'\\' { i += 2; continue; }
-                    if bytes[i] == b'"' { i += 1; break; }
+                    if bytes[i] == b'\\' {
+                        i += 2;
+                        continue;
+                    }
+                    if bytes[i] == b'"' {
+                        i += 1;
+                        break;
+                    }
                     i += 1;
                 }
                 // Consume optional @lang tag or ^^<datatype>
                 if i < bytes.len() && bytes[i] == b'@' {
-                    while i < bytes.len() && bytes[i] != b' ' && bytes[i] != b'\t' { i += 1; }
+                    while i < bytes.len() && bytes[i] != b' ' && bytes[i] != b'\t' {
+                        i += 1;
+                    }
                 } else if i + 1 < bytes.len() && bytes[i] == b'^' && bytes[i + 1] == b'^' {
                     i += 2;
                     if i < bytes.len() && bytes[i] == b'<' {
                         i += 1;
-                        while i < bytes.len() && bytes[i] != b'>' { i += 1; }
-                        if i < bytes.len() { i += 1; }
+                        while i < bytes.len() && bytes[i] != b'>' {
+                            i += 1;
+                        }
+                        if i < bytes.len() {
+                            i += 1;
+                        }
                     }
                 }
                 tokens.push(String::from_utf8_lossy(&bytes[start..i]).into_owned());
             }
             b'_' if i + 1 < bytes.len() && bytes[i + 1] == b':' => {
                 let start = i;
-                while i < bytes.len()
-                    && bytes[i] != b' '
-                    && bytes[i] != b'\t'
-                    && bytes[i] != b'.'
-                {
+                while i < bytes.len() && bytes[i] != b' ' && bytes[i] != b'\t' && bytes[i] != b'.' {
                     i += 1;
                 }
                 tokens.push(String::from_utf8_lossy(&bytes[start..i]).into_owned());
             }
             b'.' => break, // end-of-triple marker
-            _ => { i += 1; }
+            _ => {
+                i += 1;
+            }
         }
     }
 
@@ -2025,7 +2070,11 @@ fn handle_dmtl_static(body: &str) -> String {
     let rdf = req.syntax.as_deref().unwrap_or("rdf") != "meteor";
     let dict: Arc<RwLock<Dictionary>> = Arc::new(RwLock::new(Dictionary::new()));
 
-    let parsed = if rdf { parse_static_rdf(&req, &dict) } else { parse_static_meteor(&req, &dict) };
+    let parsed = if rdf {
+        parse_static_rdf(&req, &dict)
+    } else {
+        parse_static_meteor(&req, &dict)
+    };
     let (rules, iv_facts, queries) = match parsed {
         Ok(v) => v,
         Err(e) => return json_error_response(&e),
@@ -2061,14 +2110,25 @@ fn handle_dmtl_static(body: &str) -> String {
     }
     lines.sort();
 
-    let resp = DmtlStaticResponse { facts: lines, entailment, note };
+    let resp = DmtlStaticResponse {
+        facts: lines,
+        entailment,
+        note,
+    };
     json_response(&serde_json::to_string(&resp).unwrap_or_default())
 }
 
-type StaticInput = (Vec<DatalogMTLRule>, Vec<(Triple, TInterval)>, Vec<(Triple, TInterval)>);
+type StaticInput = (
+    Vec<DatalogMTLRule>,
+    Vec<(Triple, TInterval)>,
+    Vec<(Triple, TInterval)>,
+);
 
 /// Parse the static request in RDF-style: triple-pattern rules + `<s> <p> <o> @[l,r]` facts.
-fn parse_static_rdf(req: &DmtlStaticRequest, dict: &Arc<RwLock<Dictionary>>) -> Result<StaticInput, String> {
+fn parse_static_rdf(
+    req: &DmtlStaticRequest,
+    dict: &Arc<RwLock<Dictionary>>,
+) -> Result<StaticInput, String> {
     let rules = {
         let mut d = dict.write().unwrap();
         parse_dmtl_rules(&req.program, &mut d, Mode::Static)
@@ -2083,64 +2143,106 @@ fn parse_static_rdf(req: &DmtlStaticRequest, dict: &Arc<RwLock<Dictionary>>) -> 
 }
 
 /// Parse the static request in MeTeoR-style: `Pred(args)` rules + `Pred(args)@[l,r]` facts.
-fn parse_static_meteor(req: &DmtlStaticRequest, dict: &Arc<RwLock<Dictionary>>) -> Result<StaticInput, String> {
+fn parse_static_meteor(
+    req: &DmtlStaticRequest,
+    dict: &Arc<RwLock<Dictionary>>,
+) -> Result<StaticInput, String> {
     let rules = parse_program(&req.program, dict, Mode::Static)
         .map_err(|e| format!("Program parse error: {}", e))?;
     let to_iv = |fs: Vec<datalogmtl::parser::TemporalFact>| -> Vec<(Triple, TInterval)> {
-        fs.into_iter().map(|f| (f.triple, TInterval::closed(f.start as i64, f.end as i64))).collect()
+        fs.into_iter()
+            .map(|f| (f.triple, TInterval::closed(f.start as i64, f.end as i64)))
+            .collect()
     };
     let facts = to_iv(parse_data(&req.data, dict).map_err(|e| format!("Data parse error: {}", e))?);
     let queries = match &req.queries {
-        Some(q) if !q.trim().is_empty() =>
-            to_iv(parse_data(q, dict).map_err(|e| format!("Query parse error: {}", e))?),
+        Some(q) if !q.trim().is_empty() => {
+            to_iv(parse_data(q, dict).map_err(|e| format!("Query parse error: {}", e))?)
+        }
         _ => Vec::new(),
     };
     Ok((rules, facts, queries))
 }
 
 /// Parse RDF interval facts: `<s> <p> <o> @[l,r] .` (one per line).
-fn parse_dmtl_interval_facts(text: &str, dict: &Arc<RwLock<Dictionary>>) -> Result<Vec<(Triple, TInterval)>, String> {
+fn parse_dmtl_interval_facts(
+    text: &str,
+    dict: &Arc<RwLock<Dictionary>>,
+) -> Result<Vec<(Triple, TInterval)>, String> {
     let mut out = Vec::new();
     for (i, raw) in text.lines().enumerate() {
         let line = raw.trim();
-        if line.is_empty() || line.starts_with('#') { continue; }
-        let at = line.find("@[")
-            .ok_or_else(|| format!("data line {}: interval fact needs '@[l,r]': '{}'", i + 1, line))?;
+        if line.is_empty() || line.starts_with('#') {
+            continue;
+        }
+        let at = line.find("@[").ok_or_else(|| {
+            format!(
+                "data line {}: interval fact needs '@[l,r]': '{}'",
+                i + 1,
+                line
+            )
+        })?;
         let iv_inner = &line[at + 2..];
-        let rb = iv_inner.find(']')
+        let rb = iv_inner
+            .find(']')
             .ok_or_else(|| format!("data line {}: missing ']' in interval: '{}'", i + 1, line))?;
         let interval = parse_dmtl_interval(&iv_inner[..rb])?;
         let toks = tokenize_ntriples_line(&line[..at])
             .ok_or_else(|| format!("data line {}: could not parse triple: '{}'", i + 1, line))?;
         let triple = {
             let mut d = dict.write().unwrap();
-            Triple { subject: d.encode(&toks[0]), predicate: d.encode(&toks[1]), object: d.encode(&toks[2]) }
+            Triple {
+                subject: d.encode(&toks[0]),
+                predicate: d.encode(&toks[1]),
+                object: d.encode(&toks[2]),
+            }
         };
-        out.push((triple, TInterval::closed(interval.start as i64, interval.end as i64)));
+        out.push((
+            triple,
+            TInterval::closed(interval.start as i64, interval.end as i64),
+        ));
     }
     Ok(out)
 }
 
 /// Format a materialized fact as `<atom>@[l,r]` in the requested syntax.
 fn fmt_fact(triple: &Triple, iv: &TInterval, dict: &Dictionary, rdf: bool) -> String {
-    let atom = if rdf { fmt_rdf_triple(triple, dict) } else { meteor_fmt::atom_string(triple, dict) };
+    let atom = if rdf {
+        fmt_rdf_triple(triple, dict)
+    } else {
+        meteor_fmt::atom_string(triple, dict)
+    };
     format!("{}@{}", atom, fmt_tinterval(iv))
 }
 
 /// Render a triple in RDF/N-Triples style: `<s> <p> <o>` (literals/blanks as-is).
 fn fmt_rdf_triple(triple: &Triple, dict: &Dictionary) -> String {
     let d = |id| dict.decode(id).unwrap_or("?");
-    format!("{} {} {}",
+    format!(
+        "{} {} {}",
         term_to_ntriples_token(d(triple.subject)),
         term_to_ntriples_token(d(triple.predicate)),
-        term_to_ntriples_token(d(triple.object)))
+        term_to_ntriples_token(d(triple.object))
+    )
 }
 
 /// Render a `TInterval` as `[l,r]` / `(l,r)` with `±inf` for unbounded tails.
 fn fmt_tinterval(iv: &TInterval) -> String {
-    let l = if iv.start == NEG_INF { "-inf".to_string() } else { iv.start.to_string() };
-    let r = if iv.end == POS_INF { "+inf".to_string() } else { iv.end.to_string() };
-    format!("{}{},{}{}",
-        if iv.start_open { "(" } else { "[" }, l, r,
-        if iv.end_open { ")" } else { "]" })
+    let l = if iv.start == NEG_INF {
+        "-inf".to_string()
+    } else {
+        iv.start.to_string()
+    };
+    let r = if iv.end == POS_INF {
+        "+inf".to_string()
+    } else {
+        iv.end.to_string()
+    };
+    format!(
+        "{}{},{}{}",
+        if iv.start_open { "(" } else { "[" },
+        l,
+        r,
+        if iv.end_open { ")" } else { "]" }
+    )
 }

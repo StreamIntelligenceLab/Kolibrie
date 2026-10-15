@@ -6,8 +6,8 @@
  *   -> SPARQL-star feature query -> train a neural relation -> feed predictions back into RULE syntax
  */
 
-use kolibrie::execute_query::execute_query_rayon_parallel2_volcano;
 use kolibrie::execute_ml_train::build_ground_reasoner_from_db;
+use kolibrie::execute_query::execute_query_rayon_parallel2_volcano;
 use kolibrie::neural_relations::execute_neural_program;
 use kolibrie::parser::{convert_combined_rule, parse_combined_query, process_rule_definition};
 use kolibrie::sparql_database::SparqlDatabase;
@@ -113,7 +113,10 @@ fn build_feedback_program() -> String {
         String::new(),
         "MODEL \"response_model\" {".to_string(),
         "    ARCH MLP { HIDDEN [8, 4] }".to_string(),
-        format!("    OUTPUT EXCLUSIVE {{ <{}monitor>, <{}dispatch> }}", EX, EX),
+        format!(
+            "    OUTPUT EXCLUSIVE {{ <{}monitor>, <{}dispatch> }}",
+            EX, EX
+        ),
         "}".to_string(),
         String::new(),
         "NEURAL RELATION ex:predictedResponse USING MODEL \"response_model\" {".to_string(),
@@ -160,8 +163,8 @@ fn execute_sdd_rule_batch(db: &mut SparqlDatabase, rule_inputs: &[String]) -> us
 
     for rule_input in rule_inputs {
         db.register_prefixes_from_query(rule_input);
-        let (_rest, combined) = parse_combined_query(rule_input)
-            .expect("failed to parse provenance rule");
+        let (_rest, combined) =
+            parse_combined_query(rule_input).expect("failed to parse provenance rule");
 
         for (prefix, uri) in &combined.prefixes {
             db.add_prefix(prefix.clone(), uri.clone());
@@ -332,11 +335,7 @@ fn print_rows(title: &str, rows: &[Vec<String>]) {
 
 fn shorten(value: &str) -> String {
     if value.starts_with(EX) {
-        value
-            .rsplit(['/', '#'])
-            .next()
-            .unwrap_or(value)
-            .to_string()
+        value.rsplit(['/', '#']).next().unwrap_or(value).to_string()
     } else {
         value.to_string()
     }
@@ -403,9 +402,17 @@ fn main() {
         if let Some(prob) = case.hr_prob {
             add_probabilistic_fact(&mut db, &sensor, &iri("hrEvidence"), prob);
         }
-        add_probabilistic_fact(&mut db, &sensor, &iri("pressureEvidence"), case.pressure_prob);
+        add_probabilistic_fact(
+            &mut db,
+            &sensor,
+            &iri("pressureEvidence"),
+            case.pressure_prob,
+        );
     }
-    println!("  Added {} labeled sensors and seeded uncertain evidence facts", sensors.len());
+    println!(
+        "  Added {} labeled sensors and seeded uncertain evidence facts",
+        sensors.len()
+    );
 
     println!("\n[2/5] Running provenance-aware RULE syntax");
     let temp_rule = rule_risk_from_temp_pressure();
@@ -415,7 +422,10 @@ fn main() {
     println!();
     print_block("  RULE :RiskFromHrPressure", &hr_rule);
     let provenance_inferred = execute_sdd_rule_batch(&mut db, &[temp_rule, hr_rule]);
-    println!("\n  Shared SDD inference produced {} new provenance-tagged facts", provenance_inferred);
+    println!(
+        "\n  Shared SDD inference produced {} new provenance-tagged facts",
+        provenance_inferred
+    );
 
     let risk_rows = execute_query_rayon_parallel2_volcano(&risk_signal_query(), &mut db);
     println!("\n  Derived {} riskSignal facts", risk_rows.len());
@@ -426,7 +436,10 @@ fn main() {
     let provenance_rows = provenance_rows_from_rdf_star(&db);
     print_rows("  Provenance rows", &provenance_rows);
     let feature_count = materialize_feature_triples_from_rows(&mut db, &provenance_rows);
-    println!("  Materialized {} numeric feature rows for training", feature_count);
+    println!(
+        "  Materialized {} numeric feature rows for training",
+        feature_count
+    );
 
     println!("\n[4/5] Training and materializing the neural relation");
     let neural_program = build_feedback_program();
@@ -441,9 +454,12 @@ fn main() {
     println!("\n[5/5] Feeding predictions back into RULE syntax");
     let feedback_rule = feedback_rule();
     print_block("  RULE :OpenDispatchCase", &feedback_rule);
-    let (_rule, inferred) = process_rule_definition(&feedback_rule, &mut db)
-        .expect("feedback rule execution failed");
-    println!("  Rule inference produced {} new dispatchCase facts", inferred.len());
+    let (_rule, inferred) =
+        process_rule_definition(&feedback_rule, &mut db).expect("feedback rule execution failed");
+    println!(
+        "  Rule inference produced {} new dispatchCase facts",
+        inferred.len()
+    );
 
     let case_query = dispatch_case_query();
     print_block("  Final SELECT query", &case_query);
@@ -453,4 +469,9 @@ fn main() {
     println!("\nModel saved to {MODEL_PATH}");
 }
 
-mod local_ml { include!(concat!(env!("CARGO_MANIFEST_DIR"), "/examples/support/ml_context.rs")); }
+mod local_ml {
+    include!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/examples/support/ml_context.rs"
+    ));
+}

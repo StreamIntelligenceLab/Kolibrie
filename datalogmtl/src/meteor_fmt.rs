@@ -12,10 +12,10 @@
 //! textual atom form and coalesce per-atom integer tick-sets into closed
 //! intervals, so datalogmtl output can be diffed line-for-line against MeTeoR.
 
-use std::collections::{BTreeSet, HashMap};
+use crate::parser::RDF_TYPE;
 use shared::dictionary::Dictionary;
 use shared::triple::Triple;
-use crate::parser::RDF_TYPE;
+use std::collections::{BTreeSet, HashMap};
 
 /// Render a triple as a MeTeoR atom string (no interval):
 ///   `(x, rdf:type, A)` → `A(x)`;  `(x, C, y)` → `C(x,y)`.
@@ -32,10 +32,7 @@ pub fn atom_string(triple: &Triple, dict: &Dictionary) -> String {
 
 /// Coalesce a per-triple set of integer timepoints into MeTeoR-format lines
 /// `Pred(args)@[l,r]`, one line per contiguous interval, globally sorted.
-pub fn format_tick_sets(
-    ticks: &HashMap<Triple, BTreeSet<u64>>,
-    dict: &Dictionary,
-) -> Vec<String> {
+pub fn format_tick_sets(ticks: &HashMap<Triple, BTreeSet<u64>>, dict: &Dictionary) -> Vec<String> {
     let mut lines = Vec::new();
     for (triple, points) in ticks {
         let atom = atom_string(triple, dict);

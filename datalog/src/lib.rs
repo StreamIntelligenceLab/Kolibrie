@@ -26,6 +26,6 @@
 //! - **Inconsistency.** [`reasoning::repairs`] answers queries under
 //!   inconsistency-tolerant semantics instead of refusing to reason.
 
-pub mod reasoning;
-pub mod parser_n3_logic;
 pub mod cross_window_sds;
+pub mod parser_n3_logic;
+pub mod reasoning;

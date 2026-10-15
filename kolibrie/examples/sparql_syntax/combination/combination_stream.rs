@@ -8,13 +8,10 @@
  * you can obtain one at https://mozilla.org/MPL/2.0/.
  */
 
-use kolibrie::prelude::*;
 use kolibrie::parser::{
-    parse_from_named_window,
-    parse_stream_type,
-    parse_window_spec,
-    process_rule_definition,
+    parse_from_named_window, parse_stream_type, parse_window_spec, process_rule_definition,
 };
+use kolibrie::prelude::*;
 use kolibrie::sparql_database::SparqlDatabase;
 
 fn main() {
@@ -55,7 +52,10 @@ fn main() {
 
     let mut database = SparqlDatabase::new();
     database.parse_rdf(rdf_xml_data);
-    println!("Database RDF triples: {:#?}", database.query_default_triples(None, None, None));
+    println!(
+        "Database RDF triples: {:#?}",
+        database.query_default_triples(None, None, None)
+    );
     println!("Total triples loaded: {}", database.default_triple_count());
 
     // Basic RSP rule with RSTREAM and sliding window
@@ -121,10 +121,7 @@ WHERE {
             println!("Inferred {} new fact(s):", inferred_facts.len());
             for triple in inferred_facts.iter() {
                 let dict = database.dictionary();
-                println!(
-                    "  {}",
-                    database.triple_to_string(triple, &*dict)
-                );
+                println!("  {}", database.triple_to_string(triple, &*dict));
             }
         }
         Err(e) => println!("Failed to process RSP rule: {}", e),
@@ -193,10 +190,7 @@ WHERE {
             println!("Inferred {} new fact(s):", inferred_facts.len());
             for triple in inferred_facts.iter() {
                 let dict = database.dictionary();
-                println!(
-                    "  {}",
-                    database.triple_to_string(triple, &*dict)
-                );
+                println!("  {}", database.triple_to_string(triple, &*dict));
             }
         }
         Err(e) => println!("Failed to process ISTREAM rule: {}", e),
@@ -284,10 +278,7 @@ ML.PREDICT(
             println!("Inferred {} new fact(s):", inferred_facts.len());
             for triple in inferred_facts.iter() {
                 let dict = database.dictionary();
-                println!(
-                    "  {}",
-                    database.triple_to_string(triple, &*dict)
-                );
+                println!("  {}", database.triple_to_string(triple, &*dict));
             }
         }
         Err(e) => println!("Failed to process DSTREAM + ML rule: {}", e),
@@ -440,13 +431,24 @@ WHERE {
     }
 
     println!("\n=== RSP Windowing Demo Complete ===");
-    println!("Total triples in database: {}", database.default_triple_count());
+    println!(
+        "Total triples in database: {}",
+        database.default_triple_count()
+    );
     println!("Parser successfully handled all RSP windowing syntax!");
 
     // DEBUG: Final database state
     println!("DEBUG: Final database state:");
-    println!("   - Started with: {} triples", database.default_triple_count());
-    println!("   - Final count: {} triples", database.default_triple_count());
-    println!("   - Total added: {} triples", database.default_triple_count() - 15); // 15 original triples
+    println!(
+        "   - Started with: {} triples",
+        database.default_triple_count()
+    );
+    println!(
+        "   - Final count: {} triples",
+        database.default_triple_count()
+    );
+    println!(
+        "   - Total added: {} triples",
+        database.default_triple_count() - 15
+    ); // 15 original triples
 }
-

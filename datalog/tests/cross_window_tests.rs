@@ -11,18 +11,17 @@
 use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, RwLock};
 
-use shared::dictionary::Dictionary;
 use datalog::cross_window_sds::{
-    Sds, WindowData, WindowedTriple,
-    annotate_predicate, strip_window_prefix, all_component_iris,
-    translate_sds_to_datalog, sds_with_expiry_to_external,
+    all_component_iris, annotate_predicate, sds_with_expiry_to_external, strip_window_prefix,
+    translate_sds_to_datalog, Sds, WindowData, WindowedTriple,
 };
-use datalog::reasoning::materialisation::cross_window_naive::naive_sds_plus;
+use datalog::parser_n3_logic::{parse_n3_document, parse_n3_rules_for_sds};
 use datalog::reasoning::materialisation::cross_window_incremental::{
     incremental_sds_plus, SdsWithExpiry,
 };
+use datalog::reasoning::materialisation::cross_window_naive::naive_sds_plus;
 use datalog::reasoning::Reasoner;
-use datalog::parser_n3_logic::{parse_n3_document, parse_n3_rules_for_sds};
+use shared::dictionary::Dictionary;
 
 fn make_dict() -> Arc<RwLock<Dictionary>> {
     Arc::new(RwLock::new(Dictionary::new()))
@@ -75,8 +74,7 @@ fn parse_rules(dict: &Arc<RwLock<Dictionary>>) -> Vec<shared::rule::Rule> {
         ("http://map/".to_string(), 20u64),
     ]
     .into();
-    let (rules, _ctx) =
-        parse_n3_rules_for_sds(RULE_N3, &mut reasoner, window_widths).unwrap();
+    let (rules, _ctx) = parse_n3_rules_for_sds(RULE_N3, &mut reasoner, window_widths).unwrap();
     rules
 }
 
@@ -91,7 +89,12 @@ fn pred_strings(
         .map(|triples| {
             triples
                 .iter()
-                .filter_map(|t| dict.read().unwrap().decode(t.predicate).map(|s| s.to_string()))
+                .filter_map(|t| {
+                    dict.read()
+                        .unwrap()
+                        .decode(t.predicate)
+                        .map(|s| s.to_string())
+                })
                 .collect()
         })
         .unwrap_or_default()
@@ -122,7 +125,10 @@ fn test_translate_filters_expired() {
     let translated = translate_sds_to_datalog(&sds, &dict, 15);
     // Sensor fact (expiry=15) must be filtered at current_time=15
     let expiry15_present = translated.iter().any(|(_, e)| *e == 15);
-    assert!(!expiry15_present, "expired fact (expiry=15 at current_time=15) should be filtered");
+    assert!(
+        !expiry15_present,
+        "expired fact (expiry=15 at current_time=15) should be filtered"
+    );
     // Map fact (expiry=23) should still be present
     let alive = translated.iter().any(|(_, e)| *e == 23);
     assert!(alive, "alive map fact (expiry=23) should remain");
@@ -145,11 +151,12 @@ fn test_parser_accepts_missing_final_conclusion_dot() {
     let mut reasoner = Reasoner::new();
     reasoner.dictionary = Arc::clone(&dict);
 
-    let (rules, ctx) =
-        parse_n3_rules_for_sds(RULE_N3, &mut reasoner, window_widths()).unwrap();
+    let (rules, ctx) = parse_n3_rules_for_sds(RULE_N3, &mut reasoner, window_widths()).unwrap();
 
     assert_eq!(rules.len(), 1);
-    assert!(ctx.all_component_iris.contains(&"http://result/".to_string()));
+    assert!(ctx
+        .all_component_iris
+        .contains(&"http://result/".to_string()));
 }
 
 #[test]
@@ -194,7 +201,11 @@ fn test_naive_produces_hotspot() {
         "naive must produce facts in http://result/ bucket"
     );
     let preds = pred_strings(&result, "http://result/", &dict);
-    assert!(preds.contains("hotspot"), "naive must derive hotspot; got: {:?}", preds);
+    assert!(
+        preds.contains("hotspot"),
+        "naive must derive hotspot; got: {:?}",
+        preds
+    );
 }
 
 #[test]
@@ -230,8 +241,13 @@ fn test_incremental_expiration_times() {
     let empty_old: SdsWithExpiry = HashMap::new();
     let result = incremental_sds_plus(&rules, &sds, &empty_old, &dict, current_time);
 
-    let result_bucket = result.get("http://result/").expect("http://result/ bucket missing");
-    assert!(!result_bucket.is_empty(), "hotspot triple must be in result bucket");
+    let result_bucket = result
+        .get("http://result/")
+        .expect("http://result/ bucket missing");
+    assert!(
+        !result_bucket.is_empty(),
+        "hotspot triple must be in result bucket"
+    );
 
     for (_triple, &expiry) in result_bucket.iter() {
         assert_eq!(
@@ -278,7 +294,10 @@ fn test_incremental_map_fact_survives() {
         .get("http://map/")
         .map(|m| m.values().any(|&e| e > 15))
         .unwrap_or(false);
-    assert!(map_alive, "map fact (expiry=23) must still be alive at t=15");
+    assert!(
+        map_alive,
+        "map fact (expiry=23) must still be alive at t=15"
+    );
 }
 
 #[test]
@@ -311,8 +330,7 @@ fn test_expiry_chain_propagation() {
 { ?s wb:q ?o } => { ?s wc:r ?o }
 "#;
     let window_widths: HashMap<String, u64> = [("http://a/".to_string(), 10u64)].into();
-    let (rules, _ctx) =
-        parse_n3_rules_for_sds(chain_n3, &mut reasoner, window_widths).unwrap();
+    let (rules, _ctx) = parse_n3_rules_for_sds(chain_n3, &mut reasoner, window_widths).unwrap();
 
     let empty_old: SdsWithExpiry = HashMap::new();
     let sds_plus_old = incremental_sds_plus(&rules, &sds, &empty_old, &dict, 0);

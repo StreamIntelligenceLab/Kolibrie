@@ -8,11 +8,11 @@
  * you can obtain one at https://mozilla.org/MPL/2.0/.
  */
 
-use std::collections::HashMap;
-use crate::provenance::Provenance;
-use crate::triple::Triple;
 use crate::dictionary::Dictionary;
+use crate::provenance::Provenance;
 use crate::quoted_triple_store::QuotedTripleStore;
+use crate::triple::Triple;
+use std::collections::HashMap;
 
 /// Stores provenance tags for triples, parameterized by a [`Provenance`] semiring.
 ///
@@ -43,7 +43,10 @@ impl<P: Provenance> TagStore<P> {
 
     /// Get the tag for a triple. Returns `one()` if not explicitly stored (certain fact).
     pub fn get_tag(&self, triple: &Triple) -> P::Tag {
-        self.tags.get(triple).cloned().unwrap_or_else(|| self.provenance.one())
+        self.tags
+            .get(triple)
+            .cloned()
+            .unwrap_or_else(|| self.provenance.one())
     }
 
     /// Set the tag for a triple. If the tag equals `one()`, it is removed (implicit certainty).
@@ -131,44 +134,59 @@ impl TagStore<WmcProvenance> {
 
         let xsd_int = "http://www.w3.org/2001/XMLSchema#integer";
         let xsd_str = "http://www.w3.org/2001/XMLSchema#string";
-        let proof_count_id    = dict.encode("http://www.w3.org/ns/prob#proofCount");
-        let has_proof_id      = dict.encode("http://www.w3.org/ns/prob#hasProof");
-        let has_seed_id       = dict.encode("http://www.w3.org/ns/prob#hasSeed");
-        let has_neg_seed_id   = dict.encode("http://www.w3.org/ns/prob#hasNegatedSeed");
-        let formula_id        = dict.encode("http://www.w3.org/ns/prob#formula");
+        let proof_count_id = dict.encode("http://www.w3.org/ns/prob#proofCount");
+        let has_proof_id = dict.encode("http://www.w3.org/ns/prob#hasProof");
+        let has_seed_id = dict.encode("http://www.w3.org/ns/prob#hasSeed");
+        let has_neg_seed_id = dict.encode("http://www.w3.org/ns/prob#hasNegatedSeed");
+        let formula_id = dict.encode("http://www.w3.org/ns/prob#formula");
 
         for (triple, formula) in &self.tags {
             let derived_qt = qt_store.encode(triple.subject, triple.predicate, triple.object);
 
             // prob:proofCount
             let count_lit = format!("\"{}\"^^<{}>", formula.len(), xsd_int);
-            let count_id  = dict.encode(&count_lit);
-            result.push(Triple { subject: derived_qt, predicate: proof_count_id, object: count_id });
+            let count_id = dict.encode(&count_lit);
+            result.push(Triple {
+                subject: derived_qt,
+                predicate: proof_count_id,
+                object: count_id,
+            });
 
             // prob:formula — raw debug representation of the DNF
             let raw = format!("{:?}", formula);
             let formula_lit = format!("\"{}\"^^<{}>", raw.replace('"', "'"), xsd_str);
             let formula_lit_id = dict.encode(&formula_lit);
-            result.push(Triple { subject: derived_qt, predicate: formula_id, object: formula_lit_id });
+            result.push(Triple {
+                subject: derived_qt,
+                predicate: formula_id,
+                object: formula_lit_id,
+            });
 
             // per-proof path annotations
             for (proof_idx, clause) in formula.iter().enumerate() {
                 let idx_lit = format!("\"{}\"^^<{}>", proof_idx, xsd_int);
-                let idx_id  = dict.encode(&idx_lit);
+                let idx_id = dict.encode(&idx_lit);
 
                 // << d >> prob:hasProof "N"^^xsd:integer
-                result.push(Triple { subject: derived_qt, predicate: has_proof_id, object: idx_id });
+                result.push(Triple {
+                    subject: derived_qt,
+                    predicate: has_proof_id,
+                    object: idx_id,
+                });
 
                 // Level-2: << << d >> prob:hasProof "N" >> prob:hasSeed << seed >>
                 //          or prob:hasNegatedSeed for polarity=false literals
                 let proof_annot_qt = qt_store.encode(derived_qt, has_proof_id, idx_id);
                 for &(seed_var_id, polarity) in clause {
                     if let Some(seed_t) = self.seed_triples.get(seed_var_id as usize) {
-                        let seed_qt = qt_store.encode(
-                            seed_t.subject, seed_t.predicate, seed_t.object,
-                        );
+                        let seed_qt =
+                            qt_store.encode(seed_t.subject, seed_t.predicate, seed_t.object);
                         // Polarity-aware predicate: hasSeed for positive, hasNegatedSeed for negative
-                        let pred_id = if polarity { has_seed_id } else { has_neg_seed_id };
+                        let pred_id = if polarity {
+                            has_seed_id
+                        } else {
+                            has_neg_seed_id
+                        };
                         result.push(Triple {
                             subject: proof_annot_qt,
                             predicate: pred_id,
@@ -198,11 +216,11 @@ impl TagStore<SddProvenance> {
 
         let xsd_int = "http://www.w3.org/2001/XMLSchema#integer";
         let xsd_str = "http://www.w3.org/2001/XMLSchema#string";
-        let proof_count_id    = dict.encode("http://www.w3.org/ns/prob#proofCount");
-        let has_proof_id      = dict.encode("http://www.w3.org/ns/prob#hasProof");
-        let has_seed_id       = dict.encode("http://www.w3.org/ns/prob#hasSeed");
-        let has_neg_seed_id   = dict.encode("http://www.w3.org/ns/prob#hasNegatedSeed");
-        let formula_id        = dict.encode("http://www.w3.org/ns/prob#formula");
+        let proof_count_id = dict.encode("http://www.w3.org/ns/prob#proofCount");
+        let has_proof_id = dict.encode("http://www.w3.org/ns/prob#hasProof");
+        let has_seed_id = dict.encode("http://www.w3.org/ns/prob#hasSeed");
+        let has_neg_seed_id = dict.encode("http://www.w3.org/ns/prob#hasNegatedSeed");
+        let formula_id = dict.encode("http://www.w3.org/ns/prob#formula");
 
         for (triple, sdd_id) in &self.tags {
             let derived_qt = qt_store.encode(triple.subject, triple.predicate, triple.object);
@@ -212,29 +230,44 @@ impl TagStore<SddProvenance> {
 
             // prob:proofCount
             let count_lit = format!("\"{}\"^^<{}>", models.len(), xsd_int);
-            let count_id  = dict.encode(&count_lit);
-            result.push(Triple { subject: derived_qt, predicate: proof_count_id, object: count_id });
+            let count_id = dict.encode(&count_lit);
+            result.push(Triple {
+                subject: derived_qt,
+                predicate: proof_count_id,
+                object: count_id,
+            });
 
             // prob:formula — debug representation
             let raw = format!("{:?}", sdd_id);
             let formula_lit = format!("\"{}\"^^<{}>", raw.replace('"', "'"), xsd_str);
             let formula_lit_id = dict.encode(&formula_lit);
-            result.push(Triple { subject: derived_qt, predicate: formula_id, object: formula_lit_id });
+            result.push(Triple {
+                subject: derived_qt,
+                predicate: formula_id,
+                object: formula_lit_id,
+            });
 
             // per-proof path annotations
             for (proof_idx, clause) in models.iter().enumerate() {
                 let idx_lit = format!("\"{}\"^^<{}>", proof_idx, xsd_int);
-                let idx_id  = dict.encode(&idx_lit);
+                let idx_id = dict.encode(&idx_lit);
 
-                result.push(Triple { subject: derived_qt, predicate: has_proof_id, object: idx_id });
+                result.push(Triple {
+                    subject: derived_qt,
+                    predicate: has_proof_id,
+                    object: idx_id,
+                });
 
                 let proof_annot_qt = qt_store.encode(derived_qt, has_proof_id, idx_id);
                 for &(seed_var_id, polarity) in clause {
                     if let Some(seed_t) = self.seed_triples.get(seed_var_id as usize) {
-                        let seed_qt = qt_store.encode(
-                            seed_t.subject, seed_t.predicate, seed_t.object,
-                        );
-                        let pred_id = if polarity { has_seed_id } else { has_neg_seed_id };
+                        let seed_qt =
+                            qt_store.encode(seed_t.subject, seed_t.predicate, seed_t.object);
+                        let pred_id = if polarity {
+                            has_seed_id
+                        } else {
+                            has_neg_seed_id
+                        };
                         result.push(Triple {
                             subject: proof_annot_qt,
                             predicate: pred_id,
@@ -252,10 +285,16 @@ impl TagStore<SddProvenance> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::provenance::{MinMaxProbability, AddMultProbability, BooleanProvenance, WmcProvenance};
+    use crate::provenance::{
+        AddMultProbability, BooleanProvenance, MinMaxProbability, WmcProvenance,
+    };
 
     fn make_triple(s: u32, p: u32, o: u32) -> Triple {
-        Triple { subject: s, predicate: p, object: o }
+        Triple {
+            subject: s,
+            predicate: p,
+            object: o,
+        }
     }
 
     #[test]
@@ -343,7 +382,11 @@ mod tests {
         let formula: WmcFormula = [clause0, clause1].iter().cloned().collect();
         store.tags.insert(make_triple(10, 20, 30), formula);
         // seed_triples: id0 = (1,2,3), id1 = (4,5,6), id2 = (7,8,9)
-        store.seed_triples = vec![make_triple(1, 2, 3), make_triple(4, 5, 6), make_triple(7, 8, 9)];
+        store.seed_triples = vec![
+            make_triple(1, 2, 3),
+            make_triple(4, 5, 6),
+            make_triple(7, 8, 9),
+        ];
         store
     }
 
@@ -355,12 +398,23 @@ mod tests {
         let triples = store.encode_as_rdf_star_with_explanation(&mut dict, &mut qt);
 
         let proof_count_pred = dict.encode("http://www.w3.org/ns/prob#proofCount");
-        let count_triples: Vec<_> = triples.iter().filter(|t| t.predicate == proof_count_pred).collect();
-        assert_eq!(count_triples.len(), 1, "one proofCount triple per derived fact");
+        let count_triples: Vec<_> = triples
+            .iter()
+            .filter(|t| t.predicate == proof_count_pred)
+            .collect();
+        assert_eq!(
+            count_triples.len(),
+            1,
+            "one proofCount triple per derived fact"
+        );
 
         // The object should encode "2"^^xsd:integer
         let count_str = dict.decode(count_triples[0].object).unwrap();
-        assert!(count_str.contains('2'), "proofCount value should contain 2, got: {}", count_str);
+        assert!(
+            count_str.contains('2'),
+            "proofCount value should contain 2, got: {}",
+            count_str
+        );
     }
 
     #[test]
@@ -371,8 +425,15 @@ mod tests {
         let triples = store.encode_as_rdf_star_with_explanation(&mut dict, &mut qt);
 
         let has_proof_pred = dict.encode("http://www.w3.org/ns/prob#hasProof");
-        let hp_triples: Vec<_> = triples.iter().filter(|t| t.predicate == has_proof_pred).collect();
-        assert_eq!(hp_triples.len(), 2, "one hasProof triple per proof path (indices 0 and 1)");
+        let hp_triples: Vec<_> = triples
+            .iter()
+            .filter(|t| t.predicate == has_proof_pred)
+            .collect();
+        assert_eq!(
+            hp_triples.len(),
+            2,
+            "one hasProof triple per proof path (indices 0 and 1)"
+        );
     }
 
     #[test]
@@ -383,9 +444,16 @@ mod tests {
         let triples = store.encode_as_rdf_star_with_explanation(&mut dict, &mut qt);
 
         let has_seed_pred = dict.encode("http://www.w3.org/ns/prob#hasSeed");
-        let hs_triples: Vec<_> = triples.iter().filter(|t| t.predicate == has_seed_pred).collect();
+        let hs_triples: Vec<_> = triples
+            .iter()
+            .filter(|t| t.predicate == has_seed_pred)
+            .collect();
         // clause {0,1} -> 2 seeds, clause {0,2} -> 2 seeds = 4 total
-        assert_eq!(hs_triples.len(), 4, "4 hasSeed triples for formula {{0,1}},{{0,2}}");
+        assert_eq!(
+            hs_triples.len(),
+            4,
+            "4 hasSeed triples for formula {{0,1}},{{0,2}}"
+        );
     }
 
     #[test]
@@ -404,7 +472,10 @@ mod tests {
         let triples = store.encode_as_rdf_star_with_explanation(&mut dict, &mut qt);
 
         let has_seed_pred = dict.encode("http://www.w3.org/ns/prob#hasSeed");
-        let hs_count = triples.iter().filter(|t| t.predicate == has_seed_pred).count();
+        let hs_count = triples
+            .iter()
+            .filter(|t| t.predicate == has_seed_pred)
+            .count();
         assert_eq!(hs_count, 0, "no hasSeed triples when seed_triples is empty");
     }
 }

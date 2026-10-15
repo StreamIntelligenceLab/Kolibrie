@@ -8,9 +8,9 @@
  * you can obtain one at https://mozilla.org/MPL/2.0/.
  */
 
-use std::collections::HashMap;
+use crate::quoted_triple_store::{is_quoted_triple_id, QuotedTripleStore, QUOTED_TRIPLE_ID_BIT};
 use crate::triple::Triple;
-use crate::quoted_triple_store::{QuotedTripleStore, is_quoted_triple_id, QUOTED_TRIPLE_ID_BIT};
+use std::collections::HashMap;
 
 /// Interns RDF terms to `u32` ids, and decodes them back.
 ///
@@ -101,9 +101,15 @@ impl Dictionary {
 
     /// Decode a triple, handling quoted triple IDs in any position.
     pub fn decode_triple_star(&self, triple: &Triple, qt_store: &QuotedTripleStore) -> String {
-        let s = self.decode_term(triple.subject, qt_store).unwrap_or_else(|| "unknown".to_string());
-        let p = self.decode_term(triple.predicate, qt_store).unwrap_or_else(|| "unknown".to_string());
-        let o = self.decode_term(triple.object, qt_store).unwrap_or_else(|| "unknown".to_string());
+        let s = self
+            .decode_term(triple.subject, qt_store)
+            .unwrap_or_else(|| "unknown".to_string());
+        let p = self
+            .decode_term(triple.predicate, qt_store)
+            .unwrap_or_else(|| "unknown".to_string());
+        let o = self
+            .decode_term(triple.object, qt_store)
+            .unwrap_or_else(|| "unknown".to_string());
         format!("{} {} {} .", s, p, o)
     }
 

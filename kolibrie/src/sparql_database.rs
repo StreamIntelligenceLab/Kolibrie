@@ -833,10 +833,7 @@ impl SparqlDatabase {
         }
 
         // Group triples by subject, then by predicate
-        let mut subjects: BTreeMap<
-            String,
-            BTreeMap<String, Vec<String>>,
-        > = BTreeMap::new();
+        let mut subjects: BTreeMap<String, BTreeMap<String, Vec<String>>> = BTreeMap::new();
         for triple in self.query_default_triples(None, None, None) {
             let s = self.decode_any(triple.subject).unwrap_or_default();
             let p = self.decode_any(triple.predicate).unwrap_or_default();
@@ -2421,7 +2418,10 @@ impl SparqlDatabase {
 
     /// Return the decoded graph size for diagnostics
     pub fn debug_print_triples(&self) {
-        println!("TRIPLE_COUNT {}", self.query_default_triples(None, None, None).len());
+        println!(
+            "TRIPLE_COUNT {}",
+            self.query_default_triples(None, None, None).len()
+        );
     }
 
     // Create user defined function
@@ -2683,7 +2683,8 @@ impl SparqlDatabase {
     // for `ml_feature_loader`.
     #[cfg(feature = "ml")]
     pub(crate) fn set_ml_materialized(&mut self, cache_key: String, triples: Vec<Triple>) {
-        self.ml_predict_materialized_triples.insert(cache_key, triples);
+        self.ml_predict_materialized_triples
+            .insert(cache_key, triples);
     }
 
     /// Takes the triples previously materialised for `cache_key`, if any.

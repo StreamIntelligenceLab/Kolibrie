@@ -11,8 +11,8 @@
 use chrono::{Local, Timelike};
 use datalog::reasoning::Reasoner;
 use kolibrie::execute_query::execute_query_rayon_parallel2_volcano;
-use kolibrie::prelude::*;
 use kolibrie::parser::convert_combined_rule;
+use kolibrie::prelude::*;
 use kolibrie::sparql_database::SparqlDatabase;
 use rumqttc::{Client, MqttOptions, QoS, RecvTimeoutError};
 use serde::{Deserialize, Serialize};
@@ -235,15 +235,15 @@ fn start_mqtt_collection(
             let subscription_result_cam1 =
                 client.subscribe("camera/detections/1", QoS::AtLeastOnce);
             let subscription_result_schedule = client.subscribe("schedule", QoS::AtLeastOnce);
-            
+
             // Subscribe to PIR sensor topics
-            let subscription_result_pir_nw = 
+            let subscription_result_pir_nw =
                 client.subscribe("sensors/pir/sensor_nw_pir", QoS::AtLeastOnce);
-            let subscription_result_pir_sw = 
+            let subscription_result_pir_sw =
                 client.subscribe("sensors/pir/sensor_sw_pir", QoS::AtLeastOnce);
-            let subscription_result_pir_ne = 
+            let subscription_result_pir_ne =
                 client.subscribe("sensors/pir/sensor_ne_pir", QoS::AtLeastOnce);
-            let subscription_result_pir_se = 
+            let subscription_result_pir_se =
                 client.subscribe("sensors/pir/sensor_se_pir", QoS::AtLeastOnce);
 
             let subscriptions_ok = subscription_result_cam0.is_ok()
@@ -397,7 +397,7 @@ fn start_mqtt_collection(
                         ],
                         triggered_by: vec![],
                     };
-                    
+
                     // Add dummy PIR sensor data
                     let dummy_pir_data = PirSensorData {
                         id: "sensor_nw_pir".to_string(),
@@ -415,7 +415,9 @@ fn start_mqtt_collection(
                     state
                         .cameras
                         .insert(dummy_camera_data.id.clone(), dummy_camera_data);
-                    state.pir_sensors.insert(dummy_pir_data.id.clone(), dummy_pir_data);
+                    state
+                        .pir_sensors
+                        .insert(dummy_pir_data.id.clone(), dummy_pir_data);
                     state.schedule = Some(dummy_schedule_data);
                     state.last_updated = SystemTime::now();
                     state.new_data_available = true;
@@ -725,7 +727,7 @@ fn main() {
                         };
                         println!("Using current system time: {}", current_time_str);
                     }
-                    
+
                     // Determine the time periods
                     is_morning = time_in_range(&current_time_str, "05:00", "10:00");
                     is_afternoon = time_in_range(&current_time_str, "10:00", "16:00");
@@ -742,19 +744,22 @@ fn main() {
 
                 // Parse the RDF data into the database
                 database.parse_rdf(&rdf_xml_data);
-                println!("Database loaded with {} triples", database.default_triple_count());
+                println!(
+                    "Database loaded with {} triples",
+                    database.default_triple_count()
+                );
 
                 // FIXED: Load data into knowledge graph with proper lock handling
                 // Collect triples first to avoid holding lock
                 let triples_to_add = database.query_default_triples(None, None, None);
-                
+
                 for triple in triples_to_add {
                     let dict = database.dictionary();
                     let subject = dict.decode(triple.subject).map(|s| s.to_string());
                     let predicate = dict.decode(triple.predicate).map(|p| p.to_string());
                     let object = dict.decode(triple.object).map(|o| o.to_string());
                     drop(dict); // Release lock before calling add_abox_triple
-                    
+
                     if let (Some(s), Some(p), Some(o)) = (subject, predicate, object) {
                         kg.add_abox_triple(&s, &p, &o);
                     }
@@ -825,13 +830,19 @@ WHERE {
                 // Check which time-based rules should be active
                 if is_night_time {
                     // Night time - apply night motion restriction
-                    println!("Time ({}): Night hours - applying night motion rules", current_time_str);
+                    println!(
+                        "Time ({}): Night hours - applying night motion rules",
+                        current_time_str
+                    );
                     active_rules.push(rule_night_motion_template);
                 } else if is_morning || is_afternoon {
                     // Daytime - apply daytime allowed rule
-                    println!("Time ({}): Daytime hours - applying daytime allowed rules", current_time_str);
+                    println!(
+                        "Time ({}): Daytime hours - applying daytime allowed rules",
+                        current_time_str
+                    );
                     active_rules.push(rule_daytime_allowed_template);
-                    
+
                     // Only apply vehicle restrictions from 16:00 to 10:00, but NOT during morning hours (after 5am)
                     if is_morning {
                         // Morning hours (5am-10am): Special handling
@@ -839,21 +850,32 @@ WHERE {
                         if let Some(schedule) = &state.schedule {
                             // If the schedule explicitly says "morning", do NOT apply vehicle restrictions
                             if schedule.time == "morning" {
-                                println!("Morning schedule detected: Vehicle restrictions DISABLED");
+                                println!(
+                                    "Morning schedule detected: Vehicle restrictions DISABLED"
+                                );
                                 // Do not add vehicle restriction rule
                             } else {
-                                println!("Time ({}): Early morning hours - applying vehicle rules", current_time_str);
+                                println!(
+                                    "Time ({}): Early morning hours - applying vehicle rules",
+                                    current_time_str
+                                );
                                 active_rules.push(rule_vehicle_restriction_template);
                             }
                         } else {
                             // No schedule info available, use standard logic
-                            println!("Time ({}): Early morning hours - applying vehicle rules", current_time_str);
+                            println!(
+                                "Time ({}): Early morning hours - applying vehicle rules",
+                                current_time_str
+                            );
                             active_rules.push(rule_vehicle_restriction_template);
                         }
                     }
                 } else if is_evening {
                     // Evening hours (16:00-22:00) - apply vehicle restrictions
-                    println!("Time ({}): Evening hours - applying vehicle rules", current_time_str);
+                    println!(
+                        "Time ({}): Evening hours - applying vehicle rules",
+                        current_time_str
+                    );
                     active_rules.push(rule_vehicle_restriction_template);
                 }
 
@@ -862,7 +884,11 @@ WHERE {
                 for (idx, rule) in active_rules.iter().enumerate() {
                     match parse_combined_query(rule) {
                         Ok((_rest, combined_query)) => {
-                            if let Some(rule) = combined_query.single_rule().expect("expected at most one RULE block").cloned() {
+                            if let Some(rule) = combined_query
+                                .single_rule()
+                                .expect("expected at most one RULE block")
+                                .cloned()
+                            {
                                 // FIXED: Acquire write lock for conversion
                                 let mut dict = database.dictionary_mut();
                                 let dynamic_rule = convert_combined_rule(
@@ -871,7 +897,7 @@ WHERE {
                                     &combined_query.prefixes,
                                 );
                                 drop(dict); // Release lock
-                                
+
                                 println!("Dynamic rule #{}: {:#?}", idx + 1, dynamic_rule);
                                 kg.add_rule(dynamic_rule.clone());
                                 println!("Rule #{} added to KnowledgeGraph.", idx + 1);
@@ -883,7 +909,7 @@ WHERE {
                                         if let Some(expanded) = dict.decode(code) {
                                             let expanded = expanded.to_string();
                                             drop(dict); // Release lock
-                                            
+
                                             if let Some(idx) = expanded.rfind('#') {
                                                 let local = &expanded[idx + 1..];
                                                 database.add_rule_mapping(
@@ -930,53 +956,66 @@ WHERE {
 
                 {
                     let mut state = security_state.lock().unwrap();
-                    
+
                     // Use PIR for morning, afternoon, and night (but NOT evening)
-                    let use_pir_sensors = is_morning || is_afternoon || is_night_time || 
-                                         time_of_day == "morning" || time_of_day == "afternoon" || time_of_day == "night";
-                    
+                    let use_pir_sensors = is_morning
+                        || is_afternoon
+                        || is_night_time
+                        || time_of_day == "morning"
+                        || time_of_day == "afternoon"
+                        || time_of_day == "night";
+
                     println!("Current time period: {}", time_of_day);
                     println!("Using PIR sensors: {}", use_pir_sensors);
-                    
+
                     if use_pir_sensors {
                         // Get PIR detection results
                         if state.has_pir_motion() {
                             // Create appropriate message based on time of day
                             if is_night_time || time_of_day == "night" {
-                                alarm_reason = "PIR motion detected during night hours (10pm-5am)".to_string();
+                                alarm_reason =
+                                    "PIR motion detected during night hours (10pm-5am)".to_string();
                                 status = "1"; // Unauthorized during night
                             } else if is_morning || time_of_day == "morning" {
-                                alarm_reason = "PIR motion detected during morning hours (5am-10am)".to_string();
+                                alarm_reason =
+                                    "PIR motion detected during morning hours (5am-10am)"
+                                        .to_string();
                                 status = "0"; // Authorized during morning
                             } else if is_afternoon || time_of_day == "afternoon" {
-                                alarm_reason = "PIR motion detected during afternoon hours (10am-4pm)".to_string();
+                                alarm_reason =
+                                    "PIR motion detected during afternoon hours (10am-4pm)"
+                                        .to_string();
                                 status = "0"; // Authorized during afternoon
                             } else {
                                 alarm_reason = "PIR motion detected".to_string();
                                 status = "0"; // Default to authorized
                             }
-                            
+
                             alarm_needed = true;
                             detection_types.push("pir_motion");
-                            
+
                             println!("PIR motion detected with reason: {}", alarm_reason);
                         }
-                    } 
+                    }
                     // Use object detection only for EVENING
                     else if is_evening || time_of_day == "evening" {
                         println!("Using camera object detection for evening hours");
-                        
+
                         // Check for night time motion detection (10pm to 5am)
                         if is_night_time && state.has_motion_detection() {
-                            alarm_reason = "Motion detected during restricted hours (10pm-5am)".to_string();
+                            alarm_reason =
+                                "Motion detected during restricted hours (10pm-5am)".to_string();
                             alarm_needed = true;
                             status = "1"; // Unauthorized
                             detection_types.push("person");
                             detection_types.push("teddy bear");
                         }
                         // Check for vehicle detection between 4pm and 5am
-                        else if time_in_range(&current_time_str, "16:00", "05:00") && state.has_vehicle_detection() {
-                            alarm_reason = "Vehicle detected during restricted hours (4pm-5am)".to_string();
+                        else if time_in_range(&current_time_str, "16:00", "05:00")
+                            && state.has_vehicle_detection()
+                        {
+                            alarm_reason =
+                                "Vehicle detected during restricted hours (4pm-5am)".to_string();
                             alarm_needed = true;
                             status = "1"; // Unauthorized
                             detection_types.extend(&["car", "bus", "truck", "train"]);
@@ -986,22 +1025,24 @@ WHERE {
                             if let Some(schedule) = &state.schedule {
                                 // If it's explicitly "morning" according to schedule, allow vehicles
                                 if schedule.time == "morning" {
-                                    if state.has_motion_detection() || state.has_vehicle_detection() {
-                                        alarm_reason = "Detection during morning hours (5am-10am)".to_string();
+                                    if state.has_motion_detection() || state.has_vehicle_detection()
+                                    {
+                                        alarm_reason =
+                                            "Detection during morning hours (5am-10am)".to_string();
                                         alarm_needed = true;
                                         status = "0"; // Authorized
                                         detection_types = Vec::new(); // Include all detections
                                     }
-                                } 
+                                }
                                 // Otherwise apply vehicle restrictions
                                 else if state.has_vehicle_detection() {
                                     alarm_reason = "Vehicle detected during early morning restricted hours (5am-10am)".to_string();
                                     alarm_needed = true;
                                     status = "1"; // Unauthorized
                                     detection_types.extend(&["car", "bus", "truck", "train"]);
-                                }
-                                else if state.has_motion_detection() {
-                                    alarm_reason = "Motion detected during allowed morning hours".to_string();
+                                } else if state.has_motion_detection() {
+                                    alarm_reason =
+                                        "Motion detected during allowed morning hours".to_string();
                                     alarm_needed = true;
                                     status = "0"; // Authorized
                                     detection_types.push("person");
@@ -1014,9 +1055,9 @@ WHERE {
                                 alarm_needed = true;
                                 status = "1"; // Unauthorized
                                 detection_types.extend(&["car", "bus", "truck", "train"]);
-                            }
-                            else if state.has_motion_detection() {
-                                alarm_reason = "Motion detected during allowed morning hours".to_string();
+                            } else if state.has_motion_detection() {
+                                alarm_reason =
+                                    "Motion detected during allowed morning hours".to_string();
                                 alarm_needed = true;
                                 status = "0"; // Authorized
                                 detection_types.push("person");
@@ -1024,8 +1065,11 @@ WHERE {
                             }
                         }
                         // Daytime allowed detections (10am to 4pm)
-                        else if is_afternoon && (state.has_motion_detection() || state.has_vehicle_detection()) {
-                            alarm_reason = "Detection during allowed daytime hours (10am-4pm)".to_string();
+                        else if is_afternoon
+                            && (state.has_motion_detection() || state.has_vehicle_detection())
+                        {
+                            alarm_reason =
+                                "Detection during allowed daytime hours (10am-4pm)".to_string();
                             alarm_needed = true;
                             status = "0"; // Authorized
                             detection_types = Vec::new(); // Include all detections
@@ -1034,7 +1078,8 @@ WHERE {
                         else if is_evening {
                             // Check for person detection
                             if state.has_motion_detection() {
-                                alarm_reason = "Person detected during evening hours (4pm-10pm)".to_string();
+                                alarm_reason =
+                                    "Person detected during evening hours (4pm-10pm)".to_string();
                                 alarm_needed = true;
                                 status = "0"; // Authorized
                                 detection_types.push("person");
@@ -1042,7 +1087,9 @@ WHERE {
                             }
                             // Check for vehicle detection (restricted)
                             else if state.has_vehicle_detection() {
-                                alarm_reason = "Vehicle detected during restricted evening hours (4pm-10pm)".to_string();
+                                alarm_reason =
+                                    "Vehicle detected during restricted evening hours (4pm-10pm)"
+                                        .to_string();
                                 alarm_needed = true;
                                 status = "1"; // Unauthorized
                                 detection_types.extend(&["car", "bus", "truck", "train"]);
@@ -1051,10 +1098,10 @@ WHERE {
                     } else {
                         println!("No active detection sources available - no PIR or camera detection active");
                     }
-                    
+
                     // Update alarm state
                     state.current_alarm_state = alarm_needed && status == "1"; // Only set alarm state for unauthorized
-                    
+
                     // Check if we can send an alarm message (throttling)
                     if alarm_needed && state.can_send_alarm() {
                         if status == "1" {
@@ -1062,11 +1109,12 @@ WHERE {
                         } else {
                             println!("\n✅ AUTHORIZED DETECTION ✅\n");
                         }
-                        
+
                         // Generate the alarm message
-                        let alarm_message = state.generate_alarm_message(&alarm_reason, status, &detection_types);
+                        let alarm_message =
+                            state.generate_alarm_message(&alarm_reason, status, &detection_types);
                         println!("Sending message to alarm topic: {}", alarm_message);
-                        
+
                         // Send the message via MQTT to the alarm topic
                         if send_mqtt_message(&mqtt_client, "alarm", &alarm_message) {
                             // Update the last alarm sent time for throttling
@@ -1086,7 +1134,8 @@ WHERE {
                             ex:objectType ?type .
                 }"#;
 
-                let authorized_results = execute_query_rayon_parallel2_volcano(query_authorized, &mut database);
+                let authorized_results =
+                    execute_query_rayon_parallel2_volcano(query_authorized, &mut database);
                 if !authorized_results.is_empty() && security_state.lock().unwrap().can_send_alarm()
                 {
                     println!("\n==> AUTHORIZED DETECTIONS FROM SPARQL:");
@@ -1121,4 +1170,3 @@ WHERE {
         thread::sleep(Duration::from_millis(100));
     }
 }
-

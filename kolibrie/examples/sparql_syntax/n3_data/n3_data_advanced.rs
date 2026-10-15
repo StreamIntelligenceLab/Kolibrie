@@ -61,4 +61,3 @@ fn n3_simple_query() {
 fn main() {
     n3_simple_query();
 }
-

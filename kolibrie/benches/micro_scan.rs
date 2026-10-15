@@ -118,21 +118,29 @@ fn bench_dispatch(c: &mut Criterion) {
 
         group.bench_function("direct", |b| {
             b.iter(|| {
-                let quads = index.query_graph(GraphId::Default, black_box(s), black_box(p), black_box(o));
+                let quads =
+                    index.query_graph(GraphId::Default, black_box(s), black_box(p), black_box(o));
                 black_box(consume(&quads))
             })
         });
 
         group.bench_function("static_trait", |b| {
             b.iter(|| {
-                let quads = ScanStatic::scan(&index, GraphId::Default, black_box(s), black_box(p), black_box(o));
+                let quads = ScanStatic::scan(
+                    &index,
+                    GraphId::Default,
+                    black_box(s),
+                    black_box(p),
+                    black_box(o),
+                );
                 black_box(consume(&quads))
             })
         });
 
         group.bench_function("dyn_trait", |b| {
             b.iter(|| {
-                let quads = dyn_ref.scan(GraphId::Default, black_box(s), black_box(p), black_box(o));
+                let quads =
+                    dyn_ref.scan(GraphId::Default, black_box(s), black_box(p), black_box(o));
                 black_box(consume(&quads))
             })
         });

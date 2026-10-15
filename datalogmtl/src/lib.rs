@@ -34,16 +34,16 @@
 //! This crate does not depend on `datalog`, deliberately — the two reasoners are
 //! siblings over [`shared`]'s vocabulary rather than one layered on the other.
 
-pub mod syntax;
-pub mod validate;
-pub mod metrics;
-pub mod store;
+pub mod automata;
 pub mod evaluator;
-pub mod stream;
+pub mod meteor_fmt;
+pub mod metrics;
 pub mod parser;
 pub mod rdf_parser;
-pub mod meteor_fmt;
-pub mod automata;
+pub mod store;
+pub mod stream;
+pub mod syntax;
+pub mod validate;
 
 // The test modules share fixtures via `pub`, which `unreachable_pub` flags because
 // `tests` itself is private. That is the lint working correctly on code where it has

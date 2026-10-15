@@ -1,16 +1,15 @@
 #![cfg(feature = "ml")]
 
 mod ml_local {
-    include!(concat!(env!("CARGO_MANIFEST_DIR"), "/tests/common/ml_local.rs"));
+    include!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/tests/common/ml_local.rs"
+    ));
 }
 
 use kolibrie::program::{
-    ProgramError,
-    ProgramOptions,
+    compile_program, execute_program, query_program_result, ProgramError, ProgramOptions,
     PublishedProgramResult,
-    compile_program,
-    execute_program,
-    query_program_result,
 };
 use kolibrie::sparql_database::SparqlDatabase;
 use ml::{MlpNeuralPredicate, OutputType};
@@ -108,11 +107,24 @@ fn trained_distribution_prediction_feeds_joint_rules() {
     let result = execute_program(&mut db, &compiled, &options(3)).unwrap();
 
     let labels = vec![ex("A"), ex("B"), ex("C")];
-    assert_eq!(result.snapshot().labels(&ex("cls")).unwrap(), labels.as_slice());
-    let left = result.snapshot().distribution(&ex("cls"), &ex("e0")).unwrap().to_vec();
-    let right = result.snapshot().distribution(&ex("cls"), &ex("e1")).unwrap().to_vec();
+    assert_eq!(
+        result.snapshot().labels(&ex("cls")).unwrap(),
+        labels.as_slice()
+    );
+    let left = result
+        .snapshot()
+        .distribution(&ex("cls"), &ex("e0"))
+        .unwrap()
+        .to_vec();
+    let right = result
+        .snapshot()
+        .distribution(&ex("cls"), &ex("e1"))
+        .unwrap()
+        .to_vec();
     let expected: f64 = left.iter().zip(&right).map(|(a, b)| a * b).sum();
-    let same = result.answer_probability(&ex("pair"), &ex("same"), &ex("yes")).unwrap();
+    let same = result
+        .answer_probability(&ex("pair"), &ex("same"), &ex("yes"))
+        .unwrap();
     assert!((same - expected).abs() <= 1e-12);
     assert!(left[0] > 0.5 && right[2] > 0.5, "{left:?} {right:?}");
 
@@ -120,19 +132,33 @@ fn trained_distribution_prediction_feeds_joint_rules() {
     assert_eq!(metadata.feature_vars, vec!["?x0", "?x1", "?x2"]);
     assert_eq!(metadata.labels, labels);
     assert_eq!(metadata.rows, 3);
-    assert_eq!(result.training()[0].artifact_sha256, metadata.artifact_sha256);
+    assert_eq!(
+        result.training()[0].artifact_sha256,
+        metadata.artifact_sha256
+    );
     assert_eq!(result.coverage().prediction_rows, 3);
     assert!(result.coverage().confirmed);
 
     let path = db.ml_context().local_artifact("abc_joint.bin").unwrap();
     let bytes = std::fs::read(path).unwrap();
-    let model = MlpNeuralPredicate::from_bytes(3, &[8], OutputType::Categorical(3), &bytes).unwrap();
+    let model =
+        MlpNeuralPredicate::from_bytes(3, &[8], OutputType::Categorical(3), &bytes).unwrap();
     for (name, _, features, _) in samples().into_iter().filter(|s| s.1 == "eval") {
         let direct = model.predict(&[features.to_vec()]).unwrap().remove(0);
-        let syntax = result.snapshot().distribution(&ex("cls"), &ex(name)).unwrap();
-        assert_eq!(direct.as_slice(), syntax, "direct and syntax-driven predictions differ for {name}");
+        let syntax = result
+            .snapshot()
+            .distribution(&ex("cls"), &ex(name))
+            .unwrap();
+        assert_eq!(
+            direct.as_slice(),
+            syntax,
+            "direct and syntax-driven predictions differ for {name}"
+        );
     }
-    assert_eq!(db.neural_model_artifacts().get("abc").map(String::as_str), Some("abc_joint.bin"));
+    assert_eq!(
+        db.neural_model_artifacts().get("abc").map(String::as_str),
+        Some("abc_joint.bin")
+    );
     assert!(db.neural_relation_decls().contains_key(&ex("cls")));
 }
 
@@ -140,7 +166,11 @@ fn trained_distribution_prediction_feeds_joint_rules() {
 fn prediction_from_a_published_artifact_matches_the_training_run() {
     let mut db = ml_local::database();
     populate(&mut db, false);
-    let trained = compile_program(&program("abc_reuse.bin", "?item ?x0 ?x1 ?x2", ""), &db.ml_context()).unwrap();
+    let trained = compile_program(
+        &program("abc_reuse.bin", "?item ?x0 ?x1 ?x2", ""),
+        &db.ml_context(),
+    )
+    .unwrap();
     let first = execute_program(&mut db, &trained, &options(5)).unwrap();
 
     let predict_only = r#"PREFIX ex: <http://example.org/>
@@ -174,7 +204,10 @@ fn evaluation_labels_do_not_reach_training() {
     let compiled = compile_program(&text, &plain.ml_context()).unwrap();
     let a = execute_program(&mut plain, &compiled, &options(9)).unwrap();
     let b = execute_program(&mut labelled, &compiled, &options(9)).unwrap();
-    assert_eq!(a.training()[0].artifact_sha256, b.training()[0].artifact_sha256);
+    assert_eq!(
+        a.training()[0].artifact_sha256,
+        b.training()[0].artifact_sha256
+    );
     for (_, anchor) in eval_anchors() {
         assert_eq!(
             a.snapshot().distribution(&ex("cls"), &anchor),
@@ -187,7 +220,11 @@ fn evaluation_labels_do_not_reach_training() {
 fn identical_features_keep_distinct_anchors_as_distinct_choices() {
     let mut db = ml_local::database();
     populate(&mut db, false);
-    let compiled = compile_program(&program("abc_ident.bin", "?item ?x0 ?x1 ?x2", ""), &db.ml_context()).unwrap();
+    let compiled = compile_program(
+        &program("abc_ident.bin", "?item ?x0 ?x1 ?x2", ""),
+        &db.ml_context(),
+    )
+    .unwrap();
     let result = execute_program(&mut db, &compiled, &options(1)).unwrap();
     assert_eq!(result.snapshot().choice_groups(), 3);
     assert_eq!(
@@ -207,7 +244,11 @@ fn invalid_programs_fail_before_training_or_publication() {
         execute_program(&mut db, &compiled, &options(1)),
         Err(ProgramError::Unsupported(_))
     ));
-    assert!(!db.ml_context().local_artifact("abc_anchor.bin").unwrap().exists());
+    assert!(!db
+        .ml_context()
+        .local_artifact("abc_anchor.bin")
+        .unwrap()
+        .exists());
 
     let argmax = program("abc_argmax.bin", "?item ?x0 ?x1 ?x2", "").replace(" DISTRIBUTION", "");
     assert!(matches!(
@@ -215,7 +256,10 @@ fn invalid_programs_fail_before_training_or_publication() {
         Err(ProgramError::Unsupported(_))
     ));
     assert!(matches!(
-        compile_program(&program("abc_policy.bin", "?item ?x0 ?x1 ?x2", ""), &kolibrie::ml_policy::MlExecutionContext::disabled()),
+        compile_program(
+            &program("abc_policy.bin", "?item ?x0 ?x1 ?x2", ""),
+            &kolibrie::ml_policy::MlExecutionContext::disabled()
+        ),
         Err(ProgramError::Policy(_))
     ));
     assert!(db.neural_model_artifacts().is_empty());
@@ -227,8 +271,14 @@ fn failed_prediction_keeps_the_previous_publication_and_writes_nothing() {
     let mut db = ml_local::database();
     populate(&mut db, false);
     let mut published = PublishedProgramResult::new();
-    let good = compile_program(&program("abc_good.bin", "?item ?x0 ?x1 ?x2", SAME_CLASS), &db.ml_context()).unwrap();
-    published.publish(execute_program(&mut db, &good, &options(2))).unwrap();
+    let good = compile_program(
+        &program("abc_good.bin", "?item ?x0 ?x1 ?x2", SAME_CLASS),
+        &db.ml_context(),
+    )
+    .unwrap();
+    published
+        .publish(execute_program(&mut db, &good, &options(2)))
+        .unwrap();
     let before = published
         .current()
         .unwrap()
@@ -236,11 +286,22 @@ fn failed_prediction_keeps_the_previous_publication_and_writes_nothing() {
         .unwrap();
 
     db.add_triple_parts(&ex("e1"), &ex("x0"), "not-a-number");
-    let failing = compile_program(&program("abc_failed.bin", "?item ?x0 ?x1 ?x2", SAME_CLASS), &db.ml_context()).unwrap();
+    let failing = compile_program(
+        &program("abc_failed.bin", "?item ?x0 ?x1 ?x2", SAME_CLASS),
+        &db.ml_context(),
+    )
+    .unwrap();
     let outcome = published.publish(execute_program(&mut db, &failing, &options(2)));
     assert!(outcome.is_err());
-    assert!(!db.ml_context().local_artifact("abc_failed.bin").unwrap().exists());
-    assert_eq!(db.neural_model_artifacts().get("abc").map(String::as_str), Some("abc_good.bin"));
+    assert!(!db
+        .ml_context()
+        .local_artifact("abc_failed.bin")
+        .unwrap()
+        .exists());
+    assert_eq!(
+        db.neural_model_artifacts().get("abc").map(String::as_str),
+        Some("abc_good.bin")
+    );
     assert_eq!(
         published
             .current()
@@ -255,7 +316,11 @@ fn failed_prediction_keeps_the_previous_publication_and_writes_nothing() {
 fn result_queries_never_trigger_prediction() {
     let mut db = ml_local::database();
     populate(&mut db, false);
-    let compiled = compile_program(&program("abc_query.bin", "?item ?x0 ?x1 ?x2", SAME_CLASS), &db.ml_context()).unwrap();
+    let compiled = compile_program(
+        &program("abc_query.bin", "?item ?x0 ?x1 ?x2", SAME_CLASS),
+        &db.ml_context(),
+    )
+    .unwrap();
     let mut result = execute_program(&mut db, &compiled, &options(4)).unwrap();
     let rows = query_program_result(
         &mut result,
@@ -264,16 +329,21 @@ fn result_queries_never_trigger_prediction() {
     .unwrap();
     assert_eq!(rows.len(), 9);
     assert!(db.neural_materialized_triples().is_empty());
-    assert!(db.query_default_triples(None, None, None).iter().all(|triple| {
-        db.decode_any(triple.predicate).as_deref() != Some(ex("cls").as_str())
-    }));
+    assert!(db
+        .query_default_triples(None, None, None)
+        .iter()
+        .all(|triple| { db.decode_any(triple.predicate).as_deref() != Some(ex("cls").as_str()) }));
 }
 
 #[test]
 fn incomplete_prediction_coverage_is_an_error() {
     let mut db = ml_local::database();
     populate(&mut db, false);
-    let compiled = compile_program(&program("abc_cover.bin", "?item ?x0 ?x1 ?x2", SAME_CLASS), &db.ml_context()).unwrap();
+    let compiled = compile_program(
+        &program("abc_cover.bin", "?item ?x0 ?x1 ?x2", SAME_CLASS),
+        &db.ml_context(),
+    )
+    .unwrap();
     let mut missing = options(1);
     missing
         .required_choices
@@ -284,7 +354,11 @@ fn incomplete_prediction_coverage_is_an_error() {
         execute_program(&mut db, &compiled, &missing),
         Err(ProgramError::Coverage(_))
     ));
-    assert!(!db.ml_context().local_artifact("abc_cover.bin").unwrap().exists());
+    assert!(!db
+        .ml_context()
+        .local_artifact("abc_cover.bin")
+        .unwrap()
+        .exists());
 }
 
 #[test]
@@ -292,7 +366,11 @@ fn conflicting_features_for_one_anchor_are_rejected() {
     let mut db = ml_local::database();
     populate(&mut db, false);
     db.add_triple_parts(&ex("e0"), &ex("x0"), "0.3");
-    let compiled = compile_program(&program("abc_conflict.bin", "?item ?x0 ?x1 ?x2", ""), &db.ml_context()).unwrap();
+    let compiled = compile_program(
+        &program("abc_conflict.bin", "?item ?x0 ?x1 ?x2", ""),
+        &db.ml_context(),
+    )
+    .unwrap();
     assert!(matches!(
         execute_program(&mut db, &compiled, &options(1)),
         Err(ProgramError::Snapshot(_))
@@ -304,12 +382,20 @@ fn predictions_cannot_overlap_asserted_facts_even_without_rules() {
     let mut db = ml_local::database();
     populate(&mut db, false);
     db.add_triple_parts(&ex("e0"), &ex("cls"), &ex("A"));
-    let compiled = compile_program(&program("abc_overlap.bin", "?item ?x0 ?x1 ?x2", ""), &db.ml_context()).unwrap();
+    let compiled = compile_program(
+        &program("abc_overlap.bin", "?item ?x0 ?x1 ?x2", ""),
+        &db.ml_context(),
+    )
+    .unwrap();
     assert!(matches!(
         execute_program(&mut db, &compiled, &options(1)),
         Err(ProgramError::Snapshot(_))
     ));
-    assert!(!db.ml_context().local_artifact("abc_overlap.bin").unwrap().exists());
+    assert!(!db
+        .ml_context()
+        .local_artifact("abc_overlap.bin")
+        .unwrap()
+        .exists());
 }
 
 #[test]
@@ -358,9 +444,15 @@ RULE :Alert PROB(combination=sdd) :- CONSTRUCT { ex:zone ex:alert ex:on . } WHER
     )
     .unwrap();
     assert_eq!(result.snapshot().independent_facts(), 2);
-    let p0 = result.fact_probability(&ex("u0"), &ex("risky"), &ex("yes")).unwrap();
-    let p1 = result.fact_probability(&ex("u1"), &ex("risky"), &ex("yes")).unwrap();
+    let p0 = result
+        .fact_probability(&ex("u0"), &ex("risky"), &ex("yes"))
+        .unwrap();
+    let p1 = result
+        .fact_probability(&ex("u1"), &ex("risky"), &ex("yes"))
+        .unwrap();
     assert!(p0 > 0.5 && p1 < 0.5, "{p0} {p1}");
-    let alert = result.fact_probability(&ex("zone"), &ex("alert"), &ex("on")).unwrap();
+    let alert = result
+        .fact_probability(&ex("zone"), &ex("alert"), &ex("on"))
+        .unwrap();
     assert!((alert - (1.0 - (1.0 - p0) * (1.0 - p1))).abs() <= 1e-12);
 }

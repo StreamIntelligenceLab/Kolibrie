@@ -121,7 +121,13 @@ fn train(req: &Request, output_dir: &Path) -> Result<Value> {
     let start = Instant::now();
     let mut db = SparqlDatabase::with_ml_context(MlExecutionContext::trusted_local(output_dir)?);
     for (i, (image, label)) in req.train_images.iter().zip(&req.train_labels).enumerate() {
-        load_image(&mut db, &term(&format!("train/{i:08}")), image, "train", Some(*label));
+        load_image(
+            &mut db,
+            &term(&format!("train/{i:08}")),
+            image,
+            "train",
+            Some(*label),
+        );
     }
     let train_population = start.elapsed();
     let eval_start = Instant::now();
@@ -139,7 +145,13 @@ fn train(req: &Request, output_dir: &Path) -> Result<Value> {
     let eval_population_s = seconds(eval_start.elapsed());
     let parse_start = Instant::now();
     let program = compile_program(
-        &neural_program(req.learning_rate, req.epochs, req.batch_size, ARTIFACT, "eval"),
+        &neural_program(
+            req.learning_rate,
+            req.epochs,
+            req.batch_size,
+            ARTIFACT,
+            "eval",
+        ),
         &db.ml_context(),
     )?;
     let parse_s = seconds(parse_start.elapsed());
@@ -159,7 +171,11 @@ fn train(req: &Request, output_dir: &Path) -> Result<Value> {
     };
     let result = execute_program(&mut db, &program, &options)?;
     let timings = result.timings().clone();
-    let report = result.training().first().ok_or("the program did not train")?.clone();
+    let report = result
+        .training()
+        .first()
+        .ok_or("the program did not train")?
+        .clone();
 
     let mut predictions = BTreeMap::new();
     for (name, set) in &anchors {
@@ -181,7 +197,8 @@ fn train(req: &Request, output_dir: &Path) -> Result<Value> {
     if format!("{:x}", Sha256::digest(&bytes)) != report.artifact_sha256 {
         return Err("published artifact differs from the trained model".into());
     }
-    let model = MlpNeuralPredicate::from_bytes(784, &[64, 32], OutputType::Categorical(10), &bytes)?;
+    let model =
+        MlpNeuralPredicate::from_bytes(784, &[64, 32], OutputType::Categorical(10), &bytes)?;
     let mut latency = BTreeMap::new();
     let mut inference_s = BTreeMap::new();
     let mut max_difference: f64 = 0.0;
@@ -198,18 +215,28 @@ fn train(req: &Request, output_dir: &Path) -> Result<Value> {
         }
         inference_s.insert(name.clone(), set_start.elapsed().as_secs_f64());
         latency.insert(name.clone(), times);
-        for (direct, syntax) in probs.iter().flatten().zip(predictions[name].iter().flatten()) {
+        for (direct, syntax) in probs
+            .iter()
+            .flatten()
+            .zip(predictions[name].iter().flatten())
+        {
             max_difference = max_difference.max((direct - syntax).abs());
         }
     }
     if max_difference != 0.0 {
-        return Err(format!("syntax-driven and direct predictions differ by {max_difference}").into());
+        return Err(
+            format!("syntax-driven and direct predictions differ by {max_difference}").into(),
+        );
     }
 
     let train_rows: Vec<&[f64]> = req.train_images.iter().map(Vec::as_slice).collect();
-    let eval_rows: Vec<&[f64]> = req.eval_images.values().flatten().map(Vec::as_slice).collect();
-    Ok(
-        json!({"backend":"kolibrie", "prepare_s":prepare_s,
+    let eval_rows: Vec<&[f64]> = req
+        .eval_images
+        .values()
+        .flatten()
+        .map(Vec::as_slice)
+        .collect();
+    Ok(json!({"backend":"kolibrie", "prepare_s":prepare_s,
         "train_s":seconds(timings.validation + timings.training),
         "data_fetch_s":seconds(report.data_fetch), "learning_s":seconds(report.learning),
         "phase_labels":{
@@ -231,8 +258,7 @@ fn train(req: &Request, output_dir: &Path) -> Result<Value> {
             "train_data_sha256":data_sha256(&train_rows, &req.train_labels),
             "eval_data_sha256":data_sha256(&eval_rows, &[]),
             "threads":threads()},
-        "dtype":"float64 (Candle return tensor float32; native probabilities float64)"}),
-    )
+        "dtype":"float64 (Candle return tensor float32; native probabilities float64)"}))
 }
 
 fn reason(req: &Request) -> Result<Value> {
@@ -290,7 +316,8 @@ fn reason(req: &Request) -> Result<Value> {
         let mut annotated = BTreeMap::new();
         for select in [SUM_ANNOTATIONS, ANSWER_ANNOTATIONS] {
             for row in query_program_result(&mut result, select)? {
-                let probability = parse_probability_literal(&row[2]).ok_or("malformed prob:value literal")?;
+                let probability =
+                    parse_probability_literal(&row[2]).ok_or("malformed prob:value literal")?;
                 annotated.insert(row[1].clone(), probability);
             }
         }
@@ -298,7 +325,9 @@ fn reason(req: &Request) -> Result<Value> {
         for ((_, _, object), value) in answer_targets(&query).iter().zip(&values) {
             let read = annotated.get(object).copied().unwrap_or(0.0);
             if read.to_bits() != value.to_bits() {
-                return Err(format!("annotation for {object} reads {read}, expected {value}").into());
+                return Err(
+                    format!("annotation for {object} reads {read}, expected {value}").into(),
+                );
             }
         }
 
@@ -307,7 +336,9 @@ fn reason(req: &Request) -> Result<Value> {
             oracle_error = oracle_error.max((actual - oracle).abs());
         }
         if oracle_error > ORACLE_TOLERANCE {
-            return Err(format!("RULE program differs from the retained oracle by {oracle_error}").into());
+            return Err(
+                format!("RULE program differs from the retained oracle by {oracle_error}").into(),
+            );
         }
         let timings = result.timings();
         phases.push(json!({

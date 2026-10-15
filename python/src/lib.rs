@@ -19,8 +19,8 @@
 //! name, which collides with the `kolibrie` crate's own rustdoc output and is the
 //! other reason the docs are turned off here.
 
-mod py_query_builder;
 mod py_knowledge_graph;
+mod py_query_builder;
 
 use pyo3::prelude::*;
 

@@ -114,7 +114,6 @@ pub struct MlpNeuralPredicate {
     adam_state: RefCell<AdamState>,
 }
 
-
 // Summarised rather than derived: the parameters are the bulk of this type, and a
 // layer-shape list is what a reader is checking. `try_borrow` because a `Debug` impl
 // must not panic, and the layers are borrowed during a forward pass.
@@ -135,7 +134,13 @@ impl std::fmt::Debug for MlpNeuralPredicate {
         }
         s.field("hidden_act", &self.hidden_act)
             .field("output_type", &self.output_type)
-            .field("queued_forwards", &self.forward_queue.try_borrow().map_or(None, |q| Some(q.len())))
+            .field(
+                "queued_forwards",
+                &self
+                    .forward_queue
+                    .try_borrow()
+                    .map_or(None, |q| Some(q.len())),
+            )
             .finish_non_exhaustive()
     }
 }
@@ -156,11 +161,26 @@ impl MlpNeuralPredicate {
 
     /// As [`new`](Self::new), with initialisation drawn from `seed` so the
     /// network is reproducible.
-    pub fn new_seeded(input_dim: usize, hidden: &[usize], output_type: OutputType, seed: u64) -> MlResult<Self> {
-        Self::new_with_rng(input_dim, hidden, output_type, &mut rand::rngs::StdRng::seed_from_u64(seed))
+    pub fn new_seeded(
+        input_dim: usize,
+        hidden: &[usize],
+        output_type: OutputType,
+        seed: u64,
+    ) -> MlResult<Self> {
+        Self::new_with_rng(
+            input_dim,
+            hidden,
+            output_type,
+            &mut rand::rngs::StdRng::seed_from_u64(seed),
+        )
     }
 
-    fn new_with_rng(input_dim: usize, hidden: &[usize], output_type: OutputType, rng: &mut impl Rng) -> MlResult<Self> {
+    fn new_with_rng(
+        input_dim: usize,
+        hidden: &[usize],
+        output_type: OutputType,
+        rng: &mut impl Rng,
+    ) -> MlResult<Self> {
         let mut dims = Vec::with_capacity(hidden.len() + 2);
         dims.push(input_dim);
         dims.extend_from_slice(hidden);
@@ -219,7 +239,11 @@ impl MlpNeuralPredicate {
         Ok(self.forward_impl(rows, false)?.1)
     }
 
-    fn forward_impl(&self, rows: &[Vec<f64>], retain_cache: bool) -> MlResult<(Tensor, Vec<Vec<f64>>)> {
+    fn forward_impl(
+        &self,
+        rows: &[Vec<f64>],
+        retain_cache: bool,
+    ) -> MlResult<(Tensor, Vec<Vec<f64>>)> {
         let layers = self.layers.borrow();
         if rows.is_empty() {
             let out_dim = output_dim(self.output_type);
@@ -250,16 +274,22 @@ impl MlpNeuralPredicate {
 
         let mut activations = rows.to_vec();
         for (layer_idx, layer) in layers.iter().enumerate() {
-            if retain_cache { cache.layer_inputs.push(activations.clone()); }
+            if retain_cache {
+                cache.layer_inputs.push(activations.clone());
+            }
             let z = linear_batch(&activations, layer);
-            if retain_cache { cache.pre_activations.push(z.clone()); }
+            if retain_cache {
+                cache.pre_activations.push(z.clone());
+            }
             activations = if layer_idx + 1 == layers.len() {
                 output_activation(&z, self.output_type)
             } else {
                 hidden_activation(&z, self.hidden_act)
             };
         }
-        if retain_cache { cache.outputs = activations.clone(); }
+        if retain_cache {
+            cache.outputs = activations.clone();
+        }
 
         let flat: Vec<f32> = activations
             .iter()
@@ -271,7 +301,9 @@ impl MlpNeuralPredicate {
             &Device::Cpu,
         )?;
         drop(layers);
-        if retain_cache { self.forward_queue.borrow_mut().push_back(cache); }
+        if retain_cache {
+            self.forward_queue.borrow_mut().push_back(cache);
+        }
         Ok((tensor, activations))
     }
 
@@ -400,7 +432,12 @@ impl MlpNeuralPredicate {
     ///
     /// Does not clear the gradients; call
     /// [`zero_grads`](Self::zero_grads) before the next batch.
-    pub fn optimizer_step(&self, optimizer: OptimizerKind, learning_rate: f64, example_count: usize) {
+    pub fn optimizer_step(
+        &self,
+        optimizer: OptimizerKind,
+        learning_rate: f64,
+        example_count: usize,
+    ) {
         let mut layers = self.layers.borrow_mut();
         let grads = self.grad_state.borrow_mut();
         if example_count == 0 {
@@ -688,7 +725,12 @@ mod tests {
             assert_eq!(a.predict(&rows).unwrap(), expected);
         }
         assert_eq!(a.forward_queue.borrow().len(), 1);
-        a.surrogate_backward(&tracked, &[HashMap::from([(0, -1.0)])], &HashMap::from([(0, 0)])).unwrap();
+        a.surrogate_backward(
+            &tracked,
+            &[HashMap::from([(0, -1.0)])],
+            &HashMap::from([(0, 0)]),
+        )
+        .unwrap();
         assert!(a.forward_queue.borrow().is_empty());
         assert!(a.predict(&[vec![0.0]]).is_err());
     }
@@ -720,7 +762,10 @@ mod tests {
         for (expected_row, actual_row) in expected.iter().zip(&actual) {
             assert_eq!(expected_row.len(), actual_row.len());
             for (e, a) in expected_row.iter().zip(actual_row) {
-                assert!((e - a).abs() < 1e-12, "forward outputs diverged: {e} vs {a}");
+                assert!(
+                    (e - a).abs() < 1e-12,
+                    "forward outputs diverged: {e} vs {a}"
+                );
             }
         }
     }
@@ -737,7 +782,11 @@ mod tests {
         }
     }
 
-    fn linear_model(output: OutputType, weights: Vec<Vec<f64>>, bias: Vec<f64>) -> MlpNeuralPredicate {
+    fn linear_model(
+        output: OutputType,
+        weights: Vec<Vec<f64>>,
+        bias: Vec<f64>,
+    ) -> MlpNeuralPredicate {
         let model = MlpNeuralPredicate::new(weights[0].len(), &[], output).unwrap();
         {
             let mut layers = model.layers.borrow_mut();
@@ -747,9 +796,17 @@ mod tests {
         model
     }
 
-    fn accumulated_bias_grads(model: &MlpNeuralPredicate, row: &[f64], d_output: &[f64]) -> Vec<f64> {
+    fn accumulated_bias_grads(
+        model: &MlpNeuralPredicate,
+        row: &[f64],
+        d_output: &[f64],
+    ) -> Vec<f64> {
         let (tracked, _) = model.forward_with_grads(&[row.to_vec()]).unwrap();
-        let grads: HashMap<u32, f64> = d_output.iter().enumerate().map(|(i, g)| (i as u32, *g)).collect();
+        let grads: HashMap<u32, f64> = d_output
+            .iter()
+            .enumerate()
+            .map(|(i, g)| (i as u32, *g))
+            .collect();
         let cols: HashMap<u32, usize> = (0..d_output.len()).map(|i| (i as u32, i)).collect();
         model.surrogate_backward(&tracked, &[grads], &cols).unwrap();
         let state = model.grad_state.borrow();
@@ -784,7 +841,11 @@ mod tests {
                 up[k] += h;
                 down[k] -= h;
                 let numeric = (loss(&up) - loss(&down)) / (2.0 * h);
-                assert!((analytic[k] - numeric).abs() <= 1e-6, "{k}: {} vs {numeric}", analytic[k]);
+                assert!(
+                    (analytic[k] - numeric).abs() <= 1e-6,
+                    "{k}: {} vs {numeric}",
+                    analytic[k]
+                );
             }
         }
     }
@@ -801,12 +862,21 @@ mod tests {
             let analytic = accumulated_bias_grads(&model, &row, &d_output)[0];
             let loss = |b: f64| {
                 let z: f64 = weights[0].iter().zip(&row).map(|(w, x)| w * x).sum::<f64>() + b;
-                let softplus = |v: f64| if v > 0.0 { v + (-v).exp().ln_1p() } else { v.exp().ln_1p() };
+                let softplus = |v: f64| {
+                    if v > 0.0 {
+                        v + (-v).exp().ln_1p()
+                    } else {
+                        v.exp().ln_1p()
+                    }
+                };
                 label * softplus(-z) + (1.0 - label) * softplus(z)
             };
             let h = 1e-6;
             let numeric = (loss(bias + h) - loss(bias - h)) / (2.0 * h);
-            assert!((analytic - numeric).abs() <= 1e-6, "{label} {bias}: {analytic} vs {numeric}");
+            assert!(
+                (analytic - numeric).abs() <= 1e-6,
+                "{label} {bias}: {analytic} vs {numeric}"
+            );
         }
     }
 
@@ -820,7 +890,11 @@ mod tests {
                 accumulated_bias_grads(&model, &row, &[0.5]);
                 model.optimizer_step(OptimizerKind::Sgd, 0.1, *count);
                 let layers = model.layers.borrow();
-                vec![layers[0].bias[0], layers[0].weights[0][0] - 0.1, layers[0].weights[0][1] - 0.2]
+                vec![
+                    layers[0].bias[0],
+                    layers[0].weights[0][0] - 0.1,
+                    layers[0].weights[0][1] - 0.2,
+                ]
             })
             .collect();
         for (one, two) in steps[0].iter().zip(&steps[1]) {

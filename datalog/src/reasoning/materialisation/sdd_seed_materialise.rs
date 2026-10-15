@@ -58,12 +58,18 @@ pub fn infer_new_facts_with_sdd_seed_specs(
         let mut mgr = provenance.manager().lock().unwrap();
         for seed in seeds {
             match seed {
-                SeedSpec::Independent { triple, prob, seed_id } => {
+                SeedSpec::Independent {
+                    triple,
+                    prob,
+                    seed_id,
+                } => {
                     mgr.ensure_variable(seed_id, prob);
                     let tag = mgr.literal(seed_id, true);
                     initial_tags.set_tag(&triple, tag);
                     if seed_id as usize >= initial_tags.seed_triples.len() {
-                        initial_tags.seed_triples.resize(seed_id as usize + 1, zero_triple());
+                        initial_tags
+                            .seed_triples
+                            .resize(seed_id as usize + 1, zero_triple());
                     }
                     initial_tags.seed_triples[seed_id as usize] = triple.clone();
                     reasoner.insert_ground_triple(triple);
@@ -84,9 +90,12 @@ pub fn infer_new_facts_with_sdd_seed_specs(
                         let tag = mgr.apply(lit, eo, BoolOp::And);
                         initial_tags.set_tag(&choice.triple, tag);
                         if choice.choice_id as usize >= initial_tags.seed_triples.len() {
-                            initial_tags.seed_triples.resize(choice.choice_id as usize + 1, zero_triple());
+                            initial_tags
+                                .seed_triples
+                                .resize(choice.choice_id as usize + 1, zero_triple());
                         }
-                        initial_tags.seed_triples[choice.choice_id as usize] = choice.triple.clone();
+                        initial_tags.seed_triples[choice.choice_id as usize] =
+                            choice.triple.clone();
                         reasoner.insert_ground_triple(choice.triple);
                     }
                 }
@@ -99,7 +108,8 @@ pub fn infer_new_facts_with_sdd_seed_specs(
 
 fn record_seed_triple(tags: &mut TagStore<SddProvenance>, variable: u32, triple: &Triple) {
     if variable as usize >= tags.seed_triples.len() {
-        tags.seed_triples.resize(variable as usize + 1, zero_triple());
+        tags.seed_triples
+            .resize(variable as usize + 1, zero_triple());
     }
     tags.seed_triples[variable as usize] = triple.clone();
 }
@@ -120,7 +130,11 @@ pub fn try_infer_new_facts_with_sdd_seed_specs(
 
     for seed in seeds {
         match seed {
-            SeedSpec::Independent { triple, prob, seed_id } => {
+            SeedSpec::Independent {
+                triple,
+                prob,
+                seed_id,
+            } => {
                 let tag = provenance.try_with_budget(|mgr, budget| {
                     mgr.ensure_variable(seed_id, prob);
                     mgr.try_literal(seed_id, true, budget)

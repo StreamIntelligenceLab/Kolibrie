@@ -8,15 +8,15 @@
  * you can obtain one at https://mozilla.org/MPL/2.0/.
  */
 
-use annotate_snippets::{Level, Renderer, Snippet, AnnotationKind, Group, Annotation};
-use nom:: error::Error as NomError;
+use annotate_snippets::{Annotation, AnnotationKind, Group, Level, Renderer, Snippet};
+use nom::error::Error as NomError;
 
 pub(crate) fn format_parse_error(input: &str, err: nom::Err<NomError<&str>>) -> String {
     match err {
         nom::Err::Error(e) | nom::Err::Failure(e) => {
             let error_pos = e.input;
             let offset = input.len() - error_pos.len();
-            
+
             // Calculate line and column numbers
             let mut line_no = 1;
             let mut col_no = 1;
@@ -44,72 +44,85 @@ pub(crate) fn format_parse_error(input: &str, err: nom::Err<NomError<&str>>) -> 
             // Determine error message and label based on nom error kind
             let (error_title, error_label) = match e.code {
                 nom::error::ErrorKind::Tag => (
-                    format!("Expected a specific SPARQL keyword or token at line {}, column {}", line_no, col_no),
-                    "expected a valid SPARQL keyword here"
+                    format!(
+                        "Expected a specific SPARQL keyword or token at line {}, column {}",
+                        line_no, col_no
+                    ),
+                    "expected a valid SPARQL keyword here",
                 ),
                 nom::error::ErrorKind::Char => (
-                    format!("Expected a specific character at line {}, column {}", line_no, col_no),
-                    "expected a specific character here"
+                    format!(
+                        "Expected a specific character at line {}, column {}",
+                        line_no, col_no
+                    ),
+                    "expected a specific character here",
                 ),
                 nom::error::ErrorKind::Alt => (
-                    format!("Syntax error in SPARQL query at line {}, column {}", line_no, col_no),
-                    "expected one of several alternatives here"
+                    format!(
+                        "Syntax error in SPARQL query at line {}, column {}",
+                        line_no, col_no
+                    ),
+                    "expected one of several alternatives here",
                 ),
                 nom::error::ErrorKind::TakeWhile1 => (
-                    format!("Invalid character in SPARQL query at line {}, column {}", line_no, col_no),
-                    "unexpected character or sequence"
+                    format!(
+                        "Invalid character in SPARQL query at line {}, column {}",
+                        line_no, col_no
+                    ),
+                    "unexpected character or sequence",
                 ),
                 nom::error::ErrorKind::Many0 | nom::error::ErrorKind::Many1 => (
-                    format!("Expected more input or pattern at line {}, column {}", line_no, col_no),
-                    "incomplete pattern or statement"
+                    format!(
+                        "Expected more input or pattern at line {}, column {}",
+                        line_no, col_no
+                    ),
+                    "incomplete pattern or statement",
                 ),
                 nom::error::ErrorKind::Eof => (
-                    format!("Unexpected end of query at line {}, column {}", line_no, col_no),
-                    "query ended unexpectedly"
+                    format!(
+                        "Unexpected end of query at line {}, column {}",
+                        line_no, col_no
+                    ),
+                    "query ended unexpectedly",
                 ),
                 _ => (
                     format!("SPARQL syntax error at line {}, column {}", line_no, col_no),
-                    "unexpected syntax error"
-                )
+                    "unexpected syntax error",
+                ),
             };
 
             // Check for common SPARQL-specific errors
             let specific_error = detect_specific_sparql_error(input, offset, error_line);
-            let (final_title, final_label, footer) = if let Some((title, label, foot)) = specific_error {
-                (title, label, Some(foot))
-            } else {
-                (error_title, error_label.to_string(), None)
-            };
+            let (final_title, final_label, footer) =
+                if let Some((title, label, foot)) = specific_error {
+                    (title, label, Some(foot))
+                } else {
+                    (error_title, error_label.to_string(), None)
+                };
 
             // Create the annotated snippet
             let renderer = Renderer::styled();
-            
-            let mut report = vec![
-                Level::ERROR
-                    .primary_title(&final_title)
-                    .element(
-                        Snippet::source(input)
-                            .line_start(1)
-                            .path("query")
-                            .fold(false)
-                            .annotation(
-                                AnnotationKind::Primary
-                                    .span(offset..offset.saturating_add(1).min(input.len()))
-                                    .label(&final_label)
-                            )
-                    )
-            ];
+
+            let mut report = vec![Level::ERROR.primary_title(&final_title).element(
+                Snippet::source(input)
+                    .line_start(1)
+                    .path("query")
+                    .fold(false)
+                    .annotation(
+                        AnnotationKind::Primary
+                            .span(offset..offset.saturating_add(1).min(input.len()))
+                            .label(&final_label),
+                    ),
+            )];
 
             // Add footer if present
             if let Some(ref footer_text) = footer {
-                report.push(
-                    Group::with_title(Level::HELP.secondary_title(footer_text))
-                );
+                report.push(Group::with_title(Level::HELP.secondary_title(footer_text)));
             }
 
             let message = renderer.render(&report);
             format!("\n{}", message)
-        },
+        }
         nom::Err::Incomplete(_) => {
             let renderer = Renderer::styled();
             let report = &[
@@ -119,22 +132,26 @@ pub(crate) fn format_parse_error(input: &str, err: nom::Err<NomError<&str>>) -> 
                         Snippet::<Annotation>::source(input)
                             .line_start(1)
                             .path("query")
-                            .fold(false)
+                            .fold(false),
                     ),
                 Group::with_title(
-                    Level::HELP.secondary_title("The parser needs more input to complete parsing")
-                )
+                    Level::HELP.secondary_title("The parser needs more input to complete parsing"),
+                ),
             ];
-            
+
             format!("\n{}", renderer.render(report))
         }
     }
 }
 
 /// Detect specific SPARQL errors and provide helpful messages
-fn detect_specific_sparql_error(input: &str, offset: usize, _error_line: &str) -> Option<(String, String, String)> {
+fn detect_specific_sparql_error(
+    input: &str,
+    offset: usize,
+    _error_line: &str,
+) -> Option<(String, String, String)> {
     let lower = input.to_lowercase();
-    
+
     // Check for SELECT without WHERE
     if lower.contains("select") && !lower.contains("where") && !lower.contains("insert") {
         return Some((
@@ -151,7 +168,10 @@ fn detect_specific_sparql_error(input: &str, offset: usize, _error_line: &str) -
         return Some((
             "Unclosed brace in SPARQL query".to_string(),
             "missing closing '}'".to_string(),
-            format!("Found {} opening '{{' but {} closing '}}' in the query", open_braces, close_braces)
+            format!(
+                "Found {} opening '{{' but {} closing '}}' in the query",
+                open_braces, close_braces
+            ),
         ));
     }
 
@@ -162,7 +182,8 @@ fn detect_specific_sparql_error(input: &str, offset: usize, _error_line: &str) -
         return Some((
             "Unterminated string literal".to_string(),
             "string not closed with matching quote".to_string(),
-            "Make sure all string literals are properly closed with matching double quotes".to_string()
+            "Make sure all string literals are properly closed with matching double quotes"
+                .to_string(),
         ));
     }
 
@@ -183,7 +204,7 @@ fn detect_specific_sparql_error(input: &str, offset: usize, _error_line: &str) -
 fn check_missing_prefix(input: &str, offset: usize) -> Option<(String, String, String)> {
     let before_error = &input[..offset];
     let lines: Vec<&str> = input.lines().collect();
-    
+
     // Extract declared prefixes
     let mut declared_prefixes = vec!["rdf", "rdfs", "owl", "xsd", "foaf", "dc"];
     for line in &lines {
@@ -205,7 +226,10 @@ fn check_missing_prefix(input: &str, offset: usize) -> Option<(String, String, S
                     return Some((
                         format!("Undefined prefix '{}'", potential_prefix),
                         format!("prefix '{}' is not declared", potential_prefix),
-                        format!("Add a PREFIX declaration like: PREFIX {}: <http://example.org/>", potential_prefix)
+                        format!(
+                            "Add a PREFIX declaration like: PREFIX {}: <http://example.org/>",
+                            potential_prefix
+                        ),
                     ));
                 }
             }
@@ -218,7 +242,7 @@ fn check_missing_prefix(input: &str, offset: usize) -> Option<(String, String, S
 /// Check for missing separator (. or ;) between triple patterns
 fn check_missing_triple_separator(input: &str, offset: usize) -> Option<(String, String, String)> {
     let before_error = &input[..offset];
-    
+
     // Look for pattern: variable followed by non-separator followed by variable
     let trimmed = before_error.trim_end();
     if trimmed.contains('?') {
@@ -226,17 +250,24 @@ fn check_missing_triple_separator(input: &str, offset: usize) -> Option<(String,
         if let Some(last_char) = chars.last() {
             if last_char.is_alphanumeric() || *last_char == '_' {
                 // Check if we're potentially between triple patterns
-                let last_10_chars: String = chars.iter().rev().take(10).collect::<String>()
-                    .chars().rev().collect();
-                
-                if last_10_chars.contains('?') && 
-                   !last_10_chars.contains('.') && 
-                   !last_10_chars.contains(';') &&
-                   !last_10_chars.contains('{') {
+                let last_10_chars: String = chars
+                    .iter()
+                    .rev()
+                    .take(10)
+                    .collect::<String>()
+                    .chars()
+                    .rev()
+                    .collect();
+
+                if last_10_chars.contains('?')
+                    && !last_10_chars.contains('.')
+                    && !last_10_chars.contains(';')
+                    && !last_10_chars.contains('{')
+                {
                     return Some((
                         "Missing separator between triple patterns".to_string(),
                         "expected '.' or ';' to separate triple patterns".to_string(),
-                        "Triple patterns in SPARQL should be separated by '.' or ';'".to_string()
+                        "Triple patterns in SPARQL should be separated by '.' or ';'".to_string(),
                     ));
                 }
             }

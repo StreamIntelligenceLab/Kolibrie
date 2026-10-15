@@ -14,12 +14,12 @@
 //! This is event-complexity — cost scales with interval endpoints, not the
 //! horizon or interval widths.
 
-use std::collections::HashMap;
-use shared::terms::{Term, TriplePattern};
-use shared::triple::Triple;
-use crate::syntax::DatalogMTLRule;
 use super::interval::TInterval;
 use super::relation::{conjoin, eval_atom, Database};
+use crate::syntax::DatalogMTLRule;
+use shared::terms::{Term, TriplePattern};
+use shared::triple::Triple;
+use std::collections::HashMap;
 
 /// Materialize `rules` over interval-valued `facts`. `max_iters` caps the
 /// fixpoint for programs that are not finitely materializable (their minimal

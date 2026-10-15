@@ -8,8 +8,8 @@
  * you can obtain one at https://mozilla.org/MPL/2.0/.
  */
 
+use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
-use serde::{Serialize, Deserialize};
 
 /// Bit mask for identifying quoted triple IDs.
 /// Regular dictionary IDs use bits 0–30 (up to 2,147,483,647).

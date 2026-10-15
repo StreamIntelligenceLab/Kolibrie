@@ -13,7 +13,9 @@
 //! Owns a window together with the operator that evaluates over it, so the engine
 //! can hold several independently and coordinate only where they must join.
 
-use crate::rsp::s2r::{CSPARQLWindow, ContentContainer, ProbabilisticOccurrence, Report, ReportStrategy, Tick};
+use crate::rsp::s2r::{
+    CSPARQLWindow, ContentContainer, ProbabilisticOccurrence, Report, ReportStrategy, Tick,
+};
 use std::fmt::Debug;
 use std::hash::Hash;
 use std::sync::mpsc::Receiver;
@@ -52,7 +54,6 @@ where
     inner: CSPARQLWindow<I>,
     receiver: Option<Receiver<ContentContainer<I>>>,
 }
-
 
 // Summarised rather than derived: the wrapped window holds the buffered content, and
 // whether a receiver is still attached is the state a reader is usually after.

@@ -81,8 +81,12 @@ pub struct MinMaxProbability;
 impl Provenance for MinMaxProbability {
     type Tag = f64;
 
-    fn zero(&self) -> f64 { 0.0 }
-    fn one(&self) -> f64 { 1.0 }
+    fn zero(&self) -> f64 {
+        0.0
+    }
+    fn one(&self) -> f64 {
+        1.0
+    }
 
     fn disjunction(&self, a: &f64, b: &f64) -> f64 {
         a.max(*b)
@@ -123,8 +127,12 @@ pub struct AddMultProbability;
 impl Provenance for AddMultProbability {
     type Tag = f64;
 
-    fn zero(&self) -> f64 { 0.0 }
-    fn one(&self) -> f64 { 1.0 }
+    fn zero(&self) -> f64 {
+        0.0
+    }
+    fn one(&self) -> f64 {
+        1.0
+    }
 
     fn disjunction(&self, a: &f64, b: &f64) -> f64 {
         a + b - a * b
@@ -165,8 +173,12 @@ pub struct BooleanProvenance;
 impl Provenance for BooleanProvenance {
     type Tag = bool;
 
-    fn zero(&self) -> bool { false }
-    fn one(&self) -> bool { true }
+    fn zero(&self) -> bool {
+        false
+    }
+    fn one(&self) -> bool {
+        true
+    }
 
     fn disjunction(&self, a: &bool, b: &bool) -> bool {
         *a || *b
@@ -189,7 +201,11 @@ impl Provenance for BooleanProvenance {
     }
 
     fn recover_probability(&self, tag: &bool) -> f64 {
-        if *tag { 1.0 } else { 0.0 }
+        if *tag {
+            1.0
+        } else {
+            0.0
+        }
     }
 
     fn is_saturated(&self, old: &bool, new: &bool) -> bool {
@@ -224,20 +240,33 @@ impl TopKProofs {
     /// If `k` is outside `[1, 63]`: `recover_probability` enumerates proof subsets
     /// through a `u64` bitmask, so 63 is the hard ceiling.
     pub fn new(k: usize) -> Self {
-        assert!(k >= 1 && k <= 63, "k must be in [1, 63]: u64 bitmask limit in recover_probability");
-        Self { k, prob_table: Arc::new(Mutex::new(Vec::new())) }
+        assert!(
+            k >= 1 && k <= 63,
+            "k must be in [1, 63]: u64 bitmask limit in recover_probability"
+        );
+        Self {
+            k,
+            prob_table: Arc::new(Mutex::new(Vec::new())),
+        }
     }
 }
 
 fn proof_prob(proof: &Proof, table: &[f64]) -> f64 {
-    proof.iter().map(|&v| *table.get(v as usize).unwrap_or(&1.0)).product()
+    proof
+        .iter()
+        .map(|&v| *table.get(v as usize).unwrap_or(&1.0))
+        .product()
 }
 
 impl Provenance for TopKProofs {
     type Tag = TopKTag;
 
-    fn zero(&self) -> TopKTag { vec![] }
-    fn one(&self) -> TopKTag { vec![BTreeSet::new()] }
+    fn zero(&self) -> TopKTag {
+        vec![]
+    }
+    fn one(&self) -> TopKTag {
+        vec![BTreeSet::new()]
+    }
 
     /// ⊕ = union, dedup, sort by descending probability, truncate to k
     fn disjunction(&self, a: &TopKTag, b: &TopKTag) -> TopKTag {
@@ -245,9 +274,11 @@ impl Provenance for TopKProofs {
         merged.sort();
         merged.dedup();
         let table = self.prob_table.lock().unwrap();
-        merged.sort_by(|p, q|
-            proof_prob(q, &table).partial_cmp(&proof_prob(p, &table))
-                .unwrap_or(std::cmp::Ordering::Equal));
+        merged.sort_by(|p, q| {
+            proof_prob(q, &table)
+                .partial_cmp(&proof_prob(p, &table))
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
         drop(table);
         merged.truncate(self.k);
         merged
@@ -255,16 +286,24 @@ impl Provenance for TopKProofs {
 
     /// ⊗ = Cartesian product — merge variable ID sets (BTreeSet handles shared IDs)
     fn conjunction(&self, a: &TopKTag, b: &TopKTag) -> TopKTag {
-        if a.is_empty() || b.is_empty() { return vec![]; }
-        let mut result: Vec<Proof> = a.iter().flat_map(|pa|
-            b.iter().map(move |pb| pa.iter().chain(pb.iter()).copied().collect())
-        ).collect();
+        if a.is_empty() || b.is_empty() {
+            return vec![];
+        }
+        let mut result: Vec<Proof> = a
+            .iter()
+            .flat_map(|pa| {
+                b.iter()
+                    .map(move |pb| pa.iter().chain(pb.iter()).copied().collect())
+            })
+            .collect();
         result.sort();
         result.dedup();
         let table = self.prob_table.lock().unwrap();
-        result.sort_by(|p, q|
-            proof_prob(q, &table).partial_cmp(&proof_prob(p, &table))
-                .unwrap_or(std::cmp::Ordering::Equal));
+        result.sort_by(|p, q| {
+            proof_prob(q, &table)
+                .partial_cmp(&proof_prob(p, &table))
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
         drop(table);
         result.truncate(self.k);
         result
@@ -291,7 +330,9 @@ impl Provenance for TopKProofs {
         vec![proof]
     }
 
-    fn saturate(&self, a: &TopKTag) -> TopKTag { a.clone() }
+    fn saturate(&self, a: &TopKTag) -> TopKTag {
+        a.clone()
+    }
 
     fn tag_from_probability(&self, prob: f64) -> TopKTag {
         let mut table = self.prob_table.lock().unwrap();
@@ -304,7 +345,9 @@ impl Provenance for TopKProofs {
 
     fn tag_from_probability_with_id(&self, prob: f64, id: usize) -> TopKTag {
         let mut table = self.prob_table.lock().unwrap();
-        if id >= table.len() { table.resize(id + 1, 0.0); }
+        if id >= table.len() {
+            table.resize(id + 1, 0.0);
+        }
         table[id] = prob.clamp(0.0, 1.0);
         drop(table);
         let mut proof = BTreeSet::new();
@@ -315,17 +358,24 @@ impl Provenance for TopKProofs {
     /// Computes the probability of a derived fact from its retained proof paths.
     /// Result is an approximation when fewer than all proof paths were retained.
     fn recover_probability(&self, tag: &TopKTag) -> f64 {
-        if tag.is_empty() { return 0.0; }
+        if tag.is_empty() {
+            return 0.0;
+        }
         let table = self.prob_table.lock().unwrap();
         let m = tag.len();
         let mut total = 0.0_f64;
         for mask in 1u64..(1u64 << m) {
-            let sign = if mask.count_ones() % 2 == 1 { 1.0 } else { -1.0 };
+            let sign = if mask.count_ones() % 2 == 1 {
+                1.0
+            } else {
+                -1.0
+            };
             let vars: BTreeSet<u32> = (0..m)
                 .filter(|&i| mask & (1 << i) != 0)
                 .flat_map(|i| tag[i].iter().copied())
                 .collect();
-            let prod: f64 = vars.iter()
+            let prod: f64 = vars
+                .iter()
                 .map(|&v| *table.get(v as usize).unwrap_or(&1.0))
                 .product();
             total += sign * prod;
@@ -333,7 +383,9 @@ impl Provenance for TopKProofs {
         total.clamp(0.0, 1.0)
     }
 
-    fn is_saturated(&self, old: &TopKTag, new: &TopKTag) -> bool { old == new }
+    fn is_saturated(&self, old: &TopKTag, new: &TopKTag) -> bool {
+        old == new
+    }
 }
 
 /// A signed literal: `(seed_id, polarity)` where `true` = positive, `false` = negated.
@@ -357,12 +409,16 @@ pub struct DnfWmcProvenance {
 impl DnfWmcProvenance {
     /// A semiring that keeps the full DNF formula and counts it exactly.
     pub fn new() -> Self {
-        Self { prob_table: Arc::new(Mutex::new(Vec::new())) }
+        Self {
+            prob_table: Arc::new(Mutex::new(Vec::new())),
+        }
     }
 }
 
 impl Default for DnfWmcProvenance {
-    fn default() -> Self { Self::new() }
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 /// Backward-compatible alias. Use [`DnfWmcProvenance`] for explicit DNF or
@@ -372,7 +428,8 @@ pub type WmcProvenance = DnfWmcProvenance;
 /// Remove clauses subsumed by a shorter clause in the same formula.
 fn remove_subsumed(formula: WmcFormula) -> WmcFormula {
     let clauses: Vec<WmcClause> = formula.into_iter().collect();
-    clauses.iter()
+    clauses
+        .iter()
         .filter(|c1| !clauses.iter().any(|c2| c2 != *c1 && c2.is_subset(c1)))
         .cloned()
         .collect()
@@ -380,7 +437,8 @@ fn remove_subsumed(formula: WmcFormula) -> WmcFormula {
 
 /// Remove contradictory clauses (those containing both `(v, true)` and `(v, false)`).
 pub(crate) fn remove_contradictory(formula: WmcFormula) -> WmcFormula {
-    formula.into_iter()
+    formula
+        .into_iter()
         .filter(|c| !c.iter().any(|&(v, pol)| c.contains(&(v, !pol))))
         .collect()
 }
@@ -390,24 +448,37 @@ fn shannon_wmc(
     table: &[f64],
     memo: &mut std::collections::HashMap<WmcFormula, f64>,
 ) -> f64 {
-    if formula.is_empty() { return 0.0; }
-    if formula.contains(&BTreeSet::new()) { return 1.0; }
-    if let Some(&cached) = memo.get(formula) { return cached; }
+    if formula.is_empty() {
+        return 0.0;
+    }
+    if formula.contains(&BTreeSet::new()) {
+        return 1.0;
+    }
+    if let Some(&cached) = memo.get(formula) {
+        return cached;
+    }
 
-    let x = formula.iter().flat_map(|c| c.iter()).map(|&(v, _)| v).min().unwrap();
+    let x = formula
+        .iter()
+        .flat_map(|c| c.iter())
+        .map(|&(v, _)| v)
+        .min()
+        .unwrap();
     let px = *table.get(x as usize).unwrap_or(&1.0);
 
-    let phi_true: WmcFormula = formula.iter()
+    let phi_true: WmcFormula = formula
+        .iter()
         .filter(|c| !c.contains(&(x, false)))
         .map(|c| c.iter().filter(|&&(v, _)| v != x).copied().collect())
         .collect();
-    let phi_false: WmcFormula = formula.iter()
+    let phi_false: WmcFormula = formula
+        .iter()
         .filter(|c| !c.contains(&(x, true)))
         .map(|c| c.iter().filter(|&&(v, _)| v != x).copied().collect())
         .collect();
 
     let result = px * shannon_wmc(&phi_true, table, memo)
-               + (1.0 - px) * shannon_wmc(&phi_false, table, memo);
+        + (1.0 - px) * shannon_wmc(&phi_false, table, memo);
     memo.insert(formula.clone(), result);
     result
 }
@@ -415,8 +486,12 @@ fn shannon_wmc(
 impl Provenance for DnfWmcProvenance {
     type Tag = WmcFormula;
 
-    fn zero(&self) -> WmcFormula { BTreeSet::new() }
-    fn one(&self) -> WmcFormula { std::iter::once(BTreeSet::new()).collect() }
+    fn zero(&self) -> WmcFormula {
+        BTreeSet::new()
+    }
+    fn one(&self) -> WmcFormula {
+        std::iter::once(BTreeSet::new()).collect()
+    }
 
     fn disjunction(&self, a: &WmcFormula, b: &WmcFormula) -> WmcFormula {
         let union: WmcFormula = a.iter().chain(b.iter()).cloned().collect();
@@ -424,21 +499,34 @@ impl Provenance for DnfWmcProvenance {
     }
 
     fn conjunction(&self, a: &WmcFormula, b: &WmcFormula) -> WmcFormula {
-        if a.is_empty() || b.is_empty() { return self.zero(); }
-        let product: WmcFormula = a.iter().flat_map(|ca|
-            b.iter().map(move |cb| ca.iter().chain(cb.iter()).copied().collect::<WmcClause>())
-        ).collect();
+        if a.is_empty() || b.is_empty() {
+            return self.zero();
+        }
+        let product: WmcFormula = a
+            .iter()
+            .flat_map(|ca| {
+                b.iter()
+                    .map(move |cb| ca.iter().chain(cb.iter()).copied().collect::<WmcClause>())
+            })
+            .collect();
         remove_subsumed(remove_contradictory(product))
     }
 
     /// Exact negation over the proof formula, preserving correlations between literals.
     fn negate(&self, a: &WmcFormula) -> WmcFormula {
-        if a.is_empty() { return self.one(); }
-        if a.contains(&BTreeSet::new()) { return self.zero(); }
+        if a.is_empty() {
+            return self.one();
+        }
+        if a.contains(&BTreeSet::new()) {
+            return self.zero();
+        }
         let mut result = self.one();
         for clause in a {
-            if result.is_empty() { break; }
-            let neg_clause: WmcFormula = clause.iter()
+            if result.is_empty() {
+                break;
+            }
+            let neg_clause: WmcFormula = clause
+                .iter()
                 .map(|&(v, pol)| std::iter::once((v, !pol)).collect::<WmcClause>())
                 .collect();
             result = self.conjunction(&result, &neg_clause);
@@ -446,7 +534,9 @@ impl Provenance for DnfWmcProvenance {
         result
     }
 
-    fn saturate(&self, a: &WmcFormula) -> WmcFormula { a.clone() }
+    fn saturate(&self, a: &WmcFormula) -> WmcFormula {
+        a.clone()
+    }
 
     fn tag_from_probability(&self, prob: f64) -> WmcFormula {
         let mut table = self.prob_table.lock().unwrap();
@@ -457,20 +547,26 @@ impl Provenance for DnfWmcProvenance {
 
     fn tag_from_probability_with_id(&self, prob: f64, id: usize) -> WmcFormula {
         let mut table = self.prob_table.lock().unwrap();
-        if id >= table.len() { table.resize(id + 1, 0.0); }
+        if id >= table.len() {
+            table.resize(id + 1, 0.0);
+        }
         table[id] = prob.clamp(0.0, 1.0);
         drop(table);
         std::iter::once(std::iter::once((id as u32, true)).collect()).collect()
     }
 
     fn recover_probability(&self, tag: &WmcFormula) -> f64 {
-        if tag.is_empty() { return 0.0; }
+        if tag.is_empty() {
+            return 0.0;
+        }
         let table = self.prob_table.lock().unwrap();
         let mut memo = std::collections::HashMap::new();
         shannon_wmc(tag, &table, &mut memo).clamp(0.0, 1.0)
     }
 
-    fn is_saturated(&self, old: &WmcFormula, new: &WmcFormula) -> bool { old == new }
+    fn is_saturated(&self, old: &WmcFormula, new: &WmcFormula) -> bool {
+        old == new
+    }
 }
 
 /// Expiration-time provenance semiring
@@ -480,20 +576,38 @@ pub struct ExpirationProvenance;
 impl Provenance for ExpirationProvenance {
     type Tag = u64;
 
-    fn zero(&self) -> u64 { 0 }
-    fn one(&self) -> u64 { u64::MAX }
+    fn zero(&self) -> u64 {
+        0
+    }
+    fn one(&self) -> u64 {
+        u64::MAX
+    }
 
     /// ⊕ = max: multiple derivation paths — keep the longest-lived
-    fn disjunction(&self, a: &u64, b: &u64) -> u64 { (*a).max(*b) }
+    fn disjunction(&self, a: &u64, b: &u64) -> u64 {
+        (*a).max(*b)
+    }
 
     /// ⊗ = min: joined premises — expiry bounded by the weakest premise
-    fn conjunction(&self, a: &u64, b: &u64) -> u64 { (*a).min(*b) }
+    fn conjunction(&self, a: &u64, b: &u64) -> u64 {
+        (*a).min(*b)
+    }
 
-    fn negate(&self, _a: &u64) -> u64 { 0 }
-    fn saturate(&self, a: &u64) -> u64 { *a }
-    fn tag_from_probability(&self, _: f64) -> u64 { u64::MAX }
-    fn recover_probability(&self, tag: &u64) -> f64 { *tag as f64 }
-    fn is_saturated(&self, old: &u64, new: &u64) -> bool { old == new }
+    fn negate(&self, _a: &u64) -> u64 {
+        0
+    }
+    fn saturate(&self, a: &u64) -> u64 {
+        *a
+    }
+    fn tag_from_probability(&self, _: f64) -> u64 {
+        u64::MAX
+    }
+    fn recover_probability(&self, tag: &u64) -> f64 {
+        *tag as f64
+    }
+    fn is_saturated(&self, old: &u64, new: &u64) -> bool {
+        old == new
+    }
 }
 
 #[cfg(test)]
@@ -667,7 +781,11 @@ mod tests {
         p.tag_from_probability_with_id(0.8, 0);
         let tag = vec![make_proof(&[0])];
         let prob = p.recover_probability(&tag);
-        assert!((prob - 0.8).abs() < PROB_EPSILON, "expected 0.8, got {}", prob);
+        assert!(
+            (prob - 0.8).abs() < PROB_EPSILON,
+            "expected 0.8, got {}",
+            prob
+        );
     }
 
     #[test]
@@ -678,7 +796,11 @@ mod tests {
         // {0} and {1} are independent — noisy-OR: 0.8 + 0.6 - 0.48 = 0.92
         let tag = vec![make_proof(&[0]), make_proof(&[1])];
         let prob = p.recover_probability(&tag);
-        assert!((prob - 0.92).abs() < PROB_EPSILON, "expected 0.92, got {}", prob);
+        assert!(
+            (prob - 0.92).abs() < PROB_EPSILON,
+            "expected 0.92, got {}",
+            prob
+        );
     }
 
     #[test]
@@ -693,7 +815,11 @@ mod tests {
         p.tag_from_probability_with_id(0.5, 2); // z
         let tag = vec![make_proof(&[0, 1]), make_proof(&[0, 2])];
         let wmc = p.recover_probability(&tag);
-        assert!((wmc - 0.64).abs() < PROB_EPSILON, "expected 0.64, got {}", wmc);
+        assert!(
+            (wmc - 0.64).abs() < PROB_EPSILON,
+            "expected 0.64, got {}",
+            wmc
+        );
     }
 
     #[test]
@@ -704,5 +830,4 @@ mod tests {
         assert!(p.is_saturated(&a, &a));
         assert!(!p.is_saturated(&a, &b));
     }
-
 }

@@ -8,9 +8,9 @@
  * you can obtain one at https://mozilla.org/MPL/2.0/.
  */
 
-use shared::terms::Term;
-use shared::rule::Rule;
 use datalog::reasoning::Reasoner;
+use shared::rule::Rule;
+use shared::terms::Term;
 
 fn example_with_contradictions() -> Reasoner {
     let mut kg = Reasoner::new();
@@ -27,28 +27,22 @@ fn example_with_contradictions() -> Reasoner {
     let professor_id = dict.encode("professor");
     let student_id = dict.encode("student");
     drop(dict);
-    
+
     let constraint = Rule {
         premise: vec![
             (
                 Term::Variable("X".to_string()),
                 Term::Constant(isa_id),
-                Term::Constant(professor_id)
+                Term::Constant(professor_id),
             ),
             (
                 Term::Variable("X".to_string()),
                 Term::Constant(isa_id),
-                Term::Constant(student_id)
-            )
+                Term::Constant(student_id),
+            ),
         ],
         negative_premise: vec![],
-        conclusion: vec![
-            (
-                Term::Constant(0),
-                Term::Constant(0),
-                Term::Constant(0)
-            )
-        ],
+        conclusion: vec![(Term::Constant(0), Term::Constant(0), Term::Constant(0))],
         filters: vec![],
     };
     kg.add_constraint(constraint);
@@ -58,21 +52,19 @@ fn example_with_contradictions() -> Reasoner {
     let teaches_id = dict.encode("teaches");
     let enrolled_id = dict.encode("enrolledIn");
     drop(dict);
-    
+
     let professor_rule = Rule {
         premise: vec![(
             Term::Variable("X".to_string()),
             Term::Constant(teaches_id),
-            Term::Variable("Y".to_string())
+            Term::Variable("Y".to_string()),
         )],
         negative_premise: vec![],
-        conclusion: vec![
-            (
-                Term::Variable("X".to_string()),
-                Term::Constant(isa_id),
-                Term::Constant(professor_id)
-            )
-        ],
+        conclusion: vec![(
+            Term::Variable("X".to_string()),
+            Term::Constant(isa_id),
+            Term::Constant(professor_id),
+        )],
         filters: vec![],
     };
     kg.add_rule(professor_rule);
@@ -81,16 +73,14 @@ fn example_with_contradictions() -> Reasoner {
         premise: vec![(
             Term::Variable("X".to_string()),
             Term::Constant(enrolled_id),
-            Term::Variable("Y".to_string())
+            Term::Variable("Y".to_string()),
         )],
         negative_premise: vec![],
-        conclusion: vec![
-            (
-                Term::Variable("X".to_string()),
-                Term::Constant(isa_id),
-                Term::Constant(student_id)
-            )
-        ],
+        conclusion: vec![(
+            Term::Variable("X".to_string()),
+            Term::Constant(isa_id),
+            Term::Constant(student_id),
+        )],
         filters: vec![],
     };
     kg.add_rule(student_rule);
@@ -114,7 +104,8 @@ fn main() {
     println!("\nNewly inferred facts:");
     for fact in inferred_facts {
         let dict = kg.dictionary.read().unwrap();
-        println!("{} {} {}", 
+        println!(
+            "{} {} {}",
             dict.decode(fact.subject).unwrap_or("unknown"),
             dict.decode(fact.predicate).unwrap_or("unknown"),
             dict.decode(fact.object).unwrap_or("unknown")
@@ -126,11 +117,11 @@ fn main() {
     let john_id = dict.encode("john");
     let isa_id = dict.encode("isA");
     drop(dict);
-    
+
     let query = (
         Term::Constant(john_id),
         Term::Constant(isa_id),
-        Term::Variable("Role".to_string())
+        Term::Variable("Role".to_string()),
     );
 
     let results = kg.query_with_repairs(&query);
@@ -147,7 +138,8 @@ fn print_all_facts(kg: &Reasoner) {
     let facts = kg.dataset_index.query_default(None, None, None);
     let dict = kg.dictionary.read().unwrap();
     for fact in facts {
-        println!("{} {} {}", 
+        println!(
+            "{} {} {}",
             dict.decode(fact.subject).unwrap_or("unknown"),
             dict.decode(fact.predicate).unwrap_or("unknown"),
             dict.decode(fact.object).unwrap_or("unknown")

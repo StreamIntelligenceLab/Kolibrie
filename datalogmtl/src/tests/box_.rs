@@ -8,10 +8,10 @@
  * you can obtain one at https://mozilla.org/MPL/2.0/.
  */
 
-use crate::syntax::{DatalogMTLRule, TemporalAtom, Interval};
-use crate::store::TemporalSnapshotStore;
+use super::{c, enc, make_dict, triple, v};
 use crate::evaluator::DatalogMTLEvaluator;
-use super::{make_dict, enc, triple, c, v};
+use crate::store::TemporalSnapshotStore;
+use crate::syntax::{DatalogMTLRule, Interval, TemporalAtom};
 
 /// Test 4a: Box positive — inner holds at every integer point in the window.
 /// Rule: (?x :stableReading ?v) :- Box[0, 5] (?x :sensor ?v)
@@ -19,20 +19,18 @@ use super::{make_dict, enc, triple, c, v};
 #[test]
 fn test_box_positive() {
     let dict = make_dict();
-    let sensor_s  = enc(&dict, ":S");
-    let sensor_p  = enc(&dict, ":sensor");
-    let stable    = enc(&dict, ":stableReading");
-    let val42     = enc(&dict, ":v42");
+    let sensor_s = enc(&dict, ":S");
+    let sensor_p = enc(&dict, ":sensor");
+    let stable = enc(&dict, ":stableReading");
+    let val42 = enc(&dict, ":v42");
 
     let rule = DatalogMTLRule {
-        id:   "stableReading".into(),
+        id: "stableReading".into(),
         head: (v("x"), c(stable), v("val")),
-        body: vec![
-            TemporalAtom::Box_ {
-                interval: Interval { start: 0, end: 5 },
-                inner: Box::new(TemporalAtom::Base((v("x"), c(sensor_p), v("val")))),
-            },
-        ],
+        body: vec![TemporalAtom::Box_ {
+            interval: Interval { start: 0, end: 5 },
+            inner: Box::new(TemporalAtom::Base((v("x"), c(sensor_p), v("val")))),
+        }],
     };
 
     let store = TemporalSnapshotStore::new(100);
@@ -46,8 +44,11 @@ fn test_box_positive() {
     }
 
     let expected = triple(sensor_s, stable, val42);
-    assert!(last_derived.contains(&expected),
-        "(S :stableReading :v42) should be derived at t=5; derived={:?}", last_derived);
+    assert!(
+        last_derived.contains(&expected),
+        "(S :stableReading :v42) should be derived at t=5; derived={:?}",
+        last_derived
+    );
 }
 
 /// Test 4b: Box negative — a different value at one integer point breaks it.
@@ -55,21 +56,19 @@ fn test_box_positive() {
 #[test]
 fn test_box_value_inconsistency() {
     let dict = make_dict();
-    let sensor_s  = enc(&dict, ":S");
-    let sensor_p  = enc(&dict, ":sensor");
-    let stable    = enc(&dict, ":stableReading");
-    let val42     = enc(&dict, ":v42");
-    let val99     = enc(&dict, ":v99");
+    let sensor_s = enc(&dict, ":S");
+    let sensor_p = enc(&dict, ":sensor");
+    let stable = enc(&dict, ":stableReading");
+    let val42 = enc(&dict, ":v42");
+    let val99 = enc(&dict, ":v99");
 
     let rule = DatalogMTLRule {
-        id:   "stableReading".into(),
+        id: "stableReading".into(),
         head: (v("x"), c(stable), v("val")),
-        body: vec![
-            TemporalAtom::Box_ {
-                interval: Interval { start: 0, end: 5 },
-                inner: Box::new(TemporalAtom::Base((v("x"), c(sensor_p), v("val")))),
-            },
-        ],
+        body: vec![TemporalAtom::Box_ {
+            interval: Interval { start: 0, end: 5 },
+            inner: Box::new(TemporalAtom::Base((v("x"), c(sensor_p), v("val")))),
+        }],
     };
 
     let store = TemporalSnapshotStore::new(100);
@@ -86,9 +85,12 @@ fn test_box_value_inconsistency() {
     let expected42 = triple(sensor_s, stable, val42);
 
     let derived_set: std::collections::HashSet<_> = derived.iter().cloned().collect();
-    assert!(!derived_set.contains(&expected42),
+    assert!(
+        !derived_set.contains(&expected42),
         "(S :stableReading :v42) should NOT be derived at t=5 \
-         when :v99 was present at t=3; derived={:?}", derived);
+         when :v99 was present at t=3; derived={:?}",
+        derived
+    );
 }
 
 /// Test 4c: Box fails when window is empty (no timestamps in range).
@@ -96,22 +98,23 @@ fn test_box_value_inconsistency() {
 #[test]
 fn test_box_vacuous() {
     let dict = make_dict();
-    let sensor_s  = enc(&dict, ":S");
-    let sensor_p  = enc(&dict, ":sensor");
-    let stable    = enc(&dict, ":stableReading");
-    let val42     = enc(&dict, ":v42");
+    let sensor_s = enc(&dict, ":S");
+    let sensor_p = enc(&dict, ":sensor");
+    let stable = enc(&dict, ":stableReading");
+    let val42 = enc(&dict, ":v42");
 
     // Box[1000, 5000]: at t=0, t < interval.start → early exit.
     // Even if timestamps_in were called, an empty window must yield [] (no vacuous truth).
     let rule = DatalogMTLRule {
-        id:   "stableReading".into(),
+        id: "stableReading".into(),
         head: (v("x"), c(stable), v("val")),
-        body: vec![
-            TemporalAtom::Box_ {
-                interval: Interval { start: 1000, end: 5000 },
-                inner: Box::new(TemporalAtom::Base((v("x"), c(sensor_p), v("val")))),
+        body: vec![TemporalAtom::Box_ {
+            interval: Interval {
+                start: 1000,
+                end: 5000,
             },
-        ],
+            inner: Box::new(TemporalAtom::Base((v("x"), c(sensor_p), v("val")))),
+        }],
     };
 
     let store = TemporalSnapshotStore::new(10_000);
@@ -122,6 +125,9 @@ fn test_box_vacuous() {
     assert!(metrics.fixpoint_iterations >= 1);
     let expected = triple(sensor_s, stable, val42);
     let derived_set: std::collections::HashSet<_> = derived.iter().cloned().collect();
-    assert!(!derived_set.contains(&expected),
-        "Box should NOT fire when window is empty; derived={:?}", derived);
+    assert!(
+        !derived_set.contains(&expected),
+        "Box should NOT fire when window is empty; derived={:?}",
+        derived
+    );
 }

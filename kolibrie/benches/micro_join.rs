@@ -45,7 +45,9 @@ fn make_bindings(rows: usize, vars: &[&str], key_var: &str) -> Bindings {
                 let value = if *v == key_var {
                     (i as u32) % KEYS
                 } else {
-                    (i as u32).wrapping_mul(2_654_435_761).wrapping_add(c as u32)
+                    (i as u32)
+                        .wrapping_mul(2_654_435_761)
+                        .wrapping_add(c as u32)
                 };
                 row.insert((*v).to_string(), value);
             }
@@ -67,7 +69,10 @@ fn hash_join_maps(left: &Bindings, right: &Bindings, shared: &[&str]) -> Binding
 
     let mut out = Vec::new();
     for lrow in left {
-        let key: Vec<u32> = shared.iter().filter_map(|v| lrow.get(*v).copied()).collect();
+        let key: Vec<u32> = shared
+            .iter()
+            .filter_map(|v| lrow.get(*v).copied())
+            .collect();
         if key.len() != shared.len() {
             continue;
         }
@@ -107,7 +112,9 @@ fn make_relation(rows: usize, vars: &[&str], key_var: &str) -> Relation {
                     if *v == key_var {
                         (i as u32) % KEYS
                     } else {
-                        (i as u32).wrapping_mul(2_654_435_761).wrapping_add(c as u32)
+                        (i as u32)
+                            .wrapping_mul(2_654_435_761)
+                            .wrapping_add(c as u32)
                     }
                 })
                 .collect()
@@ -148,7 +155,10 @@ fn hash_join_relation(left: &Relation, right: &Relation, shared: &[&str]) -> Rel
             }
         }
     }
-    Relation { schema: out_schema, rows }
+    Relation {
+        schema: out_schema,
+        rows,
+    }
 }
 
 fn bench_join(c: &mut Criterion) {
@@ -175,7 +185,13 @@ fn bench_join(c: &mut Criterion) {
         b.iter(|| black_box(hash_join_maps(black_box(&lb), black_box(&rb), &shared).len()))
     });
     group.bench_function("schema_plus_tuples", |b| {
-        b.iter(|| black_box(hash_join_relation(black_box(&lr), black_box(&rr), &shared).rows.len()))
+        b.iter(|| {
+            black_box(
+                hash_join_relation(black_box(&lr), black_box(&rr), &shared)
+                    .rows
+                    .len(),
+            )
+        })
     });
     group.finish();
 }

@@ -31,7 +31,8 @@ fn main() {
     db.parse_turtle(turtle_data);
 
     // Filter employees with salary greater than 5000 using QueryBuilder
-    let filtered_triples = db.query()
+    let filtered_triples = db
+        .query()
         .with_predicate("<http://example.org/salary>")
         .filter(|triple| {
             // Acquire read lock for dictionary access

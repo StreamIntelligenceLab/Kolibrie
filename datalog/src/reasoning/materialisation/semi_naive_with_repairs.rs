@@ -6,15 +6,14 @@
 //! across all repairs, this commits to one: the reasoner's fact base is rewritten,
 //! and facts dropped by the repair are gone.
 
-use std::collections::HashSet;
+use crate::reasoning::materialisation::replace_variables_with_bound_values;
+use crate::reasoning::rules::{evaluate_filters, join_rule};
+use crate::reasoning::Reasoner;
 use shared::dataset_index::DatasetIndex;
 use shared::triple::Triple;
-use crate::reasoning::materialisation::replace_variables_with_bound_values;
-use crate::reasoning::Reasoner;
-use crate::reasoning::rules::{evaluate_filters, join_rule};
+use std::collections::HashSet;
 
 impl Reasoner {
-
     /// Modified infer_new_facts_semi_naive to handle inconsistencies
     pub fn infer_new_facts_semi_naive_with_repairs(&mut self) -> Vec<Triple> {
         let all_initial = self.dataset_index.query(None, None, None);
@@ -48,8 +47,9 @@ impl Reasoner {
                     if evaluate_filters(&binding, &rule.filters, &dict) {
                         // Process each conclusion
                         for conclusion in &rule.conclusion {
-                            let inferred =
-                                replace_variables_with_bound_values(conclusion, &binding, &mut dict);
+                            let inferred = replace_variables_with_bound_values(
+                                conclusion, &binding, &mut dict,
+                            );
 
                             // Check if adding this fact would cause inconsistency
                             let mut temp_facts = all_facts.clone();
@@ -79,6 +79,4 @@ impl Reasoner {
 
         inferred_so_far
     }
-
 }
-

@@ -248,8 +248,11 @@ fn main() {
     // Term::Constant ids are per-Dictionary and would otherwise match nothing.
     let dictionary = Arc::new(RwLock::new(Dictionary::new()));
     let vocab = init_vocab(&dictionary);
-    let config: Config =
-        Arc::new(ConfigHandle::new(DEFAULT_RULES, DEFAULT_SHAPES, DEFAULT_STATIC));
+    let config: Config = Arc::new(ConfigHandle::new(
+        DEFAULT_RULES,
+        DEFAULT_SHAPES,
+        DEFAULT_STATIC,
+    ));
 
     start_demo_loop(
         Arc::clone(&events),
@@ -260,7 +263,10 @@ fn main() {
     );
     start_http_server(events, state, dictionary, config, PORT);
 
-    println!("Ghent drone safety demo running at http://127.0.0.1:{}/", PORT);
+    println!(
+        "Ghent drone safety demo running at http://127.0.0.1:{}/",
+        PORT
+    );
     loop {
         thread::sleep(Duration::from_secs(60));
     }
@@ -273,7 +279,10 @@ impl DemoState {
             drone_a: DroneRuntime {
                 id: "droneA",
                 label: "Drone A",
-                position: LatLng { lat: 51.0261, lng: 3.7178 },
+                position: LatLng {
+                    lat: 51.0261,
+                    lng: 3.7178,
+                },
                 altitude_m: 80,
                 automated: true,
                 last_telemetry_ms: 0,
@@ -284,7 +293,10 @@ impl DemoState {
             drone_b: DroneRuntime {
                 id: "droneB",
                 label: "Drone B",
-                position: LatLng { lat: 51.0518, lng: 3.7179 },
+                position: LatLng {
+                    lat: 51.0518,
+                    lng: 3.7179,
+                },
                 altitude_m: 70,
                 automated: false,
                 last_telemetry_ms: 0,
@@ -454,9 +466,7 @@ fn start_http_server(
             let state = Arc::clone(&state);
             let dictionary = Arc::clone(&dictionary);
             let config = Arc::clone(&config);
-            thread::spawn(move || {
-                handle_connection(stream, events, state, dictionary, config)
-            });
+            thread::spawn(move || handle_connection(stream, events, state, dictionary, config));
         }
     });
 }
@@ -492,7 +502,11 @@ fn read_request(stream: &mut TcpStream) -> Option<(String, String, String)> {
 
     let head = std::str::from_utf8(&raw[..header_end]).ok()?;
     let request_line = head.lines().next().unwrap_or("");
-    let method = request_line.split_whitespace().next().unwrap_or("").to_string();
+    let method = request_line
+        .split_whitespace()
+        .next()
+        .unwrap_or("")
+        .to_string();
     let path = request_line
         .split_whitespace()
         .nth(1)
@@ -641,7 +655,12 @@ fn serve_html(stream: TcpStream) {
         .join("examples/real_scenario/drone_traffic_safety_demo.html");
     match std::fs::read(path) {
         Ok(body) => write_response(stream, 200, "text/html; charset=utf-8", &body),
-        Err(_) => write_response(stream, 404, "text/plain; charset=utf-8", b"Demo HTML not found"),
+        Err(_) => write_response(
+            stream,
+            404,
+            "text/plain; charset=utf-8",
+            b"Demo HTML not found",
+        ),
     }
 }
 
@@ -694,7 +713,10 @@ fn update_drone_b(stream: TcpStream, body: &str, state: Arc<Mutex<DemoState>>) {
 
     let mut guard = state.lock().unwrap();
     let now = guard.elapsed_ms();
-    guard.drone_b.position = LatLng { lat: update.lat, lng: update.lng };
+    guard.drone_b.position = LatLng {
+        lat: update.lat,
+        lng: update.lng,
+    };
     guard.drone_b.last_telemetry_ms = now;
     drop(guard);
 
@@ -837,10 +859,23 @@ fn telemetry_for_drone(
     dictionary: &Arc<RwLock<Dictionary>>,
     ingester: &mut ShapeIngester,
 ) -> (Vec<Triple>, Vec<String>) {
-    let drone_id = if drone.id == "droneA" { vocab.drone_a } else { vocab.drone_b };
-    let obs = encode(dictionary, &format!("http://utm.example.org/obs/{}-{}", drone.id, t));
-    let tlm = encode(dictionary, &format!("http://utm.example.org/telemetry/{}-{}", drone.id, t));
-    let position = encode(dictionary, &format!("{:.6},{:.6}", drone.position.lat, drone.position.lng));
+    let drone_id = if drone.id == "droneA" {
+        vocab.drone_a
+    } else {
+        vocab.drone_b
+    };
+    let obs = encode(
+        dictionary,
+        &format!("http://utm.example.org/obs/{}-{}", drone.id, t),
+    );
+    let tlm = encode(
+        dictionary,
+        &format!("http://utm.example.org/telemetry/{}-{}", drone.id, t),
+    );
+    let position = encode(
+        dictionary,
+        &format!("{:.6},{:.6}", drone.position.lat, drone.position.lng),
+    );
     let altitude = encode(dictionary, &drone.altitude_m.to_string());
     let event = RdfEvent {
         stream_iri: TELEMETRY_STREAM.to_string(),
@@ -888,7 +923,11 @@ fn telemetry_for_drone(
     facts.push(triple(
         drone_id,
         vocab.dront_on_flight_plan,
-        if off_plan { vocab.xsd_false } else { vocab.xsd_true },
+        if off_plan {
+            vocab.xsd_false
+        } else {
+            vocab.xsd_true
+        },
     ));
 
     drone.previous_zones = current_zones;
@@ -1028,7 +1067,10 @@ fn head_matches(head: &(Term, Term, Term), t: &Triple) -> bool {
 
 fn decode_triples(triples: &[Triple], dictionary: &Arc<RwLock<Dictionary>>) -> Vec<String> {
     let dict = dictionary.read().unwrap();
-    triples.iter().map(|triple| dict.decode_triple(triple)).collect()
+    triples
+        .iter()
+        .map(|triple| dict.decode_triple(triple))
+        .collect()
 }
 
 fn local(dict: &Dictionary, id: u32) -> String {
@@ -1042,7 +1084,10 @@ fn local(dict: &Dictionary, id: u32) -> String {
 
 fn init_vocab(dictionary: &Arc<RwLock<Dictionary>>) -> Vocab {
     Vocab {
-        rdf_type: encode(dictionary, "http://www.w3.org/1999/02/22-rdf-syntax-ns#type"),
+        rdf_type: encode(
+            dictionary,
+            "http://www.w3.org/1999/02/22-rdf-syntax-ns#type",
+        ),
         sosa_observation: encode(dictionary, "http://www.w3.org/ns/sosa/Observation"),
         sosa_made_by_sensor: encode(dictionary, "http://www.w3.org/ns/sosa/madeBySensor"),
         sosa_has_result: encode(dictionary, "http://www.w3.org/ns/sosa/hasResult"),
@@ -1185,21 +1230,30 @@ fn zones() -> Vec<Zone> {
             id: "hospital",
             label: "UZ Gent Hospital",
             kind: "restricted",
-            center: LatLng { lat: 51.0257, lng: 3.7297 },
+            center: LatLng {
+                lat: 51.0257,
+                lng: 3.7297,
+            },
             radius_m: 620.0,
         },
         Zone {
             id: "government",
             label: "Ghent City Hall",
             kind: "restricted",
-            center: LatLng { lat: 51.05444, lng: 3.72528 },
+            center: LatLng {
+                lat: 51.05444,
+                lng: 3.72528,
+            },
             radius_m: 320.0,
         },
         Zone {
             id: "event",
             label: "Citadelpark Event",
             kind: "restricted",
-            center: LatLng { lat: 51.0379, lng: 3.7201 },
+            center: LatLng {
+                lat: 51.0379,
+                lng: 3.7201,
+            },
             radius_m: 720.0,
         },
     ]
@@ -1209,19 +1263,33 @@ fn scripted_drone_a(tick: u64) -> LatLng {
     let cycle = tick % 95_000;
     let lat = 51.02565;
     if cycle <= 12_000 {
-        interpolate(LatLng { lat, lng: 3.7178 }, LatLng { lat, lng: 3.7252 }, cycle as f64 / 12_000.0)
+        interpolate(
+            LatLng { lat, lng: 3.7178 },
+            LatLng { lat, lng: 3.7252 },
+            cycle as f64 / 12_000.0,
+        )
     } else if cycle <= 50_000 {
         let progress = (cycle - 12_000) as f64 / 38_000.0;
-        interpolate(LatLng { lat, lng: 3.7252 }, LatLng { lat, lng: 3.7316 }, progress)
+        interpolate(
+            LatLng { lat, lng: 3.7252 },
+            LatLng { lat, lng: 3.7316 },
+            progress,
+        )
     } else if cycle <= 68_000 {
         interpolate(
             LatLng { lat, lng: 3.7316 },
-            LatLng { lat: 51.0262, lng: 3.7385 },
+            LatLng {
+                lat: 51.0262,
+                lng: 3.7385,
+            },
             (cycle - 50_000) as f64 / 18_000.0,
         )
     } else {
         interpolate(
-            LatLng { lat: 51.0262, lng: 3.7385 },
+            LatLng {
+                lat: 51.0262,
+                lng: 3.7385,
+            },
             LatLng { lat, lng: 3.7178 },
             (cycle - 68_000) as f64 / 27_000.0,
         )
@@ -1242,8 +1310,7 @@ fn haversine_m(a: LatLng, b: LatLng) -> f64 {
     let d_lng = (b.lng - a.lng).to_radians();
     let lat1 = a.lat.to_radians();
     let lat2 = b.lat.to_radians();
-    let h = (d_lat / 2.0).sin().powi(2)
-        + lat1.cos() * lat2.cos() * (d_lng / 2.0).sin().powi(2);
+    let h = (d_lat / 2.0).sin().powi(2) + lat1.cos() * lat2.cos() * (d_lng / 2.0).sin().powi(2);
     2.0 * r * h.sqrt().atan2((1.0 - h).sqrt())
 }
 
@@ -1261,6 +1328,9 @@ fn encode(dictionary: &Arc<RwLock<Dictionary>>, value: &str) -> u32 {
 }
 
 fn triple(subject: u32, predicate: u32, object: u32) -> Triple {
-    Triple { subject, predicate, object }
+    Triple {
+        subject,
+        predicate,
+        object,
+    }
 }
-

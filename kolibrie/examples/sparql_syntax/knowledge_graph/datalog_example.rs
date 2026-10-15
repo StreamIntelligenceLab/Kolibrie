@@ -9,8 +9,8 @@
  */
 
 use datalog::reasoning::Reasoner;
-use shared::terms::Term;
 use shared::rule::Rule;
+use shared::terms::Term;
 
 fn main() {
     let mut kg = Reasoner::new();
@@ -24,31 +24,39 @@ fn main() {
     let ancestor_id = kg.dictionary.write().unwrap().encode("ancestor");
 
     let rule1 = Rule {
-        premise: vec![
-            (Term::Variable("X".to_string()), 
-                          Term::Constant(parent_id), 
-                          Term::Variable("Y".to_string())),
-        ],
+        premise: vec![(
+            Term::Variable("X".to_string()),
+            Term::Constant(parent_id),
+            Term::Variable("Y".to_string()),
+        )],
         negative_premise: vec![],
-        conclusion: vec![(Term::Variable("X".to_string()), 
-                                  Term::Constant(ancestor_id), 
-                                  Term::Variable("Y".to_string())),],
+        conclusion: vec![(
+            Term::Variable("X".to_string()),
+            Term::Constant(ancestor_id),
+            Term::Variable("Y".to_string()),
+        )],
         filters: vec![],
     };
-    
+
     let rule2 = Rule {
         premise: vec![
-            (Term::Variable("X".to_string()), 
-                          Term::Constant(parent_id), 
-                          Term::Variable("Y".to_string())),
-            (Term::Variable("Y".to_string()), 
-                          Term::Constant(ancestor_id), 
-                          Term::Variable("Z".to_string())),
+            (
+                Term::Variable("X".to_string()),
+                Term::Constant(parent_id),
+                Term::Variable("Y".to_string()),
+            ),
+            (
+                Term::Variable("Y".to_string()),
+                Term::Constant(ancestor_id),
+                Term::Variable("Z".to_string()),
+            ),
         ],
         negative_premise: vec![],
-        conclusion: vec![(Term::Variable("X".to_string()), 
-                                  Term::Constant(ancestor_id), 
-                                  Term::Variable("Z".to_string())),],
+        conclusion: vec![(
+            Term::Variable("X".to_string()),
+            Term::Constant(ancestor_id),
+            Term::Variable("Z".to_string()),
+        )],
         filters: vec![],
     };
 
@@ -61,18 +69,18 @@ fn main() {
         if let (Some(s), Some(p), Some(o)) = (
             dict.decode(fact.subject),
             dict.decode(fact.predicate),
-            dict.decode(fact.object)
+            dict.decode(fact.object),
         ) {
             println!("Inferred: {} {} {}", s, p, o);
         }
     }
 
     let results = kg.query_abox(
-        None,              // subject: any (this is our variable X)
-        Some("ancestor"),  // predicate: "ancestor"
-        Some("David")      // object: "David"
+        None,             // subject: any (this is our variable X)
+        Some("ancestor"), // predicate: "ancestor"
+        Some("David"),    // object: "David"
     );
-    
+
     for triple in results {
         let dict = kg.dictionary.read().unwrap();
         if let Some(ancestor) = dict.decode(triple.subject) {

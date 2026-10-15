@@ -13,13 +13,13 @@ use std::error::Error;
 // Needed only by the ml-gated functions below; `rdf_term_to_f64`, which the default
 // build uses, needs nothing but `Error`.
 #[cfg(feature = "ml")]
-use std::collections::HashMap;
-#[cfg(feature = "ml")]
 use crate::execute_query::execute_query_rayon_parallel2_volcano;
 #[cfg(feature = "ml")]
 use crate::parser::parse_sparql_query;
 #[cfg(feature = "ml")]
 use crate::sparql_database::SparqlDatabase;
+#[cfg(feature = "ml")]
+use std::collections::HashMap;
 
 pub(crate) type RdfTerm = String;
 type LoaderResult<T> = Result<T, Box<dyn Error>>;

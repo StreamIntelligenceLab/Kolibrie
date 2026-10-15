@@ -34,8 +34,11 @@ fn setup_database() -> SparqlDatabase {
             i % DEPARTMENTS
         ));
     }
-    execute_sparql_update(&format!("INSERT DATA {{\n{default_graph}\n}}"), &mut database)
-        .expect("default graph fixture must load");
+    execute_sparql_update(
+        &format!("INSERT DATA {{\n{default_graph}\n}}"),
+        &mut database,
+    )
+    .expect("default graph fixture must load");
 
     for graph in 0..NAMED_GRAPHS {
         let mut named = String::with_capacity((SUBJECTS / NAMED_GRAPHS) * 90);

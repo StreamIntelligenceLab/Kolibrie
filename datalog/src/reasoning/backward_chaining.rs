@@ -11,11 +11,11 @@
 //! no proof. A recursive rule set deeper than that silently answers nothing, so
 //! forward chaining is the safer choice when the rules are known to recurse.
 
-use std::collections::HashMap;
+use crate::reasoning::Reasoner;
 use shared::rule::Rule;
 use shared::terms::{Term, TriplePattern};
 use shared::triple::Triple;
-use crate::reasoning::Reasoner;
+use std::collections::HashMap;
 
 fn unify_patterns(
     pattern1: &TriplePattern,
@@ -59,7 +59,8 @@ fn unify_terms(term1: &Term, term2: &Term, bindings: &mut HashMap<String, Term>)
                 && unify_terms(&qt1.1, &qt2.1, bindings)
                 && unify_terms(&qt1.2, &qt2.2, bindings)
         }
-        (Term::Variable(v), Term::QuotedTriple(qt)) | (Term::QuotedTriple(qt), Term::Variable(v)) => {
+        (Term::Variable(v), Term::QuotedTriple(qt))
+        | (Term::QuotedTriple(qt), Term::Variable(v)) => {
             bindings.insert(v.clone(), Term::QuotedTriple(qt.clone()));
             true
         }
@@ -171,8 +172,6 @@ impl Reasoner {
         let mut variable_counter = 0;
         self.backward_chaining_helper(query, &bindings, 0, &mut variable_counter)
     }
-
-
 
     /// Recursive helper for backward chaining. Depth-limited to prevent infinite loops.
     fn backward_chaining_helper(

@@ -61,12 +61,7 @@ mod tests {
 
     const EPS: f64 = 1e-6;
 
-    fn finite_difference(
-        manager: &mut SddManager,
-        target: SddId,
-        var: u32,
-        delta: f64,
-    ) -> f64 {
+    fn finite_difference(manager: &mut SddManager, target: SddId, var: u32, delta: f64) -> f64 {
         let orig_pos = manager.pos_weight()[var as usize];
         let orig_neg = manager.neg_weight()[var as usize];
         let kind = manager.var_kind(var);

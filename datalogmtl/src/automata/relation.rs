@@ -13,13 +13,13 @@
 //! interval list); conjunction is a natural join with per-binding interval
 //! **intersection**; temporal operators transduce the interval lists.
 
-use std::collections::HashMap;
-use shared::terms::{Term, TriplePattern};
-use shared::triple::Triple;
-use shared::pattern::matches_rule_pattern;
-use crate::syntax::TemporalAtom;
 use super::interval::{coalesce, intersect_lists, TInterval};
 use super::transducer;
+use crate::syntax::TemporalAtom;
+use shared::pattern::matches_rule_pattern;
+use shared::terms::{Term, TriplePattern};
+use shared::triple::Triple;
+use std::collections::HashMap;
 
 /// The interval-valued fact base, indexed for pattern matching.
 pub struct Database {
@@ -30,7 +30,6 @@ pub struct Database {
     by_pred: HashMap<u32, Vec<Triple>>,
     by_pred_obj: HashMap<(u32, u32), Vec<Triple>>,
 }
-
 
 // Summarised rather than derived: this is the fact base, so the derived form would
 // print every fact and both indexes over them.
@@ -47,12 +46,19 @@ impl std::fmt::Debug for Database {
 impl Database {
     /// An empty fact base.
     pub fn new() -> Self {
-        Database { facts: HashMap::new(), by_pred: HashMap::new(), by_pred_obj: HashMap::new() }
+        Database {
+            facts: HashMap::new(),
+            by_pred: HashMap::new(),
+            by_pred_obj: HashMap::new(),
+        }
     }
 
     fn index_triple(&mut self, t: &Triple) {
         self.by_pred.entry(t.predicate).or_default().push(t.clone());
-        self.by_pred_obj.entry((t.predicate, t.object)).or_default().push(t.clone());
+        self.by_pred_obj
+            .entry((t.predicate, t.object))
+            .or_default()
+            .push(t.clone());
     }
 
     /// Append one interval to a fact (indexes the triple if new). Does not coalesce.
@@ -97,7 +103,10 @@ impl Database {
 }
 
 fn as_const(term: &Term) -> Option<u32> {
-    match term { Term::Constant(c) => Some(*c), _ => None }
+    match term {
+        Term::Constant(c) => Some(*c),
+        _ => None,
+    }
 }
 
 /// A relation over some variables with an interval list per binding tuple.
@@ -105,16 +114,19 @@ fn as_const(term: &Term) -> Option<u32> {
 pub struct BindingRelation {
     /// The variables this relation binds, sorted and distinct. The order defines
     /// the tuple layout in [`rows`](Self::rows), so the two must be read together.
-    pub vars: Vec<String>,                        // sorted, distinct
+    pub vars: Vec<String>, // sorted, distinct
     /// One entry per binding tuple, positionally aligned to
     /// [`vars`](Self::vars), mapped to the intervals over which that tuple
     /// holds.
-    pub rows: HashMap<Vec<u32>, Vec<TInterval>>,  // values aligned to `vars`
+    pub rows: HashMap<Vec<u32>, Vec<TInterval>>, // values aligned to `vars`
 }
 
 impl BindingRelation {
     fn empty(vars: Vec<String>) -> Self {
-        BindingRelation { vars, rows: HashMap::new() }
+        BindingRelation {
+            vars,
+            rows: HashMap::new(),
+        }
     }
 }
 
@@ -123,7 +135,9 @@ fn pattern_vars(pattern: &TriplePattern) -> Vec<String> {
     let mut vs = Vec::new();
     for term in [&pattern.0, &pattern.1, &pattern.2] {
         if let Term::Variable(v) = term {
-            if !vs.contains(v) { vs.push(v.clone()); }
+            if !vs.contains(v) {
+                vs.push(v.clone());
+            }
         }
     }
     vs.sort();
@@ -162,7 +176,9 @@ pub fn eval_atom(atom: &TemporalAtom, db: &Database) -> BindingRelation {
         TemporalAtom::Since { interval, phi, psi } => {
             let a = eval_atom(phi, db);
             let b = eval_atom(psi, db);
-            join_with(&a, &b, |pints, qints| transducer::since(pints, qints, interval))
+            join_with(&a, &b, |pints, qints| {
+                transducer::since(pints, qints, interval)
+            })
         }
         TemporalAtom::DiamondPlus { interval, inner } => {
             let r = eval_atom(inner, db);
@@ -175,7 +191,9 @@ pub fn eval_atom(atom: &TemporalAtom, db: &Database) -> BindingRelation {
         TemporalAtom::Until { interval, phi, psi } => {
             let a = eval_atom(phi, db);
             let b = eval_atom(psi, db);
-            join_with(&a, &b, |pints, qints| transducer::until(pints, qints, interval))
+            join_with(&a, &b, |pints, qints| {
+                transducer::until(pints, qints, interval)
+            })
         }
     }
 }
@@ -192,7 +210,9 @@ fn eval_base(pattern: &TriplePattern, db: &Database) -> BindingRelation {
             }
         }
     }
-    for v in rows.values_mut() { *v = coalesce(std::mem::take(v)); }
+    for v in rows.values_mut() {
+        *v = coalesce(std::mem::take(v));
+    }
     BindingRelation { vars, rows }
 }
 
@@ -204,7 +224,9 @@ fn map_transduce(
     let mut rows = HashMap::new();
     for (k, ivs) in r.rows {
         let out = f(&ivs);
-        if !out.is_empty() { rows.insert(k, out); }
+        if !out.is_empty() {
+            rows.insert(k, out);
+        }
     }
     BindingRelation { vars: r.vars, rows }
 }
@@ -217,20 +239,31 @@ pub fn join_with(
     b: &BindingRelation,
     combine: impl Fn(&[TInterval], &[TInterval]) -> Vec<TInterval>,
 ) -> BindingRelation {
-    let shared: Vec<String> = a.vars.iter().filter(|v| b.vars.contains(v)).cloned().collect();
+    let shared: Vec<String> = a
+        .vars
+        .iter()
+        .filter(|v| b.vars.contains(v))
+        .cloned()
+        .collect();
     let mut out_vars = a.vars.clone();
     for v in &b.vars {
-        if !out_vars.contains(v) { out_vars.push(v.clone()); }
+        if !out_vars.contains(v) {
+            out_vars.push(v.clone());
+        }
     }
     out_vars.sort();
     if a.rows.is_empty() || b.rows.is_empty() {
         return BindingRelation::empty(out_vars);
     }
 
-    let a_shared: Vec<usize> = shared.iter()
-        .map(|v| a.vars.iter().position(|x| x == v).unwrap()).collect();
-    let b_shared: Vec<usize> = shared.iter()
-        .map(|v| b.vars.iter().position(|x| x == v).unwrap()).collect();
+    let a_shared: Vec<usize> = shared
+        .iter()
+        .map(|v| a.vars.iter().position(|x| x == v).unwrap())
+        .collect();
+    let b_shared: Vec<usize> = shared
+        .iter()
+        .map(|v| b.vars.iter().position(|x| x == v).unwrap())
+        .collect();
 
     // Hash b by its shared-variable values.
     let mut b_index: HashMap<Vec<u32>, Vec<(&Vec<u32>, &Vec<TInterval>)>> = HashMap::new();
@@ -242,19 +275,32 @@ pub fn join_with(
     let mut rows: HashMap<Vec<u32>, Vec<TInterval>> = HashMap::new();
     for (ak, aints) in &a.rows {
         let key: Vec<u32> = a_shared.iter().map(|&i| ak[i]).collect();
-        let Some(matches) = b_index.get(&key) else { continue };
+        let Some(matches) = b_index.get(&key) else {
+            continue;
+        };
         for (bk, bints) in matches {
             let combined = combine(aints, bints);
-            if combined.is_empty() { continue; }
+            if combined.is_empty() {
+                continue;
+            }
             let mut binding: HashMap<&str, u32> = HashMap::new();
-            for (i, v) in a.vars.iter().enumerate() { binding.insert(v, ak[i]); }
-            for (i, v) in b.vars.iter().enumerate() { binding.insert(v, bk[i]); }
+            for (i, v) in a.vars.iter().enumerate() {
+                binding.insert(v, ak[i]);
+            }
+            for (i, v) in b.vars.iter().enumerate() {
+                binding.insert(v, bk[i]);
+            }
             let outkey: Vec<u32> = out_vars.iter().map(|v| binding[v.as_str()]).collect();
             rows.entry(outkey).or_default().extend(combined);
         }
     }
-    for v in rows.values_mut() { *v = coalesce(std::mem::take(v)); }
-    BindingRelation { vars: out_vars, rows }
+    for v in rows.values_mut() {
+        *v = coalesce(std::mem::take(v));
+    }
+    BindingRelation {
+        vars: out_vars,
+        rows,
+    }
 }
 
 /// Conjunctive join (interval intersection) — used to fold a rule body.

@@ -6,11 +6,11 @@
 //! makes this the one place where a dictionary id missing from the dictionary
 //! panics rather than degrading.
 
+use crate::reasoning::Reasoner;
 use shared::dictionary::Dictionary;
 use shared::terms::{Term, TriplePattern};
 use shared::triple::Triple;
 use std::collections::HashSet;
-use crate::reasoning::Reasoner;
 
 /// Contains a method to convert a specific data structure into a representation in the DOT language
 /// For better visualisation
@@ -33,7 +33,6 @@ fn resolve_term_to_string(term: &Term, dictionary: &Dictionary) -> String {
 }
 
 fn triple_patterns_to_dot(triple_patterns: &Vec<TriplePattern>, kg: &Reasoner) -> String {
-
     let dict = kg.dictionary.read().unwrap();
 
     triple_patterns
@@ -53,7 +52,6 @@ fn get_subject_object_iterator(triple: &Triple) -> impl Iterator<Item = u32> {
 }
 
 fn create_nodes(kg: &Reasoner, out: &mut String) {
-
     let dict = kg.dictionary.read().unwrap();
 
     // These ids represent nodes in the knowledge graph (one id for each subject or object)
@@ -87,7 +85,6 @@ fn create_nodes(kg: &Reasoner, out: &mut String) {
 }
 
 fn create_edges(kg: &Reasoner, out: &mut String) {
-
     let dict = kg.dictionary.read().unwrap();
 
     let all_facts = kg.dataset_index.query(None, None, None);
@@ -121,4 +118,3 @@ impl ToDot for Reasoner {
         out
     }
 }
-

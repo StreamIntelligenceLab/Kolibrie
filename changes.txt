@@ -222,6 +222,12 @@
 221. Check all three feature configurations before starting, which found 3 sites invisible to the default build, two of them in the fraud_detection_system example; the ml-feature configuration is checked in the gate for that reason
 222. Gate unused_qualifications on the whole workspace rather than on <crate>/src, unlike missing_docs: the lint had nothing to say about tests, examples or benches that was not worth fixing, so there is no reason to scope it
 223. Reduce total warnings to 141 of the original 3022, leaving 107 missing_docs outside every crate's src, 27 deprecated and 7 unsafe_code; four lints are now held at zero by CI, being unreachable_pub, missing_docs, missing_debug_implementations and unused_qualifications
+224. Format the whole workspace with cargo fmt --all: 183 Rust files, ~1,578 hunks, which is the one-off reformat the rustfmt CI job had been waiting on since step 1. The tree had never been formatted, so this was always going to be one large commit; it carries no change other than formatting
+225. Make the rustfmt CI job blocking now that the tree matches it exactly, which its own comment had asked for in the same commit as the reformat; drift from here is a real finding rather than the backlog
+226. Add *.rs text eol=lf to .gitattributes, because rustfmt rewrites whatever it touches to LF regardless of what the file had: without the rule the endings drift back into the diff on every formatter run, which now happens as a blocking check. Verified by restoring one CRLF file and running cargo fmt -p datalog over it, which converted it again
+227. Convert shared/src/terms.rs to LF by hand, the one Rust file the reformat left alone because it needed no formatting changes; it was the last CRLF .rs file in the tree
+228. Leave the six .py, six .md, LICENSE and .dockerignore files that still use CRLF untouched: nothing formats or complains about them, so normalising them would be churn without a reason, and the .gitattributes rule is scoped to *.rs for the same reason
+229. Verify the reformat changed nothing but layout rather than assuming it: 643 tests passed with 0 failures, all five lint-gate invocations stayed at zero, rustdoc stayed clean under -D rustdoc::broken_intra_doc_links, and the warning count held at 141. The working tree was also stashed and restored byte-identically to confirm the diff was purely formatter output with nothing hand-edited mixed in
 
 0.2.0
 1. Add support multiple window + static data for RSP engine

@@ -236,7 +236,7 @@ impl MlExecutionContext {
             _ => Self::disabled(),
         }
     }
-        /// Runs an approved model over `input`, one feature vector per row.
+    /// Runs an approved model over `input`, one feature vector per row.
     ///
     /// Verifies the artifact against its pinned hash on every call, so a file
     /// swapped between calls is caught rather than used.
@@ -332,7 +332,7 @@ impl MlExecutionContext {
         Ok(result)
     }
 
-        /// Always [`MlError::Disabled`] without the `ml` feature.
+    /// Always [`MlError::Disabled`] without the `ml` feature.
     #[cfg(not(feature = "ml"))]
     pub fn predict(&self, _name: &str, _input: &[Vec<f64>]) -> Result<Vec<String>, MlError> {
         Err(MlError::Disabled)
@@ -540,11 +540,12 @@ impl MlExecutionContext {
         {
             validate_model_name(name)?;
         }
-        for train in query
-            .train_neural_relation_decls
-            .iter()
-            .chain(query.rules.iter().flat_map(|r| &r.train_neural_relation_decls))
-        {
+        for train in query.train_neural_relation_decls.iter().chain(
+            query
+                .rules
+                .iter()
+                .flat_map(|r| &r.train_neural_relation_decls),
+        ) {
             if let Some(path) = &train.save_path {
                 self.local_artifact(path)?;
             }

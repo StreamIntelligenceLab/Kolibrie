@@ -655,10 +655,7 @@ impl DatasetIndex {
 
     /// Counts every quad without materializing them
     pub fn count_quads(&self) -> usize {
-        self.gspo
-            .keys()
-            .map(|&graph| self.count_graph(graph))
-            .sum()
+        self.gspo.keys().map(|&graph| self.count_graph(graph)).sum()
     }
 
     /// Number of quads in one graph.
@@ -986,14 +983,30 @@ mod tests {
     #[test]
     fn a_successful_quad_mutation_advances_the_generation_once() {
         let mut index = DatasetIndex::new();
-        assert_eq!(advance(&mut index, |i| assert!(i.insert_triple(&triple(1, 2, 3)))), 1);
-        assert_eq!(advance(&mut index, |i| assert!(i.delete_triple(&triple(1, 2, 3)))), 1);
         assert_eq!(
-            advance(&mut index, |i| assert!(i.insert_quad(&quad(1, 2, 3, named(9))))),
+            advance(&mut index, |i| assert!(i.insert_triple(&triple(1, 2, 3)))),
             1
         );
         assert_eq!(
-            advance(&mut index, |i| assert!(i.delete_quad(&quad(1, 2, 3, named(9))))),
+            advance(&mut index, |i| assert!(i.delete_triple(&triple(1, 2, 3)))),
+            1
+        );
+        assert_eq!(
+            advance(&mut index, |i| assert!(i.insert_quad(&quad(
+                1,
+                2,
+                3,
+                named(9)
+            )))),
+            1
+        );
+        assert_eq!(
+            advance(&mut index, |i| assert!(i.delete_quad(&quad(
+                1,
+                2,
+                3,
+                named(9)
+            )))),
             1
         );
     }
@@ -1001,7 +1014,10 @@ mod tests {
     #[test]
     fn a_graph_mutation_advances_the_generation_once() {
         let mut index = DatasetIndex::new();
-        assert_eq!(advance(&mut index, |i| assert!(i.create_graph(named(5)))), 1);
+        assert_eq!(
+            advance(&mut index, |i| assert!(i.create_graph(named(5)))),
+            1
+        );
         assert_eq!(advance(&mut index, |i| assert!(i.drop_graph(named(5)))), 1);
     }
 
@@ -1012,14 +1028,29 @@ mod tests {
         index.create_graph(named(5));
 
         // Duplicate insert
-        assert_eq!(advance(&mut index, |i| assert!(!i.insert_triple(&triple(1, 2, 3)))), 0);
+        assert_eq!(
+            advance(&mut index, |i| assert!(!i.insert_triple(&triple(1, 2, 3)))),
+            0
+        );
         // Delete of a missing quad
-        assert_eq!(advance(&mut index, |i| assert!(!i.delete_triple(&triple(9, 9, 9)))), 0);
+        assert_eq!(
+            advance(&mut index, |i| assert!(!i.delete_triple(&triple(9, 9, 9)))),
+            0
+        );
         // Existing graph created, missing graph dropped
-        assert_eq!(advance(&mut index, |i| assert!(!i.create_graph(named(5)))), 0);
-        assert_eq!(advance(&mut index, |i| assert!(!i.drop_graph(named(404)))), 0);
+        assert_eq!(
+            advance(&mut index, |i| assert!(!i.create_graph(named(5)))),
+            0
+        );
+        assert_eq!(
+            advance(&mut index, |i| assert!(!i.drop_graph(named(404)))),
+            0
+        );
         // Default graph cannot be created
-        assert_eq!(advance(&mut index, |i| assert!(!i.create_graph(GraphId::Default))), 0);
+        assert_eq!(
+            advance(&mut index, |i| assert!(!i.create_graph(GraphId::Default))),
+            0
+        );
     }
 
     #[test]
@@ -1083,7 +1114,12 @@ mod tests {
         index.insert_quad(&quad(1, 2, 3, named(4)));
         // Same quad, graph already named
         assert_eq!(
-            advance(&mut index, |i| assert!(!i.insert_quad(&quad(1, 2, 3, named(4))))),
+            advance(&mut index, |i| assert!(!i.insert_quad(&quad(
+                1,
+                2,
+                3,
+                named(4)
+            )))),
             0
         );
     }

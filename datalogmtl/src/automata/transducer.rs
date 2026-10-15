@@ -13,8 +13,8 @@
 //! `meteor_reasoner/materialization/apply.py`. Each takes the inner atom's
 //! interval list and returns the operator's output interval list (coalesced).
 
-use crate::syntax::Interval as OpInterval;
 use super::interval::{coalesce, TInterval};
+use crate::syntax::Interval as OpInterval;
 
 /// The metric bound `[a,b]` of an operator as a closed rational interval.
 fn bound(op: &OpInterval) -> TInterval {
@@ -30,7 +30,12 @@ pub fn diamond(inner: &[TInterval], op: &OpInterval) -> Vec<TInterval> {
 /// `Boxminus[a,b]`: erode each interval `[s,e] -> [s+b, e+a]`, dropping invalid.
 pub fn box_(inner: &[TInterval], op: &OpInterval) -> Vec<TInterval> {
     let b = bound(op);
-    coalesce(inner.iter().filter_map(|&iv| TInterval::circle_add(iv, b)).collect())
+    coalesce(
+        inner
+            .iter()
+            .filter_map(|&iv| TInterval::circle_add(iv, b))
+            .collect(),
+    )
 }
 
 /// phi `Since[a,b]` psi (MeTeoR `since_deduce`), combined over all interval pairs.
@@ -70,7 +75,12 @@ pub fn diamond_plus(inner: &[TInterval], op: &OpInterval) -> Vec<TInterval> {
 /// `Boxplus[a,b]`: `[s,e] -> [s-a, e-b]`, dropping invalid (future erosion).
 pub fn box_plus(inner: &[TInterval], op: &OpInterval) -> Vec<TInterval> {
     let b = bound(op);
-    coalesce(inner.iter().filter_map(|&iv| TInterval::circle_sub(iv, b)).collect())
+    coalesce(
+        inner
+            .iter()
+            .filter_map(|&iv| TInterval::circle_sub(iv, b))
+            .collect(),
+    )
 }
 
 /// phi `Until[a,b]` psi (MeTeoR `until_deduce`), combined over all interval pairs.

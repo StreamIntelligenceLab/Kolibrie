@@ -9,16 +9,16 @@
  */
 
 extern crate kolibrie;
+use kolibrie::prelude::*;
 use std::fs::File;
 use std::io::Read;
-use kolibrie::prelude::*;
 
 fn filter_example() {
-    use std::collections::{HashSet, HashMap};
-    
+    use std::collections::{HashMap, HashSet};
+
     let project_root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
     let rdf_file_path = project_root.join("../datasets/synthetic_data_employee_4.rdf");
-    
+
     let mut file = File::open(&rdf_file_path).expect("Unable to open file");
     let mut rdf_data = String::new();
     file.read_to_string(&mut rdf_data)
@@ -28,7 +28,8 @@ fn filter_example() {
     database.parse_rdf(&rdf_data);
 
     // Use the full predicate ending to be more flexible with namespaces
-    let high_salary_triples = database.query()
+    let high_salary_triples = database
+        .query()
         .filter(|triple| {
             let dict = database.dictionary();
             // First check if this is a salary predicate
@@ -45,11 +46,11 @@ fn filter_example() {
             false
         })
         .get_triples();
-    
+
     // Create a set of subject IDs with high salaries for lookup
     let mut high_salary_subjects = HashSet::new();
     let mut subject_to_salary = HashMap::new();
-    
+
     let dict = database.dictionary();
     for triple in &high_salary_triples {
         let subject = triple.subject;
@@ -58,9 +59,10 @@ fn filter_example() {
         subject_to_salary.insert(subject, salary.to_string());
     }
     drop(dict);
-    
+
     // Find the names associated with the high-salary subjects
-    let name_triples = database.query()
+    let name_triples = database
+        .query()
         .filter(|triple| {
             let dict = database.dictionary();
             // Check if this is a name predicate for a high-salary subject
@@ -72,14 +74,17 @@ fn filter_example() {
             false
         })
         .get_triples();
-    
+
     // Print name and salary
     println!("Employees with salary > 80000:");
     let dict = database.dictionary();
     for triple in name_triples.clone() {
         let subject = triple.subject;
         let name = dict.decode(triple.object).unwrap_or("");
-        let salary = subject_to_salary.get(&subject).cloned().unwrap_or_else(|| "Unknown".to_string());
+        let salary = subject_to_salary
+            .get(&subject)
+            .cloned()
+            .unwrap_or_else(|| "Unknown".to_string());
         println!("Name: {}, Salary: {}", name, salary);
     }
 }

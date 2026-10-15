@@ -111,7 +111,10 @@ fn test_parse_facts_dotted_iris() {
     )
     .unwrap();
     assert_eq!(facts.len(), 1);
-    assert_eq!(dict.decode(facts[0].object).unwrap(), "http://sub.domain.org/o");
+    assert_eq!(
+        dict.decode(facts[0].object).unwrap(),
+        "http://sub.domain.org/o"
+    );
 }
 
 /// A literal object may contain spaces and a trailing language tag.
@@ -124,7 +127,10 @@ fn test_parse_facts_literal_with_spaces() {
     )
     .unwrap();
     assert_eq!(facts.len(), 1);
-    assert_eq!(dict.decode(facts[0].object).unwrap(), "\"UZ Gent Hospital\"@en");
+    assert_eq!(
+        dict.decode(facts[0].object).unwrap(),
+        "\"UZ Gent Hospital\"@en"
+    );
 }
 
 /// PREFIX remains available as a convenience, though it is not strict N-Triples.
@@ -148,22 +154,36 @@ fn test_parse_facts_prefixed_convenience() {
 fn test_parse_facts_rejects_variables() {
     let mut dict = Dictionary::new();
     let err = parse_facts("?z <http://x/p> <http://x/o> .", &mut dict).unwrap_err();
-    assert!(err.contains("?z"), "error should name the variable: {}", err);
-    assert!(err.contains("ground"), "error should say facts must be ground: {}", err);
+    assert!(
+        err.contains("?z"),
+        "error should name the variable: {}",
+        err
+    );
+    assert!(
+        err.contains("ground"),
+        "error should say facts must be ground: {}",
+        err
+    );
 }
 
 #[test]
 fn test_parse_facts_wrong_arity() {
     let mut dict = Dictionary::new();
     let err = parse_facts("<http://x/s> <http://x/p> .", &mut dict).unwrap_err();
-    assert!(err.contains("2 term"), "error should report the count: {}", err);
+    assert!(
+        err.contains("2 term"),
+        "error should report the count: {}",
+        err
+    );
 }
 
 #[test]
 fn test_parse_facts_empty_is_ok() {
     let mut dict = Dictionary::new();
     assert!(parse_facts("", &mut dict).unwrap().is_empty());
-    assert!(parse_facts("# only a comment\n", &mut dict).unwrap().is_empty());
+    assert!(parse_facts("# only a comment\n", &mut dict)
+        .unwrap()
+        .is_empty());
 }
 
 // ── EXPIRY ────────────────────────────────────────────────────────────────────
@@ -220,7 +240,11 @@ fn test_expiry_rejects_non_key_variable() {
         &mut dict,
     )
     .unwrap_err();
-    assert!(err.contains("?obs"), "error should name the variable: {}", err);
+    assert!(
+        err.contains("?obs"),
+        "error should name the variable: {}",
+        err
+    );
     assert!(err.contains("KEY"), "error should mention KEY: {}", err);
 }
 
@@ -290,7 +314,11 @@ fn test_unknown_prefix_is_an_error() {
         Mode::Streaming,
     )
     .unwrap_err();
-    assert!(err.contains("nope"), "error should name the prefix: {}", err);
+    assert!(
+        err.contains("nope"),
+        "error should name the prefix: {}",
+        err
+    );
 }
 
 // ── Rule labels ───────────────────────────────────────────────────────────────
@@ -465,8 +493,8 @@ const DEMO_STATIC: &str = r#"
 fn test_demo_defaults_parse() {
     let mut dict = Dictionary::new();
 
-    let rules = parse_rules(DEMO_RULES, &mut dict, Mode::Streaming)
-        .expect("demo default rules must parse");
+    let rules =
+        parse_rules(DEMO_RULES, &mut dict, Mode::Streaming).expect("demo default rules must parse");
     let ids: Vec<&str> = rules.iter().map(|r| r.id.as_str()).collect();
     assert_eq!(
         ids,
@@ -481,12 +509,11 @@ fn test_demo_defaults_parse() {
 
     // Background facts must be valid N-Triples and dual-classify every zone:
     // the generic class feeds the geofence rules, the numbered one zoneTour.
-    let facts = parse_facts(DEMO_STATIC, &mut dict)
-        .expect("demo background facts must parse");
+    let facts = parse_facts(DEMO_STATIC, &mut dict).expect("demo background facts must parse");
     assert_eq!(facts.len(), 6, "three zones x (generic + numbered) class");
 
-    let shapes = parse_stream_shapes(DEMO_SHAPES, &mut dict)
-        .expect("demo default shape must parse");
+    let shapes =
+        parse_stream_shapes(DEMO_SHAPES, &mut dict).expect("demo default shape must parse");
     assert_eq!(shapes.len(), 1);
     assert_eq!(shapes[0].stream_iri, "http://utm.example.org/telemetry");
     assert_eq!(shapes[0].event_pattern.len(), 8);

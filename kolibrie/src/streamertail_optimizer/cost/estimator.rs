@@ -150,8 +150,7 @@ impl<'a> CostEstimator<'a> {
 
                 // The right side is re-entered once per left solution, so a shared variable makes it a probe
                 let per_left_row = if self.shares_a_variable(left, right) {
-                    CostConstants::COST_PER_PROBE
-                        .saturating_mul(Self::probe_width(right).max(1))
+                    CostConstants::COST_PER_PROBE.saturating_mul(Self::probe_width(right).max(1))
                 } else {
                     self.estimate_cost(right).max(CostConstants::COST_PER_PROBE)
                 };
@@ -355,9 +354,7 @@ impl<'a> CostEstimator<'a> {
             Term::Constant(predicate) => Some(*predicate),
             _ => None,
         };
-        let is_bound = |term: &Term| {
-            matches!(term, Term::Variable(name) if bound.contains(normalize_variable(name)))
-        };
+        let is_bound = |term: &Term| matches!(term, Term::Variable(name) if bound.contains(normalize_variable(name)));
 
         let mut divisor: u64 = 1;
         if is_bound(&pattern.subject) {
@@ -534,14 +531,14 @@ impl<'a> CostEstimator<'a> {
                 Self::collect_scan_patterns(left, out);
                 Self::collect_scan_patterns(right, out);
             }
-            PhysicalOperator::StarJoin { patterns, .. } => out.extend(patterns.iter().map(|p| {
-                QuadPattern {
+            PhysicalOperator::StarJoin { patterns, .. } => {
+                out.extend(patterns.iter().map(|p| QuadPattern {
                     subject: p.0.clone(),
                     predicate: p.1.clone(),
                     object: p.2.clone(),
                     graph: GraphTerm::Default,
-                }
-            })),
+                }))
+            }
             _ => {}
         }
     }
@@ -590,7 +587,12 @@ impl<'a> CostEstimator<'a> {
     }
 
     /// Distinct values a variable takes across patterns, capped by the side's row count
-    fn domain_size(&self, patterns: &[QuadPattern], variable: &str, cardinality: u64) -> Option<u64> {
+    fn domain_size(
+        &self,
+        patterns: &[QuadPattern],
+        variable: &str,
+        cardinality: u64,
+    ) -> Option<u64> {
         patterns
             .iter()
             .filter_map(|pattern| self.distinct_estimate_for_var(pattern, variable))
@@ -801,8 +803,6 @@ impl<'a> CostEstimator<'a> {
 
         !variables_of(left).is_disjoint(&variables_of(right))
     }
-
-
 }
 
 #[cfg(test)]
@@ -887,8 +887,16 @@ mod tests {
         let stats = join_stats();
         let estimator = CostEstimator::new(&stats);
         // ?a EDGE ?b joined with ?b EDGE ?c through ?b
-        let left = [pattern(variable("?a"), Term::Constant(EDGE), variable("?b"))];
-        let right = [pattern(variable("?b"), Term::Constant(EDGE), variable("?c"))];
+        let left = [pattern(
+            variable("?a"),
+            Term::Constant(EDGE),
+            variable("?b"),
+        )];
+        let right = [pattern(
+            variable("?b"),
+            Term::Constant(EDGE),
+            variable("?c"),
+        )];
 
         let estimate =
             estimator.estimate_join_cardinality_from_patterns(8_000, 8_000, &left, &right);
@@ -900,7 +908,11 @@ mod tests {
     fn join_cardinality_without_a_shared_variable_is_the_cross_product() {
         let stats = join_stats();
         let estimator = CostEstimator::new(&stats);
-        let left = [pattern(variable("?a"), Term::Constant(EDGE), variable("?b"))];
+        let left = [pattern(
+            variable("?a"),
+            Term::Constant(EDGE),
+            variable("?b"),
+        )];
         let right = [pattern(variable("?c"), Term::Constant(TAG), variable("?d"))];
 
         assert_eq!(
@@ -916,8 +928,8 @@ mod tests {
         let step = pattern(variable("?a"), Term::Constant(EDGE), variable("?b"));
 
         let unbound = estimator.estimate_bound_scan_cardinality(&step, &HashSet::new());
-        let bound = estimator
-            .estimate_bound_scan_cardinality(&step, &HashSet::from(["a".to_string()]));
+        let bound =
+            estimator.estimate_bound_scan_cardinality(&step, &HashSet::from(["a".to_string()]));
 
         assert_eq!(unbound, 8_000);
         assert_eq!(bound, 2);
@@ -927,19 +939,26 @@ mod tests {
     fn cost_model_prefers_bind_join_for_a_selective_left_side() {
         let stats = join_stats();
         let estimator = CostEstimator::new(&stats);
-        let selective =
-            PhysicalOperator::quad_index_scan(pattern(variable("?x"), Term::Constant(TAG), Term::Constant(7)));
-        let wide =
-            PhysicalOperator::quad_index_scan(pattern(variable("?x"), Term::Constant(EDGE), variable("?y")));
+        let selective = PhysicalOperator::quad_index_scan(pattern(
+            variable("?x"),
+            Term::Constant(TAG),
+            Term::Constant(7),
+        ));
+        let wide = PhysicalOperator::quad_index_scan(pattern(
+            variable("?x"),
+            Term::Constant(EDGE),
+            variable("?y"),
+        ));
 
         let bind = estimator.estimate_cost(&PhysicalOperator::bind_join(
             selective.clone(),
             wide.clone(),
         ));
-        let hash =
-            estimator.estimate_cost(&PhysicalOperator::hash_join(selective.clone(), wide.clone()));
-        let nested =
-            estimator.estimate_cost(&PhysicalOperator::nested_loop_join(selective, wide));
+        let hash = estimator.estimate_cost(&PhysicalOperator::hash_join(
+            selective.clone(),
+            wide.clone(),
+        ));
+        let nested = estimator.estimate_cost(&PhysicalOperator::nested_loop_join(selective, wide));
 
         assert!(
             bind < hash && bind < nested,
@@ -965,12 +984,16 @@ mod tests {
             variable("?z"),
         ));
 
-        let bind =
-            estimator.estimate_cost(&PhysicalOperator::bind_join(wide_left.clone(), wide_right.clone()));
-        let hash =
-            estimator.estimate_cost(&PhysicalOperator::hash_join(wide_left.clone(), wide_right.clone()));
-        let nested = estimator
-            .estimate_cost(&PhysicalOperator::nested_loop_join(wide_left, wide_right));
+        let bind = estimator.estimate_cost(&PhysicalOperator::bind_join(
+            wide_left.clone(),
+            wide_right.clone(),
+        ));
+        let hash = estimator.estimate_cost(&PhysicalOperator::hash_join(
+            wide_left.clone(),
+            wide_right.clone(),
+        ));
+        let nested =
+            estimator.estimate_cost(&PhysicalOperator::nested_loop_join(wide_left, wide_right));
 
         assert!(
             hash < nested,
@@ -1003,7 +1026,8 @@ mod tests {
             variable("?d"),
         ));
 
-        let bind = estimator.estimate_cost(&PhysicalOperator::bind_join(left.clone(), right.clone()));
+        let bind =
+            estimator.estimate_cost(&PhysicalOperator::bind_join(left.clone(), right.clone()));
         let hash = estimator.estimate_cost(&PhysicalOperator::hash_join(left, right));
 
         // `HashJoin - BindJoin` used to be non-negative for every input, so the bind join always won
@@ -1032,11 +1056,7 @@ mod tests {
     fn a_fully_bound_scan_still_costs_something() {
         let stats = join_stats();
         let estimator = CostEstimator::new(&stats);
-        let ground = pattern(
-            Term::Constant(1),
-            Term::Constant(EDGE),
-            Term::Constant(2),
-        );
+        let ground = pattern(Term::Constant(1), Term::Constant(EDGE), Term::Constant(2));
 
         // Cardinality already accounts for boundness; discounting a second time
         assert!(
@@ -1063,8 +1083,7 @@ mod tests {
         };
 
         let input_cost = estimator.estimate_cost(&input);
-        let filtered =
-            estimator.estimate_cost(&PhysicalOperator::filter(input, condition));
+        let filtered = estimator.estimate_cost(&PhysicalOperator::filter(input, condition));
 
         // Selectivity reduces how many rows survive, not how much work was done
         assert!(

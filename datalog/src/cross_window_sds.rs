@@ -126,7 +126,14 @@ pub fn translate_sds_to_datalog(
                 let o = d.encode(&wt.object);
                 (s, p, o)
             };
-            result.push((Triple { subject: s, predicate: p, object: o }, expiry));
+            result.push((
+                Triple {
+                    subject: s,
+                    predicate: p,
+                    object: o,
+                },
+                expiry,
+            ));
         }
     }
 
@@ -140,7 +147,14 @@ pub fn translate_sds_to_datalog(
                 let o = d.encode(o_str);
                 (s, p, o)
             };
-            result.push((Triple { subject: s, predicate: p, object: o }, u64::MAX));
+            result.push((
+                Triple {
+                    subject: s,
+                    predicate: p,
+                    object: o,
+                },
+                u64::MAX,
+            ));
         }
     }
 
@@ -170,7 +184,10 @@ pub fn translate_datalog_back(
                 predicate: stripped_pred,
                 object: triple.object,
             };
-            result.entry(comp_iri.to_string()).or_default().push(stripped);
+            result
+                .entry(comp_iri.to_string())
+                .or_default()
+                .push(stripped);
         }
     }
 
@@ -210,8 +227,8 @@ pub fn sds_with_expiry_to_external(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::{Arc, RwLock};
     use shared::dictionary::Dictionary;
+    use std::sync::{Arc, RwLock};
 
     fn make_dict() -> Arc<RwLock<Dictionary>> {
         Arc::new(RwLock::new(Dictionary::new()))
@@ -261,8 +278,11 @@ mod tests {
         let dict = make_dict();
         let sds = make_sds(); // event_time=5, alpha=10 → expiry=15
         let translated = translate_sds_to_datalog(&sds, &dict, 15); // current_time=15
-        // expiry=15 is NOT > 15, so filtered out
-        assert!(translated.is_empty(), "fact with expiry=15 at current_time=15 should be filtered");
+                                                                    // expiry=15 is NOT > 15, so filtered out
+        assert!(
+            translated.is_empty(),
+            "fact with expiry=15 at current_time=15 should be filtered"
+        );
     }
 
     #[test]
@@ -293,7 +313,10 @@ mod tests {
         let sds = make_sds();
         let translated = translate_sds_to_datalog(&sds, &dict, 0);
         let back = translate_datalog_back(
-            &translated.iter().map(|(t, _)| t.clone()).collect::<Vec<_>>(),
+            &translated
+                .iter()
+                .map(|(t, _)| t.clone())
+                .collect::<Vec<_>>(),
             &dict,
             &sds,
         );
@@ -301,7 +324,12 @@ mod tests {
         let triples = &back["http://sensor/"];
         assert_eq!(triples.len(), 1);
         // predicate should be stripped to "reading"
-        let pred_str = dict.read().unwrap().decode(triples[0].predicate).unwrap().to_string();
+        let pred_str = dict
+            .read()
+            .unwrap()
+            .decode(triples[0].predicate)
+            .unwrap()
+            .to_string();
         assert_eq!(pred_str, "reading");
     }
 }

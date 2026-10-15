@@ -84,5 +84,5 @@ fn query() {
 }
 
 fn main() {
-  query();
+    query();
 }

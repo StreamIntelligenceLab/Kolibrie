@@ -75,7 +75,6 @@ pub struct RSPBuilder<'a, I, O> {
     cross_window_reasoning_mode: CrossWindowReasoningMode,
 }
 
-
 // Cannot derive: `r2r` is a trait object. Summarised besides — the query, rules and
 // triples are source text whose length is more informative than its content at this
 // stage.
@@ -93,7 +92,10 @@ impl<I, O> Debug for RSPBuilder<'_, I, O> {
             .field("sync_policy", &self.sync_policy)
             .field("reasoning_rules", &self.reasoning_rules.len())
             .field("sparql_rules", &self.sparql_rules.len())
-            .field("cross_window_reasoning_mode", &self.cross_window_reasoning_mode)
+            .field(
+                "cross_window_reasoning_mode",
+                &self.cross_window_reasoning_mode,
+            )
             .finish_non_exhaustive()
     }
 }
@@ -304,7 +306,7 @@ where
             Some("ON_CONTENT_CHANGE") => ReportStrategy::OnContentChange,
             Some("NON_EMPTY_CONTENT") => ReportStrategy::NonEmptyContent,
             Some("PERIODIC") => ReportStrategy::Periodic(1000), // Default 1 second
-            _ => ReportStrategy::OnWindowClose,                  // Default
+            _ => ReportStrategy::OnWindowClose,                 // Default
         };
 
         Ok(RSPWindow {
@@ -352,7 +354,6 @@ where
             None => None,
         };
 
-
         let window_plans = window_plans
             .iter()
             .map(|v| optimizer.find_best_plan(v))
@@ -386,8 +387,7 @@ where
         if cross_window_rules.is_some() {
             if TypeId::of::<I>() != TypeId::of::<Triple>() {
                 return Err(
-                    "Cross-window SDS+ reasoning currently requires Triple input items"
-                        .to_string(),
+                    "Cross-window SDS+ reasoning currently requires Triple input items".to_string(),
                 );
             }
             if r2r.as_any_mut().downcast_mut::<SimpleR2R>().is_none() {

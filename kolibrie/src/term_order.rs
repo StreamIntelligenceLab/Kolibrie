@@ -101,12 +101,15 @@ mod tests {
 
     /// A spread covering both classes, both zeroes, NaN, and empty strings
     const SPREAD: [&str; 16] = [
-        "9", "100", "50x", "1", "20", "3.5", "abc", "007", "-4", "1e3", "z", "0", "-0",
-        "NaN", "", "  ",
+        "9", "100", "50x", "1", "20", "3.5", "abc", "007", "-4", "1e3", "z", "0", "-0", "NaN", "",
+        "  ",
     ];
 
     fn keys(values: &[&'static str]) -> Vec<OrderKey<'static>> {
-        values.iter().map(|value| OrderKey::new(Some(value))).collect()
+        values
+            .iter()
+            .map(|value| OrderKey::new(Some(value)))
+            .collect()
     }
 
     #[test]

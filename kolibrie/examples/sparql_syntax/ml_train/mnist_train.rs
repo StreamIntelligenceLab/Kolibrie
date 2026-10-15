@@ -37,12 +37,18 @@ const NS: &str = "http://example.org/mnist#";
 
 // Read MNIST IDX files
 fn read_u32_be(bytes: &[u8], offset: usize) -> u32 {
-    u32::from_be_bytes([bytes[offset], bytes[offset + 1], bytes[offset + 2], bytes[offset + 3]])
+    u32::from_be_bytes([
+        bytes[offset],
+        bytes[offset + 1],
+        bytes[offset + 2],
+        bytes[offset + 3],
+    ])
 }
 
 fn load_images(filename: &str, max: usize) -> Vec<Vec<f64>> {
     let path = Path::new(DATASET_DIR).join(filename);
-    let mut file = File::open(&path).unwrap_or_else(|e| panic!("Cannot open {}: {}", path.display(), e));
+    let mut file =
+        File::open(&path).unwrap_or_else(|e| panic!("Cannot open {}: {}", path.display(), e));
     let mut raw = Vec::new();
     file.read_to_end(&mut raw).unwrap();
     assert_eq!(read_u32_be(&raw, 0), 2051, "Wrong magic for images file");
@@ -61,7 +67,8 @@ fn load_images(filename: &str, max: usize) -> Vec<Vec<f64>> {
 
 fn load_labels(filename: &str, max: usize) -> Vec<u8> {
     let path = Path::new(DATASET_DIR).join(filename);
-    let mut file = File::open(&path).unwrap_or_else(|e| panic!("Cannot open {}: {}", path.display(), e));
+    let mut file =
+        File::open(&path).unwrap_or_else(|e| panic!("Cannot open {}: {}", path.display(), e));
     let mut raw = Vec::new();
     file.read_to_end(&mut raw).unwrap();
     assert_eq!(read_u32_be(&raw, 0), 2049, "Wrong magic for labels file");
@@ -135,13 +142,26 @@ fn print_program_excerpt(q: &str) {
     for line in &head_lines {
         println!("      {}", line);
     }
-    println!("      ... ({} output labels, {} INPUT patterns) ...", NUM_DIGITS, PIXELS);
+    println!(
+        "      ... ({} output labels, {} INPUT patterns) ...",
+        NUM_DIGITS, PIXELS
+    );
 
     if q.contains("TRAIN NEURAL RELATION") {
-        println!("      TRAIN NEURAL RELATION <{}predicted> {{ DATA {{ ... }} ... }}", NS);
+        println!(
+            "      TRAIN NEURAL RELATION <{}predicted> {{ DATA {{ ... }} ... }}",
+            NS
+        );
     }
 
-    let tail_lines: Vec<&str> = q.lines().rev().take(10).collect::<Vec<_>>().into_iter().rev().collect();
+    let tail_lines: Vec<&str> = q
+        .lines()
+        .rev()
+        .take(10)
+        .collect::<Vec<_>>()
+        .into_iter()
+        .rev()
+        .collect();
     for line in &tail_lines {
         println!("      {}", line);
     }
@@ -225,7 +245,10 @@ fn neurosymbolic_demo(model: &MlpNeuralPredicate, test_images: &[Vec<f64>], test
         let mut local_reasoner = Reasoner::new();
         let (_derived, tag_store) = infer_new_facts_with_sdd_seed_specs(
             &mut local_reasoner,
-            vec![SeedSpec::ExclusiveGroup { group_id: 0, choices }],
+            vec![SeedSpec::ExclusiveGroup {
+                group_id: 0,
+                choices,
+            }],
         );
 
         let prov = tag_store.provenance().clone();
@@ -254,22 +277,39 @@ fn neurosymbolic_demo(model: &MlpNeuralPredicate, test_images: &[Vec<f64>], test
         let enp_tags: Vec<SddId> = even_non_prime_set.iter().map(|&d| digit_tags[d]).collect();
         let onp_tags: Vec<SddId> = odd_non_prime_set.iter().map(|&d| digit_tags[d]).collect();
         let p_even_non_prime = prov.recover_probability(&or_tags(&prov, &enp_tags));
-        let p_odd_non_prime  = prov.recover_probability(&or_tags(&prov, &onp_tags));
+        let p_odd_non_prime = prov.recover_probability(&or_tags(&prov, &onp_tags));
 
-        let result_mark = if predicted == true_label { "✓" } else { "✗" };
-        println!("Sample {:2}: true={} predicted={} {}", demo_idx, true_label, predicted, result_mark);
+        let result_mark = if predicted == true_label {
+            "✓"
+        } else {
+            "✗"
+        };
+        println!(
+            "Sample {:2}: true={} predicted={} {}",
+            demo_idx, true_label, predicted, result_mark
+        );
 
         let mut ranked: Vec<(usize, f64)> = prob_vec.iter().cloned().enumerate().collect();
         ranked.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap());
-        let top3: Vec<String> = ranked[..3].iter().map(|(d, p)| format!("{}:{:.3}", d, p)).collect();
+        let top3: Vec<String> = ranked[..3]
+            .iter()
+            .map(|(d, p)| format!("{}:{:.3}", d, p))
+            .collect();
         println!("  Neural top-3: [{}]", top3.join(", "));
-        println!("  P(digit={})              via SDD WMC = {:.4}", predicted, p_predicted);
+        println!(
+            "  P(digit={})              via SDD WMC = {:.4}",
+            predicted, p_predicted
+        );
         println!("  P(prime  ∈ {{2,3,5,7}})   via SDD WMC = {:.4}", p_prime);
         println!("  P(even   ∈ {{0,2,4,6,8}}) via SDD WMC = {:.4}", p_even);
         // This sum should be exactly 1.0
-        println!("  Partition check  prime({:.3}) + even∩¬prime({:.3}) + odd∩¬prime({:.3}) = {:.4}",
-                 p_prime, p_even_non_prime, p_odd_non_prime,
-                 p_prime + p_even_non_prime + p_odd_non_prime);
+        println!(
+            "  Partition check  prime({:.3}) + even∩¬prime({:.3}) + odd∩¬prime({:.3}) = {:.4}",
+            p_prime,
+            p_even_non_prime,
+            p_odd_non_prime,
+            p_prime + p_even_non_prime + p_odd_non_prime
+        );
         println!();
     }
 
@@ -310,11 +350,15 @@ fn main() {
     println!("    Done ({:.1}s)", t1.elapsed().as_secs_f64());
 
     // Build and parse the training program
-    println!("\n[3/5] Building & parsing first-class neural program ({} feature variables)...", PIXELS);
+    println!(
+        "\n[3/5] Building & parsing first-class neural program ({} feature variables)...",
+        PIXELS
+    );
     let neural_program = build_first_class_program();
     print_program_excerpt(&neural_program);
 
-    let (_, combined) = parse_combined_query(&neural_program).expect("first-class neural program parse failed");
+    let (_, combined) =
+        parse_combined_query(&neural_program).expect("first-class neural program parse failed");
     register_neural_declarations(
         &mut db,
         &combined.prefixes,
@@ -330,13 +374,12 @@ fn main() {
     let n_choices = NUM_DIGITS;
     println!(
         "\n    Parsed OK → model={:?}  features={}  classes={}  epochs={}  batch={}",
-        owned_clause.model_name,
-        PIXELS,
-        n_choices,
-        owned_clause.epochs,
-        owned_clause.batch_size
+        owned_clause.model_name, PIXELS, n_choices, owned_clause.epochs, owned_clause.batch_size
     );
-    println!("    Architecture: {}→64→32→{} (ReLU hidden, softmax output)", PIXELS, NUM_DIGITS);
+    println!(
+        "    Architecture: {}→64→32→{} (ReLU hidden, softmax output)",
+        PIXELS, NUM_DIGITS
+    );
 
     // Train the model
     println!("\n[4/5] Training (neural outputs → SDD seeds → WMC gradients → backprop)...");
@@ -368,7 +411,14 @@ fn main() {
 
     println!("\nDone.");
     println!("Model saved to mnist_digit_model.bin");
-    println!("The current example saves weights, but automatic resume/loading is still a later step.");
+    println!(
+        "The current example saves weights, but automatic resume/loading is still a later step."
+    );
 }
 
-mod local_ml { include!(concat!(env!("CARGO_MANIFEST_DIR"), "/examples/support/ml_context.rs")); }
+mod local_ml {
+    include!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/examples/support/ml_context.rs"
+    ));
+}

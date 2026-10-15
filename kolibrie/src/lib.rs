@@ -57,8 +57,8 @@
 // Modules with no consumer outside this crate are `pub(crate)`. Keeping them `pub`
 // put them on the documentation ledger and let future callers couple to paths we do
 // not intend to support. Promote one back the moment something outside needs it.
-pub(crate) mod error_handler;
 mod aggregate;
+pub(crate) mod error_handler;
 pub mod ml_policy;
 mod ml_syntax;
 #[cfg(test)]
@@ -90,12 +90,12 @@ pub mod prelude;
 pub mod program;
 /// Building a query programmatically instead of writing SPARQL text.
 pub mod query_builder;
+pub mod rsp;
 /// The RDF stream processing engine: named streams, windows, and their joins.
 pub mod rsp_engine;
 /// The RDF store and everything hung off it.
 pub mod sparql_database;
+pub mod streamertail_optimizer;
 pub(crate) mod term_order;
 /// Small helpers: user-defined function wrappers, timestamps, a demo server.
 pub mod utils;
-pub mod streamertail_optimizer;
-pub mod rsp;

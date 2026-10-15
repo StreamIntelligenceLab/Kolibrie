@@ -28,8 +28,8 @@
 extern crate criterion;
 
 use criterion::{black_box, criterion_group, criterion_main, BatchSize, Criterion};
-use shared::pattern::{construct_triple, matches_rule_pattern};
 use shared::dictionary::Dictionary;
+use shared::pattern::{construct_triple, matches_rule_pattern};
 use shared::terms::{Term, TriplePattern};
 use shared::triple::Triple;
 use std::collections::HashMap;
@@ -85,11 +85,8 @@ fn bench_matches(c: &mut Criterion) {
                     let mut hits = 0usize;
                     for fact in &facts {
                         bindings.clear();
-                        if matches_rule_pattern(
-                            black_box(pattern),
-                            black_box(fact),
-                            &mut bindings,
-                        ) {
+                        if matches_rule_pattern(black_box(pattern), black_box(fact), &mut bindings)
+                        {
                             hits += 1;
                         }
                     }
@@ -116,7 +113,11 @@ fn bench_construct(c: &mut Criterion) {
 
     c.bench_function("micro_pattern/construct_triple", |b| {
         b.iter(|| {
-            let mut last = Triple { subject: 0, predicate: 0, object: 0 };
+            let mut last = Triple {
+                subject: 0,
+                predicate: 0,
+                object: 0,
+            };
             for vars in &bindings {
                 last = construct_triple(
                     black_box(&conclusion),

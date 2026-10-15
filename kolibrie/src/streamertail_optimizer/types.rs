@@ -354,7 +354,8 @@ impl Condition {
 
     /// Evaluates the condition at the FILTER boundary
     pub fn evaluate(&self, result: &HashMap<String, String>) -> bool {
-        self.evaluate_filter(&self.expression, result).keeps_solution()
+        self.evaluate_filter(&self.expression, result)
+            .keeps_solution()
     }
 
     fn evaluate_filter(

@@ -46,7 +46,6 @@ pub struct QueryBuilder<'a> {
     is_streaming: bool,
 }
 
-
 // Cannot derive: the custom filter and sort key are `dyn Fn`. Summarised besides,
 // since `db` is a whole store. Whether a closure is present is the part that matters,
 // because `Clone` drops both and a cloned builder therefore behaves differently.

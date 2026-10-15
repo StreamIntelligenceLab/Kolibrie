@@ -57,8 +57,8 @@ use datalog::reasoning::Reasoner;
 use shared::dictionary::Dictionary;
 use shared::provenance::Provenance;
 use shared::query::{
-    CombinedQuery, CombinedRule, FilterExpression, ModelDecl, NeuralOutputKind,
-    NeuralRelationDecl, SparqlOperation, TrainNeuralRelationDecl, TrainingDataSource,
+    CombinedQuery, CombinedRule, FilterExpression, ModelDecl, NeuralOutputKind, NeuralRelationDecl,
+    SparqlOperation, TrainNeuralRelationDecl, TrainingDataSource,
 };
 use shared::quoted_triple_store::QuotedTripleStore;
 use shared::rule::{FilterCondition, Rule};
@@ -225,10 +225,18 @@ pub struct CompiledRule {
 impl CompiledRule {
     fn encode(&self, dictionary: &mut Dictionary) -> Rule {
         Rule {
-            premise: self.premise.iter().map(|p| encode_pattern(p, dictionary)).collect(),
+            premise: self
+                .premise
+                .iter()
+                .map(|p| encode_pattern(p, dictionary))
+                .collect(),
             negative_premise: Vec::new(),
             filters: self.filters.clone(),
-            conclusion: self.conclusion.iter().map(|p| encode_pattern(p, dictionary)).collect(),
+            conclusion: self
+                .conclusion
+                .iter()
+                .map(|p| encode_pattern(p, dictionary))
+                .collect(),
         }
     }
 }
@@ -305,7 +313,10 @@ impl CompiledProgram {
     ///
     /// This is the prepare step: the result is only valid against that dictionary.
     pub fn datalog_rules(&self, dictionary: &mut Dictionary) -> Vec<Rule> {
-        self.rules.iter().map(|rule| rule.encode(dictionary)).collect()
+        self.rules
+            .iter()
+            .map(|rule| rule.encode(dictionary))
+            .collect()
     }
 }
 
@@ -327,10 +338,14 @@ pub fn compile_program(
         )));
     }
     if combined.retrieve_clause.is_some() {
-        return Err(ProgramError::Unsupported("RETRIEVE is not part of a program".into()));
+        return Err(ProgramError::Unsupported(
+            "RETRIEVE is not part of a program".into(),
+        ));
     }
     if combined.register_clause.is_some() {
-        return Err(ProgramError::Unsupported("REGISTER is not part of a program".into()));
+        return Err(ProgramError::Unsupported(
+            "REGISTER is not part of a program".into(),
+        ));
     }
     if combined.sparql.is_some() {
         return Err(ProgramError::Unsupported(
@@ -363,7 +378,11 @@ pub fn compile_program(
                     "a program ML.PREDICT must use OUTPUT ?v DISTRIBUTION; argmax prediction stays on the legacy entry points".into(),
                 ));
             }
-            Some(compile_prediction(ml_predict.model, ml_predict.input_raw, &prefixes)?)
+            Some(compile_prediction(
+                ml_predict.model,
+                ml_predict.input_raw,
+                &prefixes,
+            )?)
         }
         None => None,
     };
@@ -416,7 +435,12 @@ fn check_program_policy(
         .model_decls
         .iter()
         .map(|decl| decl.name.as_str())
-        .chain(combined.neural_relation_decls.iter().map(|decl| decl.model_name.as_str()))
+        .chain(
+            combined
+                .neural_relation_decls
+                .iter()
+                .map(|decl| decl.model_name.as_str()),
+        )
         .chain(combined.ml_predict.iter().map(|predict| predict.model))
     {
         crate::ml_policy::validate_model_name(name)
@@ -437,10 +461,16 @@ fn normalize_term(term: &str, prefixes: &HashMap<String, String>) -> Result<Stri
     if term.starts_with(['?', '$']) {
         return Ok(format!("?{}", &term[1..]));
     }
-    if let Some(iri) = term.strip_prefix('<').and_then(|rest| rest.strip_suffix('>')) {
+    if let Some(iri) = term
+        .strip_prefix('<')
+        .and_then(|rest| rest.strip_suffix('>'))
+    {
         return Ok(iri.to_string());
     }
-    if let Some(literal) = term.strip_prefix('"').and_then(|rest| rest.strip_suffix('"')) {
+    if let Some(literal) = term
+        .strip_prefix('"')
+        .and_then(|rest| rest.strip_suffix('"'))
+    {
         return Ok(literal.to_string());
     }
     expand_prefixed(term, prefixes)
@@ -517,7 +547,10 @@ fn normalize_relation_decl(
         anchor_var: normalize_term(&decl.anchor_var, prefixes)?,
     };
     if normalized.feature_vars.is_empty()
-        || normalized.feature_vars.iter().any(|var| !var.starts_with('?'))
+        || normalized
+            .feature_vars
+            .iter()
+            .any(|var| !var.starts_with('?'))
     {
         return Err(ProgramError::Unsupported(format!(
             "NEURAL RELATION {} must list feature variables",
@@ -530,7 +563,11 @@ fn normalize_relation_decl(
         .flat_map(|(s, p, o)| [s.as_str(), p.as_str(), o.as_str()])
         .filter(|term| term.starts_with('?'))
         .collect();
-    for var in normalized.feature_vars.iter().chain([&normalized.anchor_var]) {
+    for var in normalized
+        .feature_vars
+        .iter()
+        .chain([&normalized.anchor_var])
+    {
         if !bound.contains(var.as_str()) {
             return Err(ProgramError::Unsupported(format!(
                 "NEURAL RELATION {} uses {var}, which its INPUT does not bind",
@@ -626,11 +663,15 @@ fn lower_rule(
     source: &str,
     prefixes: &HashMap<String, String>,
 ) -> Result<(CompiledRule, RuleMode), ProgramError> {
-    let name = expand_prefixed(rule.head.predicate, prefixes).unwrap_or_else(|_| rule.head.predicate.to_string());
+    let name = expand_prefixed(rule.head.predicate, prefixes)
+        .unwrap_or_else(|_| rule.head.predicate.to_string());
     let reject = |what: &str| -> Result<(CompiledRule, RuleMode), ProgramError> {
         Err(ProgramError::Unsupported(format!("RULE {name}: {what}")))
     };
-    if rule.stream_type.is_some() || !rule.window_clause.is_empty() || !rule.window_blocks.is_empty() {
+    if rule.stream_type.is_some()
+        || !rule.window_clause.is_empty()
+        || !rule.window_blocks.is_empty()
+    {
         return reject("windows and streams are not supported in programs");
     }
     if !rule.negated_body.is_empty() {
@@ -780,7 +821,10 @@ fn lower_filter(
                 return Err(format!("FILTER operator {operator} is not supported"));
             }
             let number = value.trim().trim_matches('"');
-            if number.parse::<f64>().map_or(true, |parsed| !parsed.is_finite()) {
+            if number
+                .parse::<f64>()
+                .map_or(true, |parsed| !parsed.is_finite())
+            {
                 return Err("FILTER must compare a variable with a finite number".into());
             }
             output.push(FilterCondition {
@@ -902,7 +946,9 @@ impl PredictionSnapshot {
     ) -> Result<(), ProgramError> {
         check_plain_term(relation)?;
         if labels.is_empty() {
-            return Err(ProgramError::Snapshot(format!("relation {relation} declares no labels")));
+            return Err(ProgramError::Snapshot(format!(
+                "relation {relation} declares no labels"
+            )));
         }
         let mut seen = HashSet::new();
         for label in labels {
@@ -913,15 +959,19 @@ impl PredictionSnapshot {
                 )));
             }
         }
-        if self.independent.keys().any(|(_, predicate, _)| predicate == relation) {
+        if self
+            .independent
+            .keys()
+            .any(|(_, predicate, _)| predicate == relation)
+        {
             return Err(ProgramError::Snapshot(format!(
                 "relation {relation} already carries independent facts"
             )));
         }
         match self.domains.get(relation) {
-            Some(existing) if existing.as_slice() != labels => Err(ProgramError::Snapshot(format!(
-                "relation {relation} was declared with a different label order or domain"
-            ))),
+            Some(existing) if existing.as_slice() != labels => Err(ProgramError::Snapshot(
+                format!("relation {relation} was declared with a different label order or domain"),
+            )),
             Some(_) => Ok(()),
             None => {
                 self.domains.insert(relation.to_string(), labels.to_vec());
@@ -963,7 +1013,9 @@ impl PredictionSnapshot {
         }
         if let Some(features) = features {
             if features.iter().any(|value| !value.is_finite()) {
-                return Err(ProgramError::Snapshot(format!("{anchor}: non-finite feature")));
+                return Err(ProgramError::Snapshot(format!(
+                    "{anchor}: non-finite feature"
+                )));
             }
         }
         let row = ChoiceRow {
@@ -1002,7 +1054,11 @@ impl PredictionSnapshot {
                 "{subject} {predicate} {object}: an independent fact overlaps exclusive relation {predicate}"
             )));
         }
-        let key = (subject.to_string(), predicate.to_string(), object.to_string());
+        let key = (
+            subject.to_string(),
+            predicate.to_string(),
+            object.to_string(),
+        );
         match self.independent.get(&key) {
             Some(existing) if existing.to_bits() == probability.to_bits() => Ok(()),
             Some(_) => Err(ProgramError::Snapshot(format!(
@@ -1025,7 +1081,12 @@ impl PredictionSnapshot {
             self.declare_exclusive_relation(relation, labels)?;
         }
         for ((relation, anchor), row) in &other.groups {
-            self.add_distribution(relation, anchor, &row.probabilities, row.features.as_deref())?;
+            self.add_distribution(
+                relation,
+                anchor,
+                &row.probabilities,
+                row.features.as_deref(),
+            )?;
         }
         for ((subject, predicate, object), probability) in &other.independent {
             self.add_independent(subject, predicate, object, *probability)?;
@@ -1553,7 +1614,16 @@ fn run_program(
         required_choices: 0,
         confirmed: false,
     };
-    let neural_run = run_neural(input, program, options, neural_plan, &mut snapshot, &mut coverage, &mut timings, &deadline)?;
+    let neural_run = run_neural(
+        input,
+        program,
+        options,
+        neural_plan,
+        &mut snapshot,
+        &mut coverage,
+        &mut timings,
+        &deadline,
+    )?;
 
     let input_seeds = input.probability_seeds.clone();
     for (triple, probability) in &input_seeds {
@@ -1652,7 +1722,8 @@ fn run_program(
                 max_nodes: options.limits.max_sdd_nodes,
                 deadline: deadline.0,
             };
-            let (facts, tags) = try_infer_new_facts_with_sdd_seed_specs(&mut reasoner, seeds, limits)?;
+            let (facts, tags) =
+                try_infer_new_facts_with_sdd_seed_specs(&mut reasoner, seeds, limits)?;
             timings.logical_inference = phase.elapsed();
             derived = facts.len();
 
@@ -1738,7 +1809,11 @@ fn run_program(
         coverage,
         training,
         timings,
-        provenance: if options.retain_provenance { provenance } else { None },
+        provenance: if options.retain_provenance {
+            provenance
+        } else {
+            None
+        },
         mode,
         derived,
     })
@@ -1758,7 +1833,12 @@ fn copy_asserted_input(
         .domains
         .keys()
         .map(String::as_str)
-        .chain(snapshot.independent.keys().map(|(_, predicate, _)| predicate.as_str()))
+        .chain(
+            snapshot
+                .independent
+                .keys()
+                .map(|(_, predicate, _)| predicate.as_str()),
+        )
         .collect();
     let mut copy_all = false;
     for rule in &program.rules {
@@ -1910,7 +1990,10 @@ fn sha256_hex(bytes: &[u8]) -> String {
 }
 
 #[cfg(feature = "ml")]
-fn exclusive_labels(model: &ModelDecl, prefixes: &HashMap<String, String>) -> Result<Vec<String>, ProgramError> {
+fn exclusive_labels(
+    model: &ModelDecl,
+    prefixes: &HashMap<String, String>,
+) -> Result<Vec<String>, ProgramError> {
     match &model.output_kind {
         NeuralOutputKind::Exclusive { labels } => labels
             .iter()
@@ -1964,7 +2047,10 @@ fn plan_neural(
     let mut trained_models = HashSet::new();
     for decl in &program.train_decls {
         let relation = relations.get(&decl.predicate).cloned().ok_or_else(|| {
-            ProgramError::Unsupported(format!("TRAIN names unknown NEURAL RELATION {}", decl.predicate))
+            ProgramError::Unsupported(format!(
+                "TRAIN names unknown NEURAL RELATION {}",
+                decl.predicate
+            ))
         })?;
         let model = models.get(&relation.model_name).cloned().ok_or_else(|| {
             ProgramError::Unsupported(format!("MODEL \"{}\" is not declared", relation.model_name))
@@ -1978,7 +2064,9 @@ fn plan_neural(
         }
         match &model.output_kind {
             NeuralOutputKind::Exclusive { .. } => {
-                if object != &decl.label_var || !matches!(decl.loss, LossFn::CrossEntropy | LossFn::Nll) {
+                if object != &decl.label_var
+                    || !matches!(decl.loss, LossFn::CrossEntropy | LossFn::Nll)
+                {
                     return Err(ProgramError::Unsupported(format!(
                         "TRAIN {}: exclusive models are trained with LOSS cross_entropy and TARGET object {}",
                         decl.predicate, decl.label_var
@@ -1986,7 +2074,9 @@ fn plan_neural(
                 }
             }
             NeuralOutputKind::Binary { positive_literal } => {
-                if object != &normalize_term(positive_literal, &prefixes)? || decl.loss != LossFn::BinaryCrossEntropy {
+                if object != &normalize_term(positive_literal, &prefixes)?
+                    || decl.loss != LossFn::BinaryCrossEntropy
+                {
                     return Err(ProgramError::Unsupported(format!(
                         "TRAIN {}: binary models are trained with LOSS binary_cross_entropy and the positive TARGET",
                         decl.predicate
@@ -1994,7 +2084,11 @@ fn plan_neural(
                 }
             }
         }
-        if decl.epochs == 0 || decl.batch_size == 0 || !decl.learning_rate.is_finite() || decl.learning_rate <= 0.0 {
+        if decl.epochs == 0
+            || decl.batch_size == 0
+            || !decl.learning_rate.is_finite()
+            || decl.learning_rate <= 0.0
+        {
             return Err(ProgramError::Unsupported(format!(
                 "TRAIN {}: EPOCHS, BATCH_SIZE and LEARNING_RATE must be positive",
                 decl.predicate
@@ -2066,12 +2160,16 @@ fn plan_neural(
             let artifact = if trained_models.contains(&model.name) {
                 None
             } else {
-                let artifact = input.neural_model_artifacts.get(&model.name).cloned().ok_or_else(|| {
-                    ProgramError::Unsupported(format!(
-                        "MODEL \"{}\" has no trained artifact; add TRAIN NEURAL RELATION",
-                        model.name
-                    ))
-                })?;
+                let artifact = input
+                    .neural_model_artifacts
+                    .get(&model.name)
+                    .cloned()
+                    .ok_or_else(|| {
+                        ProgramError::Unsupported(format!(
+                            "MODEL \"{}\" has no trained artifact; add TRAIN NEURAL RELATION",
+                            model.name
+                        ))
+                    })?;
                 input
                     .ml_context
                     .local_artifact(&artifact)
@@ -2080,7 +2178,9 @@ fn plan_neural(
             };
             if let Some(size) = options.prediction_batch_size {
                 if size == 0 {
-                    return Err(ProgramError::Unsupported("prediction_batch_size must be positive".into()));
+                    return Err(ProgramError::Unsupported(
+                        "prediction_batch_size must be positive".into(),
+                    ));
                 }
             }
             let labels = exclusive_labels(&model, &prefixes)?;
@@ -2205,19 +2305,25 @@ fn run_neural(
             .relation
             .feature_vars
             .iter()
-            .map(|var| column(var).ok_or_else(|| ProgramError::Execution(format!("{var} is missing"))))
+            .map(|var| {
+                column(var).ok_or_else(|| ProgramError::Execution(format!("{var} is missing")))
+            })
             .collect::<Result<Vec<_>, _>>()?;
         let mut anchors = Vec::with_capacity(rows.len());
         let mut features = Vec::with_capacity(rows.len());
         for row in &rows {
             if row.len() != prediction.columns.len() {
-                return Err(ProgramError::Execution("prediction input row has the wrong width".into()));
+                return Err(ProgramError::Execution(
+                    "prediction input row has the wrong width".into(),
+                ));
             }
             anchors.push(row[anchor_column].clone());
             features.push(
                 feature_columns
                     .iter()
-                    .map(|index| crate::ml_feature_loader::rdf_term_to_f64(&row[*index]).map_err(ml_error))
+                    .map(|index| {
+                        crate::ml_feature_loader::rdf_term_to_f64(&row[*index]).map_err(ml_error)
+                    })
                     .collect::<Result<Vec<_>, _>>()?,
             );
         }
@@ -2254,9 +2360,16 @@ fn run_neural(
             NeuralOutputKind::Binary { .. } => {
                 for (anchor, probs) in anchors.iter().zip(&probabilities) {
                     let [probability] = probs.as_slice() else {
-                        return Err(ProgramError::Snapshot("a binary model must return one probability".into()));
+                        return Err(ProgramError::Snapshot(
+                            "a binary model must return one probability".into(),
+                        ));
                     };
-                    predicted.add_independent(anchor, relation, &predict.labels[0], *probability)?;
+                    predicted.add_independent(
+                        anchor,
+                        relation,
+                        &predict.labels[0],
+                        *probability,
+                    )?;
                 }
             }
         }
@@ -2348,8 +2461,12 @@ mod tests {
         let mut snapshot = PredictionSnapshot::new();
         let labels = vec!["a".to_string(), "b".to_string()];
         snapshot.declare_exclusive_relation("r", &labels).unwrap();
-        snapshot.add_distribution("r", "x", &[0.25, 0.75], None).unwrap();
-        snapshot.add_distribution("r", "y", &[1.0, 0.0], None).unwrap();
+        snapshot
+            .add_distribution("r", "x", &[0.25, 0.75], None)
+            .unwrap();
+        snapshot
+            .add_distribution("r", "y", &[1.0, 0.0], None)
+            .unwrap();
         snapshot.add_independent("s", "p", "o", 0.5).unwrap();
         let mut dictionary = Dictionary::new();
         let specs = allocate_seed_specs(&snapshot, &mut dictionary, 100).unwrap();
@@ -2365,7 +2482,10 @@ mod tests {
         assert_eq!(ids, vec![0, 1, 2, 3, 4]);
         assert!(matches!(
             allocate_seed_specs(&snapshot, &mut dictionary, 4),
-            Err(ProgramError::Resource(ResourceError::SeedLimit { requested: 5, limit: 4 }))
+            Err(ProgramError::Resource(ResourceError::SeedLimit {
+                requested: 5,
+                limit: 4
+            }))
         ));
     }
 }

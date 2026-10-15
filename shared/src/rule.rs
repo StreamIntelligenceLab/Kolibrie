@@ -51,7 +51,11 @@ pub struct Rule {
 pub fn pattern_variables(pat: &TriplePattern) -> impl Iterator<Item = &str> {
     let (s, p, o) = pat;
     [s, p, o].into_iter().filter_map(|t| {
-        if let Term::Variable(v) = t { Some(v.as_str()) } else { None }
+        if let Term::Variable(v) = t {
+            Some(v.as_str())
+        } else {
+            None
+        }
     })
 }
 
@@ -59,9 +63,7 @@ pub fn pattern_variables(pat: &TriplePattern) -> impl Iterator<Item = &str> {
 ///
 /// Returns `Err` describing the first unsafe variable found.
 pub fn check_rule_safety(rule: &Rule) -> Result<(), String> {
-    let bound: HashSet<&str> = rule.premise.iter()
-        .flat_map(pattern_variables)
-        .collect();
+    let bound: HashSet<&str> = rule.premise.iter().flat_map(pattern_variables).collect();
     for pat in &rule.negative_premise {
         for var in pattern_variables(pat) {
             if !bound.contains(var) {

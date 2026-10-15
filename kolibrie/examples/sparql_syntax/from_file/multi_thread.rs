@@ -32,7 +32,10 @@ fn simple_select_synth_data(file_path: &str) {
     for result in results {
         if let [employee, workplace_homepage, salary] = &result[..] {
             // Process your results here
-            println!("?employee = {} ?workplaceHomepage = {} ?salary = {}", employee, workplace_homepage, salary);
+            println!(
+                "?employee = {} ?workplaceHomepage = {} ?salary = {}",
+                employee, workplace_homepage, salary
+            );
         }
     }
 }

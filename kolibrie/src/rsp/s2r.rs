@@ -22,12 +22,12 @@
 
 #[cfg(not(test))]
 use log::{debug, warn}; // Use log crate when building application
+use shared::hybrid::{EventKey, SeedId};
 use std::collections::hash_map::{IntoKeys, Keys};
 use std::collections::HashMap;
 use std::collections::HashSet;
 use std::fmt::Debug;
 use std::hash::Hash;
-use shared::hybrid::{EventKey, SeedId};
 use std::sync::mpsc::Receiver;
 use std::sync::mpsc::{channel, Sender};
 // Only the `#[cfg(test)]` Consumer harness below needs these.
@@ -164,7 +164,7 @@ where
     deterministic_items: HashSet<I>,
     probabilistic_occurrences: Vec<ProbabilisticOccurrence<I>>,
     last_timestamp_changed: usize,
-    origin: String
+    origin: String,
 }
 
 impl<I> ContentContainer<I>
@@ -177,16 +177,16 @@ where
             deterministic_items: HashSet::new(),
             probabilistic_occurrences: Vec::new(),
             last_timestamp_changed: 0,
-            origin: String::default()
+            origin: String::default(),
         }
     }
-    fn new_with_origin(origin : &str) -> ContentContainer<I> {
+    fn new_with_origin(origin: &str) -> ContentContainer<I> {
         ContentContainer {
             elements: HashMap::new(),
             deterministic_items: HashSet::new(),
             probabilistic_occurrences: Vec::new(),
             last_timestamp_changed: 0,
-            origin: origin.to_string()
+            origin: origin.to_string(),
         }
     }
     /// Number of distinct items, counting an item re-added at several timestamps
@@ -207,7 +207,11 @@ where
     }
     fn add_probabilistic(&mut self, occurrence: ProbabilisticOccurrence<I>) {
         self.add_element(occurrence.item.clone(), occurrence.event.event_time);
-        if !self.probabilistic_occurrences.iter().any(|existing| existing.seed_id == occurrence.seed_id) {
+        if !self
+            .probabilistic_occurrences
+            .iter()
+            .any(|existing| existing.seed_id == occurrence.seed_id)
+        {
             self.probabilistic_occurrences.push(occurrence);
         }
     }
@@ -258,9 +262,8 @@ where
     consumer: Option<Sender<ContentContainer<I>>>,
     // Make callbacks Send so they can be safely transferred to worker threads
     call_back: Option<Box<dyn FnMut(ContentContainer<I>) -> () + Send + 'static>>,
-    uri: String
+    uri: String,
 }
-
 
 // Cannot derive: `call_back` is a `dyn FnMut`. Summarised besides, since the active
 // windows hold the buffered stream content.
@@ -291,7 +294,13 @@ where
     ///
     /// `slide == width` makes it tumbling; a smaller slide makes it overlap, so an
     /// arrival will appear in more than one window.
-    pub fn new(width: usize, slide: usize, report: Report<I>, tick: Tick, uri: String) -> CSPARQLWindow<I> {
+    pub fn new(
+        width: usize,
+        slide: usize,
+        report: Report<I>,
+        tick: Tick,
+        uri: String,
+    ) -> CSPARQLWindow<I> {
         CSPARQLWindow {
             slide,
             width,
@@ -302,7 +311,7 @@ where
             active_windows: HashMap::new(),
             tick,
             call_back: None,
-            uri
+            uri,
         }
     }
     /// Adds a certain item at `ts`, to every active window whose extent contains
@@ -372,16 +381,23 @@ where
     pub fn add_probabilistic_to_window(&mut self, occurrence: ProbabilisticOccurrence<I>) {
         let event_time = occurrence.event.event_time;
         self.scope(&event_time);
-        let updated = self.active_windows.clone().into_iter().filter_map(|(window, mut content)| {
-            if window.open <= event_time && event_time < window.close {
-                content.add_probabilistic(occurrence.clone());
-                Some((window, content))
-            } else {
-                None
-            }
-        }).collect::<HashMap<Window, ContentContainer<I>>>();
+        let updated = self
+            .active_windows
+            .clone()
+            .into_iter()
+            .filter_map(|(window, mut content)| {
+                if window.open <= event_time && event_time < window.close {
+                    content.add_probabilistic(occurrence.clone());
+                    Some((window, content))
+                } else {
+                    None
+                }
+            })
+            .collect::<HashMap<Window, ContentContainer<I>>>();
 
-        let max = self.active_windows.iter()
+        let max = self
+            .active_windows
+            .iter()
             .filter(|(window, content)| self.report.report(window, content, event_time))
             .max_by(|(left, _), (right, _)| left.close.cmp(&right.close));
         if let Some(max_window) = max {
@@ -422,7 +438,8 @@ where
                 close: (o_i + self.width as f64) as usize,
             };
             if let None = self.active_windows.get(&window) {
-                self.active_windows.insert(window, ContentContainer::new_with_origin(&self.uri));
+                self.active_windows
+                    .insert(window, ContentContainer::new_with_origin(&self.uri));
             }
             o_i += self.slide as f64;
             if o_i > *event_time as f64 {
@@ -567,7 +584,7 @@ mod tests {
             tick: Tick::TimeDriven,
             consumer: None,
             call_back: None,
-            uri: "test_window".to_string()
+            uri: "test_window".to_string(),
         };
         let receiver = window.register();
         let consumer = Consumer::new();
@@ -600,7 +617,7 @@ mod tests {
             tick: Tick::TimeDriven,
             consumer: None,
             call_back: None,
-            uri: "test_window".to_string()
+            uri: "test_window".to_string(),
         };
         let recieved_data = Arc::new(Mutex::new(Vec::new()));
         let data_clone = Arc::clone(&recieved_data);

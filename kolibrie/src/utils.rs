@@ -8,12 +8,12 @@
  * you can obtain one at https://mozilla.org/MPL/2.0/.
  */
 
+use crate::sparql_database::SparqlDatabase;
+use std::fmt::{self, Debug};
 use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream};
-use std::time::{SystemTime, UNIX_EPOCH};
 use std::sync::Arc;
-use std::fmt::{self, Debug};
-use crate::sparql_database::SparqlDatabase;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 #[derive(Clone)]
 /// A user-defined function stored so the database can be cloned.

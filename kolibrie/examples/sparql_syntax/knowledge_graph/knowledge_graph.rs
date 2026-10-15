@@ -8,11 +8,11 @@
  * you can obtain one at https://mozilla.org/MPL/2.0/.
  */
 
-use shared::terms::Term;
-use shared::rule::Rule;
-use datalog::reasoning::*;
 use datalog::parser_n3_logic::parse_n3_rule;
 use datalog::reasoning::backward_chaining::resolve_term;
+use datalog::reasoning::*;
+use shared::rule::Rule;
+use shared::terms::Term;
 
 fn knowledge_graph() {
     let mut graph = Reasoner::new();
@@ -248,19 +248,19 @@ fn inconsistency() {
             (
                 Term::Variable("X".to_string()),
                 Term::Constant(is_a),
-                Term::Constant(professor)
+                Term::Constant(professor),
             ),
             (
                 Term::Variable("X".to_string()),
                 Term::Constant(is_a),
-                Term::Constant(student)
-            )
+                Term::Constant(student),
+            ),
         ],
         negative_premise: vec![],
         conclusion: vec![(
             Term::Constant(0), // Dummy values for constraint
             Term::Constant(0),
-            Term::Constant(0)
+            Term::Constant(0),
         )],
         filters: vec![],
     };
@@ -270,9 +270,9 @@ fn inconsistency() {
     let query = (
         Term::Variable("X".to_string()),
         Term::Constant(is_a),
-        Term::Variable("Y".to_string())
+        Term::Variable("Y".to_string()),
     );
-    
+
     let results = kg.query_with_repairs(&query);
     // This will return only consistent results
     println!("{:?}", results);
@@ -289,4 +289,3 @@ fn main() {
     println!("=======================================");
     inconsistency();
 }
-

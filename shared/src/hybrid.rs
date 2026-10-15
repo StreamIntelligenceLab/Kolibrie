@@ -1504,7 +1504,6 @@ pub struct CompiledSdd {
     pub root: SddId,
 }
 
-
 // Cannot derive: `SddManager` has no `Debug`, and would not want one — it owns every
 // compiled node. The node count is the figure that matters, since it is what the
 // compilation budget is spent on.

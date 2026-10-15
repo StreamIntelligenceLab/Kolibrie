@@ -5,11 +5,11 @@
 //! the reasoner as it goes. The strategies themselves are `pub(crate)`; the loop is
 //! public because it is also what a new strategy would plug into.
 
+use crate::reasoning::Reasoner;
 use shared::dictionary::Dictionary;
 use shared::rule::Rule;
 use shared::triple::Triple;
 use std::collections::{HashMap, HashSet};
-use crate::reasoning::Reasoner;
 
 /// One way of satisfying a rule's premises: variable name to term id.
 pub type SolutionMapping = HashMap<String, u32>;
@@ -19,7 +19,6 @@ pub type SolutionMapping = HashMap<String, u32>;
 /// A strategy decides which facts a round considers; it does not decide when to
 /// stop, since the driver stops as soon as a round derives nothing new.
 pub trait InferenceStrategy {
-
     /// Applies a single round of inference within the materialisation algorithm.
     /// `param` all_facts: all facts currently in the knowledge base (base facts + those derived in previous rounds)
     /// `known_facts`: same facts but in HashSet for quick membership checks
@@ -34,7 +33,6 @@ pub trait InferenceStrategy {
 }
 
 impl Reasoner {
-
     /// Generic function that infers all derivable facts using a given strategy, e.g. SemiNaive, or Naive
     pub fn infer_with_strategy<S: InferenceStrategy>(&mut self, mut strat: S) -> Vec<Triple> {
         // In each iteration, facts are added to this list. Use vector to preserve index for initial facts
@@ -43,9 +41,9 @@ impl Reasoner {
         let idx_before_inference = all_facts.len(); // Used to keep track of which facts are inferred by the algorithm
 
         loop {
-
             let mut dict = self.dictionary.write().unwrap();
-            let mut inferred_facts_this_round = strat.infer_round(&mut dict, &self.rules, &all_facts, &known_facts);
+            let mut inferred_facts_this_round =
+                strat.infer_round(&mut dict, &self.rules, &all_facts, &known_facts);
 
             if inferred_facts_this_round.is_empty() {
                 break;
@@ -64,4 +62,3 @@ impl Reasoner {
         all_facts.split_off(idx_before_inference)
     }
 }
-

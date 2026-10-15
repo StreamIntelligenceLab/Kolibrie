@@ -39,10 +39,10 @@ use datalog::reasoning::materialisation::cross_window_incremental::{
 };
 use datalog::reasoning::materialisation::cross_window_naive::naive_sds_plus;
 use shared::dictionary::Dictionary;
-use shared::triple::Triple;
 use shared::hybrid::{
     normalize_stream_iri, HybridError, HybridProbabilityResult, SeedId, SeedRegistry,
 };
+use shared::triple::Triple;
 use std::sync::RwLock;
 
 // Re-exports to preserve the public API used by kolibrie-http-server and examples.
@@ -136,7 +136,6 @@ pub struct ResultConsumer<I> {
     pub function: Arc<dyn Fn(I) -> () + Send + Sync>,
 }
 
-
 // Cannot derive: the callback is a `dyn Fn`. Its identity is not observable and
 // calling it would publish a solution, so it is named and not invoked.
 impl<I> Debug for ResultConsumer<I> {
@@ -193,7 +192,11 @@ macro_rules! create_window_processor {
             let mut store = $r2r_store.lock().unwrap();
 
             if let Some(simple_r2r) = store.as_any_mut().downcast_mut::<SimpleR2R>() {
-                match $seed_registry.lock().unwrap().snapshot_for_ids(live_seed_ids) {
+                match $seed_registry
+                    .lock()
+                    .unwrap()
+                    .snapshot_for_ids(live_seed_ids)
+                {
                     Ok(snapshot) => simple_r2r.set_live_seed_snapshot(snapshot),
                     Err(error) => error!("Unable to build live hybrid seed snapshot: {}", error),
                 }
@@ -337,7 +340,6 @@ where
     latest_hybrid_results: Arc<Mutex<HashMap<String, HashMap<Triple, HybridProbabilityResult>>>>,
 }
 
-
 // Cannot derive: `r2r` is a trait object behind a mutex. Summarised besides, and
 // nothing here takes a lock: a `Debug` impl that blocks on a mutex can deadlock
 // against the thread already holding it, which for an engine being inspected mid-run
@@ -356,7 +358,10 @@ where
             .field("sync_policy", &self.sync_policy)
             .field("cross_window_enabled", &self.cross_window_enabled)
             .field("cross_window_rules", &self.cross_window_rules.len())
-            .field("cross_window_reasoning_mode", &self.cross_window_reasoning_mode)
+            .field(
+                "cross_window_reasoning_mode",
+                &self.cross_window_reasoning_mode,
+            )
             .finish_non_exhaustive()
     }
 }
@@ -488,7 +493,8 @@ where
                             if let Some(simple_r2r) = store.as_any_mut().downcast_mut::<SimpleR2R>()
                             {
                                 if let Some(config) = parsed_hybrid_config {
-                                    simple_r2r.set_hybrid_config(config)
+                                    simple_r2r
+                                        .set_hybrid_config(config)
                                         .map_err(|error| error.to_string())?;
                                 }
                                 simple_r2r.rules.push(rule);
@@ -519,7 +525,9 @@ where
         let r2s_operator = Arc::new(Mutex::new(Relation2StreamOperator::new(stream_type, 0)));
         let cross_window_enabled = !parsed_cross_window_rules.is_empty();
         if cross_window_enabled
-            && store.as_any_mut().downcast_mut::<SimpleR2R>()
+            && store
+                .as_any_mut()
+                .downcast_mut::<SimpleR2R>()
                 .is_some_and(|simple| simple.hybrid_enabled())
         {
             return Err(
@@ -1077,17 +1085,20 @@ where
         }
 
         let (event, seed_id) = {
-            let mut registry = self.hybrid_seed_registry.lock()
+            let mut registry = self
+                .hybrid_seed_registry
+                .lock()
                 .map_err(|_| HybridError::PoisonedState)?;
             let event = registry.next_event_key(stream_iri, timestamp);
-            let seed_id = registry.register_occurrence(
-                event.clone(),
-                triple.clone(),
-                probability,
-            )?;
+            let seed_id =
+                registry.register_occurrence(event.clone(), triple.clone(), probability)?;
             (event, seed_id)
         };
-        let occurrence = ProbabilisticOccurrence { item: triple, event, seed_id };
+        let occurrence = ProbabilisticOccurrence {
+            item: triple,
+            event,
+            seed_id,
+        };
         let input = normalize_stream_iri(stream_iri);
         for (index, config) in self.window_configs.iter().enumerate() {
             if config.stream_iri.starts_with('?')
@@ -1106,7 +1117,9 @@ where
         &self,
         window_iri: &str,
     ) -> Option<HashMap<Triple, HybridProbabilityResult>> {
-        self.latest_hybrid_results.lock().ok()
+        self.latest_hybrid_results
+            .lock()
+            .ok()
             .and_then(|results| results.get(window_iri).cloned())
     }
 }

@@ -38,14 +38,15 @@ jobs:
             cargo test --workspace --all-targets
           fi
 
-  # Advisory until the one-off `cargo fmt --all` commit lands: the tree has never
-  # been formatted, so this currently reports ~1,590 hunks. That reformat needs a
-  # quiet merge window — it conflicts with every in-flight branch. Flip
-  # `continue-on-error` to false in the same commit.
+  # Blocking since the workspace was formatted. The one-off `cargo fmt --all` that
+  # this was waiting on landed as 182 files and ~1,578 hunks, so the tree now matches
+  # rustfmt exactly and any drift is a real finding rather than the backlog.
+  #
+  # `rustfmt.toml` is deliberately minimal — defaults plus `max_width = 100` — so
+  # what this enforces stays predictable.
   fmt:
-    name: rustfmt (advisory)
+    name: rustfmt
     runs-on: ubuntu-latest
-    continue-on-error: true
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable

@@ -42,10 +42,10 @@ pub mod dataset_index;
 pub mod dictionary;
 /// Incremental maintenance of Sentential Decision Diagrams.
 pub mod diff_sdd;
+pub mod hybrid;
 /// Join algorithms shared by the query engine and the reasoners.
 pub mod join_algorithm;
 pub mod pattern;
-pub mod hybrid;
 /// Provenance semirings: how a derived fact's annotation is computed.
 pub mod provenance;
 pub mod query;

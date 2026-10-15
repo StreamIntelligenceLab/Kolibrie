@@ -8,13 +8,13 @@
  * you can obtain one at https://mozilla.org/MPL/2.0/.
  */
 
-use kolibrie::prelude::*;
 use kolibrie::parser::process_rule_definition;
+use kolibrie::prelude::*;
 use kolibrie::sparql_database::SparqlDatabase;
 
 fn main() {
-  std::env::set_var("RUST_BACKTRACE", "1");
-  let rdf_xml_data = r#"
+    std::env::set_var("RUST_BACKTRACE", "1");
+    let rdf_xml_data = r#"
       <?xml version="1.0"?>
       <rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#"
                xmlns:ex="http://example.org#">
@@ -45,12 +45,15 @@ fn main() {
       </rdf:RDF>
   "#;
 
-  let mut database = SparqlDatabase::new();
-  database.parse_rdf(rdf_xml_data);
-  println!("Database RDF triples: {:#?}", database.query_default_triples(None, None, None));
+    let mut database = SparqlDatabase::new();
+    database.parse_rdf(rdf_xml_data);
+    println!(
+        "Database RDF triples: {:#?}",
+        database.query_default_triples(None, None, None)
+    );
 
-  // Define the rule separately
-  let rule_definition = r#"PREFIX ex: <http://example.org#>
+    // Define the rule separately
+    let rule_definition = r#"PREFIX ex: <http://example.org#>
 RULE :OverheatingAlert :-
   CONSTRUCT { 
       ?room ex:overheatingAlert true .
@@ -61,31 +64,31 @@ RULE :OverheatingAlert :-
       FILTER (?temp > 80)
   }"#;
 
-  // Process the rule definition
-  let rule_result = process_rule_definition(rule_definition, &mut database);
-  
-  if let Ok((rule, inferred_facts)) = rule_result {
-      println!("Rule processed successfully.");
-      println!("Rule details: {:#?}", rule);
-      
-      println!("Inferred {} new fact(s):", inferred_facts.len());
-      let dict = database.dictionary();
-      for triple in inferred_facts.iter() {
-          println!("{}", database.triple_to_string(triple, &dict));
-      }
-  } else {
-      println!("Failed to process rule definition: {:?}", rule_result.err());
-      return; // Exit if rule processing failed
-  }
-  
-  // Define the SELECT query separately
-  let select_query = r#"PREFIX ex: <http://example.org#>
+    // Process the rule definition
+    let rule_result = process_rule_definition(rule_definition, &mut database);
+
+    if let Ok((rule, inferred_facts)) = rule_result {
+        println!("Rule processed successfully.");
+        println!("Rule details: {:#?}", rule);
+
+        println!("Inferred {} new fact(s):", inferred_facts.len());
+        let dict = database.dictionary();
+        for triple in inferred_facts.iter() {
+            println!("{}", database.triple_to_string(triple, &dict));
+        }
+    } else {
+        println!("Failed to process rule definition: {:?}", rule_result.err());
+        return; // Exit if rule processing failed
+    }
+
+    // Define the SELECT query separately
+    let select_query = r#"PREFIX ex: <http://example.org#>
 SELECT ?room ?temp
 WHERE { 
   ?room ex:overheatingAlert true . 
 }"#;
-  
-  // Execute the SELECT query that uses the rule
-  let query_results = execute_query_rayon_parallel2_volcano(select_query, &mut database);
-  println!("Query results: {:?}", query_results);
+
+    // Execute the SELECT query that uses the rule
+    let query_results = execute_query_rayon_parallel2_volcano(select_query, &mut database);
+    println!("Query results: {:?}", query_results);
 }

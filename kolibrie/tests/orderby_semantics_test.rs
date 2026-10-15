@@ -88,8 +88,26 @@ fn ordering_a_large_mixed_column_is_deterministic_and_does_not_panic() {
     // A wide spread of values whose numeric and lexical orders disagree
     let mut triples = String::new();
     let values = [
-        "9", "100", "50x", "1", "20", "3.5", "abc", "007", "-4", "1e3", "z", "0", "10",
-        "2busy", "", "  ", "999999999999999999999", "0.0001", "Zebra", "apple",
+        "9",
+        "100",
+        "50x",
+        "1",
+        "20",
+        "3.5",
+        "abc",
+        "007",
+        "-4",
+        "1e3",
+        "z",
+        "0",
+        "10",
+        "2busy",
+        "",
+        "  ",
+        "999999999999999999999",
+        "0.0001",
+        "Zebra",
+        "apple",
     ];
     for (index, value) in values.iter().enumerate() {
         triples.push_str(&format!("<urn:s{}> <urn:v> \"{}\" .\n", index, value));

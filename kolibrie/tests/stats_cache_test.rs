@@ -58,7 +58,6 @@ fn exact_statistics_are_fresh_after_every_successful_mutation() {
     }
 }
 
-
 #[test]
 fn a_mutation_that_changed_nothing_does_not_force_a_rebuild() {
     let mut database = seeded();

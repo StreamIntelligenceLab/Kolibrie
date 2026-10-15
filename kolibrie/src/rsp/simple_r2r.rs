@@ -19,12 +19,12 @@ use crate::sparql_database::SparqlDatabase;
 use crate::streamertail_optimizer::{ExecutionEngine, PhysicalOperator};
 use datalog::parser_n3_logic::parse_n3_rule;
 use datalog::reasoning::Reasoner;
-use shared::rule::Rule;
-use shared::triple::Triple;
 use shared::hybrid::{
     encode_hybrid_results_as_rdf_star, HybridConfig, HybridError, HybridProbabilityResult,
     SeedSnapshot,
 };
+use shared::rule::Rule;
+use shared::triple::Triple;
 use std::collections::HashMap;
 use std::sync::Arc;
 
@@ -47,7 +47,6 @@ pub struct SimpleR2R {
     last_hybrid_results: HashMap<Triple, HybridProbabilityResult>,
     last_hybrid_error: Option<String>,
 }
-
 
 // Summarised rather than derived: `item` is a whole store, so the derived form would
 // print the window's content plus any background data on every log line.
@@ -101,7 +100,11 @@ impl SimpleR2R {
     /// Enables probabilistic evaluation with this configuration.
     pub fn set_hybrid_config(&mut self, config: HybridConfig) -> Result<(), HybridError> {
         config.validate()?;
-        if self.hybrid_config.as_ref().is_some_and(|existing| existing != &config) {
+        if self
+            .hybrid_config
+            .as_ref()
+            .is_some_and(|existing| existing != &config)
+        {
             return Err(HybridError::InvalidConfig(
                 "conflicting hybrid configurations in one materialisation group".into(),
             ));
@@ -123,10 +126,14 @@ impl SimpleR2R {
 
     /// Why the most recent probabilistic evaluation failed, if it did. Evaluation
     /// failing does not stop the window from reporting its deterministic results.
-    pub fn last_hybrid_error(&self) -> Option<&str> { self.last_hybrid_error.as_deref() }
+    pub fn last_hybrid_error(&self) -> Option<&str> {
+        self.last_hybrid_error.as_deref()
+    }
 
     /// Whether probabilistic evaluation is configured.
-    pub fn hybrid_enabled(&self) -> bool { self.hybrid_config.is_some() }
+    pub fn hybrid_enabled(&self) -> bool {
+        self.hybrid_config.is_some()
+    }
 }
 
 /// Allow downcasting from trait objects by exposing Any for mutable references.
@@ -220,11 +227,7 @@ impl R2ROperator<Triple, Vec<PhysicalOperator>, Vec<(String, String)>> for Simpl
             let annotations = {
                 let mut dict = self.item.dictionary.write().unwrap();
                 let mut quoted = self.item.quoted_triple_store.write().unwrap();
-                encode_hybrid_results_as_rdf_star(
-                    &self.last_hybrid_results,
-                    &mut dict,
-                    &mut quoted,
-                )
+                encode_hybrid_results_as_rdf_star(&self.last_hybrid_results, &mut dict, &mut quoted)
             };
             for annotation in annotations {
                 self.item.add_triple(annotation.clone());
@@ -253,4 +256,3 @@ impl R2ROperator<Triple, Vec<PhysicalOperator>, Vec<(String, String)>> for Simpl
         self.item.parse_and_encode_ntriples(data)
     }
 }
-

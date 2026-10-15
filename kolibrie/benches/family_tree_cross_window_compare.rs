@@ -1,6 +1,4 @@
-use criterion::{
-    black_box, criterion_group, criterion_main, BenchmarkId, Criterion, Throughput,
-};
+use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criterion, Throughput};
 use datalog::cross_window_sds::{
     all_component_iris, sds_with_expiry_to_external, Sds, WindowData, WindowedTriple,
 };
@@ -187,18 +185,15 @@ fn assert_same_results(person_count: usize, new_ratio_percent: usize) {
     let old_materialization = prepare_old_materialization(&rules, &old_sds, &dict);
 
     let naive = naive_sds_plus(&rules, &next_sds, &dict, CURRENT_TIME);
-    let incremental = incremental_sds_plus(
-        &rules,
-        &next_sds,
-        &old_materialization,
-        &dict,
-        CURRENT_TIME,
-    );
+    let incremental =
+        incremental_sds_plus(&rules, &next_sds, &old_materialization, &dict, CURRENT_TIME);
     let component_iris = all_component_iris(&next_sds);
-    let incremental_external =
-        sds_with_expiry_to_external(&incremental, &dict, &component_iris);
+    let incremental_external = sds_with_expiry_to_external(&incremental, &dict, &component_iris);
 
-    assert_eq!(signature(&naive, &dict), signature(&incremental_external, &dict));
+    assert_eq!(
+        signature(&naive, &dict),
+        signature(&incremental_external, &dict)
+    );
 }
 
 fn bench_family_tree_cross_window(c: &mut Criterion) {
@@ -246,8 +241,7 @@ fn bench_family_tree_cross_window(c: &mut Criterion) {
                     let old_sds = build_old_sds(&facts);
                     let next_sds = build_next_sds(&facts);
 
-                    let old_materialization =
-                        prepare_old_materialization(&rules, &old_sds, &dict);
+                    let old_materialization = prepare_old_materialization(&rules, &old_sds, &dict);
                     black_box(incremental_sds_plus(
                         &rules,
                         &next_sds,

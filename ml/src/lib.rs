@@ -131,7 +131,6 @@ pub struct MLHandler {
     pub best_model: Option<String>,
 }
 
-
 // Summarised rather than derived: the cache holds Python objects whose `Debug` would
 // call back into the interpreter, which needs the GIL and can fail. Counting them
 // needs neither.

@@ -35,10 +35,7 @@ fn a_predicate_added_after_the_snapshot_is_still_queryable() {
     common::load(&mut database, r#"<urn:b> <urn:brand-new> "2" ."#);
 
     assert_eq!(
-        common::query(
-            &mut database,
-            "SELECT ?s WHERE { ?s <urn:brand-new> ?o . }"
-        ),
+        common::query(&mut database, "SELECT ?s WHERE { ?s <urn:brand-new> ?o . }"),
         common::rows1(&["urn:b"]),
         "a predicate the snapshot has never seen must still return its rows"
     );

@@ -4,22 +4,26 @@
 //! strategy and the one whose result is easiest to trust. Kept as a reference for
 //! the others.
 
+use crate::reasoning::materialisation::infer_generic::{InferenceStrategy, SolutionMapping};
+use crate::reasoning::materialisation::replace_variables_with_bound_values;
+use crate::reasoning::rules::{evaluate_filters, join_premise_with_hash_join};
+use crate::reasoning::{convert_string_binding_to_u32, Reasoner};
 use shared::dictionary::Dictionary;
 use shared::rule::Rule;
 use shared::triple::Triple;
 use std::collections::{BTreeMap, HashSet};
-use crate::reasoning::{convert_string_binding_to_u32, Reasoner};
-use crate::reasoning::materialisation::infer_generic::{SolutionMapping, InferenceStrategy};
-use crate::reasoning::materialisation::replace_variables_with_bound_values;
-use crate::reasoning::rules::{evaluate_filters, join_premise_with_hash_join};
 
 pub(crate) struct NaiveStrategy;
 
 impl NaiveStrategy {
-
     /// Convert rule evaluation to use the optimized hash join
     /// Optimised hash-join: return early when build map is empty (see for loop)
-    fn find_premise_solutions(&mut self, dict: &Dictionary, rule: &Rule, all_facts: &Vec<Triple>) -> Vec<SolutionMapping> {
+    fn find_premise_solutions(
+        &mut self,
+        dict: &Dictionary,
+        rule: &Rule,
+        all_facts: &Vec<Triple>,
+    ) -> Vec<SolutionMapping> {
         if rule.premise.is_empty() {
             return Vec::new();
         }
@@ -29,7 +33,8 @@ impl NaiveStrategy {
 
         // Process each premise with the build hash-table using the optimized join
         for premise in &rule.premise {
-            cur_binding_set = join_premise_with_hash_join(premise, all_facts, cur_binding_set, dict);
+            cur_binding_set =
+                join_premise_with_hash_join(premise, all_facts, cur_binding_set, dict);
             if cur_binding_set.is_empty() {
                 break;
             }
@@ -44,8 +49,13 @@ impl NaiveStrategy {
 }
 
 impl InferenceStrategy for NaiveStrategy {
-
-    fn infer_round(&mut self, dictionary: &mut Dictionary, rules: &Vec<Rule>, all_facts: &Vec<Triple>, known_facts: &HashSet<Triple>) -> HashSet<Triple> {
+    fn infer_round(
+        &mut self,
+        dictionary: &mut Dictionary,
+        rules: &Vec<Rule>,
+        all_facts: &Vec<Triple>,
+        known_facts: &HashSet<Triple>,
+    ) -> HashSet<Triple> {
         // Also HashSet to prevent duplicate triples from being added this round
         let mut inferred_facts_this_round: HashSet<Triple> = HashSet::new();
 
@@ -60,9 +70,11 @@ impl InferenceStrategy for NaiveStrategy {
                     // Loop over each conclusion of the rule, since for the current binding,
                     // the conclusions of the rule can be inferred (because premises are met)
                     for conclusion in &rule.conclusion {
-
-                        let inferred_fact =
-                            replace_variables_with_bound_values(conclusion, binding_set, dictionary);
+                        let inferred_fact = replace_variables_with_bound_values(
+                            conclusion,
+                            binding_set,
+                            dictionary,
+                        );
 
                         if !known_facts.contains(&inferred_fact) {
                             inferred_facts_this_round.insert(inferred_fact);

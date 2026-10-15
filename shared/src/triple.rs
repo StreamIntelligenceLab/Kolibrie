@@ -7,8 +7,8 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this file,
  * you can obtain one at https://mozilla.org/MPL/2.0/.
  */
-use serde::{Serialize, Deserialize};
 use crate::terms::{Term, TriplePattern};
+use serde::{Deserialize, Serialize};
 
 /// An RDF triple with all three positions already encoded to dictionary ids.
 ///
@@ -36,7 +36,6 @@ pub struct Triple {
 }
 
 impl Triple {
-
     /// Converts a triple (subject, predicate, object) (all u32 values) into a TriplePattern
     /// Simply wraps each element into a constant
     pub fn to_pattern(&self) -> TriplePattern {

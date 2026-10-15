@@ -14,8 +14,8 @@
 //! already made during optimisation, so this makes none.
 
 use super::super::operators::PhysicalOperator;
-use super::exec_stats::exec_count;
 use super::super::types::{SubqueryProjection, SubquerySpec};
+use super::exec_stats::exec_count;
 
 use crate::sparql_database::SparqlDatabase;
 use crate::term_order;
@@ -99,10 +99,7 @@ mod tests {
                 vec![row(&[("x", 1), ("b", 12)]), row(&[("x", 2), ("b", 13)])],
             ),
             // Conflicting values on the shared variable
-            (
-                vec![row(&[("x", 1)])],
-                vec![row(&[("x", 2)])],
-            ),
+            (vec![row(&[("x", 1)])], vec![row(&[("x", 2)])]),
             // No shared variable at all: a Cartesian product
             (
                 vec![row(&[("a", 1)]), row(&[("a", 2)])],
@@ -111,10 +108,16 @@ mod tests {
         ];
 
         for (index, (left, right)) in cases.into_iter().enumerate() {
-            let expected =
-                sorted(ExecutionEngine::join_solution_sequences(left.clone(), right.clone()));
+            let expected = sorted(ExecutionEngine::join_solution_sequences(
+                left.clone(),
+                right.clone(),
+            ));
             let actual = sorted(ExecutionEngine::hash_join_solution_sequences(left, right));
-            assert_eq!(actual, expected, "case {} disagreed with the nested loop", index);
+            assert_eq!(
+                actual, expected,
+                "case {} disagreed with the nested loop",
+                index
+            );
         }
     }
 
@@ -1167,7 +1170,13 @@ impl ExecutionEngine {
 
                 Self::join_solution_sequences(incoming, results)
             }
-            PhysicalOperator::MLPredict { input, model_name, input_variables, output_variable, .. } => {
+            PhysicalOperator::MLPredict {
+                input,
+                model_name,
+                input_variables,
+                output_variable,
+                ..
+            } => {
                 if database.ml_context.approved_model(model_name).is_err() {
                     eprintln!("ML_EXECUTION_REJECTED");
                     return Vec::new();
@@ -1175,15 +1184,30 @@ impl ExecutionEngine {
                 let rows = Self::execute_with_ids_and_input(input, database, context, incoming);
                 let data = {
                     let dict = database.dictionary.read().unwrap();
-                    rows.iter().map(|row| input_variables.iter().map(|var| {
-                        row.get(Self::normalize_variable(var)).and_then(|id| dict.decode(*id))
-                            .and_then(|value| value.parse::<f64>().ok())
-                    }).collect::<Option<Vec<_>>>()).collect::<Option<Vec<_>>>()
+                    rows.iter()
+                        .map(|row| {
+                            input_variables
+                                .iter()
+                                .map(|var| {
+                                    row.get(Self::normalize_variable(var))
+                                        .and_then(|id| dict.decode(*id))
+                                        .and_then(|value| value.parse::<f64>().ok())
+                                })
+                                .collect::<Option<Vec<_>>>()
+                        })
+                        .collect::<Option<Vec<_>>>()
                 };
-                let Some(data) = data else { return Vec::new(); };
+                let Some(data) = data else {
+                    return Vec::new();
+                };
                 match database.ml_context.predict(model_name, &data) {
-                    Ok(predictions) => Self::merge_candle_predictions(rows, predictions, output_variable, database),
-                    Err(_) => { eprintln!("ML_EXECUTION_FAILED"); Vec::new() }
+                    Ok(predictions) => {
+                        Self::merge_candle_predictions(rows, predictions, output_variable, database)
+                    }
+                    Err(_) => {
+                        eprintln!("ML_EXECUTION_FAILED");
+                        Vec::new()
+                    }
                 }
             }
         }
@@ -1750,9 +1774,7 @@ impl ExecutionEngine {
 
         let chunks: Vec<Bindings> = left_results
             .par_chunks(chunk_size)
-            .map(|chunk| {
-                Self::execute_with_ids_and_input(right, database, context, chunk.to_vec())
-            })
+            .map(|chunk| Self::execute_with_ids_and_input(right, database, context, chunk.to_vec()))
             .collect();
         chunks.into_iter().flatten().collect()
     }
@@ -1778,8 +1800,10 @@ impl ExecutionEngine {
 
     /// Variables bound by some row on both sides, in deterministic order
     fn shared_variables(left: &Bindings, right: &Bindings) -> Vec<String> {
-        let left_variables: HashSet<&str> =
-            left.iter().flat_map(|row| row.keys().map(String::as_str)).collect();
+        let left_variables: HashSet<&str> = left
+            .iter()
+            .flat_map(|row| row.keys().map(String::as_str))
+            .collect();
         let mut shared: Vec<&str> = right
             .iter()
             .flat_map(|row| row.keys().map(String::as_str))
@@ -1792,7 +1816,10 @@ impl ExecutionEngine {
 
     /// The join key of a row, or `None` when it leaves a key variable unbound
     fn join_key(row: &HashMap<String, u32>, variables: &[String]) -> Option<Vec<u32>> {
-        variables.iter().map(|variable| row.get(variable).copied()).collect()
+        variables
+            .iter()
+            .map(|variable| row.get(variable).copied())
+            .collect()
     }
 
     fn join_solution_sequences(left: Bindings, right: Bindings) -> Bindings {
@@ -1859,7 +1886,6 @@ impl ExecutionEngine {
             .collect()
     }
 
-
     /// Merges string-valued Candle predictions back into id-encoded query rows
     fn merge_candle_predictions(
         mut input_results: Vec<HashMap<String, u32>>,
@@ -1880,5 +1906,4 @@ impl ExecutionEngine {
 
         input_results
     }
-
 }

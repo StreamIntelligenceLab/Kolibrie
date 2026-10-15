@@ -42,7 +42,7 @@ fn add_sample_data(database: &mut SparqlDatabase) {
 
     // Acquire write lock on dictionary for all encoding operations
     let mut dict = database.dictionary_mut();
-    
+
     // Add some triples about people
     let alice_id = dict.encode("http://example.org/alice");
     let bob_id = dict.encode("http://example.org/bob");
@@ -59,7 +59,7 @@ fn add_sample_data(database: &mut SparqlDatabase) {
     let age_30 = dict.encode("30");
     let age_35 = dict.encode("35");
     let company_id = dict.encode("http://example.org/company");
-    
+
     // Release lock early
     drop(dict);
 

@@ -46,7 +46,6 @@ fn select() {
         println!("Triple: ({}, {}, {})", subject, predicate, object);
     }
     drop(dict);
-    
 
     // Output the results (if any)
     for result in results {
@@ -59,4 +58,3 @@ fn select() {
 fn main() {
     select();
 }
-

@@ -5,16 +5,15 @@
 //! the whole fixpoint, which serialises anything else holding the same dictionary,
 //! so the parallelism it adds inside the loop is paid for outside it.
 
+use crate::reasoning::materialisation::replace_variables_with_bound_values;
+use crate::reasoning::rules::matches_rule_pattern;
+use crate::reasoning::Reasoner;
+use rayon::prelude::*;
+use shared::triple::Triple;
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
-use shared::triple::Triple;
-use rayon::prelude::*;
-use crate::reasoning::materialisation::replace_variables_with_bound_values;
-use crate::reasoning::Reasoner;
-use crate::reasoning::rules::matches_rule_pattern;
 
 impl Reasoner {
-
     /// Semi-naive forward chaining with each round's delta scanned across rayon's
     /// thread pool.
     ///
@@ -97,11 +96,12 @@ impl Reasoner {
                                                     rule.conclusion
                                                         .iter()
                                                         .filter_map(|conclusion| {
-                                                            let inferred = replace_variables_with_bound_values(
-                                                                conclusion,
-                                                                &variable_bindings_2,
-                                                                &mut dict.clone(),
-                                                            );
+                                                            let inferred =
+                                                                replace_variables_with_bound_values(
+                                                                    conclusion,
+                                                                    &variable_bindings_2,
+                                                                    &mut dict.clone(),
+                                                                );
                                                             if !all_facts_arc.contains(&inferred) {
                                                                 Some(inferred)
                                                             } else {
@@ -138,11 +138,12 @@ impl Reasoner {
                                                     rule.conclusion
                                                         .iter()
                                                         .filter_map(|conclusion| {
-                                                            let inferred = replace_variables_with_bound_values(
-                                                                conclusion,
-                                                                &variable_bindings_2b,
-                                                                &mut dict.clone(),
-                                                            );
+                                                            let inferred =
+                                                                replace_variables_with_bound_values(
+                                                                    conclusion,
+                                                                    &variable_bindings_2b,
+                                                                    &mut dict.clone(),
+                                                                );
                                                             if !all_facts_arc.contains(&inferred) {
                                                                 Some(inferred)
                                                             } else {
@@ -188,5 +189,4 @@ impl Reasoner {
 
         inferred_so_far
     }
-
 }

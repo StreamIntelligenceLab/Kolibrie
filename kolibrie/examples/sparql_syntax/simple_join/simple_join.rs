@@ -50,5 +50,5 @@ fn simple_join() {
 }
 
 fn main() {
-  simple_join();
+    simple_join();
 }

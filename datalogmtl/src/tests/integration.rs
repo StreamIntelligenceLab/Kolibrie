@@ -8,21 +8,24 @@
  * you can obtain one at https://mozilla.org/MPL/2.0/.
  */
 
-use std::collections::HashSet;
-use crate::syntax::{DatalogMTLRule, TemporalAtom, Interval};
-use crate::store::{TemporalSnapshotStore, IntervalFactStore, TemporalStore};
+use super::{c, enc, make_dict, triple, v};
 use crate::evaluator::DatalogMTLEvaluator;
+use crate::store::{IntervalFactStore, TemporalSnapshotStore, TemporalStore};
+use crate::syntax::{DatalogMTLRule, Interval, TemporalAtom};
 use shared::triple::Triple;
-use super::{make_dict, enc, triple, c, v};
+use std::collections::HashSet;
 
 fn make_diamond_rules(location: u32, was_near: u32) -> Vec<DatalogMTLRule> {
     vec![DatalogMTLRule {
-        id:   "wasNear".into(),
+        id: "wasNear".into(),
         head: (v("x"), c(was_near), v("y")),
         body: vec![
             TemporalAtom::Base((v("x"), c(location), v("loc"))),
             TemporalAtom::Diamond {
-                interval: Interval { start: 1000, end: 5000 },
+                interval: Interval {
+                    start: 1000,
+                    end: 5000,
+                },
                 inner: Box::new(TemporalAtom::Base((v("y"), c(location), v("loc")))),
             },
         ],
@@ -35,11 +38,11 @@ fn test_phase2_parity() {
     let dict1 = make_dict();
     let dict2 = make_dict();
 
-    let a        = dict1.write().unwrap().encode(":a");
-    let b        = dict1.write().unwrap().encode(":b");
+    let a = dict1.write().unwrap().encode(":a");
+    let b = dict1.write().unwrap().encode(":b");
     let location = dict1.write().unwrap().encode(":location");
     let was_near = dict1.write().unwrap().encode(":wasNear");
-    let room1    = dict1.write().unwrap().encode(":room1");
+    let room1 = dict1.write().unwrap().encode(":room1");
     // Mirror in dict2
     let _ = dict2.write().unwrap().encode(":a");
     let _ = dict2.write().unwrap().encode(":b");
@@ -50,12 +53,11 @@ fn test_phase2_parity() {
     let rules1 = make_diamond_rules(location, was_near);
     let rules2 = make_diamond_rules(location, was_near);
 
-    let mut eval1 = DatalogMTLEvaluator::new(
-        rules1, TemporalSnapshotStore::new(10_000), dict1.clone()
-    ).unwrap();
-    let mut eval2 = DatalogMTLEvaluator::new(
-        rules2, IntervalFactStore::new(10_000), dict2.clone()
-    ).unwrap();
+    let mut eval1 =
+        DatalogMTLEvaluator::new(rules1, TemporalSnapshotStore::new(10_000), dict1.clone())
+            .unwrap();
+    let mut eval2 =
+        DatalogMTLEvaluator::new(rules2, IntervalFactStore::new(10_000), dict2.clone()).unwrap();
 
     let ticks: Vec<(u64, Vec<Triple>)> = vec![
         (0, vec![triple(b, location, room1)]),
@@ -70,35 +72,40 @@ fn test_phase2_parity() {
         let (d2, _) = eval2.advance(t, new_triples);
         let s1: HashSet<Triple> = d1.into_iter().collect();
         let s2: HashSet<Triple> = d2.into_iter().collect();
-        assert_eq!(s1, s2,
+        assert_eq!(
+            s1, s2,
             "Phase 1 and Phase 2 derived different results at t={}: p1={:?} p2={:?}",
-            t, s1, s2);
+            t, s1, s2
+        );
     }
 
     // Phase 2 total_triple_count <= Phase 1 total_triple_count
-    assert!(eval2.store.total_triple_count() <= eval1.store.total_triple_count(),
-        "Phase 2 should use <= triples vs Phase 1");
+    assert!(
+        eval2.store.total_triple_count() <= eval1.store.total_triple_count(),
+        "Phase 2 should use <= triples vs Phase 1"
+    );
 }
 
 /// Test 10: Eviction — after t=10000, no snapshot for t=0 (w_max=5000).
 #[test]
 fn test_eviction() {
     let dict = make_dict();
-    let sensor_s  = enc(&dict, ":S");
-    let sensor_p  = enc(&dict, ":sensor");
-    let val42     = enc(&dict, ":v42");
-    let stable    = enc(&dict, ":stableReading");
+    let sensor_s = enc(&dict, ":S");
+    let sensor_p = enc(&dict, ":sensor");
+    let val42 = enc(&dict, ":v42");
+    let stable = enc(&dict, ":stableReading");
 
     // Rule with max interval 5000ms.
     let rule = DatalogMTLRule {
-        id:   "stable".into(),
+        id: "stable".into(),
         head: (v("x"), c(stable), v("v")),
-        body: vec![
-            TemporalAtom::Box_ {
-                interval: Interval { start: 0, end: 5000 },
-                inner: Box::new(TemporalAtom::Base((v("x"), c(sensor_p), v("v")))),
+        body: vec![TemporalAtom::Box_ {
+            interval: Interval {
+                start: 0,
+                end: 5000,
             },
-        ],
+            inner: Box::new(TemporalAtom::Base((v("x"), c(sensor_p), v("v")))),
+        }],
     };
 
     let store = TemporalSnapshotStore::new(6_000);
@@ -111,28 +118,31 @@ fn test_eviction() {
     // After t=10000, cutoff = 10000 - 5000 = 5000.
     // Phase 1: no snapshot at t=0 (evicted).
     let ts_at_0 = eval.store.timestamps_in(0, 0);
-    assert!(ts_at_0.is_empty(),
-        "After eviction at t=10000 with w_max=5000, t=0 should be evicted");
+    assert!(
+        ts_at_0.is_empty(),
+        "After eviction at t=10000 with w_max=5000, t=0 should be evicted"
+    );
 }
 
 /// Test 10b: Phase 2 eviction.
 #[test]
 fn test_eviction_phase2() {
     let dict = make_dict();
-    let sensor_s  = enc(&dict, ":S");
-    let sensor_p  = enc(&dict, ":sensor");
-    let val42     = enc(&dict, ":v42");
-    let stable    = enc(&dict, ":stableReading");
+    let sensor_s = enc(&dict, ":S");
+    let sensor_p = enc(&dict, ":sensor");
+    let val42 = enc(&dict, ":v42");
+    let stable = enc(&dict, ":stableReading");
 
     let rule = DatalogMTLRule {
-        id:   "stable".into(),
+        id: "stable".into(),
         head: (v("x"), c(stable), v("v")),
-        body: vec![
-            TemporalAtom::Box_ {
-                interval: Interval { start: 0, end: 5000 },
-                inner: Box::new(TemporalAtom::Base((v("x"), c(sensor_p), v("v")))),
+        body: vec![TemporalAtom::Box_ {
+            interval: Interval {
+                start: 0,
+                end: 5000,
             },
-        ],
+            inner: Box::new(TemporalAtom::Base((v("x"), c(sensor_p), v("v")))),
+        }],
     };
 
     let store = IntervalFactStore::new(6_000);
@@ -144,7 +154,10 @@ fn test_eviction_phase2() {
 
     // After t=10000, cutoff = 5000. No interval should start before t=5000.
     let ts_before_cutoff = eval.store.timestamps_in(0, 4999);
-    assert!(ts_before_cutoff.is_empty(),
+    assert!(
+        ts_before_cutoff.is_empty(),
         "Phase 2: no intervals before cutoff=5000 after eviction; \
-         found timestamps: {:?}", ts_before_cutoff);
+         found timestamps: {:?}",
+        ts_before_cutoff
+    );
 }

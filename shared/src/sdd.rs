@@ -46,8 +46,14 @@ enum VTreeNode {
     // is not a vtree leaf — the structure would no longer be interpretable on its
     // own. The allow is narrowed to this field so anything else that dies in this
     // enum still warns.
-    Leaf { #[allow(dead_code)] var: u32 },
-    Internal { left: VTreeId, right: VTreeId },
+    Leaf {
+        #[allow(dead_code)]
+        var: u32,
+    },
+    Internal {
+        left: VTreeId,
+        right: VTreeId,
+    },
 }
 
 /// An element in a Decision node: (prime, sub) pair.
@@ -109,7 +115,6 @@ pub struct SddOperationBudget<'a> {
     max_nodes: usize,
     deadline_available: &'a mut dyn FnMut() -> bool,
 }
-
 
 // Cannot derive: the deadline is a `&mut dyn FnMut`, which has no `Debug`. Calling it
 // here would consume part of the budget being reported on, so it is named and not
@@ -1339,7 +1344,10 @@ impl SddProvenance {
     /// Fails immediately if a previous operation already breached the budget.
     pub fn try_with_budget<T>(
         &self,
-        operation: impl FnOnce(&mut SddManager, &mut SddOperationBudget<'_>) -> Result<T, SddBudgetError>,
+        operation: impl FnOnce(
+            &mut SddManager,
+            &mut SddOperationBudget<'_>,
+        ) -> Result<T, SddBudgetError>,
     ) -> Result<T, SddBudgetError> {
         let (max_nodes, deadline) = match &self.guard {
             Some(guard) => {
@@ -1350,7 +1358,8 @@ impl SddProvenance {
             }
             None => (usize::MAX, None),
         };
-        let mut available = || deadline.map_or(true, |deadline| std::time::Instant::now() < deadline);
+        let mut available =
+            || deadline.map_or(true, |deadline| std::time::Instant::now() < deadline);
         let mut budget = SddOperationBudget::new(max_nodes, &mut available);
         let mut manager = self.manager.lock().unwrap();
         let result = operation(&mut manager, &mut budget);

@@ -1,8 +1,6 @@
-use criterion::{
-    black_box, criterion_group, criterion_main, BenchmarkId, Criterion, Throughput,
-};
+use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criterion, Throughput};
 use kolibrie::rsp_engine::{
-    CrossWindowReasoningMode, OperationMode, QueryExecutionMode, RSPEngine, RSPBuilder,
+    CrossWindowReasoningMode, OperationMode, QueryExecutionMode, RSPBuilder, RSPEngine,
     ResultConsumer, SimpleR2R,
 };
 use shared::triple::Triple;
@@ -228,13 +226,7 @@ fn bench_rsp_citybench_cross_window(c: &mut Criterion) {
                 &(size, ratio),
                 |b, &(size, ratio)| {
                     b.iter_batched(
-                        || {
-                            prepare_engine_for_update(
-                                CrossWindowReasoningMode::Naive,
-                                size,
-                                ratio,
-                            )
-                        },
+                        || prepare_engine_for_update(CrossWindowReasoningMode::Naive, size, ratio),
                         |(mut engine, results, updates)| {
                             feed_events(&mut engine, black_box(&updates));
                             engine.stop();

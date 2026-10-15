@@ -66,7 +66,7 @@ fn main() {
         </rdf:Description>
     </rdf:RDF>
     "#;
-    
+
     let mut database = SparqlDatabase::new();
     database.parse_rdf(rdf_data);
 
@@ -86,7 +86,10 @@ fn main() {
     println!("Results with LIMIT 2:");
     for result in results_limited {
         if let [name, type_, attendees] = &result[..] {
-            println!("  Name: {}, Type: {}, Attendees: {}", name, type_, attendees);
+            println!(
+                "  Name: {}, Type: {}, Attendees: {}",
+                name, type_, attendees
+            );
         }
     }
 }

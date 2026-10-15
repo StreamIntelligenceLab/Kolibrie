@@ -25,12 +25,12 @@
 //! Entailment for arbitrarily far times reduces the query modulo `P` into the
 //! materialized period window (right or left) and checks real-interval inclusion.
 
-use shared::triple::Triple;
-use crate::syntax::{DatalogMTLRule, TemporalAtom};
-use crate::evaluator::compute_w_max;
-use super::interval::{coalesce, TInterval, NEG_INF, POS_INF};
 use super::eval::eval_rule;
+use super::interval::{coalesce, TInterval, NEG_INF, POS_INF};
 use super::relation::Database;
+use crate::evaluator::compute_w_max;
+use crate::syntax::{DatalogMTLRule, TemporalAtom};
+use shared::triple::Triple;
 
 /// A finitely-represented (possibly infinite, ultimately periodic) model.
 pub struct PeriodicModel {
@@ -54,7 +54,6 @@ pub struct PeriodicModel {
     pub left_periodic: bool,
 }
 
-
 // Summarised rather than derived: the embedded `Database` is the whole materialised
 // prefix. The regime bounds are what a reader is usually checking, so those print in
 // full.
@@ -63,8 +62,14 @@ impl std::fmt::Debug for PeriodicModel {
         f.debug_struct("PeriodicModel")
             .field("facts", &self.db.facts.len())
             .field("period", &self.period)
-            .field("right", &(self.right_start, self.right_horizon, self.right_periodic))
-            .field("left", &(self.left_start, self.left_horizon, self.left_periodic))
+            .field(
+                "right",
+                &(self.right_start, self.right_horizon, self.right_periodic),
+            )
+            .field(
+                "left",
+                &(self.left_start, self.left_horizon, self.left_periodic),
+            )
             .finish_non_exhaustive()
     }
 }
@@ -75,14 +80,28 @@ pub fn materialize_omega(
     facts: Vec<(Triple, TInterval)>,
 ) -> Result<PeriodicModel, String> {
     let reach = compute_w_max(rules) as i64;
-    let period = op_ends(rules).into_iter().filter(|&e| e > 0).fold(1i64, lcm).max(1);
-    let max_x = facts.iter().map(|(_, iv)| iv.end).filter(|e| *e != POS_INF).max().unwrap_or(0);
-    let min_x = facts.iter().map(|(_, iv)| iv.start).filter(|s| *s != NEG_INF).min().unwrap_or(0);
+    let period = op_ends(rules)
+        .into_iter()
+        .filter(|&e| e > 0)
+        .fold(1i64, lcm)
+        .max(1);
+    let max_x = facts
+        .iter()
+        .map(|(_, iv)| iv.end)
+        .filter(|e| *e != POS_INF)
+        .max()
+        .unwrap_or(0);
+    let min_x = facts
+        .iter()
+        .map(|(_, iv)| iv.start)
+        .filter(|s| *s != NEG_INF)
+        .min()
+        .unwrap_or(0);
 
     let r = max_x + reach;
-    let h = r + 3 * period;   // right materialization bound
+    let h = r + 3 * period; // right materialization bound
     let l = min_x - reach;
-    let lb = l - 3 * period;  // left materialization bound
+    let lb = l - 3 * period; // left materialization bound
 
     // 1. Finite fixpoint, clipping interval ends/starts to `[lb, h]`.
     let mut db = Database::new();
@@ -138,17 +157,25 @@ pub fn materialize_omega(
 
 /// Does `triple` hold over all of `query` in the ω-model (any time)?
 pub fn entails(model: &PeriodicModel, triple: &Triple, query: TInterval) -> bool {
-    let Some(ivs) = model.db.facts.get(triple) else { return false };
+    let Some(ivs) = model.db.facts.get(triple) else {
+        return false;
+    };
 
     // Covered directly (prefix, or an unbounded `[l,+∞)` / `(−∞,e]` interval).
     if ivs.iter().any(|iv| TInterval::inclusion(query, *iv)) {
         return true;
     }
-    let width = if query.is_finite() { query.end - query.start } else { i64::MAX };
+    let width = if query.is_finite() {
+        query.end - query.start
+    } else {
+        i64::MAX
+    };
 
     // Far future: reduce modulo P into the materialized right period window.
     if model.right_periodic && query.is_finite() && query.start > model.right_horizon {
-        if width >= model.period { return false; }
+        if width >= model.period {
+            return false;
+        }
         let base = model.right_start + model.period;
         let k = (query.start - base) / model.period; // >= 1
         let reduced = query.shifted(-k * model.period);
@@ -156,7 +183,9 @@ pub fn entails(model: &PeriodicModel, triple: &Triple, query: TInterval) -> bool
     }
     // Far past: reduce modulo P into the materialized left period window.
     if model.left_periodic && query.is_finite() && query.end < model.left_horizon {
-        if width >= model.period { return false; }
+        if width >= model.period {
+            return false;
+        }
         let base = model.left_start - model.period;
         let k = (base - query.end) / model.period; // >= 1
         let reduced = query.shifted(k * model.period);
@@ -166,7 +195,10 @@ pub fn entails(model: &PeriodicModel, triple: &Triple, query: TInterval) -> bool
 }
 
 #[derive(Clone, Copy)]
-enum Dir { Left, Right }
+enum Dir {
+    Left,
+    Right,
+}
 
 /// Confirm a tail is `P`-periodic (two consecutive period windows agree) and
 /// report whether a genuinely gappy (finite) tail exists on that side.
@@ -177,7 +209,9 @@ fn verify_side(db: &Database, base: i64, p: i64, dir: Dir) -> Result<bool, Strin
             Dir::Right => iv.end != POS_INF && iv.end >= base,
             Dir::Left => iv.start != NEG_INF && iv.start <= base,
         });
-        if tail { has_tail = true; }
+        if tail {
+            has_tail = true;
+        }
         for k in 0..p {
             let (a, b) = match dir {
                 Dir::Right => (base + k, base + p + k),
@@ -186,7 +220,12 @@ fn verify_side(db: &Database, base: i64, p: i64, dir: Dir) -> Result<bool, Strin
             if holds_at(ivs, a) != holds_at(ivs, b) {
                 return Err(format!(
                     "{} period {} did not stabilize",
-                    match dir { Dir::Right => "right", Dir::Left => "left" }, p));
+                    match dir {
+                        Dir::Right => "right",
+                        Dir::Left => "left",
+                    },
+                    p
+                ));
             }
         }
     }
@@ -219,15 +258,23 @@ fn fixpoint(db: &mut Database, rules: &[DatalogMTLRule], lb: i64, h: i64) {
 }
 
 fn clip_intervals(ints: Vec<TInterval>, lb: i64, h: i64) -> Vec<TInterval> {
-    ints.into_iter().filter_map(|mut iv| {
-        // Drop intervals entirely outside the materialized window.
-        if (iv.start != NEG_INF && iv.start > h) || (iv.end != POS_INF && iv.end < lb) {
-            return None;
-        }
-        if iv.end != POS_INF && iv.end > h { iv.end = h; iv.end_open = false; }
-        if iv.start != NEG_INF && iv.start < lb { iv.start = lb; iv.start_open = false; }
-        Some(iv)
-    }).collect()
+    ints.into_iter()
+        .filter_map(|mut iv| {
+            // Drop intervals entirely outside the materialized window.
+            if (iv.start != NEG_INF && iv.start > h) || (iv.end != POS_INF && iv.end < lb) {
+                return None;
+            }
+            if iv.end != POS_INF && iv.end > h {
+                iv.end = h;
+                iv.end_open = false;
+            }
+            if iv.start != NEG_INF && iv.start < lb {
+                iv.start = lb;
+                iv.start_open = false;
+            }
+            Some(iv)
+        })
+        .collect()
 }
 
 /// All operator interval end-values appearing in rule bodies.
@@ -236,7 +283,9 @@ fn op_ends(rules: &[DatalogMTLRule]) -> Vec<i64> {
         match atom {
             TemporalAtom::Base(_) => {}
             TemporalAtom::Conj(atoms) => {
-                for a in atoms { walk(a, out); }
+                for a in atoms {
+                    walk(a, out);
+                }
             }
             TemporalAtom::Diamond { interval, inner }
             | TemporalAtom::Box_ { interval, inner }
@@ -274,5 +323,9 @@ fn gcd(a: i64, b: i64) -> i64 {
 }
 
 fn lcm(a: i64, b: i64) -> i64 {
-    if a == 0 || b == 0 { 0 } else { (a / gcd(a, b)) * b }
+    if a == 0 || b == 0 {
+        0
+    } else {
+        (a / gcd(a, b)) * b
+    }
 }

@@ -82,7 +82,10 @@ fn run(rule_text: &str, f: &Fixture) -> Vec<u64> {
         });
 
         let (derived, _) = eval.advance(t, facts);
-        if derived.iter().any(|d| d.predicate == f.test_pred && d.object == f.zone_b) {
+        if derived
+            .iter()
+            .any(|d| d.predicate == f.test_pred && d.object == f.zone_b)
+        {
             fired.push(t);
         }
     }
@@ -150,9 +153,17 @@ fn test_conjunction_under_box_is_stronger_than_hoisting() {
     }
 
     // Hoisted: needs inZone over [t-5,t] and the class at t only -> fires at 20.
-    assert_eq!(hoisted_first, Some(20), "hoisted form only needs the class now");
+    assert_eq!(
+        hoisted_first,
+        Some(20),
+        "hoisted form only needs the class now"
+    );
     // Scoped: needs the class at every point of [t-5,t] too -> fires 5 ticks later.
-    assert_eq!(scoped_first, Some(25), "scoped form needs the class all window");
+    assert_eq!(
+        scoped_first,
+        Some(25),
+        "scoped form needs the class all window"
+    );
 }
 
 /// Nested operators read additively, and `compute_w_max` must say so — it drives

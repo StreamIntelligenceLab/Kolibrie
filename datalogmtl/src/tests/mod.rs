@@ -8,10 +8,10 @@
  * you can obtain one at https://mozilla.org/MPL/2.0/.
  */
 
-use std::sync::{Arc, RwLock};
 use shared::dictionary::Dictionary;
-use shared::triple::Triple;
 use shared::terms::Term;
+use shared::triple::Triple;
+use std::sync::{Arc, RwLock};
 
 pub fn make_dict() -> Arc<RwLock<Dictionary>> {
     Arc::new(RwLock::new(Dictionary::new()))
@@ -22,20 +22,28 @@ pub fn enc(dict: &Arc<RwLock<Dictionary>>, s: &str) -> u32 {
 }
 
 pub fn triple(s: u32, p: u32, o: u32) -> Triple {
-    Triple { subject: s, predicate: p, object: o }
+    Triple {
+        subject: s,
+        predicate: p,
+        object: o,
+    }
 }
 
-pub fn c(id: u32) -> Term { Term::Constant(id) }
-pub fn v(name: &str) -> Term { Term::Variable(name.to_string()) }
+pub fn c(id: u32) -> Term {
+    Term::Constant(id)
+}
+pub fn v(name: &str) -> Term {
+    Term::Variable(name.to_string())
+}
 
+pub mod automata;
 pub mod base;
+pub mod box_;
+pub mod conj;
+pub mod diamond;
+pub mod integration;
 pub mod parser;
 pub mod rdf_parser;
-pub mod conj;
-pub mod automata;
-pub mod diamond;
-pub mod box_;
-pub mod since;
 pub mod recursive;
-pub mod integration;
+pub mod since;
 pub mod stream;

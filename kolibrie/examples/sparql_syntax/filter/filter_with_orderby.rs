@@ -66,7 +66,7 @@ fn main() {
         </rdf:Description>
     </rdf:RDF>
     "#;
-    
+
     let mut database = SparqlDatabase::new();
     database.parse_rdf(rdf_data);
 

@@ -157,7 +157,10 @@ fn join_variants_agree_on_a_repeated_variable_within_a_pattern() {
     // ?self appears twice in one pattern, so the scan must self-constrain
     let rows = assert_general_joins_agree(
         &mut database,
-        quad((var("self"), knows.clone(), var("self")), GraphTerm::Default),
+        quad(
+            (var("self"), knows.clone(), var("self")),
+            GraphTerm::Default,
+        ),
         quad((var("other"), age, var("a")), GraphTerm::Default),
         "repeated variable in a pattern",
     );

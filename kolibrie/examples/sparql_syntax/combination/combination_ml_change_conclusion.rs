@@ -63,7 +63,8 @@ fn extract_traffic_data_from_database(
                 .iter()
                 .find(|t| {
                     t.subject == triple.subject
-                        && dict.decode(t.predicate)
+                        && dict
+                            .decode(t.predicate)
                             .map_or(false, |p| p.ends_with("vehicleCount"))
                 })
                 .and_then(|t| dict.decode(t.object))
@@ -103,10 +104,16 @@ fn predict_congestion(
     best_model: &str,
     traffic_data: &[TrafficData],
     feature_names: &[String],
-) -> Result<(Vec<CongestionPrediction>, kolibrie::execute_ml::MLPredictTiming), Box<dyn Error>> {
+) -> Result<
+    (
+        Vec<CongestionPrediction>,
+        kolibrie::execute_ml::MLPredictTiming,
+    ),
+    Box<dyn Error>,
+> {
     println!("\n[Rust] Building feature vectors...");
     let feature_build_start = std::time::Instant::now();
-    
+
     // Build feature vectors based on selected variables
     let features: Vec<Vec<f64>> = traffic_data
         .iter()
@@ -128,7 +135,10 @@ fn predict_congestion(
     }
 
     let feature_build_time = feature_build_start.elapsed().as_secs_f64();
-    println!("[Rust] Feature vector building: {:.6} seconds", feature_build_time);
+    println!(
+        "[Rust] Feature vector building: {:.6} seconds",
+        feature_build_time
+    );
     println!("Using features for congestion prediction: {:?}", features);
 
     // Call ML prediction (this now includes detailed timing)
@@ -136,7 +146,7 @@ fn predict_congestion(
 
     // Extract timing information from the ML prediction result
     let timing = kolibrie::execute_ml::MLPredictTiming {
-        total_time: 0.0, // Will be updated by execute_ml_prediction_from_clause
+        total_time: 0.0,          // Will be updated by execute_ml_prediction_from_clause
         rust_to_python_time: 0.0, // Will be updated by execute_ml_prediction_from_clause
         python_preprocessing_time: prediction_results.timing.preprocessing_time,
         actual_prediction_time: prediction_results.timing.actual_prediction_time,
@@ -145,12 +155,18 @@ fn predict_congestion(
     };
 
     println!("\nML Model Performance:");
-    println!("  Prediction Time: {:.4} seconds", 
-        prediction_results.performance_metrics.prediction_time);
-    println!("  Memory Usage: {:.2} MB", 
-        prediction_results.performance_metrics.memory_usage_mb);
-    println!("  CPU Usage: {:.2}%", 
-        prediction_results.performance_metrics.cpu_usage_percent);
+    println!(
+        "  Prediction Time: {:.4} seconds",
+        prediction_results.performance_metrics.prediction_time
+    );
+    println!(
+        "  Memory Usage: {:.2} MB",
+        prediction_results.performance_metrics.memory_usage_mb
+    );
+    println!(
+        "  CPU Usage: {:.2}%",
+        prediction_results.performance_metrics.cpu_usage_percent
+    );
 
     // Create congestion predictions with severity levels
     let predictions: Vec<CongestionPrediction> = traffic_data
@@ -371,14 +387,13 @@ impl DynamicRuleManager {
     fn find_roads_with_emergency_vehicles(&self) -> Vec<(String, i32)> {
         let mut results = Vec::new();
         let dict = self.database.dictionary();
-        
+
         for triple in self.database.query_default_triples(None, None, None) {
             if let Some(pred) = dict.decode(triple.predicate) {
                 if pred.contains("emergencyVehicles") {
-                    if let (Some(subject_str), Some(object_str)) = (
-                        dict.decode(triple.subject),
-                        dict.decode(triple.object),
-                    ) {
+                    if let (Some(subject_str), Some(object_str)) =
+                        (dict.decode(triple.subject), dict.decode(triple.object))
+                    {
                         if let Ok(count) = object_str.parse::<i32>() {
                             results.push((subject_str.to_string(), count));
                         }
@@ -386,21 +401,20 @@ impl DynamicRuleManager {
                 }
             }
         }
-        
+
         results
     }
 
     fn find_roads_with_bad_weather(&self) -> Vec<String> {
         let mut results = Vec::new();
         let dict = self.database.dictionary();
-        
+
         for triple in self.database.query_default_triples(None, None, None) {
             if let Some(pred) = dict.decode(triple.predicate) {
                 if pred.contains("weatherCondition") {
-                    if let (Some(subject_str), Some(object_str)) = (
-                        dict.decode(triple.subject),
-                        dict.decode(triple.object),
-                    ) {
+                    if let (Some(subject_str), Some(object_str)) =
+                        (dict.decode(triple.subject), dict.decode(triple.object))
+                    {
                         if object_str == "rain" || object_str == "fog" {
                             results.push(subject_str.to_string());
                         }
@@ -408,21 +422,20 @@ impl DynamicRuleManager {
                 }
             }
         }
-        
+
         results
     }
 
     fn find_roads_with_congestion(&self) -> HashMap<String, String> {
         let mut results = HashMap::new();
         let dict = self.database.dictionary();
-        
+
         for triple in self.database.query_default_triples(None, None, None) {
             if let Some(pred) = dict.decode(triple.predicate) {
                 if pred.contains("congestionLevel") && !pred.starts_with("ex:") {
-                    if let (Some(subject_str), Some(object_str)) = (
-                        dict.decode(triple.subject),
-                        dict.decode(triple.object),
-                    ) {
+                    if let (Some(subject_str), Some(object_str)) =
+                        (dict.decode(triple.subject), dict.decode(triple.object))
+                    {
                         if object_str.parse::<f64>().is_ok() {
                             results
                                 .entry(subject_str.to_string())
@@ -432,7 +445,7 @@ impl DynamicRuleManager {
                 }
             }
         }
-        
+
         results
     }
 
@@ -443,7 +456,7 @@ impl DynamicRuleManager {
         rule: &CombinedRule,
     ) {
         let road_subject = format!("http://example.org/traffic#{}", prediction.road_id);
-        
+
         // Encode with write lock
         let road_subject_id = {
             let mut dict = self.database.dictionary_mut();
@@ -451,7 +464,10 @@ impl DynamicRuleManager {
         };
 
         if !self.prediction_matches_where_clause(prediction, rule) {
-            println!("  Skipping {} - doesn't match WHERE clause filters", prediction.road_id);
+            println!(
+                "  Skipping {} - doesn't match WHERE clause filters",
+                prediction.road_id
+            );
             return;
         }
 
@@ -462,7 +478,7 @@ impl DynamicRuleManager {
                 let expanded_predicate = self
                     .database
                     .resolve_query_term(predicate_str, &self.database.prefixes().clone());
-                
+
                 // Acquire write lock for encoding
                 let mut dict = self.database.dictionary_mut();
                 let predicate_id = dict.encode(&expanded_predicate);
@@ -477,7 +493,7 @@ impl DynamicRuleManager {
                 } else {
                     dict.encode(object_str)
                 };
-                
+
                 drop(dict); // Release write lock
 
                 let enhanced_triple = Triple {
@@ -607,7 +623,7 @@ impl DynamicRuleManager {
     // Helper method to get road data
     fn get_road_data(&self, road_subject_id: u32, data_type: &str) -> Option<f64> {
         let dict = self.database.dictionary();
-        
+
         self.database
             .query_default_triples(Some(road_subject_id), None, None)
             .into_iter()
@@ -958,4 +974,9 @@ RULE :IncidentResponse :-
     Ok(())
 }
 
-mod local_ml { include!(concat!(env!("CARGO_MANIFEST_DIR"), "/examples/support/ml_context.rs")); }
+mod local_ml {
+    include!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/examples/support/ml_context.rs"
+    ));
+}

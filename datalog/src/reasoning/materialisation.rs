@@ -30,18 +30,18 @@ use std::collections::HashMap;
 // keep working. What this does buy: nothing outside can couple to these paths, and the
 // modules leave the documentation ledger. Anything exporting a type or free function
 // by path stays `pub` below.
-pub(crate) mod semi_naive;
 pub(crate) mod my_naive;
+pub(crate) mod semi_naive;
 pub(crate) mod semi_naive_parallel;
 pub(crate) mod semi_naive_with_repairs;
 
+pub mod cross_window_incremental;
+pub mod cross_window_naive;
+pub mod hybrid_materialisation;
 pub mod infer_generic;
 pub mod provenance_infer_generic;
 pub mod provenance_semi_naive;
-pub mod hybrid_materialisation;
 pub mod sdd_seed_materialise;
-pub mod cross_window_naive;
-pub mod cross_window_incremental;
 
 /// The id a conclusion term stands for, given the bindings that satisfied the premises.
 ///
@@ -81,7 +81,6 @@ pub fn replace_variables_with_bound_values(
             if let Some(&bound_value) = vars.get(v) {
                 bound_value
             } else {
-
                 // If not bound, create a new placeholder in the dictionary
                 dict.encode(&format!("ml_output_placeholder_{}", v))
             }

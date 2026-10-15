@@ -8,8 +8,8 @@
  * you can obtain one at https://mozilla.org/MPL/2.0/.
  */
 
-use kolibrie::prelude::*;
 use kolibrie::parser::process_rule_definition;
+use kolibrie::prelude::*;
 use kolibrie::sparql_database::SparqlDatabase;
 
 fn main() {
@@ -51,7 +51,9 @@ fn main() {
 
     let size_after_rdf = database.default_triple_count();
     println!("  Loaded {} RDF triples.", size_after_rdf);
-    println!("  Sensors: S1 (temp=92, press=135), S2 (temp=71, press=118), S3 (temp=88, press=142)");
+    println!(
+        "  Sensors: S1 (temp=92, press=135), S2 (temp=71, press=118), S3 (temp=88, press=142)"
+    );
 
     println!("\n[Stage 2] Loading RDF-star annotations (quoted triples)...");
     let rdf_star_data = r#"<< <http://example.org/sensor/S1> <http://example.org/temperature> "92" >> <http://example.org/reliability> "0.95" .
@@ -62,7 +64,10 @@ fn main() {
 
     let size_after_rdf_star = database.default_triple_count();
     let rdf_star_count = size_after_rdf_star - size_after_rdf;
-    println!("  Loaded {} RDF-star triples (reliability annotations).", rdf_star_count);
+    println!(
+        "  Loaded {} RDF-star triples (reliability annotations).",
+        rdf_star_count
+    );
     println!("  Initial database size: {} triples.", size_after_rdf_star);
 
     println!("\n[Stage 3] SPARQL-star query — sensor calibration reliability...");
@@ -141,7 +146,9 @@ SELECT ?sensor WHERE {
     println!("  (Uses Stage 4 output — overheatAlert — as a premise!)");
     println!("  RULE :CriticalRisk PROB(combination=minmax) :-");
     println!("    CONSTRUCT {{ ?sensor ex:criticalRisk true . }}");
-    println!("    WHERE     {{ ?sensor ex:overheatAlert true ; ex:pressure ?p . FILTER(?p > 130) }}");
+    println!(
+        "    WHERE     {{ ?sensor ex:overheatAlert true ; ex:pressure ?p . FILTER(?p > 130) }}"
+    );
 
     let prob_rule = r#"PREFIX ex: <http://example.org/>
 
@@ -179,7 +186,10 @@ SELECT ?sensor WHERE {
 }"#;
 
     let critical_results = execute_query_rayon_parallel2_volcano(sparql_critical, &mut database);
-    println!("  Critical-risk sensors ({} found):", critical_results.len());
+    println!(
+        "  Critical-risk sensors ({} found):",
+        critical_results.len()
+    );
     for row in &critical_results {
         for val in row {
             println!("    {}", shorten(val));
@@ -202,9 +212,9 @@ SELECT ?sensor WHERE {
         }
     }
 
-    let final_size  = database.default_triple_count();
-    let growth      = final_size as isize - size_after_rdf_star as isize;
-    let growth_pct  = growth as f64 / size_after_rdf_star as f64 * 100.0;
+    let final_size = database.default_triple_count();
+    let growth = final_size as isize - size_after_rdf_star as isize;
+    let growth_pct = growth as f64 / size_after_rdf_star as f64 * 100.0;
 
     println!("\n=== Database Growth Summary ===");
     println!(
@@ -219,10 +229,7 @@ SELECT ?sensor WHERE {
         "  After provenance RULE:             {:>2} triples  (+2 criticalRisk for S1, S3)",
         final_size
     );
-    println!(
-        "  Total growth: +{} triples  ({:.0}%)",
-        growth, growth_pct
-    );
+    println!("  Total growth: +{} triples  ({:.0}%)", growth, growth_pct);
     println!();
     println!("  Syntax elements demonstrated:");
     println!("    * SPARQL SELECT            — Stages 5, 7");

@@ -4,18 +4,9 @@ use datalog::reasoning::materialisation::hybrid_materialisation::validate_hybrid
 use kolibrie::ml_policy::MlExecutionContext;
 use kolibrie::parser::{parse_combined_query, process_rule_definition};
 use kolibrie::program::{
-    CompiledProgram,
-    PredictionSnapshot,
-    ProgramError,
-    ProgramOptions,
-    ProgramResult,
-    PublishedProgramResult,
-    ResourceError,
-    RuleMode,
-    compile_program,
-    execute_program,
-    parse_probability_literal,
-    query_program_result,
+    compile_program, execute_program, parse_probability_literal, query_program_result,
+    CompiledProgram, PredictionSnapshot, ProgramError, ProgramOptions, ProgramResult,
+    PublishedProgramResult, ResourceError, RuleMode,
 };
 use kolibrie::sparql_database::SparqlDatabase;
 use shared::dictionary::Dictionary;
@@ -72,12 +63,22 @@ fn fixtures() -> Vec<Vec<f64>> {
 
 fn pair_options(left: &[f64], right: Option<&[f64]>) -> ProgramOptions {
     let left_image = image_term(0);
-    let right_image = if right.is_some() { image_term(1) } else { image_term(0) };
+    let right_image = if right.is_some() {
+        image_term(1)
+    } else {
+        image_term(0)
+    };
     let mut snapshot = PredictionSnapshot::new();
-    snapshot.declare_exclusive_relation(DIGIT, &digit_labels()).unwrap();
-    snapshot.add_distribution(DIGIT, &left_image, left, None).unwrap();
+    snapshot
+        .declare_exclusive_relation(DIGIT, &digit_labels())
+        .unwrap();
+    snapshot
+        .add_distribution(DIGIT, &left_image, left, None)
+        .unwrap();
     if let Some(right) = right {
-        snapshot.add_distribution(DIGIT, &right_image, right, None).unwrap();
+        snapshot
+            .add_distribution(DIGIT, &right_image, right, None)
+            .unwrap();
     }
     ProgramOptions {
         frozen_predictions: Some(snapshot),
@@ -93,7 +94,11 @@ fn pair_options(left: &[f64], right: Option<&[f64]>) -> ProgramOptions {
 fn pair_input(same_image: bool) -> SparqlDatabase {
     let mut db = SparqlDatabase::new();
     load_knowledge(&mut db).unwrap();
-    let right = if same_image { image_term(0) } else { image_term(1) };
+    let right = if same_image {
+        image_term(0)
+    } else {
+        image_term(1)
+    };
     load_pair(&mut db, &pair_term(0), &image_term(0), &right);
     db
 }
@@ -180,9 +185,15 @@ ML.PREDICT(MODEL "m", INPUT { SELECT ?s ?x WHERE { ?s ex:x ?x . } }, OUTPUT ?d)
 #[test]
 fn unsupported_trailing_statements_fail_before_side_effects() {
     let with_select = format!("{REASONING_RULES}\nSELECT ?s WHERE {{ ?s ?p ?o . }}");
-    assert!(matches!(compile(&with_select), Err(ProgramError::Unsupported(_))));
+    assert!(matches!(
+        compile(&with_select),
+        Err(ProgramError::Unsupported(_))
+    ));
     let with_garbage = format!("{REASONING_RULES}\nNOT A STATEMENT");
-    assert!(matches!(compile(&with_garbage), Err(ProgramError::Parse(_))));
+    assert!(matches!(
+        compile(&with_garbage),
+        Err(ProgramError::Parse(_))
+    ));
 
     let mut db = SparqlDatabase::new();
     db.add_triple_parts(&ex("s"), &ex("a"), &ex("o"));
@@ -239,8 +250,14 @@ fn checked_lowering_rejects_constructs_it_cannot_represent() {
     db.add_tagged_triple(&ex("a"), &ex("score"), "3", 0.5);
     db.add_tagged_triple(&ex("b"), &ex("score"), "1", 0.5);
     let result = execute_program(&mut db, &program, &ProgramOptions::default()).unwrap();
-    assert_eq!(result.fact_probability(&ex("a"), &ex("high"), &ex("yes")), Some(0.5));
-    assert_eq!(result.fact_probability(&ex("b"), &ex("high"), &ex("yes")), None);
+    assert_eq!(
+        result.fact_probability(&ex("a"), &ex("high"), &ex("yes")),
+        Some(0.5)
+    );
+    assert_eq!(
+        result.fact_probability(&ex("b"), &ex("high"), &ex("yes")),
+        None
+    );
 }
 
 #[test]
@@ -276,7 +293,10 @@ fn deterministic_chains_reach_one_fixpoint_in_any_rule_order() {
         db.add_triple_parts(&ex("s"), &ex("a"), &ex("m"));
         db.add_triple_parts(&ex("m"), &ex("next"), &ex("t"));
         let mut result = execute_program(&mut db, &program, &ProgramOptions::default()).unwrap();
-        assert_eq!(result.fact_probability(&ex("s"), &ex("d"), &ex("t")), Some(1.0));
+        assert_eq!(
+            result.fact_probability(&ex("s"), &ex("d"), &ex("t")),
+            Some(1.0)
+        );
         assert_eq!(result.derived_facts(), 3);
         let rows = query_program_result(
             &mut result,
@@ -308,11 +328,18 @@ fn probabilistic_rules_combine_every_proof_in_any_order() {
         db.add_tagged_triple(&ex("room"), &ex("heat"), &ex("yes"), 0.5);
         db.add_triple_parts(&ex("room"), &ex("staffed"), &ex("yes"));
         let result = execute_program(&mut db, &program, &ProgramOptions::default()).unwrap();
-        let alarm = result.fact_probability(&ex("room"), &ex("alarm"), &ex("on")).unwrap();
-        let call = result.fact_probability(&ex("room"), &ex("call"), &ex("fire")).unwrap();
+        let alarm = result
+            .fact_probability(&ex("room"), &ex("alarm"), &ex("on"))
+            .unwrap();
+        let call = result
+            .fact_probability(&ex("room"), &ex("call"), &ex("fire"))
+            .unwrap();
         assert!((alarm - 0.8).abs() <= 1e-12);
         assert!((call - 0.8).abs() <= 1e-12);
-        assert_eq!(result.fact_probability(&ex("room"), &ex("staffed"), &ex("yes")), Some(1.0));
+        assert_eq!(
+            result.fact_probability(&ex("room"), &ex("staffed"), &ex("yes")),
+            Some(1.0)
+        );
         outcomes.push((alarm.to_bits(), call.to_bits()));
     }
     assert!(outcomes.windows(2).all(|pair| pair[0] == pair[1]));
@@ -322,10 +349,7 @@ fn probabilistic_rules_combine_every_proof_in_any_order() {
 fn reference_rules_are_order_invariant() {
     let (_, combined) = parse_combined_query(REASONING_RULES).unwrap();
     assert_eq!(combined.rules.len(), 10);
-    let blocks: Vec<&str> = REASONING_RULES
-        .split("\nRULE ")
-        .skip(1)
-        .collect();
+    let blocks: Vec<&str> = REASONING_RULES.split("\nRULE ").skip(1).collect();
     let reversed = format!(
         "PREFIX mnist: <http://mnist/>\nPREFIX : <http://mnist/rules/>\n{}",
         blocks
@@ -370,7 +394,11 @@ fn overloaded_vocabulary_fails_hybrid_validation_but_direct_sdd_does_not_use_it(
     let expected = enumerate(&left, Some(&one_hot(1)));
     let checks: Vec<f64> = ANSWER_KINDS
         .iter()
-        .map(|kind| result.answer_probability(&pair_term(0), ANSWER, &term(kind)).unwrap())
+        .map(|kind| {
+            result
+                .answer_probability(&pair_term(0), ANSWER, &term(kind))
+                .unwrap()
+        })
         .collect();
     assert_close(&checks, &expected[19..], 1e-12);
 }
@@ -398,8 +426,14 @@ fn one_image_used_twice_doubles_its_digit() {
         assert_close(&actual, &enumerate(&left, None), 1e-12);
         assert_close(&actual, &mnist_oracle::answers(&left, &left, true), 1e-12);
         for odd in (1..19).step_by(2) {
-            assert_eq!(result.fact_probability(&pair_term(0), SUM, &sum_term(odd)), None);
-            assert_eq!(result.answer_probability(&pair_term(0), SUM, &sum_term(odd)), Ok(0.0));
+            assert_eq!(
+                result.fact_probability(&pair_term(0), SUM, &sum_term(odd)),
+                None
+            );
+            assert_eq!(
+                result.answer_probability(&pair_term(0), SUM, &sum_term(odd)),
+                Ok(0.0)
+            );
         }
     }
 }
@@ -431,12 +465,24 @@ fn independent_seeds_mix_with_exclusive_groups() {
 fn contradiction_is_absent_from_select_and_zero_through_the_api() {
     let program = reference();
     let mut result = run_pair(&program, &vec![0.1; 10], Some(&vec![0.1; 10]));
-    let direct = "PREFIX mnist: <http://mnist/>\nSELECT ?x WHERE { ?x mnist:is mnist:contradiction . }";
-    let projected = "PREFIX mnist: <http://mnist/>\nSELECT ?q WHERE { ?q mnist:answer mnist:contradiction . }";
-    assert!(query_program_result(&mut result, direct).unwrap().is_empty());
-    assert!(query_program_result(&mut result, projected).unwrap().is_empty());
-    assert_eq!(result.fact_probability(&image_term(0), &term("is"), &term("contradiction")), None);
-    assert_eq!(result.answer_probability(&pair_term(0), ANSWER, &term("contradiction")), Ok(0.0));
+    let direct =
+        "PREFIX mnist: <http://mnist/>\nSELECT ?x WHERE { ?x mnist:is mnist:contradiction . }";
+    let projected =
+        "PREFIX mnist: <http://mnist/>\nSELECT ?q WHERE { ?q mnist:answer mnist:contradiction . }";
+    assert!(query_program_result(&mut result, direct)
+        .unwrap()
+        .is_empty());
+    assert!(query_program_result(&mut result, projected)
+        .unwrap()
+        .is_empty());
+    assert_eq!(
+        result.fact_probability(&image_term(0), &term("is"), &term("contradiction")),
+        None
+    );
+    assert_eq!(
+        result.answer_probability(&pair_term(0), ANSWER, &term("contradiction")),
+        Ok(0.0)
+    );
     let annotated = query_program_result(&mut result, ANSWER_ANNOTATIONS).unwrap();
     assert!(annotated.iter().all(|row| row[1] != term("contradiction")));
     assert_eq!(annotated.len(), 5);
@@ -448,13 +494,34 @@ fn structural_false_zero_weight_tiny_certain_and_absent_facts_are_distinct() {
     let tiny = fixtures()[4].clone();
     let mut result = run_pair(&program, &tiny, Some(&one_hot(0)));
 
-    assert_eq!(result.fact_probability(&image_term(0), &term("is"), &term("contradiction")), None);
-    assert_eq!(result.fact_probability(&image_term(0), DIGIT, &digit_label(4)), Some(0.0));
-    assert_eq!(result.fact_probability(&pair_term(0), SUM, &sum_term(4)), Some(0.0));
-    assert_eq!(result.fact_probability(&pair_term(0), SUM, &sum_term(1)), Some(1e-300));
-    assert_eq!(result.fact_probability(&image_term(1), DIGIT, &digit_label(0)), Some(1.0));
-    assert_eq!(result.fact_probability(&pair_term(0), LEFT, &image_term(0)), Some(1.0));
-    assert_eq!(result.fact_probability(&pair_term(0), SUM, &term("unknown")), None);
+    assert_eq!(
+        result.fact_probability(&image_term(0), &term("is"), &term("contradiction")),
+        None
+    );
+    assert_eq!(
+        result.fact_probability(&image_term(0), DIGIT, &digit_label(4)),
+        Some(0.0)
+    );
+    assert_eq!(
+        result.fact_probability(&pair_term(0), SUM, &sum_term(4)),
+        Some(0.0)
+    );
+    assert_eq!(
+        result.fact_probability(&pair_term(0), SUM, &sum_term(1)),
+        Some(1e-300)
+    );
+    assert_eq!(
+        result.fact_probability(&image_term(1), DIGIT, &digit_label(0)),
+        Some(1.0)
+    );
+    assert_eq!(
+        result.fact_probability(&pair_term(0), LEFT, &image_term(0)),
+        Some(1.0)
+    );
+    assert_eq!(
+        result.fact_probability(&pair_term(0), SUM, &term("unknown")),
+        None
+    );
 
     let sums = query_program_result(&mut result, SUM_ANNOTATIONS).unwrap();
     assert_eq!(sums.len(), 19);
@@ -513,7 +580,11 @@ fn failed_runs_preserve_the_published_result() {
     let mut published = PublishedProgramResult::new();
     let mut db = pair_input(false);
     published
-        .publish(execute_program(&mut db, &program, &pair_options(&left, Some(&one_hot(1)))))
+        .publish(execute_program(
+            &mut db,
+            &program,
+            &pair_options(&left, Some(&one_hot(1))),
+        ))
         .unwrap();
     let expected = answers(published.current().unwrap());
 
@@ -578,12 +649,16 @@ fn coverage_must_be_complete_and_confirmed_before_absent_means_zero() {
     unconfirmed.required_choices = None;
     let result = execute_program(&mut db, &program, &unconfirmed).unwrap();
     assert!(!result.coverage().confirmed);
-    assert!(result.answer_probability(&pair_term(0), SUM, &sum_term(2)).is_ok());
+    assert!(result
+        .answer_probability(&pair_term(0), SUM, &sum_term(2))
+        .is_ok());
     assert!(matches!(
         result.answer_probability(&pair_term(0), ANSWER, &term("contradiction")),
         Err(ProgramError::Coverage(_))
     ));
-    assert!(result.prepare_answers(&answer_targets(&pair_term(0))).is_err());
+    assert!(result
+        .prepare_answers(&answer_targets(&pair_term(0)))
+        .is_err());
 }
 
 #[test]
@@ -612,38 +687,76 @@ fn snapshot_validation_is_shared_and_strict() {
     assert!(snapshot.declare_exclusive_relation(DIGIT, &labels).is_ok());
     let mut reordered = labels.clone();
     reordered.swap(0, 1);
-    assert!(snapshot.declare_exclusive_relation(DIGIT, &reordered).is_err());
     assert!(snapshot
-        .declare_exclusive_relation("http://mnist/other", &[labels[0].clone(), labels[0].clone()])
+        .declare_exclusive_relation(DIGIT, &reordered)
+        .is_err());
+    assert!(snapshot
+        .declare_exclusive_relation(
+            "http://mnist/other",
+            &[labels[0].clone(), labels[0].clone()]
+        )
         .is_err());
 
     let uniform = vec![0.1; 10];
-    snapshot.add_distribution(DIGIT, &image_term(0), &uniform, Some(&[0.5])).unwrap();
-    snapshot.add_distribution(DIGIT, &image_term(0), &uniform, Some(&[0.5])).unwrap();
+    snapshot
+        .add_distribution(DIGIT, &image_term(0), &uniform, Some(&[0.5]))
+        .unwrap();
+    snapshot
+        .add_distribution(DIGIT, &image_term(0), &uniform, Some(&[0.5]))
+        .unwrap();
     assert_eq!(snapshot.choice_groups(), 1);
-    assert!(snapshot.add_distribution(DIGIT, &image_term(0), &uniform, Some(&[0.25])).is_err());
-    assert!(snapshot.add_distribution(DIGIT, &image_term(0), &one_hot(1), Some(&[0.5])).is_err());
-    snapshot.add_distribution(DIGIT, &image_term(1), &uniform, Some(&[0.5])).unwrap();
+    assert!(snapshot
+        .add_distribution(DIGIT, &image_term(0), &uniform, Some(&[0.25]))
+        .is_err());
+    assert!(snapshot
+        .add_distribution(DIGIT, &image_term(0), &one_hot(1), Some(&[0.5]))
+        .is_err());
+    snapshot
+        .add_distribution(DIGIT, &image_term(1), &uniform, Some(&[0.5]))
+        .unwrap();
     assert_eq!(snapshot.choice_groups(), 2);
 
-    assert!(snapshot.add_distribution(DIGIT, &image_term(2), &[0.5, 0.5], None).is_err());
-    assert!(snapshot.add_distribution(DIGIT, &image_term(2), &[f64::NAN; 10], None).is_err());
+    assert!(snapshot
+        .add_distribution(DIGIT, &image_term(2), &[0.5, 0.5], None)
+        .is_err());
+    assert!(snapshot
+        .add_distribution(DIGIT, &image_term(2), &[f64::NAN; 10], None)
+        .is_err());
     let mut negative = one_hot(0);
     negative[0] = 1.5;
     negative[1] = -0.5;
-    assert!(snapshot.add_distribution(DIGIT, &image_term(2), &negative, None).is_err());
+    assert!(snapshot
+        .add_distribution(DIGIT, &image_term(2), &negative, None)
+        .is_err());
 
     let accepted = [0.5, 0.5 + 5e-8, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0];
-    snapshot.add_distribution(DIGIT, &image_term(4), &accepted, None).unwrap();
-    assert_eq!(snapshot.distribution(DIGIT, &image_term(4)).unwrap(), &accepted);
+    snapshot
+        .add_distribution(DIGIT, &image_term(4), &accepted, None)
+        .unwrap();
+    assert_eq!(
+        snapshot.distribution(DIGIT, &image_term(4)).unwrap(),
+        &accepted
+    );
     let rejected = [0.5, 0.5 + 2e-7, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0];
-    assert!(snapshot.add_distribution(DIGIT, &image_term(5), &rejected, None).is_err());
+    assert!(snapshot
+        .add_distribution(DIGIT, &image_term(5), &rejected, None)
+        .is_err());
 
-    assert!(snapshot.add_independent(&image_term(0), DIGIT, &labels[3], 0.5).is_err());
-    snapshot.add_independent(&image_term(0), &term("bright"), &term("yes"), 0.5).unwrap();
-    assert!(snapshot.add_independent(&image_term(0), &term("bright"), &term("yes"), 0.6).is_err());
-    assert!(snapshot.add_independent(&image_term(0), &term("bright"), &term("no"), 1.5).is_err());
-    assert!(snapshot.add_distribution("http://mnist/undeclared", &image_term(0), &uniform, None).is_err());
+    assert!(snapshot
+        .add_independent(&image_term(0), DIGIT, &labels[3], 0.5)
+        .is_err());
+    snapshot
+        .add_independent(&image_term(0), &term("bright"), &term("yes"), 0.5)
+        .unwrap();
+    assert!(snapshot
+        .add_independent(&image_term(0), &term("bright"), &term("yes"), 0.6)
+        .is_err());
+    assert!(snapshot
+        .add_independent(&image_term(0), &term("bright"), &term("no"), 1.5)
+        .is_err());
+    assert!(snapshot
+        .add_distribution("http://mnist/undeclared", &image_term(0), &uniform, None)
+        .is_err());
 }
 
 #[test]
@@ -651,7 +764,11 @@ fn seeds_cannot_overlap_asserted_certain_facts() {
     let program = reference();
     let mut db = pair_input(false);
     db.add_triple_parts(&image_term(0), DIGIT, &digit_label(3));
-    let result = execute_program(&mut db, &program, &pair_options(&one_hot(3), Some(&one_hot(4))));
+    let result = execute_program(
+        &mut db,
+        &program,
+        &pair_options(&one_hot(3), Some(&one_hot(4))),
+    );
     assert!(matches!(result, Err(ProgramError::Snapshot(_))));
 }
 
@@ -660,7 +777,9 @@ fn distinct_anchors_with_equal_distributions_stay_independent() {
     let program = reference();
     let uniform = vec![0.1; 10];
     let result = run_pair(&program, &uniform, Some(&uniform));
-    let sum_zero = result.answer_probability(&pair_term(0), SUM, &sum_term(0)).unwrap();
+    let sum_zero = result
+        .answer_probability(&pair_term(0), SUM, &sum_term(0))
+        .unwrap();
     assert!((sum_zero - 0.01).abs() <= 1e-15);
 }
 
@@ -674,7 +793,8 @@ fn result_dictionary_remaps_input_ids_and_literals_round_trip() {
     load_knowledge(&mut db).unwrap();
     load_pair(&mut db, &pair_term(0), &image_term(0), &image_term(1));
     let left = fixtures()[3].clone();
-    let mut result = execute_program(&mut db, &program, &pair_options(&left, Some(&one_hot(6)))).unwrap();
+    let mut result =
+        execute_program(&mut db, &program, &pair_options(&left, Some(&one_hot(6)))).unwrap();
 
     let input_terms = db.dictionary().string_to_id.len();
     let result_terms = result.dataset().dictionary().string_to_id.len();
@@ -729,7 +849,9 @@ fn warm_recovery_matches_published_probabilities() {
     let program = reference();
     let left = fixtures()[3].clone();
     let result = run_pair(&program, &left, Some(&fixtures()[2]));
-    let prepared = result.prepare_answers(&answer_targets(&pair_term(0))).unwrap();
+    let prepared = result
+        .prepare_answers(&answer_targets(&pair_term(0)))
+        .unwrap();
     assert_eq!(prepared.recover(), answers(&result));
 }
 

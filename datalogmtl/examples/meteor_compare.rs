@@ -27,12 +27,12 @@ use shared::dictionary::Dictionary;
 use shared::terms::{Term, TriplePattern};
 use shared::triple::Triple;
 
+use datalogmtl::automata::{self, interval::TInterval};
 use datalogmtl::evaluator::{compute_w_max, DatalogMTLEvaluator};
 use datalogmtl::meteor_fmt::format_tick_sets;
 use datalogmtl::parser::{parse_data, parse_program, TemporalFact, RDF_TYPE};
 use datalogmtl::store::{IntervalFactStore, TemporalSnapshotStore, TemporalStore};
 use datalogmtl::syntax::{DatalogMTLRule, Mode, TemporalAtom};
-use datalogmtl::automata::{self, interval::TInterval};
 
 fn main() {
     let args: Vec<String> = std::env::args().collect();
@@ -49,25 +49,53 @@ fn main() {
     let mut i = 1;
     while i < args.len() {
         match args[i].as_str() {
-            "--program" => { program_path = args.get(i + 1).cloned(); i += 2; }
-            "--data" => { data_path = args.get(i + 1).cloned(); i += 2; }
+            "--program" => {
+                program_path = args.get(i + 1).cloned();
+                i += 2;
+            }
+            "--data" => {
+                data_path = args.get(i + 1).cloned();
+                i += 2;
+            }
             "--horizon" => {
                 horizon_override = args.get(i + 1).and_then(|s| s.parse().ok());
                 i += 2;
             }
-            "--store" => { store_kind = args.get(i + 1).cloned().unwrap_or_default(); i += 2; }
+            "--store" => {
+                store_kind = args.get(i + 1).cloned().unwrap_or_default();
+                i += 2;
+            }
             // Evaluation strategy: tick (per-tick engine) or interval (automata).
-            "--strategy" => { strategy = args.get(i + 1).cloned().unwrap_or_default(); strategy_set = true; i += 2; }
+            "--strategy" => {
+                strategy = args.get(i + 1).cloned().unwrap_or_default();
+                strategy_set = true;
+                i += 2;
+            }
             // Data contract: streaming (past-only) or static (past + future operators).
-            "--mode" => { mode_str = args.get(i + 1).cloned().unwrap_or_default(); i += 2; }
+            "--mode" => {
+                mode_str = args.get(i + 1).cloned().unwrap_or_default();
+                i += 2;
+            }
             // Print timing + fact/derivation counts as JSON instead of the full
             // materialization (for the performance harness).
-            "--timing" => { timing = true; i += 1; }
+            "--timing" => {
+                timing = true;
+                i += 1;
+            }
             // Disable skipping provably-empty ticks (for A/B comparison).
-            "--no-skip" => { skip_empty = false; i += 1; }
+            "--no-skip" => {
+                skip_empty = false;
+                i += 1;
+            }
             // Answer entailment for the query facts in <file> (with --strategy omega).
-            "--entail" => { entail_file = args.get(i + 1).cloned(); i += 2; }
-            other => { eprintln!("unknown argument: {}", other); std::process::exit(2); }
+            "--entail" => {
+                entail_file = args.get(i + 1).cloned();
+                i += 2;
+            }
+            other => {
+                eprintln!("unknown argument: {}", other);
+                std::process::exit(2);
+            }
         }
     }
 
@@ -77,7 +105,10 @@ fn main() {
     let mode = match mode_str.as_str() {
         "streaming" => Mode::Streaming,
         "static" => Mode::Static,
-        other => fail(&format!("unknown --mode '{}' (use streaming|static)", other)),
+        other => fail(&format!(
+            "unknown --mode '{}' (use streaming|static)",
+            other
+        )),
     };
     // Future operators require the static (interval) engine; the tick engine
     // cannot see the future. In static mode default the strategy to interval.
@@ -85,7 +116,9 @@ fn main() {
         if strategy_set && strategy == "tick" {
             fail("--mode static requires the interval engine; drop '--strategy tick'");
         }
-        if !strategy_set { strategy = "interval".to_string(); }
+        if !strategy_set {
+            strategy = "interval".to_string();
+        }
     }
 
     let program_text = std::fs::read_to_string(&program_path)
@@ -110,9 +143,26 @@ fn main() {
         run_interval(rules, &facts, &dict, horizon)
     } else {
         match store_kind.as_str() {
-            "snapshot" => run(TemporalSnapshotStore::new(horizon + 1), rules, &facts, &dict, horizon, skip_empty),
-            "interval" => run(IntervalFactStore::new(horizon + 1), rules, &facts, &dict, horizon, skip_empty),
-            other => fail(&format!("unknown --store '{}' (use snapshot|interval)", other)),
+            "snapshot" => run(
+                TemporalSnapshotStore::new(horizon + 1),
+                rules,
+                &facts,
+                &dict,
+                horizon,
+                skip_empty,
+            ),
+            "interval" => run(
+                IntervalFactStore::new(horizon + 1),
+                rules,
+                &facts,
+                &dict,
+                horizon,
+                skip_empty,
+            ),
+            other => fail(&format!(
+                "unknown --store '{}' (use snapshot|interval)",
+                other
+            )),
         }
     };
 
@@ -176,16 +226,21 @@ fn run<S: TemporalStore>(
     let start = Instant::now();
     let mut holds: HashMap<Triple, BTreeSet<u64>> = HashMap::new();
     for t in 0..=horizon {
-        if !relevant[t as usize] { continue; }
+        if !relevant[t as usize] {
+            continue;
+        }
         let ingest = by_tick.remove(&t).unwrap_or_default();
         eval.advance(t, ingest);
 
         // Record every fact (base + derived) active at this tick.
         for b in eval.store.query_at(&wildcard, t) {
-            if let (Some(&s), Some(&p), Some(&o)) =
-                (b.get("_s"), b.get("_p"), b.get("_o"))
-            {
-                holds.entry(Triple { subject: s, predicate: p, object: o })
+            if let (Some(&s), Some(&p), Some(&o)) = (b.get("_s"), b.get("_p"), b.get("_o")) {
+                holds
+                    .entry(Triple {
+                        subject: s,
+                        predicate: p,
+                        object: o,
+                    })
                     .or_default()
                     .insert(t);
             }
@@ -211,8 +266,14 @@ fn run_interval(
     dict: &Arc<RwLock<Dictionary>>,
     horizon: u64,
 ) -> RunOutput {
-    let iv_facts: Vec<(Triple, TInterval)> = facts.iter()
-        .map(|f| (f.triple.clone(), TInterval::closed(f.start as i64, f.end as i64)))
+    let iv_facts: Vec<(Triple, TInterval)> = facts
+        .iter()
+        .map(|f| {
+            (
+                f.triple.clone(),
+                TInterval::closed(f.start as i64, f.end as i64),
+            )
+        })
         .collect();
 
     let start = Instant::now();
@@ -251,14 +312,23 @@ fn run_omega(
     entail_file: Option<String>,
     timing: bool,
 ) {
-    let iv_facts: Vec<(Triple, TInterval)> = facts.iter()
-        .map(|f| (f.triple.clone(), TInterval::closed(f.start as i64, f.end as i64)))
+    let iv_facts: Vec<(Triple, TInterval)> = facts
+        .iter()
+        .map(|f| {
+            (
+                f.triple.clone(),
+                TInterval::closed(f.start as i64, f.end as i64),
+            )
+        })
         .collect();
 
     let start = Instant::now();
     let model = match automata::materialize_omega(&rules, iv_facts) {
         Ok(m) => m,
-        Err(e) => { eprintln!("omega: {}", e); std::process::exit(3); }
+        Err(e) => {
+            eprintln!("omega: {}", e);
+            std::process::exit(3);
+        }
     };
     let reason_micros = start.elapsed().as_micros();
 
@@ -268,10 +338,18 @@ fn run_omega(
         let queries = parse_data(&text, dict).unwrap_or_else(|e| fail(&e));
         let g = dict.read().unwrap();
         for q in queries {
-            let holds = automata::entails(&model, &q.triple,
-                TInterval::closed(q.start as i64, q.end as i64));
-            println!("{}@[{},{}]\t{}",
-                datalogmtl::meteor_fmt::atom_string(&q.triple, &g), q.start, q.end, holds);
+            let holds = automata::entails(
+                &model,
+                &q.triple,
+                TInterval::closed(q.start as i64, q.end as i64),
+            );
+            println!(
+                "{}@[{},{}]\t{}",
+                datalogmtl::meteor_fmt::atom_string(&q.triple, &g),
+                q.start,
+                q.end,
+                holds
+            );
         }
         return;
     }
@@ -280,14 +358,19 @@ fn run_omega(
     for (t, ivs) in &model.db.facts {
         let set = holds.entry(t.clone()).or_default();
         for iv in ivs {
-            for p in iv.integer_points_upto(horizon) { set.insert(p); }
+            for p in iv.integer_points_upto(horizon) {
+                set.insert(p);
+            }
         }
     }
     holds.retain(|_, set| !set.is_empty());
     let g = dict.read().unwrap();
     if timing {
-        println!("{{\"reason_ms\": {:.3}, \"atoms\": {}}}",
-            reason_micros as f64 / 1000.0, holds.len());
+        println!(
+            "{{\"reason_ms\": {:.3}, \"atoms\": {}}}",
+            reason_micros as f64 / 1000.0,
+            holds.len()
+        );
     } else {
         for line in format_tick_sets(&holds, &g) {
             println!("{}", line);
@@ -336,9 +419,15 @@ fn relevant_ticks(
 /// `Class` (object); otherwise the predicate-position constant. `None` if that
 /// position is not a constant.
 fn atom_pred_id(pat: &TriplePattern, rdf_type: u32) -> Option<u32> {
-    let pred = match &pat.1 { Term::Constant(c) => *c, _ => return None };
+    let pred = match &pat.1 {
+        Term::Constant(c) => *c,
+        _ => return None,
+    };
     if pred == rdf_type {
-        match &pat.2 { Term::Constant(c) => Some(*c), _ => None }
+        match &pat.2 {
+            Term::Constant(c) => Some(*c),
+            _ => None,
+        }
     } else {
         Some(pred)
     }
@@ -346,17 +435,22 @@ fn atom_pred_id(pat: &TriplePattern, rdf_type: u32) -> Option<u32> {
 
 fn collect_body_preds(atom: &TemporalAtom, rdf_type: u32, out: &mut Vec<u32>) {
     match atom {
-        TemporalAtom::Base(p) => { if let Some(id) = atom_pred_id(p, rdf_type) { out.push(id); } }
+        TemporalAtom::Base(p) => {
+            if let Some(id) = atom_pred_id(p, rdf_type) {
+                out.push(id);
+            }
+        }
         TemporalAtom::Conj(atoms) => {
-            for a in atoms { collect_body_preds(a, rdf_type, out); }
+            for a in atoms {
+                collect_body_preds(a, rdf_type, out);
+            }
         }
         TemporalAtom::Diamond { inner, .. }
         | TemporalAtom::Box_ { inner, .. }
         | TemporalAtom::Prev { inner, .. }
         | TemporalAtom::DiamondPlus { inner, .. }
         | TemporalAtom::BoxPlus { inner, .. } => collect_body_preds(inner, rdf_type, out),
-        TemporalAtom::Since { phi, psi, .. }
-        | TemporalAtom::Until { phi, psi, .. } => {
+        TemporalAtom::Since { phi, psi, .. } | TemporalAtom::Until { phi, psi, .. } => {
             collect_body_preds(phi, rdf_type, out);
             collect_body_preds(psi, rdf_type, out);
         }
@@ -368,10 +462,16 @@ fn collect_body_preds(atom: &TemporalAtom, rdf_type: u32, out: &mut Vec<u32>) {
 fn is_recursive(rules: &[DatalogMTLRule], rdf_type: u32) -> bool {
     let mut edges: HashMap<u32, Vec<u32>> = HashMap::new();
     for r in rules {
-        let Some(head) = atom_pred_id(&r.head, rdf_type) else { continue };
+        let Some(head) = atom_pred_id(&r.head, rdf_type) else {
+            continue;
+        };
         let mut bps = Vec::new();
-        for a in &r.body { collect_body_preds(a, rdf_type, &mut bps); }
-        for bp in bps { edges.entry(bp).or_default().push(head); }
+        for a in &r.body {
+            collect_body_preds(a, rdf_type, &mut bps);
+        }
+        for bp in bps {
+            edges.entry(bp).or_default().push(head);
+        }
     }
     let preds: Vec<u32> = edges.keys().copied().collect();
     for &start in &preds {
@@ -380,8 +480,12 @@ fn is_recursive(rules: &[DatalogMTLRule], rdf_type: u32) -> bool {
         while let Some(node) = stack.pop() {
             if let Some(nexts) = edges.get(&node) {
                 for &m in nexts {
-                    if m == start { return true; }
-                    if seen.insert(m) { stack.push(m); }
+                    if m == start {
+                        return true;
+                    }
+                    if seen.insert(m) {
+                        stack.push(m);
+                    }
                 }
             }
         }

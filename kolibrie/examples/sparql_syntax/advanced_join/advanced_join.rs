@@ -52,5 +52,5 @@ fn advanced_join() {
 }
 
 fn main() {
-  advanced_join();
+    advanced_join();
 }

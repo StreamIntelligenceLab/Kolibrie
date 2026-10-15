@@ -11,9 +11,9 @@
 #![allow(unused_imports)]
 #![allow(unused_variables)]
 use crossbeam::channel::{bounded, Sender};
-use rayon::prelude::*;
 use rand::distr::Uniform;
 use rand::{Rng, SeedableRng};
+use rayon::prelude::*;
 use std::fs::File;
 use std::io::{BufWriter, Write};
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -167,9 +167,7 @@ xmlns:ds=\"https://data.cityofchicago.org/resource/xzkq-xp2w/\">\n",
     });
 
     // Wait for the writer thread to finish
-    writer_handle
-        .join()
-        .expect("Writer thread panicked")?;
+    writer_handle.join().expect("Writer thread panicked")?;
 
     let total_time = start_time.elapsed();
     println!(

@@ -39,9 +39,7 @@
 //! the entry points above, which at least confine the exposure to a return type you
 //! can discard.
 
-use crate::neural_relations::{
-    execute_train_decl, materialize_neural_relations_for_patterns,
-};
+use crate::neural_relations::{execute_train_decl, materialize_neural_relations_for_patterns};
 use crate::sparql_database::SparqlDatabase;
 use datalog::reasoning::Reasoner;
 use nom::{
@@ -2648,8 +2646,7 @@ pub fn parse_ml_predict(input: &str) -> IResult<&str, MLPredictClause<'_>> {
     let (input, _) = tag("OUTPUT").parse(input)?;
     let (input, _) = multispace1.parse(input)?;
     let (input, output_var) = variable(input)?;
-    let (input, distribution) =
-        opt(preceded(multispace1, tag("DISTRIBUTION"))).parse(input)?;
+    let (input, distribution) = opt(preceded(multispace1, tag("DISTRIBUTION"))).parse(input)?;
     let (input, _) = multispace0.parse(input)?;
     let (input, _) = char(')').parse(input)?;
 
@@ -2844,10 +2841,7 @@ fn parse_sync_policy_timeout(input: &str) -> IResult<&str, SyncPolicy> {
     let (input, fallback) = alt((parse_fallback_steal, parse_fallback_drop)).parse(input)?;
     let (input, _) = multispace0.parse(input)?;
     let (input, _) = char(')').parse(input)?;
-    Ok((
-        input,
-        SyncPolicy::Timeout { duration, fallback },
-    ))
+    Ok((input, SyncPolicy::Timeout { duration, fallback }))
 }
 
 fn parse_fallback_steal(input: &str) -> IResult<&str, Fallback> {
@@ -3633,23 +3627,19 @@ pub fn convert_combined_rule<'a>(
 
     // Handle ML.PREDICT: wire output variable into conclusion triples
     if let Some(ml_predict) = &cr.ml_predict {
-
         let ml_output_var = ml_predict.output.trim_start_matches(['?', '$']);
 
         // Check if the conclusion triples contain the ML output variable
         for conclusion in &mut conclusion_triples {
-
             // Check if the conclusion contains variables that need ML output
             match &mut conclusion.2 {
-                Term::Variable(var) if var == ml_output_var => {
-                }
+                Term::Variable(var) if var == ml_output_var => {}
                 Term::Variable(var) if var == "level" => {
                     // Replace generic 'level' variable with ML output variable
                     *var = ml_output_var.to_string();
                 }
                 _ => {}
             }
-
         }
     }
 
@@ -3685,7 +3675,10 @@ pub fn process_rule_definition(
         if combined.ml_predict.is_some() {
             return Err("process_rule_definition does not execute a top-level ML.PREDICT; use kolibrie::program".to_string());
         }
-        if single.and_then(|rule| rule.ml_predict.as_ref()).is_some_and(|predict| predict.distribution) {
+        if single
+            .and_then(|rule| rule.ml_predict.as_ref())
+            .is_some_and(|predict| predict.distribution)
+        {
             return Err("in-rule ML.PREDICT ... DISTRIBUTION is not supported; write a top-level ML.PREDICT in a program".to_string());
         }
         for (prefix, uri) in &combined.prefixes {
@@ -3728,7 +3721,10 @@ pub fn process_rule_definition(
         // Execute ML.PREDICT before converting the rule for Datalog
         if let Some(ml_predict) = rule.ml_predict.clone() {
             #[cfg(not(feature = "ml"))]
-            { let _ = ml_predict; return Err("ML_FEATURE_DISABLED".into()); }
+            {
+                let _ = ml_predict;
+                return Err("ML_FEATURE_DISABLED".into());
+            }
             #[cfg(feature = "ml")]
             crate::ml_predict_runtime::execute_ml_predict_clause(
                 &ml_predict,
@@ -3753,7 +3749,6 @@ pub fn process_rule_definition(
 
         // Check if this rule has windowing - if so, set up RSP processing
         if !rule.window_clause.is_empty() {
-
             let mut all_stream_results: Vec<Triple> = Vec::new();
             let mut rsp_windows: Vec<CSPARQLWindow<WindowTriple>> = Vec::new();
 
@@ -3793,7 +3788,6 @@ pub fn process_rule_definition(
 
                 rsp_window.register_callback(Box::new(
                     move |content: ContentContainer<WindowTriple>| {
-
                         // Convert window content back to Knowledge Graph format
                         let mut window_kg = kg_clone.clone();
                         for window_triple in content.iter() {
@@ -3807,7 +3801,6 @@ pub fn process_rule_definition(
                         // Apply the rule to windowed data
                         window_kg.add_rule(rule_clone.clone());
                         window_kg.infer_new_facts_semi_naive();
-
                     },
                 ));
 
@@ -3829,7 +3822,6 @@ pub fn process_rule_definition(
             for _window_clause in &rsp_windows {
                 let mut r2s_operator = Relation2StreamOperator::new(stream_operator.clone(), 0);
                 let stream_results = r2s_operator.eval(inferred_facts.clone(), eval_time);
-
 
                 // Add inferred facts to the database
                 for triple in stream_results.iter() {
@@ -4032,12 +4024,10 @@ pub fn process_retrieve_clause(
     retrieve_clause: &RetrieveClause,
     database: &mut SparqlDatabase,
 ) -> Result<Vec<Triple>, String> {
-
     // Convert graph patterns to triple patterns for matching
     let mut retrieved_triples = Vec::new();
 
     for pattern in &retrieve_clause.graph_pattern {
-
         // Create a temporary knowledge graph to match patterns
         let mut kg = Reasoner::new();
         let default_triples = database.query_default_triples(None, None, None);

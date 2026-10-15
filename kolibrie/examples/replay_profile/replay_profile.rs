@@ -137,7 +137,10 @@ fn main() {
     let quads = database.quad_count();
     println!("store: {quads} quads from {members} members");
     println!("ingest total            : {ingest:?}");
-    println!("ingest per quad         : {:?}", ingest / quads.max(1) as u32);
+    println!(
+        "ingest per quad         : {:?}",
+        ingest / quads.max(1) as u32
+    );
 
     // Cost of one statistics rebuild
     database.invalidate_stats_cache();
@@ -189,7 +192,12 @@ fn main() {
     let count = members / every;
     println!("\nreplay shape: {count} evals interleaved with {members} member inserts");
 
-    let fresh = replay(members, every, PlanningStatsPolicy::AlwaysFresh, JOIN_OF_TWO);
+    let fresh = replay(
+        members,
+        every,
+        PlanningStatsPolicy::AlwaysFresh,
+        JOIN_OF_TWO,
+    );
     report("AlwaysFresh", count, &fresh);
 
     for (minimum_batch, refresh_fraction) in [(100u64, 0.50f64), (250, 0.25), (500, 0.10)] {
@@ -210,7 +218,11 @@ fn main() {
             minimum_batch,
             refresh_fraction,
         };
-        let suffix = if policy == PlanningStatsPolicy::DEFAULT_BOUNDED { " (default)" } else { "" };
+        let suffix = if policy == PlanningStatsPolicy::DEFAULT_BOUNDED {
+            " (default)"
+        } else {
+            ""
+        };
         report(
             &format!("Bounded {{{minimum_batch}, {refresh_fraction}}}{suffix}"),
             count,

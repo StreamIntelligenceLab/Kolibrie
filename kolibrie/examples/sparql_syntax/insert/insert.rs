@@ -38,4 +38,3 @@ fn insert() {
 fn main() {
     insert();
 }
-

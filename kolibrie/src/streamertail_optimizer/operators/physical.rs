@@ -62,23 +62,23 @@ pub enum PhysicalOperator {
     },
     /// Pipelined dependent join whose left solutions feed the right side, so its scans probe indexes with bound values
     BindJoin {
-                /// Executed first; each of its solutions drives the right side.
+        /// Executed first; each of its solutions drives the right side.
         left: Box<PhysicalOperator>,
-                /// Re-entered once per left solution, with those bindings pushed in.
+        /// Re-entered once per left solution, with those bindings pushed in.
         right: Box<PhysicalOperator>,
     },
     /// Build/probe join over the shared-variable key of two independently executed sides
     HashJoin {
-                /// Build side.
+        /// Build side.
         left: Box<PhysicalOperator>,
-                /// Probe side.
+        /// Probe side.
         right: Box<PhysicalOperator>,
     },
     /// Materialized pairwise join over both sides, and the algorithm for Cartesian products
     NestedLoopJoin {
-                /// Outer side.
+        /// Outer side.
         left: Box<PhysicalOperator>,
-                /// Inner side, re-scanned per outer solution.
+        /// Inner side, re-scanned per outer solution.
         right: Box<PhysicalOperator>,
     },
     /// Join several patterns that all share one variable, in a single pass.

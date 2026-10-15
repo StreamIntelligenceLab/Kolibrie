@@ -8,9 +8,9 @@
  * you can obtain one at https://mozilla.org/MPL/2.0/.
  */
 
-use std::collections::{HashMap, HashSet};
-use crate::terms::*;
 use crate::terms::Term::*;
+use crate::terms::*;
+use std::collections::{HashMap, HashSet};
 
 /// Index of a rule in the reasoner's rule list.
 pub type RuleId = usize;
@@ -77,12 +77,42 @@ impl RuleIndex {
         let (s_val, p_val, o_val) = triple_pattern_to_keys(pattern);
 
         // Insert into each of the six permutations
-        self.spo.entry(s_val).or_default().entry(p_val).or_default().insert(rule_id);
-        self.pos.entry(p_val).or_default().entry(o_val).or_default().insert(rule_id);
-        self.osp.entry(o_val).or_default().entry(s_val).or_default().insert(rule_id);
-        self.pso.entry(p_val).or_default().entry(s_val).or_default().insert(rule_id);
-        self.ops.entry(o_val).or_default().entry(p_val).or_default().insert(rule_id);
-        self.sop.entry(s_val).or_default().entry(o_val).or_default().insert(rule_id);
+        self.spo
+            .entry(s_val)
+            .or_default()
+            .entry(p_val)
+            .or_default()
+            .insert(rule_id);
+        self.pos
+            .entry(p_val)
+            .or_default()
+            .entry(o_val)
+            .or_default()
+            .insert(rule_id);
+        self.osp
+            .entry(o_val)
+            .or_default()
+            .entry(s_val)
+            .or_default()
+            .insert(rule_id);
+        self.pso
+            .entry(p_val)
+            .or_default()
+            .entry(s_val)
+            .or_default()
+            .insert(rule_id);
+        self.ops
+            .entry(o_val)
+            .or_default()
+            .entry(p_val)
+            .or_default()
+            .insert(rule_id);
+        self.sop
+            .entry(s_val)
+            .or_default()
+            .entry(o_val)
+            .or_default()
+            .insert(rule_id);
     }
 
     /// Rules that might fire for a fact with the given bound positions.

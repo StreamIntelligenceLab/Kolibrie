@@ -23,9 +23,11 @@
 //! [`cross_window_naive`](super::cross_window_naive) computes the same thing the
 //! slow way and is the oracle this is tested against.
 
-use crate::cross_window_sds::{Sds, all_component_iris, strip_window_prefix, translate_sds_to_datalog};
-use crate::reasoning::Reasoner;
+use crate::cross_window_sds::{
+    all_component_iris, strip_window_prefix, translate_sds_to_datalog, Sds,
+};
 use crate::reasoning::materialisation::provenance_semi_naive::semi_naive_with_initial_tags_and_delta;
+use crate::reasoning::Reasoner;
 use shared::dictionary::Dictionary;
 use shared::provenance::ExpirationProvenance;
 use shared::rule::Rule;
@@ -123,4 +125,3 @@ pub fn incremental_sds_plus(
 
     result
 }
-

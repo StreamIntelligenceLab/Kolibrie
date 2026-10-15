@@ -1,8 +1,8 @@
 use datalog::reasoning::Reasoner;
+use shared::provenance::{AddMultProbability, BooleanProvenance, MinMaxProbability, Provenance};
+use shared::provenance::{TopKProofs, WmcProvenance};
 use shared::rule::{FilterCondition, Rule};
 use shared::terms::Term;
-use shared::provenance::{AddMultProbability, MinMaxProbability, BooleanProvenance, Provenance};
-use shared::provenance::{TopKProofs, WmcProvenance};
 use std::collections::HashMap;
 
 fn enc(r: &Reasoner, s: &str) -> u32 {
@@ -36,7 +36,9 @@ fn inferred(r: &mut Reasoner, s: &str, p: &str, o: &str) -> bool {
 }
 
 fn bc_has(results: &[HashMap<String, Term>], var: &str, val: u32) -> bool {
-    results.iter().any(|b| b.get(var) == Some(&Term::Constant(val)))
+    results
+        .iter()
+        .any(|b| b.get(var) == Some(&Term::Constant(val)))
 }
 
 // Forward chaining
@@ -50,8 +52,16 @@ fn fc_1hop_base() {
     let ancestor = enc(&r, "ancestor");
 
     r.add_rule(rule(
-        vec![(Term::Variable("X".into()), Term::Constant(parent), Term::Variable("Y".into()))],
-        vec![(Term::Variable("X".into()), Term::Constant(ancestor), Term::Variable("Y".into()))],
+        vec![(
+            Term::Variable("X".into()),
+            Term::Constant(parent),
+            Term::Variable("Y".into()),
+        )],
+        vec![(
+            Term::Variable("X".into()),
+            Term::Constant(ancestor),
+            Term::Variable("Y".into()),
+        )],
     ));
 
     r.infer_new_facts_semi_naive();
@@ -70,16 +80,36 @@ fn fc_2hop_transitive() {
 
     // base: parent -> ancestor
     r.add_rule(rule(
-        vec![(Term::Variable("X".into()), Term::Constant(parent), Term::Variable("Y".into()))],
-        vec![(Term::Variable("X".into()), Term::Constant(ancestor), Term::Variable("Y".into()))],
+        vec![(
+            Term::Variable("X".into()),
+            Term::Constant(parent),
+            Term::Variable("Y".into()),
+        )],
+        vec![(
+            Term::Variable("X".into()),
+            Term::Constant(ancestor),
+            Term::Variable("Y".into()),
+        )],
     ));
     // transitive: ancestor + ancestor -> ancestor
     r.add_rule(rule(
         vec![
-            (Term::Variable("X".into()), Term::Constant(ancestor), Term::Variable("Y".into())),
-            (Term::Variable("Y".into()), Term::Constant(ancestor), Term::Variable("Z".into())),
+            (
+                Term::Variable("X".into()),
+                Term::Constant(ancestor),
+                Term::Variable("Y".into()),
+            ),
+            (
+                Term::Variable("Y".into()),
+                Term::Constant(ancestor),
+                Term::Variable("Z".into()),
+            ),
         ],
-        vec![(Term::Variable("X".into()), Term::Constant(ancestor), Term::Variable("Z".into()))],
+        vec![(
+            Term::Variable("X".into()),
+            Term::Constant(ancestor),
+            Term::Variable("Z".into()),
+        )],
     ));
 
     r.infer_new_facts_semi_naive();
@@ -100,15 +130,35 @@ fn fc_3hop_transitive() {
     let ancestor = enc(&r, "ancestor");
 
     r.add_rule(rule(
-        vec![(Term::Variable("X".into()), Term::Constant(parent), Term::Variable("Y".into()))],
-        vec![(Term::Variable("X".into()), Term::Constant(ancestor), Term::Variable("Y".into()))],
+        vec![(
+            Term::Variable("X".into()),
+            Term::Constant(parent),
+            Term::Variable("Y".into()),
+        )],
+        vec![(
+            Term::Variable("X".into()),
+            Term::Constant(ancestor),
+            Term::Variable("Y".into()),
+        )],
     ));
     r.add_rule(rule(
         vec![
-            (Term::Variable("X".into()), Term::Constant(ancestor), Term::Variable("Y".into())),
-            (Term::Variable("Y".into()), Term::Constant(ancestor), Term::Variable("Z".into())),
+            (
+                Term::Variable("X".into()),
+                Term::Constant(ancestor),
+                Term::Variable("Y".into()),
+            ),
+            (
+                Term::Variable("Y".into()),
+                Term::Constant(ancestor),
+                Term::Variable("Z".into()),
+            ),
         ],
-        vec![(Term::Variable("X".into()), Term::Constant(ancestor), Term::Variable("Z".into()))],
+        vec![(
+            Term::Variable("X".into()),
+            Term::Constant(ancestor),
+            Term::Variable("Z".into()),
+        )],
     ));
 
     r.infer_new_facts_semi_naive();
@@ -130,16 +180,28 @@ fn fc_join_sibling() {
 
     r.add_rule(Rule {
         premise: vec![
-            (Term::Variable("X".into()), Term::Constant(parent), Term::Variable("P2".into())),
-            (Term::Variable("Y".into()), Term::Constant(parent), Term::Variable("P2".into())),
+            (
+                Term::Variable("X".into()),
+                Term::Constant(parent),
+                Term::Variable("P2".into()),
+            ),
+            (
+                Term::Variable("Y".into()),
+                Term::Constant(parent),
+                Term::Variable("P2".into()),
+            ),
         ],
         negative_premise: vec![],
-        conclusion: vec![
-            (Term::Variable("X".into()), Term::Constant(sibling), Term::Variable("Y".into())),
-        ],
-        filters: vec![
-            FilterCondition { variable: "X".into(), operator: "!=".into(), value: "Y".into() },
-        ],
+        conclusion: vec![(
+            Term::Variable("X".into()),
+            Term::Constant(sibling),
+            Term::Variable("Y".into()),
+        )],
+        filters: vec![FilterCondition {
+            variable: "X".into(),
+            operator: "!=".into(),
+            value: "Y".into(),
+        }],
     });
 
     r.infer_new_facts_semi_naive();
@@ -160,12 +222,28 @@ fn fc_multi_rule_cascade() {
     let affiliated = enc(&r, "affiliated");
 
     r.add_rule(rule(
-        vec![(Term::Variable("X".into()), Term::Constant(works_for), Term::Variable("Y".into()))],
-        vec![(Term::Variable("X".into()), Term::Constant(employed), Term::Variable("Y".into()))],
+        vec![(
+            Term::Variable("X".into()),
+            Term::Constant(works_for),
+            Term::Variable("Y".into()),
+        )],
+        vec![(
+            Term::Variable("X".into()),
+            Term::Constant(employed),
+            Term::Variable("Y".into()),
+        )],
     ));
     r.add_rule(rule(
-        vec![(Term::Variable("X".into()), Term::Constant(employed), Term::Variable("Y".into()))],
-        vec![(Term::Variable("X".into()), Term::Constant(affiliated), Term::Variable("Y".into()))],
+        vec![(
+            Term::Variable("X".into()),
+            Term::Constant(employed),
+            Term::Variable("Y".into()),
+        )],
+        vec![(
+            Term::Variable("X".into()),
+            Term::Constant(affiliated),
+            Term::Variable("Y".into()),
+        )],
     ));
 
     r.infer_new_facts_semi_naive();
@@ -188,11 +266,27 @@ fn fc_three_premise_rule() {
 
     r.add_rule(rule(
         vec![
-            (Term::Variable("X".into()), Term::Constant(r_pred), Term::Variable("Y".into())),
-            (Term::Variable("Y".into()), Term::Constant(s_pred), Term::Variable("Z".into())),
-            (Term::Variable("Z".into()), Term::Constant(t_pred), Term::Variable("W".into())),
+            (
+                Term::Variable("X".into()),
+                Term::Constant(r_pred),
+                Term::Variable("Y".into()),
+            ),
+            (
+                Term::Variable("Y".into()),
+                Term::Constant(s_pred),
+                Term::Variable("Z".into()),
+            ),
+            (
+                Term::Variable("Z".into()),
+                Term::Constant(t_pred),
+                Term::Variable("W".into()),
+            ),
         ],
-        vec![(Term::Variable("X".into()), Term::Constant(connected), Term::Variable("W".into()))],
+        vec![(
+            Term::Variable("X".into()),
+            Term::Constant(connected),
+            Term::Variable("W".into()),
+        )],
     ));
 
     r.infer_new_facts_semi_naive();
@@ -210,8 +304,16 @@ fn fc_no_spurious() {
     let ancestor = enc(&r, "ancestor");
 
     r.add_rule(rule(
-        vec![(Term::Variable("X".into()), Term::Constant(parent), Term::Variable("Y".into()))],
-        vec![(Term::Variable("X".into()), Term::Constant(ancestor), Term::Variable("Y".into()))],
+        vec![(
+            Term::Variable("X".into()),
+            Term::Constant(parent),
+            Term::Variable("Y".into()),
+        )],
+        vec![(
+            Term::Variable("X".into()),
+            Term::Constant(ancestor),
+            Term::Variable("Y".into()),
+        )],
     ));
 
     r.infer_new_facts_semi_naive();
@@ -233,25 +335,50 @@ fn fc_sibling_three_children() {
 
     r.add_rule(Rule {
         premise: vec![
-            (Term::Variable("X".into()), Term::Constant(parent), Term::Variable("Z".into())),
-            (Term::Variable("Y".into()), Term::Constant(parent), Term::Variable("Z".into())),
+            (
+                Term::Variable("X".into()),
+                Term::Constant(parent),
+                Term::Variable("Z".into()),
+            ),
+            (
+                Term::Variable("Y".into()),
+                Term::Constant(parent),
+                Term::Variable("Z".into()),
+            ),
         ],
         negative_premise: vec![],
-        conclusion: vec![
-            (Term::Variable("X".into()), Term::Constant(sibling), Term::Variable("Y".into())),
-        ],
-        filters: vec![
-            FilterCondition { variable: "X".into(), operator: "!=".into(), value: "Y".into() },
-        ],
+        conclusion: vec![(
+            Term::Variable("X".into()),
+            Term::Constant(sibling),
+            Term::Variable("Y".into()),
+        )],
+        filters: vec![FilterCondition {
+            variable: "X".into(),
+            operator: "!=".into(),
+            value: "Y".into(),
+        }],
     });
 
     r.infer_new_facts_semi_naive();
 
-    for (s, o) in [("A","B"),("A","C"),("B","A"),("B","C"),("C","A"),("C","B")] {
-        assert!(inferred(&mut r, s, "sibling", o), "{s} should be sibling of {o}");
+    for (s, o) in [
+        ("A", "B"),
+        ("A", "C"),
+        ("B", "A"),
+        ("B", "C"),
+        ("C", "A"),
+        ("C", "B"),
+    ] {
+        assert!(
+            inferred(&mut r, s, "sibling", o),
+            "{s} should be sibling of {o}"
+        );
     }
-    for x in ["A","B","C"] {
-        assert!(!inferred(&mut r, x, "sibling", x), "{x} should not be sibling of itself");
+    for x in ["A", "B", "C"] {
+        assert!(
+            !inferred(&mut r, x, "sibling", x),
+            "{x} should not be sibling of itself"
+        );
     }
 }
 
@@ -266,10 +393,22 @@ fn fc_multi_conclusion() {
     let partner = enc(&r, "partner");
 
     r.add_rule(rule(
-        vec![(Term::Variable("X".into()), Term::Constant(married), Term::Variable("Y".into()))],
+        vec![(
+            Term::Variable("X".into()),
+            Term::Constant(married),
+            Term::Variable("Y".into()),
+        )],
         vec![
-            (Term::Variable("X".into()), Term::Constant(spouse), Term::Variable("Y".into())),
-            (Term::Variable("X".into()), Term::Constant(partner), Term::Variable("Y".into())),
+            (
+                Term::Variable("X".into()),
+                Term::Constant(spouse),
+                Term::Variable("Y".into()),
+            ),
+            (
+                Term::Variable("X".into()),
+                Term::Constant(partner),
+                Term::Variable("Y".into()),
+            ),
         ],
     ));
 
@@ -292,24 +431,53 @@ fn fc_diamond_ancestor() {
     let ancestor = enc(&r, "ancestor");
 
     r.add_rule(rule(
-        vec![(Term::Variable("X".into()), Term::Constant(parent), Term::Variable("Y".into()))],
-        vec![(Term::Variable("X".into()), Term::Constant(ancestor), Term::Variable("Y".into()))],
+        vec![(
+            Term::Variable("X".into()),
+            Term::Constant(parent),
+            Term::Variable("Y".into()),
+        )],
+        vec![(
+            Term::Variable("X".into()),
+            Term::Constant(ancestor),
+            Term::Variable("Y".into()),
+        )],
     ));
     r.add_rule(rule(
         vec![
-            (Term::Variable("X".into()), Term::Constant(ancestor), Term::Variable("Y".into())),
-            (Term::Variable("Y".into()), Term::Constant(ancestor), Term::Variable("Z".into())),
+            (
+                Term::Variable("X".into()),
+                Term::Constant(ancestor),
+                Term::Variable("Y".into()),
+            ),
+            (
+                Term::Variable("Y".into()),
+                Term::Constant(ancestor),
+                Term::Variable("Z".into()),
+            ),
         ],
-        vec![(Term::Variable("X".into()), Term::Constant(ancestor), Term::Variable("Z".into()))],
+        vec![(
+            Term::Variable("X".into()),
+            Term::Constant(ancestor),
+            Term::Variable("Z".into()),
+        )],
     ));
 
     r.infer_new_facts_semi_naive();
 
-    assert!(inferred(&mut r, "A", "ancestor", "D"), "A should be ancestor of D via B and C");
+    assert!(
+        inferred(&mut r, "A", "ancestor", "D"),
+        "A should be ancestor of D via B and C"
+    );
     assert!(inferred(&mut r, "B", "ancestor", "D"));
     assert!(inferred(&mut r, "C", "ancestor", "D"));
-    assert!(!inferred(&mut r, "A", "ancestor", "A"), "A should not be its own ancestor");
-    assert!(!inferred(&mut r, "D", "ancestor", "A"), "D should not be ancestor of A");
+    assert!(
+        !inferred(&mut r, "A", "ancestor", "A"),
+        "A should not be its own ancestor"
+    );
+    assert!(
+        !inferred(&mut r, "D", "ancestor", "A"),
+        "D should not be ancestor of A"
+    );
 }
 
 #[test]
@@ -323,16 +491,30 @@ fn fc_disconnected_graphs() {
     let ancestor = enc(&r, "ancestor");
 
     r.add_rule(rule(
-        vec![(Term::Variable("P".into()), Term::Constant(parent), Term::Variable("Q".into()))],
-        vec![(Term::Variable("P".into()), Term::Constant(ancestor), Term::Variable("Q".into()))],
+        vec![(
+            Term::Variable("P".into()),
+            Term::Constant(parent),
+            Term::Variable("Q".into()),
+        )],
+        vec![(
+            Term::Variable("P".into()),
+            Term::Constant(ancestor),
+            Term::Variable("Q".into()),
+        )],
     ));
 
     r.infer_new_facts_semi_naive();
 
     assert!(inferred(&mut r, "A", "ancestor", "B"));
     assert!(inferred(&mut r, "X", "ancestor", "Y"));
-    assert!(!inferred(&mut r, "A", "ancestor", "Y"), "A should not be ancestor of Y (different graph)");
-    assert!(!inferred(&mut r, "X", "ancestor", "B"), "X should not be ancestor of B (different graph)");
+    assert!(
+        !inferred(&mut r, "A", "ancestor", "Y"),
+        "A should not be ancestor of Y (different graph)"
+    );
+    assert!(
+        !inferred(&mut r, "X", "ancestor", "B"),
+        "X should not be ancestor of B (different graph)"
+    );
 }
 
 #[test]
@@ -345,13 +527,24 @@ fn fc_no_matching_facts() {
     let ancestor = enc(&r, "ancestor");
 
     r.add_rule(rule(
-        vec![(Term::Variable("X".into()), Term::Constant(parent), Term::Variable("Y".into()))],
-        vec![(Term::Variable("X".into()), Term::Constant(ancestor), Term::Variable("Y".into()))],
+        vec![(
+            Term::Variable("X".into()),
+            Term::Constant(parent),
+            Term::Variable("Y".into()),
+        )],
+        vec![(
+            Term::Variable("X".into()),
+            Term::Constant(ancestor),
+            Term::Variable("Y".into()),
+        )],
     ));
 
     let new_facts = r.infer_new_facts_semi_naive();
 
-    assert!(new_facts.is_empty(), "No facts should be inferred when no premise matches");
+    assert!(
+        new_facts.is_empty(),
+        "No facts should be inferred when no premise matches"
+    );
 }
 
 #[test]
@@ -364,16 +557,31 @@ fn fc_idempotent() {
     let ancestor = enc(&r, "ancestor");
 
     r.add_rule(rule(
-        vec![(Term::Variable("X".into()), Term::Constant(parent), Term::Variable("Y".into()))],
-        vec![(Term::Variable("X".into()), Term::Constant(ancestor), Term::Variable("Y".into()))],
+        vec![(
+            Term::Variable("X".into()),
+            Term::Constant(parent),
+            Term::Variable("Y".into()),
+        )],
+        vec![(
+            Term::Variable("X".into()),
+            Term::Constant(ancestor),
+            Term::Variable("Y".into()),
+        )],
     ));
 
     r.infer_new_facts_semi_naive();
     let second_round = r.infer_new_facts_semi_naive();
 
-    assert!(second_round.is_empty(), "Second inference pass should derive nothing new");
+    assert!(
+        second_round.is_empty(),
+        "Second inference pass should derive nothing new"
+    );
     let results = r.query_abox(Some("A"), Some("ancestor"), Some("B"));
-    assert_eq!(results.len(), 1, "Exactly one ancestor triple should exist, not duplicates");
+    assert_eq!(
+        results.len(),
+        1,
+        "Exactly one ancestor triple should exist, not duplicates"
+    );
 }
 
 #[test]
@@ -392,34 +600,70 @@ fn fc_uncle_derived() {
     // sibling(X, Y) :- parent(X, Z), parent(Y, Z), X != Y
     r.add_rule(Rule {
         premise: vec![
-            (Term::Variable("X".into()), Term::Constant(parent), Term::Variable("Z".into())),
-            (Term::Variable("Y".into()), Term::Constant(parent), Term::Variable("Z".into())),
+            (
+                Term::Variable("X".into()),
+                Term::Constant(parent),
+                Term::Variable("Z".into()),
+            ),
+            (
+                Term::Variable("Y".into()),
+                Term::Constant(parent),
+                Term::Variable("Z".into()),
+            ),
         ],
         negative_premise: vec![],
-        conclusion: vec![
-            (Term::Variable("X".into()), Term::Constant(sibling), Term::Variable("Y".into())),
-        ],
-        filters: vec![
-            FilterCondition { variable: "X".into(), operator: "!=".into(), value: "Y".into() },
-        ],
+        conclusion: vec![(
+            Term::Variable("X".into()),
+            Term::Constant(sibling),
+            Term::Variable("Y".into()),
+        )],
+        filters: vec![FilterCondition {
+            variable: "X".into(),
+            operator: "!=".into(),
+            value: "Y".into(),
+        }],
     });
 
     // uncle(U, N) :- sibling(U, Par), parent(N, Par)
     r.add_rule(rule(
         vec![
-            (Term::Variable("U".into()), Term::Constant(sibling), Term::Variable("Par".into())),
-            (Term::Variable("N".into()), Term::Constant(parent), Term::Variable("Par".into())),
+            (
+                Term::Variable("U".into()),
+                Term::Constant(sibling),
+                Term::Variable("Par".into()),
+            ),
+            (
+                Term::Variable("N".into()),
+                Term::Constant(parent),
+                Term::Variable("Par".into()),
+            ),
         ],
-        vec![(Term::Variable("U".into()), Term::Constant(uncle), Term::Variable("N".into()))],
+        vec![(
+            Term::Variable("U".into()),
+            Term::Constant(uncle),
+            Term::Variable("N".into()),
+        )],
     ));
 
     r.infer_new_facts_semi_naive();
 
-    assert!(inferred(&mut r, "A", "sibling", "B"), "A should be sibling of B");
-    assert!(inferred(&mut r, "B", "sibling", "A"), "B should be sibling of A");
-    assert!(inferred(&mut r, "B", "uncle", "C"), "B should be uncle of C");
+    assert!(
+        inferred(&mut r, "A", "sibling", "B"),
+        "A should be sibling of B"
+    );
+    assert!(
+        inferred(&mut r, "B", "sibling", "A"),
+        "B should be sibling of A"
+    );
+    assert!(
+        inferred(&mut r, "B", "uncle", "C"),
+        "B should be uncle of C"
+    );
     // A is the parent of C, not uncle
-    assert!(!inferred(&mut r, "A", "uncle", "C"), "A (parent) should not also be uncle of C");
+    assert!(
+        !inferred(&mut r, "A", "uncle", "C"),
+        "A (parent) should not also be uncle of C"
+    );
 }
 
 #[test]
@@ -437,15 +681,32 @@ fn fc_constant_object_premise_filters() {
 
     // alert(V, Flagged) :- inZone(V, RestrictedZone)
     r.add_rule(rule(
-        vec![(Term::Variable("V".into()), Term::Constant(in_zone), Term::Constant(restricted))],
-        vec![(Term::Variable("V".into()), Term::Constant(alert), Term::Constant(flagged))],
+        vec![(
+            Term::Variable("V".into()),
+            Term::Constant(in_zone),
+            Term::Constant(restricted),
+        )],
+        vec![(
+            Term::Variable("V".into()),
+            Term::Constant(alert),
+            Term::Constant(flagged),
+        )],
     ));
 
     r.infer_new_facts_semi_naive();
 
-    assert!(inferred(&mut r, "v1", "alert", "Flagged"), "v1 is in the restricted zone");
-    assert!(!inferred(&mut r, "v2", "alert", "Flagged"), "v2 is in a different zone");
-    assert!(!inferred(&mut r, "v3", "alert", "Flagged"), "v3 is in a different zone");
+    assert!(
+        inferred(&mut r, "v1", "alert", "Flagged"),
+        "v1 is in the restricted zone"
+    );
+    assert!(
+        !inferred(&mut r, "v2", "alert", "Flagged"),
+        "v2 is in a different zone"
+    );
+    assert!(
+        !inferred(&mut r, "v3", "alert", "Flagged"),
+        "v3 is in a different zone"
+    );
 }
 
 #[test]
@@ -462,14 +723,28 @@ fn fc_constant_subject_premise_filters() {
 
     // observedZone(sensor, Z) :- inZone(v1, Z)
     r.add_rule(rule(
-        vec![(Term::Constant(v1), Term::Constant(in_zone), Term::Variable("Z".into()))],
-        vec![(Term::Constant(sensor), Term::Constant(observed), Term::Variable("Z".into()))],
+        vec![(
+            Term::Constant(v1),
+            Term::Constant(in_zone),
+            Term::Variable("Z".into()),
+        )],
+        vec![(
+            Term::Constant(sensor),
+            Term::Constant(observed),
+            Term::Variable("Z".into()),
+        )],
     ));
 
     r.infer_new_facts_semi_naive();
 
-    assert!(inferred(&mut r, "sensor", "observedZone", "RestrictedZone"), "v1's zone should be observed");
-    assert!(!inferred(&mut r, "sensor", "observedZone", "SafeZone"), "v2's zone must not match a premise on v1");
+    assert!(
+        inferred(&mut r, "sensor", "observedZone", "RestrictedZone"),
+        "v1's zone should be observed"
+    );
+    assert!(
+        !inferred(&mut r, "sensor", "observedZone", "SafeZone"),
+        "v2's zone must not match a premise on v1"
+    );
 }
 
 #[test]
@@ -491,16 +766,34 @@ fn fc_constant_object_premise_in_join() {
     // alert(V, Flagged) :- type(V, Vehicle), inZone(V, RestrictedZone)
     r.add_rule(rule(
         vec![
-            (Term::Variable("V".into()), Term::Constant(ty), Term::Constant(vehicle)),
-            (Term::Variable("V".into()), Term::Constant(in_zone), Term::Constant(restricted)),
+            (
+                Term::Variable("V".into()),
+                Term::Constant(ty),
+                Term::Constant(vehicle),
+            ),
+            (
+                Term::Variable("V".into()),
+                Term::Constant(in_zone),
+                Term::Constant(restricted),
+            ),
         ],
-        vec![(Term::Variable("V".into()), Term::Constant(alert), Term::Constant(flagged))],
+        vec![(
+            Term::Variable("V".into()),
+            Term::Constant(alert),
+            Term::Constant(flagged),
+        )],
     ));
 
     r.infer_new_facts_semi_naive();
 
-    assert!(inferred(&mut r, "v1", "alert", "Flagged"), "v1 is a vehicle in the restricted zone");
-    assert!(!inferred(&mut r, "v2", "alert", "Flagged"), "v2 is a vehicle but not in the restricted zone");
+    assert!(
+        inferred(&mut r, "v1", "alert", "Flagged"),
+        "v1 is a vehicle in the restricted zone"
+    );
+    assert!(
+        !inferred(&mut r, "v2", "alert", "Flagged"),
+        "v2 is a vehicle but not in the restricted zone"
+    );
 }
 
 #[test]
@@ -514,15 +807,32 @@ fn fc_variable_predicate_premise() {
 
     // linkedFrom(O, S) :- any(S, P, O)
     r.add_rule(rule(
-        vec![(Term::Variable("S".into()), Term::Variable("P".into()), Term::Variable("O".into()))],
-        vec![(Term::Variable("O".into()), Term::Constant(linked_from), Term::Variable("S".into()))],
+        vec![(
+            Term::Variable("S".into()),
+            Term::Variable("P".into()),
+            Term::Variable("O".into()),
+        )],
+        vec![(
+            Term::Variable("O".into()),
+            Term::Constant(linked_from),
+            Term::Variable("S".into()),
+        )],
     ));
 
     r.infer_new_facts_semi_naive();
 
-    assert!(inferred(&mut r, "B", "linkedFrom", "A"), "B is reached from A via likes");
-    assert!(inferred(&mut r, "C", "linkedFrom", "A"), "C is reached from A via knows");
-    assert!(!inferred(&mut r, "B", "linkedFrom", "C"), "B and C are not connected");
+    assert!(
+        inferred(&mut r, "B", "linkedFrom", "A"),
+        "B is reached from A via likes"
+    );
+    assert!(
+        inferred(&mut r, "C", "linkedFrom", "A"),
+        "C is reached from A via knows"
+    );
+    assert!(
+        !inferred(&mut r, "B", "linkedFrom", "C"),
+        "B and C are not connected"
+    );
 }
 
 #[test]
@@ -537,16 +847,34 @@ fn fc_variable_predicate_join() {
     // Q(X, Y) :- P(X, Y), subPropertyOf(P, Q)
     r.add_rule(rule(
         vec![
-            (Term::Variable("X".into()), Term::Variable("P".into()), Term::Variable("Y".into())),
-            (Term::Variable("P".into()), Term::Constant(sub_property_of), Term::Variable("Q".into())),
+            (
+                Term::Variable("X".into()),
+                Term::Variable("P".into()),
+                Term::Variable("Y".into()),
+            ),
+            (
+                Term::Variable("P".into()),
+                Term::Constant(sub_property_of),
+                Term::Variable("Q".into()),
+            ),
         ],
-        vec![(Term::Variable("X".into()), Term::Variable("Q".into()), Term::Variable("Y".into()))],
+        vec![(
+            Term::Variable("X".into()),
+            Term::Variable("Q".into()),
+            Term::Variable("Y".into()),
+        )],
     ));
 
     r.infer_new_facts_semi_naive();
 
-    assert!(inferred(&mut r, "A", "affiliatedWith", "B"), "worksFor is a subproperty of affiliatedWith");
-    assert!(!inferred(&mut r, "A", "subPropertyOf", "B"), "A worksFor B must not become A subPropertyOf B");
+    assert!(
+        inferred(&mut r, "A", "affiliatedWith", "B"),
+        "worksFor is a subproperty of affiliatedWith"
+    );
+    assert!(
+        !inferred(&mut r, "A", "subPropertyOf", "B"),
+        "A worksFor B must not become A subPropertyOf B"
+    );
 }
 
 #[test]
@@ -565,24 +893,46 @@ fn fc_shared_predicate_variable() {
     // sharesRelWith(A, C) :- P(A, _), P(C, _)  -- A and C share no predicate
     r.add_rule(rule(
         vec![
-            (Term::Constant(a), Term::Variable("P".into()), Term::Variable("X1".into())),
-            (Term::Constant(c), Term::Variable("P".into()), Term::Variable("X2".into())),
+            (
+                Term::Constant(a),
+                Term::Variable("P".into()),
+                Term::Variable("X1".into()),
+            ),
+            (
+                Term::Constant(c),
+                Term::Variable("P".into()),
+                Term::Variable("X2".into()),
+            ),
         ],
         vec![(Term::Constant(a), Term::Constant(shares), Term::Constant(c))],
     ));
     // sharesRelWith(A, D) :- P(A, _), P(D, _)  -- A and D both use rel1
     r.add_rule(rule(
         vec![
-            (Term::Constant(a), Term::Variable("P".into()), Term::Variable("X1".into())),
-            (Term::Constant(d), Term::Variable("P".into()), Term::Variable("X2".into())),
+            (
+                Term::Constant(a),
+                Term::Variable("P".into()),
+                Term::Variable("X1".into()),
+            ),
+            (
+                Term::Constant(d),
+                Term::Variable("P".into()),
+                Term::Variable("X2".into()),
+            ),
         ],
         vec![(Term::Constant(a), Term::Constant(shares), Term::Constant(d))],
     ));
 
     r.infer_new_facts_semi_naive();
 
-    assert!(inferred(&mut r, "A", "sharesRelWith", "D"), "A and D both use rel1");
-    assert!(!inferred(&mut r, "A", "sharesRelWith", "C"), "A and C use different predicates");
+    assert!(
+        inferred(&mut r, "A", "sharesRelWith", "D"),
+        "A and D both use rel1"
+    );
+    assert!(
+        !inferred(&mut r, "A", "sharesRelWith", "C"),
+        "A and C use different predicates"
+    );
 }
 
 #[test]
@@ -598,14 +948,28 @@ fn fc_repeated_variable_premise() {
 
     // selfLinked(V, True) :- rel(V, V)
     r.add_rule(rule(
-        vec![(Term::Variable("V".into()), Term::Constant(rel), Term::Variable("V".into()))],
-        vec![(Term::Variable("V".into()), Term::Constant(self_linked), Term::Constant(true_c))],
+        vec![(
+            Term::Variable("V".into()),
+            Term::Constant(rel),
+            Term::Variable("V".into()),
+        )],
+        vec![(
+            Term::Variable("V".into()),
+            Term::Constant(self_linked),
+            Term::Constant(true_c),
+        )],
     ));
 
     r.infer_new_facts_semi_naive();
 
-    assert!(inferred(&mut r, "a", "selfLinked", "True"), "a links to itself");
-    assert!(!inferred(&mut r, "b", "selfLinked", "True"), "b does not link to itself");
+    assert!(
+        inferred(&mut r, "a", "selfLinked", "True"),
+        "a links to itself"
+    );
+    assert!(
+        !inferred(&mut r, "b", "selfLinked", "True"),
+        "b does not link to itself"
+    );
 }
 
 // Backward chaining
@@ -619,7 +983,11 @@ fn bc_direct_fact() {
     let a = enc(&r, "A");
     let b = enc(&r, "B");
 
-    let query = (Term::Variable("X".into()), Term::Constant(likes), Term::Variable("Y".into()));
+    let query = (
+        Term::Variable("X".into()),
+        Term::Constant(likes),
+        Term::Variable("Y".into()),
+    );
     let results = r.backward_chaining(&query);
 
     assert!(bc_has(&results, "X", a));
@@ -637,11 +1005,23 @@ fn bc_1hop_rule() {
     let b = enc(&r, "B");
 
     r.add_rule(rule(
-        vec![(Term::Variable("X".into()), Term::Constant(parent), Term::Variable("Y".into()))],
-        vec![(Term::Variable("X".into()), Term::Constant(ancestor), Term::Variable("Y".into()))],
+        vec![(
+            Term::Variable("X".into()),
+            Term::Constant(parent),
+            Term::Variable("Y".into()),
+        )],
+        vec![(
+            Term::Variable("X".into()),
+            Term::Constant(ancestor),
+            Term::Variable("Y".into()),
+        )],
     ));
 
-    let query = (Term::Constant(a), Term::Constant(ancestor), Term::Variable("Y".into()));
+    let query = (
+        Term::Constant(a),
+        Term::Constant(ancestor),
+        Term::Variable("Y".into()),
+    );
     let results = r.backward_chaining(&query);
 
     assert!(bc_has(&results, "Y", b));
@@ -660,18 +1040,42 @@ fn bc_2hop_transitive() {
     let c = enc(&r, "C");
 
     r.add_rule(rule(
-        vec![(Term::Variable("X".into()), Term::Constant(parent), Term::Variable("Y".into()))],
-        vec![(Term::Variable("X".into()), Term::Constant(ancestor), Term::Variable("Y".into()))],
+        vec![(
+            Term::Variable("X".into()),
+            Term::Constant(parent),
+            Term::Variable("Y".into()),
+        )],
+        vec![(
+            Term::Variable("X".into()),
+            Term::Constant(ancestor),
+            Term::Variable("Y".into()),
+        )],
     ));
     r.add_rule(rule(
         vec![
-            (Term::Variable("X".into()), Term::Constant(ancestor), Term::Variable("Y".into())),
-            (Term::Variable("Y".into()), Term::Constant(ancestor), Term::Variable("Z".into())),
+            (
+                Term::Variable("X".into()),
+                Term::Constant(ancestor),
+                Term::Variable("Y".into()),
+            ),
+            (
+                Term::Variable("Y".into()),
+                Term::Constant(ancestor),
+                Term::Variable("Z".into()),
+            ),
         ],
-        vec![(Term::Variable("X".into()), Term::Constant(ancestor), Term::Variable("Z".into()))],
+        vec![(
+            Term::Variable("X".into()),
+            Term::Constant(ancestor),
+            Term::Variable("Z".into()),
+        )],
     ));
 
-    let query = (Term::Constant(a), Term::Constant(ancestor), Term::Variable("Y".into()));
+    let query = (
+        Term::Constant(a),
+        Term::Constant(ancestor),
+        Term::Variable("Y".into()),
+    );
     let results = r.backward_chaining(&query);
 
     assert!(bc_has(&results, "Y", b), "Expected A ancestor B");
@@ -693,18 +1097,42 @@ fn bc_3hop_transitive() {
     let d = enc(&r, "D");
 
     r.add_rule(rule(
-        vec![(Term::Variable("X".into()), Term::Constant(parent), Term::Variable("Y".into()))],
-        vec![(Term::Variable("X".into()), Term::Constant(ancestor), Term::Variable("Y".into()))],
+        vec![(
+            Term::Variable("X".into()),
+            Term::Constant(parent),
+            Term::Variable("Y".into()),
+        )],
+        vec![(
+            Term::Variable("X".into()),
+            Term::Constant(ancestor),
+            Term::Variable("Y".into()),
+        )],
     ));
     r.add_rule(rule(
         vec![
-            (Term::Variable("X".into()), Term::Constant(ancestor), Term::Variable("Y".into())),
-            (Term::Variable("Y".into()), Term::Constant(ancestor), Term::Variable("Z".into())),
+            (
+                Term::Variable("X".into()),
+                Term::Constant(ancestor),
+                Term::Variable("Y".into()),
+            ),
+            (
+                Term::Variable("Y".into()),
+                Term::Constant(ancestor),
+                Term::Variable("Z".into()),
+            ),
         ],
-        vec![(Term::Variable("X".into()), Term::Constant(ancestor), Term::Variable("Z".into()))],
+        vec![(
+            Term::Variable("X".into()),
+            Term::Constant(ancestor),
+            Term::Variable("Z".into()),
+        )],
     ));
 
-    let query = (Term::Constant(a), Term::Constant(ancestor), Term::Variable("Y".into()));
+    let query = (
+        Term::Constant(a),
+        Term::Constant(ancestor),
+        Term::Variable("Y".into()),
+    );
     let results = r.backward_chaining(&query);
 
     assert!(bc_has(&results, "Y", b), "Expected A ancestor B");
@@ -724,18 +1152,42 @@ fn bc_specific_target() {
     let c = enc(&r, "C");
 
     r.add_rule(rule(
-        vec![(Term::Variable("X".into()), Term::Constant(parent), Term::Variable("Y".into()))],
-        vec![(Term::Variable("X".into()), Term::Constant(ancestor), Term::Variable("Y".into()))],
+        vec![(
+            Term::Variable("X".into()),
+            Term::Constant(parent),
+            Term::Variable("Y".into()),
+        )],
+        vec![(
+            Term::Variable("X".into()),
+            Term::Constant(ancestor),
+            Term::Variable("Y".into()),
+        )],
     ));
     r.add_rule(rule(
         vec![
-            (Term::Variable("X".into()), Term::Constant(ancestor), Term::Variable("Y".into())),
-            (Term::Variable("Y".into()), Term::Constant(ancestor), Term::Variable("Z".into())),
+            (
+                Term::Variable("X".into()),
+                Term::Constant(ancestor),
+                Term::Variable("Y".into()),
+            ),
+            (
+                Term::Variable("Y".into()),
+                Term::Constant(ancestor),
+                Term::Variable("Z".into()),
+            ),
         ],
-        vec![(Term::Variable("X".into()), Term::Constant(ancestor), Term::Variable("Z".into()))],
+        vec![(
+            Term::Variable("X".into()),
+            Term::Constant(ancestor),
+            Term::Variable("Z".into()),
+        )],
     ));
 
-    let query = (Term::Constant(a), Term::Constant(ancestor), Term::Constant(c));
+    let query = (
+        Term::Constant(a),
+        Term::Constant(ancestor),
+        Term::Constant(c),
+    );
     let results = r.backward_chaining(&query);
 
     assert!(!results.is_empty(), "Expected A ancestor C to be derivable");
@@ -752,11 +1204,23 @@ fn bc_no_result() {
     let d = enc(&r, "D");
 
     r.add_rule(rule(
-        vec![(Term::Variable("X".into()), Term::Constant(parent), Term::Variable("Y".into()))],
-        vec![(Term::Variable("X".into()), Term::Constant(ancestor), Term::Variable("Y".into()))],
+        vec![(
+            Term::Variable("X".into()),
+            Term::Constant(parent),
+            Term::Variable("Y".into()),
+        )],
+        vec![(
+            Term::Variable("X".into()),
+            Term::Constant(ancestor),
+            Term::Variable("Y".into()),
+        )],
     ));
 
-    let query = (Term::Constant(a), Term::Constant(ancestor), Term::Constant(d));
+    let query = (
+        Term::Constant(a),
+        Term::Constant(ancestor),
+        Term::Constant(d),
+    );
     let results = r.backward_chaining(&query);
 
     assert!(results.is_empty(), "Expected no result for A ancestor D");
@@ -774,15 +1238,35 @@ fn bc_multi_rule_chain() {
     let corp = enc(&r, "Corp");
 
     r.add_rule(rule(
-        vec![(Term::Variable("X".into()), Term::Constant(works_for), Term::Variable("Y".into()))],
-        vec![(Term::Variable("X".into()), Term::Constant(employed), Term::Variable("Y".into()))],
+        vec![(
+            Term::Variable("X".into()),
+            Term::Constant(works_for),
+            Term::Variable("Y".into()),
+        )],
+        vec![(
+            Term::Variable("X".into()),
+            Term::Constant(employed),
+            Term::Variable("Y".into()),
+        )],
     ));
     r.add_rule(rule(
-        vec![(Term::Variable("X".into()), Term::Constant(employed), Term::Variable("Y".into()))],
-        vec![(Term::Variable("X".into()), Term::Constant(affiliated), Term::Variable("Y".into()))],
+        vec![(
+            Term::Variable("X".into()),
+            Term::Constant(employed),
+            Term::Variable("Y".into()),
+        )],
+        vec![(
+            Term::Variable("X".into()),
+            Term::Constant(affiliated),
+            Term::Variable("Y".into()),
+        )],
     ));
 
-    let query = (Term::Constant(a), Term::Constant(affiliated), Term::Variable("Y".into()));
+    let query = (
+        Term::Constant(a),
+        Term::Constant(affiliated),
+        Term::Variable("Y".into()),
+    );
     let results = r.backward_chaining(&query);
 
     assert!(bc_has(&results, "Y", corp), "Expected A affiliated Corp");
@@ -801,17 +1285,36 @@ fn bc_sibling_join() {
 
     r.add_rule(rule(
         vec![
-            (Term::Variable("X".into()), Term::Constant(parent), Term::Variable("Z".into())),
-            (Term::Variable("Y".into()), Term::Constant(parent), Term::Variable("Z".into())),
+            (
+                Term::Variable("X".into()),
+                Term::Constant(parent),
+                Term::Variable("Z".into()),
+            ),
+            (
+                Term::Variable("Y".into()),
+                Term::Constant(parent),
+                Term::Variable("Z".into()),
+            ),
         ],
-        vec![(Term::Variable("X".into()), Term::Constant(sibling), Term::Variable("Y".into()))],
+        vec![(
+            Term::Variable("X".into()),
+            Term::Constant(sibling),
+            Term::Variable("Y".into()),
+        )],
     ));
 
     let a_id = enc(&r, "A");
-    let query = (Term::Constant(a_id), Term::Constant(sibling), Term::Variable("Y".into()));
+    let query = (
+        Term::Constant(a_id),
+        Term::Constant(sibling),
+        Term::Variable("Y".into()),
+    );
     let results = r.backward_chaining(&query);
 
-    assert!(bc_has(&results, "Y", b), "BC should find A sibling B via join");
+    assert!(
+        bc_has(&results, "Y", b),
+        "BC should find A sibling B via join"
+    );
 }
 
 #[test]
@@ -855,7 +1358,10 @@ fn bc_no_spurious_negative() {
     );
     let results = r.backward_chaining(&query);
 
-    assert!(results.is_empty(), "BC should return nothing for unknown predicate");
+    assert!(
+        results.is_empty(),
+        "BC should return nothing for unknown predicate"
+    );
 }
 
 #[test]
@@ -871,24 +1377,44 @@ fn prov_transitive_addmult_combination() {
 
     r.add_rule(rule(
         vec![
-            (Term::Variable("X".into()), Term::Constant(related), Term::Variable("Y".into())),
-            (Term::Variable("Y".into()), Term::Constant(related), Term::Variable("Z".into())),
+            (
+                Term::Variable("X".into()),
+                Term::Constant(related),
+                Term::Variable("Y".into()),
+            ),
+            (
+                Term::Variable("Y".into()),
+                Term::Constant(related),
+                Term::Variable("Z".into()),
+            ),
         ],
-        vec![
-            (Term::Variable("X".into()), Term::Constant(related), Term::Variable("Z".into())),
-        ],
+        vec![(
+            Term::Variable("X".into()),
+            Term::Constant(related),
+            Term::Variable("Z".into()),
+        )],
     ));
 
     let (inferred, tag_store) = r.infer_new_facts_with_provenance(AddMultProbability);
 
     let a = enc(&r, "A");
     let c = enc(&r, "C");
-    let a_related_c = inferred.iter().any(|t| t.subject == a && t.predicate == related && t.object == c);
+    let a_related_c = inferred
+        .iter()
+        .any(|t| t.subject == a && t.predicate == related && t.object == c);
     assert!(a_related_c, "Should infer A related C");
 
-    let triple = shared::triple::Triple { subject: a, predicate: related, object: c };
+    let triple = shared::triple::Triple {
+        subject: a,
+        predicate: related,
+        object: c,
+    };
     let prob = AddMultProbability.recover_probability(&tag_store.get_tag(&triple));
-    assert!((prob - 0.56).abs() < 1e-6, "Probability should be ~0.56, got {}", prob);
+    assert!(
+        (prob - 0.56).abs() < 1e-6,
+        "Probability should be ~0.56, got {}",
+        prob
+    );
 }
 
 #[test]
@@ -908,22 +1434,40 @@ fn prov_addmult_multiple_paths() {
 
     r.add_rule(rule(
         vec![
-            (Term::Variable("X".into()), Term::Constant(related), Term::Variable("Y".into())),
-            (Term::Variable("Y".into()), Term::Constant(related), Term::Variable("Z".into())),
+            (
+                Term::Variable("X".into()),
+                Term::Constant(related),
+                Term::Variable("Y".into()),
+            ),
+            (
+                Term::Variable("Y".into()),
+                Term::Constant(related),
+                Term::Variable("Z".into()),
+            ),
         ],
-        vec![
-            (Term::Variable("X".into()), Term::Constant(related), Term::Variable("Z".into())),
-        ],
+        vec![(
+            Term::Variable("X".into()),
+            Term::Constant(related),
+            Term::Variable("Z".into()),
+        )],
     ));
 
     let (_inferred, tag_store) = r.infer_new_facts_with_provenance(AddMultProbability);
 
     let a = enc(&r, "A");
     let d = enc(&r, "D");
-    let triple = shared::triple::Triple { subject: a, predicate: related, object: d };
+    let triple = shared::triple::Triple {
+        subject: a,
+        predicate: related,
+        object: d,
+    };
     let prob = AddMultProbability.recover_probability(&tag_store.get_tag(&triple));
     // noisy-OR: 0.48 + 0.45 - 0.48*0.45 = 0.93 - 0.216 = 0.714
-    assert!((prob - 0.714).abs() < 1e-6, "AddMult disjunction should be ~0.714, got {}", prob);
+    assert!(
+        (prob - 0.714).abs() < 1e-6,
+        "AddMult disjunction should be ~0.714, got {}",
+        prob
+    );
 }
 
 #[test]
@@ -940,23 +1484,41 @@ fn prov_minmax_conjunction() {
 
     r.add_rule(Rule {
         premise: vec![
-            (Term::Variable("X".into()), Term::Constant(knows), Term::Variable("Y".into())),
-            (Term::Variable("Y".into()), Term::Constant(trusts), Term::Variable("Z".into())),
+            (
+                Term::Variable("X".into()),
+                Term::Constant(knows),
+                Term::Variable("Y".into()),
+            ),
+            (
+                Term::Variable("Y".into()),
+                Term::Constant(trusts),
+                Term::Variable("Z".into()),
+            ),
         ],
         negative_premise: vec![],
         filters: vec![],
-        conclusion: vec![
-            (Term::Variable("X".into()), Term::Constant(recommends), Term::Variable("Z".into())),
-        ],
+        conclusion: vec![(
+            Term::Variable("X".into()),
+            Term::Constant(recommends),
+            Term::Variable("Z".into()),
+        )],
     });
 
     let (_inferred, tag_store) = r.infer_new_facts_with_provenance(MinMaxProbability);
 
     let a = enc(&r, "A");
     let c = enc(&r, "C");
-    let triple = shared::triple::Triple { subject: a, predicate: recommends, object: c };
+    let triple = shared::triple::Triple {
+        subject: a,
+        predicate: recommends,
+        object: c,
+    };
     let prob = MinMaxProbability.recover_probability(&tag_store.get_tag(&triple));
-    assert!((prob - 0.6).abs() < 1e-6, "MinMax conjunction should be 0.6, got {}", prob);
+    assert!(
+        (prob - 0.6).abs() < 1e-6,
+        "MinMax conjunction should be 0.6, got {}",
+        prob
+    );
 }
 
 #[test]
@@ -976,21 +1538,39 @@ fn prov_minmax_multiple_paths() {
 
     r.add_rule(rule(
         vec![
-            (Term::Variable("X".into()), Term::Constant(related), Term::Variable("Y".into())),
-            (Term::Variable("Y".into()), Term::Constant(related), Term::Variable("Z".into())),
+            (
+                Term::Variable("X".into()),
+                Term::Constant(related),
+                Term::Variable("Y".into()),
+            ),
+            (
+                Term::Variable("Y".into()),
+                Term::Constant(related),
+                Term::Variable("Z".into()),
+            ),
         ],
-        vec![
-            (Term::Variable("X".into()), Term::Constant(related), Term::Variable("Z".into())),
-        ],
+        vec![(
+            Term::Variable("X".into()),
+            Term::Constant(related),
+            Term::Variable("Z".into()),
+        )],
     ));
 
     let (_inferred, tag_store) = r.infer_new_facts_with_provenance(MinMaxProbability);
 
     let a = enc(&r, "A");
     let d = enc(&r, "D");
-    let triple = shared::triple::Triple { subject: a, predicate: related, object: d };
+    let triple = shared::triple::Triple {
+        subject: a,
+        predicate: related,
+        object: d,
+    };
     let prob = MinMaxProbability.recover_probability(&tag_store.get_tag(&triple));
-    assert!((prob - 0.6).abs() < 1e-6, "MinMax disjunction should be 0.6, got {}", prob);
+    assert!(
+        (prob - 0.6).abs() < 1e-6,
+        "MinMax disjunction should be 0.6, got {}",
+        prob
+    );
 }
 
 #[test]
@@ -1004,17 +1584,35 @@ fn prov_boolean_matches_classical() {
     let ancestor = enc(&r, "ancestor");
 
     r.add_rule(rule(
-        vec![(Term::Variable("X".into()), Term::Constant(parent), Term::Variable("Y".into()))],
-        vec![(Term::Variable("X".into()), Term::Constant(ancestor), Term::Variable("Y".into()))],
+        vec![(
+            Term::Variable("X".into()),
+            Term::Constant(parent),
+            Term::Variable("Y".into()),
+        )],
+        vec![(
+            Term::Variable("X".into()),
+            Term::Constant(ancestor),
+            Term::Variable("Y".into()),
+        )],
     ));
     r.add_rule(rule(
         vec![
-            (Term::Variable("X".into()), Term::Constant(ancestor), Term::Variable("Y".into())),
-            (Term::Variable("Y".into()), Term::Constant(parent), Term::Variable("Z".into())),
+            (
+                Term::Variable("X".into()),
+                Term::Constant(ancestor),
+                Term::Variable("Y".into()),
+            ),
+            (
+                Term::Variable("Y".into()),
+                Term::Constant(parent),
+                Term::Variable("Z".into()),
+            ),
         ],
-        vec![
-            (Term::Variable("X".into()), Term::Constant(ancestor), Term::Variable("Z".into())),
-        ],
+        vec![(
+            Term::Variable("X".into()),
+            Term::Constant(ancestor),
+            Term::Variable("Z".into()),
+        )],
     ));
 
     let (inferred, tag_store) = r.infer_new_facts_with_provenance(BooleanProvenance);
@@ -1023,9 +1621,15 @@ fn prov_boolean_matches_classical() {
     let a = enc(&r, "A");
     let b = enc(&r, "B");
     let c = enc(&r, "C");
-    assert!(inferred.iter().any(|t| t.subject == a && t.predicate == ancestor && t.object == b));
-    assert!(inferred.iter().any(|t| t.subject == b && t.predicate == ancestor && t.object == c));
-    assert!(inferred.iter().any(|t| t.subject == a && t.predicate == ancestor && t.object == c));
+    assert!(inferred
+        .iter()
+        .any(|t| t.subject == a && t.predicate == ancestor && t.object == b));
+    assert!(inferred
+        .iter()
+        .any(|t| t.subject == b && t.predicate == ancestor && t.object == c));
+    assert!(inferred
+        .iter()
+        .any(|t| t.subject == a && t.predicate == ancestor && t.object == c));
 
     // All tags should be true (one())
     for t in &inferred {
@@ -1043,8 +1647,16 @@ fn prov_classical_rules_still_work() {
     let ancestor = enc(&r, "ancestor");
 
     r.add_rule(rule(
-        vec![(Term::Variable("X".into()), Term::Constant(parent), Term::Variable("Y".into()))],
-        vec![(Term::Variable("X".into()), Term::Constant(ancestor), Term::Variable("Y".into()))],
+        vec![(
+            Term::Variable("X".into()),
+            Term::Constant(parent),
+            Term::Variable("Y".into()),
+        )],
+        vec![(
+            Term::Variable("X".into()),
+            Term::Constant(ancestor),
+            Term::Variable("Y".into()),
+        )],
     ));
 
     r.infer_new_facts_semi_naive();
@@ -1063,12 +1675,22 @@ fn prov_zero_tag_pruning() {
 
     r.add_rule(rule(
         vec![
-            (Term::Variable("X".into()), Term::Constant(related), Term::Variable("Y".into())),
-            (Term::Variable("Y".into()), Term::Constant(related), Term::Variable("Z".into())),
+            (
+                Term::Variable("X".into()),
+                Term::Constant(related),
+                Term::Variable("Y".into()),
+            ),
+            (
+                Term::Variable("Y".into()),
+                Term::Constant(related),
+                Term::Variable("Z".into()),
+            ),
         ],
-        vec![
-            (Term::Variable("X".into()), Term::Constant(related), Term::Variable("Z".into())),
-        ],
+        vec![(
+            Term::Variable("X".into()),
+            Term::Constant(related),
+            Term::Variable("Z".into()),
+        )],
     ));
 
     let (inferred, _tag_store) = r.infer_new_facts_with_provenance(AddMultProbability);
@@ -1076,8 +1698,13 @@ fn prov_zero_tag_pruning() {
     // A related C should NOT be inferred (zero ⊗ anything = zero, pruned)
     let a = enc(&r, "A");
     let c = enc(&r, "C");
-    let a_related_c = inferred.iter().any(|t| t.subject == a && t.predicate == related && t.object == c);
-    assert!(!a_related_c, "Should NOT infer A related C through zero-tagged premise");
+    let a_related_c = inferred
+        .iter()
+        .any(|t| t.subject == a && t.predicate == related && t.object == c);
+    assert!(
+        !a_related_c,
+        "Should NOT infer A related C through zero-tagged premise"
+    );
 }
 
 #[test]
@@ -1095,9 +1722,11 @@ fn topk_wmc_overlap_vs_noisy_or() {
     p.tag_from_probability_with_id(0.5, 2); // z
 
     let mut proof1: std::collections::BTreeSet<u32> = Default::default();
-    proof1.insert(0); proof1.insert(1);
+    proof1.insert(0);
+    proof1.insert(1);
     let mut proof2: std::collections::BTreeSet<u32> = Default::default();
-    proof2.insert(0); proof2.insert(2);
+    proof2.insert(0);
+    proof2.insert(2);
 
     let tag = vec![proof1, proof2];
     let wmc = p.recover_probability(&tag);
@@ -1124,25 +1753,47 @@ fn topk_transitive_chain() {
 
     r.add_rule(rule(
         vec![
-            (Term::Variable("X".into()), Term::Constant(related), Term::Variable("Y".into())),
-            (Term::Variable("Y".into()), Term::Constant(related), Term::Variable("Z".into())),
+            (
+                Term::Variable("X".into()),
+                Term::Constant(related),
+                Term::Variable("Y".into()),
+            ),
+            (
+                Term::Variable("Y".into()),
+                Term::Constant(related),
+                Term::Variable("Z".into()),
+            ),
         ],
-        vec![
-            (Term::Variable("X".into()), Term::Constant(related), Term::Variable("Z".into())),
-        ],
+        vec![(
+            Term::Variable("X".into()),
+            Term::Constant(related),
+            Term::Variable("Z".into()),
+        )],
     ));
 
     let (inferred, tag_store) = r.infer_new_facts_with_provenance(TopKProofs::new(3));
 
     let a = enc(&r, "A");
     let c = enc(&r, "C");
-    let a_related_c = inferred.iter().any(|t| t.subject == a && t.predicate == related && t.object == c);
+    let a_related_c = inferred
+        .iter()
+        .any(|t| t.subject == a && t.predicate == related && t.object == c);
     assert!(a_related_c, "Should infer A related C");
 
-    let triple = shared::triple::Triple { subject: a, predicate: related, object: c };
-    let prob = tag_store.provenance().recover_probability(&tag_store.get_tag(&triple));
+    let triple = shared::triple::Triple {
+        subject: a,
+        predicate: related,
+        object: c,
+    };
+    let prob = tag_store
+        .provenance()
+        .recover_probability(&tag_store.get_tag(&triple));
     // Both seeds are distinct variables, so WMC = 0.9 * 0.8 = 0.72
-    assert!((prob - 0.72).abs() < 1e-6, "TopK chain probability should be 0.72, got {}", prob);
+    assert!(
+        (prob - 0.72).abs() < 1e-6,
+        "TopK chain probability should be 0.72, got {}",
+        prob
+    );
 }
 
 #[test]
@@ -1177,24 +1828,42 @@ fn topk_overlap_two_paths_share_base_fact() {
 
     r.add_rule(rule(
         vec![
-            (Term::Variable("X".into()), Term::Constant(is_active), Term::Variable("S".into())),
-            (Term::Variable("X".into()), Term::Constant(knows), Term::Variable("Y".into())),
+            (
+                Term::Variable("X".into()),
+                Term::Constant(is_active),
+                Term::Variable("S".into()),
+            ),
+            (
+                Term::Variable("X".into()),
+                Term::Constant(knows),
+                Term::Variable("Y".into()),
+            ),
         ],
-        vec![
-            (Term::Variable("X".into()), Term::Constant(is_socially_active), Term::Constant(yes)),
-        ],
+        vec![(
+            Term::Variable("X".into()),
+            Term::Constant(is_socially_active),
+            Term::Constant(yes),
+        )],
     ));
 
     let (inferred, tag_store) = r.infer_new_facts_with_provenance(TopKProofs::new(5));
 
     let a = enc(&r, "A");
     assert!(
-        inferred.iter().any(|t| t.subject == a && t.predicate == is_socially_active && t.object == yes),
+        inferred
+            .iter()
+            .any(|t| t.subject == a && t.predicate == is_socially_active && t.object == yes),
         "Should infer A is_socially_active yes"
     );
 
-    let triple = shared::triple::Triple { subject: a, predicate: is_socially_active, object: yes };
-    let prob = tag_store.provenance().recover_probability(&tag_store.get_tag(&triple));
+    let triple = shared::triple::Triple {
+        subject: a,
+        predicate: is_socially_active,
+        object: yes,
+    };
+    let prob = tag_store
+        .provenance()
+        .recover_probability(&tag_store.get_tag(&triple));
 
     assert!(
         (prob - 0.64).abs() < 1e-6,
@@ -1227,24 +1896,42 @@ fn wmc_overlap_exact_inference() {
 
     r.add_rule(rule(
         vec![
-            (Term::Variable("X".into()), Term::Constant(is_active), Term::Variable("S".into())),
-            (Term::Variable("X".into()), Term::Constant(knows), Term::Variable("Y".into())),
+            (
+                Term::Variable("X".into()),
+                Term::Constant(is_active),
+                Term::Variable("S".into()),
+            ),
+            (
+                Term::Variable("X".into()),
+                Term::Constant(knows),
+                Term::Variable("Y".into()),
+            ),
         ],
-        vec![
-            (Term::Variable("X".into()), Term::Constant(is_socially_active), Term::Constant(yes)),
-        ],
+        vec![(
+            Term::Variable("X".into()),
+            Term::Constant(is_socially_active),
+            Term::Constant(yes),
+        )],
     ));
 
     let (inferred, tag_store) = r.infer_new_facts_with_provenance(WmcProvenance::new());
 
     let a = enc(&r, "A");
     assert!(
-        inferred.iter().any(|t| t.subject == a && t.predicate == is_socially_active && t.object == yes),
+        inferred
+            .iter()
+            .any(|t| t.subject == a && t.predicate == is_socially_active && t.object == yes),
         "Should infer A is_socially_active yes"
     );
 
-    let triple = shared::triple::Triple { subject: a, predicate: is_socially_active, object: yes };
-    let prob = tag_store.provenance().recover_probability(&tag_store.get_tag(&triple));
+    let triple = shared::triple::Triple {
+        subject: a,
+        predicate: is_socially_active,
+        object: yes,
+    };
+    let prob = tag_store
+        .provenance()
+        .recover_probability(&tag_store.get_tag(&triple));
 
     assert!(
         (prob - 0.64).abs() < 1e-6,
@@ -1279,24 +1966,42 @@ fn wmc_no_truncation_three_paths() {
 
     r.add_rule(rule(
         vec![
-            (Term::Variable("X".into()), Term::Constant(is_active), Term::Variable("S".into())),
-            (Term::Variable("X".into()), Term::Constant(knows), Term::Variable("Y".into())),
+            (
+                Term::Variable("X".into()),
+                Term::Constant(is_active),
+                Term::Variable("S".into()),
+            ),
+            (
+                Term::Variable("X".into()),
+                Term::Constant(knows),
+                Term::Variable("Y".into()),
+            ),
         ],
-        vec![
-            (Term::Variable("X".into()), Term::Constant(is_socially_active), Term::Constant(yes)),
-        ],
+        vec![(
+            Term::Variable("X".into()),
+            Term::Constant(is_socially_active),
+            Term::Constant(yes),
+        )],
     ));
 
     let (inferred, tag_store) = r.infer_new_facts_with_provenance(WmcProvenance::new());
 
     let a = enc(&r, "A");
     assert!(
-        inferred.iter().any(|t| t.subject == a && t.predicate == is_socially_active && t.object == yes),
+        inferred
+            .iter()
+            .any(|t| t.subject == a && t.predicate == is_socially_active && t.object == yes),
         "Should infer A is_socially_active yes"
     );
 
-    let triple = shared::triple::Triple { subject: a, predicate: is_socially_active, object: yes };
-    let prob = tag_store.provenance().recover_probability(&tag_store.get_tag(&triple));
+    let triple = shared::triple::Triple {
+        subject: a,
+        predicate: is_socially_active,
+        object: yes,
+    };
+    let prob = tag_store
+        .provenance()
+        .recover_probability(&tag_store.get_tag(&triple));
 
     assert!(
         (prob - 0.8784).abs() < 1e-6,
@@ -1325,12 +2030,22 @@ fn wmc_explanation_encoding() {
 
     r.add_rule(rule(
         vec![
-            (Term::Variable("X".into()), Term::Constant(is_active), Term::Variable("S".into())),
-            (Term::Variable("X".into()), Term::Constant(knows), Term::Variable("Y".into())),
+            (
+                Term::Variable("X".into()),
+                Term::Constant(is_active),
+                Term::Variable("S".into()),
+            ),
+            (
+                Term::Variable("X".into()),
+                Term::Constant(knows),
+                Term::Variable("Y".into()),
+            ),
         ],
-        vec![
-            (Term::Variable("X".into()), Term::Constant(is_socially_active), Term::Constant(yes)),
-        ],
+        vec![(
+            Term::Variable("X".into()),
+            Term::Constant(is_socially_active),
+            Term::Constant(yes),
+        )],
     ));
 
     let (inferred, tag_store) = r.infer_new_facts_with_provenance(WmcProvenance::new());
@@ -1340,12 +2055,18 @@ fn wmc_explanation_encoding() {
 
     let a = enc(&r, "A");
     assert!(
-        inferred.iter().any(|t| t.subject == a && t.predicate == is_socially_active && t.object == yes),
+        inferred
+            .iter()
+            .any(|t| t.subject == a && t.predicate == is_socially_active && t.object == yes),
         "Should infer A is_socially_active yes"
     );
 
     // formula for the derived triple should have 2 proof paths
-    let derived = shared::triple::Triple { subject: a, predicate: is_socially_active, object: yes };
+    let derived = shared::triple::Triple {
+        subject: a,
+        predicate: is_socially_active,
+        object: yes,
+    };
     let formula = tag_store.get_tag(&derived);
     assert_eq!(formula.len(), 2, "two proof paths: {{0,1}} and {{0,2}}");
 
@@ -1355,8 +2076,8 @@ fn wmc_explanation_encoding() {
     let triples = tag_store.encode_as_rdf_star_with_explanation(&mut dict, &mut qt);
 
     let proof_count_pred = dict.encode("http://www.w3.org/ns/prob#proofCount");
-    let has_proof_pred   = dict.encode("http://www.w3.org/ns/prob#hasProof");
-    let has_seed_pred    = dict.encode("http://www.w3.org/ns/prob#hasSeed");
+    let has_proof_pred = dict.encode("http://www.w3.org/ns/prob#hasProof");
+    let has_seed_pred = dict.encode("http://www.w3.org/ns/prob#hasSeed");
 
     // The tag store holds all 4 tagged triples (3 seeds + 1 derived fact),
     // so annotation counts span all of them:
@@ -1369,22 +2090,37 @@ fn wmc_explanation_encoding() {
     //   ────────────────────────────────────────────────────────────────────────────
     //   Total                                         |     4      |    5     |    7
 
-    let proof_count_triples: Vec<_> = triples.iter()
+    let proof_count_triples: Vec<_> = triples
+        .iter()
         .filter(|t| t.predicate == proof_count_pred)
         .collect();
-    assert_eq!(proof_count_triples.len(), 4, "one proofCount per tagged triple (3 seeds + 1 derived)");
+    assert_eq!(
+        proof_count_triples.len(),
+        4,
+        "one proofCount per tagged triple (3 seeds + 1 derived)"
+    );
 
-    let has_proof_triples: Vec<_> = triples.iter()
+    let has_proof_triples: Vec<_> = triples
+        .iter()
         .filter(|t| t.predicate == has_proof_pred)
         .collect();
     // seeds have 1 proof each (3×1=3), derived has 2 proof paths -> total 5
-    assert_eq!(has_proof_triples.len(), 5, "hasProof: 3 seed paths + 2 derived paths");
+    assert_eq!(
+        has_proof_triples.len(),
+        5,
+        "hasProof: 3 seed paths + 2 derived paths"
+    );
 
-    let has_seed_triples: Vec<_> = triples.iter()
+    let has_seed_triples: Vec<_> = triples
+        .iter()
         .filter(|t| t.predicate == has_seed_pred)
         .collect();
     // seeds: 1+1+1=3; derived: proof {0,1}->2, proof {0,2}->2 = 4 -> total 7
-    assert_eq!(has_seed_triples.len(), 7, "hasSeed: 3 from seed paths + 4 from derived paths");
+    assert_eq!(
+        has_seed_triples.len(),
+        7,
+        "hasSeed: 3 from seed paths + 4 from derived paths"
+    );
 }
 
 // ─── Phase 1 NAF tests ────────────────────────────────────────────────────────
@@ -1396,28 +2132,48 @@ fn boolean_naf_blocked_present() {
     r.add_abox_triple("P", "active", "yes");
     r.add_abox_triple("P", "blocked", "yes");
 
-    let active    = enc(&r, "active");
-    let blocked   = enc(&r, "blocked");
+    let active = enc(&r, "active");
+    let blocked = enc(&r, "blocked");
     let effective = enc(&r, "effective");
-    let yes       = enc(&r, "yes");
+    let yes = enc(&r, "yes");
 
     // RULE: active(?x, yes), NOT blocked(?x, yes) -> effective(?x, yes)
     r.add_rule(naf_rule(
-        vec![(Term::Variable("x".into()), Term::Constant(active),    Term::Constant(yes))],
-        vec![(Term::Variable("x".into()), Term::Constant(blocked),   Term::Constant(yes))],
-        vec![(Term::Variable("x".into()), Term::Constant(effective), Term::Constant(yes))],
+        vec![(
+            Term::Variable("x".into()),
+            Term::Constant(active),
+            Term::Constant(yes),
+        )],
+        vec![(
+            Term::Variable("x".into()),
+            Term::Constant(blocked),
+            Term::Constant(yes),
+        )],
+        vec![(
+            Term::Variable("x".into()),
+            Term::Constant(effective),
+            Term::Constant(yes),
+        )],
     ));
 
     let (new_facts, _tag_store) = r.infer_new_facts_with_provenance(BooleanProvenance);
 
     // blocked IS present -> NOT true = false -> effective must NOT be derived
-    assert!(!inferred(&mut r, "P", "effective", "yes"),
-        "effective must not be derived when blocked is present");
+    assert!(
+        !inferred(&mut r, "P", "effective", "yes"),
+        "effective must not be derived when blocked is present"
+    );
 
-    let p_id  = enc(&r, "P");
-    let eff_t = shared::triple::Triple { subject: p_id, predicate: effective, object: yes };
-    assert!(!new_facts.iter().any(|t| t == &eff_t),
-        "effective must not appear in new_facts when blocked is present");
+    let p_id = enc(&r, "P");
+    let eff_t = shared::triple::Triple {
+        subject: p_id,
+        predicate: effective,
+        object: yes,
+    };
+    assert!(
+        !new_facts.iter().any(|t| t == &eff_t),
+        "effective must not appear in new_facts when blocked is present"
+    );
 }
 
 /// BooleanProvenance: exact NAF — blocked fact is ABSENT -> NOT blocked = true -> effective derived.
@@ -1427,29 +2183,51 @@ fn boolean_naf_absent_negated() {
     r.add_abox_triple("P", "active", "yes");
     // "blocked" triple intentionally NOT added
 
-    let active    = enc(&r, "active");
-    let blocked   = enc(&r, "blocked");
+    let active = enc(&r, "active");
+    let blocked = enc(&r, "blocked");
     let effective = enc(&r, "effective");
-    let yes       = enc(&r, "yes");
+    let yes = enc(&r, "yes");
 
     r.add_rule(naf_rule(
-        vec![(Term::Variable("x".into()), Term::Constant(active),    Term::Constant(yes))],
-        vec![(Term::Variable("x".into()), Term::Constant(blocked),   Term::Constant(yes))],
-        vec![(Term::Variable("x".into()), Term::Constant(effective), Term::Constant(yes))],
+        vec![(
+            Term::Variable("x".into()),
+            Term::Constant(active),
+            Term::Constant(yes),
+        )],
+        vec![(
+            Term::Variable("x".into()),
+            Term::Constant(blocked),
+            Term::Constant(yes),
+        )],
+        vec![(
+            Term::Variable("x".into()),
+            Term::Constant(effective),
+            Term::Constant(yes),
+        )],
     ));
 
     let (new_facts, tag_store) = r.infer_new_facts_with_provenance(BooleanProvenance);
 
-    assert!(inferred(&mut r, "P", "effective", "yes"),
-        "effective must be derived when blocked is absent");
+    assert!(
+        inferred(&mut r, "P", "effective", "yes"),
+        "effective must be derived when blocked is absent"
+    );
 
-    let p_id  = enc(&r, "P");
-    let eff_t = shared::triple::Triple { subject: p_id, predicate: effective, object: yes };
-    assert!(tag_store.get_tag(&eff_t),
-        "BooleanProvenance tag for effective must be true");
+    let p_id = enc(&r, "P");
+    let eff_t = shared::triple::Triple {
+        subject: p_id,
+        predicate: effective,
+        object: yes,
+    };
+    assert!(
+        tag_store.get_tag(&eff_t),
+        "BooleanProvenance tag for effective must be true"
+    );
 
-    assert!(new_facts.iter().any(|t| t == &eff_t),
-        "effective must appear in new_facts");
+    assert!(
+        new_facts.iter().any(|t| t == &eff_t),
+        "effective must appear in new_facts"
+    );
 }
 
 /// AddMultProbability (approximate): active(0.8) AND NOT blocked(0.3) -> P ≈ 0.8 * 0.7 = 0.56.
@@ -1458,30 +2236,49 @@ fn boolean_naf_absent_negated() {
 #[test]
 fn addmult_naf_approximate() {
     let mut r = Reasoner::new();
-    r.add_tagged_triple("P", "active",  "yes", 0.8);
+    r.add_tagged_triple("P", "active", "yes", 0.8);
     r.add_tagged_triple("P", "blocked", "yes", 0.3);
 
-    let active    = enc(&r, "active");
-    let blocked   = enc(&r, "blocked");
+    let active = enc(&r, "active");
+    let blocked = enc(&r, "blocked");
     let effective = enc(&r, "effective");
-    let yes       = enc(&r, "yes");
+    let yes = enc(&r, "yes");
 
     r.add_rule(naf_rule(
-        vec![(Term::Variable("x".into()), Term::Constant(active),    Term::Constant(yes))],
-        vec![(Term::Variable("x".into()), Term::Constant(blocked),   Term::Constant(yes))],
-        vec![(Term::Variable("x".into()), Term::Constant(effective), Term::Constant(yes))],
+        vec![(
+            Term::Variable("x".into()),
+            Term::Constant(active),
+            Term::Constant(yes),
+        )],
+        vec![(
+            Term::Variable("x".into()),
+            Term::Constant(blocked),
+            Term::Constant(yes),
+        )],
+        vec![(
+            Term::Variable("x".into()),
+            Term::Constant(effective),
+            Term::Constant(yes),
+        )],
     ));
 
     let (_, tag_store) = r.infer_new_facts_with_provenance(AddMultProbability);
 
-    let p_id  = enc(&r, "P");
-    let eff_t = shared::triple::Triple { subject: p_id, predicate: effective, object: yes };
-    let prob  = tag_store.get_tag(&eff_t);
+    let p_id = enc(&r, "P");
+    let eff_t = shared::triple::Triple {
+        subject: p_id,
+        predicate: effective,
+        object: yes,
+    };
+    let prob = tag_store.get_tag(&eff_t);
 
     // P(effective) ≈ P(active) * (1 - P(blocked)) = 0.8 * 0.7 = 0.56
     // (approximate: exact only for independent seeds)
-    assert!((prob - 0.56).abs() < 1e-9,
-        "AddMultProbability NAF: expected ~0.56, got {}", prob);
+    assert!(
+        (prob - 0.56).abs() < 1e-9,
+        "AddMultProbability NAF: expected ~0.56, got {}",
+        prob
+    );
 }
 
 /// AddMultProbability: blocked absent -> NOT blocked = one() -> P(effective) = P(active) = 0.8.
@@ -1491,26 +2288,45 @@ fn addmult_naf_absent_negated() {
     r.add_tagged_triple("P", "active", "yes", 0.8);
     // blocked NOT added
 
-    let active    = enc(&r, "active");
-    let blocked   = enc(&r, "blocked");
+    let active = enc(&r, "active");
+    let blocked = enc(&r, "blocked");
     let effective = enc(&r, "effective");
-    let yes       = enc(&r, "yes");
+    let yes = enc(&r, "yes");
 
     r.add_rule(naf_rule(
-        vec![(Term::Variable("x".into()), Term::Constant(active),    Term::Constant(yes))],
-        vec![(Term::Variable("x".into()), Term::Constant(blocked),   Term::Constant(yes))],
-        vec![(Term::Variable("x".into()), Term::Constant(effective), Term::Constant(yes))],
+        vec![(
+            Term::Variable("x".into()),
+            Term::Constant(active),
+            Term::Constant(yes),
+        )],
+        vec![(
+            Term::Variable("x".into()),
+            Term::Constant(blocked),
+            Term::Constant(yes),
+        )],
+        vec![(
+            Term::Variable("x".into()),
+            Term::Constant(effective),
+            Term::Constant(yes),
+        )],
     ));
 
     let (_, tag_store) = r.infer_new_facts_with_provenance(AddMultProbability);
 
-    let p_id  = enc(&r, "P");
-    let eff_t = shared::triple::Triple { subject: p_id, predicate: effective, object: yes };
-    let prob  = tag_store.get_tag(&eff_t);
+    let p_id = enc(&r, "P");
+    let eff_t = shared::triple::Triple {
+        subject: p_id,
+        predicate: effective,
+        object: yes,
+    };
+    let prob = tag_store.get_tag(&eff_t);
 
     // blocked absent -> NOT blocked = one() -> P = 0.8 * 1.0 = 0.8
-    assert!((prob - 0.8).abs() < 1e-9,
-        "AddMultProbability NAF (absent): expected 0.8, got {}", prob);
+    assert!(
+        (prob - 0.8).abs() < 1e-9,
+        "AddMultProbability NAF (absent): expected 0.8, got {}",
+        prob
+    );
 }
 
 /// try_add_rule rejects rules where a negated variable is unbound by positive premises.
@@ -1518,30 +2334,43 @@ fn addmult_naf_absent_negated() {
 fn unsafe_negation_rejected() {
     let mut r = Reasoner::new();
 
-    let active    = enc(&r, "active");
-    let blocked   = enc(&r, "blocked");
+    let active = enc(&r, "active");
+    let blocked = enc(&r, "blocked");
     let effective = enc(&r, "effective");
-    let yes       = enc(&r, "yes");
+    let yes = enc(&r, "yes");
 
     // UNSAFE: ?y appears in NOT-body but is NOT bound by premise (?x is bound, ?y is not)
     let bad_rule = Rule {
-        premise: vec![
-            (Term::Variable("x".into()), Term::Constant(active), Term::Constant(yes)),
-        ],
+        premise: vec![(
+            Term::Variable("x".into()),
+            Term::Constant(active),
+            Term::Constant(yes),
+        )],
         negative_premise: vec![
             // ?y is unbound — not in any positive premise
-            (Term::Variable("y".into()), Term::Constant(blocked), Term::Constant(yes)),
+            (
+                Term::Variable("y".into()),
+                Term::Constant(blocked),
+                Term::Constant(yes),
+            ),
         ],
-        conclusion: vec![
-            (Term::Variable("x".into()), Term::Constant(effective), Term::Constant(yes)),
-        ],
+        conclusion: vec![(
+            Term::Variable("x".into()),
+            Term::Constant(effective),
+            Term::Constant(yes),
+        )],
         filters: vec![],
     };
 
     let result = r.try_add_rule(bad_rule);
-    assert!(result.is_err(), "unsafe negation must be rejected by try_add_rule");
-    assert!(result.unwrap_err().contains("unsafe negation"),
-        "error message must mention unsafe negation");
+    assert!(
+        result.is_err(),
+        "unsafe negation must be rejected by try_add_rule"
+    );
+    assert!(
+        result.unwrap_err().contains("unsafe negation"),
+        "error message must mention unsafe negation"
+    );
 }
 
 // ─── Phase 2 WMC NAF integration tests ──────────────────────────────────────
@@ -1553,28 +2382,49 @@ fn unsafe_negation_rejected() {
 #[test]
 fn wmc_naf_independent_seeds_integration() {
     let mut r = Reasoner::new();
-    r.add_tagged_triple("P", "active",  "yes", 0.8);
+    r.add_tagged_triple("P", "active", "yes", 0.8);
     r.add_tagged_triple("P", "blocked", "yes", 0.3);
 
-    let active    = enc(&r, "active");
-    let blocked   = enc(&r, "blocked");
+    let active = enc(&r, "active");
+    let blocked = enc(&r, "blocked");
     let effective = enc(&r, "effective");
-    let yes       = enc(&r, "yes");
+    let yes = enc(&r, "yes");
 
     r.add_rule(naf_rule(
-        vec![(Term::Variable("x".into()), Term::Constant(active),    Term::Constant(yes))],
-        vec![(Term::Variable("x".into()), Term::Constant(blocked),   Term::Constant(yes))],
-        vec![(Term::Variable("x".into()), Term::Constant(effective), Term::Constant(yes))],
+        vec![(
+            Term::Variable("x".into()),
+            Term::Constant(active),
+            Term::Constant(yes),
+        )],
+        vec![(
+            Term::Variable("x".into()),
+            Term::Constant(blocked),
+            Term::Constant(yes),
+        )],
+        vec![(
+            Term::Variable("x".into()),
+            Term::Constant(effective),
+            Term::Constant(yes),
+        )],
     ));
 
     let (_, tag_store) = r.infer_new_facts_with_provenance(WmcProvenance::new());
 
-    let p_id  = enc(&r, "P");
-    let eff_t = shared::triple::Triple { subject: p_id, predicate: effective, object: yes };
-    let prob  = tag_store.provenance().recover_probability(&tag_store.get_tag(&eff_t));
+    let p_id = enc(&r, "P");
+    let eff_t = shared::triple::Triple {
+        subject: p_id,
+        predicate: effective,
+        object: yes,
+    };
+    let prob = tag_store
+        .provenance()
+        .recover_probability(&tag_store.get_tag(&eff_t));
 
-    assert!((prob - 0.56).abs() < 1e-9,
-        "WMC NAF independent seeds: expected 0.56, got {}", prob);
+    assert!(
+        (prob - 0.56).abs() < 1e-9,
+        "WMC NAF independent seeds: expected 0.56, got {}",
+        prob
+    );
 }
 
 /// WmcProvenance: same triple used for both active and blocked (shared seed).
@@ -1587,18 +2437,21 @@ fn wmc_naf_shared_seed_integration() {
     let mut r = Reasoner::new();
     // Add the SAME triple for both active and blocked at the same probability.
     // Since it's the same triple, both get the same seed ID in the tag store.
-    r.add_tagged_triple("P", "status", "active",  0.8);
+    r.add_tagged_triple("P", "status", "active", 0.8);
     // Use a different triple to represent blocked so we can control the seed.
     // To force shared-seed: use the same triple for both predicates is not possible
     // in the normal API. So we test the algebraic property directly via provenance:
     let p = WmcProvenance::new();
-    let active_tag  = p.tag_from_probability_with_id(0.8, 0);
+    let active_tag = p.tag_from_probability_with_id(0.8, 0);
     let blocked_tag = p.tag_from_probability_with_id(0.8, 0); // same ID = shared seed
 
-    let not_blocked   = p.negate(&blocked_tag);
+    let not_blocked = p.negate(&blocked_tag);
     let effective_tag = p.conjunction(&active_tag, &not_blocked);
     let prob = p.recover_probability(&effective_tag);
 
-    assert!((prob - 0.0).abs() < 1e-9,
-        "WMC NAF shared seed: expected 0.0 (p ∧ ¬p = ⊥), got {}", prob);
+    assert!(
+        (prob - 0.0).abs() < 1e-9,
+        "WMC NAF shared seed: expected 0.0 (p ∧ ¬p = ⊥), got {}",
+        prob
+    );
 }

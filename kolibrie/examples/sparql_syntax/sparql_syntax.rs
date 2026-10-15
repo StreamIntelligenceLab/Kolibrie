@@ -11,9 +11,8 @@
 use kolibrie::prelude::*;
 use kolibrie::streamertail_optimizer::optimizer::Streamertail;
 use kolibrie::streamertail_optimizer::utils::build_logical_plan_from_group;
-use std::time::Instant;
 use shared::query::SparqlOperation;
-
+use std::time::Instant;
 
 fn streamertail_optimizer_sparql() {
     // Step 1: Initialize the database
@@ -80,7 +79,8 @@ fn streamertail_optimizer_sparql() {
         let duration = start.elapsed();
 
         // Step 7: Extract and print the selected variables
-        let selected_vars: Vec<String> = select.variables
+        let selected_vars: Vec<String> = select
+            .variables
             .iter()
             .filter(|(agg_type, _, _)| *agg_type == "VAR")
             .map(|(_, var, _)| var.to_string())

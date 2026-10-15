@@ -15,7 +15,7 @@
 //! incremental version in [`cross_window_incremental`](super::cross_window_incremental)
 //! is checked against, but it repeats all the work on every tick.
 
-use crate::cross_window_sds::{Sds, translate_sds_to_datalog, translate_datalog_back};
+use crate::cross_window_sds::{translate_datalog_back, translate_sds_to_datalog, Sds};
 use crate::reasoning::Reasoner;
 use shared::dictionary::Dictionary;
 use shared::rule::Rule;
@@ -48,4 +48,3 @@ pub fn naive_sds_plus(
     let all_facts = reasoner.dataset_index.query(None, None, None);
     translate_datalog_back(&all_facts, dict, sds)
 }
-
