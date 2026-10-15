@@ -172,6 +172,11 @@ fn bytes_to_mb(bytes: u64) -> f64 {
     bytes as f64 / 1_048_576.0
 }
 
+// SAFETY: `counters` is zeroed and has its `cb` set to its own size before the call,
+// which is the contract `GetProcessMemoryInfo` documents; the pointer is to a live
+// local, and `GetCurrentProcess` returns a pseudo-handle that needs no closing. The
+// return value is checked before any field is read.
+#[allow(unsafe_code)]
 #[cfg(windows)]
 fn current_rss_bytes() -> Option<u64> {
     use std::mem::{size_of, zeroed};
@@ -194,6 +199,10 @@ fn current_rss_bytes() -> Option<u64> {
     }
 }
 
+// SAFETY: `sysconf` takes an integer name and returns a long, touching no memory the
+// caller owns. `_SC_PAGESIZE` is a valid name, and a non-positive result is treated as
+// failure rather than used as a multiplier.
+#[allow(unsafe_code)]
 #[cfg(all(unix, not(target_os = "macos")))]
 fn current_rss_bytes() -> Option<u64> {
     let statm = fs::read_to_string("/proc/self/statm").ok()?;
@@ -206,6 +215,15 @@ fn current_rss_bytes() -> Option<u64> {
     }
 }
 
+// SAFETY: `getrusage` writes into the `rusage` it is given, and a zeroed `rusage` is a
+// valid initial value for a plain C struct of integers. `RUSAGE_SELF` is a valid who
+// argument, and the return value is checked before `ru_maxrss` is read.
+//
+// Note this measures something different from the other two: `ru_maxrss` is *peak*
+// resident size, where /proc/self/statm and `WorkingSetSize` are current. On macOS it
+// is already in bytes, where Linux reports it in kilobytes. So the figure this example
+// prints on macOS is a high-water mark and will not fall back down.
+#[allow(unsafe_code)]
 #[cfg(target_os = "macos")]
 fn current_rss_bytes() -> Option<u64> {
     unsafe {

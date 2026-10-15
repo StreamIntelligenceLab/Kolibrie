@@ -19,6 +19,20 @@ static BYTES: AtomicUsize = AtomicUsize::new(0);
 
 struct CountingAllocator;
 
+// `unsafe` is unavoidable here: `GlobalAlloc` is an unsafe trait and every method on
+// it is unsafe, because the allocator is what the rest of the program's memory safety
+// rests on. The allow is scoped to this impl so that new unsafe elsewhere still fails
+// the lint gate.
+//
+// SAFETY: every method forwards to `System`, the allocator these obligations are
+// already discharged by, and adds only relaxed counter arithmetic. That means:
+// pointers returned by `alloc` come from `System` and so are valid for `layout`;
+// `dealloc` and `realloc` receive pointers this allocator produced, since it is the
+// single `#[global_allocator]` for the test binary, and pass them back to the
+// allocator that produced them with the same layout. The counters are atomics, so
+// they add no synchronisation requirement, and nothing here allocates, which would
+// re-enter the allocator.
+#[allow(unsafe_code)]
 unsafe impl GlobalAlloc for CountingAllocator {
     unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
         ALLOCATIONS.fetch_add(1, Ordering::Relaxed);

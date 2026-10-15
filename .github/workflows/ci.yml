@@ -173,6 +173,22 @@ jobs:
         run: scripts/check_lint.sh deprecated -- -p kolibrie --features ml --all-targets
       - name: deprecated, no default features
         run: scripts/check_lint.sh deprecated -- -p kolibrie --no-default-features --all-targets
+      # unsafe_code is zero in a different sense from the lints above: the remaining
+      # unsafe is necessary and carries a scoped `#[allow(unsafe_code)]` with a SAFETY
+      # comment, rather than having been removed. Four sites — a GlobalAlloc impl in
+      # the allocation_profile test, which is an unsafe trait, and three
+      # platform-specific resident-set-size readers in one example, which std has no
+      # equivalent for. The gate therefore catches *new* unsafe, and the allow is what
+      # makes adding it a deliberate, reviewed act.
+      #
+      # Note the allows cover blocks this runner never compiles: the Windows and Linux
+      # readers are behind `#[cfg]`, so a macOS check sees neither.
+      - name: unsafe_code, default features
+        run: scripts/check_lint.sh unsafe_code -- --workspace --all-targets
+      - name: unsafe_code, ml feature
+        run: scripts/check_lint.sh unsafe_code -- -p kolibrie --features ml --all-targets
+      - name: unsafe_code, no default features
+        run: scripts/check_lint.sh unsafe_code -- -p kolibrie --no-default-features --all-targets
 
   # ── Advisory for now: reports, does not block ───────────────────────────────
   #

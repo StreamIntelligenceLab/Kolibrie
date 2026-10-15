@@ -94,35 +94,15 @@ pub fn current_timestamp() -> u64 {
         .as_secs()
 }
 
-/// Number of logical CPUs, queried directly rather than through a dependency.
+/// How many threads are worth starting for a parallel parse.
+///
+/// [`std::thread::available_parallelism`] rather than a CPU count, which is a
+/// different number: it accounts for CPU affinity and container quotas, so a
+/// process limited to two cores on a 64-core host is told two. For sizing a worker
+/// pool that is the figure that matters.
+///
+/// Returns 1 when the platform cannot answer, so the result is always usable as a
+/// thread count.
 pub fn get_num_cpus() -> usize {
-    // For Unix-like systems
-    #[cfg(unix)]
-    {
-        unsafe {
-            let cpus = libc::sysconf(libc::_SC_NPROCESSORS_ONLN);
-            if cpus > 0 {
-                cpus as usize
-            } else {
-                1 // Fallback to 1 if sysconf fails
-            }
-        }
-    }
-
-    // For Windows systems
-    #[cfg(windows)]
-    {
-        use winapi::um::sysinfoapi::{GetSystemInfo, SYSTEM_INFO};
-        unsafe {
-            let mut sysinfo: SYSTEM_INFO = std::mem::zeroed();
-            GetSystemInfo(&mut sysinfo);
-            sysinfo.dwNumberOfProcessors as usize
-        }
-    }
-
-    // Fallback for other platforms
-    #[cfg(not(any(unix, windows)))]
-    {
-        1
-    }
+    std::thread::available_parallelism().map_or(1, |n| n.get())
 }

@@ -36,10 +36,14 @@ ml = { path = "../ml", optional = true }
 log = "0.4.27"
 annotate-snippets = "0.12.10"
 
-[target.'cfg(unix)'.dependencies]
+# Example-only since `utils::get_num_cpus` moved to `std::thread::available_parallelism`.
+# The one remaining user is the repro_sensor_path_benchmark example, which reads
+# resident set size and has no std equivalent to reach for. Normal dependencies here
+# would make every consumer of `kolibrie` pull them for nothing.
+[target.'cfg(unix)'.dev-dependencies]
 libc = "0.2.161"
 
-[target.'cfg(windows)'.dependencies]
+[target.'cfg(windows)'.dev-dependencies]
 winapi = { version = "0.3.9", features = ["processthreadsapi", "psapi", "sysinfoapi"] }
 
 [features]
