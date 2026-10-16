@@ -46,6 +46,7 @@ use datalogmtl::rdf_parser::{
 use datalogmtl::store::IntervalFactStore;
 use datalogmtl::stream::{RdfEvent, ShapeIngester};
 use datalogmtl::syntax::{DatalogMTLRule, Mode};
+use kolibrie::execute_query::QueryError;
 use kolibrie::parser::process_rule_definition;
 use kolibrie::rsp_engine::{
     OperationMode, QueryExecutionMode, RSPBuilder, ResultConsumer, SimpleR2R,
@@ -406,6 +407,28 @@ fn http_ml_context(
             }
         })
         .as_ref()
+}
+
+/// The response for a failed query, mapping [`QueryError`] to this server's wire
+/// codes.
+///
+/// Goes through [`ml_error_response`] rather than matching the variants against a
+/// second status table: three other callers still pass bare strings, so the table has
+/// to stay there, and two copies of it would drift.
+///
+/// The mapping is deliberately the one that was in place when these errors were
+/// `String`s. Every non-ML failure — a syntax error included — reports as
+/// `QUERY_EXECUTION_FAILED` with 400. For a parse failure that is misleading, and the
+/// variants now make a `QUERY_PARSE_ERROR` possible, but adding one changes what
+/// clients receive and is not part of this change.
+fn query_error_response(error: &QueryError) -> String {
+    let code = match error {
+        QueryError::Ml(policy) => policy.to_string(),
+        QueryError::Parse(_) | QueryError::Unsupported(_) | QueryError::Execution(_) => {
+            "QUERY_EXECUTION_FAILED".to_string()
+        }
+    };
+    ml_error_response(&code)
 }
 
 fn ml_error_response(error: &str) -> String {
@@ -841,7 +864,7 @@ fn rsp_register(body: &str, sessions: &Sessions) -> String {
         if let Err(error) =
             kolibrie::execute_query::validate_query_policy(&strip_hash_comments(text), &policy_db)
         {
-            return ml_error_response(&error);
+            return query_error_response(&error);
         }
     }
     println!("RSP register: building engine for new session");
@@ -1126,7 +1149,7 @@ fn execute_sparql_with_policy(
         if let Err(error) =
             kolibrie::execute_query::validate_query_policy(&strip_hash_comments(text), &database)
         {
-            return ml_error_response(&error);
+            return query_error_response(&error);
         }
     }
 
@@ -1283,7 +1306,7 @@ fn execute_sparql_with_policy(
             context,
         ) {
             Ok(rows) => rows,
-            Err(error) => return ml_error_response(&error),
+            Err(error) => return query_error_response(&error),
         };
 
         let execution_time = start_time.elapsed().as_secs_f64() * 1000.0;
@@ -1334,7 +1357,7 @@ fn execute_rsp_query(body: &str) -> String {
         &strip_hash_comments(&request.query),
         &SparqlDatabase::new(),
     ) {
-        return ml_error_response(&error);
+        return query_error_response(&error);
     }
     println!("RSP_REQUEST event_count={}", request.events.len());
 
@@ -1604,6 +1627,63 @@ mod tests {
         );
         assert!(response.starts_with("HTTP/1.1 200"));
         assert!(response.contains("7"));
+    }
+
+    // Pins the wire format across the move from `String` errors to `QueryError`.
+    // Each case is the response the string-matching version produced for the same
+    // failure, so a change to `query_error_response` that clients would notice fails
+    // here rather than in a browser.
+    #[test]
+    fn query_error_responses_keep_their_wire_codes() {
+        use kolibrie::execute_query::QueryError;
+        use kolibrie::ml_policy::MlError;
+
+        for (error, expected_code) in [
+            (QueryError::Ml(MlError::Disabled), "ML_FEATURE_DISABLED"),
+            (QueryError::Ml(MlError::Forbidden), "ML_FORBIDDEN"),
+            (
+                QueryError::Ml(MlError::InvalidArtifact),
+                "ML_INVALID_ARTIFACT",
+            ),
+            (
+                QueryError::Ml(MlError::InvalidConfiguration),
+                "ML_INVALID_CONFIGURATION",
+            ),
+            // Not in the status table, so it lands on the default arm, as it did
+            // when it arrived as the string "ML_EXECUTION_FAILED".
+            (
+                QueryError::Ml(MlError::ExecutionFailed),
+                "QUERY_EXECUTION_FAILED",
+            ),
+            (QueryError::Parse("boom".into()), "QUERY_EXECUTION_FAILED"),
+            (
+                QueryError::Unsupported("boom".into()),
+                "QUERY_EXECUTION_FAILED",
+            ),
+            (
+                QueryError::Execution("boom".into()),
+                "QUERY_EXECUTION_FAILED",
+            ),
+        ] {
+            let actual = super::query_error_response(&error);
+            assert_eq!(
+                actual,
+                super::ml_error_response(expected_code),
+                "{error:?} should respond exactly as the code {expected_code} did"
+            );
+            assert!(actual.contains(expected_code), "{actual}");
+        }
+    }
+
+    // A parse failure carries the offending snippet. It must not reach the client.
+    #[test]
+    fn query_error_responses_do_not_leak_the_request() {
+        use kolibrie::execute_query::QueryError;
+
+        let error = QueryError::Parse("SELECT ?secret WHERE { canary }".to_string());
+        let response = super::query_error_response(&error);
+        assert!(!response.contains("canary"), "{response}");
+        assert!(!response.contains("secret"), "{response}");
     }
 
     #[test]

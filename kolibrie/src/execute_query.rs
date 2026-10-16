@@ -154,12 +154,11 @@ impl<'a> Solution<'a> {
 ///
 /// # The older entry points render differently
 ///
-/// [`execute_sparql_query`] and [`execute_sparql_with_ml_context`] still return
-/// `String`, and still return the bare message or bare `ML_*` code they always did,
-/// because the HTTP surface passes those to clients as a documented contract. So the
-/// same failure reads as `QUERY_POLICY: ML_FORBIDDEN` through [`execute`] and as
-/// `ML_FORBIDDEN` through those two. That is deliberate and temporary: match on the
-/// variant rather than on either string.
+/// [`execute_sparql_query`] still returns `String`, and still returns the bare message
+/// or bare `ML_*` code it always did, because several callers inside this crate
+/// propagate it with `?` into their own `Result<_, String>`. So the same failure
+/// reads as `QUERY_POLICY: ML_FORBIDDEN` through [`execute`] and as `ML_FORBIDDEN`
+/// through that one. Match on the variant rather than on either string.
 pub enum QueryError {
     /// The request did not parse as SPARQL or as one of the Kolibrie extensions.
     ///
@@ -202,12 +201,17 @@ impl QueryError {
     /// The message the `String`-returning entry points produced before this type
     /// existed: the bare message, or the bare `ML_*` code for a policy refusal.
     ///
-    /// Only [`execute_sparql_query`] and [`execute_sparql_with_ml_context`] use it,
-    /// and only because the HTTP surface returns their error strings to clients as a
-    /// documented contract. [`Display`](fmt::Display) is the one to use otherwise —
-    /// it carries a `QUERY_*` code, matching
-    /// [`ProgramError`](crate::program::ProgramError). This goes away with its two
-    /// callers.
+    /// Three callers, all inside this crate and all returning `Result<_, String>`
+    /// themselves: [`execute_sparql_query`],
+    /// [`process_rule_definition`](crate::parser::process_rule_definition) and
+    /// [`execute_neural_program`](crate::neural_relations::execute_neural_program).
+    /// The last two matter because a test asserts their error starts with `ML_`, and
+    /// [`Display`](fmt::Display) would prefix `QUERY_POLICY:` instead — which is the
+    /// right rendering for a new caller and the wrong one for an existing contract.
+    ///
+    /// Prefer `Display` otherwise: it carries a `QUERY_*` code, matching
+    /// [`ProgramError`](crate::program::ProgramError). This goes away when those
+    /// three signatures do.
     pub(crate) fn legacy_string(&self) -> String {
         match self {
             Self::Parse(message) | Self::Unsupported(message) | Self::Execution(message) => {
@@ -254,13 +258,25 @@ pub fn execute(sparql: &str, database: &mut SparqlDatabase) -> Result<Solutions,
     execute_request(sparql, database, RequestKind::Any)
 }
 
-/// Validate a request without changing the database
-pub fn validate_query_policy(sparql: &str, database: &SparqlDatabase) -> Result<(), String> {
-    let combined = parse_request(sparql, true).map_err(|_| "SPARQL_PARSE_ERROR".to_string())?;
+/// Checks whether a request would be permitted, without running it or touching the
+/// database.
+///
+/// Parses and applies the ML policy, and nothing else. A request this accepts can
+/// still fail when executed.
+///
+/// # Errors
+///
+/// [`QueryError::Parse`] if it does not parse, or [`QueryError::Ml`] if the policy
+/// refuses it. The parse message used to be flattened to the literal
+/// `"SPARQL_PARSE_ERROR"`, which discarded the snippet naming the offending token and
+/// was consumed by nothing: the one caller that reported it mapped every
+/// non-ML error to the same code regardless.
+pub fn validate_query_policy(sparql: &str, database: &SparqlDatabase) -> Result<(), QueryError> {
+    let combined = parse_request(sparql, true).map_err(QueryError::Parse)?;
     database
         .ml_context
         .validate_request(&combined, database)
-        .map_err(|e| e.to_string())
+        .map_err(QueryError::Ml)
 }
 
 /// Execute with temporary host-selected ML authority
@@ -268,11 +284,9 @@ pub fn execute_sparql_with_ml_context(
     sparql: &str,
     database: &mut SparqlDatabase,
     context: &crate::ml_policy::MlExecutionContext,
-) -> Result<Vec<Vec<String>>, String> {
+) -> Result<Vec<Vec<String>>, QueryError> {
     with_ml_context(database, context, |database| {
-        execute_request(sparql, database, RequestKind::Any)
-            .map(Vec::from)
-            .map_err(|error| error.legacy_string())
+        execute_request(sparql, database, RequestKind::Any).map(Vec::from)
     })
 }
 

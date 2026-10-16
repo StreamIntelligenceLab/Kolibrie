@@ -466,7 +466,10 @@ pub fn execute_top_level_ml_predict(
 
 /// Parses and runs a program's neural declarations against a store.
 pub fn execute_neural_program(database: &mut SparqlDatabase, program: &str) -> Result<(), String> {
-    crate::execute_query::validate_query_policy(program, database)?;
+    // `legacy_string`, not `to_string`: these return the bare `ML_*` code, which
+    // callers match on. `Display` would prefix `QUERY_POLICY:` and break that.
+    crate::execute_query::validate_query_policy(program, database)
+        .map_err(|error| error.legacy_string())?;
     database.register_prefixes_from_query(program);
 
     let (_rest, combined) =

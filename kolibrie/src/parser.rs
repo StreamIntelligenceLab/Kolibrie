@@ -3669,7 +3669,10 @@ pub fn process_rule_definition(
     rule_input: &str,
     database: &mut SparqlDatabase,
 ) -> Result<(Rule, Vec<Triple>), String> {
-    crate::execute_query::validate_query_policy(rule_input, database)?;
+    // `legacy_string`, not `to_string`: these return the bare `ML_*` code, which
+    // callers match on. `Display` would prefix `QUERY_POLICY:` and break that.
+    crate::execute_query::validate_query_policy(rule_input, database)
+        .map_err(|error| error.legacy_string())?;
     // First, register any prefixes from the rule with the database
     database.register_prefixes_from_query(rule_input);
 
