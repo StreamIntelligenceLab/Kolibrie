@@ -26,7 +26,9 @@ fn simple_select_synth_data(file_path: &str) {
         ?employee ds:annual_salary ?salary
     }"#;
 
-    let results = execute_query_rayon_parallel2_volcano(sparql, &mut database);
+    let results = execute(sparql, &mut database)
+        .expect("query should run")
+        .into_rows();
 
     println!("Results:");
     for result in results {

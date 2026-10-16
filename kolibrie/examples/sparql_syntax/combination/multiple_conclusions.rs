@@ -107,7 +107,9 @@ WHERE {
 }"#;
 
     // Execute the SELECT query
-    let query_results = execute_query_rayon_parallel2_volcano(select_query, &mut database);
+    let query_results = execute(select_query, &mut database)
+        .expect("query should run")
+        .into_rows();
 
     // Format and display the results nicely
     println!("\nQuery results: {:?}", query_results);

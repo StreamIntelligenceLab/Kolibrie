@@ -8,7 +8,7 @@
  * you can obtain one at https://mozilla.org/MPL/2.0/.
  */
 
-use kolibrie_core::execute_query::execute_query_rayon_parallel2_volcano;
+use kolibrie_core::execute_query::execute;
 use kolibrie_core::sparql_database::SparqlDatabase;
 use pyo3::exceptions::{PyOSError, PyRuntimeError, PyValueError};
 use pyo3::prelude::*;
@@ -130,12 +130,20 @@ impl PySparqlDatabase {
         Ok(())
     }
 
-    fn exec_query(&self, query: &str) -> Vec<Vec<String>> {
-        if let Ok(mut db) = self.db.lock() {
-            execute_query_rayon_parallel2_volcano(query, &mut db)
-        } else {
-            Vec::new()
-        }
+    /// Execute a SELECT and return its rows.
+    ///
+    /// Raises on a syntax or execution failure rather than returning an empty
+    /// table, matching `update` below: an empty list now means the query matched
+    /// nothing, where it previously also meant the query was rejected or the
+    /// database lock was poisoned.
+    fn exec_query(&self, query: &str) -> PyResult<Vec<Vec<String>>> {
+        let mut db = self
+            .db
+            .lock()
+            .map_err(|_| PyErr::new::<PyRuntimeError, _>("database lock poisoned"))?;
+        execute(query, &mut db)
+            .map(|solutions| solutions.into_rows())
+            .map_err(|error| PyErr::new::<PyRuntimeError, _>(error.to_string()))
     }
 
     /// Execute INSERT/DELETE DATA or a template-based INSERT/DELETE WHERE.

@@ -11,7 +11,7 @@
 use std::alloc::{GlobalAlloc, Layout, System};
 use std::sync::atomic::{AtomicUsize, Ordering};
 
-use kolibrie::execute_query::{execute_query_rayon_parallel2_volcano, execute_sparql_update};
+use kolibrie::execute_query::{execute, execute_sparql_update};
 use kolibrie::sparql_database::SparqlDatabase;
 
 static ALLOCATIONS: AtomicUsize = AtomicUsize::new(0);
@@ -129,7 +129,9 @@ fn allocation_profile() {
 
     // Warm up so thread-pool and dictionary growth are not attributed to a query
     for (_, sparql) in QUERIES {
-        execute_query_rayon_parallel2_volcano(sparql, &mut database);
+        execute(sparql, &mut database)
+            .expect("query should run")
+            .into_rows();
     }
 
     println!(
@@ -142,7 +144,10 @@ fn allocation_profile() {
         let before_allocations = ALLOCATIONS.load(Ordering::Relaxed);
         let before_bytes = BYTES.load(Ordering::Relaxed);
 
-        let rows = execute_query_rayon_parallel2_volcano(sparql, &mut database).len();
+        let rows = execute(sparql, &mut database)
+            .expect("query should run")
+            .into_rows()
+            .len();
 
         let allocations = ALLOCATIONS.load(Ordering::Relaxed) - before_allocations;
         let bytes = BYTES.load(Ordering::Relaxed) - before_bytes;

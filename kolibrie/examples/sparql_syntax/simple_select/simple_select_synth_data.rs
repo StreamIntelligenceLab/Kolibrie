@@ -54,7 +54,9 @@ fn simple_select_synth_data() {
 
     let sparql = r#"PREFIX ds: <https://data.cityofchicago.org/resource/xzkq-xp2w/> SELECT ?employee ?salary WHERE {?employee ds:annual_salary ?salary}"#;
 
-    let results = execute_query_rayon_parallel2_volcano(sparql, &mut database);
+    let results = execute(sparql, &mut database)
+        .expect("query should run")
+        .into_rows();
 
     // Now the main function is responsible for printing the results
     println!("Results:");

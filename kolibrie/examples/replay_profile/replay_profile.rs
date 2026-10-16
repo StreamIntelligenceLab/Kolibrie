@@ -10,7 +10,7 @@
 
 // Usage: cargo run --release --example replay_profile -- [members] [evals]
 
-use kolibrie::execute_query::execute_query_rayon_parallel2_volcano;
+use kolibrie::execute_query::execute;
 use kolibrie::sparql_database::{PlanningStatsPolicy, SparqlDatabase};
 use std::time::{Duration, Instant};
 
@@ -94,7 +94,10 @@ fn replay(members: usize, every: usize, policy: PlanningStatsPolicy, query: &str
         insert_member(&mut database, member);
         if member % every == 0 {
             let at = Instant::now();
-            rows = execute_query_rayon_parallel2_volcano(query, &mut database).len();
+            rows = execute(query, &mut database)
+                .expect("query should run")
+                .into_rows()
+                .len();
             query_time += at.elapsed();
         }
     }
@@ -160,13 +163,16 @@ fn main() {
     println!("stats rebuild (10x mean): {:?}", started.elapsed() / 10);
 
     // Query cost with warm statistics
-    let _ = execute_query_rayon_parallel2_volcano(JOIN_OF_TWO, &mut database);
+    let _ = execute(JOIN_OF_TWO, &mut database)
+        .expect("query should run")
+        .into_rows();
     let started = Instant::now();
     for _ in 0..evals {
-        std::hint::black_box(execute_query_rayon_parallel2_volcano(
-            JOIN_OF_TWO,
-            &mut database,
-        ));
+        std::hint::black_box(
+            execute(JOIN_OF_TWO, &mut database)
+                .expect("query should run")
+                .into_rows(),
+        );
     }
     let warm = started.elapsed();
     println!(
@@ -174,13 +180,17 @@ fn main() {
         warm / evals.max(1) as u32
     );
 
-    let rows = execute_query_rayon_parallel2_volcano(SEVEN_PATTERN_JOIN, &mut database).len();
+    let rows = execute(SEVEN_PATTERN_JOIN, &mut database)
+        .expect("query should run")
+        .into_rows()
+        .len();
     let started = Instant::now();
     for _ in 0..5 {
-        std::hint::black_box(execute_query_rayon_parallel2_volcano(
-            SEVEN_PATTERN_JOIN,
-            &mut database,
-        ));
+        std::hint::black_box(
+            execute(SEVEN_PATTERN_JOIN, &mut database)
+                .expect("query should run")
+                .into_rows(),
+        );
     }
     println!(
         "7-pattern join, warm    : {:?} each, {rows} rows",

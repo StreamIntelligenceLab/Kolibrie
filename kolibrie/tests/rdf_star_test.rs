@@ -8,7 +8,7 @@
  * you can obtain one at https://mozilla.org/MPL/2.0/.
  */
 
-use kolibrie::execute_query::execute_query_rayon_parallel2_volcano;
+use kolibrie::execute_query::execute;
 use kolibrie::sparql_database::SparqlDatabase;
 use shared::quoted_triple_store::{is_quoted_triple_id, QuotedTripleStore};
 
@@ -174,7 +174,9 @@ fn test_sparql_star_query_constant_quoted_triple() {
         }
     "#;
 
-    let results = execute_query_rayon_parallel2_volcano(query, &mut db);
+    let results = execute(query, &mut db)
+        .expect("query should run")
+        .into_rows();
     assert!(
         !results.is_empty(),
         "Should return at least one result, got: {:?}",
@@ -199,7 +201,9 @@ fn test_sparql_star_query_variable_in_quoted_triple() {
         }
     "#;
 
-    let results = execute_query_rayon_parallel2_volcano(query, &mut db);
+    let results = execute(query, &mut db)
+        .expect("query should run")
+        .into_rows();
     assert_eq!(
         results.len(),
         2,
@@ -378,7 +382,9 @@ fn test_bind_subject_predicate_object() {
             BIND(SUBJECT(?t) AS ?s)
         }
     "#;
-    let results = execute_query_rayon_parallel2_volcano(query, &mut db);
+    let results = execute(query, &mut db)
+        .expect("query should run")
+        .into_rows();
     assert_eq!(results.len(), 1, "Should return one result");
     // The subject of the quoted triple should be alice
     let row = &results[0];
@@ -402,7 +408,9 @@ fn test_bind_triple_constructor() {
             BIND(TRIPLE(?s, ?p, ?o) AS ?t)
         }
     "#;
-    let results = execute_query_rayon_parallel2_volcano(query, &mut db);
+    let results = execute(query, &mut db)
+        .expect("query should run")
+        .into_rows();
     assert_eq!(results.len(), 1, "Should return one result");
     // The constructed triple should contain <<
     let row = &results[0];
@@ -488,7 +496,9 @@ fn test_delete_where() {
         DELETE { ?s <http://example.org/knows> ?o . }
         WHERE { ?s <http://example.org/knows> ?o . }
     "#;
-    execute_query_rayon_parallel2_volcano(delete_query, &mut db);
+    execute(delete_query, &mut db)
+        .expect("query should run")
+        .into_rows();
     assert_eq!(
         default_len(&db),
         1,

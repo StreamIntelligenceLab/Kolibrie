@@ -14,7 +14,7 @@
 // that nothing can import from, so the lint flags every one of them.
 #![allow(unreachable_pub)]
 
-use kolibrie::execute_query::{execute_query_rayon_parallel2_volcano, execute_sparql_query};
+use kolibrie::execute_query::{execute, execute_sparql_query};
 use kolibrie::sparql_database::SparqlDatabase;
 
 /// Normalizes a solution sequence into a comparable bag
@@ -25,12 +25,16 @@ pub fn bag(mut rows: Vec<Vec<String>>) -> Vec<Vec<String>> {
 
 /// Runs a query and returns its solutions as a bag
 pub fn query(database: &mut SparqlDatabase, sparql: &str) -> Vec<Vec<String>> {
-    bag(execute_query_rayon_parallel2_volcano(sparql, database))
+    bag(execute(sparql, database)
+        .expect("query should run")
+        .into_rows())
 }
 
 /// Runs a query and returns its solutions in the sequence the engine produced
 pub fn ordered(database: &mut SparqlDatabase, sparql: &str) -> Vec<Vec<String>> {
-    execute_query_rayon_parallel2_volcano(sparql, database)
+    execute(sparql, database)
+        .expect("query should run")
+        .into_rows()
 }
 
 /// Runs a query through the `Result`-returning entry point

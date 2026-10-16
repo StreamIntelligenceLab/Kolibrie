@@ -34,7 +34,9 @@ fn execute_sample_query(database: &mut SparqlDatabase) {
         ?employee foaf:workplaceHomepage ?workplaceHomepage .
         ?employee ds:annual_salary ?salary
     }"#;
-    execute_query_rayon_parallel2_volcano(sparql, database);
+    execute(sparql, database)
+        .expect("query should run")
+        .into_rows();
 }
 
 fn execute_sample_query_volcano(database: &mut SparqlDatabase) {
@@ -46,7 +48,9 @@ fn execute_sample_query_volcano(database: &mut SparqlDatabase) {
         ?employee foaf:workplaceHomepage ?workplaceHomepage .
         ?employee ds:annual_salary ?salary
     }"#;
-    execute_query_rayon_parallel2_volcano(sparql, database);
+    execute(sparql, database)
+        .expect("query should run")
+        .into_rows();
 }
 
 /////////////////////////////////////////////////////////////////////////
@@ -65,7 +69,9 @@ fn execute_sample_query_complex(database: &mut SparqlDatabase) {
             }
         }
     }"#;
-    execute_query_rayon_parallel2_volcano(sparql, database);
+    execute(sparql, database)
+        .expect("query should run")
+        .into_rows();
 }
 
 fn execute_sample_query_volcano_complex(database: &mut SparqlDatabase) {
@@ -82,7 +88,9 @@ fn execute_sample_query_volcano_complex(database: &mut SparqlDatabase) {
             }
         }
     }"#;
-    execute_query_rayon_parallel2_volcano(sparql, database);
+    execute(sparql, database)
+        .expect("query should run")
+        .into_rows();
 }
 
 fn my_benchmark(c: &mut Criterion) {

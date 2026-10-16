@@ -35,7 +35,9 @@ fn simple_select() {
 
     let sparql = r#"PREFIX ex: <http://example.org/> SELECT ?person ?location WHERE {?person ex:worksAt ?location}"#;
 
-    let results = execute_query_rayon_parallel2_volcano(sparql, &mut database);
+    let results = execute(sparql, &mut database)
+        .expect("query should run")
+        .into_rows();
 
     // Now the main function is responsible for printing the results
     println!("Results:");

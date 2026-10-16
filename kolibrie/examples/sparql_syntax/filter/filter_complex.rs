@@ -82,7 +82,9 @@ fn main() {
         FILTER (?type = "Technical" || ?type = "Academic")
     }"#;
 
-    let results = execute_query_rayon_parallel2_volcano(sparql, &mut database);
+    let results = execute(sparql, &mut database)
+        .expect("query should run")
+        .into_rows();
     for result in results {
         if let [name, type_, attendees] = &result[..] {
             println!("Name: {}, Type: {}, Attendees: {}", name, type_, attendees);

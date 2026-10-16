@@ -580,7 +580,7 @@ fn run_all_queries(db: &mut SparqlDatabase) {
 
         for _ in 0..ITERATIONS {
             let start = Instant::now();
-            let _ = execute_query_rayon_parallel2_volcano(query, db);
+            let _ = execute(query, db).expect("query should run").into_rows();
             let elapsed = start.elapsed().as_secs_f64();
             total_time += elapsed;
         }

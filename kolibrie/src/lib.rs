@@ -21,7 +21,7 @@
 //!
 //! let mut db = SparqlDatabase::new();
 //! db.parse_ntriples_and_add(data);
-//! let rows = execute_query_rayon_parallel2_volcano(query, &mut db);
+//! let rows = execute(query, &mut db).expect("query should run").into_rows();
 //! ```
 //!
 //! # How a query gets answered

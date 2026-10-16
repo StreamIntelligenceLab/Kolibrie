@@ -7,7 +7,7 @@
  * you can obtain one at https://mozilla.org/MPL/2.0/.
  */
 
-use kolibrie::execute_query::execute_query_rayon_parallel2_volcano;
+use kolibrie::execute_query::execute;
 use kolibrie::parser::{parse_standalone_rule, process_rule_definition};
 use kolibrie::sparql_database::SparqlDatabase;
 use kolibrie::streamertail_optimizer::operators::LogicalOperator;
@@ -152,7 +152,9 @@ WHERE {
     ?room ex:temperatureAlert ?alert .
 }"#;
 
-    let query_results = execute_query_rayon_parallel2_volcano(select_query, &mut database);
+    let query_results = execute(select_query, &mut database)
+        .expect("query should run")
+        .into_rows();
     println!(
         "Final query results (rooms with temperature alerts): {:?}",
         query_results
@@ -165,8 +167,9 @@ WHERE {
           sensor:predictionConfidence ?confidence
 }"#;
 
-    let predictions_results =
-        execute_query_rayon_parallel2_volcano(predictions_query, &mut database);
+    let predictions_results = execute(predictions_query, &mut database)
+        .expect("query should run")
+        .into_rows();
     println!("ML Predictions in database: {:?}", predictions_results);
 
     let all_rooms_query = r#"PREFIX sensor: <http://example.org/sensor#>
@@ -177,7 +180,9 @@ WHERE {
           sensor:occupancy ?occupancy
 }"#;
 
-    let all_rooms_results = execute_query_rayon_parallel2_volcano(all_rooms_query, &mut database);
+    let all_rooms_results = execute(all_rooms_query, &mut database)
+        .expect("query should run")
+        .into_rows();
     println!("All room data: {:?}", all_rooms_results);
 
     Ok(())

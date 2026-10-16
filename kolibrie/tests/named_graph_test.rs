@@ -8,7 +8,7 @@
  * you can obtain one at https://mozilla.org/MPL/2.0/.
  */
 
-use kolibrie::execute_query::execute_query_rayon_parallel2_volcano;
+use kolibrie::execute_query::execute;
 use kolibrie::sparql_database::SparqlDatabase;
 
 #[test]
@@ -20,7 +20,7 @@ fn plain_select_reads_default_graph_only() {
         "default-o",
     );
 
-    execute_query_rayon_parallel2_volcano(
+    execute(
         r#"
         INSERT {
             GRAPH <http://example.org/g1> {
@@ -30,9 +30,11 @@ fn plain_select_reads_default_graph_only() {
         WHERE { }
         "#,
         &mut db,
-    );
+    )
+    .expect("query should run")
+    .into_rows();
 
-    let rows = execute_query_rayon_parallel2_volcano(
+    let rows = execute(
         r#"
         SELECT ?s ?o
         WHERE {
@@ -40,7 +42,9 @@ fn plain_select_reads_default_graph_only() {
         }
         "#,
         &mut db,
-    );
+    )
+    .expect("query should run")
+    .into_rows();
 
     assert_eq!(
         rows,
@@ -55,7 +59,7 @@ fn plain_select_reads_default_graph_only() {
 fn graph_iri_select_reads_only_that_named_graph() {
     let mut db = SparqlDatabase::new();
 
-    execute_query_rayon_parallel2_volcano(
+    execute(
         r#"
         INSERT {
             GRAPH <http://example.org/g1> {
@@ -68,9 +72,11 @@ fn graph_iri_select_reads_only_that_named_graph() {
         WHERE { }
         "#,
         &mut db,
-    );
+    )
+    .expect("query should run")
+    .into_rows();
 
-    let rows = execute_query_rayon_parallel2_volcano(
+    let rows = execute(
         r#"
         SELECT ?s ?o
         WHERE {
@@ -80,7 +86,9 @@ fn graph_iri_select_reads_only_that_named_graph() {
         }
         "#,
         &mut db,
-    );
+    )
+    .expect("query should run")
+    .into_rows();
 
     assert_eq!(
         rows,
@@ -97,7 +105,7 @@ fn graph_variable_binds_named_graphs_only() {
         "default-o",
     );
 
-    execute_query_rayon_parallel2_volcano(
+    execute(
         r#"
         INSERT {
             GRAPH <http://example.org/g1> {
@@ -110,9 +118,11 @@ fn graph_variable_binds_named_graphs_only() {
         WHERE { }
         "#,
         &mut db,
-    );
+    )
+    .expect("query should run")
+    .into_rows();
 
-    let mut rows = execute_query_rayon_parallel2_volcano(
+    let mut rows = execute(
         r#"
         SELECT ?g ?o
         WHERE {
@@ -122,7 +132,9 @@ fn graph_variable_binds_named_graphs_only() {
         }
         "#,
         &mut db,
-    );
+    )
+    .expect("query should run")
+    .into_rows();
     rows.sort();
 
     assert_eq!(
@@ -138,7 +150,7 @@ fn graph_variable_binds_named_graphs_only() {
 fn from_named_restricts_graph_variable_visibility() {
     let mut db = SparqlDatabase::new();
 
-    execute_query_rayon_parallel2_volcano(
+    execute(
         r#"
         INSERT {
             GRAPH <http://example.org/g1> {
@@ -151,9 +163,11 @@ fn from_named_restricts_graph_variable_visibility() {
         WHERE { }
         "#,
         &mut db,
-    );
+    )
+    .expect("query should run")
+    .into_rows();
 
-    let rows = execute_query_rayon_parallel2_volcano(
+    let rows = execute(
         r#"
         SELECT ?g ?o
         FROM NAMED <http://example.org/g2>
@@ -164,7 +178,9 @@ fn from_named_restricts_graph_variable_visibility() {
         }
         "#,
         &mut db,
-    );
+    )
+    .expect("query should run")
+    .into_rows();
 
     assert_eq!(
         rows,
@@ -179,7 +195,7 @@ fn nquads_roundtrip_preserves_named_graph() {
         r#"<http://example.org/s> <http://example.org/p> "value" <http://example.org/g> ."#,
     );
 
-    let rows = execute_query_rayon_parallel2_volcano(
+    let rows = execute(
         r#"
         SELECT ?g ?o
         WHERE {
@@ -189,7 +205,9 @@ fn nquads_roundtrip_preserves_named_graph() {
         }
         "#,
         &mut db,
-    );
+    )
+    .expect("query should run")
+    .into_rows();
 
     assert_eq!(
         rows,

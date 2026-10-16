@@ -81,7 +81,9 @@ fn main() {
     << ?sensor <http://example.org/temperature> ?temp >> <http://example.org/reliability> ?reliability .
 }"#;
 
-    let star_results = execute_query_rayon_parallel2_volcano(sparql_star_query, &mut database);
+    let star_results = execute(sparql_star_query, &mut database)
+        .expect("query should run")
+        .into_rows();
 
     println!("  Results ({} rows):", star_results.len());
     for row in &star_results {
@@ -134,7 +136,9 @@ SELECT ?sensor WHERE {
     ?sensor ex:overheatAlert true .
 }"#;
 
-    let alert_results = execute_query_rayon_parallel2_volcano(sparql_alert, &mut database);
+    let alert_results = execute(sparql_alert, &mut database)
+        .expect("query should run")
+        .into_rows();
     println!("  Overheating sensors ({} found):", alert_results.len());
     for row in &alert_results {
         for val in row {
@@ -185,7 +189,9 @@ SELECT ?sensor WHERE {
     ?sensor ex:criticalRisk true .
 }"#;
 
-    let critical_results = execute_query_rayon_parallel2_volcano(sparql_critical, &mut database);
+    let critical_results = execute(sparql_critical, &mut database)
+        .expect("query should run")
+        .into_rows();
     println!(
         "  Critical-risk sensors ({} found):",
         critical_results.len()
@@ -199,7 +205,9 @@ SELECT ?sensor WHERE {
     println!("\n[Stage 8] SPARQL-star re-query — reliability annotations still accessible...");
 
     database.get_or_build_stats();
-    let star_results2 = execute_query_rayon_parallel2_volcano(sparql_star_query, &mut database);
+    let star_results2 = execute(sparql_star_query, &mut database)
+        .expect("query should run")
+        .into_rows();
     println!("  Reliability annotations ({} rows):", star_results2.len());
     for row in &star_results2 {
         if row.len() >= 3 {

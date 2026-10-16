@@ -12,7 +12,7 @@
 //! produces. Every test here fixes a dataset, then asserts that writing the
 //! same patterns in different source orders yields the same solution bag.
 
-use kolibrie::execute_query::{execute_query_rayon_parallel2_volcano, execute_sparql_update};
+use kolibrie::execute_query::{execute, execute_sparql_update};
 use kolibrie::sparql_database::SparqlDatabase;
 
 fn bag(mut rows: Vec<Vec<String>>) -> Vec<Vec<String>> {
@@ -21,7 +21,9 @@ fn bag(mut rows: Vec<Vec<String>>) -> Vec<Vec<String>> {
 }
 
 fn query(database: &mut SparqlDatabase, sparql: &str) -> Vec<Vec<String>> {
-    bag(execute_query_rayon_parallel2_volcano(sparql, database))
+    bag(execute(sparql, database)
+        .expect("query should run")
+        .into_rows())
 }
 
 /// A path `n0 -> n1 -> ... -> n8` where only `n0` carries the anchor type,

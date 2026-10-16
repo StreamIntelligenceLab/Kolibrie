@@ -13,7 +13,7 @@ use std::error::Error;
 // Needed only by the ml-gated functions below; `rdf_term_to_f64`, which the default
 // build uses, needs nothing but `Error`.
 #[cfg(feature = "ml")]
-use crate::execute_query::execute_query_rayon_parallel2_volcano;
+use crate::execute_query::execute;
 #[cfg(feature = "ml")]
 use crate::parser::parse_sparql_query;
 #[cfg(feature = "ml")]
@@ -53,7 +53,9 @@ pub(crate) fn query_training_rows(
         return Err("training data query must SELECT at least one variable".into());
     }
 
-    let rows = execute_query_rayon_parallel2_volcano(select_query, db);
+    let rows = execute(select_query, db)
+        .expect("query should run")
+        .into_rows();
     Ok(rows
         .into_iter()
         .map(|row| {

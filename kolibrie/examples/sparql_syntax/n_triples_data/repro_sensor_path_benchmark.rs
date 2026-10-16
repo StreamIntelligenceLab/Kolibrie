@@ -8,7 +8,7 @@
  * you can obtain one at https://mozilla.org/MPL/2.0/.
  */
 
-use kolibrie::execute_query::execute_query_rayon_parallel2_volcano;
+use kolibrie::execute_query::execute;
 use kolibrie::sparql_database::SparqlDatabase;
 use std::fs;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -159,15 +159,19 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut legacy_db = db.clone();
     let mut optimized_db = db.clone();
 
-    let legacy = measure_query("execute_query_rayon_parallel2_volcano (warmup)", || {
-        execute_query_rayon_parallel2_volcano(REPRO_QUERY, &mut legacy_db)
+    let legacy = measure_query("execute (warmup)", || {
+        execute(REPRO_QUERY, &mut legacy_db)
+            .expect("query should run")
+            .into_rows()
     });
-    print_measurement("execute_query_rayon_parallel2_volcano (warmup)", &legacy);
+    print_measurement("execute (warmup)", &legacy);
 
-    let optimized = measure_query("execute_query_rayon_parallel2_volcano", || {
-        execute_query_rayon_parallel2_volcano(REPRO_QUERY, &mut optimized_db)
+    let optimized = measure_query("execute", || {
+        execute(REPRO_QUERY, &mut optimized_db)
+            .expect("query should run")
+            .into_rows()
     });
-    print_measurement("execute_query_rayon_parallel2_volcano", &optimized);
+    print_measurement("execute", &optimized);
 
     if legacy.rows.len() != optimized.rows.len() {
         eprintln!(

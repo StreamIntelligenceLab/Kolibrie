@@ -36,10 +36,12 @@ fn values() {
     database.parse_rdf(rdf_data);
 
     // Sample SPARQL query using VALUES clause
-    let sparql_query = r#"PREFIX ex: <http://example.org/> SELECT ?person ?company WHERE {?person ex:worksAt ?company} VALUES ?company { ex:companyA ex:companyB }"#;
+    let sparql_query = r#"PREFIX ex: <http://example.org/> SELECT ?person ?company WHERE { VALUES ?company { ex:companyA ex:companyB } ?person ex:worksAt ?company }"#;
 
     // Execute the query on the database
-    let results = execute_query_rayon_parallel2_volcano(sparql_query, &mut database);
+    let results = execute(sparql_query, &mut database)
+        .expect("query should run")
+        .into_rows();
 
     // Display the results
     println!("Query Results:");

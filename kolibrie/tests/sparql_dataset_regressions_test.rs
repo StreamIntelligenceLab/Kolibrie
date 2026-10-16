@@ -1,10 +1,12 @@
-use kolibrie::execute_query::{execute_query_rayon_parallel2_volcano, execute_sparql_update};
+use kolibrie::execute_query::{execute, execute_sparql_update};
 use kolibrie::sparql_database::SparqlDatabase;
 use kolibrie::streamertail_optimizer::DatabaseStats;
 use shared::dataset_index::GraphId;
 
 fn query(database: &mut SparqlDatabase, sparql: &str) -> Vec<Vec<String>> {
-    execute_query_rayon_parallel2_volcano(sparql, database)
+    execute(sparql, database)
+        .expect("query should run")
+        .into_rows()
 }
 
 #[test]

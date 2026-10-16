@@ -43,21 +43,7 @@ pub use crate::execute_query::execute;
 /// Why a request could not be answered.
 pub use crate::execute_query::QueryError;
 
-/// Executes a query against a store, reporting failure by returning no rows.
-//
-// Superseded by `execute` and kept only so its callers can move one at a time. The
-// name describes an implementation it happened to land on — and no longer has, since
-// the "2" is vestigial — but the reason to replace it is the contract, not the name:
-// it prints `SPARQL_EXECUTION_FAILED` and returns an empty vector, which a caller
-// cannot tell from a query that correctly matched nothing.
-//
-// What the prelude buys, stated precisely because it is easy to overstate: it removes
-// dependence on module *paths*, not on names. 48 files import through this glob, so
-// moving a function to another crate edits a line here rather than 48 files — which
-// is what the crate splits do. The name itself is still spelled out at 115 call sites
-// in bodies, and in 25 explicit imports, which is the work the migration step does.
-//
-// It cannot be marked `#[deprecated]` while those call sites exist: the lint fires at
-// the *use* site, and `deprecated` is held at zero by a blocking CI gate, so marking
-// it would turn the build red at 115 places at once. Migrate first, deprecate after.
-pub use crate::execute_query::execute_query_rayon_parallel2_volcano;
+// `execute_query_rayon_parallel2_volcano` was here until `execute` replaced it. It is
+// deprecated rather than deleted, but it is no longer in the prelude: a glob import
+// should not be how anyone reaches a deprecated entry point, and re-exporting one
+// here would put a deprecation warning on every file that globs this module.

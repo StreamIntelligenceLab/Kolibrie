@@ -9,7 +9,7 @@
  */
 
 extern crate kolibrie;
-use kolibrie::execute_query::execute_query_rayon_parallel2_volcano;
+use kolibrie::execute_query::execute;
 use kolibrie::sparql_database::SparqlDatabase;
 use shared::triple::Triple;
 
@@ -184,13 +184,15 @@ mod tests {
         "#,
         );
 
-        let rows = execute_query_rayon_parallel2_volcano(
+        let rows = execute(
             r#"
             SELECT ?person ?friend
             WHERE { ?person ?anything ?friend }
         "#,
             &mut db,
-        );
+        )
+        .expect("query should run")
+        .into_rows();
 
         assert_eq!(rows.len(), 2);
         assert!(rows.contains(&vec![
@@ -213,7 +215,7 @@ mod tests {
         "#,
         );
 
-        let rows = execute_query_rayon_parallel2_volcano(
+        let rows = execute(
             r#"
             PREFIX ex: <http://example.org/>
             SELECT ?age ?friend
@@ -223,7 +225,9 @@ mod tests {
             }
         "#,
             &mut db,
-        );
+        )
+        .expect("query should run")
+        .into_rows();
 
         assert_eq!(
             rows,
@@ -241,7 +245,7 @@ mod tests {
         "#,
         );
 
-        let rows = execute_query_rayon_parallel2_volcano(
+        let rows = execute(
             r#"
             PREFIX ex: <http://example.org/>
             SELECT ?friend
@@ -250,7 +254,9 @@ mod tests {
             }
         "#,
             &mut db,
-        );
+        )
+        .expect("query should run")
+        .into_rows();
 
         assert_eq!(rows.len(), 2);
         assert!(rows.contains(&vec!["http://example.org/Bob".to_string()]));
@@ -267,7 +273,7 @@ mod tests {
         "#,
         );
 
-        let rows = execute_query_rayon_parallel2_volcano(
+        let rows = execute(
             r#"
             PREFIX ex: <http://example.org/>
             SELECT ?predicate ?object
@@ -276,7 +282,9 @@ mod tests {
             }
         "#,
             &mut db,
-        );
+        )
+        .expect("query should run")
+        .into_rows();
 
         assert_eq!(rows.len(), 3);
         assert!(rows.contains(&vec![

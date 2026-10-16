@@ -12,7 +12,7 @@ extern crate criterion;
 extern crate kolibrie;
 
 use criterion::*;
-use kolibrie::execute_query::{execute_query_rayon_parallel2_volcano, execute_sparql_update};
+use kolibrie::execute_query::{execute, execute_sparql_update};
 use kolibrie::sparql_database::SparqlDatabase;
 
 const SUBJECTS: usize = 20_000;
@@ -110,7 +110,9 @@ fn hot_paths(c: &mut Criterion) {
     ] {
         group.bench_function(name, |b| {
             b.iter(|| {
-                let results = execute_query_rayon_parallel2_volcano(sparql, &mut database);
+                let results = execute(sparql, &mut database)
+                    .expect("query should run")
+                    .into_rows();
                 black_box(results.len())
             })
         });

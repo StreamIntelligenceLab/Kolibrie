@@ -49,7 +49,13 @@ fn main() {
     let mut database = SparqlDatabase::new();
     database.parse_rdf_from_file(&args.file);
 
-    // Execute query
-    let results = execute_query_rayon_parallel2_volcano(&args.query, &mut database);
-    println!("Results: {:?}", results);
+    // A failed query exits non-zero and says why. It used to print `Results: []`
+    // and exit 0, which is also what a query matching nothing prints.
+    match execute(&args.query, &mut database) {
+        Ok(solutions) => println!("Results: {:?}", solutions.into_rows()),
+        Err(error) => {
+            eprintln!("{error}");
+            std::process::exit(1);
+        }
+    }
 }

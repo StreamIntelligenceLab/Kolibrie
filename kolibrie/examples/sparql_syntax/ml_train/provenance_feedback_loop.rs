@@ -7,7 +7,7 @@
  */
 
 use kolibrie::execute_ml_train::build_ground_reasoner_from_db;
-use kolibrie::execute_query::execute_query_rayon_parallel2_volcano;
+use kolibrie::execute_query::execute;
 use kolibrie::neural_relations::execute_neural_program;
 use kolibrie::parser::{convert_combined_rule, parse_combined_query, process_rule_definition};
 use kolibrie::sparql_database::SparqlDatabase;
@@ -427,7 +427,9 @@ fn main() {
         provenance_inferred
     );
 
-    let risk_rows = execute_query_rayon_parallel2_volcano(&risk_signal_query(), &mut db);
+    let risk_rows = execute(&risk_signal_query(), &mut db)
+        .expect("query should run")
+        .into_rows();
     println!("\n  Derived {} riskSignal facts", risk_rows.len());
 
     println!("\n[3/5] Inspecting provenance with SPARQL-star and building neural features");
@@ -448,7 +450,9 @@ fn main() {
 
     let prediction_query = prediction_query();
     print_block("  Prediction query", &prediction_query);
-    let prediction_rows = execute_query_rayon_parallel2_volcano(&prediction_query, &mut db);
+    let prediction_rows = execute(&prediction_query, &mut db)
+        .expect("query should run")
+        .into_rows();
     print_rows("  Predicted responses", &prediction_rows);
 
     println!("\n[5/5] Feeding predictions back into RULE syntax");
@@ -463,7 +467,9 @@ fn main() {
 
     let case_query = dispatch_case_query();
     print_block("  Final SELECT query", &case_query);
-    let case_rows = execute_query_rayon_parallel2_volcano(&case_query, &mut db);
+    let case_rows = execute(&case_query, &mut db)
+        .expect("query should run")
+        .into_rows();
     print_rows("  Dispatch cases opened by the rule", &case_rows);
 
     println!("\nModel saved to {MODEL_PATH}");

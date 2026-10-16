@@ -677,7 +677,7 @@ mod tests {
         ));
     }
     use super::*;
-    use crate::execute_query::execute_query_rayon_parallel2_volcano;
+    use crate::execute_query::execute;
     use crate::parser::process_rule_definition;
     use shared::query::{LossFn, OptimizerKind};
 
@@ -820,7 +820,9 @@ WHERE {
 }
         "#;
 
-        let results = execute_query_rayon_parallel2_volcano(query, &mut db);
+        let results = execute(query, &mut db)
+            .expect("query should run")
+            .into_rows();
         assert_eq!(results.len(), 2);
     }
 

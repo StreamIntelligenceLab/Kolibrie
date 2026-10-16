@@ -51,9 +51,11 @@ fn sum_aggregate() {
     let mut database = SparqlDatabase::new();
     database.parse_rdf(rdf_data);
 
-    let sparql = r#"PREFIX foaf: <http://xmlns.com/foaf/0.1/> PREFIX ds: <https://data.cityofchicago.org/resource/xzkq-xp2w/> SELECT ?title SUM(?salary) AS ?total_salary WHERE {?employee foaf:title ?title . ?employee ds:annual_salary ?salary} GROUPBY ?title"#;
+    let sparql = r#"PREFIX foaf: <http://xmlns.com/foaf/0.1/> PREFIX ds: <https://data.cityofchicago.org/resource/xzkq-xp2w/> SELECT ?title SUM(?salary) AS ?total_salary WHERE {?employee foaf:title ?title . ?employee ds:annual_salary ?salary} GROUP BY ?title"#;
 
-    let results = execute_query_rayon_parallel2_volcano(sparql, &mut database);
+    let results = execute(sparql, &mut database)
+        .expect("query should run")
+        .into_rows();
 
     // Now the main function is responsible for printing the results
     println!("Results:");

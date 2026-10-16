@@ -1,5 +1,5 @@
 use kolibrie::execute_ml::execute_ml_prediction_from_clause;
-use kolibrie::execute_query::execute_query_rayon_parallel2_volcano;
+use kolibrie::execute_query::execute;
 use kolibrie::parser::{parse_standalone_rule, process_rule_definition};
 use kolibrie::sparql_database::SparqlDatabase;
 use ml::MLHandler;
@@ -677,7 +677,9 @@ impl DynamicRuleManager {
 
     fn query(&mut self, query: &str, description: &str) -> Result<(), Box<dyn Error>> {
         println!("\nQuery: {}", description);
-        let results = execute_query_rayon_parallel2_volcano(query, &mut self.database);
+        let results = execute(query, &mut self.database)
+            .expect("query should run")
+            .into_rows();
         println!("Results: {:?}", results);
         Ok(())
     }

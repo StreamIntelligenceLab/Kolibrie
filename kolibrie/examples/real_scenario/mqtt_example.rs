@@ -10,7 +10,7 @@
 
 use chrono::Utc;
 use datalog::reasoning::Reasoner;
-use kolibrie::execute_query::execute_query_rayon_parallel2_volcano;
+use kolibrie::execute_query::execute;
 use kolibrie::parser::convert_combined_rule;
 use kolibrie::prelude::*;
 use kolibrie::sparql_database::SparqlDatabase;
@@ -701,8 +701,9 @@ WHERE {
                             ex:gridY ?y .
                 }"#;
 
-                let grid_sensor_results =
-                    execute_query_rayon_parallel2_volcano(query_grid_sensors, &mut database);
+                let grid_sensor_results = execute(query_grid_sensors, &mut database)
+                    .expect("query should run")
+                    .into_rows();
                 println!("\n==> Sensors in grid coordinates:");
                 for row in grid_sensor_results {
                     println!("{:?}", row);
@@ -715,8 +716,9 @@ WHERE {
                     ?room ex:detectionStrategy ?strategy .
                 }"#;
 
-                let strategy_results =
-                    execute_query_rayon_parallel2_volcano(query_strategies, &mut database);
+                let strategy_results = execute(query_strategies, &mut database)
+                    .expect("query should run")
+                    .into_rows();
                 println!("\n==> Detection strategies:");
                 for row in strategy_results {
                     println!("{:?}", row);
@@ -729,8 +731,9 @@ WHERE {
                     ?room ex:fallbackDetectionStrategy ?strategy .
                 }"#;
 
-                let fallback_results =
-                    execute_query_rayon_parallel2_volcano(query_fallbacks, &mut database);
+                let fallback_results = execute(query_fallbacks, &mut database)
+                    .expect("query should run")
+                    .into_rows();
                 println!("\n==> Fallback strategies:");
                 for row in fallback_results {
                     println!("{:?}", row);
@@ -745,8 +748,9 @@ WHERE {
                     FILTER(?detected = "true")
                 }"#;
 
-                let motion_results =
-                    execute_query_rayon_parallel2_volcano(query_motion, &mut database);
+                let motion_results = execute(query_motion, &mut database)
+                    .expect("query should run")
+                    .into_rows();
                 println!("\n==> Active motion detection:");
                 for row in motion_results {
                     println!("{:?}", row);
@@ -761,8 +765,9 @@ WHERE {
                            ex:timeOfDetection ?time .
                 }"#;
 
-                let detection_results =
-                    execute_query_rayon_parallel2_volcano(query_detections, &mut database);
+                let detection_results = execute(query_detections, &mut database)
+                    .expect("query should run")
+                    .into_rows();
                 println!("\n==> Detected objects");
                 for row in detection_results {
                     println!("{:?}", row);
@@ -777,8 +782,9 @@ WHERE {
                            ex:timeOfDetection ?time .
                 }"#;
 
-                let unauthorized_results =
-                    execute_query_rayon_parallel2_volcano(query_unauthorized, &mut database);
+                let unauthorized_results = execute(query_unauthorized, &mut database)
+                    .expect("query should run")
+                    .into_rows();
                 println!("\n==> Unauthorized detection events:");
                 for row in unauthorized_results {
                     println!("{:?}", row);

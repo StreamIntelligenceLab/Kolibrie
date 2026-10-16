@@ -82,7 +82,9 @@ fn main() {
     }
     LIMIT 2"#;
 
-    let results_limited = execute_query_rayon_parallel2_volcano(sparql_with_limit, &mut database);
+    let results_limited = execute(sparql_with_limit, &mut database)
+        .expect("query should run")
+        .into_rows();
     println!("Results with LIMIT 2:");
     for result in results_limited {
         if let [name, type_, attendees] = &result[..] {

@@ -49,7 +49,9 @@ fn n3_simple_query() {
         ?person ex:annualSalary ?salary
     }"#;
 
-    let results = execute_query_rayon_parallel2_volcano(sparql_query, &mut db);
+    let results = execute(sparql_query, &mut db)
+        .expect("query should run")
+        .into_rows();
     println!("Results:");
     for result in results {
         if let [name, salary] = &result[..] {

@@ -8,7 +8,7 @@
  */
 
 use kolibrie::execute_ml::execute_ml_prediction_from_clause;
-use kolibrie::execute_query::execute_query_rayon_parallel2_volcano;
+use kolibrie::execute_query::execute;
 use kolibrie::parser::{parse_standalone_rule, process_rule_definition};
 use kolibrie::sparql_database::SparqlDatabase;
 use ml::MLHandler;
@@ -455,7 +455,9 @@ WHERE {
 }"#;
 
     // Execute the SELECT query to get results
-    let query_results = execute_query_rayon_parallel2_volcano(select_query, &mut database);
+    let query_results = execute(select_query, &mut database)
+        .expect("query should run")
+        .into_rows();
     println!(
         "Final query results (users with savings alerts): {:?}",
         query_results
@@ -469,8 +471,9 @@ WHERE {
           finance:predictionConfidence ?confidence
 }"#;
 
-    let predictions_results =
-        execute_query_rayon_parallel2_volcano(predictions_query, &mut database);
+    let predictions_results = execute(predictions_query, &mut database)
+        .expect("query should run")
+        .into_rows();
     println!("ML Predictions in database: {:?}", predictions_results);
 
     // Execute a query to show all user financial data for comparison
@@ -482,7 +485,9 @@ WHERE {
           finance:savings_rate ?savings_rate
 }"#;
 
-    let all_users_results = execute_query_rayon_parallel2_volcano(all_users_query, &mut database);
+    let all_users_results = execute(all_users_query, &mut database)
+        .expect("query should run")
+        .into_rows();
     println!("All user financial data: {:?}", all_users_results);
 
     Ok(())

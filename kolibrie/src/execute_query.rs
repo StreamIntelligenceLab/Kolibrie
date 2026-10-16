@@ -77,6 +77,17 @@ impl Solutions {
         self.variables.iter().any(|v| v == name)
     }
 
+    /// The rows as plain strings, dropping the variable names and rendering an
+    /// unbound value as `""`.
+    ///
+    /// The shape the older entry points return, for a caller that indexes by column
+    /// and does not need either. It is lossy in a way `Vec<Vec<String>>` cannot
+    /// express — an unbound variable and one bound to the empty string come out the
+    /// same — so prefer [`iter`](Self::iter) in new code.
+    pub fn into_rows(self) -> Vec<Vec<String>> {
+        self.into()
+    }
+
     /// The solutions, in result order.
     pub fn iter(&self) -> impl Iterator<Item = Solution<'_>> {
         self.rows.iter().map(|values| Solution {
@@ -149,7 +160,6 @@ impl<'a> Solution<'a> {
 /// same failure reads as `QUERY_POLICY: ML_FORBIDDEN` through [`execute`] and as
 /// `ML_FORBIDDEN` through those two. That is deliberate and temporary: match on the
 /// variant rather than on either string.
-#[derive(Debug)]
 pub enum QueryError {
     /// The request did not parse as SPARQL or as one of the Kolibrie extensions.
     ///
@@ -164,6 +174,17 @@ pub enum QueryError {
     /// Parsing and policy both passed, and evaluation failed. Covers an unresolvable
     /// dataset clause, an unsupported update template, and failure inside the plan.
     Execution(String),
+}
+
+// Debug delegates to Display rather than being derived, because `unwrap` and
+// `expect` print the Debug form: a derived one escapes the newlines in a parse
+// snippet, turning the annotated, multi-line message that points at the offending
+// token into an unreadable single line of `\n`. The `QUERY_*` prefix carries the
+// variant name, so nothing is lost by this.
+impl fmt::Debug for QueryError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{self}")
+    }
 }
 
 impl fmt::Display for QueryError {
@@ -284,7 +305,17 @@ pub struct UpdateSummary {
     pub deleted_quads: usize,
 }
 
+/// Executes a query, reporting failure by returning no rows.
+///
+/// Superseded by [`execute`]. Deprecated rather than deleted so code outside this
+/// repository keeps compiling with a warning; every call site inside it has moved.
+///
 /// Execute SELECT or a compatibility Update request through the unified
+#[deprecated(
+    note = "use `execute`, which returns Result<Solutions, QueryError>: this reports \
+            failure by returning no rows, which a caller cannot tell from a query \
+            that matched nothing"
+)]
 pub fn execute_query_rayon_parallel2_volcano(
     sparql: &str,
     database: &mut SparqlDatabase,
