@@ -251,7 +251,7 @@ impl From<crate::ml_policy::MlError> for QueryError {
 /// queries. [`execute_sparql_query`] rejects them, and
 /// [`execute_sparql_update`] returns an [`UpdateSummary`] rather than rows.
 pub fn execute(sparql: &str, database: &mut SparqlDatabase) -> Result<Solutions, QueryError> {
-    execute_request(sparql, database, true)
+    execute_request(sparql, database, RequestKind::Any)
 }
 
 /// Validate a request without changing the database
@@ -270,7 +270,7 @@ pub fn execute_sparql_with_ml_context(
     context: &crate::ml_policy::MlExecutionContext,
 ) -> Result<Vec<Vec<String>>, String> {
     with_ml_context(database, context, |database| {
-        execute_request(sparql, database, true)
+        execute_request(sparql, database, RequestKind::Any)
             .map(Vec::from)
             .map_err(|error| error.legacy_string())
     })
@@ -341,35 +341,17 @@ pub fn execute_sparql_query(
     sparql: &str,
     database: &mut SparqlDatabase,
 ) -> Result<Vec<Vec<String>>, String> {
-    let combined = parse_request(sparql, false)?;
-    combined.single_rule()?;
-    database
-        .ml_context
-        .validate_request(&combined, database)
-        .map_err(|e| e.to_string())?;
-    if let Some(predict) = &combined.ml_predict {
-        #[cfg(feature = "ml")]
-        if database.ml_context.require_local().is_ok() {
-            crate::neural_relations::execute_neural_program(database, sparql)?;
-            return Ok(Vec::new());
-        }
-        return execute_approved_prediction(predict, &combined.prefixes, database).map(Vec::from);
-    }
-    match combined.sparql.as_ref() {
-        Some(SparqlOperation::Update(_)) => {
-            Err("expected a SPARQL query, found an Update operation".to_string())
-        }
-        Some(SparqlOperation::Select(query)) => {
-            let prefixes = prepare_extensions(&combined, database)?;
-            // Flattened back to the published shape, losing the variable names and
-            // the unbound distinction. `execute` is the one that keeps them.
-            execute_select(query, &prefixes, database).map(Vec::from)
-        }
-        None => {
-            prepare_extensions(&combined, database)?;
-            Ok(Vec::new())
-        }
-    }
+    // This repeated `execute_request`'s whole pipeline — parse, single_rule,
+    // validate_request, the ML branch, dispatch — for the sake of two differences,
+    // which are now what `RequestKind::QueryOnly` means. Keeping two copies of that
+    // sequence is how the entry points drift apart.
+    //
+    // Still returns `String` rather than `QueryError`, and still flattens to
+    // `Vec<Vec<String>>`, because the HTTP surface passes these errors to clients.
+    // `execute` is the one that keeps the variable names and the unbound distinction.
+    execute_request(sparql, database, RequestKind::QueryOnly)
+        .map(Solutions::into_rows)
+        .map_err(|error| error.legacy_string())
 }
 
 /// Execute one of the six supported standard SPARQL Update forms
@@ -393,12 +375,22 @@ pub(crate) fn execute_sparql_update_compat(
 // further down is a separate change, and doing it here keeps the distinction a caller
 // can act on — a request that did not parse, versus one refused by policy, versus one
 // that failed while running — without rewriting the pipeline underneath.
+/// What forms a request may take, which is the whole of what the query entry points
+/// disagree about.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RequestKind {
+    /// A query or an Update, with the standalone `INSERT`/`DELETE` aliases accepted.
+    Any,
+    /// A query only. An Update is refused, and the aliases do not parse.
+    QueryOnly,
+}
+
 fn execute_request(
     sparql: &str,
     database: &mut SparqlDatabase,
-    allow_data_aliases: bool,
+    kind: RequestKind,
 ) -> Result<Solutions, QueryError> {
-    let combined = parse_request(sparql, allow_data_aliases).map_err(QueryError::Parse)?;
+    let combined = parse_request(sparql, kind == RequestKind::Any).map_err(QueryError::Parse)?;
     combined.single_rule().map_err(QueryError::Unsupported)?;
     database
         .ml_context
@@ -414,6 +406,19 @@ fn execute_request(
         return execute_approved_prediction(predict, &combined.prefixes, database)
             .map_err(QueryError::Execution);
     }
+    // After the ML branch and before `prepare_extensions`, which is where the
+    // query-only entry point used to refuse: `prepare_extensions` registers prefixes
+    // and neural declarations on the database, so a refused request must not reach it
+    // and leave those behind. An `ML.PREDICT` request still takes the branch above,
+    // as it did when this check lived in the `match` below.
+    if kind == RequestKind::QueryOnly
+        && matches!(combined.sparql.as_ref(), Some(SparqlOperation::Update(_)))
+    {
+        return Err(QueryError::Unsupported(
+            "expected a SPARQL query, found an Update operation".to_string(),
+        ));
+    }
+
     let prefixes = prepare_extensions(&combined, database).map_err(QueryError::Execution)?;
 
     match combined.sparql.as_ref() {
