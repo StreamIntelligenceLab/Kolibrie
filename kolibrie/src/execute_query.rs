@@ -152,13 +152,6 @@ impl<'a> Solution<'a> {
 /// pointing at the offending token. It contains no terminal escapes, so it is safe to
 /// log or serialise.
 ///
-/// # The older entry points render differently
-///
-/// [`execute_sparql_query`] still returns `String`, and still returns the bare message
-/// or bare `ML_*` code it always did, because several callers inside this crate
-/// propagate it with `?` into their own `Result<_, String>`. So the same failure
-/// reads as `QUERY_POLICY: ML_FORBIDDEN` through [`execute`] and as `ML_FORBIDDEN`
-/// through that one. Match on the variant rather than on either string.
 pub enum QueryError {
     /// The request did not parse as SPARQL or as one of the Kolibrie extensions.
     ///
@@ -193,31 +186,6 @@ impl fmt::Display for QueryError {
             Self::Unsupported(message) => write!(f, "QUERY_UNSUPPORTED: {message}"),
             Self::Ml(error) => write!(f, "QUERY_POLICY: {error}"),
             Self::Execution(message) => write!(f, "QUERY_EXECUTION_FAILED: {message}"),
-        }
-    }
-}
-
-impl QueryError {
-    /// The message the `String`-returning entry points produced before this type
-    /// existed: the bare message, or the bare `ML_*` code for a policy refusal.
-    ///
-    /// Three callers, all inside this crate and all returning `Result<_, String>`
-    /// themselves: [`execute_sparql_query`],
-    /// [`process_rule_definition`](crate::parser::process_rule_definition) and
-    /// [`execute_neural_program`](crate::neural_relations::execute_neural_program).
-    /// The last two matter because a test asserts their error starts with `ML_`, and
-    /// [`Display`](fmt::Display) would prefix `QUERY_POLICY:` instead — which is the
-    /// right rendering for a new caller and the wrong one for an existing contract.
-    ///
-    /// Prefer `Display` otherwise: it carries a `QUERY_*` code, matching
-    /// [`ProgramError`](crate::program::ProgramError). This goes away when those
-    /// three signatures do.
-    pub(crate) fn legacy_string(&self) -> String {
-        match self {
-            Self::Parse(message) | Self::Unsupported(message) | Self::Execution(message) => {
-                message.clone()
-            }
-            Self::Ml(error) => error.to_string(),
         }
     }
 }
@@ -354,7 +322,7 @@ pub fn execute_query_rayon_parallel2_volcano(
 pub fn execute_sparql_query(
     sparql: &str,
     database: &mut SparqlDatabase,
-) -> Result<Vec<Vec<String>>, String> {
+) -> Result<Vec<Vec<String>>, QueryError> {
     // This repeated `execute_request`'s whole pipeline — parse, single_rule,
     // validate_request, the ML branch, dispatch — for the sake of two differences,
     // which are now what `RequestKind::QueryOnly` means. Keeping two copies of that
@@ -363,9 +331,7 @@ pub fn execute_sparql_query(
     // Still returns `String` rather than `QueryError`, and still flattens to
     // `Vec<Vec<String>>`, because the HTTP surface passes these errors to clients.
     // `execute` is the one that keeps the variable names and the unbound distinction.
-    execute_request(sparql, database, RequestKind::QueryOnly)
-        .map(Solutions::into_rows)
-        .map_err(|error| error.legacy_string())
+    execute_request(sparql, database, RequestKind::QueryOnly).map(Solutions::into_rows)
 }
 
 /// Execute one of the six supported standard SPARQL Update forms
@@ -413,8 +379,7 @@ fn execute_request(
     if let Some(predict) = &combined.ml_predict {
         #[cfg(feature = "ml")]
         if database.ml_context.require_local().is_ok() {
-            crate::neural_relations::execute_neural_program(database, sparql)
-                .map_err(QueryError::Execution)?;
+            crate::neural_relations::execute_neural_program(database, sparql)?;
             return Ok(Solutions::default());
         }
         return execute_approved_prediction(predict, &combined.prefixes, database)
@@ -504,7 +469,7 @@ fn execute_approved_prediction(
         input.push_str(&format!("PREFIX {prefix}: <{iri}>\n"));
     }
     input.push_str(predict.input_raw);
-    let rows = execute_sparql_query(&input, database)?;
+    let rows = execute_sparql_query(&input, database).map_err(|error| error.to_string())?;
     let features = rows
         .iter()
         .map(|r| {

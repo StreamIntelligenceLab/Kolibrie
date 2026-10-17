@@ -50,7 +50,10 @@ fn hybrid_rule_rejects_recursive_dependency() {
     "#;
     let error = process_rule_definition(rule, &mut database)
         .expect_err("recursive hybrid rules must be rejected");
-    assert!(error.contains("recursion"), "unexpected error: {error}");
+    assert!(
+        error.to_string().contains("recursion"),
+        "unexpected error: {error}"
+    );
 }
 
 #[test]

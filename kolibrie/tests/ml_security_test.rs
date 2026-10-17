@@ -1,4 +1,4 @@
-use kolibrie::execute_query::execute_sparql_query;
+use kolibrie::execute_query::{execute_sparql_query, QueryError};
 use kolibrie::ml_policy::{validate_artifact_filename, validate_model_name, MlExecutionContext};
 use kolibrie::sparql_database::SparqlDatabase;
 
@@ -34,7 +34,7 @@ fn denied_declaration_does_not_register_prefixes_or_models() {
     let (remaining, _) = kolibrie::parser::parse_combined_query(query).unwrap();
     assert!(remaining.trim().is_empty());
     let error = execute_sparql_query(query, &mut db).unwrap_err();
-    assert!(error.starts_with("ML_"), "{error}");
+    assert!(matches!(error, QueryError::Ml(_)), "{error}");
     assert_eq!(&before, db.prefixes());
     assert!(db.model_decls().is_empty());
 }
@@ -58,7 +58,7 @@ fn rule_ml_is_rejected_before_prefix_registration() {
 RULE :Predict :- CONSTRUCT { ?s ex:p ?prediction } WHERE { ?s ex:x ?x }
 ML.PREDICT(MODEL "unapproved", INPUT { SELECT ?x WHERE { ?s ex:x ?x } }, OUTPUT ?prediction)"#;
     let error = kolibrie::parser::process_rule_definition(request, &mut db).unwrap_err();
-    assert!(error.starts_with("ML_"), "{error}");
+    assert!(matches!(error, QueryError::Ml(_)), "{error}");
     assert!(db.prefixes().is_empty());
     assert!(db.model_decls().is_empty());
 }
@@ -85,11 +85,11 @@ fn default_policy_rejects_prediction_relation_and_training_routes() {
         let mut db = SparqlDatabase::new();
         let error = execute_sparql_query(request, &mut db).unwrap_err();
         assert_eq!(
-            error,
+            error.to_string(),
             if cfg!(feature = "ml") {
-                "ML_FORBIDDEN"
+                "QUERY_POLICY: ML_FORBIDDEN"
             } else {
-                "ML_FEATURE_DISABLED"
+                "QUERY_POLICY: ML_FEATURE_DISABLED"
             }
         );
         assert!(db.prefixes().is_empty());

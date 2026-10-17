@@ -316,7 +316,7 @@ ML.PREDICT(MODEL "shared_model",
     let err = kolibrie::neural_relations::execute_neural_program(&mut db, program)
         .expect_err("ambiguous model-to-relation mapping should fail");
     assert!(
-        err.contains("matches 2 NEURAL RELATION"),
+        err.to_string().contains("matches 2 NEURAL RELATION"),
         "unexpected error: {}",
         err
     );
@@ -558,7 +558,8 @@ ML.PREDICT(MODEL "digit_model",
 "#;
     let result = process_rule_definition(rule, &mut db);
     match result {
-        Err(msg) => {
+        Err(error) => {
+            let msg = error.to_string();
             assert!(
                 msg.contains("is not referenced by any conclusion triple"),
                 "expected unused-output error, got: {}",
@@ -600,7 +601,8 @@ ML.PREDICT(MODEL "other_model",
 "#;
     let result = process_rule_definition(rule, &mut db);
     match result {
-        Err(msg) => {
+        Err(error) => {
+            let msg = error.to_string();
             assert!(
                 msg.contains("other_model") && msg.contains("digit_model"),
                 "expected model-mismatch error, got: {}",
@@ -642,7 +644,8 @@ ML.PREDICT(MODEL "digit_model",
 "#;
     let result = process_rule_definition(rule, &mut db);
     match result {
-        Err(msg) => {
+        Err(error) => {
+            let msg = error.to_string();
             assert!(
                 msg.contains("?sample") && msg.contains("not bound by INPUT"),
                 "expected bindings-coverage error, got: {}",
@@ -685,7 +688,8 @@ ML.PREDICT(MODEL "digit_model",
 "#;
     let result = process_rule_definition(rule, &mut db);
     match result {
-        Err(msg) => {
+        Err(error) => {
+            let msg = error.to_string();
             assert!(
                 msg.contains("multiple conclusion predicates"),
                 "expected single-predicate invariant error, got: {}",

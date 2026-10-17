@@ -465,25 +465,31 @@ pub fn execute_top_level_ml_predict(
 }
 
 /// Parses and runs a program's neural declarations against a store.
-pub fn execute_neural_program(database: &mut SparqlDatabase, program: &str) -> Result<(), String> {
-    // `legacy_string`, not `to_string`: these return the bare `ML_*` code, which
-    // callers match on. `Display` would prefix `QUERY_POLICY:` and break that.
-    crate::execute_query::validate_query_policy(program, database)
-        .map_err(|error| error.legacy_string())?;
+pub fn execute_neural_program(
+    database: &mut SparqlDatabase,
+    program: &str,
+) -> Result<(), crate::execute_query::QueryError> {
+    crate::execute_query::validate_query_policy(program, database)?;
     database.register_prefixes_from_query(program);
 
-    let (_rest, combined) =
-        parse_combined_query(program).map_err(|_| "Failed to parse neural program".to_string())?;
+    let (_rest, combined) = parse_combined_query(program).map_err(|_| {
+        crate::execute_query::QueryError::Parse("Failed to parse neural program".to_string())
+    })?;
 
     if !combined.rules.is_empty() {
-        return Err("execute_neural_program only accepts MODEL / NEURAL RELATION / TRAIN NEURAL RELATION declarations and top-level ML.PREDICT".to_string());
+        return Err(crate::execute_query::QueryError::Unsupported(
+            "execute_neural_program only accepts MODEL / NEURAL RELATION / TRAIN NEURAL RELATION declarations and top-level ML.PREDICT"
+                .to_string(),
+        ));
     }
     if combined
         .ml_predict
         .as_ref()
         .is_some_and(|predict| predict.distribution)
     {
-        return Err(DISTRIBUTION_REQUIRES_PROGRAM.to_string());
+        return Err(crate::execute_query::QueryError::Unsupported(
+            DISTRIBUTION_REQUIRES_PROGRAM.to_string(),
+        ));
     }
 
     for (prefix, uri) in &combined.prefixes {
@@ -514,14 +520,15 @@ pub fn execute_neural_program(database: &mut SparqlDatabase, program: &str) -> R
         .collect();
 
     for train_decl in &normalized_trains {
-        execute_train_decl(database, train_decl).map_err(|err| err.to_string())?;
+        execute_train_decl(database, train_decl)
+            .map_err(|err| crate::execute_query::QueryError::Execution(err.to_string()))?;
         materialize_neural_relation(database, &train_decl.predicate)
-            .map_err(|err| err.to_string())?;
+            .map_err(|err| crate::execute_query::QueryError::Execution(err.to_string()))?;
     }
 
     if let Some(ml_predict) = &combined.ml_predict {
         execute_top_level_ml_predict(database, ml_predict, &prefixes)
-            .map_err(|err| err.to_string())?;
+            .map_err(|err| crate::execute_query::QueryError::Execution(err.to_string()))?;
     }
 
     Ok(())

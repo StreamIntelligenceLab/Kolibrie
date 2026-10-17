@@ -2319,10 +2319,19 @@ impl SparqlDatabase {
                 .collect::<Vec<_>>()
                 .join("\n"),
             Err(error) => {
-                let (status, code) = match error.as_str() {
-                    "ML_FEATURE_DISABLED" => ("503 Service Unavailable", "ML_FEATURE_DISABLED"),
-                    "ML_FORBIDDEN" => ("403 Forbidden", "ML_FORBIDDEN"),
-                    "ML_INVALID_ARTIFACT" => ("403 Forbidden", "ML_INVALID_ARTIFACT"),
+                // Matched on the variant rather than on a rendered string. This is the
+                // same status table the HTTP server keeps in `ml_error_response`: two
+                // copies, in two crates, that have to be changed together.
+                use crate::execute_query::QueryError;
+                use crate::ml_policy::MlError;
+                let (status, code) = match &error {
+                    QueryError::Ml(MlError::Disabled) => {
+                        ("503 Service Unavailable", "ML_FEATURE_DISABLED")
+                    }
+                    QueryError::Ml(MlError::Forbidden) => ("403 Forbidden", "ML_FORBIDDEN"),
+                    QueryError::Ml(MlError::InvalidArtifact) => {
+                        ("403 Forbidden", "ML_INVALID_ARTIFACT")
+                    }
                     _ => return "Query Failed: QUERY_EXECUTION_FAILED".to_string(),
                 };
                 format!("HTTP/1.1 {status}\r\nContent-Type: text/plain\r\nContent-Length: {}\r\n\r\n{code}", code.len())

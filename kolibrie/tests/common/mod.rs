@@ -41,7 +41,7 @@ pub fn ordered(database: &mut SparqlDatabase, sparql: &str) -> Vec<Vec<String>> 
 pub fn query_checked(
     database: &mut SparqlDatabase,
     sparql: &str,
-) -> Result<Vec<Vec<String>>, String> {
+) -> Result<Vec<Vec<String>>, kolibrie::execute_query::QueryError> {
     execute_sparql_query(sparql, database).map(bag)
 }
 

@@ -1539,7 +1539,7 @@ pub fn query_program_result(
         ));
     }
     crate::execute_query::execute_sparql_query(select, &mut result.dataset)
-        .map_err(ProgramError::Execution)
+        .map_err(|error| ProgramError::Execution(error.to_string()))
 }
 
 /// Reads a probability from a literal, accepting a bare number or an
@@ -2294,7 +2294,7 @@ fn run_neural(
 
         let phase = Instant::now();
         let rows = crate::execute_query::execute_sparql_query(&prediction.query, input)
-            .map_err(ProgramError::Execution)?;
+            .map_err(|error| ProgramError::Execution(error.to_string()))?;
         let column = |var: &str| {
             let name = var.trim_start_matches('?');
             prediction.columns.iter().position(|column| column == name)

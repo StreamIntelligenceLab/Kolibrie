@@ -39,6 +39,7 @@
 //! the entry points above, which at least confine the exposure to a return type you
 //! can discard.
 
+use crate::execute_query::QueryError;
 use crate::neural_relations::{execute_train_decl, materialize_neural_relations_for_patterns};
 use crate::sparql_database::SparqlDatabase;
 use datalog::reasoning::Reasoner;
@@ -3668,26 +3669,29 @@ pub fn convert_combined_rule<'a>(
 pub fn process_rule_definition(
     rule_input: &str,
     database: &mut SparqlDatabase,
-) -> Result<(Rule, Vec<Triple>), String> {
-    // `legacy_string`, not `to_string`: these return the bare `ML_*` code, which
-    // callers match on. `Display` would prefix `QUERY_POLICY:` and break that.
-    crate::execute_query::validate_query_policy(rule_input, database)
-        .map_err(|error| error.legacy_string())?;
+) -> Result<(Rule, Vec<Triple>), QueryError> {
+    crate::execute_query::validate_query_policy(rule_input, database)?;
     // First, register any prefixes from the rule with the database
     database.register_prefixes_from_query(rule_input);
 
     let parse_result = parse_combined_query(rule_input);
 
     if let Ok((_rest, combined)) = parse_result {
-        let single = combined.single_rule()?;
+        let single = combined.single_rule().map_err(QueryError::Unsupported)?;
         if combined.ml_predict.is_some() {
-            return Err("process_rule_definition does not execute a top-level ML.PREDICT; use kolibrie::program".to_string());
+            return Err(QueryError::Unsupported(
+                "process_rule_definition does not execute a top-level ML.PREDICT; use kolibrie::program"
+                    .to_string(),
+            ));
         }
         if single
             .and_then(|rule| rule.ml_predict.as_ref())
             .is_some_and(|predict| predict.distribution)
         {
-            return Err("in-rule ML.PREDICT ... DISTRIBUTION is not supported; write a top-level ML.PREDICT in a program".to_string());
+            return Err(QueryError::Unsupported(
+                "in-rule ML.PREDICT ... DISTRIBUTION is not supported; write a top-level ML.PREDICT in a program"
+                    .to_string(),
+            ));
         }
         for (prefix, uri) in &combined.prefixes {
             database.prefixes.insert(prefix.clone(), uri.clone());
@@ -3701,7 +3705,8 @@ pub fn process_rule_definition(
             &combined.model_decls,
             &combined.neural_relation_decls,
             &combined.train_neural_relation_decls,
-        )?;
+        )
+        .map_err(QueryError::Execution)?;
 
         let normalized_trains: Vec<TrainNeuralRelationDecl> = combined
             .train_neural_relation_decls
@@ -3715,23 +3720,26 @@ pub fn process_rule_definition(
             })
             .collect();
         for train_decl in &normalized_trains {
-            execute_train_decl(database, train_decl).map_err(|err| err.to_string())?;
+            execute_train_decl(database, train_decl)
+                .map_err(|err| QueryError::Execution(err.to_string()))?;
         }
 
         #[allow(unused_mut)] // ML-enabled execution can rewrite this rule.
         let mut rule = combined
-            .single_rule()?
+            .single_rule()
+            .map_err(QueryError::Unsupported)?
             .cloned()
-            .ok_or_else(|| "Failed to parse rule definition".to_string())?;
+            .ok_or_else(|| QueryError::Parse("Failed to parse rule definition".to_string()))?;
 
-        materialize_neural_relations_for_patterns(database, &rule.body.0, &rule_prefixes)?;
+        materialize_neural_relations_for_patterns(database, &rule.body.0, &rule_prefixes)
+            .map_err(QueryError::Execution)?;
 
         // Execute ML.PREDICT before converting the rule for Datalog
         if let Some(ml_predict) = rule.ml_predict.clone() {
             #[cfg(not(feature = "ml"))]
             {
                 let _ = ml_predict;
-                return Err("ML_FEATURE_DISABLED".into());
+                return Err(QueryError::Ml(crate::ml_policy::MlError::Disabled));
             }
             #[cfg(feature = "ml")]
             crate::ml_predict_runtime::execute_ml_predict_clause(
@@ -3740,7 +3748,7 @@ pub fn process_rule_definition(
                 database,
                 &rule_prefixes,
             )
-            .map_err(|err| err.to_string())?;
+            .map_err(|err| QueryError::Execution(err.to_string()))?;
         }
 
         let mut kg = Reasoner::new();
@@ -3770,7 +3778,8 @@ pub fn process_rule_definition(
 
             // Create a window for each window clause
             for window_clause in &rule.window_clause {
-                let mut rsp_window = create_rsp_window(&window_clause.window_spec)?;
+                let mut rsp_window =
+                    create_rsp_window(&window_clause.window_spec).map_err(QueryError::Execution)?;
 
                 // Process existing triples through the window
                 let mut current_time = 1;
@@ -3898,14 +3907,16 @@ pub fn process_rule_definition(
                 // selective exact SDD escalation.
                 "hybrid" => {
                     let config = ann.hybrid_config.as_ref().ok_or_else(|| {
-                        "PROB(provenance=hybrid) requires a valid threshold and hybrid configuration"
-                            .to_string()
+                        QueryError::Execution(
+                            "PROB(provenance=hybrid) requires a valid threshold and hybrid configuration"
+                                .to_string(),
+                        )
                     })?;
                     let snapshot = SeedSnapshot::from_probability_seeds(&kg.probability_seeds)
-                        .map_err(|error| error.to_string())?;
+                        .map_err(|error| QueryError::Execution(error.to_string()))?;
                     let (facts, results, _lineage) = kg
                         .infer_new_facts_with_hybrid(snapshot, config)
-                        .map_err(|error| error.to_string())?;
+                        .map_err(|error| QueryError::Execution(error.to_string()))?;
                     let mut dict = kg.dictionary.write().unwrap();
                     let mut qt_store = database.quoted_triple_store.write().unwrap();
                     let rdf_star =
@@ -4021,7 +4032,9 @@ pub fn process_rule_definition(
             Ok((dynamic_rule, inferred_facts))
         }
     } else {
-        Err("Failed to parse rule definition".to_string())
+        Err(QueryError::Parse(
+            "Failed to parse rule definition".to_string(),
+        ))
     }
 }
 
