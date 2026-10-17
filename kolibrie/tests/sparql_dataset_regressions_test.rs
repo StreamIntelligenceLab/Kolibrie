@@ -129,6 +129,24 @@ fn nquads_round_trip_keeps_default_and_named_quads() {
     assert!(escaped_literal_rows[0][0].starts_with("_:kolibrie-update-"));
 }
 
+/// Splits an HTTP response from `handle_http_request` into its status and body.
+///
+/// The status is checked as well as the body: the response used to be a bare body
+/// that the caller wrapped in `200 OK`, so a failure was indistinguishable from a
+/// success here.
+fn split_response(response: &str) -> (String, String) {
+    let (head, body) = response
+        .split_once("\r\n\r\n")
+        .expect("a response has a header section and a body");
+    let status = head
+        .lines()
+        .next()
+        .expect("a response starts with a status line")
+        .trim_start_matches("HTTP/1.1 ")
+        .to_string();
+    (status, body.to_string())
+}
+
 #[test]
 fn http_sparql_query_encodings_use_the_unified_query_executor() {
     let mut database = SparqlDatabase::new();
@@ -144,7 +162,10 @@ fn http_sparql_query_encodings_use_the_unified_query_executor() {
         "\r\n",
         "SELECT ?s WHERE { ?s <urn:p> <urn:o> }"
     );
-    assert_eq!(database.handle_http_request(direct), "urn:http-subject");
+    assert_eq!(
+        split_response(&database.handle_http_request(direct)),
+        ("200 OK".to_string(), "urn:http-subject".to_string())
+    );
 
     let form = concat!(
         "POST /sparql HTTP/1.1\r\n",
@@ -153,13 +174,19 @@ fn http_sparql_query_encodings_use_the_unified_query_executor() {
         "query=SELECT%20%3Fs%20WHERE%20%7B%20%3Fs%20%3Curn%3Ap%3E%20",
         "%3Curn%3Ao%3E%20%7D"
     );
-    assert_eq!(database.handle_http_request(form), "urn:http-subject");
+    assert_eq!(
+        split_response(&database.handle_http_request(form)),
+        ("200 OK".to_string(), "urn:http-subject".to_string())
+    );
 
     let get = concat!(
         "GET /sparql?query=SELECT%20%3Fs%20WHERE%20%7B%20%3Fs%20",
         "%3Curn%3Ap%3E%20%3Curn%3Ao%3E%20%7D HTTP/1.1\r\n\r\n"
     );
-    assert_eq!(database.handle_http_request(get), "urn:http-subject");
+    assert_eq!(
+        split_response(&database.handle_http_request(get)),
+        ("200 OK".to_string(), "urn:http-subject".to_string())
+    );
 
     let update_on_query_endpoint = concat!(
         "POST /sparql HTTP/1.1\r\n",
@@ -167,9 +194,14 @@ fn http_sparql_query_encodings_use_the_unified_query_executor() {
         "\r\n",
         "INSERT DATA { <urn:must-not-exist> <urn:p> <urn:o> }"
     );
-    assert!(database
-        .handle_http_request(update_on_query_endpoint)
-        .starts_with("Query Failed:"));
+    // An Update on the query endpoint is refused, and now says so in the status.
+    assert_eq!(
+        split_response(&database.handle_http_request(update_on_query_endpoint)),
+        (
+            "400 Bad Request".to_string(),
+            "QUERY_EXECUTION_FAILED".to_string()
+        )
+    );
     assert!(query(
         &mut database,
         "SELECT ?s WHERE { <urn:must-not-exist> <urn:p> ?s }"
@@ -184,9 +216,9 @@ fn http_sparql_query_encodings_use_the_unified_query_executor() {
         "WHERE+%7B+%3Curn%3Ahttp-subject%3E+%3Curn%3Ap%3E+%3Fo+",
         "FILTER%28%3Fo+%3D+%3Curn%3Ao%3E%29+%7D"
     );
-    assert!(database
-        .handle_http_request(form_update)
-        .starts_with("Update Successful"));
+    let (status, body) = split_response(&database.handle_http_request(form_update));
+    assert_eq!(status, "200 OK");
+    assert!(body.starts_with("Update Successful"), "{body}");
     assert_eq!(
         query(&mut database, "SELECT ?s WHERE { ?s <urn:copied> <urn:o> }"),
         vec![vec!["urn:form&subject".to_string()]]

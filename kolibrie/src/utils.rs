@@ -71,13 +71,9 @@ pub fn handle_connection(mut stream: TcpStream, database: &mut SparqlDatabase) {
     stream.read_exact(&mut buffer).unwrap();
 
     let request = String::from_utf8_lossy(&buffer[..]);
+    // Written verbatim: `handle_http_request` returns a complete response. Wrapping
+    // it in a second `200 OK` here is what made every failure look like a success.
     let response = database.handle_http_request(&request);
-
-    let response = format!(
-        "HTTP/1.1 200 OK\r\nContent-Length: {}\r\n\r\n{}",
-        response.len(),
-        response
-    );
     stream.write_all(response.as_bytes()).unwrap();
     stream.flush().unwrap();
 }

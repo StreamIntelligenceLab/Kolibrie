@@ -497,6 +497,17 @@ fn graph_union_composes_with_aggregation_order_and_limit() {
     );
 }
 
+/// The body of a response from `handle_http_request`.
+///
+/// The response carries a status line now, so the body is no longer the whole
+/// string; checking the status as well is the point of the change.
+fn body_of(response: &str) -> &str {
+    response
+        .split_once("\r\n\r\n")
+        .expect("a response has a header section and a body")
+        .1
+}
+
 #[test]
 fn legacy_and_http_adapters_route_through_the_same_update_executor() {
     let mut database = SparqlDatabase::new();
@@ -519,9 +530,13 @@ fn legacy_and_http_adapters_route_through_the_same_update_executor() {
         "\r\n",
         "INSERT DATA { <urn:http-direct> <urn:p> <urn:o> }"
     );
-    assert!(database
-        .handle_http_request(direct_request)
-        .starts_with("Update Successful"));
+    // The response now carries a status line, so the body is checked after it.
+    let response = database.handle_http_request(direct_request);
+    assert!(response.starts_with("HTTP/1.1 200 OK"), "{response}");
+    assert!(
+        body_of(&response).starts_with("Update Successful"),
+        "{response}"
+    );
 
     let form_request = concat!(
         "POST /sparql HTTP/1.1\r\n",
@@ -530,9 +545,12 @@ fn legacy_and_http_adapters_route_through_the_same_update_executor() {
         "update=INSERT%20DATA%20%7B%20%3Curn%3Ahttp-form%3E%20",
         "%3Curn%3Ap%3E%20%3Curn%3Ao%3E%20%7D"
     );
-    assert!(database
-        .handle_http_request(form_request)
-        .starts_with("Update Successful"));
+    let response = database.handle_http_request(form_request);
+    assert!(response.starts_with("HTTP/1.1 200 OK"), "{response}");
+    assert!(
+        body_of(&response).starts_with("Update Successful"),
+        "{response}"
+    );
 
     let mut rows = query(
         &mut database,
