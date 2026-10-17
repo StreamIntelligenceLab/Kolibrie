@@ -33,7 +33,6 @@ import sys
 # defect. Each needs something this script will not start:
 SKIP = {
     "drone_traffic_safety_demo": "serves HTTP until interrupted",
-    "http_check": "expects kolibrie-http-server to be running",
     "mqtt_example": "needs an MQTT broker",
     "mqtt_real_scenario": "needs an MQTT broker",
 }

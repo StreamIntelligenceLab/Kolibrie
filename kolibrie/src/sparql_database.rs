@@ -14,7 +14,6 @@ use crate::utils;
 use crate::utils::ClonableFn;
 use crossbeam::channel::unbounded;
 use crossbeam::scope;
-use percent_encoding::percent_decode;
 use quick_xml::events::Event;
 use quick_xml::name::QName;
 use quick_xml::Reader;
@@ -27,7 +26,6 @@ use shared::triple::Triple;
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::sync::Arc;
 use std::sync::{Mutex, RwLock, RwLockReadGuard, RwLockWriteGuard};
-use url::Url;
 
 fn looks_like_absolute_iri(value: &str) -> bool {
     let Some((scheme, _)) = value.split_once(':') else {
@@ -97,23 +95,6 @@ fn decode_ntriples_literal(term: &str) -> Option<(String, &str)> {
     }
 
     None
-}
-
-fn decode_form_component(component: &str) -> String {
-    let normalized = component
-        .bytes()
-        .map(|byte| if byte == b'+' { b' ' } else { byte })
-        .collect::<Vec<_>>();
-    percent_decode(&normalized).decode_utf8_lossy().into_owned()
-}
-
-fn parse_form_urlencoded(body: &str) -> HashMap<String, String> {
-    body.split('&')
-        .map(|pair| {
-            let (name, value) = pair.split_once('=').unwrap_or((pair, ""));
-            (decode_form_component(name), decode_form_component(value))
-        })
-        .collect()
 }
 
 pub(crate) fn reencode_term_id(
@@ -2311,70 +2292,6 @@ impl SparqlDatabase {
         result
     }
 
-    /// The status line and body for one SPARQL query.
-    ///
-    /// Returns the two separately so that [`Self::handle_http_request`] composes
-    /// exactly one response. This used to return a bare body on success and a
-    /// complete HTTP response on an ML refusal, which the caller then wrapped in a
-    /// second `200 OK` — so a refusal reached the client as a success whose body was
-    /// another HTTP response.
-    fn http_query_result(&mut self, query: &str) -> (&'static str, String) {
-        match crate::execute_query::execute_sparql_query(query, self) {
-            Ok(rows) => (
-                "200 OK",
-                rows.into_iter()
-                    .map(|row| row.join("\t"))
-                    .collect::<Vec<_>>()
-                    .join("\n"),
-            ),
-            Err(error) => {
-                // Matched on the variant rather than on a rendered string. This is the
-                // same status table the HTTP server keeps in `ml_error_response`: two
-                // copies, in two crates, that have to be changed together.
-                use crate::execute_query::QueryError;
-                use crate::ml_policy::MlError;
-                match &error {
-                    QueryError::Ml(MlError::Disabled) => {
-                        ("503 Service Unavailable", "ML_FEATURE_DISABLED".to_string())
-                    }
-                    QueryError::Ml(MlError::Forbidden) => {
-                        ("403 Forbidden", "ML_FORBIDDEN".to_string())
-                    }
-                    QueryError::Ml(MlError::InvalidArtifact) => {
-                        ("403 Forbidden", "ML_INVALID_ARTIFACT".to_string())
-                    }
-                    QueryError::Ml(MlError::InvalidConfiguration) => (
-                        "503 Service Unavailable",
-                        "ML_INVALID_CONFIGURATION".to_string(),
-                    ),
-                    // The message is deliberately not sent: a parse failure carries the
-                    // offending query text.
-                    _ => ("400 Bad Request", "QUERY_EXECUTION_FAILED".to_string()),
-                }
-            }
-        }
-    }
-
-    /// The status line and body for one SPARQL Update.
-    ///
-    /// A failed update used to answer `200 OK` with the body `Update Failed`.
-    fn http_update_result(&mut self, update: &str) -> (&'static str, String) {
-        if let Ok(summary) = self.execute_update(update) {
-            return (
-                "200 OK",
-                format!(
-                    "Update Successful (inserted {}, deleted {})",
-                    summary.inserted_quads, summary.deleted_quads
-                ),
-            );
-        }
-        // Historical standalone INSERT/DELETE aliases parse into the same update operation
-        if crate::execute_query::execute_sparql_update_compat(update, self).is_ok() {
-            return ("200 OK", "Update Successful".to_string());
-        }
-        ("400 Bad Request", "Update Failed".to_string())
-    }
-
     /// Executes one supported standard SPARQL Update form and reports what changed
     pub fn execute_update(
         &mut self,
@@ -2385,81 +2302,10 @@ impl SparqlDatabase {
 
     /// Applies an update and renders the outcome as text, for the demo server.
     ///
-    /// The body only. [`Self::handle_http_request`] pairs the same outcome with a
-    /// status line.
+    /// The body only. [`sparql_protocol::answer`](crate::sparql_protocol::answer)
+    /// pairs the same outcome with a status line.
     pub fn handle_update(&mut self, update: &str) -> String {
-        self.http_update_result(update).1
-    }
-
-    /// Answers one HTTP request against this store, for [`crate::utils::run_server`].
-    ///
-    /// A complete HTTP response, status line included, which
-    /// [`crate::utils::handle_connection`] writes verbatim. It used to return the
-    /// body alone and leave the caller to add `200 OK`, so every failure — a syntax
-    /// error, a refused update, an ML refusal — reached the client as a success.
-    ///
-    /// Enforces the ML policy: a request naming a model the host has not approved
-    /// is refused rather than run.
-    pub fn handle_http_request(&mut self, request: &str) -> String {
-        let context = self.ml_context.for_http();
-        let (status, body) = crate::execute_query::with_ml_context(self, &context, |db| {
-            db.handle_http_request_inner(request)
-        });
-        format!(
-            "HTTP/1.1 {status}\r\nContent-Type: text/plain\r\nContent-Length: {}\r\n\r\n{body}",
-            body.len()
-        )
-    }
-
-    fn handle_http_request_inner(&mut self, request: &str) -> (&'static str, String) {
-        let mut headers = [httparse::EMPTY_HEADER; 16];
-        let mut req = httparse::Request::new(&mut headers);
-        req.parse(request.as_bytes()).unwrap();
-
-        match req.method.unwrap() {
-            "GET" => {
-                let url = Url::parse(&("http://localhost".to_owned() + req.path.unwrap())).unwrap();
-                let query_pairs: HashMap<_, _> = url.query_pairs().into_owned().collect();
-                if let Some(query) = query_pairs.get("query") {
-                    return self.http_query_result(query);
-                }
-            }
-            "POST" => {
-                let content_type = req
-                    .headers
-                    .iter()
-                    .find(|header| header.name.eq_ignore_ascii_case("Content-Type"))
-                    .map(|header| header.value);
-
-                if let Some(content_type) = content_type {
-                    if content_type == b"application/sparql-query" {
-                        // Direct POST query
-                        if let Some(body) = request.split("\r\n\r\n").nth(1) {
-                            return self.http_query_result(body);
-                        }
-                    } else if content_type == b"application/x-www-form-urlencoded" {
-                        // URL-encoded POST query or update
-                        if let Some(body) = request.split("\r\n\r\n").nth(1) {
-                            let params = parse_form_urlencoded(body);
-
-                            if let Some(query) = params.get("query") {
-                                return self.http_query_result(query);
-                            } else if let Some(update) = params.get("update") {
-                                return self.http_update_result(update);
-                            }
-                        }
-                    } else if content_type == b"application/sparql-update" {
-                        // Direct POST update
-                        if let Some(body) = request.split("\r\n\r\n").nth(1) {
-                            return self.http_update_result(body);
-                        }
-                    }
-                }
-            }
-            _ => {}
-        }
-
-        ("400 Bad Request", "Bad Request".to_string())
+        crate::sparql_protocol::update_result(self, update).1
     }
 
     /// Return the decoded graph size for diagnostics

@@ -1,5 +1,6 @@
 use kolibrie::execute_query::{execute, execute_sparql_update};
 use kolibrie::sparql_database::SparqlDatabase;
+use kolibrie::sparql_protocol::answer;
 
 fn query(database: &mut SparqlDatabase, sparql: &str) -> Vec<Vec<String>> {
     execute(sparql, database)
@@ -497,7 +498,7 @@ fn graph_union_composes_with_aggregation_order_and_limit() {
     );
 }
 
-/// The body of a response from `handle_http_request`.
+/// The body of a response from `answer`.
 ///
 /// The response carries a status line now, so the body is no longer the whole
 /// string; checking the status as well is the point of the change.
@@ -531,7 +532,7 @@ fn legacy_and_http_adapters_route_through_the_same_update_executor() {
         "INSERT DATA { <urn:http-direct> <urn:p> <urn:o> }"
     );
     // The response now carries a status line, so the body is checked after it.
-    let response = database.handle_http_request(direct_request);
+    let response = answer(&mut database, direct_request);
     assert!(response.starts_with("HTTP/1.1 200 OK"), "{response}");
     assert!(
         body_of(&response).starts_with("Update Successful"),
@@ -545,7 +546,7 @@ fn legacy_and_http_adapters_route_through_the_same_update_executor() {
         "update=INSERT%20DATA%20%7B%20%3Curn%3Ahttp-form%3E%20",
         "%3Curn%3Ap%3E%20%3Curn%3Ao%3E%20%7D"
     );
-    let response = database.handle_http_request(form_request);
+    let response = answer(&mut database, form_request);
     assert!(response.starts_with("HTTP/1.1 200 OK"), "{response}");
     assert!(
         body_of(&response).starts_with("Update Successful"),

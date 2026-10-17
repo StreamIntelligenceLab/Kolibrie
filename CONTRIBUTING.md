@@ -117,8 +117,8 @@ scripts/smoke_examples.py --list      # what runs, what is skipped and why
 scripts/smoke_examples.py             # run them; non-zero names each failure
 ```
 
-Four are skipped, listed in `SKIP` in that script with a reason each: two need an
-MQTT broker, one serves HTTP until interrupted, one expects that server running.
+Three are skipped, listed in `SKIP` in that script with a reason each: two need an
+MQTT broker and one serves HTTP until interrupted.
 The eleven behind the `ml` feature are not run either — they need a trusted-local
 training directory, a model allowlist, or the MNIST corpus, so running them here
 would report environment setup as failure.

@@ -1,5 +1,6 @@
 use kolibrie::execute_query::{execute, execute_sparql_update};
 use kolibrie::sparql_database::SparqlDatabase;
+use kolibrie::sparql_protocol::answer;
 use kolibrie::streamertail_optimizer::DatabaseStats;
 use shared::dataset_index::GraphId;
 
@@ -129,7 +130,7 @@ fn nquads_round_trip_keeps_default_and_named_quads() {
     assert!(escaped_literal_rows[0][0].starts_with("_:kolibrie-update-"));
 }
 
-/// Splits an HTTP response from `handle_http_request` into its status and body.
+/// Splits an HTTP response from `answer` into its status and body.
 ///
 /// The status is checked as well as the body: the response used to be a bare body
 /// that the caller wrapped in `200 OK`, so a failure was indistinguishable from a
@@ -163,7 +164,7 @@ fn http_sparql_query_encodings_use_the_unified_query_executor() {
         "SELECT ?s WHERE { ?s <urn:p> <urn:o> }"
     );
     assert_eq!(
-        split_response(&database.handle_http_request(direct)),
+        split_response(&answer(&mut database, direct)),
         ("200 OK".to_string(), "urn:http-subject".to_string())
     );
 
@@ -175,7 +176,7 @@ fn http_sparql_query_encodings_use_the_unified_query_executor() {
         "%3Curn%3Ao%3E%20%7D"
     );
     assert_eq!(
-        split_response(&database.handle_http_request(form)),
+        split_response(&answer(&mut database, form)),
         ("200 OK".to_string(), "urn:http-subject".to_string())
     );
 
@@ -184,7 +185,7 @@ fn http_sparql_query_encodings_use_the_unified_query_executor() {
         "%3Curn%3Ap%3E%20%3Curn%3Ao%3E%20%7D HTTP/1.1\r\n\r\n"
     );
     assert_eq!(
-        split_response(&database.handle_http_request(get)),
+        split_response(&answer(&mut database, get)),
         ("200 OK".to_string(), "urn:http-subject".to_string())
     );
 
@@ -196,7 +197,7 @@ fn http_sparql_query_encodings_use_the_unified_query_executor() {
     );
     // An Update on the query endpoint is refused, and now says so in the status.
     assert_eq!(
-        split_response(&database.handle_http_request(update_on_query_endpoint)),
+        split_response(&answer(&mut database, update_on_query_endpoint)),
         (
             "400 Bad Request".to_string(),
             "QUERY_EXECUTION_FAILED".to_string()
@@ -216,7 +217,7 @@ fn http_sparql_query_encodings_use_the_unified_query_executor() {
         "WHERE+%7B+%3Curn%3Ahttp-subject%3E+%3Curn%3Ap%3E+%3Fo+",
         "FILTER%28%3Fo+%3D+%3Curn%3Ao%3E%29+%7D"
     );
-    let (status, body) = split_response(&database.handle_http_request(form_update));
+    let (status, body) = split_response(&answer(&mut database, form_update));
     assert_eq!(status, "200 OK");
     assert!(body.starts_with("Update Successful"), "{body}");
     assert_eq!(

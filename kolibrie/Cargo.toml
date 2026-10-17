@@ -146,10 +146,6 @@ name = "sparql_syntax"
 path = "examples/sparql_syntax/sparql_syntax.rs"
 
 [[example]]
-name = "http_check"
-path = "examples/http_test/http_check.rs"
-
-[[example]]
 name = "advanced_join"
 path = "examples/sparql_syntax/advanced_join/advanced_join.rs"
 

@@ -101,6 +101,7 @@ fn default_policy_rejects_prediction_relation_and_training_routes() {
 #[cfg(feature = "ml")]
 mod enabled {
     use super::*;
+    use kolibrie::sparql_protocol::answer;
     use sha2::{Digest, Sha256};
     use std::{
         fs,
@@ -152,7 +153,7 @@ mod enabled {
         let request = format!(
             "POST /sparql HTTP/1.1\r\nContent-Type: application/sparql-query\r\n\r\n{query}"
         );
-        let response = db.handle_http_request(&request);
+        let response = answer(&mut db, &request);
         assert!(response.contains("403 Forbidden"), "{response}");
         assert!(!response.contains("urn:secret:"));
         assert!(db.prefixes().is_empty());

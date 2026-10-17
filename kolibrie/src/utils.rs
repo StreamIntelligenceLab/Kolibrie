@@ -8,10 +8,7 @@
  * you can obtain one at https://mozilla.org/MPL/2.0/.
  */
 
-use crate::sparql_database::SparqlDatabase;
 use std::fmt::{self, Debug};
-use std::io::{Read, Write};
-use std::net::{TcpListener, TcpStream};
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -43,39 +40,6 @@ impl Debug for ClonableFn {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "ClonableFn(<function>)")
     }
-}
-
-/// A minimal demonstration HTTP server on `127.0.0.1:7878`.
-///
-/// For trying the engine out, not for serving traffic: it handles one connection
-/// at a time, reads a fixed 1 KiB buffer, and panics on any I/O error. The real
-/// server is the `kolibrie-http-server` binary.
-pub fn run_server() {
-    let listener = TcpListener::bind("127.0.0.1:7878").unwrap();
-    let mut database = SparqlDatabase::new();
-
-    for stream in listener.incoming() {
-        let stream = stream.unwrap();
-        handle_connection(stream, &mut database);
-    }
-}
-
-/// Answers one request on `stream` from `database`.
-///
-/// # Panics
-///
-/// On any read or write error, and if the request is shorter than the 1 KiB it
-/// insists on reading. See [`run_server`].
-pub fn handle_connection(mut stream: TcpStream, database: &mut SparqlDatabase) {
-    let mut buffer = [0; 1024];
-    stream.read_exact(&mut buffer).unwrap();
-
-    let request = String::from_utf8_lossy(&buffer[..]);
-    // Written verbatim: `handle_http_request` returns a complete response. Wrapping
-    // it in a second `200 OK` here is what made every failure look like a success.
-    let response = database.handle_http_request(&request);
-    stream.write_all(response.as_bytes()).unwrap();
-    stream.flush().unwrap();
 }
 
 /// Seconds since the Unix epoch.

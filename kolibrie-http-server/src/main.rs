@@ -10,7 +10,7 @@
 
 //! The Kolibrie HTTP server: a REST surface and the browser playground, on port 8080.
 //!
-//! A hand-rolled server over [`TcpListener`](std::net::TcpListener) with a thread
+//! A hand-rolled server over [`std::net::TcpListener`] with a thread
 //! per connection — no framework. Three families of endpoint, each keyed by a
 //! session the client creates first:
 //!
