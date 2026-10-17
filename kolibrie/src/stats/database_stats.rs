@@ -15,8 +15,7 @@
 //! [`PlanningStatsPolicy`](crate::sparql_database::PlanningStatsPolicy) rather than
 //! on every write.
 
-use crate::sparql_database::SparqlDatabase;
-use shared::dataset_index::GraphId;
+use shared::dataset_index::{DatasetIndex, GraphId};
 use std::collections::{HashMap, HashSet};
 use std::hash::{BuildHasherDefault, Hasher};
 
@@ -217,10 +216,13 @@ impl DatabaseStats {
         }
     }
 
-    /// Gathers statistics from the database using sampling for performance
-    pub fn gather_stats_fast(database: &SparqlDatabase) -> Self {
-        let index = &database.dataset_index;
-
+    /// Gathers statistics from a dataset index using sampling for performance.
+    ///
+    /// Takes the index and the quoted-triple count rather than a store, so the cost
+    /// model's statistics do not depend on the store that happens to hold them.
+    /// [`SparqlDatabase::gather_stats`](crate::sparql_database::SparqlDatabase::gather_stats)
+    /// is the store-side caller.
+    pub fn gather_stats_fast(index: &DatasetIndex, quoted_triple_count: u64) -> Self {
         // Pass 1: exact per-graph and total quad counts
         let named_graphs = index.named_graphs();
         let mut graph_cardinalities =
@@ -305,8 +307,6 @@ impl DatabaseStats {
             .collect();
         let distinct_subjects = scale_distinct(all_subjects.len() as u64, total_triples);
         let distinct_objects = scale_distinct(all_objects.len() as u64, total_triples);
-
-        let quoted_triple_count = database.quoted_triple_store.read().unwrap().len() as u64;
 
         Self {
             total_triples,

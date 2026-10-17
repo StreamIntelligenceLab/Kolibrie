@@ -9,7 +9,7 @@
  */
 
 use crate::query_builder::QueryBuilder;
-use crate::streamertail_optimizer::DatabaseStats;
+use crate::stats::DatabaseStats;
 use crate::utils;
 use crate::utils::ClonableFn;
 use crossbeam::channel::unbounded;
@@ -526,10 +526,21 @@ impl SparqlDatabase {
         mutations < minimum_batch.max(proportional)
     }
 
+    /// Gathers fresh statistics over this store's dataset, without caching them.
+    ///
+    /// [`Self::get_or_build_stats`] is the cached form and the one query execution
+    /// uses; this is for a caller that wants a snapshot of the data as it stands.
+    pub fn gather_stats(&self) -> DatabaseStats {
+        DatabaseStats::gather_stats_fast(
+            &self.dataset_index,
+            self.quoted_triple_store.read().unwrap().len() as u64,
+        )
+    }
+
     /// Builds statistics and records rebuild count and duration
     fn rebuild_stats(&mut self) -> Arc<DatabaseStats> {
         let started = std::time::Instant::now();
-        let stats = Arc::new(DatabaseStats::gather_stats_fast(self));
+        let stats = Arc::new(self.gather_stats());
         self.stats_rebuild_count += 1;
         self.stats_rebuild_nanos = self
             .stats_rebuild_nanos

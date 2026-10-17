@@ -79,7 +79,7 @@ fn reference_stats(database: &SparqlDatabase) -> DatabaseStats {
 }
 
 fn assert_matches_reference(database: &SparqlDatabase, case: &str) {
-    let actual = DatabaseStats::gather_stats_fast(database);
+    let actual = database.gather_stats();
     let expected = reference_stats(database);
 
     assert_eq!(
@@ -172,7 +172,7 @@ fn named_graphs_including_empty_ones_collect_the_same_statistics() {
     database.create_graph(GraphId::Named(empty));
 
     assert_matches_reference(&database, "named graphs");
-    let stats = DatabaseStats::gather_stats_fast(&database);
+    let stats = database.gather_stats();
     assert_eq!(
         stats.get_graph_cardinality(GraphId::Named(empty)),
         0,
@@ -203,7 +203,7 @@ fn a_skewed_predicate_distribution_collects_the_same_statistics() {
     let database = common::database_with(&triples);
 
     assert_matches_reference(&database, "skewed");
-    let stats = DatabaseStats::gather_stats_fast(&database);
+    let stats = database.gather_stats();
     let rare = database.dictionary_mut().encode("urn:rare");
     assert_eq!(
         stats.get_predicate_cardinality(rare),
@@ -239,9 +239,9 @@ fn collection_is_deterministic_and_insertion_order_independent() {
     let first = common::database_with(&forward.join("\n"));
     let second = common::database_with(&reversed.join("\n"));
 
-    let a = DatabaseStats::gather_stats_fast(&first);
-    let b = DatabaseStats::gather_stats_fast(&first);
-    let c = DatabaseStats::gather_stats_fast(&second);
+    let a = first.gather_stats();
+    let b = first.gather_stats();
+    let c = second.gather_stats();
 
     assert_eq!(a.total_triples, b.total_triples);
     assert_eq!(a.predicate_cardinalities, b.predicate_cardinalities);

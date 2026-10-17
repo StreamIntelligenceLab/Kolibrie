@@ -15,9 +15,9 @@
 //! may lag the data under the store's default statistics policy.
 
 use super::super::operators::PhysicalOperator;
-use super::super::stats::DatabaseStats;
 use super::super::types::{Condition, ConditionExpression};
 use super::super::DatasetView;
+use crate::stats::DatabaseStats;
 use shared::dataset_index::{GraphId, GraphTerm, QuadPattern};
 use shared::terms::{Term, TriplePattern};
 use std::collections::HashSet;
@@ -875,7 +875,7 @@ mod tests {
             });
         }
 
-        let stats = DatabaseStats::gather_stats_fast(&database);
+        let stats = database.gather_stats();
 
         assert_eq!(stats.get_predicate_distinct_subjects(predicate), 3);
         assert_eq!(stats.get_predicate_distinct_objects(predicate), 1);

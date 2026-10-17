@@ -1,7 +1,6 @@
 use kolibrie::execute_query::{execute, execute_sparql_update};
 use kolibrie::sparql_database::SparqlDatabase;
 use kolibrie::sparql_protocol::answer;
-use kolibrie::streamertail_optimizer::DatabaseStats;
 use shared::dataset_index::GraphId;
 
 fn query(database: &mut SparqlDatabase, sparql: &str) -> Vec<Vec<String>> {
@@ -280,7 +279,7 @@ fn statistics_include_terms_that_exist_only_in_named_graphs() {
 
     let predicate = database.dictionary_mut().encode("urn:p");
     let graph = database.dictionary_mut().encode("urn:g");
-    let stats = DatabaseStats::gather_stats_fast(&database);
+    let stats = database.gather_stats();
 
     assert_eq!(stats.total_triples, 1);
     assert_eq!(stats.get_predicate_cardinality(predicate), 1);

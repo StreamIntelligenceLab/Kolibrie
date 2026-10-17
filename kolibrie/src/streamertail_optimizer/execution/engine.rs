@@ -1314,7 +1314,7 @@ impl ExecutionEngine {
                         .filter_map(|row| row.get(input).copied())
                         .filter_map(|id| database.decode_any(id))
                         .collect::<Vec<_>>();
-                    let value = crate::execute_query::aggregate_value(
+                    let value = crate::aggregate::value(
                         &aggregate.kind,
                         &values.iter().map(String::as_str).collect::<Vec<_>>(),
                     );

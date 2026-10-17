@@ -24,7 +24,7 @@
 //! |---|---|
 //! | [`operators`] | the two plan representations: logical *what*, physical *how* |
 //! | [`cost`] | cardinality and cost estimates that rank the alternatives |
-//! | [`stats`] | the data statistics those estimates read |
+//! | [`crate::stats`] | the data statistics those estimates read, a layer below this one |
 //! | [`optimizer`] | [`Streamertail`], which does the enumeration and selection |
 //! | [`execution`] | runs a chosen physical plan |
 //! | [`types`] | filter conditions and subquery descriptions shared by both plans |
@@ -51,16 +51,15 @@ pub mod cost;
 pub mod execution;
 pub mod operators;
 pub mod optimizer;
-pub mod stats;
 pub mod types;
 pub mod utils;
 
 // Re-export main components for convenience
+pub use crate::stats::{DatabaseStats, GraphMap, TermMap, TermSet};
 pub use cost::{CostConstants, CostEstimator};
 pub use execution::{DatasetView, ExecutionContext, ExecutionEngine};
 pub use operators::{LogicalOperator, PhysicalOperator};
 pub use optimizer::Streamertail;
-pub use stats::{DatabaseStats, GraphMap, TermMap, TermSet};
 pub use types::{
     Condition, ConditionArithmetic, ConditionExpression, IdResult, SubqueryProjection, SubquerySpec,
 };

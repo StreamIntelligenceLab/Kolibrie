@@ -567,7 +567,7 @@ fn optimize_and_execute(
     let stats = if logical_plan.requires_cost_based_join_ordering() {
         database.get_or_build_planning_stats()
     } else {
-        std::sync::Arc::new(crate::streamertail_optimizer::DatabaseStats::new())
+        std::sync::Arc::new(crate::stats::DatabaseStats::new())
     };
     let mut optimizer = Streamertail::with_cached_stats_and_dataset(stats, dataset.clone());
     let physical_plan = optimizer.find_best_plan(&logical_plan);
@@ -832,7 +832,7 @@ fn aggregate_rows(rows: Vec<StringBinding>, query: &SelectQuery<'_>) -> Vec<Stri
                     .iter()
                     .filter_map(|row| row.get(input).map(String::as_str))
                     .collect::<Vec<_>>();
-                if let Some(value) = aggregate_value(kind, &values) {
+                if let Some(value) = crate::aggregate::value(kind, &values) {
                     result.insert(output, value);
                 } else {
                     result.remove(&output);
@@ -841,11 +841,6 @@ fn aggregate_rows(rows: Vec<StringBinding>, query: &SelectQuery<'_>) -> Vec<Stri
             result
         })
         .collect()
-}
-
-/// Computes one aggregate over the values a group bound to its input variable
-pub(crate) fn aggregate_value(kind: &str, values: &[&str]) -> Option<String> {
-    crate::aggregate::value(kind, values)
 }
 
 fn apply_order_by(rows: &mut [StringBinding], conditions: &[OrderCondition<'_>]) {

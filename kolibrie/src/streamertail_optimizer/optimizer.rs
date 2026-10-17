@@ -17,8 +17,8 @@
 use super::cost::{collect_pattern_variables, CostEstimator};
 use super::execution::{DatasetView, ExecutionEngine};
 use super::operators::{LogicalOperator, PhysicalOperator};
-use super::stats::DatabaseStats;
 use super::types::{ConditionArithmetic, ConditionExpression};
+use crate::stats::DatabaseStats;
 
 use crate::sparql_database::SparqlDatabase;
 use shared::dataset_index::{GraphTerm, QuadPattern};
@@ -81,7 +81,7 @@ fn serialize_arith_expr(expr: &ConditionArithmetic) -> String {
 impl Streamertail {
     /// Creates a new volcano optimizer
     pub fn new(database: &SparqlDatabase) -> Self {
-        let stats = Arc::new(DatabaseStats::gather_stats_fast(database));
+        let stats = Arc::new(database.gather_stats());
         Self {
             memo: HashMap::new(),
             selected_variables: Vec::new(),
@@ -911,7 +911,7 @@ impl Streamertail {
 
     /// Updates the optimizer's statistics
     pub fn update_stats(&mut self, database: &SparqlDatabase) {
-        self.stats = Arc::new(DatabaseStats::gather_stats_fast(database));
+        self.stats = Arc::new(database.gather_stats());
         self.memo.clear(); // Clear memo as stats have changed
     }
 

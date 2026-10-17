@@ -96,6 +96,8 @@ pub mod rsp_engine;
 /// The RDF store and everything hung off it.
 pub mod sparql_database;
 pub mod sparql_protocol;
+/// Cardinalities over a dataset index, read by the cost model.
+pub mod stats;
 pub mod streamertail_optimizer;
 pub(crate) mod term_order;
 /// Small helpers: user-defined function wrappers, timestamps, a demo server.
