@@ -15,7 +15,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 #[derive(Clone)]
 /// A user-defined function stored so the database can be cloned.
 ///
-/// Wraps the closure in an `Arc` because [`SparqlDatabase`] derives `Clone` and a
+/// Wraps the closure in an `Arc` because [`SparqlDatabase`](crate::sparql_database::SparqlDatabase) derives `Clone` and a
 /// bare `Box<dyn Fn>` is not cloneable. Cloning shares the same function rather
 /// than duplicating it.
 pub struct ClonableFn(Arc<dyn Fn(Vec<&str>) -> String + Send + Sync>);

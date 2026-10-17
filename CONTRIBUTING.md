@@ -222,6 +222,23 @@ gate catches a module becoming reachable, but nothing catches a signature changi
 If this is picked up again, the thing to check first is whether rustdoc JSON has
 stabilised, which removes the only real objection.
 
+## Known gaps
+
+Two things are deliberately left undone, recorded so they are not rediscovered as
+surprises.
+
+**The HTTP status mapping exists twice.** `kolibrie::sparql_protocol::query_result`
+and `kolibrie-http-server`'s `ml_error_response` both map a `QueryError` to a status
+and a wire code, in two crates, and they have to be changed together. Each carries a
+comment naming the other. Deduplicating means `kolibrie-http-server` growing a
+`lib.rs` — it is binary-only today, which is also why nothing can reuse its request
+handling.
+
+**Eleven rustdoc `redundant explicit link target` warnings** remain across five
+crates, from the documentation burn-down: `[`Name`](path::to::Name)` where the text
+resolves on its own. The `docs` job denies only broken links, so these do not fail
+it. Worth one mechanical pass; not worth touching a file for on its own.
+
 ## Notes for AI coding assistants
 
 - Do not commit, push, or create branches unless explicitly asked.
