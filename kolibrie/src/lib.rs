@@ -76,6 +76,8 @@ pub(crate) mod ml_feature_loader;
 pub(crate) mod ml_predict_candle;
 #[cfg(feature = "ml")]
 pub(crate) mod ml_predict_runtime;
+/// Recording model and neural relation declarations on a store.
+pub mod neural_registry;
 /// Predicates whose facts come from a model rather than from data.
 #[cfg(feature = "ml")]
 pub mod neural_relations;

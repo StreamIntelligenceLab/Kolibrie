@@ -14,7 +14,7 @@ use std::error::Error;
 use ml::{MlpNeuralPredicate, OutputType};
 use shared::query::{MLPredictClause, NeuralOutputKind, NeuralRelationDecl};
 
-use crate::neural_relations::{model_hidden_layers, model_output_type};
+use crate::neural_registry::{model_hidden_layers, model_output_type};
 use crate::sparql_database::SparqlDatabase;
 
 type CandleResult<T> = Result<T, Box<dyn Error>>;

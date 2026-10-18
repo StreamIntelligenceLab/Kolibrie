@@ -588,7 +588,7 @@ fn prepare_extensions(
     prefixes.extend(combined.prefixes.clone());
     database.prefixes.extend(combined.prefixes.clone());
 
-    crate::neural_relations::register_neural_declarations_checked(
+    crate::neural_registry::register_neural_declarations_checked(
         database,
         &prefixes,
         &combined.model_decls,

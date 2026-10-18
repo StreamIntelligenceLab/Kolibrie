@@ -3699,7 +3699,7 @@ pub fn process_rule_definition(
 
         let mut rule_prefixes = combined.prefixes.clone();
         database.share_prefixes_with(&mut rule_prefixes);
-        crate::neural_relations::register_neural_declarations_checked(
+        crate::neural_registry::register_neural_declarations_checked(
             database,
             &rule_prefixes,
             &combined.model_decls,

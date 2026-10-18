@@ -25,10 +25,10 @@
 use std::collections::HashMap;
 use std::error::Error;
 
-use ml::{MlpNeuralPredicate, OutputType};
+use ml::MlpNeuralPredicate;
 use shared::query::{
-    MLPredictClause, ModelArch, ModelDecl, NeuralOutputKind, NeuralRelationDecl,
-    TrainNeuralRelationDecl, TrainingDataSource,
+    MLPredictClause, ModelDecl, NeuralOutputKind, NeuralRelationDecl, TrainNeuralRelationDecl,
+    TrainingDataSource,
 };
 use shared::triple::Triple;
 
@@ -39,6 +39,12 @@ use crate::execute_ml_train::{
 use crate::execute_query::query_training_rows;
 use crate::ml_feature_loader::build_feature_vec;
 use crate::parser::parse_combined_query;
+// Re-exported, not redefined: the implementation lives one layer down in
+// `neural_registry`, and `kolibrie::neural_relations::register_neural_declarations`
+// stays a working path for callers that already use it.
+pub use crate::neural_registry::register_neural_declarations;
+
+use crate::neural_registry::{default_model_artifact_path, model_hidden_layers, model_output_type};
 use crate::sparql_database::SparqlDatabase;
 
 type NeuralResult<T> = Result<T, Box<dyn Error>>;
@@ -48,146 +54,6 @@ type NeuralResult<T> = Result<T, Box<dyn Error>>;
 /// exclusive needs the probabilistic machinery these entry points do not have.
 pub const DISTRIBUTION_REQUIRES_PROGRAM: &str =
     "ML.PREDICT ... OUTPUT ?v DISTRIBUTION runs only through kolibrie::program; legacy entry points predict the argmax";
-
-/// The default artifact filename for a model.
-///
-/// Every non-alphanumeric character becomes `_`, so the result is a safe filename
-/// — but two model names differing only in punctuation collide. A host that cares
-/// should name artifacts explicitly.
-pub fn default_model_artifact_path(model_name: &str) -> String {
-    let sanitized: String = model_name
-        .chars()
-        .map(|ch| if ch.is_ascii_alphanumeric() { ch } else { '_' })
-        .collect();
-    format!("{}_model.bin", sanitized)
-}
-
-fn normalize_term(
-    database: &SparqlDatabase,
-    prefixes: &HashMap<String, String>,
-    term: &str,
-) -> String {
-    if term.starts_with('?') {
-        term.to_string()
-    } else {
-        database.resolve_query_term(term, prefixes)
-    }
-}
-
-fn normalize_triple(
-    database: &SparqlDatabase,
-    prefixes: &HashMap<String, String>,
-    triple: &(String, String, String),
-) -> (String, String, String) {
-    (
-        normalize_term(database, prefixes, &triple.0),
-        normalize_term(database, prefixes, &triple.1),
-        normalize_term(database, prefixes, &triple.2),
-    )
-}
-
-/// Registers model, relation and training declarations on a store.
-///
-/// Reports failures to stderr. Prefer
-/// [`register_neural_declarations_checked`] where the caller can handle an error.
-pub fn register_neural_declarations(
-    database: &mut SparqlDatabase,
-    prefixes: &HashMap<String, String>,
-    model_decls: &[ModelDecl],
-    neural_relation_decls: &[NeuralRelationDecl],
-    train_neural_relation_decls: &[TrainNeuralRelationDecl],
-) {
-    if register_neural_declarations_checked(
-        database,
-        prefixes,
-        model_decls,
-        neural_relation_decls,
-        train_neural_relation_decls,
-    )
-    .is_err()
-    {
-        eprintln!("ML_REGISTRATION_REJECTED");
-    }
-}
-
-/// Registers declarations, returning an error rather than reporting it.
-///
-/// Checks the ML policy for every model named, so a set containing one unapproved
-/// model registers none of them.
-pub fn register_neural_declarations_checked(
-    database: &mut SparqlDatabase,
-    prefixes: &HashMap<String, String>,
-    model_decls: &[ModelDecl],
-    neural_relation_decls: &[NeuralRelationDecl],
-    train_neural_relation_decls: &[TrainNeuralRelationDecl],
-) -> Result<(), String> {
-    if !model_decls.is_empty()
-        || !neural_relation_decls.is_empty()
-        || !train_neural_relation_decls.is_empty()
-    {
-        database
-            .ml_context
-            .require_local()
-            .map_err(|e| e.to_string())?;
-    }
-    for name in model_decls
-        .iter()
-        .map(|d| d.name.as_str())
-        .chain(neural_relation_decls.iter().map(|d| d.model_name.as_str()))
-    {
-        crate::ml_policy::validate_model_name(name).map_err(|e| e.to_string())?;
-    }
-    for train in train_neural_relation_decls {
-        if let Some(path) = &train.save_path {
-            database
-                .ml_context
-                .local_artifact(path)
-                .map_err(|e| e.to_string())?;
-        }
-    }
-    for decl in model_decls {
-        database.model_decls.insert(decl.name.clone(), decl.clone());
-    }
-
-    for decl in neural_relation_decls {
-        let mut normalized = decl.clone();
-        normalized.predicate = normalize_term(database, prefixes, &decl.predicate);
-        normalized.input_patterns = decl
-            .input_patterns
-            .iter()
-            .map(|triple| normalize_triple(database, prefixes, triple))
-            .collect();
-        normalized.anchor_var = normalize_term(database, prefixes, &decl.anchor_var);
-        database
-            .neural_relation_decls
-            .insert(normalized.predicate.clone(), normalized);
-    }
-
-    for decl in train_neural_relation_decls {
-        let mut normalized = decl.clone();
-        normalized.predicate = normalize_term(database, prefixes, &decl.predicate);
-        normalized.target_triple = normalize_triple(database, prefixes, &decl.target_triple);
-        if let TrainingDataSource::GraphPattern(patterns) = &decl.data_source {
-            normalized.data_source = TrainingDataSource::GraphPattern(
-                patterns
-                    .iter()
-                    .map(|triple| normalize_triple(database, prefixes, triple))
-                    .collect(),
-            );
-        }
-        if let Some(path) = &normalized.save_path {
-            if let Some(relation) = database.neural_relation_decls.get(&normalized.predicate) {
-                database
-                    .neural_model_artifacts
-                    .insert(relation.model_name.clone(), path.clone());
-            }
-        }
-        database
-            .train_neural_relation_decls
-            .insert(normalized.predicate.clone(), normalized);
-    }
-    Ok(())
-}
 
 fn push_unique(vars: &mut Vec<String>, value: String) {
     if !vars.iter().any(|existing| existing == &value) {
@@ -535,19 +401,6 @@ pub fn execute_neural_program(
     Ok(())
 }
 
-pub(crate) fn model_output_type(model_decl: &ModelDecl) -> OutputType {
-    match &model_decl.output_kind {
-        NeuralOutputKind::Exclusive { labels } => OutputType::Categorical(labels.len()),
-        NeuralOutputKind::Binary { .. } => OutputType::Binary,
-    }
-}
-
-pub(crate) fn model_hidden_layers(model_decl: &ModelDecl) -> &[usize] {
-    match &model_decl.arch {
-        ModelArch::Mlp { hidden_layers } => hidden_layers,
-    }
-}
-
 fn remove_materialized_triples(database: &mut SparqlDatabase, predicate: &str) {
     if let Some(old_triples) = database.neural_materialized_triples.remove(predicate) {
         for triple in old_triples {
@@ -690,7 +543,7 @@ mod tests {
     use super::*;
     use crate::execute_query::execute;
     use crate::parser::process_rule_definition;
-    use shared::query::{LossFn, OptimizerKind};
+    use shared::query::{LossFn, ModelArch, OptimizerKind};
 
     fn populate_multiclass_db(db: &mut SparqlDatabase) {
         for (idx, label, features) in [

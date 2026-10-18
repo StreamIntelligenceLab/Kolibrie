@@ -227,7 +227,7 @@ fn execute_ml_training_impl(
         None => db
             .model_decls
             .get(&clause.model_name)
-            .map(crate::neural_relations::model_hidden_layers)
+            .map(crate::neural_registry::model_hidden_layers)
             .unwrap_or(&[64, 32]),
     };
     let model = match seed {

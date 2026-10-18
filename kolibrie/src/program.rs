@@ -2103,7 +2103,7 @@ fn plan_neural(
         let save_path = decl
             .save_path
             .clone()
-            .unwrap_or_else(|| crate::neural_relations::default_model_artifact_path(&model.name));
+            .unwrap_or_else(|| crate::neural_registry::default_model_artifact_path(&model.name));
         let path = input
             .ml_context
             .local_artifact(&save_path)
@@ -2213,7 +2213,7 @@ fn run_neural(
     timings: &mut ProgramTimings,
     deadline: &Deadline,
 ) -> Result<NeuralRun, ProgramError> {
-    use crate::neural_relations::{model_hidden_layers, model_output_type};
+    use crate::neural_registry::{model_hidden_layers, model_output_type};
     use ml::MlpNeuralPredicate;
 
     let phase = Instant::now();
@@ -2411,7 +2411,7 @@ fn publish_neural(
             .map_err(|error| ProgramError::Policy(error.to_string()))?;
     }
     let prefixes = program.prefixes.clone();
-    crate::neural_relations::register_neural_declarations_checked(
+    crate::neural_registry::register_neural_declarations_checked(
         input,
         &prefixes,
         &program.model_decls,

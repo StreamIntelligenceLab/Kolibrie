@@ -20,37 +20,12 @@
 //! the feature provides. Only a request that actually needs a model fails.
 
 pub use crate::ml_syntax::lower_ml_predict_alias;
+// Registration is not gated, so the real one serves both builds.
+pub use crate::neural_registry::register_neural_declarations;
 use crate::sparql_database::SparqlDatabase;
-use shared::query::{ModelDecl, NeuralRelationDecl, TrainNeuralRelationDecl};
+use shared::query::TrainNeuralRelationDecl;
 use std::collections::HashMap;
 
-/// Accepts an empty set of declarations and refuses any non-empty one.
-pub fn register_neural_declarations_checked(
-    _db: &mut SparqlDatabase,
-    _prefixes: &HashMap<String, String>,
-    models: &[ModelDecl],
-    relations: &[NeuralRelationDecl],
-    training: &[TrainNeuralRelationDecl],
-) -> Result<(), String> {
-    if models.is_empty() && relations.is_empty() && training.is_empty() {
-        Ok(())
-    } else {
-        Err("ML_FEATURE_DISABLED".into())
-    }
-}
-/// As [`register_neural_declarations_checked`], reporting to stderr instead of
-/// returning an error.
-pub fn register_neural_declarations(
-    db: &mut SparqlDatabase,
-    prefixes: &HashMap<String, String>,
-    models: &[ModelDecl],
-    relations: &[NeuralRelationDecl],
-    training: &[TrainNeuralRelationDecl],
-) {
-    if register_neural_declarations_checked(db, prefixes, models, relations, training).is_err() {
-        eprintln!("ML_FEATURE_DISABLED");
-    }
-}
 /// Always fails: training needs the `ml` feature.
 pub fn execute_train_decl(
     _db: &mut SparqlDatabase,
