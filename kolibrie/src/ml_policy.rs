@@ -167,6 +167,47 @@ pub fn validate_model_name(name: &str) -> Result<(), MlError> {
     Ok(())
 }
 
+/// The parsed input of every `ML.PREDICT` clause in one request, as a tree.
+///
+/// [`MlExecutionContext::validate_request`] has to inspect the query nested inside
+/// each `ML.PREDICT` input, which means parsing it. Parsing belongs to the parser, a
+/// layer above this one, so the caller parses and hands the result over; the policy
+/// then walks it without ever calling the parser. That is what keeps this module
+/// below [`crate::parser`] rather than beside it.
+///
+/// The shape is a tree rather than a flat list because validation interleaves: a
+/// clause's model name is checked, then its nested query is walked in full, and only
+/// then is the next clause's name checked. `build` in
+/// [`crate::execute_query`](crate::execute_query) is the constructor.
+#[derive(Debug, Default)]
+pub struct PredictInputs<'a> {
+    /// One entry per `ML.PREDICT` clause, in the order `validate_request` walks
+    /// them: the query's own clause first, then one per rule in source order. An
+    /// `Err` is an input that did not parse as a complete query.
+    entries: Vec<Result<(CombinedQuery<'a>, PredictInputs<'a>), MlError>>,
+}
+
+impl<'a> PredictInputs<'a> {
+    /// Builds the tree from entries already parsed by the caller.
+    pub fn new(entries: Vec<Result<(CombinedQuery<'a>, PredictInputs<'a>), MlError>>) -> Self {
+        Self { entries }
+    }
+
+    /// The parsed input of the clause at `position`, or why it is refused.
+    ///
+    /// A position with no entry is refused rather than skipped: that can only mean
+    /// the tree was built from a different query than the one being validated, and a
+    /// policy check that silently passes an unparsed input is worse than one that
+    /// over-refuses.
+    fn nested(&self, position: usize) -> Result<(&CombinedQuery<'a>, &Self), MlError> {
+        match self.entries.get(position) {
+            Some(Ok((query, nested))) => Ok((query, nested)),
+            Some(Err(error)) => Err(*error),
+            None => Err(MlError::Forbidden),
+        }
+    }
+}
+
 /// Checks an artifact filename is safe to create.
 ///
 /// A filename can be chosen by a query, so it is attacker-influenced. Rejects
@@ -504,15 +545,20 @@ impl MlExecutionContext {
             .map_err(|_| MlError::Forbidden)?;
         file.write_all(bytes).map_err(|_| MlError::ExecutionFailed)
     }
-    /// Validate the request before mutations
     /// Checks every model a parsed request names before any of it runs.
     ///
     /// Called up front so a request mentioning one unapproved model is refused
     /// whole, rather than partly executing and then failing.
+    ///
+    /// `predicts` carries the already-parsed input of each `ML.PREDICT` clause, in
+    /// the order this walks them; see [`PredictInputs`]. `has_registered_relations`
+    /// is whether the store holds any neural relation declaration, which requires
+    /// trusted-local authority on its own.
     pub fn validate_request(
         &self,
         query: &CombinedQuery<'_>,
-        db: &crate::sparql_database::SparqlDatabase,
+        predicts: &PredictInputs<'_>,
+        has_registered_relations: bool,
     ) -> Result<(), MlError> {
         let has_declarations = !query.model_decls.is_empty()
             || !query.neural_relation_decls.is_empty()
@@ -550,24 +596,25 @@ impl MlExecutionContext {
                 self.local_artifact(path)?;
             }
         }
-        for predict in query
+        for (position, predict) in query
             .ml_predict
             .iter()
             .chain(query.rules.iter().filter_map(|r| r.ml_predict.as_ref()))
+            .enumerate()
         {
             validate_model_name(predict.model)?;
             if self.require_local().is_err() {
                 self.approved_model(predict.model)?;
             }
-            let (remaining, nested) = crate::parser::parse_combined_query(predict.input_raw)
-                .map_err(|_| MlError::Forbidden)?;
-            if !remaining.trim().is_empty() || nested.sparql.is_none() {
-                return Err(MlError::Forbidden);
-            }
-            self.validate_request(&nested, db)?;
+            // Checked here rather than up front because the order matters: with the
+            // `ml` feature off the checks above refuse the request as Disabled, and
+            // parsing everything first would report an unparseable nested input as
+            // Forbidden instead, turning a 503 into a 403.
+            let (nested_query, nested_predicts) = predicts.nested(position)?;
+            self.validate_request(nested_query, nested_predicts, has_registered_relations)?;
         }
         // Registered relations require trusted-local execution
-        if !db.neural_relation_decls.is_empty() {
+        if has_registered_relations {
             self.require_local()?;
         }
         Ok(())

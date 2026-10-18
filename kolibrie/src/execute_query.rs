@@ -235,15 +235,51 @@ pub fn execute(sparql: &str, database: &mut SparqlDatabase) -> Result<Solutions,
 /// # Errors
 ///
 /// [`QueryError::Parse`] if it does not parse, or [`QueryError::Ml`] if the policy
+/// Parses the input of every `ML.PREDICT` clause in `query`, recursively.
+///
+/// The ML policy has to look inside these inputs to validate the models they name,
+/// but parsing is this layer's job, not the policy's; see
+/// [`PredictInputs`](crate::ml_policy::PredictInputs). An input that does not parse
+/// as one complete query becomes an `Err` entry rather than failing here, so the
+/// policy still reports it in the order it would have found it.
+///
+/// Terminates because each nested input is a strict substring of the text enclosing
+/// it, so the depth is bounded by the length of the request.
+fn predict_inputs<'a>(query: &CombinedQuery<'a>) -> crate::ml_policy::PredictInputs<'a> {
+    let entries = query
+        .ml_predict
+        .iter()
+        .chain(
+            query
+                .rules
+                .iter()
+                .filter_map(|rule| rule.ml_predict.as_ref()),
+        )
+        .map(|predict| match parse_combined_query(predict.input_raw) {
+            Ok((remaining, nested)) if remaining.trim().is_empty() && nested.sparql.is_some() => {
+                let deeper = predict_inputs(&nested);
+                Ok((nested, deeper))
+            }
+            _ => Err(crate::ml_policy::MlError::Forbidden),
+        })
+        .collect();
+    crate::ml_policy::PredictInputs::new(entries)
+}
+
 /// refuses it. The parse message used to be flattened to the literal
 /// `"SPARQL_PARSE_ERROR"`, which discarded the snippet naming the offending token and
 /// was consumed by nothing: the one caller that reported it mapped every
 /// non-ML error to the same code regardless.
 pub fn validate_query_policy(sparql: &str, database: &SparqlDatabase) -> Result<(), QueryError> {
     let combined = parse_request(sparql, true).map_err(QueryError::Parse)?;
+    let predicts = predict_inputs(&combined);
     database
         .ml_context
-        .validate_request(&combined, database)
+        .validate_request(
+            &combined,
+            &predicts,
+            !database.neural_relation_decls.is_empty(),
+        )
         .map_err(QueryError::Ml)
 }
 
@@ -372,9 +408,14 @@ fn execute_request(
 ) -> Result<Solutions, QueryError> {
     let combined = parse_request(sparql, kind == RequestKind::Any).map_err(QueryError::Parse)?;
     combined.single_rule().map_err(QueryError::Unsupported)?;
+    let predicts = predict_inputs(&combined);
     database
         .ml_context
-        .validate_request(&combined, database)
+        .validate_request(
+            &combined,
+            &predicts,
+            !database.neural_relation_decls.is_empty(),
+        )
         .map_err(QueryError::Ml)?;
     if let Some(predict) = &combined.ml_predict {
         #[cfg(feature = "ml")]
@@ -507,9 +548,14 @@ fn prepare_extensions(
     combined: &CombinedQuery<'_>,
     database: &mut SparqlDatabase,
 ) -> Result<HashMap<String, String>, String> {
+    let predicts = predict_inputs(combined);
     database
         .ml_context
-        .validate_request(combined, database)
+        .validate_request(
+            combined,
+            &predicts,
+            !database.neural_relation_decls.is_empty(),
+        )
         .map_err(|e| e.to_string())?;
     // Database prefixes remain available, while a query-local declaration
     let mut prefixes = database.prefixes.clone();
