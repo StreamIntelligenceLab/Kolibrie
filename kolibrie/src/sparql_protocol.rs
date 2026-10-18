@@ -158,8 +158,12 @@ pub(crate) fn query_result(database: &mut SparqlDatabase, query: &str) -> (&'sta
 }
 
 /// The status and body for one update.
-pub(crate) fn update_result(database: &mut SparqlDatabase, update: &str) -> (&'static str, String) {
-    if let Ok(summary) = database.execute_update(update) {
+///
+/// Public because the outcome text is what a caller applying an update outside a
+/// request wants; `SparqlDatabase::handle_update` used to delegate here and has been
+/// removed, since a store should not reach up into the protocol that serves it.
+pub fn update_result(database: &mut SparqlDatabase, update: &str) -> (&'static str, String) {
+    if let Ok(summary) = crate::execute_query::execute_sparql_update(update, database) {
         return (
             "200 OK",
             format!(

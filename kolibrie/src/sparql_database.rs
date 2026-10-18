@@ -8,7 +8,6 @@
  * you can obtain one at https://mozilla.org/MPL/2.0/.
  */
 
-use crate::query_builder::QueryBuilder;
 use crate::stats::DatabaseStats;
 use crate::utils;
 use crate::utils::ClonableFn;
@@ -567,11 +566,6 @@ impl SparqlDatabase {
             self.stats_rebuild_count,
             std::time::Duration::from_nanos(self.stats_rebuild_nanos),
         )
-    }
-
-    /// Starts a programmatic query. See [`crate::query_builder`].
-    pub fn query(&self) -> QueryBuilder<'_> {
-        QueryBuilder::new(self)
     }
 
     /// Adds an already-encoded triple to the default graph.
@@ -2301,22 +2295,6 @@ impl SparqlDatabase {
         }
 
         result
-    }
-
-    /// Executes one supported standard SPARQL Update form and reports what changed
-    pub fn execute_update(
-        &mut self,
-        update: &str,
-    ) -> Result<crate::execute_query::UpdateSummary, String> {
-        crate::execute_query::execute_sparql_update(update, self)
-    }
-
-    /// Applies an update and renders the outcome as text, for the demo server.
-    ///
-    /// The body only. [`sparql_protocol::answer`](crate::sparql_protocol::answer)
-    /// pairs the same outcome with a status line.
-    pub fn handle_update(&mut self, update: &str) -> String {
-        crate::sparql_protocol::update_result(self, update).1
     }
 
     /// Return the decoded graph size for diagnostics

@@ -42,6 +42,7 @@ pub use crate::execute_query::execute;
 
 /// Why a request could not be answered.
 pub use crate::execute_query::QueryError;
+pub use crate::query_builder::Queryable;
 
 // `execute_query_rayon_parallel2_volcano` was here until `execute` replaced it. It is
 // deprecated rather than deleted, but it is no longer in the prelude: a glob import

@@ -10,6 +10,7 @@
 
 extern crate kolibrie;
 use kolibrie::execute_query::execute;
+use kolibrie::query_builder::Queryable;
 use kolibrie::sparql_database::SparqlDatabase;
 use shared::triple::Triple;
 

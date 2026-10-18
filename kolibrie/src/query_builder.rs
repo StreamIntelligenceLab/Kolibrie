@@ -190,6 +190,23 @@ pub enum SortDirection {
     Descending,
 }
 
+/// Starting a [`QueryBuilder`] from a store.
+///
+/// An extension trait rather than a method on [`SparqlDatabase`], because the store
+/// is a layer below this one and should not name the builder. Implemented for
+/// `SparqlDatabase` and re-exported from [`crate::prelude`], so `db.query()` keeps
+/// working for anyone who imports either.
+pub trait Queryable {
+    /// Starts a programmatic query against this store.
+    fn query(&self) -> QueryBuilder<'_>;
+}
+
+impl Queryable for SparqlDatabase {
+    fn query(&self) -> QueryBuilder<'_> {
+        QueryBuilder::new(self)
+    }
+}
+
 impl<'a> QueryBuilder<'a> {
     /// Creates a new QueryBuilder for the given SparqlDatabase
     pub fn new(db: &'a SparqlDatabase) -> Self {

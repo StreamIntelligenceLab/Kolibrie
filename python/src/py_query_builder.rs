@@ -154,7 +154,7 @@ impl PySparqlDatabase {
             .db
             .lock()
             .map_err(|_| PyRuntimeError::new_err("Failed to acquire database lock"))?;
-        db.execute_update(update)
+        kolibrie_core::execute_query::execute_sparql_update(update, &mut db)
             .map(|_| ())
             .map_err(PyValueError::new_err)
     }

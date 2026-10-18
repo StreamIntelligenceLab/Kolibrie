@@ -428,7 +428,10 @@ fn test_insert_quoted_triple() {
     let mut db = SparqlDatabase::new();
 
     // Use handle_update for INSERT
-    let result = db.handle_update(r#"INSERT { << <http://example.org/alice> <http://example.org/knows> <http://example.org/bob> >> <http://example.org/source> <http://example.org/doc1> . }"#);
+    let result = update_body(
+        &mut db,
+        r#"INSERT { << <http://example.org/alice> <http://example.org/knows> <http://example.org/bob> >> <http://example.org/source> <http://example.org/doc1> . }"#,
+    );
     assert_eq!(result, "Update Successful");
 
     // Verify the triple was inserted
@@ -446,7 +449,10 @@ fn test_insert_quoted_triple() {
 fn test_insert_normal_triple() {
     let mut db = SparqlDatabase::new();
 
-    let result = db.handle_update(r#"INSERT { <http://example.org/alice> <http://example.org/knows> <http://example.org/bob> . }"#);
+    let result = update_body(
+        &mut db,
+        r#"INSERT { <http://example.org/alice> <http://example.org/knows> <http://example.org/bob> . }"#,
+    );
     assert_eq!(result, "Update Successful");
     assert_eq!(default_len(&db), 1, "Should have inserted one triple");
 }
@@ -461,7 +467,10 @@ fn test_delete_basic() {
     assert_eq!(default_len(&db), 2, "Should start with 2 triples");
 
     // Use handle_update for simple DELETE
-    let result = db.handle_update(r#"DELETE { <http://example.org/alice> <http://example.org/knows> <http://example.org/bob> . }"#);
+    let result = update_body(
+        &mut db,
+        r#"DELETE { <http://example.org/alice> <http://example.org/knows> <http://example.org/bob> . }"#,
+    );
     assert_eq!(result, "Update Successful");
     assert_eq!(default_len(&db), 1, "Should have 1 triple after delete");
 }
@@ -474,7 +483,10 @@ fn test_delete_quoted_triple() {
     db.parse_ntriples_and_add(ntriples);
     assert_eq!(default_len(&db), 1, "Should start with 1 triple");
 
-    let result = db.handle_update(r#"DELETE { << <http://example.org/alice> <http://example.org/knows> <http://example.org/bob> >> <http://example.org/source> <http://example.org/doc1> . }"#);
+    let result = update_body(
+        &mut db,
+        r#"DELETE { << <http://example.org/alice> <http://example.org/knows> <http://example.org/bob> >> <http://example.org/source> <http://example.org/doc1> . }"#,
+    );
     assert_eq!(result, "Update Successful");
     assert_eq!(default_len(&db), 0, "Should have 0 triples after delete");
 }
@@ -593,7 +605,8 @@ fn test_generate_turtle_star() {
 #[test]
 fn test_handle_update_insert() {
     let mut db = SparqlDatabase::new();
-    let result = db.handle_update(
+    let result = update_body(
+        &mut db,
         r#"INSERT { <http://example.org/a> <http://example.org/b> <http://example.org/c> . }"#,
     );
     assert_eq!(result, "Update Successful");
@@ -603,12 +616,14 @@ fn test_handle_update_insert() {
 #[test]
 fn test_handle_update_delete() {
     let mut db = SparqlDatabase::new();
-    db.handle_update(
+    update_body(
+        &mut db,
         r#"INSERT { <http://example.org/a> <http://example.org/b> <http://example.org/c> . }"#,
     );
     assert_eq!(default_len(&db), 1);
 
-    let result = db.handle_update(
+    let result = update_body(
+        &mut db,
         r#"DELETE { <http://example.org/a> <http://example.org/b> <http://example.org/c> . }"#,
     );
     assert_eq!(result, "Update Successful");
@@ -618,9 +633,17 @@ fn test_handle_update_delete() {
 #[test]
 fn test_handle_update_insert_quoted_triple() {
     let mut db = SparqlDatabase::new();
-    let result = db.handle_update(r#"INSERT { << <http://example.org/a> <http://example.org/b> <http://example.org/c> >> <http://example.org/src> <http://example.org/d> . }"#);
+    let result = update_body(
+        &mut db,
+        r#"INSERT { << <http://example.org/a> <http://example.org/b> <http://example.org/c> >> <http://example.org/src> <http://example.org/d> . }"#,
+    );
     assert_eq!(result, "Update Successful");
     assert_eq!(default_len(&db), 1);
     let qt_store = db.quoted_triples();
     assert!(!qt_store.is_empty(), "QuotedTripleStore should have entry");
+}
+
+/// The body of the protocol's update outcome, which `db.handle_update` used to return.
+fn update_body(db: &mut SparqlDatabase, update: &str) -> String {
+    kolibrie::sparql_protocol::update_result(db, update).1
 }
