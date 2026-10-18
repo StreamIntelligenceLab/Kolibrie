@@ -26,7 +26,8 @@
 //! | R2R | [`r2r`], [`simple_r2r`] | evaluate the query over a window's content |
 //! | R2S | [`r2s`] | choose which solutions reach the output stream |
 //!
-//! [`window_runner`] drives one window's S2R→R2R cycle; [`builder`] assembles an
+//! [`window_runner`] drives one window's S2R→R2R cycle;
+//! [`builder`](crate::rsp_engine::builder) assembles an
 //! engine from a parsed query. [`RSPEngine`](crate::rsp_engine::RSPEngine) owns the
 //! whole thing.
 //!
@@ -43,7 +44,6 @@
 //! latency against whether one result may mix data from different cycles, so it is a
 //! correctness question, not a tuning knob.
 
-pub mod builder;
 pub mod r2r;
 pub mod r2s;
 pub mod s2r;

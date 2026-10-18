@@ -46,7 +46,15 @@ use shared::triple::Triple;
 use std::sync::RwLock;
 
 // Re-exports to preserve the public API used by kolibrie-http-server and examples.
-pub use crate::rsp::builder::{RSPBuilder, RSPQueryConfig};
+/// Assembling an engine from a parsed query. Lives here rather than in
+/// [`rsp`](crate::rsp) because it builds an [`RSPEngine`], and a module that builds
+/// a thing should sit with it rather than below it.
+pub mod builder;
+
+pub use builder::{RSPBuilder, RSPQueryConfig};
+// Defined with the R2R operator that carries it, one layer down, so that `rsp`
+// does not have to name this module. The public path is unchanged.
+pub use crate::rsp::simple_r2r::QueryExecutionMode;
 pub use crate::rsp::simple_r2r::SimpleR2R;
 
 /// How the engine runs its windows.
@@ -60,16 +68,6 @@ pub enum OperationMode {
     /// only when there is something to join: more than one window, or static
     /// patterns alongside a window.
     MultiThread,
-}
-
-/// Which evaluation path a window's query takes.
-#[derive(Clone, Copy, Debug)]
-pub enum QueryExecutionMode {
-    /// Direct evaluation, without cost-based planning.
-    Standard,
-    /// Through the [`streamertail_optimizer`](crate::streamertail_optimizer),
-    /// which costs alternative plans first.
-    Volcano,
 }
 
 /// How derived facts are maintained as windows advance.
@@ -373,7 +371,7 @@ where
 {
     /// An engine over the given windows and plan.
     ///
-    /// Prefer [`RSPBuilder`](crate::rsp::builder::RSPBuilder), which assembles one
+    /// Prefer [`RSPBuilder`], which assembles one
     /// from a parsed RSP-QL query and validates it.
     pub fn new(
         query_config: RSPQueryConfig,

@@ -14,7 +14,6 @@
 //! correct, and enough for a window whose content fits in memory.
 
 use crate::rsp::r2r::{AsAnyMut, R2ROperator};
-use crate::rsp_engine::QueryExecutionMode;
 use crate::sparql_database::SparqlDatabase;
 use crate::streamertail_optimizer::{ExecutionEngine, PhysicalOperator};
 use datalog::parser_n3_logic::parse_n3_rule;
@@ -33,6 +32,15 @@ use log::{debug, error};
 #[cfg(test)]
 use std::{println as debug, println as error};
 
+/// Which evaluation path a window's query takes.
+#[derive(Clone, Copy, Debug)]
+pub enum QueryExecutionMode {
+    /// Direct evaluation, without cost-based planning.
+    Standard,
+    /// Through the [`streamertail_optimizer`](crate::streamertail_optimizer),
+    /// which costs alternative plans first.
+    Volcano,
+}
 /// An [`R2ROperator`] that loads each window's content into a store and queries it.
 pub struct SimpleR2R {
     /// The store holding the current window's content plus any background data.
