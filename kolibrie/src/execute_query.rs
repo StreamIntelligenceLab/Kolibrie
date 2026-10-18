@@ -235,6 +235,32 @@ pub fn execute(sparql: &str, database: &mut SparqlDatabase) -> Result<Solutions,
 /// # Errors
 ///
 /// [`QueryError::Parse`] if it does not parse, or [`QueryError::Ml`] if the policy
+/// Runs a training-data `SELECT` and returns its rows keyed by variable name.
+///
+/// Lived in [`crate::ml_feature_loader`] until that module was made to depend on
+/// nothing in the crate; it needs to execute a query, so it belongs here. It used to
+/// parse `select_query` a second time purely to recover the projected variable names,
+/// which [`Solutions::variables`] already carries, so the second parse is gone.
+///
+/// An unbound value is rendered as the empty string, as [`Solutions::into_rows`]
+/// does, and reaches the caller as a term that fails to convert to a number.
+#[cfg(feature = "ml")]
+pub(crate) fn query_training_rows(
+    db: &mut SparqlDatabase,
+    select_query: &str,
+) -> Result<Vec<HashMap<String, crate::ml_feature_loader::RdfTerm>>, Box<dyn std::error::Error>> {
+    let solutions = execute(select_query, db).expect("query should run");
+    let variables: Vec<String> = solutions.variables().to_vec();
+    if variables.is_empty() {
+        return Err("training data query must SELECT at least one variable".into());
+    }
+    Ok(solutions
+        .into_rows()
+        .into_iter()
+        .map(|row| variables.iter().cloned().zip(row).collect())
+        .collect())
+}
+
 /// Parses the input of every `ML.PREDICT` clause in `query`, recursively.
 ///
 /// The ML policy has to look inside these inputs to validate the models they name,

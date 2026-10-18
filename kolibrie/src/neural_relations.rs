@@ -36,7 +36,8 @@ use crate::execute_ml_train::{
     build_ground_reasoner_from_db, execute_ml_training_owned, OwnedNeuralCallSpec,
     OwnedNeuralChoice, OwnedNeuralGroupType, OwnedNeuralTrainingClause,
 };
-use crate::ml_feature_loader::{build_feature_vec, query_training_rows};
+use crate::execute_query::query_training_rows;
+use crate::ml_feature_loader::build_feature_vec;
 use crate::parser::parse_combined_query;
 use crate::sparql_database::SparqlDatabase;
 

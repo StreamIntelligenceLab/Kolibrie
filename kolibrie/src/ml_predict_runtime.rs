@@ -11,7 +11,7 @@
 use std::collections::HashMap;
 use std::error::Error;
 
-use crate::ml_feature_loader::query_training_rows;
+use crate::execute_query::query_training_rows;
 use shared::query::{CombinedRule, MLPredictClause};
 use shared::triple::Triple;
 

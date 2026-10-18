@@ -34,7 +34,8 @@ use shared::seed_spec::{ExclusiveChoice, SeedSpec};
 use shared::triple::Triple;
 use std::time::{Duration, Instant};
 
-use crate::ml_feature_loader::{build_feature_vec, query_training_rows, rdf_term_to_f64, RdfTerm};
+use crate::execute_query::query_training_rows;
+use crate::ml_feature_loader::{build_feature_vec, rdf_term_to_f64, RdfTerm};
 use crate::sparql_database::SparqlDatabase;
 
 type TrainResult<T> = Result<T, Box<dyn Error>>;

@@ -177,8 +177,8 @@ pub fn validate_model_name(name: &str) -> Result<(), MlError> {
 ///
 /// The shape is a tree rather than a flat list because validation interleaves: a
 /// clause's model name is checked, then its nested query is walked in full, and only
-/// then is the next clause's name checked. `build` in
-/// [`crate::execute_query`](crate::execute_query) is the constructor.
+/// then is the next clause's name checked. `predict_inputs` in
+/// [`crate::execute_query`] is the constructor.
 #[derive(Debug, Default)]
 pub struct PredictInputs<'a> {
     /// One entry per `ML.PREDICT` clause, in the order `validate_request` walks

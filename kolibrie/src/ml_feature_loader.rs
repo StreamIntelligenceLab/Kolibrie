@@ -8,66 +8,22 @@
  * you can obtain one at https://mozilla.org/MPL/2.0/.
  */
 
+//! Turning RDF terms into the numbers a model consumes.
+//!
+//! Pure conversion, and deliberately nothing else. Loading the rows to convert needs
+//! to run a query, which is a layer above this one, so
+//! [`query_training_rows`](crate::execute_query::query_training_rows) lives there and
+//! this module depends on nothing in the crate.
+
 use std::error::Error;
 
-// Needed only by the ml-gated functions below; `rdf_term_to_f64`, which the default
-// build uses, needs nothing but `Error`.
-#[cfg(feature = "ml")]
-use crate::execute_query::execute;
-#[cfg(feature = "ml")]
-use crate::parser::parse_sparql_query;
-#[cfg(feature = "ml")]
-use crate::sparql_database::SparqlDatabase;
 #[cfg(feature = "ml")]
 use std::collections::HashMap;
 
 pub(crate) type RdfTerm = String;
 type LoaderResult<T> = Result<T, Box<dyn Error>>;
 
-// Only the ml-gated modules (execute_ml_train, neural_relations, ml_predict_runtime)
-// load training rows or build feature vectors, so these two are gated to match. Their
-// sibling `rdf_term_to_f64` is NOT gated: program.rs and execute_query.rs use it in the
-// default build. Demoting this module to `pub(crate)` in step 4a is what surfaced the
-// distinction — while it was `pub`, everything here counted as reachable.
-#[cfg(feature = "ml")]
-pub(crate) fn query_training_rows(
-    db: &mut SparqlDatabase,
-    select_query: &str,
-) -> LoaderResult<Vec<HashMap<String, RdfTerm>>> {
-    let (_, parsed) = parse_sparql_query(select_query)
-        .map_err(|err| format!("failed to parse training data query: {err:?}"))?;
-
-    let variables: Vec<String> = parsed
-        .variables
-        .iter()
-        .filter_map(|(kind, var, _)| {
-            if *kind == "VAR" || var.starts_with('?') {
-                Some(var.trim_start_matches('?').to_string())
-            } else {
-                None
-            }
-        })
-        .collect();
-
-    if variables.is_empty() {
-        return Err("training data query must SELECT at least one variable".into());
-    }
-
-    let rows = execute(select_query, db)
-        .expect("query should run")
-        .into_rows();
-    Ok(rows
-        .into_iter()
-        .map(|row| {
-            variables
-                .iter()
-                .cloned()
-                .zip(row)
-                .collect::<HashMap<String, RdfTerm>>()
-        })
-        .collect())
-}
-
+// Not gated: program.rs and execute_query.rs use this one in the default build.
 pub(crate) fn rdf_term_to_f64(term: &RdfTerm) -> LoaderResult<f64> {
     let trimmed = term.trim();
     if let Ok(value) = trimmed.parse::<f64>() {
@@ -99,6 +55,7 @@ pub(crate) fn rdf_term_to_f64(term: &RdfTerm) -> LoaderResult<f64> {
     Err(format!("Non-numeric RDF term in neural feature vector: {}", term).into())
 }
 
+// Gated: only the ml-gated modules build feature vectors.
 #[cfg(feature = "ml")]
 pub(crate) fn build_feature_vec(
     row: &HashMap<String, RdfTerm>,
