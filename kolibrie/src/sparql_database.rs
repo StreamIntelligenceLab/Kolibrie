@@ -303,6 +303,7 @@ pub struct SparqlDatabase {
     stats_rebuild_nanos: u64,
     pub(crate) quoted_triple_store: Arc<RwLock<QuotedTripleStore>>,
     implicit_neural_materialization: bool,
+    training_seed: Option<u64>,
 }
 
 impl SparqlDatabase {
@@ -337,6 +338,7 @@ impl SparqlDatabase {
             stats_rebuild_nanos: 0,
             quoted_triple_store: Arc::new(RwLock::new(QuotedTripleStore::new())),
             implicit_neural_materialization: true,
+            training_seed: None,
         }
     }
 
@@ -2251,6 +2253,7 @@ impl SparqlDatabase {
             stats_rebuild_nanos: 0,
             quoted_triple_store: Arc::new(RwLock::new(merged_quoted_triples)),
             implicit_neural_materialization: self.implicit_neural_materialization,
+            training_seed: self.training_seed,
         }
     }
 
@@ -2582,6 +2585,27 @@ impl SparqlDatabase {
     /// Sets the flag and returns its previous value, so a caller can restore it.
     pub(crate) fn set_implicit_neural_materialization(&mut self, enabled: bool) -> bool {
         std::mem::replace(&mut self.implicit_neural_materialization, enabled)
+    }
+
+    /// The seed a `TRAIN NEURAL RELATION` declaration initialises weights from.
+    ///
+    /// `None`, the default, draws them unseeded, so two runs of the same declaration
+    /// train different models.
+    pub fn training_seed(&self) -> Option<u64> {
+        self.training_seed
+    }
+
+    /// Makes declarative training reproducible by fixing its seed.
+    ///
+    /// Weight initialisation and batch shuffling both derive from it, so the same
+    /// declaration over the same data trains the same model every time. A host that
+    /// has to reproduce or compare a training run sets this; one that wants an
+    /// independent initialisation each time leaves it `None`.
+    ///
+    /// [`program`](crate::program) already took a seed through its own options; this
+    /// is the same control for the declarative path, which had none.
+    pub fn set_training_seed(&mut self, seed: Option<u64>) {
+        self.training_seed = seed;
     }
 
     /// Rebuilds every graph-scoped index, keeping named graphs distinct from the default

@@ -246,6 +246,11 @@ ML.PREDICT(MODEL "digit_model",
 #[test]
 fn top_level_ml_predict_materializes_after_training() {
     let mut db = ml_local::database();
+    // Asserts exact labels, so it is seeded for the same reason
+    // `rerun_cleans_stale_predictions` is: an unseeded initialisation can leave a
+    // sample misclassified. This one had not been seen to fail, but it is flaky by
+    // construction rather than by luck.
+    db.set_training_seed(Some(7));
     populate_multiclass_db(&mut db);
     train_multiclass(&mut db, &tmp_model_path("top_level"));
 
@@ -382,6 +387,11 @@ ML.PREDICT(MODEL "fraud_model",
 #[test]
 fn rerun_cleans_stale_predictions() {
     let mut db = ml_local::database();
+    // This asserts one exact predicted label, so it needs the model to have learned
+    // the task. Weight initialisation is unseeded by default, and an unlucky draw
+    // left s0 misclassified after 80 epochs on three features, failing this about
+    // once in twenty runs.
+    db.set_training_seed(Some(7));
     populate_multiclass_db(&mut db);
     train_multiclass(&mut db, &tmp_model_path("rerun"));
 

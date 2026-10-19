@@ -33,8 +33,8 @@ use shared::query::{
 use shared::triple::Triple;
 
 use crate::execute_ml_train::{
-    build_ground_reasoner_from_db, execute_ml_training_owned, OwnedNeuralCallSpec,
-    OwnedNeuralChoice, OwnedNeuralGroupType, OwnedNeuralTrainingClause,
+    build_ground_reasoner_from_db, execute_ml_training_owned, execute_ml_training_owned_seeded,
+    OwnedNeuralCallSpec, OwnedNeuralChoice, OwnedNeuralGroupType, OwnedNeuralTrainingClause,
 };
 use crate::execute_query::query_training_rows;
 use crate::ml_feature_loader::build_feature_vec;
@@ -205,7 +205,17 @@ pub fn execute_train_decl(
     database.ml_context.require_local()?;
     let owned_clause = lower_train_decl_to_owned(database, train_decl)?;
     let base_reasoner = build_ground_reasoner_from_db(database, None);
-    execute_ml_training_owned(&owned_clause, &base_reasoner, database)?;
+    // Reproducible when the host fixed a seed, independent otherwise. The
+    // programmatic path through `program` always had this control; the declarative
+    // one did not, which left a `TRAIN NEURAL RELATION` run impossible to repeat.
+    match database.training_seed() {
+        Some(seed) => {
+            execute_ml_training_owned_seeded(&owned_clause, &base_reasoner, database, seed)?;
+        }
+        None => {
+            execute_ml_training_owned(&owned_clause, &base_reasoner, database)?;
+        }
+    }
 
     if let Some(relation) = database.neural_relation_decls.get(&train_decl.predicate) {
         if let Some(save_path) = &owned_clause.save_path {
