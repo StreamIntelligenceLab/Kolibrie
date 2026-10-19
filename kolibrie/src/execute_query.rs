@@ -9,8 +9,9 @@
  */
 
 use crate::error_handler::format_parse_error;
-use crate::neural_relations::{execute_train_decl, materialize_neural_relations_for_patterns};
 use crate::parser::{parse_combined_query, parse_combined_query_with_options};
+// Re-exported, not defined here: see `query_error` for why it moved.
+pub use crate::query_error::QueryError;
 use crate::sparql_database::SparqlDatabase;
 use crate::streamertail_optimizer::{
     build_logical_plan_from_group, compile_graph_term, compile_term, DatasetView, ExecutionEngine,
@@ -25,7 +26,6 @@ use shared::query::{
 use shared::quoted_triple_store::is_quoted_triple_id;
 use shared::terms::{Bindings, Term};
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
-use std::fmt;
 use std::sync::atomic::{AtomicU64, Ordering as AtomicOrdering};
 
 type StringBinding = HashMap<String, String>;
@@ -139,69 +139,6 @@ impl<'a> Solution<'a> {
     /// The values in column order, matching [`Solutions::variables`].
     pub fn values(&self) -> &'a [Option<String>] {
         self.values
-    }
-}
-
-/// Why a request could not be answered.
-///
-/// # Rendering
-///
-/// `Display` prefixes a stable `QUERY_*` code, as
-/// [`ProgramError`](crate::program::ProgramError) does. A [`Parse`](Self::Parse)
-/// message is **multi-line**: it carries the annotated snippet the parser produced,
-/// pointing at the offending token. It contains no terminal escapes, so it is safe to
-/// log or serialise.
-///
-pub enum QueryError {
-    /// The request did not parse as SPARQL or as one of the Kolibrie extensions.
-    ///
-    /// Carries the parser's message, which names a position in the input.
-    Parse(String),
-    /// It parsed, but is not a form this entry point accepts — an Update where a
-    /// query was required, or more than one rule in a single request.
-    Unsupported(String),
-    /// The ML policy refused it. The request may be well-formed; the caller simply
-    /// lacks the authority. See [`ml_policy`](crate::ml_policy).
-    Ml(crate::ml_policy::MlError),
-    /// Parsing and policy both passed, and evaluation failed. Covers an unresolvable
-    /// dataset clause, an unsupported update template, and failure inside the plan.
-    Execution(String),
-}
-
-// Debug delegates to Display rather than being derived, because `unwrap` and
-// `expect` print the Debug form: a derived one escapes the newlines in a parse
-// snippet, turning the annotated, multi-line message that points at the offending
-// token into an unreadable single line of `\n`. The `QUERY_*` prefix carries the
-// variant name, so nothing is lost by this.
-impl fmt::Debug for QueryError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{self}")
-    }
-}
-
-impl fmt::Display for QueryError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::Parse(message) => write!(f, "QUERY_PARSE_ERROR: {message}"),
-            Self::Unsupported(message) => write!(f, "QUERY_UNSUPPORTED: {message}"),
-            Self::Ml(error) => write!(f, "QUERY_POLICY: {error}"),
-            Self::Execution(message) => write!(f, "QUERY_EXECUTION_FAILED: {message}"),
-        }
-    }
-}
-
-impl std::error::Error for QueryError {
-    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
-        match self {
-            Self::Ml(error) => Some(error),
-            _ => None,
-        }
-    }
-}
-
-impl From<crate::ml_policy::MlError> for QueryError {
-    fn from(error: crate::ml_policy::MlError) -> Self {
-        Self::Ml(error)
     }
 }
 
@@ -446,7 +383,7 @@ fn execute_request(
     if let Some(predict) = &combined.ml_predict {
         #[cfg(feature = "ml")]
         if database.ml_context.require_local().is_ok() {
-            crate::neural_relations::execute_neural_program(database, sparql)?;
+            crate::ml_runtime_for_build().execute_program(database, sparql)?;
             return Ok(Solutions::default());
         }
         return execute_approved_prediction(predict, &combined.prefixes, database)
@@ -608,7 +545,8 @@ fn prepare_extensions(
         })
         .collect::<Vec<_>>();
     for declaration in &normalized_trains {
-        execute_train_decl(database, declaration)
+        crate::ml_runtime_for_build()
+            .execute_train_decl(database, declaration)
             .map_err(|error| format!("failed to execute TRAIN NEURAL RELATION: {error}"))?;
     }
 
@@ -622,7 +560,11 @@ fn execute_select(
 ) -> Result<Solutions, String> {
     let mut lexical_patterns = Vec::new();
     collect_triple_patterns(&query.pattern, &mut lexical_patterns);
-    materialize_neural_relations_for_patterns(database, &lexical_patterns, prefixes)?;
+    crate::ml_runtime_for_build().materialize_for_patterns(
+        database,
+        &lexical_patterns,
+        prefixes,
+    )?;
 
     let dataset = build_dataset_view(query, prefixes, database)?;
     let logical_plan = build_logical_plan_from_group(&query.pattern, prefixes, database)?;
@@ -1011,7 +953,11 @@ fn execute_modify(
 ) -> Result<UpdateSummary, String> {
     let mut lexical_patterns = Vec::new();
     collect_triple_patterns(where_pattern, &mut lexical_patterns);
-    materialize_neural_relations_for_patterns(database, &lexical_patterns, prefixes)?;
+    crate::ml_runtime_for_build().materialize_for_patterns(
+        database,
+        &lexical_patterns,
+        prefixes,
+    )?;
 
     let logical_plan = build_logical_plan_from_group(where_pattern, prefixes, database)?;
     let dataset = DatasetView::from_database(database);

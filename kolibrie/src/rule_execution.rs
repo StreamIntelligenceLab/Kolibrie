@@ -20,7 +20,6 @@
 //! below.
 
 use crate::execute_query::QueryError;
-use crate::neural_relations::{execute_train_decl, materialize_neural_relations_for_patterns};
 use crate::parser::{convert_combined_rule, convert_triple_pattern, parse_combined_query};
 use crate::rsp::r2s::{Relation2StreamOperator, StreamOperator};
 use crate::rsp::s2r::{
@@ -99,8 +98,9 @@ pub fn process_rule_definition(
             })
             .collect();
         for train_decl in &normalized_trains {
-            execute_train_decl(database, train_decl)
-                .map_err(|err| QueryError::Execution(err.to_string()))?;
+            crate::ml_runtime_for_build()
+                .execute_train_decl(database, train_decl)
+                .map_err(QueryError::Execution)?;
         }
 
         #[allow(unused_mut)] // ML-enabled execution can rewrite this rule.
@@ -110,24 +110,20 @@ pub fn process_rule_definition(
             .cloned()
             .ok_or_else(|| QueryError::Parse("Failed to parse rule definition".to_string()))?;
 
-        materialize_neural_relations_for_patterns(database, &rule.body.0, &rule_prefixes)
+        crate::ml_runtime_for_build()
+            .materialize_for_patterns(database, &rule.body.0, &rule_prefixes)
             .map_err(QueryError::Execution)?;
 
         // Execute ML.PREDICT before converting the rule for Datalog
         if let Some(ml_predict) = rule.ml_predict.clone() {
-            #[cfg(not(feature = "ml"))]
-            {
-                let _ = ml_predict;
-                return Err(QueryError::Ml(crate::ml_policy::MlError::Disabled));
-            }
-            #[cfg(feature = "ml")]
-            crate::ml_predict_runtime::execute_ml_predict_clause(
+            // No `cfg` needed any more: the build's runtime refuses this itself when
+            // the feature is off, with the same `QUERY_POLICY` code as before.
+            crate::ml_runtime_for_build().execute_predict_clause(
+                database,
                 &ml_predict,
                 &mut rule,
-                database,
                 &rule_prefixes,
-            )
-            .map_err(|err| QueryError::Execution(err.to_string()))?;
+            )?;
         }
 
         let mut kg = Reasoner::new();

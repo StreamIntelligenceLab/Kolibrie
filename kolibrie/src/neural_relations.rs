@@ -816,3 +816,48 @@ WHERE {
         assert_eq!(inferred.len(), 2);
     }
 }
+
+/// The ML layer's implementation of the hooks query evaluation calls.
+///
+/// A unit type: every method takes the store as an argument, so there is no state to
+/// hold. The crate root is what selects it for the build.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct NeuralRuntime;
+
+impl crate::ml_runtime::MlRuntime for NeuralRuntime {
+    fn materialize_for_patterns(
+        &self,
+        database: &mut SparqlDatabase,
+        patterns: &[(&str, &str, &str)],
+        prefixes: &std::collections::HashMap<String, String>,
+    ) -> Result<(), String> {
+        materialize_neural_relations_for_patterns(database, patterns, prefixes)
+    }
+
+    fn execute_train_decl(
+        &self,
+        database: &mut SparqlDatabase,
+        declaration: &shared::query::TrainNeuralRelationDecl,
+    ) -> Result<(), String> {
+        execute_train_decl(database, declaration).map_err(|error| error.to_string())
+    }
+
+    fn execute_program(
+        &self,
+        database: &mut SparqlDatabase,
+        program: &str,
+    ) -> Result<(), crate::query_error::QueryError> {
+        execute_neural_program(database, program)
+    }
+
+    fn execute_predict_clause(
+        &self,
+        database: &mut SparqlDatabase,
+        clause: &shared::query::MLPredictClause<'_>,
+        rule: &mut shared::query::CombinedRule<'_>,
+        prefixes: &std::collections::HashMap<String, String>,
+    ) -> Result<Vec<shared::triple::Triple>, crate::query_error::QueryError> {
+        crate::ml_predict_runtime::execute_ml_predict_clause(clause, rule, database, prefixes)
+            .map_err(|error| crate::query_error::QueryError::Execution(error.to_string()))
+    }
+}

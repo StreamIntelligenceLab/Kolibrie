@@ -60,6 +60,7 @@
 mod aggregate;
 pub(crate) mod error_handler;
 pub mod ml_policy;
+pub mod ml_runtime;
 mod ml_syntax;
 #[cfg(test)]
 extern crate self as kolibrie;
@@ -76,7 +77,6 @@ pub(crate) mod ml_feature_loader;
 pub(crate) mod ml_predict_candle;
 #[cfg(feature = "ml")]
 pub(crate) mod ml_predict_runtime;
-/// Recording model and neural relation declarations on a store.
 pub mod neural_registry;
 /// Predicates whose facts come from a model rather than from data.
 #[cfg(feature = "ml")]
@@ -92,17 +92,40 @@ pub mod prelude;
 pub mod program;
 /// Building a query programmatically instead of writing SPARQL text.
 pub mod query_builder;
+pub mod query_error;
 pub mod rsp;
 /// The RDF stream processing engine: named streams, windows, and their joins.
 pub mod rsp_engine;
-/// Running a `RULE` definition against a store, and the `RETRIEVE` clause.
 pub mod rule_execution;
 /// The RDF store and everything hung off it.
 pub mod sparql_database;
 pub mod sparql_protocol;
-/// Cardinalities over a dataset index, read by the cost model.
 pub mod stats;
 pub mod streamertail_optimizer;
 pub(crate) mod term_order;
 /// Small helpers: user-defined function wrappers, timestamps, a demo server.
 pub mod utils;
+
+/// Which [`MlRuntime`](ml_runtime::MlRuntime) the query layer calls through.
+///
+/// The crate root is the one place that may name both the abstraction and the
+/// implementation, which is what keeps `execute_query` and `rule_execution` from
+/// depending on the ML layer. At the point the workspace is split into crates this
+/// selection moves to the facade crate and the object is threaded through the store
+/// instead; until then, a `static` chosen by the feature flag does the same job
+/// without a registration step, so no caller has to install anything.
+pub(crate) mod ml_runtime_impl {
+    use crate::ml_runtime::MlRuntime;
+
+    // No `cfg` here: `neural_relations` is already either the real module or the
+    // `#[path]`-substituted disabled one, so naming its `NeuralRuntime` picks the
+    // right implementation for the build on its own.
+    static RUNTIME: crate::neural_relations::NeuralRuntime = crate::neural_relations::NeuralRuntime;
+
+    /// The runtime for this build.
+    pub(crate) fn runtime() -> &'static dyn MlRuntime {
+        &RUNTIME
+    }
+}
+
+pub(crate) use ml_runtime_impl::runtime as ml_runtime_for_build;
