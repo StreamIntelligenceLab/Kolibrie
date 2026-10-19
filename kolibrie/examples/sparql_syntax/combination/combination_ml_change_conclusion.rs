@@ -1,6 +1,7 @@
 use kolibrie::execute_ml::execute_ml_prediction_from_clause;
 use kolibrie::execute_query::execute;
-use kolibrie::parser::{parse_standalone_rule, process_rule_definition};
+use kolibrie::parser::parse_standalone_rule;
+use kolibrie::rule_execution::process_rule_definition;
 use kolibrie::sparql_database::SparqlDatabase;
 use ml::MLHandler;
 use pyo3::prepare_freethreaded_python;

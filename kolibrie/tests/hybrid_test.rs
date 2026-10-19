@@ -4,7 +4,7 @@
  * KU Leuven — Stream Intelligence Lab, Belgium
  */
 
-use kolibrie::parser::process_rule_definition;
+use kolibrie::rule_execution::process_rule_definition;
 use kolibrie::sparql_database::SparqlDatabase;
 
 #[test]

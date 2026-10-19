@@ -8,7 +8,8 @@
  */
 
 use kolibrie::execute_query::execute;
-use kolibrie::parser::{parse_standalone_rule, process_rule_definition};
+use kolibrie::parser::parse_standalone_rule;
+use kolibrie::rule_execution::process_rule_definition;
 use kolibrie::sparql_database::SparqlDatabase;
 use kolibrie::streamertail_optimizer::operators::LogicalOperator;
 use kolibrie::streamertail_optimizer::optimizer::Streamertail;

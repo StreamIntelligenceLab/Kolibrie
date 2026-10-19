@@ -95,6 +95,8 @@ pub mod query_builder;
 pub mod rsp;
 /// The RDF stream processing engine: named streams, windows, and their joins.
 pub mod rsp_engine;
+/// Running a `RULE` definition against a store, and the `RETRIEVE` clause.
+pub mod rule_execution;
 /// The RDF store and everything hung off it.
 pub mod sparql_database;
 pub mod sparql_protocol;

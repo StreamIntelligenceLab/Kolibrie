@@ -9,7 +9,8 @@
 use kolibrie::execute_ml_train::build_ground_reasoner_from_db;
 use kolibrie::execute_query::execute;
 use kolibrie::neural_relations::execute_neural_program;
-use kolibrie::parser::{convert_combined_rule, parse_combined_query, process_rule_definition};
+use kolibrie::parser::{convert_combined_rule, parse_combined_query};
+use kolibrie::rule_execution::process_rule_definition;
 use kolibrie::sparql_database::SparqlDatabase;
 use shared::sdd::SddProvenance;
 

@@ -57,7 +57,7 @@ fn rule_ml_is_rejected_before_prefix_registration() {
     let request = r#"PREFIX ex: <urn:canary:>
 RULE :Predict :- CONSTRUCT { ?s ex:p ?prediction } WHERE { ?s ex:x ?x }
 ML.PREDICT(MODEL "unapproved", INPUT { SELECT ?x WHERE { ?s ex:x ?x } }, OUTPUT ?prediction)"#;
-    let error = kolibrie::parser::process_rule_definition(request, &mut db).unwrap_err();
+    let error = kolibrie::rule_execution::process_rule_definition(request, &mut db).unwrap_err();
     assert!(matches!(error, QueryError::Ml(_)), "{error}");
     assert!(db.prefixes().is_empty());
     assert!(db.model_decls().is_empty());

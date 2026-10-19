@@ -10,7 +10,7 @@
 
 #![cfg(feature = "ml")]
 
-use kolibrie::parser::process_rule_definition;
+use kolibrie::rule_execution::process_rule_definition;
 use kolibrie::sparql_database::SparqlDatabase;
 
 #[path = "common/ml_local.rs"]

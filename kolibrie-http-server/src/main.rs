@@ -47,10 +47,10 @@ use datalogmtl::store::IntervalFactStore;
 use datalogmtl::stream::{RdfEvent, ShapeIngester};
 use datalogmtl::syntax::{DatalogMTLRule, Mode};
 use kolibrie::execute_query::QueryError;
-use kolibrie::parser::process_rule_definition;
 use kolibrie::rsp_engine::{
     OperationMode, QueryExecutionMode, RSPBuilder, ResultConsumer, SimpleR2R,
 };
+use kolibrie::rule_execution::process_rule_definition;
 use kolibrie::sparql_database::SparqlDatabase;
 use serde::{Deserialize, Serialize};
 use shared::dictionary::Dictionary;

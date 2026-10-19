@@ -1,5 +1,5 @@
-use kolibrie::parser::process_rule_definition;
 use kolibrie::rsp_engine::{QueryExecutionMode, RSPBuilder, ResultConsumer, SimpleR2R};
+use kolibrie::rule_execution::process_rule_definition;
 use kolibrie::sparql_database::SparqlDatabase;
 use ml::MLHandler;
 

@@ -27,7 +27,7 @@ use std::time::Instant;
 #[cfg(test)]
 use std::{println as debug, println as error};
 
-use crate::parser::process_rule_definition;
+use crate::rule_execution::process_rule_definition;
 use crate::sparql_database::SparqlDatabase;
 use crate::streamertail_optimizer::{ExecutionEngine, LogicalOperator, PhysicalOperator};
 use datalog::cross_window_sds::{

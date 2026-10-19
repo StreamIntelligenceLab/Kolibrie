@@ -1,5 +1,5 @@
-use kolibrie::parser::process_rule_definition;
 use kolibrie::prelude::*;
+use kolibrie::rule_execution::process_rule_definition;
 use kolibrie::sparql_database::SparqlDatabase;
 use rand::Rng;
 use std::thread;

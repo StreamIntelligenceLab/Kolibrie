@@ -542,7 +542,7 @@ mod tests {
     }
     use super::*;
     use crate::execute_query::execute;
-    use crate::parser::process_rule_definition;
+    use crate::rule_execution::process_rule_definition;
     use shared::query::{LossFn, ModelArch, OptimizerKind};
 
     fn populate_multiclass_db(db: &mut SparqlDatabase) {

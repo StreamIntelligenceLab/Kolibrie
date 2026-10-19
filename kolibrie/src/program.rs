@@ -10,7 +10,7 @@
 
 //! Probabilistic programs: compile a rule set once, run it, query the answers.
 //!
-//! The alternative to [`process_rule_definition`](crate::parser::process_rule_definition)
+//! The alternative to [`process_rule_definition`](crate::rule_execution::process_rule_definition)
 //! for anything beyond a single rule. The split matters because compiling validates
 //! and costs nothing to repeat, while executing consumes a dataset:
 //!

@@ -8,8 +8,8 @@
  * you can obtain one at https://mozilla.org/MPL/2.0/.
  */
 
-use kolibrie::parser::process_rule_definition;
 use kolibrie::prelude::*;
+use kolibrie::rule_execution::process_rule_definition;
 use kolibrie::sparql_database::SparqlDatabase;
 
 fn main() {
