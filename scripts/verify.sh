@@ -49,6 +49,27 @@ do
   [ "$n" -gt 0 ] && { grep -E '^[^ ]+: error|^error' "$OUT/$name.log" | head -5 | sed 's/^/     /'; fail=1; }
 done
 
+# Mirrors the blocking `rustdoc` CI job exactly, including the deny flag: a broken
+# intra-doc link fails there even though `missing_docs` is only a warning. Not in the
+# loop above because RUSTDOCFLAGS contains a space and would not survive its word
+# splitting.
+#
+# Why this is worth the extra minute: four broken links reached commits in one
+# refactoring session while every other check here passed. `cargo check` does not
+# resolve doc links at all, so nothing else in this script can see them. Two came
+# from the same trap twice -- a `///` summary written on a `pub mod` whose file
+# already has a `//!` header, which merge and then resolve in the parent module's
+# scope -- and one from removing an import that only a doc link still used.
+echo "== rustdoc =="
+RUSTDOCFLAGS="-D rustdoc::broken_intra_doc_links" \
+  cargo doc --workspace --no-deps > "$OUT/doc.log" 2>&1
+n=$(grep -cE '^error' "$OUT/doc.log")
+echo "   errors: $n"
+if [ "$n" -gt 0 ]; then
+  grep -E '^error' -A 3 "$OUT/doc.log" | head -12 | sed 's/^/     /'
+  fail=1
+fi
+
 # Runs the examples, which the compile check above cannot speak for: three examples
 # were broken for months while compiling cleanly. Adds about a minute, most of it two
 # streaming demos sleeping through timed windows.

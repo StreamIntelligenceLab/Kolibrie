@@ -86,10 +86,10 @@ and are latently exposed to the same variation.
 ## Before you commit
 
 1. `scripts/verify.sh` — runs tests, `cargo check --all-targets`, both feature
-   configurations, the benches with `--no-run`, and the examples both compiled and
-   *run*, then prints a summary. Compare the test count against the known-good
-   baseline rather than against zero, and name any pre-existing failure you are not
-   fixing.
+   configurations, the benches with `--no-run`, `cargo doc` with the same deny flag
+   the blocking CI job uses, and the examples both compiled and *run*, then prints a
+   summary. Compare the test count against the known-good baseline rather than
+   against zero, and name any pre-existing failure you are not fixing.
 2. `python3 scripts/warning_report.py` — the warning count is a tracked metric
    and should not go up.
 3. Update `changes.txt`.
@@ -162,7 +162,10 @@ start, because both have cost real debugging time:
   place — the module file — and rustdoc uses its first line.
   **In practice:** when you add a `//!` to a module, delete the outer `///` from its
   `pub mod` line in the same change. Doing one without the other is what breaks it,
-  and it has happened three times in this burn-down.
+  and it has happened repeatedly in this burn-down — including twice after this
+  warning was written down. `verify.sh` now runs `cargo doc`, so it is caught before
+  a commit rather than in CI; `cargo check` cannot see it, because it does not
+  resolve doc links at all.
 - **Bracketed notation in a doc comment is read as a link.** `Box[a,b]` and friends
   need backticks, or `cargo doc` fails. The `docs` CI job is blocking and runs with
   `-D rustdoc::broken_intra_doc_links`.
@@ -234,10 +237,15 @@ comment naming the other. Deduplicating means `kolibrie-http-server` growing a
 `lib.rs` — it is binary-only today, which is also why nothing can reuse its request
 handling.
 
-**Eleven rustdoc `redundant explicit link target` warnings** remain across five
-crates, from the documentation burn-down: `[`Name`](path::to::Name)` where the text
-resolves on its own. The `docs` job denies only broken links, so these do not fail
-it. Worth one mechanical pass; not worth touching a file for on its own.
+**Ten rustdoc `redundant explicit link target` warnings** remain, from the
+documentation burn-down: `[`Name`](path::to::Name)` where the text resolves on its
+own. Five are in `kolibrie`, three in `datalog`, one each in `datalogmtl` and
+`shared`. The `docs` job denies only broken links, so these do not fail it, and
+neither does `verify.sh`. Worth one mechanical pass; not worth touching a file for on
+its own.
+
+Re-count before quoting this number — it was recorded as eleven across five crates
+and had been stale since one of them was fixed in passing.
 
 ## Notes for AI coding assistants
 
