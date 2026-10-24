@@ -329,7 +329,7 @@ checksum = "b94f61472cee1439c0b966b47e3aca9ae07e45d070759512cd390ea2bebc6675"
 
 [[package]]
 name = "cli"
-version = "0.1.1"
+version = "0.3.0"
 dependencies = [
  "clap",
  "kolibrie",
@@ -485,7 +485,7 @@ dependencies = [
 
 [[package]]
 name = "datalog"
-version = "0.1.1"
+version = "0.3.0"
 dependencies = [
  "nom",
  "rayon",
@@ -494,7 +494,7 @@ dependencies = [
 
 [[package]]
 name = "datalogmtl"
-version = "0.1.1"
+version = "0.3.0"
 dependencies = [
  "rayon",
  "serde",
@@ -1201,7 +1201,7 @@ dependencies = [
 
 [[package]]
 name = "kolibrie"
-version = "0.1.1"
+version = "0.3.0"
 dependencies = [
  "annotate-snippets",
  "chrono",
@@ -1231,7 +1231,7 @@ dependencies = [
 
 [[package]]
 name = "kolibrie-http-server"
-version = "0.1.1"
+version = "0.3.0"
 dependencies = [
  "datalog",
  "datalogmtl",
@@ -1243,7 +1243,7 @@ dependencies = [
 
 [[package]]
 name = "kolibrie-python"
-version = "0.1.1"
+version = "0.3.0"
 dependencies = [
  "datalog",
  "kolibrie",
@@ -1342,7 +1342,7 @@ dependencies = [
 
 [[package]]
 name = "ml"
-version = "0.1.1"
+version = "0.3.0"
 dependencies = [
  "candle-core",
  "pyo3",
@@ -2074,7 +2074,7 @@ dependencies = [
 
 [[package]]
 name = "shared"
-version = "0.1.1"
+version = "0.3.0"
 dependencies = [
  "rayon",
  "serde",

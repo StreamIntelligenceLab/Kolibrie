@@ -12,7 +12,7 @@ from setuptools import setup, find_packages
 
 setup(
     name="mlschema",
-    version="0.1.1",
+    version="0.3.0",
     py_modules=["mlschema"],
     packages=find_packages(),
     install_requires=[

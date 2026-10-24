@@ -43,7 +43,7 @@ pub fn pattern_contains_variable(pattern: &TriplePattern, var: &str) -> bool {
 
 /// Estimates the selectivity of an operator for optimization purposes
 #[deprecated(
-    since = "0.1.1",
+    since = "0.3.0",
     note = "use CostEstimator::estimate_cost; this returns fictional constants"
 )]
 pub fn estimate_operator_selectivity(op: &LogicalOperator, _database: &SparqlDatabase) -> u64 {

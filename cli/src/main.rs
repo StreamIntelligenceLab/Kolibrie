@@ -29,7 +29,7 @@ use kolibrie::sparql_database::SparqlDatabase;
 #[derive(Parser)]
 #[command(
     name = "kolibrie-cli",
-    version = "0.1.1",
+    version,
     author = "Volodymyr Kadzhaia <vkadzhaia@gmail.com>",
     author = "Pieter Bonte <pieter.bonte@kuleuven.be>",
     about = "A CLI tool for Kolibrie",
