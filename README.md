@@ -662,6 +662,11 @@ Alice is ancestor of Charlie
 
 ## API Documentation
 
+How the workspace fits together — the crate graph, the 28 modules of `kolibrie`
+arranged into layers, and what each depends on — is in
+[`docs/architecture.md`](docs/architecture.md). It is generated from the source by
+`scripts/module_graph.py` rather than drawn by hand, so it cannot drift.
+
 ### `SparqlDatabase` Struct
 
 The `SparqlDatabase` struct is the core component representing the RDF store and providing methods for data manipulation and querying.
