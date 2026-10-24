@@ -163,15 +163,6 @@ pub fn execute(sparql: &str, database: &mut SparqlDatabase) -> Result<Solutions,
     execute_request(sparql, database, RequestKind::Any)
 }
 
-/// Checks whether a request would be permitted, without running it or touching the
-/// database.
-///
-/// Parses and applies the ML policy, and nothing else. A request this accepts can
-/// still fail when executed.
-///
-/// # Errors
-///
-/// [`QueryError::Parse`] if it does not parse, or [`QueryError::Ml`] if the policy
 /// Runs a training-data `SELECT` and returns its rows keyed by variable name.
 ///
 /// Lived in [`crate::ml_feature_loader`] until that module was made to depend on
@@ -181,12 +172,21 @@ pub fn execute(sparql: &str, database: &mut SparqlDatabase) -> Result<Solutions,
 ///
 /// An unbound value is rendered as the empty string, as [`Solutions::into_rows`]
 /// does, and reaches the caller as a term that fails to convert to a number.
+///
+/// # Errors
+///
+/// The query's own [`QueryError`] if it does not parse, is refused by the policy or
+/// fails to evaluate, and a message of its own if it projects no variables. The
+/// query comes from a `TRAIN` clause and is therefore caller-supplied, so none of
+/// those is a bug in this crate: this used to `expect`, which aborted the process on
+/// a malformed training query rather than returning the `Err` the signature already
+/// allowed.
 #[cfg(feature = "ml")]
 pub(crate) fn query_training_rows(
     db: &mut SparqlDatabase,
     select_query: &str,
 ) -> Result<Vec<HashMap<String, crate::ml_feature_loader::RdfTerm>>, Box<dyn std::error::Error>> {
-    let solutions = execute(select_query, db).expect("query should run");
+    let solutions = execute(select_query, db)?;
     let variables: Vec<String> = solutions.variables().to_vec();
     if variables.is_empty() {
         return Err("training data query must SELECT at least one variable".into());
@@ -229,6 +229,15 @@ fn predict_inputs<'a>(query: &CombinedQuery<'a>) -> crate::ml_policy::PredictInp
     crate::ml_policy::PredictInputs::new(entries)
 }
 
+/// Checks whether a request would be permitted, without running it or touching the
+/// database.
+///
+/// Parses and applies the ML policy, and nothing else. A request this accepts can
+/// still fail when executed.
+///
+/// # Errors
+///
+/// [`QueryError::Parse`] if it does not parse, or [`QueryError::Ml`] if the policy
 /// refuses it. The parse message used to be flattened to the literal
 /// `"SPARQL_PARSE_ERROR"`, which discarded the snippet naming the offending token and
 /// was consumed by nothing: the one caller that reported it mapped every

@@ -648,6 +648,18 @@ mod tests {
     }
 
     #[test]
+    fn malformed_training_query_is_an_error_not_a_panic() {
+        // A TRAIN declaration's `QUERY { ... }` block is captured by the parser as
+        // raw text and never parsed, so a malformed one reaches here from user
+        // input. This used to `expect`, which aborted the process.
+        let mut db = ml_local::database();
+        for query in ["this is not a query at all", "SELECT ?x WHERE { ?s ?p", ""] {
+            let result = query_training_rows(&mut db, query);
+            assert!(result.is_err(), "expected Err for {query:?}");
+        }
+    }
+
+    #[test]
     fn neural_train_two_group_grad_flow() {
         let mut db = ml_local::database();
         for sample in ["g0", "g1", "g2", "g3"] {
