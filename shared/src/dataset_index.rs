@@ -1154,3 +1154,23 @@ mod tests {
         assert_eq!(visited, index.all_quads());
     }
 }
+
+impl crate::quad_source::QuadSource for DatasetIndex {
+    fn query_default(&self, s: Option<u32>, p: Option<u32>, o: Option<u32>) -> Vec<Triple> {
+        self.query_default(s, p, o)
+    }
+
+    fn for_each_quad(&self, visit: &mut dyn FnMut(GraphId, u32, u32, u32)) {
+        // The inherent method takes `impl FnMut`, which is not object-safe; a
+        // `&mut dyn FnMut` is itself `FnMut`, so it forwards without an extra layer.
+        self.for_each_quad(|g, s, p, o| visit(g, s, p, o));
+    }
+
+    fn named_graphs(&self) -> Vec<GraphId> {
+        self.named_graphs()
+    }
+
+    fn count_graph(&self, graph: GraphId) -> usize {
+        self.count_graph(graph)
+    }
+}

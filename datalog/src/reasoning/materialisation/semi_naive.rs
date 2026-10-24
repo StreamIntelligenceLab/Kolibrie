@@ -120,4 +120,22 @@ impl Reasoner {
             start_idx_for_delta: 0,
         })
     }
+
+    /// As [`infer_new_facts_semi_naive`](Self::infer_new_facts_semi_naive), reading
+    /// the base facts from `base` instead of requiring them to have been inserted
+    /// here first.
+    ///
+    /// For a caller that wants to reason over a store it does not own. Nothing is
+    /// copied into this reasoner's index but the facts it derives.
+    pub fn infer_new_facts_semi_naive_over(
+        &mut self,
+        base: &dyn shared::quad_source::QuadSource,
+    ) -> Vec<Triple> {
+        self.infer_with_strategy_over(
+            Some(base),
+            SemiNaiveStrategy {
+                start_idx_for_delta: 0,
+            },
+        )
+    }
 }

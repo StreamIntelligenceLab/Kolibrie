@@ -182,6 +182,9 @@ pub(crate) fn model_output_type(model_decl: &ModelDecl) -> OutputType {
     }
 }
 
+// Gated for the same reason as `model_output_type`: every caller is ml-gated, so
+// in a default build this is dead code and warns.
+#[cfg(feature = "ml")]
 pub(crate) fn model_hidden_layers(model_decl: &ModelDecl) -> &[usize] {
     match &model_decl.arch {
         ModelArch::Mlp { hidden_layers } => hidden_layers,

@@ -204,14 +204,21 @@ impl R2ROperator<Triple, Vec<PhysicalOperator>, Vec<(String, String)>> for Simpl
 
         let mut reasoner = Reasoner::new();
         reasoner.dictionary = Arc::clone(&self.item.dictionary);
-        for triple in self.item.query_default_triples(None, None, None) {
-            reasoner.dataset_index.insert(&triple);
-        }
+        // The window's facts are read straight from `self.item` rather than inserted
+        // here first. Building a second set of sorted indexes over content this
+        // operator is about to throw away was the whole cost, and inference flattens
+        // it back into a `Vec` immediately.
         reasoner.rules = self.rules.clone();
         self.last_hybrid_results.clear();
         self.last_hybrid_error = None;
 
         let derived = if let Some(config) = &self.hybrid_config {
+            // The hybrid strategy goes through lineage materialisation, which reads
+            // the reasoner's own index rather than a source, so this path still pays
+            // for the copy. It is confined to the branch that needs it.
+            for triple in self.item.query_default_triples(None, None, None) {
+                reasoner.dataset_index.insert(&triple);
+            }
             match reasoner.infer_new_facts_with_hybrid(self.live_seed_snapshot.clone(), config) {
                 Ok((derived, results, _lineage)) => {
                     self.last_hybrid_results = results;
@@ -224,7 +231,7 @@ impl R2ROperator<Triple, Vec<PhysicalOperator>, Vec<(String, String)>> for Simpl
                 }
             }
         } else {
-            reasoner.infer_new_facts_semi_naive()
+            reasoner.infer_new_facts_semi_naive_over(&self.item)
         };
         debug!("materialize: {} facts derived by reasoning", derived.len());
         for t in &derived {

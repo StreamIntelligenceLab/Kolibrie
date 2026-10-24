@@ -48,6 +48,7 @@ pub mod join_algorithm;
 pub mod pattern;
 /// Provenance semirings: how a derived fact's annotation is computed.
 pub mod provenance;
+pub mod quad_source;
 pub mod query;
 /// Storage for RDF-star quoted triples, which live in a tagged id range.
 pub mod quoted_triple_store;

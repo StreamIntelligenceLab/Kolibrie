@@ -2707,3 +2707,22 @@ mod tests {
         assert_eq!(database.get_or_build_stats().total_triples, 1);
     }
 }
+
+impl shared::quad_source::QuadSource for SparqlDatabase {
+    fn query_default(&self, s: Option<u32>, p: Option<u32>, o: Option<u32>) -> Vec<Triple> {
+        self.dataset_index.query_default(s, p, o)
+    }
+
+    fn for_each_quad(&self, visit: &mut dyn FnMut(GraphId, u32, u32, u32)) {
+        self.dataset_index
+            .for_each_quad(|g, s, p, o| visit(g, s, p, o));
+    }
+
+    fn named_graphs(&self) -> Vec<GraphId> {
+        self.dataset_index.named_graphs()
+    }
+
+    fn count_graph(&self, graph: GraphId) -> usize {
+        self.dataset_index.count_graph(graph)
+    }
+}
