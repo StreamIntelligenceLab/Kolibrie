@@ -52,6 +52,7 @@ pub mod quad_source;
 pub mod query;
 /// Storage for RDF-star quoted triples, which live in a tagged id range.
 pub mod quoted_triple_store;
+pub mod relation;
 /// Rules: premises, conclusion, filters, and safety checking.
 pub mod rule;
 /// An index from triple pattern to the rules whose premises could match it.

@@ -25,6 +25,7 @@
 extern crate criterion;
 
 use criterion::{black_box, criterion_group, criterion_main, Criterion};
+use shared::relation::Relation as Relation2;
 use std::collections::HashMap;
 
 const LEFT_ROWS: usize = 20_000;
@@ -161,6 +162,86 @@ fn hash_join_relation(left: &Relation, right: &Relation, shared: &[&str]) -> Rel
     }
 }
 
+// ── Conversion at the boundary ───────────────────────────────────────────────────
+
+/// `Relation` to the map shape, which is what an engine adopting `Relation`
+/// internally would have to do at every edge that still returns the old shape —
+/// `MtlStore::query_at` in `datalogmtl`, and the four optimizer entry points.
+fn relation_to_maps(r: &Relation) -> Bindings {
+    r.rows
+        .iter()
+        .map(|row| {
+            r.schema
+                .iter()
+                .cloned()
+                .zip(row.iter().copied())
+                .collect::<HashMap<String, u32>>()
+        })
+        .collect()
+}
+
+/// The map shape to `Relation`, which is what the same engine would do at every
+/// edge that still *supplies* the old shape. The schema is taken from the first row,
+/// so this assumes a uniform shape — which the engine's bindings are, but a general
+/// conversion would have to check.
+fn maps_to_relation(b: &Bindings) -> Relation {
+    let schema: Vec<String> = b
+        .first()
+        .map(|r| r.keys().cloned().collect())
+        .unwrap_or_default();
+    let rows = b
+        .iter()
+        .map(|row| schema.iter().map(|v| row[v]).collect::<Vec<u32>>())
+        .collect();
+    Relation { schema, rows }
+}
+
+/// The same hash join over the real `shared::relation::Relation`, through its public
+/// API rather than the stand-in's bare fields.
+///
+/// The stand-in has `schema` and `rows` public and is local to this file, so the
+/// optimiser sees everything. The real type encapsulates both behind accessors in
+/// another crate. This arm exists to check that the measured win survives the API,
+/// rather than assuming it does.
+fn hash_join_real(left: &Relation2, right: &Relation2, shared: &[&str]) -> Relation2 {
+    let lk: Vec<usize> = shared.iter().filter_map(|v| left.column(v)).collect();
+    let rk: Vec<usize> = shared.iter().filter_map(|v| right.column(v)).collect();
+    let right_only: Vec<usize> = (0..right.schema().len())
+        .filter(|i| !rk.contains(i))
+        .collect();
+
+    let mut out_schema: Vec<String> = left.schema().to_vec();
+    for &i in &right_only {
+        out_schema.push(right.schema()[i].clone());
+    }
+    let mut out = Relation2::new(out_schema);
+
+    let mut index: HashMap<Vec<u32>, Vec<&Vec<u32>>> = HashMap::new();
+    for row in right.rows() {
+        index
+            .entry(rk.iter().map(|&i| row[i]).collect())
+            .or_default()
+            .push(row);
+    }
+    for lrow in left.rows() {
+        let key: Vec<u32> = lk.iter().map(|&i| lrow[i]).collect();
+        if let Some(matches) = index.get(&key) {
+            for rrow in matches {
+                let mut row = lrow.clone();
+                for &i in &right_only {
+                    row.push(rrow[i]);
+                }
+                out.push(row);
+            }
+        }
+    }
+    out
+}
+
+fn make_real(rows: usize, vars: &[&str], key_var: &str) -> Relation2 {
+    Relation2::from_bindings(&make_bindings(rows, vars, key_var))
+}
+
 fn bench_join(c: &mut Criterion) {
     let left_vars = ["x", "a", "b"];
     let right_vars = ["x", "c", "d"];
@@ -180,6 +261,14 @@ fn bench_join(c: &mut Criterion) {
         "the two representations must join to the same cardinality"
     );
 
+    let lreal = make_real(LEFT_ROWS, &left_vars, "x");
+    let rreal = make_real(RIGHT_ROWS, &right_vars, "x");
+    assert_eq!(
+        hash_join_real(&lreal, &rreal, &shared).len(),
+        n_rel,
+        "the real type must join to the same cardinality as the stand-in"
+    );
+
     let mut group = c.benchmark_group("micro_join");
     group.bench_function("vec_hashmap_string_keys", |b| {
         b.iter(|| black_box(hash_join_maps(black_box(&lb), black_box(&rb), &shared).len()))
@@ -193,6 +282,38 @@ fn bench_join(c: &mut Criterion) {
             )
         })
     });
+    // What the incremental path would actually cost: join cheaply in `Relation`
+    // form, then hand the old shape back across an unchanged boundary.
+    group.bench_function("relation_join_then_to_maps", |b| {
+        b.iter(|| {
+            let joined = hash_join_relation(black_box(&lr), black_box(&rr), &shared);
+            black_box(relation_to_maps(&joined).len())
+        })
+    });
+
+    // The other direction: take the old shape in, convert once, then join.
+    group.bench_function("maps_to_relation_then_join", |b| {
+        b.iter(|| {
+            let l = maps_to_relation(black_box(&lb));
+            let r = maps_to_relation(black_box(&rb));
+            black_box(hash_join_relation(&l, &r, &shared).rows.len())
+        })
+    });
+
+    // The conversions alone, so the two above can be decomposed.
+    let joined_rel = hash_join_relation(&lr, &rr, &shared);
+    group.bench_function("convert_result_to_maps", |b| {
+        b.iter(|| black_box(relation_to_maps(black_box(&joined_rel)).len()))
+    });
+    group.bench_function("convert_input_to_relation", |b| {
+        b.iter(|| black_box(maps_to_relation(black_box(&lb)).rows.len()))
+    });
+
+    // The real type, through its public API, against the stand-in above.
+    group.bench_function("schema_plus_tuples_real_type", |b| {
+        b.iter(|| black_box(hash_join_real(black_box(&lreal), black_box(&rreal), &shared).len()))
+    });
+
     group.finish();
 }
 
