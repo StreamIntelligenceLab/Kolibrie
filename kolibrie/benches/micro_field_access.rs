@@ -24,8 +24,19 @@
 //!
 //!   * `dictionary()` — the guard accessor, which is what essentially all 96
 //!     rewritten call sites use.
-//!   * `dictionary_handle()` — the documented escape hatch for sharing the encoding
-//!     with another engine, which costs an `Arc` clone before the lock.
+//!   * `terms()` then `with_terms` — the way to share the encoding with another
+//!     engine, which costs an `Arc` clone before the lock. This arm used to measure
+//!     `dictionary_handle()`, which did the same two things and was removed when the
+//!     last `Arc<RwLock<_>>` left the public API; the baseline therefore has
+//!     `handle_then_lock` where this now reads `terms_then_scope`.
+//!
+//! Measured, the new arm is not slower: 5.09us against the removed arm's baselined
+//! 8.53us. Do not read that as a 40% improvement. It also comes in slightly under
+//! `guard_accessor` at 5.41us, despite doing an `Arc` clone and taking a *write*
+//! lock where that arm takes a read lock — which is the sign that the clone and its
+//! matching drop are being cancelled, because the `SharedTerms` provably does not
+//! escape this loop. A call site that keeps the encoder will not see that. The arm
+//! is worth having as a floor and not as a figure to quote.
 //!
 //! The outlined arm stays as the pessimistic bound: if the guard ever stops being
 //! inlined, the gap between it and `guard_accessor` is where that shows up.
@@ -34,6 +45,7 @@ extern crate criterion;
 
 use criterion::{black_box, criterion_group, criterion_main, Criterion};
 use kolibrie::sparql_database::SparqlDatabase;
+use shared::term_encoder::TermEncoder;
 
 /// Deliberately not inlinable, as the pessimistic bound on the guard accessor.
 #[inline(never)]
@@ -61,15 +73,13 @@ fn bench_access(c: &mut Criterion) {
         })
     });
 
-    group.bench_function("handle_then_lock", |b| {
+    group.bench_function("terms_then_scope", |b| {
         b.iter(|| {
             let mut n = 0usize;
             for _ in 0..1_000 {
-                n += black_box(&database)
-                    .dictionary_handle()
-                    .read()
-                    .unwrap()
-                    .next_id as usize;
+                black_box(&database).terms().with_terms(&mut |dict| {
+                    n += dict.next_id as usize;
+                });
             }
             black_box(n)
         })

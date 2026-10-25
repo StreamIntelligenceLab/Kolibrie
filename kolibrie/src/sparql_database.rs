@@ -269,9 +269,10 @@ impl std::ops::DerefMut for QuotedTriplesMut<'_> {
 /// Every field is private, reached through accessors. Terms are interned, indexes
 /// are maintained in step with writes, and statistics are cached against the
 /// index's generation — invariants a caller writing to a field directly would
-/// break. Lock-held state is reached through guards rather than handles, so
-/// `Arc<RwLock<_>>` does not appear in the public API; the one exception is
-/// [`Self::dictionary_handle`], documented there.
+/// break. Lock-held state is reached through guards rather than handles, and
+/// `Arc<RwLock<_>>` does not appear in the public API at all: sharing a term
+/// encoding, which was the one case that needed it, goes through
+/// [`Self::terms`] instead.
 ///
 /// # Encoding
 ///
@@ -2405,37 +2406,14 @@ impl SparqlDatabase {
 
     /// This store's term space, as an encoder another component can adopt.
     ///
-    /// Prefer this to [`Self::dictionary_handle`]: it shares the same encoding
-    /// without putting `Arc<RwLock<_>>` in the signature, which is what P5 asks,
-    /// and it cannot be confused with a copy. A term interned through it is
-    /// immediately visible here.
+    /// The way to share one encoding between a store and a reasoner, or between two
+    /// engines. It shares rather than copies — a term interned through it is
+    /// immediately visible here — and it hands back an opaque
+    /// [`SharedTerms`](shared::term_encoder::SharedTerms) rather than the
+    /// `Arc<RwLock<_>>` underneath, which is what P5 asks and what replaced the two
+    /// handle methods this used to sit beside.
     pub fn terms(&self) -> shared::term_encoder::SharedTerms {
         shared::term_encoder::SharedTerms::from_handle(Arc::clone(&self.dictionary))
-    }
-
-    /// The dictionary handle, for sharing one term encoding across engines.
-    ///
-    /// This is the one place `Arc<RwLock<_>>` still reaches the public API, and it is
-    /// a deliberate, named escape hatch rather than an oversight. Sharing an encoding
-    /// is a real capability: the HTTP server and two examples hand the database's
-    /// dictionary to a `Reasoner` so derived terms decode consistently, and
-    /// `Reasoner::dictionary` is itself typed `Arc<RwLock<Dictionary>>` in another
-    /// crate, so no guard-based signature can express it.
-    ///
-    /// P5 says `Arc<RwLock<_>>` must not appear in public signatures. Confining the
-    /// violation to two documented methods leaves one place to change when §4 moves
-    /// encoding behind `TermEncoder` and makes sharing a storage concern — against
-    /// 96 call sites if the field had stayed public. Prefer [`Self::dictionary`] and
-    /// [`Self::dictionary_mut`] for everything else.
-    pub fn dictionary_handle(&self) -> Arc<RwLock<Dictionary>> {
-        Arc::clone(&self.dictionary)
-    }
-
-    /// Adopts `handle` as this database's dictionary, replacing its own.
-    ///
-    /// See [`Self::dictionary_handle`] for why this takes the raw handle.
-    pub fn set_dictionary_handle(&mut self, handle: Arc<RwLock<Dictionary>>) {
-        self.dictionary = handle;
     }
 
     // ── Accessors for fields sealed in stage 2a ─────────────────────────────────
