@@ -43,32 +43,61 @@
 //!
 //! Over 10,000 warm terms, against direct access:
 //!
+//! Over 10,000 warm terms across four runs, with each figure's own noise beside it,
+//! because two of these are too noisy to compare and that is part of the result:
+//!
 //! | shape | encode | decode |
 //! |---|---:|---:|
-//! | direct, no lock | — | — |
-//! | concrete, one batched guard | +2% | +7% |
-//! | `&mut dyn`, caller holds the guard | +0.4% | +30% |
-//! | concrete, lock per call | +6% | +13% |
-//! | `&dyn` interior lock, visitor `decode` | +8% | +46% |
-//! | `&dyn` interior lock, owned `String` | — | +272% |
-//!
-//! **Locking is cheap, and the batching 125 call sites rely on buys about 3%**, so
-//! it is not worth designing around. That removes the main objection to
-//! `encode(&self)`, which is the only shape that keeps `Arc<RwLock<_>>` out of
-//! public signatures.
-//!
-//! **Dispatch is free on encode and is not on decode.** A vtable costs nothing
-//! measurable against a ~19ns encode, and about 22% against a ~7ns decode. The
-//! smaller the operation, the more a layer of indirection shows, which is why
-//! `micro_scan`'s result — dispatch free at every selectivity — does not carry over.
+//! | direct, no lock | — (6.1%) | — (4.2%) |
+//! | concrete, lock per call | +6% (4.2%) | +17% (0.7%) |
+//! | `&dyn` interior lock | +8% (0.4%) | — |
+//! | `&dyn` interior lock, visitor `decode` | — | +54% (1.1%) |
+//! | `&dyn` interior lock, owned `String` | — | +294% (0.4%) |
+//! | concrete, one batched guard | not measurable (8.4%) | not measurable (21.5%) |
+//! | `&mut dyn`, caller holds the guard | not measurable (3.0%) | not measurable (21.8%) |
 //!
 //! **The large cost is what `decode` returns.** An owned `String` per call, which
 //! interior locking forces because a borrow cannot outlive the guard taken to get
-//! it, is roughly three times the decode itself. Lending through a visitor recovers
-//! most of it, the same answer `QuadSource::for_each_quad` reached for the same
-//! reason. No shape is both free and guard-less, so `decode` trades a few
-//! nanoseconds per call for P5 compliance and should be documented as that rather
-//! than as a free abstraction.
+//! it, is nearly four times the decode itself. Lending through a visitor costs +54%,
+//! the same answer `QuadSource::for_each_quad` reached for the same reason.
+//!
+//! **Locking itself is modest**: +6% on encode, +17% on decode, both measured
+//! against a concrete receiver so no vtable is involved.
+//!
+//! ## Under contention, which reverses the conclusion above
+//!
+//! Every figure above is single-threaded, so its lock is uncontended. The
+//! `micro_term_encoder_contended` group divides the same 10,000 terms among `n`
+//! threads. Against the single-threaded reference:
+//!
+//! | threads | encode, own dict | encode, shared | decode, shared |
+//! |---|---:|---:|---:|
+//! | 2 | 1.4x faster | 1.6x slower | 3.3x slower |
+//! | 4 | 2.0x faster | 2.2x slower | 5.4x slower |
+//! | 8 | 1.7x faster | 3.9x slower | 12.3x slower |
+//!
+//! **Per-call locking on a shared dictionary does not merely fail to scale; it is
+//! slower than one thread at two threads, and 4 to 12 times worse at eight.** It is
+//! worse for reads than for writes, because a read acquisition still does an atomic
+//! read-modify-write on one cache line, so the acquisitions ping-pong it between
+//! cores. Independent dictionaries scale about 2x, so the cost is the sharing and
+//! not the threading.
+//!
+//! This reverses what the uncontended numbers suggest. `encode(&self)` with interior
+//! per-call locking is the +8% shape single-threaded and a 4x regression at eight
+//! threads — and `rsp_engine` spawns a thread per window, which is this access
+//! pattern exactly. So the batching that the guard-held rows below could not
+//! measure is not an incidental habit of 125 call sites; it is what keeps the
+//! current design workable, and an abstraction that forbids it would be a serious
+//! concurrency regression dressed as a cleanup.
+//!
+//! **The two guard-held shapes could not be measured.** Both carry about 21% noise
+//! across runs — the worst in the whole suite — and their medians move enough
+//! between runs to reverse their order, so no claim about the cost of batching, or
+//! about the cost of a vtable, can be drawn from them. A single run suggested the
+//! vtable cost 22% on decode; four runs put the dyn variant *below* the concrete
+//! one. Treat both rows as absent rather than as evidence, and do not use them as
+//! regression guards until they are stabilised.
 
 extern crate criterion;
 
@@ -285,5 +314,95 @@ fn bench_encoder_shapes(c: &mut Criterion) {
     group.finish();
 }
 
-criterion_group!(benches, bench_encode, bench_encoder_shapes);
+/// Encode and decode under real contention, which the group above cannot show.
+///
+/// Everything above is single-threaded, so its `RwLock` is always uncontended — and
+/// an uncontended lock is the cheap case. That matters because the reason the
+/// dictionary is an `Arc<RwLock<_>>` at all is cross-thread sharing: `rsp_engine`
+/// spawns a thread per window plus a coordinator, and they encode into one
+/// dictionary. So the 6% the group above attributes to locking is a floor, not the
+/// cost in the mode that forced the lock to exist.
+///
+/// Each benchmark divides the same 10,000 terms among `n` threads, so total work is
+/// constant and only the sharing changes. `independent` gives each thread its own
+/// dictionary: it pays the same spawn and join cost but takes no shared lock, which
+/// isolates contention from threading overhead. Read the contention cost as
+/// `shared` minus `independent` at the same thread count.
+///
+/// `encode` takes a write lock and therefore serialises completely; `decode` takes a
+/// read lock and should not. Whether that asymmetry holds is the question.
+fn bench_contention(c: &mut Criterion) {
+    let iris = iris();
+    let mut warm = Dictionary::new();
+    for iri in &iris {
+        warm.encode(iri);
+    }
+    let ids: Vec<u32> = iris.iter().map(|iri| warm.encode(iri)).collect();
+
+    let mut group = c.benchmark_group("micro_term_encoder_contended");
+
+    for threads in [2usize, 4, 8] {
+        let chunk = iris.len() / threads;
+
+        group.bench_function(format!("encode_shared/{threads}"), |b| {
+            let handle = Arc::new(RwLock::new(warm.clone()));
+            b.iter(|| {
+                std::thread::scope(|scope| {
+                    for part in iris.chunks(chunk) {
+                        let handle = Arc::clone(&handle);
+                        scope.spawn(move || {
+                            for iri in part {
+                                black_box(handle.write().unwrap().encode(black_box(iri)));
+                            }
+                        });
+                    }
+                });
+            })
+        });
+
+        group.bench_function(format!("encode_independent/{threads}"), |b| {
+            // Each thread gets its own *warm* dictionary, cloned once outside the
+            // timing loop. Starting them empty would compare cold encodes against
+            // the shared version's warm ones and overstate contention by the whole
+            // difference between the two, which is a factor of five.
+            let mut owns: Vec<Dictionary> = (0..threads).map(|_| warm.clone()).collect();
+            b.iter(|| {
+                std::thread::scope(|scope| {
+                    for (own, part) in owns.iter_mut().zip(iris.chunks(chunk)) {
+                        scope.spawn(move || {
+                            for iri in part {
+                                black_box(own.encode(black_box(iri)));
+                            }
+                        });
+                    }
+                });
+            })
+        });
+
+        group.bench_function(format!("decode_shared/{threads}"), |b| {
+            let handle = Arc::new(RwLock::new(warm.clone()));
+            b.iter(|| {
+                std::thread::scope(|scope| {
+                    for part in ids.chunks(chunk) {
+                        let handle = Arc::clone(&handle);
+                        scope.spawn(move || {
+                            for id in part {
+                                black_box(handle.read().unwrap().decode(black_box(*id)).is_some());
+                            }
+                        });
+                    }
+                });
+            })
+        });
+    }
+
+    group.finish();
+}
+
+criterion_group!(
+    benches,
+    bench_encode,
+    bench_encoder_shapes,
+    bench_contention
+);
 criterion_main!(benches);

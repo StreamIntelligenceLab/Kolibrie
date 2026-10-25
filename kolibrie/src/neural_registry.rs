@@ -29,9 +29,11 @@ use crate::sparql_database::SparqlDatabase;
 use ml::OutputType;
 #[cfg(feature = "ml")]
 use shared::query::NeuralOutputKind;
-use shared::query::{
-    ModelArch, ModelDecl, NeuralRelationDecl, TrainNeuralRelationDecl, TrainingDataSource,
-};
+// `ModelArch` is named only by `model_hidden_layers`, which is ml-gated, so the
+// import has to be too or a default build warns.
+#[cfg(feature = "ml")]
+use shared::query::ModelArch;
+use shared::query::{ModelDecl, NeuralRelationDecl, TrainNeuralRelationDecl, TrainingDataSource};
 use std::collections::HashMap;
 
 /// The default artifact filename for a model.
