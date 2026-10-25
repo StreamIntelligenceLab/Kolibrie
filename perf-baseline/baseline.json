@@ -1,249 +1,249 @@
 {
   "benchmarks": {
     "execution_hot_paths/filter_numeric": {
-      "mad_ns": 24927.249128665055,
-      "median_ns": 2187387.4382867133,
-      "noise_pct": 0.4557849598913482,
+      "mad_ns": 25333.167119690872,
+      "median_ns": 2101911.015277778,
+      "noise_pct": 2.4215513676313036,
       "runs": 4
     },
     "execution_hot_paths/graph_fixed_scan": {
-      "mad_ns": 10202.46835167114,
-      "median_ns": 1699465.062960601,
-      "noise_pct": 11.909796790985114,
+      "mad_ns": 10602.35159808915,
+      "median_ns": 1891275.2503132832,
+      "noise_pct": 12.062973037638406,
       "runs": 4
     },
     "execution_hot_paths/graph_variable_scan": {
-      "mad_ns": 79460.36073457674,
-      "median_ns": 8536152.612734487,
-      "noise_pct": 14.031596531952365,
+      "mad_ns": 166596.59873627807,
+      "median_ns": 9652651.042410713,
+      "noise_pct": 12.718268100736893,
       "runs": 4
     },
     "execution_hot_paths/join_two_patterns": {
-      "mad_ns": 183669.64833899227,
-      "median_ns": 11480179.19047619,
-      "noise_pct": 12.510599215172991,
+      "mad_ns": 171932.85818855418,
+      "median_ns": 12815082.643915344,
+      "noise_pct": 9.840764203470398,
       "runs": 4
     },
     "execution_hot_paths/union_branches": {
-      "mad_ns": 392516.5118922814,
-      "median_ns": 21193814.25378788,
-      "noise_pct": 12.5869941220195,
+      "mad_ns": 412146.06840461,
+      "median_ns": 23549438.500520833,
+      "noise_pct": 14.464439345610652,
       "runs": 4
     },
     "hybrid_escalated_exact": {
-      "mad_ns": 827.793826079725,
-      "median_ns": 103102.59073024805,
-      "noise_pct": 3.8559678462362386,
+      "mad_ns": 649.6200111571964,
+      "median_ns": 102397.22557660865,
+      "noise_pct": 0.8636542673833896,
       "runs": 4
     },
     "hybrid_full_sdd": {
-      "mad_ns": 428.67776647325843,
-      "median_ns": 49941.85510127674,
-      "noise_pct": 5.267584640924428,
+      "mad_ns": 336.9997830835153,
+      "median_ns": 49600.44143584545,
+      "noise_pct": 0.9297426100601228,
       "runs": 4
     },
     "hybrid_topk_only": {
-      "mad_ns": 445.98746139353307,
-      "median_ns": 51083.23436151961,
-      "noise_pct": 2.3470657455945205,
+      "mad_ns": 278.2361227609673,
+      "median_ns": 50746.25279567855,
+      "noise_pct": 1.2835716608376553,
       "runs": 4
     },
     "micro_dictionary/decode": {
-      "mad_ns": 1400.8495471713857,
-      "median_ns": 70652.07365066906,
-      "noise_pct": 4.167602244953522,
+      "mad_ns": 5658.219719397398,
+      "median_ns": 74089.87627962258,
+      "noise_pct": 31.249122526797397,
       "runs": 4
     },
     "micro_dictionary/encode_cold": {
-      "mad_ns": 8706.727827460043,
-      "median_ns": 988173.9379204414,
-      "noise_pct": 1.1725189553038502,
+      "mad_ns": 11602.91165853523,
+      "median_ns": 987088.7254110884,
+      "noise_pct": 3.255143724200958,
       "runs": 4
     },
     "micro_dictionary/encode_warm": {
-      "mad_ns": 10516.78981573959,
-      "median_ns": 184419.23914890553,
-      "noise_pct": 6.1493753889449945,
+      "mad_ns": 7265.8258737717815,
+      "median_ns": 182635.01842588448,
+      "noise_pct": 8.395087937138156,
       "runs": 4
     },
     "micro_field_access/guard_accessor": {
-      "mad_ns": 15.620799597960431,
-      "median_ns": 5319.31572862109,
-      "noise_pct": 0.7250677074271916,
-      "runs": 4
-    },
-    "micro_field_access/handle_then_lock": {
-      "mad_ns": 43.85600419995534,
-      "median_ns": 8534.45614031083,
-      "noise_pct": 0.6825965718772963,
+      "mad_ns": 33.83401194594026,
+      "median_ns": 5309.315766338726,
+      "noise_pct": 3.043032858143782,
       "runs": 4
     },
     "micro_field_access/outlined_guard": {
-      "mad_ns": 29.572147112721336,
-      "median_ns": 5484.801402805191,
-      "noise_pct": 0.7630018312831927,
+      "mad_ns": 41.80032850701685,
+      "median_ns": 5481.217483660131,
+      "noise_pct": 0.3914989908309902,
+      "runs": 4
+    },
+    "micro_field_access/terms_then_scope": {
+      "mad_ns": 37.47359352082475,
+      "median_ns": 4985.739191697305,
+      "noise_pct": 0.886586642845678,
       "runs": 4
     },
     "micro_join/schema_plus_tuples": {
-      "mad_ns": 220722.1452113983,
-      "median_ns": 11377464.6,
-      "noise_pct": 4.031276815370187,
+      "mad_ns": 286067.7390512828,
+      "median_ns": 11280558.35,
+      "noise_pct": 3.336452486937463,
       "runs": 4
     },
     "micro_join/vec_hashmap_string_keys": {
-      "mad_ns": 692806.3656002283,
-      "median_ns": 50722979.0,
-      "noise_pct": 2.2627623564853376,
+      "mad_ns": 1040676.5810742974,
+      "median_ns": 51970083.25,
+      "noise_pct": 6.054973893171233,
       "runs": 4
     },
     "micro_pattern_construct_triple": {
-      "mad_ns": 495.5576411986318,
-      "median_ns": 19955.00100360904,
-      "noise_pct": 5.677539450185896,
+      "mad_ns": 635.092915114443,
+      "median_ns": 20593.153552881457,
+      "noise_pct": 5.124927631034455,
       "runs": 4
     },
     "micro_pattern_matches_rule_pattern/all_variables": {
-      "mad_ns": 16796.13928132866,
-      "median_ns": 1166768.4198373286,
-      "noise_pct": 0.9367299800936134,
+      "mad_ns": 18942.035211895458,
+      "median_ns": 1170867.8723677513,
+      "noise_pct": 0.5800925953274635,
       "runs": 4
     },
     "micro_pattern_matches_rule_pattern/fully_bound": {
-      "mad_ns": 126.77028416456736,
-      "median_ns": 32725.96610292713,
-      "noise_pct": 0.5315013818909775,
+      "mad_ns": 125.59724552335169,
+      "median_ns": 32717.898209874333,
+      "noise_pct": 2.086912125031453,
       "runs": 4
     },
     "micro_pattern_matches_rule_pattern/predicate_bound": {
-      "mad_ns": 7487.370530278264,
-      "median_ns": 507928.4883292383,
-      "noise_pct": 2.3202571670009267,
+      "mad_ns": 8921.793739147604,
+      "median_ns": 512200.4951775249,
+      "noise_pct": 1.4122665365993696,
       "runs": 4
     },
     "micro_scan_broad_all/direct": {
-      "mad_ns": 3312.6250752781734,
-      "median_ns": 183089.5109198169,
-      "noise_pct": 5.654938800401987,
+      "mad_ns": 3713.7989772394676,
+      "median_ns": 199250.43490646256,
+      "noise_pct": 6.354946738776161,
       "runs": 4
     },
     "micro_scan_broad_all/dyn_boxed_iter": {
-      "mad_ns": 5086.047279849895,
-      "median_ns": 219707.03357989906,
-      "noise_pct": 6.385688525411137,
+      "mad_ns": 4079.043445583141,
+      "median_ns": 215260.28921393567,
+      "noise_pct": 13.677124831038922,
       "runs": 4
     },
     "micro_scan_broad_all/dyn_trait": {
-      "mad_ns": 1301.7018909261005,
-      "median_ns": 196641.51142857142,
-      "noise_pct": 6.5617382972476825,
+      "mad_ns": 2283.775370064939,
+      "median_ns": 194296.01765407342,
+      "noise_pct": 16.23108698305454,
       "runs": 4
     },
     "micro_scan_broad_all/static_trait": {
-      "mad_ns": 1296.865069522321,
-      "median_ns": 182750.0593535469,
-      "noise_pct": 10.34298748170128,
+      "mad_ns": 4666.765504323352,
+      "median_ns": 199632.6668424515,
+      "noise_pct": 12.968503978789034,
       "runs": 4
     },
     "micro_scan_medium_predicate/direct": {
-      "mad_ns": 71.83602383808312,
-      "median_ns": 12043.539408881343,
-      "noise_pct": 1.1696522545670915,
+      "mad_ns": 86.78559143019528,
+      "median_ns": 12049.855306613152,
+      "noise_pct": 1.4928832650421437,
       "runs": 4
     },
     "micro_scan_medium_predicate/dyn_boxed_iter": {
-      "mad_ns": 80.79620277107206,
-      "median_ns": 14964.919734658772,
-      "noise_pct": 6.130627135381107,
+      "mad_ns": 93.08619369394336,
+      "median_ns": 14996.434253832089,
+      "noise_pct": 0.8650892471249463,
       "runs": 4
     },
     "micro_scan_medium_predicate/dyn_trait": {
-      "mad_ns": 64.95755626679536,
-      "median_ns": 12001.05922302779,
-      "noise_pct": 1.344463403769272,
+      "mad_ns": 62.132424944143274,
+      "median_ns": 12106.358830943751,
+      "noise_pct": 1.9750773055350799,
       "runs": 4
     },
     "micro_scan_medium_predicate/static_trait": {
-      "mad_ns": 71.4699270254399,
-      "median_ns": 12058.545572280149,
-      "noise_pct": 6.091600578469665,
+      "mad_ns": 78.90611133966064,
+      "median_ns": 12073.386534148087,
+      "noise_pct": 1.8003948308428215,
       "runs": 4
     },
     "micro_scan_selective_subject/direct": {
-      "mad_ns": 0.6606977843955101,
-      "median_ns": 94.27784185955498,
-      "noise_pct": 6.506894480620211,
+      "mad_ns": 0.7890018709185918,
+      "median_ns": 96.30482907159038,
+      "noise_pct": 12.928456065806134,
       "runs": 4
     },
     "micro_scan_selective_subject/dyn_boxed_iter": {
-      "mad_ns": 1.2820121618365827,
-      "median_ns": 116.10233740128919,
-      "noise_pct": 4.793263600261554,
+      "mad_ns": 1.501666298482878,
+      "median_ns": 119.54485391207972,
+      "noise_pct": 7.397421459593241,
       "runs": 4
     },
     "micro_scan_selective_subject/dyn_trait": {
-      "mad_ns": 0.944988560639527,
-      "median_ns": 93.32894897637817,
-      "noise_pct": 5.163025501316001,
+      "mad_ns": 0.7771999327977113,
+      "median_ns": 94.84114917334028,
+      "noise_pct": 5.974256670996018,
       "runs": 4
     },
     "micro_scan_selective_subject/static_trait": {
-      "mad_ns": 0.6742029546191652,
-      "median_ns": 94.13488233690022,
-      "noise_pct": 6.037332700878223,
+      "mad_ns": 0.5932820588308609,
+      "median_ns": 95.87140888969728,
+      "noise_pct": 12.378714988127335,
       "runs": 4
     },
     "micro_term_encoder/decode_batched_guard": {
-      "mad_ns": 13035.676210628379,
-      "median_ns": 86330.66666779161,
-      "noise_pct": 21.469829948738372,
+      "mad_ns": 12544.121183471234,
+      "median_ns": 82008.11998064828,
+      "noise_pct": 10.594014936834204,
       "runs": 4
     },
     "micro_term_encoder/decode_dyn_guard": {
-      "mad_ns": 11643.224828617049,
-      "median_ns": 81733.96988068073,
-      "noise_pct": 21.792721086174275,
+      "mad_ns": 6506.508754255594,
+      "median_ns": 76995.05087410295,
+      "noise_pct": 8.196668970231789,
       "runs": 4
     },
     "micro_term_encoder/decode_dyn_interior_owned": {
-      "mad_ns": 1777.8704051839416,
-      "median_ns": 278528.23037404614,
-      "noise_pct": 0.3989140796422705,
+      "mad_ns": 1876.6995938525606,
+      "median_ns": 277901.1379164824,
+      "noise_pct": 0.5368586989124233,
       "runs": 4
     },
     "micro_term_encoder/decode_dyn_visitor": {
-      "mad_ns": 1200.493671438995,
-      "median_ns": 108905.05776024658,
-      "noise_pct": 1.0727677891137064,
+      "mad_ns": 1561.8949583754888,
+      "median_ns": 109134.77120618205,
+      "noise_pct": 0.9813066870327011,
       "runs": 4
     },
     "micro_term_encoder/decode_lock_per_call": {
-      "mad_ns": 278.3140928182459,
-      "median_ns": 83129.29610906863,
-      "noise_pct": 0.6788143511239543,
+      "mad_ns": 380.06110937894493,
+      "median_ns": 83431.20145998677,
+      "noise_pct": 0.9900998966796742,
       "runs": 4
     },
     "micro_term_encoder/encode_batched_guard": {
-      "mad_ns": 4356.306458838324,
-      "median_ns": 180332.01414713002,
-      "noise_pct": 8.389479533551821,
+      "mad_ns": 11339.740252806369,
+      "median_ns": 184261.5322833995,
+      "noise_pct": 9.814663606710958,
       "runs": 4
     },
     "micro_term_encoder/encode_dyn_guard": {
-      "mad_ns": 10656.625024837758,
-      "median_ns": 185336.08944815805,
-      "noise_pct": 2.9632197430339073,
+      "mad_ns": 6260.927948524783,
+      "median_ns": 180865.14875116714,
+      "noise_pct": 11.899852429976097,
       "runs": 4
     },
     "micro_term_encoder/encode_dyn_interior": {
-      "mad_ns": 1331.0548813922874,
-      "median_ns": 200048.8793655348,
-      "noise_pct": 0.3561382324275101,
+      "mad_ns": 1520.968789991522,
+      "median_ns": 200177.04005813954,
+      "noise_pct": 1.1812161753148982,
       "runs": 4
     },
     "micro_term_encoder/encode_lock_per_call": {
-      "mad_ns": 6742.540226978922,
-      "median_ns": 194816.57404009035,
-      "noise_pct": 4.225472568475004,
+      "mad_ns": 2724.634840335162,
+      "median_ns": 192832.58664215688,
+      "noise_pct": 2.050456688193318,
       "runs": 4
     }
   },

@@ -43,27 +43,44 @@
 //!
 //! Over 10,000 warm terms, against direct access:
 //!
-//! Over 10,000 warm terms across four runs, with each figure's own noise beside it,
-//! because two of these are too noisy to compare and that is part of the result:
+//! Over 10,000 warm terms, from two independent four-run baselines. Quote only the
+//! ratios between the low-noise rows: every shape that locks per call measures
+//! stably, and every direct or guard-held one does not.
 //!
-//! | shape | encode | decode |
-//! |---|---:|---:|
-//! | direct, no lock | — (6.1%) | — (4.2%) |
-//! | concrete, lock per call | +6% (4.2%) | +17% (0.7%) |
-//! | `&dyn` interior lock | +8% (0.4%) | — |
-//! | `&dyn` interior lock, visitor `decode` | — | +54% (1.1%) |
-//! | `&dyn` interior lock, owned `String` | — | +294% (0.4%) |
-//! | concrete, one batched guard | not measurable (8.4%) | not measurable (21.5%) |
-//! | `&mut dyn`, caller holds the guard | not measurable (3.0%) | not measurable (21.8%) |
+//! | shape | median | noise | usable as an anchor |
+//! |---|---:|---:|---|
+//! | `decode` direct | 74us | 31% | no |
+//! | `decode_batched_guard` | 82us | 11% | no |
+//! | `decode_dyn_guard` | 77us | 8% | no |
+//! | `decode_lock_per_call` | 83us | 1.0% | yes |
+//! | `decode_dyn_visitor` | 109us | 1.0% | yes |
+//! | `decode_dyn_interior_owned` | 278us | 0.5% | yes |
+//! | `encode_warm` direct | 183us | 8% | no |
+//! | `encode_lock_per_call` | 193us | 2.1% | yes |
+//! | `encode_dyn_interior` | 200us | 1.2% | yes |
 //!
-//! **The large cost is what `decode` returns.** An owned `String` per call, which
-//! interior locking forces because a borrow cannot outlive the guard taken to get
-//! it, is nearly four times the decode itself. Lending through a visitor costs +54%,
-//! the same answer `QuadSource::for_each_quad` reached for the same reason.
+//! Per-call locking dominates its own measurement and so swamps scheduling
+//! variance; the tight loops are at the mercy of it. `decode` direct measured 4.2%
+//! noise in one baseline and 31.2% in the next on identical code, which is why no
+//! figure here is given relative to it.
 //!
-//! **Locking itself is modest**: +6% on encode, +17% on decode, both measured
-//! against a concrete receiver so no vtable is involved.
+//! What the stable rows support:
 //!
+//!   * **An owned `String` return costs 2.55x a visitor** (278us against 109us).
+//!     Interior locking forces the owned return, because a borrow cannot outlive
+//!     the guard it came from, so this is the cost of the obvious design and the
+//!     reason the visitor exists.
+//!   * **A visitor costs 31% over per-call locking that lends** (109us against
+//!     83us) — the price of not handing out a guard.
+//!   * **A vtable costs about 4% on encode** (200us against 193us, both stable).
+//!     This is the only dispatch figure here worth anything; an earlier claim of
+//!     22% on decode came from comparing two rows that both turned out to be noisy.
+//!
+//! What they do not support: any statement of overhead against direct access. The
+//! direct rows are too unstable, so the absolute cost of the abstraction is not
+//! measured here, only the differences between its candidate shapes.
+//!
+
 //! ## Under contention
 //!
 //! Everything here is single-threaded, so every lock is uncontended — the cheap
