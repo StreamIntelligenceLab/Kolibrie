@@ -103,3 +103,43 @@ fn cost_ratio_threshold_is_recorded_in_rdf_metadata() {
     assert!(threshold_object.contains("0.25"));
     assert!(policy_object.contains("auto:cost"));
 }
+
+/// A plain rule — no window clause, no `PROB` annotation — derives from the store's
+/// facts.
+///
+/// This exists because nothing covered it. Every other `process_rule_definition`
+/// test here uses the annotated path, and the `ml` ones assert on predictions rather
+/// than on derivation, so the plain path could have stopped seeing the store's facts
+/// entirely and the whole of `verify.sh` would still have passed: 646 tests green and
+/// all 51 examples running, because the examples print results rather than assert on
+/// them and the smoke run only checks exit status.
+///
+/// Verified to fail when the base facts are withheld, which is the only reason to
+/// trust it.
+#[test]
+fn plain_rule_derives_from_the_stores_facts() {
+    let mut database = SparqlDatabase::new();
+    database.add_triple_parts(
+        "http://example.org/alice",
+        "http://example.org/parent",
+        "http://example.org/bob",
+    );
+    let rule = r#"
+        RULE :Ancestor :-
+        CONSTRUCT { ?x <http://example.org/ancestor> ?y . }
+        WHERE { ?x <http://example.org/parent> ?y . } .
+    "#;
+    let (_rule, inferred) =
+        process_rule_definition(rule, &mut database).expect("plain rule should execute");
+    assert_eq!(
+        inferred.len(),
+        1,
+        "one parent fact should derive one ancestor fact"
+    );
+
+    let ancestor = database
+        .dictionary_mut()
+        .encode("http://example.org/ancestor");
+    let derived = database.query_default_triples(None, Some(ancestor), None);
+    assert_eq!(derived.len(), 1, "the derived fact should reach the store");
+}

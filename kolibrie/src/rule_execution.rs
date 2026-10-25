@@ -128,8 +128,17 @@ pub fn process_rule_definition(
 
         let mut kg = Reasoner::new();
         kg.dictionary = database.dictionary.clone();
-        for triple in database.query_default_triples(None, None, None) {
-            kg.dataset_index.insert(&triple);
+        // Two paths below still need the store's facts inside `kg`, so they are
+        // copied in only for those. A windowed rule clones `kg` into a `'static`
+        // callback per window, which cannot borrow the store; and the provenance
+        // strategies read `kg.dataset_index` through machinery that does not yet
+        // take a source. The plain path, which is the common one, reads the store
+        // directly through `QuadSource` and copies nothing.
+        let kg_needs_own_facts = !rule.window_clause.is_empty() || rule.prob_annotation.is_some();
+        if kg_needs_own_facts {
+            for triple in database.query_default_triples(None, None, None) {
+                kg.dataset_index.insert(&triple);
+            }
         }
         kg.probability_seeds = database.probability_seeds.clone();
 
@@ -396,8 +405,9 @@ pub fn process_rule_definition(
             // Register rule predicates
             register_rule_predicates(&dynamic_rule, database);
 
-            // Infer new facts based on the rule
-            let inferred_facts = kg.infer_new_facts_semi_naive();
+            // Infer new facts based on the rule, reading the base from the store
+            // rather than from a copy of it
+            let inferred_facts = kg.infer_new_facts_semi_naive_over(database);
 
             // Add inferred facts to the database
             for triple in inferred_facts.iter() {
