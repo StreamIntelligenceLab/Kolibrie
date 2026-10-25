@@ -17,6 +17,13 @@
 #   heavy    Scaling sweeps comparing naive vs incremental strategies. Research
 #            results, not refactor guards. Run deliberately, never routinely.
 #
+# Wipe `target/criterion` when switching tiers. Criterion accumulates results there
+# and `perf_report.py collect` summarises everything present, not the last run — so
+# a routine collect after a heavy run reports both, and a comparison against the
+# baseline then shows the heavy benchmarks as "new" and may mix in stale numbers
+# from whenever that tier last ran. Measured: a heavy-only run collected 50
+# benchmarks, 41 of them left over from an earlier routine pass.
+#
 # Usage:
 #   scripts/perf_bench.sh routine                   # full sampling (authoritative)
 #   scripts/perf_bench.sh routine --quick           # reduced sampling (fast check)
@@ -36,6 +43,7 @@ ROUTINE=(
 )
 
 HEAVY=(
+  contended_dictionary
   cross_window_benchmark
   citybench_cross_window_compare
   rsp_citybench_cross_window

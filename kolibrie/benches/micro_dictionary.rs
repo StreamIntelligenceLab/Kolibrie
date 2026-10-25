@@ -64,32 +64,15 @@
 //! **Locking itself is modest**: +6% on encode, +17% on decode, both measured
 //! against a concrete receiver so no vtable is involved.
 //!
-//! ## Under contention, which reverses the conclusion above
+//! ## Under contention
 //!
-//! Every figure above is single-threaded, so its lock is uncontended. The
-//! `micro_term_encoder_contended` group divides the same 10,000 terms among `n`
-//! threads. Against the single-threaded reference:
-//!
-//! | threads | encode, own dict | encode, shared | decode, shared |
-//! |---|---:|---:|---:|
-//! | 2 | 1.4x faster | 1.6x slower | 3.3x slower |
-//! | 4 | 2.0x faster | 2.2x slower | 5.4x slower |
-//! | 8 | 1.7x faster | 3.9x slower | 12.3x slower |
-//!
-//! **Per-call locking on a shared dictionary does not merely fail to scale; it is
-//! slower than one thread at two threads, and 4 to 12 times worse at eight.** It is
-//! worse for reads than for writes, because a read acquisition still does an atomic
-//! read-modify-write on one cache line, so the acquisitions ping-pong it between
-//! cores. Independent dictionaries scale about 2x, so the cost is the sharing and
-//! not the threading.
-//!
-//! This reverses what the uncontended numbers suggest. `encode(&self)` with interior
-//! per-call locking is the +8% shape single-threaded and a 4x regression at eight
-//! threads — and `rsp_engine` spawns a thread per window, which is this access
-//! pattern exactly. So the batching that the guard-held rows below could not
-//! measure is not an incidental habit of 125 call sites; it is what keeps the
-//! current design workable, and an abstraction that forbids it would be a serious
-//! concurrency regression dressed as a cleanup.
+//! Everything here is single-threaded, so every lock is uncontended — the cheap
+//! case, and a misleading one. `benches/contended_dictionary.rs` measures the same
+//! operations across threads and reaches the opposite conclusion: per-call locking
+//! on a shared dictionary is slower than a single thread at two threads and 4 to 12
+//! times worse at eight. Read that before drawing anything from the locking rows
+//! here. It sits in the `heavy` tier because it answers a design question rather
+//! than guarding a refactor.
 //!
 //! **The two guard-held shapes could not be measured.** Both carry about 21% noise
 //! across runs — the worst in the whole suite — and their medians move enough
@@ -314,95 +297,5 @@ fn bench_encoder_shapes(c: &mut Criterion) {
     group.finish();
 }
 
-/// Encode and decode under real contention, which the group above cannot show.
-///
-/// Everything above is single-threaded, so its `RwLock` is always uncontended — and
-/// an uncontended lock is the cheap case. That matters because the reason the
-/// dictionary is an `Arc<RwLock<_>>` at all is cross-thread sharing: `rsp_engine`
-/// spawns a thread per window plus a coordinator, and they encode into one
-/// dictionary. So the 6% the group above attributes to locking is a floor, not the
-/// cost in the mode that forced the lock to exist.
-///
-/// Each benchmark divides the same 10,000 terms among `n` threads, so total work is
-/// constant and only the sharing changes. `independent` gives each thread its own
-/// dictionary: it pays the same spawn and join cost but takes no shared lock, which
-/// isolates contention from threading overhead. Read the contention cost as
-/// `shared` minus `independent` at the same thread count.
-///
-/// `encode` takes a write lock and therefore serialises completely; `decode` takes a
-/// read lock and should not. Whether that asymmetry holds is the question.
-fn bench_contention(c: &mut Criterion) {
-    let iris = iris();
-    let mut warm = Dictionary::new();
-    for iri in &iris {
-        warm.encode(iri);
-    }
-    let ids: Vec<u32> = iris.iter().map(|iri| warm.encode(iri)).collect();
-
-    let mut group = c.benchmark_group("micro_term_encoder_contended");
-
-    for threads in [2usize, 4, 8] {
-        let chunk = iris.len() / threads;
-
-        group.bench_function(format!("encode_shared/{threads}"), |b| {
-            let handle = Arc::new(RwLock::new(warm.clone()));
-            b.iter(|| {
-                std::thread::scope(|scope| {
-                    for part in iris.chunks(chunk) {
-                        let handle = Arc::clone(&handle);
-                        scope.spawn(move || {
-                            for iri in part {
-                                black_box(handle.write().unwrap().encode(black_box(iri)));
-                            }
-                        });
-                    }
-                });
-            })
-        });
-
-        group.bench_function(format!("encode_independent/{threads}"), |b| {
-            // Each thread gets its own *warm* dictionary, cloned once outside the
-            // timing loop. Starting them empty would compare cold encodes against
-            // the shared version's warm ones and overstate contention by the whole
-            // difference between the two, which is a factor of five.
-            let mut owns: Vec<Dictionary> = (0..threads).map(|_| warm.clone()).collect();
-            b.iter(|| {
-                std::thread::scope(|scope| {
-                    for (own, part) in owns.iter_mut().zip(iris.chunks(chunk)) {
-                        scope.spawn(move || {
-                            for iri in part {
-                                black_box(own.encode(black_box(iri)));
-                            }
-                        });
-                    }
-                });
-            })
-        });
-
-        group.bench_function(format!("decode_shared/{threads}"), |b| {
-            let handle = Arc::new(RwLock::new(warm.clone()));
-            b.iter(|| {
-                std::thread::scope(|scope| {
-                    for part in ids.chunks(chunk) {
-                        let handle = Arc::clone(&handle);
-                        scope.spawn(move || {
-                            for id in part {
-                                black_box(handle.read().unwrap().decode(black_box(*id)).is_some());
-                            }
-                        });
-                    }
-                });
-            })
-        });
-    }
-
-    group.finish();
-}
-
-criterion_group!(
-    benches,
-    bench_encode,
-    bench_encoder_shapes,
-    bench_contention
-);
+criterion_group!(benches, bench_encode, bench_encoder_shapes);
 criterion_main!(benches);
