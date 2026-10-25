@@ -87,7 +87,7 @@ impl<S: TemporalStore> DatalogMTLEvaluator<S> {
     ///
     /// # Errors
     ///
-    /// The message from [`validate_rules`](crate::validate::validate_rules):
+    /// The message from [`validate_rules`]:
     /// an interval with `start > end`, or a head variable no body atom can bind.
     pub fn new(
         rules: Vec<DatalogMTLRule>,

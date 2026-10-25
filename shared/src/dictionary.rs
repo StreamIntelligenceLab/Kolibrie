@@ -20,7 +20,7 @@ use std::collections::HashMap;
 /// share one dictionary, which is why it is normally held behind a shared handle.
 ///
 /// Ids stop below `0x8000_0000`; the top bit is reserved to tag quoted triples, which
-/// [`QuotedTripleStore`](crate::quoted_triple_store::QuotedTripleStore) owns.
+/// [`QuotedTripleStore`] owns.
 /// [`Self::encode`] asserts rather than silently colliding with that range.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct Dictionary {

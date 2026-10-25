@@ -11,7 +11,7 @@
 //! Building a logical plan from a parsed query.
 //!
 //! The bridge from the lexical syntax tree in [`shared::query`] to
-//! [`LogicalOperator`](super::LogicalOperator): terms are resolved against a
+//! [`LogicalOperator`]: terms are resolved against a
 //! dictionary and graph patterns become plan nodes.
 
 use super::operators::{LogicalOperator, PhysicalOperator};

@@ -298,7 +298,7 @@ macro_rules! register_window {
 /// no static data each firing is independently complete, and the engine skips the
 /// join path entirely.
 ///
-/// When coordination is needed, [`SyncPolicy`](shared::query::SyncPolicy) decides how
+/// When coordination is needed, [`SyncPolicy`] decides how
 /// long to wait for the other windows — a correctness choice, since the impatient
 /// settings publish results mixing data from different cycles.
 pub struct RSPEngine<I, O>

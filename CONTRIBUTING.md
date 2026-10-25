@@ -87,8 +87,8 @@ and are latently exposed to the same variation.
 
 1. `scripts/verify.sh` — runs tests, `cargo check --all-targets`, both feature
    configurations, the benches with `--no-run`, `cargo doc` with the same deny flag
-   the blocking CI job uses, and the examples both compiled and *run*, then prints a
-   summary. Compare the test count against the known-good baseline rather than
+   the blocking CI job uses, `scripts/module_graph.py --check` so the module graph
+   stays acyclic, and the examples both compiled and *run*, then prints a summary. Compare the test count against the known-good baseline rather than
    against zero, and name any pre-existing failure you are not fixing.
 2. `python3 scripts/warning_report.py` — the warning count is a tracked metric
    and should not go up.
@@ -227,8 +227,8 @@ stabilised, which removes the only real objection.
 
 ## Known gaps
 
-Two things are deliberately left undone, recorded so they are not rediscovered as
-surprises.
+One thing is deliberately left undone, recorded so it is not rediscovered as a
+surprise.
 
 **The HTTP status mapping exists twice.** `kolibrie::sparql_protocol::query_result`
 and `kolibrie-http-server`'s `ml_error_response` both map a `QueryError` to a status
@@ -237,15 +237,12 @@ comment naming the other. Deduplicating means `kolibrie-http-server` growing a
 `lib.rs` — it is binary-only today, which is also why nothing can reuse its request
 handling.
 
-**Ten rustdoc `redundant explicit link target` warnings** remain, from the
-documentation burn-down: `[`Name`](path::to::Name)` where the text resolves on its
-own. Five are in `kolibrie`, three in `datalog`, one each in `datalogmtl` and
-`shared`. The `docs` job denies only broken links, so these do not fail it, and
-neither does `verify.sh`. Worth one mechanical pass; not worth touching a file for on
-its own.
+The ten `redundant explicit link target` warnings that used to be listed here are
+gone, fixed in one mechanical pass once they were the only thing left.
 
-Re-count before quoting this number — it was recorded as eleven across five crates
-and had been stale since one of them was fixed in passing.
+If you add an entry, say how to re-derive its numbers. That one went stale twice: it
+was still quoted as eleven warnings across five crates after one had been fixed in
+passing, and then as ten after the rest were.
 
 ## Notes for AI coding assistants
 

@@ -1,6 +1,6 @@
 //! Goal-directed evaluation: proving one query without materialising everything.
 //!
-//! Unification works over [`Term`](shared::terms::Term) rather than over dictionary
+//! Unification works over [`Term`] rather than over dictionary
 //! ids alone, because a goal can carry unbound variables where a fact never does.
 //! Quoted triples unify component-wise.
 //!

@@ -109,6 +109,12 @@ jobs:
         with: { python-version: "3.11" }
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
+      # The module graph is acyclic. This is the only thing that keeps it so: a
+      # cycle costs nothing at runtime, so one `use crate::` in the wrong
+      # direction is invisible until someone tries to split the crate. The check
+      # reads source only and needs no build.
+      - name: kolibrie's module graph is acyclic
+        run: python3 scripts/module_graph.py --check
       # unreachable_pub reached zero workspace-wide in step 4b.
       - name: unreachable_pub, default features
         run: scripts/check_lint.sh unreachable_pub -- --workspace --all-targets

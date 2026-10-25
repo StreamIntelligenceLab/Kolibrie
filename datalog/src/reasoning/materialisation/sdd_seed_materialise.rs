@@ -17,7 +17,7 @@
 //! starts for the derived facts to inherit it.
 //!
 //! [`try_infer_new_facts_with_sdd_seed_specs`] is the same thing under an
-//! [`SddLimits`](shared::sdd::SddLimits) budget, and reports exhaustion as an error
+//! [`SddLimits`] budget, and reports exhaustion as an error
 //! rather than running until it finishes.
 
 use shared::sdd::{BoolOp, SddBudgetError, SddLimits, SddProvenance, VarKind};

@@ -15,7 +15,7 @@
 //! delta rather than to the window contents.
 //!
 //! Expiry is what makes this possible without recomputing: every derived fact is
-//! tagged with an [`ExpirationProvenance`](shared::provenance::ExpirationProvenance)
+//! tagged with an [`ExpirationProvenance`]
 //! tag giving the time it stops holding, which is the minimum over the facts it was
 //! derived from, so a fact leaving a window retracts its consequences without any
 //! search for them.

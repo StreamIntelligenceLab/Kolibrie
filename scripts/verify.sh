@@ -49,6 +49,18 @@ do
   [ "$n" -gt 0 ] && { grep -E '^[^ ]+: error|^error' "$OUT/$name.log" | head -5 | sed 's/^/     /'; fail=1; }
 done
 
+# The module graph is acyclic and nothing else here would notice if it stopped
+# being so. One `use crate::` in the wrong direction puts a cycle back, and a cycle
+# costs nothing at runtime, so it is invisible until someone tries to split the
+# crate. `scripts/module_graph.py` is a pure source read and takes under a second.
+echo "== module graph =="
+if python3 scripts/module_graph.py --check > "$OUT/graph.log" 2>&1; then
+  sed 's/^/   /' "$OUT/graph.log"
+else
+  sed 's/^/   /' "$OUT/graph.log"
+  fail=1
+fi
+
 # Mirrors the blocking `rustdoc` CI job exactly, including the deny flag: a broken
 # intra-doc link fails there even though `missing_docs` is only a warning. Not in the
 # loop above because RUSTDOCFLAGS contains a space and would not survive its word

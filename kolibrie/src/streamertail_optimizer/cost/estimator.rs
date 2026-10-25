@@ -11,7 +11,7 @@
 //! [`CostEstimator`]: predicting cardinality and work for a candidate plan.
 //!
 //! Estimates only have to rank plans correctly; absolute accuracy is not the goal.
-//! They read [`DatabaseStats`](crate::streamertail_optimizer::DatabaseStats), which
+//! They read [`DatabaseStats`], which
 //! may lag the data under the store's default statistics policy.
 
 use super::super::operators::PhysicalOperator;

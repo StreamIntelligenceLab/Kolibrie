@@ -7,8 +7,8 @@
 * you can obtain one at https://mozilla.org/MPL/2.0/.
 */
 
-//! A straightforward [`R2ROperator`](super::r2r::R2ROperator) backed by a
-//! [`SparqlDatabase`](crate::sparql_database::SparqlDatabase).
+//! A straightforward [`R2ROperator`] backed by a
+//! [`SparqlDatabase`].
 //!
 //! Loads each window's content into a store and evaluates the query against it:
 //! correct, and enough for a window whose content fits in memory.
