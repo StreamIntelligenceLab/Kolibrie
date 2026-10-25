@@ -101,7 +101,7 @@ fn main() {
     // Step 3: Create KnowledgeGraph and populate it (One-time)
     println!("\n=== Populating KnowledgeGraph (One-time) ===");
     let mut kg = Reasoner::new();
-    kg.dictionary = database.dictionary_handle();
+    kg.adopt_terms(database.terms());
 
     let populate_start = Instant::now();
     let triples = database.query_default_triples(None, None, None);

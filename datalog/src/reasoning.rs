@@ -35,6 +35,7 @@ use shared::provenance::Provenance;
 use shared::rule::Rule;
 use shared::rule_index::RuleIndex;
 use shared::tag_store::TagStore;
+use shared::term_encoder::SharedTerms;
 use shared::triple::Triple;
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::sync::Arc;
@@ -93,6 +94,20 @@ pub fn convert_string_binding_to_u32(
 }
 
 impl Reasoner {
+    /// Adopts `terms` as this reasoner's term space.
+    ///
+    /// The point of taking a [`SharedTerms`] rather than the handle is that the
+    /// caller does not have to name `Arc<RwLock<Dictionary>>`, and cannot pass
+    /// something single-threaded by mistake: only the shared encoder is `Sync`.
+    ///
+    /// Sharing rather than copying, so a term interned here afterwards is
+    /// immediately visible to everything else holding the same `SharedTerms`. Code
+    /// that assigns the handle and then assigns it back to "sync" the result is
+    /// doing nothing; see the note this replaced in `kolibrie-http-server`.
+    pub fn adopt_terms(&mut self, terms: SharedTerms) {
+        self.dictionary = terms.handle();
+    }
+
     /// An empty reasoner with a fresh dictionary of its own.
     ///
     /// To share a caller's dictionary instead, assign to

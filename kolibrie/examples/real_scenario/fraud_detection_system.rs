@@ -1228,7 +1228,7 @@ fn run_reasoning(database: &mut SparqlDatabase, rules: &[Rule], tx_uri: &str) ->
     };
 
     let mut reasoner = Reasoner::new();
-    reasoner.dictionary = database.dictionary_handle();
+    reasoner.adopt_terms(database.terms());
     for (s, p, o) in decoded_triples {
         reasoner.add_abox_triple(&s, &p, &o);
     }

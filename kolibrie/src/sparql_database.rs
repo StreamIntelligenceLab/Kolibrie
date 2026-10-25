@@ -2403,6 +2403,16 @@ impl SparqlDatabase {
         Arc::ptr_eq(&self.dictionary, &other.dictionary)
     }
 
+    /// This store's term space, as an encoder another component can adopt.
+    ///
+    /// Prefer this to [`Self::dictionary_handle`]: it shares the same encoding
+    /// without putting `Arc<RwLock<_>>` in the signature, which is what P5 asks,
+    /// and it cannot be confused with a copy. A term interned through it is
+    /// immediately visible here.
+    pub fn terms(&self) -> shared::term_encoder::SharedTerms {
+        shared::term_encoder::SharedTerms::from_handle(Arc::clone(&self.dictionary))
+    }
+
     /// The dictionary handle, for sharing one term encoding across engines.
     ///
     /// This is the one place `Arc<RwLock<_>>` still reaches the public API, and it is

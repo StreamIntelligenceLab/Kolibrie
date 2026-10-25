@@ -1193,9 +1193,10 @@ fn execute_sparql_with_policy(
         if has_n3_rule_text(&n3_rules_text) {
             println!("Processing N3 logic rules from N3 Logic sub-tab...");
 
-            // Mirror the database dictionary so term encodings are shared
+            // One term space between the store and the reasoner, so a term either
+            // interns once or decodes consistently on both sides.
             let mut kg = Reasoner::new();
-            kg.dictionary = database.dictionary_handle();
+            kg.adopt_terms(database.terms());
 
             // Decode all triples to owned strings using database.dictionary BEFORE
             // creating kg's mutable borrow — avoids the RwLockReadGuard conflict.
@@ -1249,8 +1250,10 @@ fn execute_sparql_with_policy(
                         database.add_triple(triple);
                     }
 
-                    // Sync the enriched dictionary back so SPARQL can decode the new terms
-                    database.set_dictionary_handle(kg.dictionary.clone());
+                    // No dictionary sync here on purpose. The store and the
+                    // reasoner share one encoding, so terms interned while inferring
+                    // were already visible to SPARQL; the assignment that used to sit
+                    // here handed the store back the handle it already held.
 
                     if database.default_triple_count() > 0 {
                         database.invalidate_stats_cache();
