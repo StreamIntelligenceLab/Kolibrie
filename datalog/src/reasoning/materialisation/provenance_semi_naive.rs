@@ -35,6 +35,7 @@ use crate::reasoning::rules::{evaluate_filters, join_premise_with_hash_join};
 use crate::reasoning::Reasoner;
 use shared::dictionary::Dictionary;
 use shared::provenance::Provenance;
+use shared::quad_source::QuadSource;
 use shared::rule::Rule;
 use shared::tag_store::TagStore;
 use shared::triple::Triple;
@@ -241,6 +242,24 @@ impl Reasoner {
         &mut self,
         provenance: P,
     ) -> (Vec<Triple>, TagStore<P>) {
+        self.infer_new_facts_with_provenance_over(None, provenance)
+    }
+
+    /// As [`infer_new_facts_with_provenance`](Self::infer_new_facts_with_provenance),
+    /// reading the base facts from `base` as well as from this reasoner's own index.
+    ///
+    /// For a caller reasoning over a store it does not own. Nothing is copied in but
+    /// the facts derived, as with
+    /// [`infer_new_facts_semi_naive_over`](Self::infer_new_facts_semi_naive_over).
+    ///
+    /// The seeded tags come from `probability_seeds` either way: a source supplies
+    /// facts, not probabilities, so a caller wanting seeded base facts still sets
+    /// them on the reasoner.
+    pub fn infer_new_facts_with_provenance_over<P: Provenance>(
+        &mut self,
+        base: Option<&dyn QuadSource>,
+        provenance: P,
+    ) -> (Vec<Triple>, TagStore<P>) {
         let mut tag_store = TagStore::new(provenance.clone());
 
         // Seed tag store from probability seeds.
@@ -260,7 +279,7 @@ impl Reasoner {
         // Record sorted seed triples so encode_as_rdf_star_with_explanation can map IDs -> triples.
         tag_store.seed_triples = seeds.iter().map(|(t, _)| (*t).clone()).collect();
 
-        let new_facts = semi_naive_with_initial_tags(self, provenance, tag_store.clone());
+        let new_facts = semi_naive_with_initial_tags(self, base, provenance, tag_store.clone());
         (new_facts.0, new_facts.1)
     }
 }
@@ -275,6 +294,7 @@ impl Reasoner {
 /// tag is a handle into that store and is meaningless without it.
 pub fn semi_naive_with_initial_tags<P: Provenance>(
     reasoner: &mut Reasoner,
+    base: Option<&dyn QuadSource>,
     provenance: P,
     mut initial_tags: TagStore<P>,
 ) -> (Vec<Triple>, TagStore<P>) {
@@ -294,6 +314,7 @@ pub fn semi_naive_with_initial_tags<P: Provenance>(
 
     // Stratum 0: run positive fixpoint.
     let mut new_facts = reasoner.infer_with_provenance_strategy_and_rules(
+        base,
         ProvenanceSemiNaiveStrategy {
             start_idx_for_delta: 0,
             delta_improved: Vec::new(),
@@ -306,8 +327,13 @@ pub fn semi_naive_with_initial_tags<P: Provenance>(
 
     // Stratum 1: single negative pass (if any NAF rules exist).
     if !negative_rules.is_empty() {
-        let neg_new =
-            run_negative_stratum_pass(reasoner, &negative_rules, &mut initial_tags, &provenance);
+        let neg_new = run_negative_stratum_pass(
+            reasoner,
+            base,
+            &negative_rules,
+            &mut initial_tags,
+            &provenance,
+        );
         new_facts.extend(neg_new);
     }
 
@@ -325,6 +351,7 @@ pub fn semi_naive_with_initial_tags<P: Provenance>(
 /// are positive and the delta is the facts that arrived this tick.
 pub fn semi_naive_with_initial_tags_and_delta<P: Provenance>(
     reasoner: &mut Reasoner,
+    base: Option<&dyn QuadSource>,
     _provenance: P,
     mut initial_tags: TagStore<P>,
     initial_delta: Vec<Triple>,
@@ -337,6 +364,7 @@ pub fn semi_naive_with_initial_tags_and_delta<P: Provenance>(
         .collect();
 
     let new_facts = reasoner.infer_with_provenance_strategy_and_rules(
+        base,
         ProvenanceSemiNaiveStrategy {
             start_idx_for_delta: 0,
             delta_improved: Vec::new(),
@@ -353,11 +381,15 @@ pub fn semi_naive_with_initial_tags_and_delta<P: Provenance>(
 /// Single forward pass for NAF rules (stratum 1) over the stratum-0 closure.
 fn run_negative_stratum_pass<P: Provenance>(
     reasoner: &mut Reasoner,
+    base: Option<&dyn QuadSource>,
     rules: &[Rule],
     tag_store: &mut TagStore<P>,
     provenance: &P,
 ) -> Vec<Triple> {
-    let all_facts: Vec<Triple> = reasoner.dataset_index.query(None, None, None);
+    let mut all_facts: Vec<Triple> = reasoner.dataset_index.query(None, None, None);
+    if let Some(base) = base {
+        all_facts.extend(base.query_default(None, None, None));
+    }
     let all_facts_set: HashSet<Triple> = all_facts.iter().cloned().collect();
     let mut new_derived: Vec<Triple> = Vec::new();
 

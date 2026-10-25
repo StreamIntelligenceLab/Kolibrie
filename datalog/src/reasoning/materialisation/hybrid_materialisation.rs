@@ -219,7 +219,7 @@ pub fn materialize_lineage(
         reasoner.insert_ground_triple(triple.clone());
     }
 
-    let (new_facts, tags) = semi_naive_with_initial_tags(reasoner, provenance, initial_tags);
+    let (new_facts, tags) = semi_naive_with_initial_tags(reasoner, None, provenance, initial_tags);
     Ok(LineageMaterialization { new_facts, tags })
 }
 

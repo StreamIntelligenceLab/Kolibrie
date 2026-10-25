@@ -128,14 +128,12 @@ pub fn process_rule_definition(
 
         let mut kg = Reasoner::new();
         kg.dictionary = database.dictionary.clone();
-        // Two paths below still need the store's facts inside `kg`, so they are
-        // copied in only for those. A windowed rule clones `kg` into a `'static`
-        // callback per window, which cannot borrow the store; and the provenance
-        // strategies read `kg.dataset_index` through machinery that does not yet
-        // take a source. The plain path, which is the common one, reads the store
-        // directly through `QuadSource` and copies nothing.
-        let kg_needs_own_facts = !rule.window_clause.is_empty() || rule.prob_annotation.is_some();
-        if kg_needs_own_facts {
+        // Only a windowed rule still needs the store's facts inside `kg`: it clones
+        // `kg` into a `'static` callback per window, and a boxed callback cannot
+        // borrow the store. Every other path reads the store through `QuadSource`
+        // and copies nothing; the hybrid annotation does its own copy below, because
+        // lineage materialisation has no source parameter yet.
+        if !rule.window_clause.is_empty() {
             for triple in database.query_default_triples(None, None, None) {
                 kg.dataset_index.insert(&triple);
             }
@@ -249,8 +247,10 @@ pub fn process_rule_definition(
             let provenance_type = ann.combination;
             let inferred_facts = match provenance_type {
                 "minmax" | "min" => {
-                    let (facts, tag_store) =
-                        kg.infer_new_facts_with_provenance(shared::provenance::MinMaxProbability);
+                    let (facts, tag_store) = kg.infer_new_facts_with_provenance_over(
+                        Some(database),
+                        shared::provenance::MinMaxProbability,
+                    );
                     let mut dict = kg.dictionary.write().unwrap();
                     let mut qt_store = database.quoted_triple_store.write().unwrap();
                     let rdf_star = tag_store.encode_as_rdf_star(&mut dict, &mut qt_store);
@@ -262,8 +262,10 @@ pub fn process_rule_definition(
                     facts
                 }
                 "addmult" | "independent" => {
-                    let (facts, tag_store) =
-                        kg.infer_new_facts_with_provenance(shared::provenance::AddMultProbability);
+                    let (facts, tag_store) = kg.infer_new_facts_with_provenance_over(
+                        Some(database),
+                        shared::provenance::AddMultProbability,
+                    );
                     let mut dict = kg.dictionary.write().unwrap();
                     let mut qt_store = database.quoted_triple_store.write().unwrap();
                     let rdf_star = tag_store.encode_as_rdf_star(&mut dict, &mut qt_store);
@@ -275,8 +277,10 @@ pub fn process_rule_definition(
                     facts
                 }
                 "boolean" => {
-                    let (facts, tag_store) =
-                        kg.infer_new_facts_with_provenance(shared::provenance::BooleanProvenance);
+                    let (facts, tag_store) = kg.infer_new_facts_with_provenance_over(
+                        Some(database),
+                        shared::provenance::BooleanProvenance,
+                    );
                     let mut dict = kg.dictionary.write().unwrap();
                     let mut qt_store = database.quoted_triple_store.write().unwrap();
                     let rdf_star = tag_store.encode_as_rdf_star(&mut dict, &mut qt_store);
@@ -298,6 +302,11 @@ pub fn process_rule_definition(
                     })?;
                     let snapshot = SeedSnapshot::from_probability_seeds(&kg.probability_seeds)
                         .map_err(|error| QueryError::Execution(error.to_string()))?;
+                    // Lineage materialisation reads the reasoner's own index rather
+                    // than a source, so this branch alone still copies the store in.
+                    for triple in database.query_default_triples(None, None, None) {
+                        kg.dataset_index.insert(&triple);
+                    }
                     let (facts, results, _lineage) = kg
                         .infer_new_facts_with_hybrid(snapshot, config)
                         .map_err(|error| QueryError::Execution(error.to_string()))?;
@@ -329,8 +338,10 @@ pub fn process_rule_definition(
                 }
                 // SDD-based exact proof-formula provenance (WMC via SDD)
                 "sdd" => {
-                    let (facts, tag_store) =
-                        kg.infer_new_facts_with_provenance(shared::sdd::SddProvenance::new());
+                    let (facts, tag_store) = kg.infer_new_facts_with_provenance_over(
+                        Some(database),
+                        shared::sdd::SddProvenance::new(),
+                    );
                     let mut dict = kg.dictionary.write().unwrap();
                     let mut qt_store = database.quoted_triple_store.write().unwrap();
                     let rdf_star =
@@ -347,8 +358,10 @@ pub fn process_rule_definition(
                 // Syntax: PROB(combination=topk) or PROB(combination=topk, threshold=10)
                 "topk" => {
                     let k = ann.threshold.map(|t| t as usize).unwrap_or(5);
-                    let (facts, tag_store) =
-                        kg.infer_new_facts_with_provenance(shared::provenance::TopKProofs::new(k));
+                    let (facts, tag_store) = kg.infer_new_facts_with_provenance_over(
+                        Some(database),
+                        shared::provenance::TopKProofs::new(k),
+                    );
                     let diagnostics: HashMap<Triple, HybridProbabilityResult> = facts
                         .iter()
                         .map(|triple| {
@@ -380,8 +393,10 @@ pub fn process_rule_definition(
                     facts
                 }
                 _ => {
-                    let (facts, tag_store) =
-                        kg.infer_new_facts_with_provenance(shared::provenance::MinMaxProbability);
+                    let (facts, tag_store) = kg.infer_new_facts_with_provenance_over(
+                        Some(database),
+                        shared::provenance::MinMaxProbability,
+                    );
                     let mut dict = kg.dictionary.write().unwrap();
                     let mut qt_store = database.quoted_triple_store.write().unwrap();
                     let rdf_star = tag_store.encode_as_rdf_star(&mut dict, &mut qt_store);

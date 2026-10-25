@@ -19,6 +19,7 @@
 use crate::reasoning::Reasoner;
 use shared::dictionary::Dictionary;
 use shared::provenance::Provenance;
+use shared::quad_source::QuadSource;
 use shared::rule::Rule;
 use shared::tag_store::TagStore;
 use shared::triple::Triple;
@@ -57,6 +58,7 @@ impl Reasoner {
     /// Generic driver for provenance-based materialisation. Loops until fixpoint.
     pub fn infer_with_provenance_strategy<P, S>(
         &mut self,
+        base: Option<&dyn QuadSource>,
         strat: S,
         tag_store: &mut TagStore<P>,
     ) -> Vec<Triple>
@@ -65,13 +67,14 @@ impl Reasoner {
         S: ProvenanceInferenceStrategy<P>,
     {
         let rules: Vec<Rule> = self.rules.clone();
-        self.infer_with_provenance_strategy_and_rules(strat, tag_store, &rules)
+        self.infer_with_provenance_strategy_and_rules(base, strat, tag_store, &rules)
     }
 
     /// Same as `infer_with_provenance_strategy` but with an explicit rule slice.
     /// Used for stratified evaluation where stratum-0 uses only positive rules.
     pub fn infer_with_provenance_strategy_and_rules<P, S>(
         &mut self,
+        base: Option<&dyn QuadSource>,
         mut strat: S,
         tag_store: &mut TagStore<P>,
         rules: &[Rule],
@@ -81,6 +84,9 @@ impl Reasoner {
         S: ProvenanceInferenceStrategy<P>,
     {
         let mut all_facts: Vec<Triple> = self.dataset_index.query(None, None, None);
+        if let Some(base) = base {
+            all_facts.extend(base.query_default(None, None, None));
+        }
         let mut known_facts: HashSet<Triple> = all_facts.iter().cloned().collect();
         let idx_before_inference = all_facts.len();
 

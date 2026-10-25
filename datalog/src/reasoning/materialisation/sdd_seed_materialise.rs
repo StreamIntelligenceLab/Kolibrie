@@ -103,7 +103,7 @@ pub fn infer_new_facts_with_sdd_seed_specs(
         }
     }
 
-    semi_naive_with_initial_tags(reasoner, provenance, initial_tags)
+    semi_naive_with_initial_tags(reasoner, None, provenance, initial_tags)
 }
 
 fn record_seed_triple(tags: &mut TagStore<SddProvenance>, variable: u32, triple: &Triple) {
@@ -169,7 +169,8 @@ pub fn try_infer_new_facts_with_sdd_seed_specs(
         }
     }
 
-    let (facts, tags) = semi_naive_with_initial_tags(reasoner, provenance.clone(), initial_tags);
+    let (facts, tags) =
+        semi_naive_with_initial_tags(reasoner, None, provenance.clone(), initial_tags);
     match provenance.budget_error() {
         Some(error) => Err(error),
         None => Ok((facts, tags)),

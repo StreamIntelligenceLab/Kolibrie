@@ -99,6 +99,7 @@ pub fn incremental_sds_plus(
     let initial_delta: Vec<Triple> = d_new.iter().map(|(t, _)| t.clone()).collect();
     let (_new_triples, tag_store) = semi_naive_with_initial_tags_and_delta(
         &mut reasoner,
+        None,
         ExpirationProvenance,
         initial_tags,
         initial_delta,

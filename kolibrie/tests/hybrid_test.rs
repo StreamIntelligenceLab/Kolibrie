@@ -143,3 +143,35 @@ fn plain_rule_derives_from_the_stores_facts() {
     let derived = database.query_default_triples(None, Some(ancestor), None);
     assert_eq!(derived.len(), 1, "the derived fact should reach the store");
 }
+
+/// A provenance-annotated rule derives from the store's facts.
+///
+/// Added for the same reason as `plain_rule_derives_from_the_stores_facts`: nothing
+/// covered `rule_execution`'s annotated path. Thirty-two tests fail if the base is
+/// withheld inside datalog's provenance driver, but they reach it through `program`
+/// or through datalog directly — passing `None` at `rule_execution`'s six provenance
+/// call sites left all 647 green.
+///
+/// Verified to fail when the base is withheld, which is the only reason to trust it.
+#[test]
+fn annotated_rule_derives_from_the_stores_facts() {
+    let mut database = SparqlDatabase::new();
+    database.add_tagged_triple(
+        "http://example.org/a",
+        "http://example.org/input",
+        "http://example.org/yes",
+        0.8,
+    );
+    let rule = r#"
+        RULE :MinMax PROB(provenance=minmax) :-
+        CONSTRUCT { ?x <http://example.org/result> <http://example.org/yes> . }
+        WHERE { ?x <http://example.org/input> <http://example.org/yes> . } .
+    "#;
+    let (_rule, inferred) =
+        process_rule_definition(rule, &mut database).expect("annotated rule should execute");
+    assert_eq!(
+        inferred.len(),
+        1,
+        "one input fact should derive one result fact"
+    );
+}
