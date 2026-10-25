@@ -278,7 +278,9 @@ fn execute_ml_training_impl(
                     output_dim,
                 )?;
                 let snapshot = SeedSnapshot::from_seed_specs(&seeds)?;
-                let lineage = materialize_lineage(&mut local_reasoner, snapshot)?;
+                // `None`: this reasoner carries the store's facts already, copied in by
+                // `build_ground_reasoner_from_db`. See the note on that function.
+                let lineage = materialize_lineage(&mut local_reasoner, None, snapshot)?;
 
                 let target = instantiate_triple(
                     (

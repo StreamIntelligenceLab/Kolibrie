@@ -175,3 +175,45 @@ fn annotated_rule_derives_from_the_stores_facts() {
         "one input fact should derive one result fact"
     );
 }
+
+/// A hybrid rule can match a fact the store holds untagged, not only its seeds.
+///
+/// This distinction is why the hybrid path's base facts matter at all.
+/// `materialize_lineage` inserts the snapshot's seed triples into the reasoner
+/// itself, so a rule whose body is satisfied entirely by tagged facts derives
+/// correctly even with no base at all — which is why the three `provenance=hybrid`
+/// tests above pass whether the store's facts reach the reasoner or not.
+///
+/// Here the body needs one tagged fact and one plain one, so the base is load
+/// bearing. Verified to fail when it is withheld.
+#[test]
+fn hybrid_rule_matches_an_untagged_fact_from_the_store() {
+    let mut database = SparqlDatabase::new();
+    database.add_tagged_triple(
+        "http://example.org/a",
+        "http://example.org/input",
+        "http://example.org/yes",
+        0.8,
+    );
+    // Untagged, so it is not a seed and reaches the reasoner only as a base fact.
+    database.add_triple_parts(
+        "http://example.org/a",
+        "http://example.org/kind",
+        "http://example.org/plain",
+    );
+    let rule = r#"
+        RULE :NeedsBoth PROB(provenance=hybrid, threshold=0.5) :-
+        CONSTRUCT { ?x <http://example.org/result> <http://example.org/yes> . }
+        WHERE {
+            ?x <http://example.org/input> <http://example.org/yes> .
+            ?x <http://example.org/kind> <http://example.org/plain> .
+        } .
+    "#;
+    let (_rule, inferred) =
+        process_rule_definition(rule, &mut database).expect("hybrid rule should execute");
+    assert_eq!(
+        inferred.len(),
+        1,
+        "the rule needs the untagged fact, which only the base supplies"
+    );
+}

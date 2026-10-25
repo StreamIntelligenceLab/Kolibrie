@@ -302,13 +302,8 @@ pub fn process_rule_definition(
                     })?;
                     let snapshot = SeedSnapshot::from_probability_seeds(&kg.probability_seeds)
                         .map_err(|error| QueryError::Execution(error.to_string()))?;
-                    // Lineage materialisation reads the reasoner's own index rather
-                    // than a source, so this branch alone still copies the store in.
-                    for triple in database.query_default_triples(None, None, None) {
-                        kg.dataset_index.insert(&triple);
-                    }
                     let (facts, results, _lineage) = kg
-                        .infer_new_facts_with_hybrid(snapshot, config)
+                        .infer_new_facts_with_hybrid_over(Some(database), snapshot, config)
                         .map_err(|error| QueryError::Execution(error.to_string()))?;
                     let mut dict = kg.dictionary.write().unwrap();
                     let mut qt_store = database.quoted_triple_store.write().unwrap();

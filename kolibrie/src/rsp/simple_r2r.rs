@@ -213,13 +213,11 @@ impl R2ROperator<Triple, Vec<PhysicalOperator>, Vec<(String, String)>> for Simpl
         self.last_hybrid_error = None;
 
         let derived = if let Some(config) = &self.hybrid_config {
-            // The hybrid strategy goes through lineage materialisation, which reads
-            // the reasoner's own index rather than a source, so this path still pays
-            // for the copy. It is confined to the branch that needs it.
-            for triple in self.item.query_default_triples(None, None, None) {
-                reasoner.dataset_index.insert(&triple);
-            }
-            match reasoner.infer_new_facts_with_hybrid(self.live_seed_snapshot.clone(), config) {
+            match reasoner.infer_new_facts_with_hybrid_over(
+                Some(&self.item),
+                self.live_seed_snapshot.clone(),
+                config,
+            ) {
                 Ok((derived, results, _lineage)) => {
                     self.last_hybrid_results = results;
                     derived

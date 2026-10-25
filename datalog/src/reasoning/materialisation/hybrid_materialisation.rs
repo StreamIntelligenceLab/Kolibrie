@@ -27,6 +27,7 @@ use shared::hybrid::{
     compile_lineage_to_sdd, evaluate_hybrid, CompiledSdd, HybridConfig, HybridError,
     HybridProbabilityResult, LineageId, LineageProvenance, SeedSnapshot,
 };
+use shared::quad_source::QuadSource;
 use shared::rule::Rule;
 use shared::tag_store::TagStore;
 use shared::terms::Term;
@@ -185,6 +186,7 @@ pub fn validate_hybrid_rules(rules: &[Rule]) -> Result<(), HybridError> {
 /// finite Boolean lineage.
 pub fn materialize_lineage(
     reasoner: &mut Reasoner,
+    base: Option<&dyn QuadSource>,
     snapshot: SeedSnapshot,
 ) -> Result<LineageMaterialization, HybridError> {
     validate_hybrid_rules(&reasoner.rules)?;
@@ -219,7 +221,7 @@ pub fn materialize_lineage(
         reasoner.insert_ground_triple(triple.clone());
     }
 
-    let (new_facts, tags) = semi_naive_with_initial_tags(reasoner, None, provenance, initial_tags);
+    let (new_facts, tags) = semi_naive_with_initial_tags(reasoner, base, provenance, initial_tags);
     Ok(LineageMaterialization { new_facts, tags })
 }
 
@@ -246,8 +248,29 @@ impl Reasoner {
         ),
         HybridError,
     > {
+        self.infer_new_facts_with_hybrid_over(None, snapshot, config)
+    }
+
+    /// As [`infer_new_facts_with_hybrid`](Self::infer_new_facts_with_hybrid), reading
+    /// the base facts from `base` as well as from this reasoner's own index.
+    ///
+    /// The seed triples a snapshot names are still inserted here, since they are the
+    /// subject of the lineage rather than part of the store's facts.
+    pub fn infer_new_facts_with_hybrid_over(
+        &mut self,
+        base: Option<&dyn QuadSource>,
+        snapshot: SeedSnapshot,
+        config: &HybridConfig,
+    ) -> Result<
+        (
+            Vec<Triple>,
+            HashMap<Triple, HybridProbabilityResult>,
+            LineageMaterialization,
+        ),
+        HybridError,
+    > {
         config.validate()?;
-        let materialization = materialize_lineage(self, snapshot)?;
+        let materialization = materialize_lineage(self, base, snapshot)?;
         let mut results = HashMap::new();
         for triple in &materialization.new_facts {
             results.insert(triple.clone(), materialization.evaluate(triple, config));
@@ -304,7 +327,8 @@ mod tests {
                 .unwrap();
         }
         let mut reasoner = Reasoner::new();
-        let materialized = materialize_lineage(&mut reasoner, registry.snapshot_all()).unwrap();
+        let materialized =
+            materialize_lineage(&mut reasoner, None, registry.snapshot_all()).unwrap();
         let result = materialized.evaluate(&triple, &HybridConfig::default());
         match result {
             HybridProbabilityResult::Exact {
@@ -346,6 +370,7 @@ mod tests {
         let mut full_reasoner = Reasoner::new();
         let full = materialize_lineage(
             &mut full_reasoner,
+            None,
             registry.snapshot_for_ids([first, second]).unwrap(),
         )
         .unwrap();
@@ -353,11 +378,11 @@ mod tests {
 
         let live_snapshot = registry.snapshot_for_ids([second]).unwrap();
         let mut live_reasoner = Reasoner::new();
-        let live = materialize_lineage(&mut live_reasoner, live_snapshot.clone()).unwrap();
+        let live = materialize_lineage(&mut live_reasoner, None, live_snapshot.clone()).unwrap();
         assert!((exact_probability(&live, &input) - 0.4).abs() < 1e-9);
 
         let mut oracle_reasoner = Reasoner::new();
-        let rebuilt = materialize_lineage(&mut oracle_reasoner, live_snapshot).unwrap();
+        let rebuilt = materialize_lineage(&mut oracle_reasoner, None, live_snapshot).unwrap();
         assert!(
             (exact_probability(&rebuilt, &input) - exact_probability(&live, &input)).abs() < 1e-9
         );
