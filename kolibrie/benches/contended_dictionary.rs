@@ -33,6 +33,37 @@
 //! `rsp_engine` spawns a thread per window plus a coordinator, all encoding into one
 //! dictionary, so this is the access pattern the real system has.
 //!
+//! # What scoped access recovers
+//!
+//! `encode_scoped` uses [`TermEncoder::with_terms`](shared::term_encoder::TermEncoder),
+//! which acquires once per chunk instead of once per term — the shape the trait
+//! offers, measured beside the one it exists to avoid:
+//!
+//! | threads | per-call lock | scoped | own dict |
+//! |---|---:|---:|---:|
+//! | 2 | 299us | 256us | 161us |
+//! | 4 | 643us | 283us | 95us |
+//! | 8 | 697us | 330us | 108us |
+//!
+//! Scoped access roughly halves the contended cost at 4 and 8 threads, and stops
+//! the degradation compounding: 1.4x to 1.8x slower than one thread across 2 to 8
+//! threads, against 1.6x to 3.8x for per-call.
+//!
+//! It does **not** make threading profitable. `with_terms` holds an exclusive lock
+//! for the whole chunk, so the threads serialise and the result is single-threaded
+//! throughput minus handoff. Parallel speedup on encoding would need a sharded
+//! dictionary or a thread-local cache in front of a shared one; this only removes
+//! the pathology.
+//!
+//! # These figures are directional
+//!
+//! Contended measurements depend on scheduling and move far more between runs than
+//! the single-threaded ones: `encode_shared/4` measured 413us and 643us on two runs
+//! of identical code, a 56% swing. The ordering has been stable across every run —
+//! per-call worst, scoped in between, independent best, and all three worsening
+//! past 4 threads — so read the shape and not the multipliers, and do not use these
+//! as regression thresholds.
+//!
 //! # Why the `heavy` tier
 //!
 //! It answers a design question rather than guarding a refactor, which is what that
@@ -44,6 +75,7 @@ extern crate criterion;
 
 use criterion::{black_box, criterion_group, criterion_main, Criterion};
 use shared::dictionary::Dictionary;
+use shared::term_encoder::{SharedTerms, TermEncoder};
 use std::sync::{Arc, RwLock};
 
 const TERMS: usize = 10_000;
@@ -129,6 +161,30 @@ fn bench_contention(c: &mut Criterion) {
                             for id in part {
                                 black_box(handle.read().unwrap().decode(black_box(*id)).is_some());
                             }
+                        });
+                    }
+                });
+            })
+        });
+    }
+
+    // The shape `TermEncoder::with_terms` actually offers: acquire once per thread,
+    // do the whole chunk inside. This is the claim the trait's design rests on, so
+    // it is measured next to the per-call variant it exists to avoid.
+    for threads in [2usize, 4, 8] {
+        let chunk = iris.len() / threads;
+        group.bench_function(format!("encode_scoped/{threads}"), |b| {
+            let terms = SharedTerms::from_handle(Arc::new(RwLock::new(warm.clone())));
+            b.iter(|| {
+                std::thread::scope(|scope| {
+                    for part in iris.chunks(chunk) {
+                        let terms = terms.clone();
+                        scope.spawn(move || {
+                            terms.with_terms(&mut |dict| {
+                                for iri in part {
+                                    black_box(dict.encode(black_box(iri)));
+                                }
+                            });
                         });
                     }
                 });

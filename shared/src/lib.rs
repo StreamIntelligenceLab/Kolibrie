@@ -62,6 +62,7 @@ pub mod sdd;
 pub mod seed_spec;
 /// Per-fact provenance annotations, kept alongside the facts.
 pub mod tag_store;
+pub mod term_encoder;
 /// Terms and triple patterns: the variable-or-constant vocabulary.
 pub mod terms;
 /// An encoded RDF triple: three dictionary ids.
