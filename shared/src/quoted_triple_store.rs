@@ -31,6 +31,7 @@ pub fn is_quoted_triple_id(id: u32) -> bool {
 /// Components are themselves encoded ids, and may be quoted triples in turn, so
 /// nesting is representable. Ids start at [`QUOTED_TRIPLE_ID_BIT`] and climb, which
 /// is what keeps them distinguishable from ordinary terms by a single bit test.
+/// `u32::MAX` is never minted; see [`encode`](Self::encode).
 pub struct QuotedTripleStore {
     /// Id to its three component ids.
     pub id_to_components: HashMap<u32, (u32, u32, u32)>,
@@ -57,6 +58,16 @@ impl QuotedTripleStore {
         if let Some(&id) = self.components_to_id.get(&key) {
             return id;
         }
+        // Mirrors the assert on the ordinary-term half of the id space, which
+        // refuses to mint an id that would collide with this range. The top value
+        // is reserved: `relation::UNBOUND` is `u32::MAX`, and a row that held it as
+        // a real id would read as unbound. Nothing else here caps `next_qt_id`, so
+        // this also stops the increment below overflowing silently in release.
+        assert!(
+            self.next_qt_id < u32::MAX,
+            "quoted triple ID space exhausted: next_qt_id {} is reserved",
+            self.next_qt_id
+        );
         let id = self.next_qt_id;
         self.next_qt_id += 1;
         self.id_to_components.insert(id, key);

@@ -25,7 +25,7 @@
 extern crate criterion;
 
 use criterion::{black_box, criterion_group, criterion_main, Criterion};
-use shared::relation::Relation as Relation2;
+use shared::relation::{Relation as Relation2, UNBOUND};
 use std::collections::HashMap;
 
 const LEFT_ROWS: usize = 20_000;
@@ -88,6 +88,67 @@ fn hash_join_maps(left: &Bindings, right: &Bindings, shared: &[&str]) -> Binding
         }
     }
     out
+}
+
+// ── Control: a struct that genuinely only wraps the map shape ───────────────────
+
+/// `Bindings` behind a struct with accessors, keeping one `HashMap` per row.
+///
+/// This exists to answer "why would wrapping a HashMap in a struct cost anything?"
+/// It should not, and this arm measures that it does not. `Relation` is a different
+/// thing: it does not wrap the per-row map, it removes it, which is where its win
+/// and its conversion cost both come from. Separating the two means neither gets
+/// credited to the other.
+struct WrappedMaps {
+    rows: Bindings,
+}
+
+impl WrappedMaps {
+    fn new(rows: Bindings) -> Self {
+        Self { rows }
+    }
+
+    fn rows(&self) -> &[HashMap<String, u32>] {
+        &self.rows
+    }
+
+    fn len(&self) -> usize {
+        self.rows.len()
+    }
+
+    fn get(&self, row: usize, name: &str) -> Option<u32> {
+        self.rows.get(row)?.get(name).copied()
+    }
+}
+
+/// The same join as `hash_join_maps`, reaching every row through the accessors
+/// above rather than touching the field. Identical work, one indirection added.
+fn hash_join_wrapped(left: &WrappedMaps, right: &WrappedMaps, shared: &[&str]) -> WrappedMaps {
+    let mut index: HashMap<Vec<u32>, Vec<&HashMap<String, u32>>> = HashMap::new();
+    for i in 0..right.len() {
+        let key: Vec<u32> = shared.iter().filter_map(|v| right.get(i, v)).collect();
+        if key.len() == shared.len() {
+            index.entry(key).or_default().push(&right.rows()[i]);
+        }
+    }
+
+    let mut out = Vec::new();
+    for i in 0..left.len() {
+        let key: Vec<u32> = shared.iter().filter_map(|v| left.get(i, v)).collect();
+        if key.len() != shared.len() {
+            continue;
+        }
+        if let Some(matches) = index.get(&key) {
+            for rrow in matches {
+                let mut merged = left.rows()[i].clone();
+                for (k, v) in rrow.iter() {
+                    merged.entry(k.clone()).or_insert(*v);
+                }
+                out.push(merged);
+            }
+        }
+    }
+    WrappedMaps::new(out)
 }
 
 // ── Proposed representation: schema + tuples ────────────────────────────────────
@@ -171,27 +232,45 @@ fn relation_to_maps(r: &Relation) -> Bindings {
     r.rows
         .iter()
         .map(|row| {
-            r.schema
-                .iter()
-                .cloned()
-                .zip(row.iter().copied())
-                .collect::<HashMap<String, u32>>()
+            let mut out = HashMap::with_capacity(r.schema.len());
+            for (name, id) in r.schema.iter().zip(row.iter().copied()) {
+                if id != UNBOUND {
+                    out.insert(name.clone(), id);
+                }
+            }
+            out
         })
         .collect()
 }
 
 /// The map shape to `Relation`, which is what the same engine would do at every
-/// edge that still *supplies* the old shape. The schema is taken from the first row,
-/// so this assumes a uniform shape — which the engine's bindings are, but a general
-/// conversion would have to check.
+/// edge that still *supplies* the old shape.
+///
+/// This mirrors `shared::relation::Relation::from_bindings`, including taking the
+/// schema as the **union** of every row's variables rather than the first row's.
+/// That costs a pass over all rows and a membership test per key, and it is not
+/// optional: solution mappings are partial, so a variable may be bound only in a
+/// later row. An earlier version of this helper read the first row alone, which
+/// measured a conversion the real type cannot perform.
 fn maps_to_relation(b: &Bindings) -> Relation {
-    let schema: Vec<String> = b
-        .first()
-        .map(|r| r.keys().cloned().collect())
-        .unwrap_or_default();
+    let mut schema: Vec<String> = Vec::new();
+    for row in b {
+        let mut names: Vec<&String> = row.keys().collect();
+        names.sort();
+        for name in names {
+            if !schema.iter().any(|v| v == name) {
+                schema.push(name.clone());
+            }
+        }
+    }
     let rows = b
         .iter()
-        .map(|row| schema.iter().map(|v| row[v]).collect::<Vec<u32>>())
+        .map(|row| {
+            schema
+                .iter()
+                .map(|v| row.get(v).copied().unwrap_or(UNBOUND))
+                .collect::<Vec<u32>>()
+        })
         .collect();
     Relation { schema, rows }
 }
@@ -270,6 +349,11 @@ fn bench_join(c: &mut Criterion) {
     );
 
     let mut group = c.benchmark_group("micro_join");
+    group.bench_function("wrapped_maps_through_accessors", |b| {
+        let wl = WrappedMaps::new(lb.clone());
+        let wr = WrappedMaps::new(rb.clone());
+        b.iter(|| black_box(hash_join_wrapped(black_box(&wl), black_box(&wr), &shared).len()))
+    });
     group.bench_function("vec_hashmap_string_keys", |b| {
         b.iter(|| black_box(hash_join_maps(black_box(&lb), black_box(&rb), &shared).len()))
     });

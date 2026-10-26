@@ -293,16 +293,6 @@ impl Streamertail {
         ExecutionEngine::execute_with_dataset(plan, database, dataset)
     }
 
-    /// Executes an optimized plan against a replacement SPARQL dataset, returning id bindings
-    pub fn execute_plan_with_ids_and_dataset(
-        &self,
-        plan: &PhysicalOperator,
-        database: &mut SparqlDatabase,
-        dataset: &DatasetView,
-    ) -> Vec<HashMap<String, u32>> {
-        ExecutionEngine::execute_with_ids_and_dataset(plan, database, dataset)
-    }
-
     /// Optimizes and executes a logical plan in one step
     pub fn optimize_and_execute(
         &mut self,
