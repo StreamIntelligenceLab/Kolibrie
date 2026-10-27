@@ -39,12 +39,18 @@ use std::sync::atomic::{AtomicU64, Ordering as AtomicOrdering};
 ///
 /// Profiling five end-to-end queries over a 20,000 subject fixture put 54.5% of
 /// working time in this path, against 12.8% in the engine's own row handling, which
-/// is why this was converted first.
+/// is why this was converted first. Measured afterwards, `optimizer_hotpath` runs
+/// 1.12x to 1.22x faster on four of those five queries and unchanged on the fifth --
+/// less than that 54.5% suggests, because what remains is irreducible here: every
+/// cell still has to become an owned `String` for [`Solutions`] to hold it. What went
+/// away was the redundant work around that, not the decoding itself.
 struct StringTable {
     /// Normalised variable names, in column order, allocated once for the result.
     variables: Vec<String>,
+    /// Every distinct value, stored once. Cells index this.
+    terms: Vec<String>,
     /// One row per solution, one cell per column. `None` is an unbound variable.
-    rows: Vec<Vec<Option<String>>>,
+    rows: Vec<Vec<Option<u32>>>,
 }
 
 impl StringTable {
@@ -54,6 +60,36 @@ impl StringTable {
     /// what the map shape did and what this type exists to stop.
     fn column(&self, name: &str) -> Option<usize> {
         self.variables.iter().position(|v| v == name)
+    }
+
+    /// The value an interned cell refers to.
+    fn term(&self, cell: Option<u32>) -> Option<&str> {
+        self.terms.get(cell? as usize).map(String::as_str)
+    }
+}
+
+/// Interns computed values, for the aggregates that invent strings no term table has.
+struct TermInterner {
+    terms: Vec<String>,
+    indices: HashMap<String, u32>,
+}
+
+impl TermInterner {
+    fn new() -> Self {
+        Self {
+            terms: Vec::new(),
+            indices: HashMap::new(),
+        }
+    }
+
+    fn intern(&mut self, value: String) -> u32 {
+        if let Some(&index) = self.indices.get(&value) {
+            return index;
+        }
+        let index = self.terms.len() as u32;
+        self.indices.insert(value.clone(), index);
+        self.terms.push(value);
+        index
     }
 }
 
@@ -71,32 +107,39 @@ const DECODE_LOCK_CHUNK: usize = 1024;
 /// two things the engine knew: which variable each column belongs to, and whether a
 /// value is absent because it was unbound.
 ///
-/// # Why the values are owned
+/// # Why the values are interned
 ///
-/// [`Solution::get`] returns `Option<&str>`, so reading a result already borrows.
-/// Whether the rows *behind* it should own their `String`s is a measured trade-off,
-/// and which way it falls depends on how the caller reads the result.
+/// [`Solution::get`] returns `Option<&str>`, so reading a result borrows. The rows
+/// behind it hold indices into a shared term table rather than owning a `String`
+/// each, so a term repeated down a column -- every solution sharing a department, a
+/// type, a graph name -- is held once instead of once per occurrence.
 ///
-/// Interning -- holding each distinct value once, with rows indexing it -- was built
-/// and benchmarked. `optimizer_hotpath` has both arms:
+/// Getting that to pay took three attempts, and the first two lost to simply owning
+/// the strings. The cause was never the hashing: a `u32` hash lookup measured 5.6ns
+/// against 24.4ns to clone a short IRI. It was that interning needs an index assigned
+/// before a cell can be rewritten.
+///
+/// - One **global** map has to exist before anything is rewritten, which forces a
+///   sequential pass over every cell. About 1.1ms here, and it lost outright.
+/// - **Sorting** the ids removes the hashing, but pays an `n log n` sort and a
+///   cache-missing binary search per cell, and lost by more. A chunk's map is small
+///   enough to stay in cache; sorting 60,000 ids to find 50 distinct is not.
+/// - **Per chunk**, which is what this does: each chunk interns into its own table
+///   under one dictionary lock, a prefix sum over the per-chunk counts gives each
+///   chunk its offset, and one parallel integer add per cell makes the indices
+///   global. Nothing runs sequentially over cells. A term shared by two chunks is
+///   held twice, trading a little memory to keep every step parallel.
+///
+/// Measured against owning, on `optimizer_hotpath`:
 ///
 /// | read through | owned | interned |
 /// |---|---|---|
-/// | [`into_rows`](Self::into_rows) | **9.53ms** | 10.65ms |
-/// | [`iter`](Self::iter) and [`Solution::get`] | 10.09ms | **9.11ms** |
+/// | [`iter`](Self::iter) and [`Solution::get`] | 10.15ms | **8.26ms** |
+/// | [`into_rows`](Self::into_rows) | 9.83ms | **9.50ms** |
 ///
-/// So interning is about 1.11x faster for a caller that borrows, and about 1.12x
-/// slower for one that materialises, because `into_rows` allocates a `String` per
-/// cell whatever the result holds and so pays interning's indirection for nothing.
-/// Every consumer in this workspace materialises -- the CLI, the Python bindings, the
-/// HTTP server, the examples, and this crate's own doc example -- so owning is the
-/// right default today. Revisit it when something reads results through `iter`.
-///
-/// Note the reason is *not* that hashing costs more than copying: a `u32` hash
-/// lookup measured 5.6ns against 24.4ns to clone a short IRI. An earlier version of
-/// this note claimed otherwise. The interned build pays a sequential pass over every
-/// cell to assign indices, and that pass cannot join the parallel chunked decode
-/// around it.
+/// So 1.23x for a caller that borrows and 1.03x for one that materialises, measured
+/// on a join whose columns are nearly all distinct, which is the shape least
+/// favourable to interning. The gain is larger where values repeat.
 ///
 /// Borrowing from the dictionary instead was not built: the result would hold a read
 /// guard for its whole lifetime, blocking every writer, and since the database is
@@ -108,10 +151,61 @@ const DECODE_LOCK_CHUNK: usize = 1024;
 /// distinguishes that from a variable bound to the empty string, and
 /// `Vec<Vec<String>>` cannot: it renders both as `""`. [`From<Solutions>`] keeps that
 /// old flattening for callers that want the previous shape.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[derive(Clone, Default)]
 pub struct Solutions {
     variables: Vec<String>,
-    rows: Vec<Vec<Option<String>>>,
+    /// Every distinct value in the result, stored once.
+    ///
+    /// A result row used to own a `String` per cell, so a term repeated down a
+    /// column — every solution sharing a department, a type, a graph name — was
+    /// allocated and copied once per occurrence. Cells index this instead, which is
+    /// why [`Solution::get`] can hand back a borrow without the result holding a
+    /// dictionary lock open.
+    terms: Vec<String>,
+    /// One row per solution; a cell indexes [`Self::terms`], or is `None` when the
+    /// solution did not bind that variable.
+    rows: Vec<Vec<Option<u32>>>,
+}
+
+impl Solutions {
+    /// The value an interned cell refers to.
+    fn term(&self, cell: Option<u32>) -> Option<&str> {
+        self.terms.get(cell? as usize).map(String::as_str)
+    }
+}
+
+/// Compared by what the solutions say, not by how they are interned.
+///
+/// Two equal results can hold different term tables — a different build order, or a
+/// value interned that projection later dropped — so comparing the fields directly
+/// would report inequality for results a caller cannot tell apart.
+impl PartialEq for Solutions {
+    fn eq(&self, other: &Self) -> bool {
+        self.variables == other.variables
+            && self.rows.len() == other.rows.len()
+            && self
+                .iter()
+                .zip(other.iter())
+                .all(|(left, right)| left.values().eq(right.values()))
+    }
+}
+
+impl Eq for Solutions {}
+
+/// Prints the values, not the indices behind them.
+impl std::fmt::Debug for Solutions {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Solutions")
+            .field("variables", &self.variables)
+            .field(
+                "rows",
+                &self
+                    .iter()
+                    .map(|solution| solution.values().collect::<Vec<_>>())
+                    .collect::<Vec<_>>(),
+            )
+            .finish()
+    }
 }
 
 impl Solutions {
@@ -158,6 +252,7 @@ impl Solutions {
     pub fn iter(&self) -> impl Iterator<Item = Solution<'_>> {
         self.rows.iter().map(|values| Solution {
             variables: &self.variables,
+            terms: &self.terms,
             values,
         })
     }
@@ -176,10 +271,19 @@ impl From<Solutions> for Vec<Vec<String>> {
     /// The shape the older entry points return. Renders an unbound value as `""`,
     /// which is why it is lossy and why [`Solutions`] exists.
     fn from(solutions: Solutions) -> Self {
+        // Sequential on purpose. Interning moved a cost here -- owning a `String`
+        // per cell let this move them out, sharing them means a copy per cell -- but
+        // collecting nested `Vec`s in parallel measured worse than doing it on one
+        // thread, at 5.38ms against 5.14ms on `low_cardinality_projection`, so the
+        // allocator contention costs more than the parallelism buys.
         solutions
             .rows
-            .into_iter()
-            .map(|row| row.into_iter().map(Option::unwrap_or_default).collect())
+            .iter()
+            .map(|row| {
+                row.iter()
+                    .map(|cell| solutions.term(*cell).unwrap_or_default().to_string())
+                    .collect()
+            })
             .collect()
     }
 }
@@ -188,7 +292,8 @@ impl From<Solutions> for Vec<Vec<String>> {
 #[derive(Debug, Clone, Copy)]
 pub struct Solution<'a> {
     variables: &'a [String],
-    values: &'a [Option<String>],
+    terms: &'a [String],
+    values: &'a [Option<u32>],
 }
 
 impl<'a> Solution<'a> {
@@ -199,12 +304,24 @@ impl<'a> Solution<'a> {
     pub fn get(&self, variable: &str) -> Option<&'a str> {
         let name = normalize_variable(variable);
         let column = self.variables.iter().position(|v| v == name)?;
-        self.values.get(column)?.as_deref()
+        self.term(*self.values.get(column)?)
     }
 
     /// The values in column order, matching [`Solutions::variables`].
-    pub fn values(&self) -> &'a [Option<String>] {
+    ///
+    /// Borrowed, and `None` for an unbound variable. This returned
+    /// `&[Option<String>]` before the values were interned; a caller that needs that
+    /// shape can `.map(|value| value.map(str::to_string)).collect()`.
+    pub fn values(&self) -> impl Iterator<Item = Option<&'a str>> + 'a {
+        let terms = self.terms;
         self.values
+            .iter()
+            .map(move |cell| cell.and_then(|cell| terms.get(cell as usize).map(String::as_str)))
+    }
+
+    /// The value an interned cell refers to.
+    fn term(&self, cell: Option<u32>) -> Option<&'a str> {
+        self.terms.get(cell? as usize).map(String::as_str)
     }
 }
 
@@ -568,17 +685,23 @@ fn execute_approved_prediction(
     // clause binds it to. Everything before it keeps the input query's own names.
     let mut variables = predict_input_columns(predict);
     variables.push(normalize_variable(predict.output).to_string());
+    let mut interner = TermInterner::new();
+    let rows = rows
+        .into_iter()
+        .zip(predictions)
+        .map(|(row, prediction)| {
+            let mut values: Vec<Option<u32>> = row
+                .into_iter()
+                .map(|value| Some(interner.intern(value)))
+                .collect();
+            values.push(Some(interner.intern(prediction)));
+            values
+        })
+        .collect();
     Ok(Solutions {
         variables,
-        rows: rows
-            .into_iter()
-            .zip(predictions)
-            .map(|(row, prediction)| {
-                let mut values: Vec<Option<String>> = row.into_iter().map(Some).collect();
-                values.push(Some(prediction));
-                values
-            })
-            .collect(),
+        terms: interner.terms,
+        rows,
     })
 }
 
@@ -712,10 +835,9 @@ fn decode_bindings(bindings: Bindings, database: &SparqlDatabase) -> StringTable
         }
     }
 
-    // Lay the ids out per row first, so decoding is one pass over a fixed width and
-    // the variable names are never touched again.
+    // Lay the ids out per row first, so the variable names are never touched again.
     let width = variables.len();
-    let id_rows: Vec<Vec<Option<u32>>> = bindings
+    let mut rows: Vec<Vec<Option<u32>>> = bindings
         .into_iter()
         .map(|row| {
             let mut cells = vec![None; width];
@@ -728,41 +850,75 @@ fn decode_bindings(bindings: Bindings, database: &SparqlDatabase) -> StringTable
         })
         .collect();
 
-    let rows = id_rows
-        .into_par_iter()
-        .chunks(DECODE_LOCK_CHUNK)
-        .flat_map_iter(|chunk| {
-            // One lock acquisition per chunk rather than per cell, and one decode per
-            // distinct id rather than per occurrence -- a result that repeats a term
-            // across rows, which is the normal case for a joined column, decodes it once.
+    // Interned per chunk, then stitched, so no step runs sequentially over cells.
+    //
+    // A single global id-to-index map is the obvious way to intern, and it was the
+    // slow way: the map has to exist before any cell can be rewritten, which forces
+    // a sequential pass over every cell. Measured at about 1.1ms here, enough to lose
+    // to simply owning the strings. Sorting the ids instead removes the hashing but
+    // pays an n log n sort and a cache-missing binary search per cell, which measured
+    // worse again -- a chunk's map is small enough to stay in cache, and a hash
+    // lookup beat a clone 5.6ns to 24.4ns.
+    //
+    // So each chunk interns into its own table, under one dictionary lock, exactly
+    // where the owned path cloned. A chunk's indices are local, a prefix sum over the
+    // per-chunk counts gives each chunk's offset, and a parallel pass of one integer
+    // add per cell makes them global. A term shared by two chunks is held twice,
+    // which costs a little memory to keep the whole thing parallel.
+    let chunk_terms: Vec<Vec<String>> = rows
+        .par_chunks_mut(DECODE_LOCK_CHUNK)
+        .map(|chunk| {
             let dictionary = database.dictionary.read().unwrap();
             let quoted = database.quoted_triple_store.read().unwrap();
-            let mut decoded_ids: HashMap<u32, Option<String>> = HashMap::new();
-            let decoded: Vec<Vec<Option<String>>> = chunk
-                .into_iter()
-                .map(|cells| {
-                    cells
-                        .into_iter()
-                        .map(|cell| {
-                            // A bound id that will not decode stays `Some("")`, which is
-                            // what unwrap_or_default gave before. Only an absent variable
-                            // is `None`, and Solutions documents that difference.
-                            cell.map(|id| {
-                                decoded_ids
-                                    .entry(id)
-                                    .or_insert_with(|| dictionary.decode_term(id, &quoted))
-                                    .clone()
-                                    .unwrap_or_default()
-                            })
-                        })
-                        .collect()
-                })
-                .collect();
-            decoded.into_iter()
+            let mut local: HashMap<u32, u32> = HashMap::new();
+            let mut terms: Vec<String> = Vec::new();
+            for row in chunk.iter_mut() {
+                for cell in row.iter_mut() {
+                    if let Some(id) = *cell {
+                        let index = *local.entry(id).or_insert_with(|| {
+                            // A bound id that will not decode becomes "", which is
+                            // what unwrap_or_default gave before. Only an absent
+                            // variable is `None`, and Solutions documents that.
+                            terms.push(dictionary.decode_term(id, &quoted).unwrap_or_default());
+                            (terms.len() - 1) as u32
+                        });
+                        *cell = Some(index);
+                    }
+                }
+            }
+            terms
         })
         .collect();
 
-    StringTable { variables, rows }
+    let mut offsets: Vec<u32> = Vec::with_capacity(chunk_terms.len());
+    let mut total = 0u32;
+    for terms in &chunk_terms {
+        offsets.push(total);
+        total += terms.len() as u32;
+    }
+
+    rows.par_chunks_mut(DECODE_LOCK_CHUNK)
+        .zip(offsets.par_iter())
+        .for_each(|(chunk, &offset)| {
+            if offset == 0 {
+                return;
+            }
+            for row in chunk.iter_mut() {
+                for cell in row.iter_mut() {
+                    if let Some(index) = cell.as_mut() {
+                        *index += offset;
+                    }
+                }
+            }
+        });
+
+    let terms: Vec<String> = chunk_terms.into_iter().flatten().collect();
+
+    StringTable {
+        variables,
+        terms,
+        rows,
+    }
 }
 
 fn finalize_select(mut table: StringTable, query: &SelectQuery<'_>) -> Solutions {
@@ -787,9 +943,11 @@ fn finalize_select(mut table: StringTable, query: &SelectQuery<'_>) -> Solutions
     if query.distinct {
         let mut seen = HashSet::new();
         table.rows.retain(|row| {
-            let key: Vec<Option<String>> = projected
+            // Copied, not cloned: an interned cell is a `u32`, where this used to
+            // clone a String per projected column for every row in the result.
+            let key: Vec<Option<u32>> = projected
                 .iter()
-                .map(|column| column.and_then(|index| row[index].clone()))
+                .map(|column| column.and_then(|index| row[index]))
                 .collect();
             seen.insert(key)
         });
@@ -817,7 +975,7 @@ fn finalize_select(mut table: StringTable, query: &SelectQuery<'_>) -> Solutions
             .map(|row| {
                 projected
                     .iter()
-                    .map(|column| column.and_then(|index| row[index].clone()))
+                    .map(|column| column.and_then(|index| row[index]))
                     .collect()
             })
             .collect()
@@ -828,6 +986,10 @@ fn finalize_select(mut table: StringTable, query: &SelectQuery<'_>) -> Solutions
             .iter()
             .map(|column| normalize_variable(column).to_string())
             .collect(),
+        // Carried over whole. Projection can drop a column and so leave a term here
+        // that no cell refers to, which costs a little memory and nothing else;
+        // rebuilding the table to avoid that would cost a pass over every cell.
+        terms: table.terms,
         rows,
     }
 }
@@ -958,11 +1120,13 @@ fn aggregate_rows(table: StringTable, query: &SelectQuery<'_>) -> StringTable {
         .map(|variable| table.column(normalize_variable(variable)))
         .collect();
 
-    let mut groups: BTreeMap<Vec<Option<String>>, Vec<usize>> = BTreeMap::new();
+    // Grouping on interned cells rather than cloned strings. The cells come from one
+    // term table, so equal cells are equal values; the key is a row of `u32`.
+    let mut groups: BTreeMap<Vec<Option<u32>>, Vec<usize>> = BTreeMap::new();
     for (index, row) in table.rows.iter().enumerate() {
-        let key: Vec<Option<String>> = group_columns
+        let key: Vec<Option<u32>> = group_columns
             .iter()
-            .map(|column| column.and_then(|column| row[column].clone()))
+            .map(|column| column.and_then(|column| row[column]))
             .collect();
         groups.entry(key).or_default().push(index);
     }
@@ -994,13 +1158,18 @@ fn aggregate_rows(table: StringTable, query: &SelectQuery<'_>) -> StringTable {
         aggregates.push((column, kind, normalize_variable(variable)));
     }
 
+    // A fresh term table: an aggregated result is one row per group, so almost
+    // nothing the input interned survives into it.
+    let mut interner = TermInterner::new();
     let width = variables.len();
-    let rows = groups
+    let rows: Vec<Vec<Option<u32>>> = groups
         .into_iter()
         .map(|(key, members)| {
             let mut row = vec![None; width];
             for (column, value) in key.into_iter().enumerate() {
-                row[column] = value;
+                row[column] = table
+                    .term(value)
+                    .map(|value| interner.intern(value.to_string()));
             }
 
             for &(column, kind, input) in &aggregates {
@@ -1010,33 +1179,39 @@ fn aggregate_rows(table: StringTable, query: &SelectQuery<'_>) -> StringTable {
                     // COUNT(*) counts solutions, and COUNT(DISTINCT *) counts the
                     // distinct ones over every decoded column, which is what
                     // deduplicating whole maps did.
-                    row[column] = Some(if descriptor.distinct {
-                        let unique: BTreeSet<&Vec<Option<String>>> =
+                    let count = if descriptor.distinct {
+                        let unique: BTreeSet<&Vec<Option<u32>>> =
                             members.iter().map(|&member| &table.rows[member]).collect();
                         unique.len().to_string()
                     } else {
                         members.len().to_string()
-                    });
+                    };
+                    row[column] = Some(interner.intern(count));
                     continue;
                 }
                 // `None` where the aggregate has no value, matching the removal the
                 // map shape did, so the column reads as unbound rather than empty.
-                row[column] = match table.column(input) {
+                let value = match table.column(input) {
                     Some(input) => {
                         let values: Vec<&str> = members
                             .iter()
-                            .filter_map(|&member| table.rows[member][input].as_deref())
+                            .filter_map(|&member| table.term(table.rows[member][input]))
                             .collect();
                         crate::aggregate::value(kind, &values)
                     }
                     None => crate::aggregate::value(kind, &[]),
                 };
+                row[column] = value.map(|value| interner.intern(value));
             }
             row
         })
         .collect();
 
-    StringTable { variables, rows }
+    StringTable {
+        variables,
+        terms: interner.terms,
+        rows,
+    }
 }
 
 fn apply_order_by(table: &mut StringTable, conditions: &[OrderCondition<'_>]) {
@@ -1056,13 +1231,15 @@ fn apply_order_by(table: &mut StringTable, conditions: &[OrderCondition<'_>]) {
         })
         .collect();
 
-    table.rows.sort_by(|left, right| {
+    // Taken out so the comparator can borrow the term table while the rows are
+    // sorted in place.
+    let mut rows = std::mem::take(&mut table.rows);
+    let terms = &table.terms;
+    let term = |cell: Option<u32>| cell.and_then(|cell| terms.get(cell as usize).map(String::as_str));
+    rows.sort_by(|left, right| {
         for (column, direction) in &keys {
             let Some(column) = *column else { continue };
-            let comparison = term_order::compare(
-                left[column].as_deref(),
-                right[column].as_deref(),
-            );
+            let comparison = term_order::compare(term(left[column]), term(right[column]));
             let comparison = match direction {
                 SortDirection::Asc => comparison,
                 SortDirection::Desc => comparison.reverse(),
@@ -1073,6 +1250,7 @@ fn apply_order_by(table: &mut StringTable, conditions: &[OrderCondition<'_>]) {
         }
         std::cmp::Ordering::Equal
     });
+    table.rows = rows;
 }
 
 fn collect_triple_patterns<'a>(
