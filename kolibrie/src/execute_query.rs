@@ -18,6 +18,7 @@ use crate::streamertail_optimizer::{
     Streamertail,
 };
 use crate::term_order;
+use rayon::prelude::*;
 use shared::dataset_index::{GraphId, GraphTerm, Quad};
 use shared::query::{
     CombinedQuery, DeleteClause, GroupGraphPattern, InsertClause, LexicalQuadPattern,
@@ -28,13 +29,78 @@ use shared::terms::{Bindings, Term};
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::sync::atomic::{AtomicU64, Ordering as AtomicOrdering};
 
-type StringBinding = HashMap<String, String>;
+/// Rows the decoder hands to projection: a schema once, and values per row.
+///
+/// This used to be `Vec<HashMap<String, String>>`, one map per solution. That shape
+/// existed only to be taken apart again one step later, because [`Solutions`] is
+/// already a schema and rows -- so every result cell paid for a variable name it
+/// shared with every other row, a hash to store it, and a second hash and a second
+/// copy to read it back out.
+///
+/// Profiling five end-to-end queries over a 20,000 subject fixture put 54.5% of
+/// working time in this path, against 12.8% in the engine's own row handling, which
+/// is why this was converted first.
+struct StringTable {
+    /// Normalised variable names, in column order, allocated once for the result.
+    variables: Vec<String>,
+    /// One row per solution, one cell per column. `None` is an unbound variable.
+    rows: Vec<Vec<Option<String>>>,
+}
+
+impl StringTable {
+    /// The column index of an already-normalised variable name.
+    ///
+    /// Resolve once per result and index rows with it. Looking a name up per row is
+    /// what the map shape did and what this type exists to stop.
+    fn column(&self, name: &str) -> Option<usize> {
+        self.variables.iter().position(|v| v == name)
+    }
+}
+
+/// Rows decoded per dictionary lock acquisition.
+///
+/// The decode used to call `SparqlDatabase::decode_any` per cell, and that takes the
+/// dictionary read lock per call -- 60,000 acquisitions for a 20,000 row, three
+/// column result, all sequential. Mirrors `FILTER_LOCK_CHUNK` in the execution
+/// engine, which already decoded this way.
+const DECODE_LOCK_CHUNK: usize = 1024;
 
 /// The rows a request answered with, and the variables they are rows of.
 ///
 /// Replaces the bare `Vec<Vec<String>>` the older entry points return, which loses
 /// two things the engine knew: which variable each column belongs to, and whether a
 /// value is absent because it was unbound.
+///
+/// # Why the values are owned
+///
+/// [`Solution::get`] returns `Option<&str>`, so reading a result already borrows.
+/// Whether the rows *behind* it should own their `String`s is a measured trade-off,
+/// and which way it falls depends on how the caller reads the result.
+///
+/// Interning -- holding each distinct value once, with rows indexing it -- was built
+/// and benchmarked. `optimizer_hotpath` has both arms:
+///
+/// | read through | owned | interned |
+/// |---|---|---|
+/// | [`into_rows`](Self::into_rows) | **9.53ms** | 10.65ms |
+/// | [`iter`](Self::iter) and [`Solution::get`] | 10.09ms | **9.11ms** |
+///
+/// So interning is about 1.11x faster for a caller that borrows, and about 1.12x
+/// slower for one that materialises, because `into_rows` allocates a `String` per
+/// cell whatever the result holds and so pays interning's indirection for nothing.
+/// Every consumer in this workspace materialises -- the CLI, the Python bindings, the
+/// HTTP server, the examples, and this crate's own doc example -- so owning is the
+/// right default today. Revisit it when something reads results through `iter`.
+///
+/// Note the reason is *not* that hashing costs more than copying: a `u32` hash
+/// lookup measured 5.6ns against 24.4ns to clone a short IRI. An earlier version of
+/// this note claimed otherwise. The interned build pays a sequential pass over every
+/// cell to assign indices, and that pass cannot join the parallel chunked decode
+/// around it.
+///
+/// Borrowing from the dictionary instead was not built: the result would hold a read
+/// guard for its whole lifetime, blocking every writer, and since the database is
+/// taken by `&mut` a caller could not touch it at all while results were alive.
 ///
 /// # Unbound is not empty
 ///
@@ -631,68 +697,138 @@ fn compile_dataset_graph(
     }
 }
 
-fn decode_bindings(bindings: Bindings, database: &SparqlDatabase) -> Vec<StringBinding> {
-    bindings
+fn decode_bindings(bindings: Bindings, database: &SparqlDatabase) -> StringTable {
+    // The schema is the union of every row's variables, not the first row's:
+    // solution mappings are partial, so a variable may be bound only in a later row.
+    let mut variables: Vec<String> = Vec::new();
+    for row in &bindings {
+        let mut names: Vec<&str> = row.keys().map(|key| normalize_variable(key)).collect();
+        // Sorted so the column order does not depend on HashMap iteration order.
+        names.sort_unstable();
+        for name in names {
+            if !variables.iter().any(|v| v == name) {
+                variables.push(name.to_string());
+            }
+        }
+    }
+
+    // Lay the ids out per row first, so decoding is one pass over a fixed width and
+    // the variable names are never touched again.
+    let width = variables.len();
+    let id_rows: Vec<Vec<Option<u32>>> = bindings
         .into_iter()
-        .map(|binding| {
-            binding
-                .into_iter()
-                .map(|(variable, id)| {
-                    (
-                        normalize_variable(&variable).to_string(),
-                        database.decode_any(id).unwrap_or_default(),
-                    )
-                })
-                .collect()
+        .map(|row| {
+            let mut cells = vec![None; width];
+            for (name, id) in row {
+                if let Some(index) = variables.iter().position(|v| v == normalize_variable(&name)) {
+                    cells[index] = Some(id);
+                }
+            }
+            cells
         })
-        .collect()
+        .collect();
+
+    let rows = id_rows
+        .into_par_iter()
+        .chunks(DECODE_LOCK_CHUNK)
+        .flat_map_iter(|chunk| {
+            // One lock acquisition per chunk rather than per cell, and one decode per
+            // distinct id rather than per occurrence -- a result that repeats a term
+            // across rows, which is the normal case for a joined column, decodes it once.
+            let dictionary = database.dictionary.read().unwrap();
+            let quoted = database.quoted_triple_store.read().unwrap();
+            let mut decoded_ids: HashMap<u32, Option<String>> = HashMap::new();
+            let decoded: Vec<Vec<Option<String>>> = chunk
+                .into_iter()
+                .map(|cells| {
+                    cells
+                        .into_iter()
+                        .map(|cell| {
+                            // A bound id that will not decode stays `Some("")`, which is
+                            // what unwrap_or_default gave before. Only an absent variable
+                            // is `None`, and Solutions documents that difference.
+                            cell.map(|id| {
+                                decoded_ids
+                                    .entry(id)
+                                    .or_insert_with(|| dictionary.decode_term(id, &quoted))
+                                    .clone()
+                                    .unwrap_or_default()
+                            })
+                        })
+                        .collect()
+                })
+                .collect();
+            decoded.into_iter()
+        })
+        .collect();
+
+    StringTable { variables, rows }
 }
 
-fn finalize_select(mut rows: Vec<StringBinding>, query: &SelectQuery<'_>) -> Solutions {
+fn finalize_select(mut table: StringTable, query: &SelectQuery<'_>) -> Solutions {
     let columns = projection_columns(query);
     if query
         .variables
         .iter()
         .any(|(kind, _, _)| *kind != "VAR" && *kind != "*")
     {
-        rows = aggregate_rows(rows, query);
+        table = aggregate_rows(table, query);
     }
 
-    apply_order_by(&mut rows, &query.order_conditions);
+    apply_order_by(&mut table, &query.order_conditions);
+
+    // Every projected column resolved to an index once for the whole result. `None`
+    // is a column the solutions never bound, which stays unbound in every row.
+    let projected: Vec<Option<usize>> = columns
+        .iter()
+        .map(|column| table.column(normalize_variable(column)))
+        .collect();
 
     if query.distinct {
         let mut seen = HashSet::new();
-        rows.retain(|row| {
-            let key = columns
+        table.rows.retain(|row| {
+            let key: Vec<Option<String>> = projected
                 .iter()
-                .map(|column| row.get(normalize_variable(column)).cloned())
-                .collect::<Vec<_>>();
+                .map(|column| column.and_then(|index| row[index].clone()))
+                .collect();
             seen.insert(key)
         });
     }
 
     if let Some(limit) = query.limit {
-        rows.truncate(limit);
+        table.rows.truncate(limit);
     }
 
-    // `None` where the binding has no entry for the column: that is an unbound
-    // variable, which used to be flattened to `""` here and so became
-    // indistinguishable from a variable bound to the empty string.
-    let values = rows
-        .into_iter()
-        .map(|row| {
-            columns
-                .iter()
-                .map(|column| row.get(normalize_variable(column)).cloned())
-                .collect()
-        })
-        .collect();
+    // `None` where the solution did not bind the column: an unbound variable, which
+    // SPARQL distinguishes from one bound to the empty string.
+    let identity = projected.len() == table.variables.len()
+        && projected
+            .iter()
+            .enumerate()
+            .all(|(position, column)| *column == Some(position));
+    let rows = if identity {
+        // Projecting every column in its own order, so the rows move as they are
+        // rather than being rebuilt a cell at a time.
+        table.rows
+    } else {
+        table
+            .rows
+            .iter()
+            .map(|row| {
+                projected
+                    .iter()
+                    .map(|column| column.and_then(|index| row[index].clone()))
+                    .collect()
+            })
+            .collect()
+    };
+
     Solutions {
         variables: columns
             .iter()
             .map(|column| normalize_variable(column).to_string())
             .collect(),
-        rows: values,
+        rows,
     }
 }
 
@@ -814,71 +950,120 @@ fn push_variable(variables: &mut Vec<String>, variable: &str) {
     }
 }
 
-fn aggregate_rows(rows: Vec<StringBinding>, query: &SelectQuery<'_>) -> Vec<StringBinding> {
-    let mut groups: BTreeMap<Vec<Option<String>>, Vec<StringBinding>> = BTreeMap::new();
-    for row in rows {
-        let key = query
-            .group_vars
+fn aggregate_rows(table: StringTable, query: &SelectQuery<'_>) -> StringTable {
+    // Grouping columns resolved once, then every row keyed by index.
+    let group_columns: Vec<Option<usize>> = query
+        .group_vars
+        .iter()
+        .map(|variable| table.column(normalize_variable(variable)))
+        .collect();
+
+    let mut groups: BTreeMap<Vec<Option<String>>, Vec<usize>> = BTreeMap::new();
+    for (index, row) in table.rows.iter().enumerate() {
+        let key: Vec<Option<String>> = group_columns
             .iter()
-            .map(|variable| row.get(normalize_variable(variable)).cloned())
+            .map(|column| column.and_then(|column| row[column].clone()))
             .collect();
-        groups.entry(key).or_default().push(row);
+        groups.entry(key).or_default().push(index);
     }
     if groups.is_empty() && query.group_vars.is_empty() {
         groups.insert(Vec::new(), Vec::new());
     }
 
-    groups
+    // The output schema is the grouping variables, then one column per aggregate.
+    // An aggregate aliased onto a grouping variable reuses its column, which is what
+    // inserting into one map per row did.
+    let mut variables: Vec<String> = query
+        .group_vars
+        .iter()
+        .map(|variable| normalize_variable(variable).to_string())
+        .collect();
+    let mut aggregates: Vec<(usize, &str, &str)> = Vec::new();
+    for (kind, variable, alias) in &query.variables {
+        if *kind == "VAR" || *kind == "*" {
+            continue;
+        }
+        let output = normalize_variable(alias.unwrap_or(variable)).to_string();
+        let column = match variables.iter().position(|v| *v == output) {
+            Some(column) => column,
+            None => {
+                variables.push(output);
+                variables.len() - 1
+            }
+        };
+        aggregates.push((column, kind, normalize_variable(variable)));
+    }
+
+    let width = variables.len();
+    let rows = groups
         .into_iter()
-        .map(|(key, group)| {
-            // A grouped solution is described by its grouping key and its aggregates only
-            let mut result = StringBinding::new();
-            for (variable, value) in query.group_vars.iter().zip(key) {
-                if let Some(value) = value {
-                    result.insert(normalize_variable(variable).to_string(), value);
-                }
+        .map(|(key, members)| {
+            let mut row = vec![None; width];
+            for (column, value) in key.into_iter().enumerate() {
+                row[column] = value;
             }
 
-            for (kind, variable, alias) in &query.variables {
-                if *kind == "VAR" || *kind == "*" {
-                    continue;
-                }
-                let output = normalize_variable(alias.unwrap_or(variable)).to_string();
-                let input = normalize_variable(variable);
+            for &(column, kind, input) in &aggregates {
                 let normalized_kind = kind.to_ascii_uppercase();
                 let descriptor = crate::aggregate::Aggregate::parse(&normalized_kind);
                 if descriptor.kind == "COUNT" && input == "*" {
-                    result.insert(output, descriptor.star_count(&group));
+                    // COUNT(*) counts solutions, and COUNT(DISTINCT *) counts the
+                    // distinct ones over every decoded column, which is what
+                    // deduplicating whole maps did.
+                    row[column] = Some(if descriptor.distinct {
+                        let unique: BTreeSet<&Vec<Option<String>>> =
+                            members.iter().map(|&member| &table.rows[member]).collect();
+                        unique.len().to_string()
+                    } else {
+                        members.len().to_string()
+                    });
                     continue;
                 }
-                let values = group
-                    .iter()
-                    .filter_map(|row| row.get(input).map(String::as_str))
-                    .collect::<Vec<_>>();
-                if let Some(value) = crate::aggregate::value(kind, &values) {
-                    result.insert(output, value);
-                } else {
-                    result.remove(&output);
-                }
+                // `None` where the aggregate has no value, matching the removal the
+                // map shape did, so the column reads as unbound rather than empty.
+                row[column] = match table.column(input) {
+                    Some(input) => {
+                        let values: Vec<&str> = members
+                            .iter()
+                            .filter_map(|&member| table.rows[member][input].as_deref())
+                            .collect();
+                        crate::aggregate::value(kind, &values)
+                    }
+                    None => crate::aggregate::value(kind, &[]),
+                };
             }
-            result
+            row
         })
-        .collect()
+        .collect();
+
+    StringTable { variables, rows }
 }
 
-fn apply_order_by(rows: &mut [StringBinding], conditions: &[OrderCondition<'_>]) {
+fn apply_order_by(table: &mut StringTable, conditions: &[OrderCondition<'_>]) {
     if conditions.is_empty() {
         return;
     }
 
-    rows.sort_by(|left, right| {
-        for condition in conditions {
-            let variable = normalize_variable(condition.variable);
+    // Resolved once for the sort, not per comparison: a sort does O(n log n)
+    // comparisons, so a name lookup inside the comparator is paid that many times.
+    let keys: Vec<(Option<usize>, SortDirection)> = conditions
+        .iter()
+        .map(|condition| {
+            (
+                table.column(normalize_variable(condition.variable)),
+                condition.direction.clone(),
+            )
+        })
+        .collect();
+
+    table.rows.sort_by(|left, right| {
+        for (column, direction) in &keys {
+            let Some(column) = *column else { continue };
             let comparison = term_order::compare(
-                left.get(variable).map(String::as_str),
-                right.get(variable).map(String::as_str),
+                left[column].as_deref(),
+                right[column].as_deref(),
             );
-            let comparison = match condition.direction {
+            let comparison = match direction {
                 SortDirection::Asc => comparison,
                 SortDirection::Desc => comparison.reverse(),
             };

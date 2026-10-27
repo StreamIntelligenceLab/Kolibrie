@@ -95,6 +95,17 @@ WHERE {
     ?s <http://example.org/dept> ?d
 }"#;
 
+/// A projection whose values repeat: 20,000 solutions over 50 distinct departments.
+///
+/// The counterpart to `join_two_patterns`, whose columns are a distinct IRI and a
+/// near-distinct literal per row. Grouping columns, rdf:type and graph names all have
+/// this shape, and it is the case where storing each value once can pay.
+const LOW_CARDINALITY_PROJECTION: &str = r#"
+SELECT ?d
+WHERE {
+    ?s <http://example.org/dept> ?d
+}"#;
+
 fn hot_paths(c: &mut Criterion) {
     let mut database = setup_database();
 
@@ -107,6 +118,7 @@ fn hot_paths(c: &mut Criterion) {
         ("union_branches", UNION_BRANCHES),
         ("filter_numeric", FILTER_NUMERIC),
         ("join_two_patterns", JOIN_TWO_PATTERNS),
+        ("low_cardinality_projection", LOW_CARDINALITY_PROJECTION),
     ] {
         group.bench_function(name, |b| {
             b.iter(|| {
@@ -114,6 +126,35 @@ fn hot_paths(c: &mut Criterion) {
                     .expect("query should run")
                     .into_rows();
                 black_box(results.len())
+            })
+        });
+    }
+
+    // The same queries read through the borrowing API instead of `into_rows`.
+    //
+    // `into_rows` materialises an owned String per cell whatever the result holds
+    // internally, so it cannot show a difference between owning the values and
+    // referring to them. `iter` and `get` return `&str`, so these arms are the ones
+    // a representation change can move.
+    for (name, sparql) in [
+        ("borrowed_read/join_two_patterns", JOIN_TWO_PATTERNS),
+        (
+            "borrowed_read/low_cardinality_projection",
+            LOW_CARDINALITY_PROJECTION,
+        ),
+    ] {
+        group.bench_function(name, |b| {
+            b.iter(|| {
+                let solutions = execute(sparql, &mut database).expect("query should run");
+                let mut bytes = 0usize;
+                for solution in solutions.iter() {
+                    for variable in solutions.variables() {
+                        if let Some(value) = solution.get(variable) {
+                            bytes += value.len();
+                        }
+                    }
+                }
+                black_box(bytes)
             })
         });
     }
