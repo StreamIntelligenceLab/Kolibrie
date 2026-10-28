@@ -1098,7 +1098,7 @@ mod tests {
     fn buffer_cardinality_reflects_its_content() {
         let stats = join_stats();
         let estimator = CostEstimator::new(&stats);
-        let content: Bindings = vec![HashMap::new(), HashMap::new(), HashMap::new()];
+        let content: Bindings = vec![HashMap::new(), HashMap::new(), HashMap::new()].into();
         let buffer = PhysicalOperator::buffer(content, "test".to_string());
 
         // A buffer reporting zero rows makes every join above it estimate an empty result

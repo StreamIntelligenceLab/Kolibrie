@@ -318,7 +318,7 @@ fn hash_join_real(left: &Relation2, right: &Relation2, shared: &[&str]) -> Relat
 }
 
 fn make_real(rows: usize, vars: &[&str], key_var: &str) -> Relation2 {
-    Relation2::from_bindings(&make_bindings(rows, vars, key_var))
+    Relation2::from_bindings(&make_bindings(rows, vars, key_var).into())
 }
 
 fn bench_join(c: &mut Criterion) {

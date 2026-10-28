@@ -365,7 +365,7 @@ mod tests {
     fn a_row_binding_nothing_is_the_unit_solution_mapping() {
         // One row, no variables: what a query with no projected variables matches,
         // and what the engine spells `vec![HashMap::new()]`. It is not "no rows".
-        let original: Bindings = vec![HashMap::new()];
+        let original = Bindings::unit();
         let relation = Relation::from_bindings(&original);
 
         assert_eq!(relation.len(), 1, "one row");

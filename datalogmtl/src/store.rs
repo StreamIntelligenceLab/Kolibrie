@@ -27,7 +27,7 @@
 
 use shared::dataset_index::DatasetIndex;
 use shared::pattern::matches_rule_pattern;
-use shared::terms::TriplePattern;
+use shared::terms::{Bindings, TriplePattern};
 use shared::triple::Triple;
 use std::collections::{BTreeMap, HashMap, HashSet};
 
@@ -41,7 +41,7 @@ pub trait TemporalStore {
     ///
     /// A time with no facts and a time already evicted are indistinguishable:
     /// both answer with nothing.
-    fn query_at(&self, pattern: &TriplePattern, t: u64) -> Vec<HashMap<String, u32>>;
+    fn query_at(&self, pattern: &TriplePattern, t: u64) -> Bindings;
     /// Timestamps in `lo..=hi` that hold at least one fact, ascending. The
     /// bounds are inclusive, and the result skips times where nothing happened,
     /// which is what lets an existential operator scan only occupied points.
@@ -100,7 +100,7 @@ impl TemporalStore for TemporalSnapshotStore {
             .insert(triple);
     }
 
-    fn query_at(&self, pattern: &TriplePattern, t: u64) -> Vec<HashMap<String, u32>> {
+    fn query_at(&self, pattern: &TriplePattern, t: u64) -> Bindings {
         // Use the index to fetch only triples whose constant positions match the
         // pattern, instead of scanning every fact at t.
         let facts = self
@@ -108,7 +108,7 @@ impl TemporalStore for TemporalSnapshotStore {
             .get(&t)
             .map(|idx| idx.get_matching_triples(pattern))
             .unwrap_or_default();
-        let mut results = Vec::new();
+        let mut results = Bindings::empty();
         for fact in &facts {
             let mut bindings = HashMap::new();
             if matches_rule_pattern(pattern, fact, &mut bindings) {
@@ -224,7 +224,7 @@ impl TemporalStore for IntervalFactStore {
         self.insert_interval(triple.clone(), t);
     }
 
-    fn query_at(&self, pattern: &TriplePattern, t: u64) -> Vec<HashMap<String, u32>> {
+    fn query_at(&self, pattern: &TriplePattern, t: u64) -> Bindings {
         // Collect all triples valid at t, then match pattern against them.
         let candidates: Vec<Triple> = self
             .facts
@@ -232,7 +232,7 @@ impl TemporalStore for IntervalFactStore {
             .filter(|(_, ivs)| ivs.iter().any(|iv| iv.contains(t)))
             .map(|(triple, _)| triple.clone())
             .collect();
-        let mut results = Vec::new();
+        let mut results = Bindings::empty();
         for fact in &candidates {
             let mut bindings = HashMap::new();
             if matches_rule_pattern(pattern, fact, &mut bindings) {

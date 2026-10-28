@@ -44,7 +44,7 @@ use crate::syntax::{DatalogMTLRule, Interval, TemporalAtom};
 use crate::validate::validate_rules;
 use shared::dictionary::Dictionary;
 use shared::pattern::construct_triple;
-use shared::terms::{Term, TriplePattern};
+use shared::terms::{Bindings, Term, TriplePattern};
 use shared::triple::Triple;
 use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, RwLock};
@@ -157,7 +157,7 @@ impl<S: TemporalStore> DatalogMTLEvaluator<S> {
         rule: &DatalogMTLRule,
         t: u64,
         metrics: &mut TickMetrics,
-    ) -> Vec<HashMap<String, u32>> {
+    ) -> Bindings {
         // Step 1: seed bindings from all Base atoms at the current snapshot,
         // using indexed store lookups and indexed joins (no full-fact scan).
         let base_atoms: Vec<&TriplePattern> = rule
@@ -205,7 +205,7 @@ impl<S: TemporalStore> DatalogMTLEvaluator<S> {
                 TemporalAtom::DiamondPlus { .. }
                 | TemporalAtom::BoxPlus { .. }
                 | TemporalAtom::Until { .. } => {
-                    bindings = Vec::new();
+                    bindings = Bindings::empty();
                 }
             }
             if bindings.is_empty() {
@@ -219,16 +219,16 @@ impl<S: TemporalStore> DatalogMTLEvaluator<S> {
     /// store lookups. Each subsequent atom is queried with the running binding
     /// substituted in, turning the join into indexed probes rather than an
     /// O(facts^k) nested-loop scan.
-    fn seed_base_atoms(&self, base_atoms: &[&TriplePattern], t: u64) -> Vec<HashMap<String, u32>> {
+    fn seed_base_atoms(&self, base_atoms: &[&TriplePattern], t: u64) -> Bindings {
         let Some((first, rest)) = base_atoms.split_first() else {
-            return vec![HashMap::new()];
+            return Bindings::unit();
         };
         let mut bindings = self.store.query_at(first, t);
         for pattern in rest {
             if bindings.is_empty() {
                 break;
             }
-            let mut next = Vec::with_capacity(bindings.len());
+            let mut next = Bindings::with_capacity(bindings.len());
             for binding in &bindings {
                 let spec = substitute_pattern(pattern, binding);
                 for candidate in self.store.query_at(&spec, t) {
@@ -263,13 +263,13 @@ impl<S: TemporalStore> DatalogMTLEvaluator<S> {
         inner: &TemporalAtom,
         t: u64,
         bindings: &[HashMap<String, u32>],
-    ) -> Vec<HashMap<String, u32>> {
+    ) -> Bindings {
         if t < interval.start {
-            return vec![];
+            return Bindings::empty();
         }
         let (lo, hi) = interval.absolute_range(t);
         let timestamps = self.store.timestamps_in(lo, hi);
-        let mut results = Vec::new();
+        let mut results = Bindings::empty();
         for binding in bindings {
             for &t_prime in &timestamps {
                 let inner_bindings = self.eval_atom_at(inner, t_prime, &[binding.clone()]);
@@ -291,17 +291,17 @@ impl<S: TemporalStore> DatalogMTLEvaluator<S> {
         inner: &TemporalAtom,
         t: u64,
         bindings: &[HashMap<String, u32>],
-    ) -> Vec<HashMap<String, u32>> {
+    ) -> Bindings {
         // Universal operator: the whole window [t-end, t-start] must lie within
         // observable time [0, t]. If t < end the window extends before time 0,
         // where nothing holds, so Box fails. (Guarding on interval.start would
         // let absolute_range's saturating_sub clamp the lower bound to 0 and
         // spuriously satisfy Box at the leading boundary.)
         if t < interval.end {
-            return vec![];
+            return Bindings::empty();
         }
         let (lo, hi) = interval.absolute_range(t); // lo <= hi since end >= start
-        let mut results = Vec::new();
+        let mut results = Bindings::empty();
         'outer: for binding in bindings {
             // Seed candidates from the first integer point.
             let mut candidates = self.eval_atom_at(inner, lo, &[binding.clone()]);
@@ -311,7 +311,7 @@ impl<S: TemporalStore> DatalogMTLEvaluator<S> {
 
             // Require every subsequent integer point in the window to satisfy inner.
             for t_prime in (lo + 1)..=hi {
-                let mut surviving = Vec::new();
+                let mut surviving = Bindings::empty();
                 for candidate in candidates {
                     let check = self.eval_atom_at(inner, t_prime, &[candidate.clone()]);
                     if !check.is_empty() {
@@ -335,16 +335,16 @@ impl<S: TemporalStore> DatalogMTLEvaluator<S> {
         inner: &TemporalAtom,
         t: u64,
         bindings: &[HashMap<String, u32>],
-    ) -> Vec<HashMap<String, u32>> {
+    ) -> Bindings {
         if t < interval.start {
-            return vec![];
+            return Bindings::empty();
         }
         let (lo, hi) = interval.absolute_range(t);
         let timestamps = self.store.timestamps_in(lo, hi);
         let Some(&t_prev) = timestamps.last() else {
-            return Vec::new();
+            return Bindings::empty();
         };
-        let mut results = Vec::new();
+        let mut results = Bindings::empty();
         for binding in bindings {
             let inner_results = self.eval_atom_at(inner, t_prev, &[binding.clone()]);
             results.extend(inner_results);
@@ -363,12 +363,12 @@ impl<S: TemporalStore> DatalogMTLEvaluator<S> {
         psi: &TemporalAtom,
         t: u64,
         bindings: &[HashMap<String, u32>],
-    ) -> (Vec<HashMap<String, u32>>, usize) {
+    ) -> (Bindings, usize) {
         let (lo, hi) = interval.absolute_range(t);
         // Reset candidates: fact-bearing points in the window where psi may hold
         // (psi only holds where a fact exists, so scanning timestamps is complete).
         let since_timestamps = self.store.timestamps_in(lo, hi);
-        let mut results = Vec::new();
+        let mut results = Bindings::empty();
         let mut scan_depth = 0;
 
         for binding in bindings {
@@ -402,10 +402,10 @@ impl<S: TemporalStore> DatalogMTLEvaluator<S> {
         atom: &TemporalAtom,
         t_prime: u64,
         bindings: &[HashMap<String, u32>],
-    ) -> Vec<HashMap<String, u32>> {
+    ) -> Bindings {
         match atom {
             TemporalAtom::Base(pattern) => {
-                let mut results = Vec::new();
+                let mut results = Bindings::empty();
                 for binding in bindings {
                     // Specialize the pattern with already-bound variables so the
                     // store query is as constrained (and indexed) as possible.
@@ -446,7 +446,7 @@ impl<S: TemporalStore> DatalogMTLEvaluator<S> {
             // All conjuncts hold at the SAME time point: thread bindings through
             // them left to right, so each is constrained by the previous.
             TemporalAtom::Conj(atoms) => {
-                let mut current = bindings.to_vec();
+                let mut current = Bindings::from(bindings.to_vec());
                 for a in atoms {
                     if current.is_empty() {
                         break;
@@ -459,7 +459,7 @@ impl<S: TemporalStore> DatalogMTLEvaluator<S> {
             // (blocked upstream by the parser/mode); yield no bindings.
             TemporalAtom::DiamondPlus { .. }
             | TemporalAtom::BoxPlus { .. }
-            | TemporalAtom::Until { .. } => Vec::new(),
+            | TemporalAtom::Until { .. } => Bindings::empty(),
         }
     }
 }

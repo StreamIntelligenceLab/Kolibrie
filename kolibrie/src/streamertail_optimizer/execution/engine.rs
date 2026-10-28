@@ -81,29 +81,29 @@ mod tests {
         let cases: Vec<(Bindings, Bindings)> = vec![
             // Shared variable, several matches and one dangling value
             (
-                vec![row(&[("x", 1), ("a", 10)]), row(&[("x", 2), ("a", 20)])],
+                vec![row(&[("x", 1), ("a", 10)]), row(&[("x", 2), ("a", 20)])].into(),
                 vec![
                     row(&[("x", 1), ("b", 11)]),
                     row(&[("x", 1), ("b", 12)]),
                     row(&[("x", 3), ("b", 13)]),
-                ],
+                ].into(),
             ),
             // Right side leaves the key variable unbound
             (
-                vec![row(&[("x", 1), ("a", 10)])],
-                vec![row(&[("b", 11)]), row(&[("x", 1), ("b", 12)])],
+                vec![row(&[("x", 1), ("a", 10)])].into(),
+                vec![row(&[("b", 11)]), row(&[("x", 1), ("b", 12)])].into(),
             ),
             // Left side leaves the key variable unbound
             (
-                vec![row(&[("a", 10)]), row(&[("x", 1), ("a", 11)])],
-                vec![row(&[("x", 1), ("b", 12)]), row(&[("x", 2), ("b", 13)])],
+                vec![row(&[("a", 10)]), row(&[("x", 1), ("a", 11)])].into(),
+                vec![row(&[("x", 1), ("b", 12)]), row(&[("x", 2), ("b", 13)])].into(),
             ),
             // Conflicting values on the shared variable
-            (vec![row(&[("x", 1)])], vec![row(&[("x", 2)])]),
+            (vec![row(&[("x", 1)])].into(), vec![row(&[("x", 2)])].into()),
             // No shared variable at all: a Cartesian product
             (
-                vec![row(&[("a", 1)]), row(&[("a", 2)])],
-                vec![row(&[("b", 3)]), row(&[("b", 4)])],
+                vec![row(&[("a", 1)]), row(&[("a", 2)])].into(),
+                vec![row(&[("b", 3)]), row(&[("b", 4)])].into(),
             ),
         ];
 
@@ -128,7 +128,7 @@ mod tests {
             PhysicalOperator::union(vec![PhysicalOperator::unit(), PhysicalOperator::unit()]);
 
         let results = ExecutionEngine::execute_with_ids(&plan, &mut database);
-        assert_eq!(results, vec![HashMap::new(), HashMap::new()]);
+        assert_eq!(results, vec![HashMap::new(), HashMap::new()].into());
     }
 
     #[test]
@@ -154,7 +154,7 @@ mod tests {
             &plan,
             &mut database,
             &context,
-            vec![input],
+            vec![input].into(),
         );
 
         assert_eq!(results.len(), 1);
@@ -323,12 +323,13 @@ mod tests {
             object: variable("?o"),
             graph: GraphTerm::Default,
         };
-        let incoming = vec![
+        let incoming: Bindings = vec![
             row(&[("s", many), ("tag", 1)]),
             row(&[("s", none), ("tag", 2)]),
             row(&[("s", one), ("tag", 3)]),
             row(&[("s", many), ("tag", 1)]),
-        ];
+        ]
+        .into();
 
         let results = scan(
             &database,
@@ -389,7 +390,7 @@ mod tests {
                 row(&[]),
                 row(&[("x", a), ("keep", 7)]),
                 row(&[("x", d), ("keep", 8)]),
-            ],
+            ].into(),
         );
 
         // Unbound `row(&[])` matches both self-referential quads; `x = a` extends and
@@ -475,11 +476,11 @@ mod tests {
                 row(&[]),
                 row(&[("g", second), ("tag", 1)]),
                 row(&[("g", hidden), ("tag", 2)]),
-            ],
+            ].into(),
         );
         let mut graphs = vec![GraphId::Named(first), GraphId::Named(second)];
         graphs.sort_unstable();
-        let mut expected = Vec::new();
+        let mut expected = Bindings::empty();
         for graph in graphs {
             let GraphId::Named(graph_id) = graph else {
                 unreachable!()
@@ -503,8 +504,8 @@ mod tests {
             object: variable("?o"),
             graph: GraphTerm::Variable("$g".to_string()),
         };
-        let results = scan(&database, &shared_pattern, dataset(), vec![row(&[])]);
-        assert_eq!(results, vec![row(&[("g", first), ("o", values[4])])]);
+        let results = scan(&database, &shared_pattern, dataset(), vec![row(&[])].into());
+        assert_eq!(results, vec![row(&[("g", first), ("o", values[4])])].into());
 
         let named_pattern = |graph| QuadPattern {
             subject: variable("?s"),
@@ -516,11 +517,11 @@ mod tests {
             &database,
             &named_pattern(second),
             dataset(),
-            vec![row(&[("tag", 3)]), row(&[("tag", 3)])],
+            vec![row(&[("tag", 3)]), row(&[("tag", 3)])].into(),
         );
         let second_row = row(&[("tag", 3), ("s", subject), ("o", values[2])]);
-        assert_eq!(results, vec![second_row.clone(), second_row]);
-        let results = scan(&database, &named_pattern(hidden), dataset(), vec![row(&[])]);
+        assert_eq!(results, vec![second_row.clone(), second_row].into());
+        let results = scan(&database, &named_pattern(hidden), dataset(), vec![row(&[])].into());
         assert!(results.is_empty());
     }
 
@@ -562,7 +563,7 @@ mod tests {
             &database,
             &pattern,
             dataset,
-            vec![row(&[("tag", 1)]), row(&[("tag", 2)])],
+            vec![row(&[("tag", 1)]), row(&[("tag", 2)])].into(),
         );
 
         let expected: Bindings = [1, 2]
@@ -617,7 +618,7 @@ mod tests {
                 row(&[("tag", 1)]),
                 row(&[("s", second), ("tag", 2)]),
                 row(&[("s", second), ("who", alice)]),
-            ],
+            ].into(),
         );
 
         let mut expected: Bindings =
@@ -838,7 +839,7 @@ impl ExecutionEngine {
     pub fn execute_with_ids(
         operator: &PhysicalOperator,
         database: &mut SparqlDatabase,
-    ) -> Vec<HashMap<String, u32>> {
+    ) -> Bindings {
         let dataset = DatasetView::from_database(database);
         Self::execute_with_ids_and_dataset(operator, database, &dataset)
     }
@@ -859,7 +860,7 @@ impl ExecutionEngine {
         database: &SparqlDatabase,
         context: &ExecutionContext,
     ) -> Bindings {
-        Self::execute_with_ids_and_input(operator, database, context, vec![HashMap::new()])
+        Self::execute_with_ids_and_input(operator, database, context, Bindings::unit())
     }
 
     /// Executes a plan using the supplied solution sequence as input
@@ -867,10 +868,51 @@ impl ExecutionEngine {
         operator: &PhysicalOperator,
         database: &SparqlDatabase,
         context: &ExecutionContext,
+        incoming: Bindings,
+    ) -> Bindings {
+        // `PhysicalOperator::output_variables` has to name every variable the plan can
+        // bind, because a schema-and-tuples result has nowhere to put one it missed.
+        // Checking it here, in debug only, puts every test and example in the
+        // workspace behind that function rather than behind a handful of unit tests.
+        #[cfg(debug_assertions)]
+        let declared = {
+            let mut input: Vec<String> = Vec::new();
+            for row in &incoming {
+                let mut names: Vec<&String> = row.keys().collect();
+                names.sort();
+                for name in names {
+                    if !input.iter().any(|existing| existing == name) {
+                        input.push(name.clone());
+                    }
+                }
+            }
+            operator.output_variables(&input)
+        };
+
+        let produced = Self::execute_with_ids_and_input_inner(operator, database, context, incoming);
+
+        #[cfg(debug_assertions)]
+        for row in &produced {
+            for variable in row.keys() {
+                debug_assert!(
+                    declared.iter().any(|name| name == variable),
+                    "output_variables under-approximated: {operator:?} bound {variable:?}, \
+                     declared {declared:?}"
+                );
+            }
+        }
+
+        produced
+    }
+
+    fn execute_with_ids_and_input_inner(
+        operator: &PhysicalOperator,
+        database: &SparqlDatabase,
+        context: &ExecutionContext,
         mut incoming: Bindings,
     ) -> Bindings {
         if incoming.is_empty() {
-            return Vec::new();
+            return Bindings::empty();
         }
 
         match operator {
@@ -882,7 +924,7 @@ impl ExecutionEngine {
                 Self::execute_quad_scan_with_ids(database, pattern, context, incoming)
             }
             PhysicalOperator::Union { branches } => {
-                let mut results = Vec::new();
+                let mut results = Bindings::empty();
                 let last = branches.len().saturating_sub(1);
                 for (index, branch) in branches.iter().enumerate() {
                     // Every branch evaluates against the same input, so only the last one may consume it
@@ -931,7 +973,7 @@ impl ExecutionEngine {
                     .map(|v| Self::normalize_variable(v).to_string())
                     .collect();
 
-                let projected: Vec<HashMap<String, u32>> = input_results
+                let projected: Bindings = input_results
                     .into_par_iter()
                     .map(|mut result| {
                         result.retain(|k, _| stripped_vars.iter().any(|var| var == k));
@@ -949,7 +991,7 @@ impl ExecutionEngine {
                 let left_results =
                     Self::execute_with_ids_and_input(left, database, context, incoming);
                 if left_results.is_empty() {
-                    return Vec::new();
+                    return Bindings::empty();
                 }
                 let right_results = Self::execute_with_ids_and_context(right, database, context);
                 Self::hash_join_solution_sequences(left_results, right_results)
@@ -958,7 +1000,7 @@ impl ExecutionEngine {
                 let left_results =
                     Self::execute_with_ids_and_input(left, database, context, incoming);
                 if left_results.is_empty() {
-                    return Vec::new();
+                    return Bindings::empty();
                 }
                 let right_results = Self::execute_with_ids_and_context(right, database, context);
                 Self::join_solution_sequences(left_results, right_results)
@@ -989,7 +1031,7 @@ impl ExecutionEngine {
                     inner,
                     database,
                     context,
-                    vec![HashMap::new()],
+                    Bindings::unit(),
                 );
                 let finalized = Self::finalize_subquery(inner_results, spec, database);
                 Self::join_solution_sequences(incoming, finalized)
@@ -1153,7 +1195,7 @@ impl ExecutionEngine {
                     .collect();
 
                 // Convert VALUES data to result rows
-                let mut results = Vec::new();
+                let mut results = Bindings::empty();
 
                 for value_row in values {
                     let mut row = HashMap::new();
@@ -1179,7 +1221,7 @@ impl ExecutionEngine {
             } => {
                 if database.ml_context.approved_model(model_name).is_err() {
                     eprintln!("ML_EXECUTION_REJECTED");
-                    return Vec::new();
+                    return Bindings::empty();
                 }
                 let rows = Self::execute_with_ids_and_input(input, database, context, incoming);
                 let data = {
@@ -1198,7 +1240,7 @@ impl ExecutionEngine {
                         .collect::<Option<Vec<_>>>()
                 };
                 let Some(data) = data else {
-                    return Vec::new();
+                    return Bindings::empty();
                 };
                 match database.ml_context.predict(model_name, &data) {
                     Ok(predictions) => {
@@ -1206,7 +1248,7 @@ impl ExecutionEngine {
                     }
                     Err(_) => {
                         eprintln!("ML_EXECUTION_FAILED");
-                        Vec::new()
+                        Bindings::empty()
                     }
                 }
             }
@@ -1285,7 +1327,7 @@ impl ExecutionEngine {
             groups.entry(key).or_default().push(row);
         }
         if groups.is_empty() && spec.group_vars.is_empty() {
-            groups.insert(Vec::new(), Vec::new());
+            groups.insert(Vec::new(), Bindings::empty());
         }
 
         groups
@@ -1398,7 +1440,7 @@ impl ExecutionEngine {
                 if !context.dataset.is_named_visible(graph_id)
                     || !database.dataset_index.graph_exists(graph_id)
                 {
-                    return Vec::new();
+                    return Bindings::empty();
                 }
                 let graph_context = context.with_active_graph(graph_id);
                 Self::execute_with_ids_and_input(input, database, &graph_context, incoming)
@@ -1409,7 +1451,7 @@ impl ExecutionEngine {
                     context.dataset.named_graphs.iter().copied().collect();
                 visible_graphs.sort_unstable();
 
-                let mut results = Vec::new();
+                let mut results = Bindings::empty();
                 for row in incoming {
                     if let Some(&bound_graph) = row.get(&variable) {
                         let graph = GraphId::Named(bound_graph);
@@ -1421,7 +1463,7 @@ impl ExecutionEngine {
                                 input,
                                 database,
                                 &graph_context,
-                                vec![row],
+                                Bindings::from(vec![row]),
                             ));
                         }
                         continue;
@@ -1441,7 +1483,7 @@ impl ExecutionEngine {
                             input,
                             database,
                             &graph_context,
-                            vec![graph_row],
+                            Bindings::from(vec![graph_row]),
                         ));
                     }
                 }
@@ -1456,7 +1498,7 @@ impl ExecutionEngine {
         context: &ExecutionContext,
         incoming: Bindings,
     ) -> Bindings {
-        let mut results = Vec::new();
+        let mut results = Bindings::empty();
 
         // The visible graph set is the same for every incoming row, so it is built once
         let visible_graphs: Vec<GraphId> = if matches!(pattern.graph, GraphTerm::Variable(_)) {
@@ -1763,7 +1805,7 @@ impl ExecutionEngine {
         left_results: Bindings,
     ) -> Bindings {
         if left_results.is_empty() {
-            return Vec::new();
+            return Bindings::empty();
         }
 
         let threads = rayon::current_num_threads();
@@ -1774,7 +1816,7 @@ impl ExecutionEngine {
 
         let chunks: Vec<Bindings> = left_results
             .par_chunks(chunk_size)
-            .map(|chunk| Self::execute_with_ids_and_input(right, database, context, chunk.to_vec()))
+            .map(|chunk| Self::execute_with_ids_and_input(right, database, context, Bindings::from(chunk.to_vec())))
             .collect();
         chunks.into_iter().flatten().collect()
     }
@@ -1824,7 +1866,7 @@ impl ExecutionEngine {
 
     fn join_solution_sequences(left: Bindings, right: Bindings) -> Bindings {
         if left.is_empty() || right.is_empty() {
-            return Vec::new();
+            return Bindings::empty();
         }
 
         left.par_iter()
@@ -1839,7 +1881,7 @@ impl ExecutionEngine {
     /// Build/probe join that builds on the right side and probes in parallel with the left, so emitted order matches the nested loop
     fn hash_join_solution_sequences(left: Bindings, right: Bindings) -> Bindings {
         if left.is_empty() || right.is_empty() {
-            return Vec::new();
+            return Bindings::empty();
         }
 
         let key_variables = Self::shared_variables(&left, &right);
@@ -1888,11 +1930,11 @@ impl ExecutionEngine {
 
     /// Merges string-valued Candle predictions back into id-encoded query rows
     fn merge_candle_predictions(
-        mut input_results: Vec<HashMap<String, u32>>,
+        mut input_results: Bindings,
         predictions: Vec<String>,
         output_variable: &str,
         database: &SparqlDatabase,
-    ) -> Vec<HashMap<String, u32>> {
+    ) -> Bindings {
         let output_var = output_variable.strip_prefix('?').unwrap_or(output_variable);
 
         let mut dict = database.dictionary.write().unwrap();

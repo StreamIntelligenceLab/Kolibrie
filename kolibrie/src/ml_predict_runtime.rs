@@ -17,6 +17,7 @@ use shared::triple::Triple;
 
 use crate::ml_predict_candle::try_candle_predict;
 use crate::sparql_database::SparqlDatabase;
+use shared::terms::Bindings;
 
 type MlResult<T> = Result<T, Box<dyn Error>>;
 
@@ -241,7 +242,7 @@ fn run_input_query(
     input_raw: &str,
     database: &mut SparqlDatabase,
     rule_prefixes: &HashMap<String, String>,
-) -> MlResult<Vec<HashMap<String, u32>>> {
+) -> MlResult<Bindings> {
     let mut query_with_prefixes = String::new();
     for (prefix, uri) in rule_prefixes {
         let prefix_decl = format!("PREFIX {}:", prefix);

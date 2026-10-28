@@ -16,7 +16,7 @@ use shared::join_algorithm::perform_hash_join_for_rules;
 // `datalog::reasoning::{matches_rule_pattern, construct_triple}` keeps working.
 pub use shared::pattern::{construct_triple, matches_rule_pattern};
 use shared::rule::{FilterCondition, Rule};
-use shared::terms::TriplePattern;
+use shared::terms::{Bindings, TriplePattern};
 use shared::triple::Triple;
 use std::collections::{BTreeMap, HashMap, HashSet};
 
@@ -25,9 +25,9 @@ pub fn join_rule(
     rule: &Rule,
     all_facts: &HashSet<Triple>,
     delta: &HashSet<Triple>,
-) -> Vec<HashMap<String, u32>> {
+) -> Bindings {
     let n = rule.premise.len();
-    let mut results = Vec::new();
+    let mut results = Bindings::empty();
 
     // For each premise position i
     for i in 0..n {
@@ -51,8 +51,8 @@ pub fn join_remaining(
     changed_idx: usize,
     all_facts: &HashSet<Triple>,
     binding: HashMap<String, u32>,
-) -> Vec<HashMap<String, u32>> {
-    let mut results = vec![binding];
+) -> Bindings {
+    let mut results = Bindings::from(vec![binding]);
     let n = rule.premise.len();
 
     // For each other premise j (order can be arbitrary)
@@ -60,7 +60,7 @@ pub fn join_remaining(
         if j == changed_idx {
             continue;
         }
-        let mut new_results = Vec::new();
+        let mut new_results = Bindings::empty();
         // For every binding so far
         for partial_binding in results.into_iter() {
             // And for every fact in all_facts

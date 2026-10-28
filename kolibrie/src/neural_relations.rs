@@ -46,6 +46,7 @@ pub use crate::neural_registry::register_neural_declarations;
 
 use crate::neural_registry::{default_model_artifact_path, model_hidden_layers, model_output_type};
 use crate::sparql_database::SparqlDatabase;
+use shared::terms::Bindings;
 
 type NeuralResult<T> = Result<T, Box<dyn Error>>;
 
@@ -250,7 +251,7 @@ fn run_ml_predict_input_query(
 fn encode_prediction_rows(
     database: &mut SparqlDatabase,
     rows: &[HashMap<String, String>],
-) -> Vec<HashMap<String, u32>> {
+) -> Bindings {
     rows.iter()
         .map(|row| {
             row.iter()

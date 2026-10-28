@@ -11,13 +11,13 @@
 
 use crate::reasoning::rules::matches_rule_pattern;
 use crate::reasoning::Reasoner;
-use shared::terms::TriplePattern;
+use shared::terms::{Bindings, TriplePattern};
 use shared::triple::Triple;
 use std::collections::{HashMap, HashSet};
 
 impl Reasoner {
     /// New method: Query with inconsistency-tolerant semantics
-    pub fn query_with_repairs(&self, query: &TriplePattern) -> Vec<HashMap<String, u32>> {
+    pub fn query_with_repairs(&self, query: &TriplePattern) -> Bindings {
         let all_facts: HashSet<Triple> = self
             .dataset_index
             .query(None, None, None)
@@ -28,7 +28,7 @@ impl Reasoner {
         let repairs = self.compute_repairs(&all_facts);
 
         // IAR semantics: only return answers that are present in all repairs
-        let mut results = Vec::new();
+        let mut results = Bindings::empty();
         if let Some(first_repair) = repairs.first() {
             // Start with results from first repair
             for fact in first_repair {

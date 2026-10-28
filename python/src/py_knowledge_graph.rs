@@ -326,7 +326,7 @@ impl PyKnowledgeGraph {
             convert_term(query.object),
         );
 
-        // `results` is Vec<HashMap<String, u32>>
+        // `results` is a `Bindings`
         let results = self.inner.query_with_repairs(&rust_query);
 
         results
