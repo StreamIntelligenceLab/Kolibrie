@@ -43,7 +43,13 @@ impl Reasoner {
                 repairs.iter().skip(1).all(|repair| {
                     repair.iter().any(|fact| {
                         let mut test_map = HashMap::new();
-                        matches_rule_pattern(query, fact, &mut test_map) && test_map == *binding
+                        matches_rule_pattern(query, fact, &mut test_map)
+                            && test_map.len() == binding.len()
+                            // Compared entry by entry rather than by building a map
+                            // from the row, which would allocate once per candidate.
+                            && binding
+                                .iter()
+                                .all(|(name, id)| test_map.get(name) == Some(&id))
                     })
                 })
             });

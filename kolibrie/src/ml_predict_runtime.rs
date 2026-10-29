@@ -165,7 +165,7 @@ pub(crate) fn execute_ml_predict_clause<'a>(
                         .iter()
                         .map(|var| {
                             row.get(*var)
-                                .and_then(|id| database.decode_any(*id))
+                                .and_then(|id| database.decode_any(id))
                                 .and_then(|value| {
                                     crate::ml_feature_loader::rdf_term_to_f64(&value).ok()
                                 })
@@ -429,7 +429,7 @@ fn encode_triple(
 pub(crate) fn run_python_ml_dispatch(
     database: &SparqlDatabase,
     model: &str,
-    input_rows: &[HashMap<String, u32>],
+    input_rows: &Bindings,
     input_select: &[(&str, &str, Option<&str>)],
 ) -> MlResult<Vec<String>> {
     use ml::MLHandler;
@@ -492,7 +492,7 @@ pub(crate) fn run_python_ml_dispatch(
 
 /// Pick numeric INPUT variables and return rows aligned with `input_rows`
 pub(crate) fn filter_numeric_features(
-    input_rows: &[HashMap<String, u32>],
+    input_rows: &Bindings,
     input_variables: &[String],
     database: &SparqlDatabase,
 ) -> Vec<Vec<f64>> {
@@ -507,7 +507,7 @@ pub(crate) fn filter_numeric_features(
             let stripped = var.strip_prefix('?').unwrap_or(var);
             first_row
                 .get(stripped)
-                .and_then(|&id| dict.decode(id))
+                .and_then(|id| dict.decode(id))
                 .map(|s| s.parse::<f64>().is_ok())
                 .unwrap_or(false)
         })
@@ -522,7 +522,7 @@ pub(crate) fn filter_numeric_features(
                 .filter_map(|var| {
                     let stripped = var.strip_prefix('?').unwrap_or(var);
                     row.get(stripped)
-                        .and_then(|&id| dict.decode(id))
+                        .and_then(|id| dict.decode(id))
                         .and_then(|s| s.parse::<f64>().ok())
                 })
                 .collect()

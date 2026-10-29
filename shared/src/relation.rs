@@ -201,25 +201,12 @@ impl Relation {
     /// this is not interchangeable with `0`: the first term a dictionary interns has
     /// id `0`, so `0` means "the term numbered zero", never "nothing".
     pub fn from_bindings(bindings: &Bindings) -> Self {
-        let mut schema: Vec<String> = Vec::new();
-        for row in bindings {
-            let mut names: Vec<&String> = row.keys().collect();
-            // Sorted so the schema is deterministic; `HashMap` iteration is not.
-            names.sort();
-            for name in names {
-                if !schema.iter().any(|v| v == name) {
-                    schema.push(name.clone());
-                }
-            }
-        }
+        // `Bindings` is itself a schema and tuples now, so this is a copy rather
+        // than a conversion, and the two types are one deduplication away.
+        let schema: Vec<String> = bindings.schema().to_vec();
         let rows = bindings
             .iter()
-            .map(|row| {
-                schema
-                    .iter()
-                    .map(|v| row.get(v).copied().unwrap_or(UNBOUND))
-                    .collect()
-            })
+            .map(|row| row.cells().to_vec())
             .collect();
         Self { schema, rows }
     }
@@ -329,7 +316,10 @@ mod tests {
         // The round trip must give back an absent key, not a key bound to a sentinel.
         let back = relation.to_bindings();
         assert_eq!(back, original);
-        assert!(!back[1].contains_key("y"), "unbound must not become a term id");
+        assert!(
+            !back.row(1).expect("two rows").contains_key("y"),
+            "unbound must not become a term id"
+        );
     }
 
     #[test]

@@ -16,6 +16,7 @@
 use shared::{
     dictionary::Dictionary,
     query::{ArithmeticExpression, FilterExpression, SortDirection},
+    terms::UNBOUND,
 };
 use std::collections::HashMap;
 
@@ -473,29 +474,53 @@ impl Condition {
         }
     }
 
+    /// The value a row binds to `variable`, or `None` where it binds nothing.
+    ///
+    /// Resolved by scanning the schema rather than by hashing the name. A schema
+    /// holds a handful of short names and a filter mentions one or two variables, so
+    /// comparing `&str` beats normalising the name into a `String` and hashing it,
+    /// which is what looking the variable up in a per-row map amounted to.
+    fn bound_value(variable: &str, row: &[u32], schema: &[String]) -> Option<u32> {
+        let name = Self::normalize_variable(variable);
+        let column = schema.iter().position(|candidate| candidate == name)?;
+        // Compared, not matched. A `match` arm naming a constant that is not in
+        // scope silently becomes a binding that matches everything, which made this
+        // return `None` for every variable and every filter reject every row. The
+        // compiler says so -- "matches any value" -- but only as a warning.
+        let value = row.get(column).copied()?;
+        if value == UNBOUND {
+            None
+        } else {
+            Some(value)
+        }
+    }
+
     /// The ID-based counterpart of [`Condition::evaluate`], with the same
+    /// three-valued semantics, over one row of a schema rather than a map.
     pub fn evaluate_with_ids(
         &self,
-        result: &HashMap<String, u32>,
+        row: &[u32],
+        schema: &[String],
         dictionary: &Dictionary,
     ) -> bool {
-        self.evaluate_filter_with_ids(&self.expression, result, dictionary)
+        self.evaluate_filter_with_ids(&self.expression, row, schema, dictionary)
             .keeps_solution()
     }
 
     fn evaluate_filter_with_ids(
         &self,
         expression: &ConditionExpression,
-        result: &HashMap<String, u32>,
+        row: &[u32],
+        schema: &[String],
         dictionary: &Dictionary,
     ) -> Truth {
         match expression {
             ConditionExpression::Comparison(variable, operator, value) => {
-                let Some(&id) = result.get(Self::normalize_variable(variable)) else {
+                let Some(id) = Self::bound_value(variable, row, schema) else {
                     return Truth::Error;
                 };
                 if Self::is_variable(value) {
-                    let Some(&rhs) = result.get(Self::normalize_variable(value)) else {
+                    let Some(rhs) = Self::bound_value(value, row, schema) else {
                         return Truth::Error;
                     };
                     return match operator.as_str() {
@@ -516,7 +541,7 @@ impl Condition {
             }
             ConditionExpression::ArithmeticComparison(left, operator, right) => {
                 let resolver = |variable: &str| {
-                    let &id = result.get(Self::normalize_variable(variable))?;
+                    let id = Self::bound_value(variable, row, schema)?;
                     dictionary.decode(id)?.parse::<f64>().ok()
                 };
                 let (Ok(left), Ok(right)) = (
@@ -528,17 +553,17 @@ impl Condition {
                 Self::compare_numeric(left, operator, right)
             }
             ConditionExpression::And(left, right) => self
-                .evaluate_filter_with_ids(left, result, dictionary)
-                .and(|| self.evaluate_filter_with_ids(right, result, dictionary)),
+                .evaluate_filter_with_ids(left, row, schema, dictionary)
+                .and(|| self.evaluate_filter_with_ids(right, row, schema, dictionary)),
             ConditionExpression::Or(left, right) => self
-                .evaluate_filter_with_ids(left, result, dictionary)
-                .or(|| self.evaluate_filter_with_ids(right, result, dictionary)),
+                .evaluate_filter_with_ids(left, row, schema, dictionary)
+                .or(|| self.evaluate_filter_with_ids(right, row, schema, dictionary)),
             ConditionExpression::Not(inner) => self
-                .evaluate_filter_with_ids(inner, result, dictionary)
+                .evaluate_filter_with_ids(inner, row, schema, dictionary)
                 .negate(),
             ConditionExpression::ArithmeticExpr(expression) => {
                 let resolver = |variable: &str| {
-                    let &id = result.get(Self::normalize_variable(variable))?;
+                    let id = Self::bound_value(variable, row, schema)?;
                     dictionary.decode(id)?.parse::<f64>().ok()
                 };
                 Self::evaluate_arithmetic(expression, &resolver)
@@ -553,8 +578,8 @@ impl Condition {
                 let Some(argument) = arguments.first() else {
                     return Truth::Error;
                 };
-                match result.get(Self::normalize_variable(argument)) {
-                    Some(id) => Truth::from_bool(is_quoted_triple_id(*id)),
+                match Self::bound_value(argument, row, schema) {
+                    Some(id) => Truth::from_bool(is_quoted_triple_id(id)),
                     None => Truth::Error,
                 }
             }

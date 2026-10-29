@@ -44,9 +44,9 @@ use crate::syntax::{DatalogMTLRule, Interval, TemporalAtom};
 use crate::validate::validate_rules;
 use shared::dictionary::Dictionary;
 use shared::pattern::construct_triple;
-use shared::terms::{Bindings, Term, TriplePattern};
+use shared::terms::{BindingRef, Bindings, Term, TriplePattern};
 use shared::triple::Triple;
-use std::collections::{HashMap, HashSet};
+use std::collections::HashSet;
 use std::sync::{Arc, RwLock};
 use std::time::Instant;
 
@@ -231,17 +231,20 @@ impl<S: TemporalStore> DatalogMTLEvaluator<S> {
             let mut next = Bindings::with_capacity(bindings.len());
             for binding in &bindings {
                 let spec = substitute_pattern(pattern, binding);
-                for candidate in self.store.query_at(&spec, t) {
-                    let mut merged = binding.clone();
+                let candidates = self.store.query_at(&spec, t);
+                for candidate in candidates.iter() {
+                    // Owned, because a merge adds variables the row did not have and
+                    // a row of a sequence is a view into one schema.
+                    let mut merged = binding.to_binding();
                     let mut consistent = true;
-                    for (var, val) in &candidate {
+                    for (var, val) in candidate.iter() {
                         if let Some(&existing) = merged.get(var) {
-                            if existing != *val {
+                            if existing != val {
                                 consistent = false;
                                 break;
                             }
                         } else {
-                            merged.insert(var.clone(), *val);
+                            merged.insert(var.to_string(), val);
                         }
                     }
                     if consistent {
@@ -262,7 +265,7 @@ impl<S: TemporalStore> DatalogMTLEvaluator<S> {
         interval: &Interval,
         inner: &TemporalAtom,
         t: u64,
-        bindings: &[HashMap<String, u32>],
+        bindings: &Bindings,
     ) -> Bindings {
         if t < interval.start {
             return Bindings::empty();
@@ -272,7 +275,7 @@ impl<S: TemporalStore> DatalogMTLEvaluator<S> {
         let mut results = Bindings::empty();
         for binding in bindings {
             for &t_prime in &timestamps {
-                let inner_bindings = self.eval_atom_at(inner, t_prime, &[binding.clone()]);
+                let inner_bindings = self.eval_atom_at(inner, t_prime, &Bindings::single(binding.to_binding()));
                 results.extend(inner_bindings);
             }
         }
@@ -290,7 +293,7 @@ impl<S: TemporalStore> DatalogMTLEvaluator<S> {
         interval: &Interval,
         inner: &TemporalAtom,
         t: u64,
-        bindings: &[HashMap<String, u32>],
+        bindings: &Bindings,
     ) -> Bindings {
         // Universal operator: the whole window [t-end, t-start] must lie within
         // observable time [0, t]. If t < end the window extends before time 0,
@@ -304,7 +307,7 @@ impl<S: TemporalStore> DatalogMTLEvaluator<S> {
         let mut results = Bindings::empty();
         'outer: for binding in bindings {
             // Seed candidates from the first integer point.
-            let mut candidates = self.eval_atom_at(inner, lo, &[binding.clone()]);
+            let mut candidates = self.eval_atom_at(inner, lo, &Bindings::single(binding.to_binding()));
             if candidates.is_empty() {
                 continue 'outer;
             }
@@ -313,7 +316,7 @@ impl<S: TemporalStore> DatalogMTLEvaluator<S> {
             for t_prime in (lo + 1)..=hi {
                 let mut surviving = Bindings::empty();
                 for candidate in candidates {
-                    let check = self.eval_atom_at(inner, t_prime, &[candidate.clone()]);
+                    let check = self.eval_atom_at(inner, t_prime, &Bindings::single(candidate.clone()));
                     if !check.is_empty() {
                         surviving.push(candidate);
                     }
@@ -334,7 +337,7 @@ impl<S: TemporalStore> DatalogMTLEvaluator<S> {
         interval: &Interval,
         inner: &TemporalAtom,
         t: u64,
-        bindings: &[HashMap<String, u32>],
+        bindings: &Bindings,
     ) -> Bindings {
         if t < interval.start {
             return Bindings::empty();
@@ -346,7 +349,7 @@ impl<S: TemporalStore> DatalogMTLEvaluator<S> {
         };
         let mut results = Bindings::empty();
         for binding in bindings {
-            let inner_results = self.eval_atom_at(inner, t_prev, &[binding.clone()]);
+            let inner_results = self.eval_atom_at(inner, t_prev, &Bindings::single(binding.to_binding()));
             results.extend(inner_results);
         }
         results
@@ -362,7 +365,7 @@ impl<S: TemporalStore> DatalogMTLEvaluator<S> {
         phi: &TemporalAtom,
         psi: &TemporalAtom,
         t: u64,
-        bindings: &[HashMap<String, u32>],
+        bindings: &Bindings,
     ) -> (Bindings, usize) {
         let (lo, hi) = interval.absolute_range(t);
         // Reset candidates: fact-bearing points in the window where psi may hold
@@ -374,7 +377,7 @@ impl<S: TemporalStore> DatalogMTLEvaluator<S> {
         for binding in bindings {
             'reset: for &t_prime in since_timestamps.iter().rev() {
                 scan_depth += 1;
-                let psi_results = self.eval_atom_at(psi, t_prime, &[binding.clone()]);
+                let psi_results = self.eval_atom_at(psi, t_prime, &Bindings::single(binding.to_binding()));
                 if psi_results.is_empty() {
                     continue;
                 }
@@ -383,7 +386,7 @@ impl<S: TemporalStore> DatalogMTLEvaluator<S> {
                 // an uncovered integer point makes the continuation fail).
                 for t_pp in (t_prime + 1)..=t {
                     scan_depth += 1;
-                    let phi_results = self.eval_atom_at(phi, t_pp, &[binding.clone()]);
+                    let phi_results = self.eval_atom_at(phi, t_pp, &Bindings::single(binding.to_binding()));
                     if phi_results.is_empty() {
                         continue 'reset;
                     }
@@ -401,7 +404,7 @@ impl<S: TemporalStore> DatalogMTLEvaluator<S> {
         &self,
         atom: &TemporalAtom,
         t_prime: u64,
-        bindings: &[HashMap<String, u32>],
+        bindings: &Bindings,
     ) -> Bindings {
         match atom {
             TemporalAtom::Base(pattern) => {
@@ -410,17 +413,18 @@ impl<S: TemporalStore> DatalogMTLEvaluator<S> {
                     // Specialize the pattern with already-bound variables so the
                     // store query is as constrained (and indexed) as possible.
                     let spec = substitute_pattern(pattern, binding);
-                    for candidate in self.store.query_at(&spec, t_prime) {
-                        let mut merged = binding.clone();
+                    let candidates = self.store.query_at(&spec, t_prime);
+                    for candidate in candidates.iter() {
+                        let mut merged = binding.to_binding();
                         let mut consistent = true;
-                        for (var, val) in &candidate {
+                        for (var, val) in candidate.iter() {
                             if let Some(&existing) = merged.get(var) {
-                                if existing != *val {
+                                if existing != val {
                                     consistent = false;
                                     break;
                                 }
                             } else {
-                                merged.insert(var.clone(), *val);
+                                merged.insert(var.to_string(), val);
                             }
                         }
                         if consistent {
@@ -446,7 +450,7 @@ impl<S: TemporalStore> DatalogMTLEvaluator<S> {
             // All conjuncts hold at the SAME time point: thread bindings through
             // them left to right, so each is constrained by the previous.
             TemporalAtom::Conj(atoms) => {
-                let mut current = Bindings::from(bindings.to_vec());
+                let mut current = bindings.clone();
                 for a in atoms {
                     if current.is_empty() {
                         break;
@@ -466,11 +470,11 @@ impl<S: TemporalStore> DatalogMTLEvaluator<S> {
 
 /// Substitute a pattern's variables that are already bound in `binding` with
 /// their constant values, so the resulting query is maximally constrained.
-fn substitute_pattern(pattern: &TriplePattern, binding: &HashMap<String, u32>) -> TriplePattern {
+fn substitute_pattern(pattern: &TriplePattern, binding: BindingRef<'_>) -> TriplePattern {
     let resolve = |term: &Term| -> Term {
         match term {
             Term::Variable(v) => match binding.get(v) {
-                Some(&id) => Term::Constant(id),
+                Some(id) => Term::Constant(id),
                 None => term.clone(),
             },
             other => other.clone(),

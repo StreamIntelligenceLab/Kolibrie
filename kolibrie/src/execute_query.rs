@@ -25,7 +25,7 @@ use shared::query::{
     OrderCondition, SelectQuery, SortDirection, SparqlOperation, UpdateOperation,
 };
 use shared::quoted_triple_store::is_quoted_triple_id;
-use shared::terms::{Bindings, Term};
+use shared::terms::{BindingRef, Bindings, Term};
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::sync::atomic::{AtomicU64, Ordering as AtomicOrdering};
 
@@ -1354,12 +1354,12 @@ fn instantiate_data(
     database: &mut SparqlDatabase,
     insert: bool,
 ) -> Result<BTreeSet<Quad>, String> {
-    instantiate_templates(quads, &[HashMap::new()], prefixes, database, insert)
+    instantiate_templates(quads, &Bindings::unit(), prefixes, database, insert)
 }
 
 fn instantiate_templates(
     templates: &[LexicalQuadPattern<'_>],
-    bindings: &[HashMap<String, u32>],
+    bindings: &Bindings,
     prefixes: &HashMap<String, String>,
     database: &mut SparqlDatabase,
     insert: bool,
@@ -1386,7 +1386,7 @@ fn instantiate_templates(
 
 fn instantiate_quad(
     template: &LexicalQuadPattern<'_>,
-    binding: &HashMap<String, u32>,
+    binding: BindingRef<'_>,
     prefixes: &HashMap<String, String>,
     database: &mut SparqlDatabase,
     insert: bool,
@@ -1463,14 +1463,13 @@ fn instantiate_quad(
 
 fn instantiate_graph(
     graph: &str,
-    binding: &HashMap<String, u32>,
+    binding: BindingRef<'_>,
     prefixes: &HashMap<String, String>,
     database: &mut SparqlDatabase,
 ) -> Result<Option<GraphId>, String> {
     if is_variable(graph) {
         return Ok(binding
             .get(normalize_variable(graph))
-            .copied()
             .map(GraphId::Named));
     }
     match compile_graph_term(graph, prefixes, database)? {
@@ -1553,7 +1552,7 @@ fn is_probable_absolute_iri(value: &str) -> bool {
 
 fn instantiate_term(
     term: &str,
-    binding: &HashMap<String, u32>,
+    binding: BindingRef<'_>,
     prefixes: &HashMap<String, String>,
     database: &mut SparqlDatabase,
     insert: bool,
@@ -1561,7 +1560,7 @@ fn instantiate_term(
 ) -> Result<Option<u32>, String> {
     let term = term.trim();
     if is_variable(term) {
-        return Ok(binding.get(normalize_variable(term)).copied());
+        return Ok(binding.get(normalize_variable(term)));
     }
     if term.starts_with("_:") {
         if !insert {

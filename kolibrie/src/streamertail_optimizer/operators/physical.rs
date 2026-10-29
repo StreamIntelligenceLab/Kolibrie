@@ -394,7 +394,7 @@ impl PhysicalOperator {
             Self::InMemoryBuffer { content, .. } => {
                 // Buffered solutions carry their own variables, and are joined in.
                 for row in content {
-                    let mut names: Vec<&String> = row.keys().collect();
+                    let mut names: Vec<&str> = row.keys().collect();
                     names.sort();
                     for name in names {
                         push_variable(name, variables);

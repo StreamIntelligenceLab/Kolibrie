@@ -16,6 +16,7 @@ use shared::query::{MLPredictClause, NeuralOutputKind, NeuralRelationDecl};
 
 use crate::neural_registry::{model_hidden_layers, model_output_type};
 use crate::sparql_database::SparqlDatabase;
+use shared::terms::Bindings;
 
 type CandleResult<T> = Result<T, Box<dyn Error>>;
 
@@ -32,7 +33,7 @@ pub(crate) fn try_candle_predict(
     ml_predict: &MLPredictClause<'_>,
     conclusion: &[(&str, &str, &str)],
     rule_prefixes: &HashMap<String, String>,
-    input_rows: &[HashMap<String, u32>],
+    input_rows: &Bindings,
 ) -> CandleResult<Option<CandleDispatch>> {
     database.ml_context.require_local()?;
     let output_var = ml_predict.output.trim_start_matches('?');
@@ -123,7 +124,7 @@ pub(crate) fn try_candle_predict(
 pub(crate) fn try_candle_predict_by_model_name(
     database: &SparqlDatabase,
     model_name: &str,
-    input_rows: &[HashMap<String, u32>],
+    input_rows: &Bindings,
 ) -> CandleResult<Option<CandleDispatch>> {
     database.ml_context.require_local()?;
     // Find the relation bound to this model name
@@ -194,7 +195,7 @@ fn find_object_position_predicate<'a>(
 fn build_features_for_rows(
     database: &SparqlDatabase,
     relation: &NeuralRelationDecl,
-    input_rows: &[HashMap<String, u32>],
+    input_rows: &Bindings,
 ) -> CandleResult<Vec<Vec<f64>>> {
     let dict = database.dictionary.read().unwrap();
     let mut features: Vec<Vec<f64>> = Vec::with_capacity(input_rows.len());
@@ -205,7 +206,7 @@ fn build_features_for_rows(
             let id = row
                 .get(key)
                 .or_else(|| row.get(var.as_str()))
-                .copied()
+                
                 .ok_or_else(|| {
                     format!(
                         "Row {}: feature variable {} not present in INPUT query result",
