@@ -277,20 +277,7 @@ fn parse_not_triple_block(input: &str) -> IResult<&str, Vec<(&str, &str, &str)>>
 
 /// A `WHERE` clause, returning the five-tuple of triple patterns, filters,
 /// `VALUES`, `BIND` clauses and subqueries that `shared::query` uses.
-pub(crate) fn parse_where_nom(
-    input: &str,
-) -> IResult<
-    &str,
-    (
-        Vec<(&str, &str, &str)>,
-        Vec<FilterExpression<'_>>,
-        Option<ValuesClause<'_>>,
-        Vec<(&str, Vec<&str>, &str)>,
-        Vec<SubQuery<'_>>,
-        Vec<WindowBlock<'_>>,
-        Vec<(&str, &str, &str)>, // negated triple patterns (NOT X)
-    ),
-> {
+pub(crate) fn parse_where_nom(input: &str) -> IResult<&str, WhereClause<'_>> {
     let (input, _) = multispace0.parse(input)?;
     let (input, _) = tag("WHERE").parse(input)?;
     let (input, _) = multispace0.parse(input)?;
@@ -360,15 +347,15 @@ pub(crate) fn parse_where_nom(
 
     Ok((
         current_input,
-        (
+        WhereClause {
             patterns,
             filters,
-            values_clause,
+            values: values_clause,
             binds,
             subqueries,
             window_blocks,
-            neg_patterns,
-        ),
+            negated_patterns: neg_patterns,
+        },
     ))
 }
 
@@ -400,7 +387,18 @@ pub(crate) fn parse_register_clause(input: &str) -> IResult<&str, RegisterClause
     let (input, _) = multispace0.parse(input)?;
 
     // Parse WHERE clause with window support
-    let (input, (patterns, filters, values_clause, binds, subqueries, window_blocks, _)) =
+    let (
+        input,
+        WhereClause {
+            patterns,
+            filters,
+            values: values_clause,
+            binds,
+            subqueries,
+            window_blocks,
+            ..
+        },
+    ) =
         parse_where_nom(input)?;
 
     Ok((
@@ -2103,7 +2101,7 @@ fn into_owned_triple(triple: (&str, &str, &str)) -> (String, String, String) {
 
 fn parse_graph_pattern_block_owned(input: &str) -> Result<Vec<(String, String, String)>, String> {
     let wrapped = format!("WHERE {{ {} }}", input.trim());
-    let (_, (patterns, _, _, _, _, _, _)) =
+    let (_, WhereClause { patterns, .. }) =
         parse_where_nom(&wrapped).map_err(|err| format!("invalid graph-pattern block: {err:?}"))?;
     Ok(patterns.into_iter().map(into_owned_triple).collect())
 }
@@ -2490,11 +2488,11 @@ pub(crate) fn parse_ml_predict(input: &str) -> IResult<&str, MLPredictClause<'_>
             // Parse WHERE patterns and filters (simplified - use your actual WHERE parser)
             let where_clause = &input_query[where_idx + 5..].trim();
             // This is a placeholder - you should use your actual pattern and filter parser here
-            let (_rest, (patterns, filters, _values, _binds, _subqueries, _, _)) =
+            let (_rest, WhereClause { patterns, filters, .. }) =
                 parse_where_nom(where_clause).unwrap_or_else(|_| {
                     (
                         where_clause,
-                        (vec![], vec![], None, vec![], vec![], vec![], vec![]),
+                        WhereClause::default(),
                     )
                 });
 
@@ -3101,7 +3099,18 @@ pub(crate) fn parse_rule(input: &str) -> IResult<&str, CombinedRule<'_>> {
     let (input, _) = multispace0.parse(input)?;
 
     // Parse WHERE clause
-    let (input, (patterns, filters, values_clause, binds, subqueries, window_blocks, neg_patterns)) =
+    let (
+        input,
+        WhereClause {
+            patterns,
+            filters,
+            values: values_clause,
+            binds,
+            subqueries,
+            window_blocks,
+            negated_patterns: neg_patterns,
+        },
+    ) =
         parse_where_nom(input)?;
     let body = (patterns, filters, values_clause, binds, subqueries);
 
@@ -3563,25 +3572,8 @@ pub fn parse_triple_block(input: &str) -> ParseResult<'_, Vec<(&str, &str, &str)
 pub fn parse_filter(input: &str) -> ParseResult<'_, FilterExpression<'_>> {
     parse_filter_nom(input).map_err(ParseError::from_nom)
 }
-/// Parses a `WHERE` clause into its patterns, filters and nested blocks.
-///
-/// The tuple it returns is positional and wide; §4 wants it replaced by a named
-/// struct, which is a separate change from closing the `nom` leak.
-#[allow(clippy::type_complexity)]
-pub fn parse_where(
-    input: &str,
-) -> ParseResult<
-    '_,
-    (
-        Vec<(&str, &str, &str)>,
-        Vec<FilterExpression<'_>>,
-        Option<ValuesClause<'_>>,
-        Vec<(&str, Vec<&str>, &str)>,
-        Vec<SubQuery<'_>>,
-        Vec<WindowBlock<'_>>,
-        Vec<(&str, &str, &str)>,
-    ),
-> {
+/// Parses a `WHERE` clause into everything it declares.
+pub fn parse_where(input: &str) -> ParseResult<'_, WhereClause<'_>> {
     parse_where_nom(input).map_err(ParseError::from_nom)
 }
 

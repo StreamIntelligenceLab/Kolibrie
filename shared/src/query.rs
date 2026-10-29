@@ -151,6 +151,37 @@ pub struct LexicalQuadPattern<'a> {
 /// The existing tuple representation used by BIND.
 pub type BindClause<'a> = (&'a str, Vec<&'a str>, &'a str);
 
+/// Everything a `WHERE` clause declares, as written.
+///
+/// The parser returned these seven as a positional tuple, which every caller
+/// destructured and then had to name itself -- and three of the four callers wanted
+/// only one or two of the parts, so they spelled the rest as `_, _, _, _`. §4 asks
+/// for named structs in place of wide positional tuples, and this was the widest.
+///
+/// Nothing is optional except `values`: a clause with no filters has no filters,
+/// which is an empty `Vec` rather than an absent one.
+///
+/// No `PartialEq`: [`WindowBlock`] has none, and giving it one to make this
+/// comparable would be deciding when two window declarations are the same question
+/// on behalf of a type that has not answered it.
+#[derive(Debug, Clone, Default)]
+pub struct WhereClause<'a> {
+    /// Triple patterns the clause matches.
+    pub patterns: Vec<LexicalTriplePattern<'a>>,
+    /// `FILTER` expressions constraining them.
+    pub filters: Vec<FilterExpression<'a>>,
+    /// An inline `VALUES` table, if the clause has one.
+    pub values: Option<ValuesClause<'a>>,
+    /// `BIND` clauses computing new variables.
+    pub binds: Vec<BindClause<'a>>,
+    /// Nested `SELECT` subqueries.
+    pub subqueries: Vec<SubQuery<'a>>,
+    /// RSP-QL `WINDOW` blocks.
+    pub window_blocks: Vec<WindowBlock<'a>>,
+    /// Patterns under `NOT`, which must *not* match.
+    pub negated_patterns: Vec<LexicalTriplePattern<'a>>,
+}
+
 /// The quads an update inserts: either literal data or a template to instantiate.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct InsertClause<'a> {
