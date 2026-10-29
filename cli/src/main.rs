@@ -23,8 +23,8 @@
 //! will drift silently at the next version bump.
 
 use clap::Parser;
-use kolibrie::prelude::*;
-use kolibrie::sparql_database::SparqlDatabase;
+// One dependency, not two crates and a guess about which holds what.
+use kolibrie_api::prelude::*;
 
 #[derive(Parser)]
 #[command(

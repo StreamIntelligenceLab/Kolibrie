@@ -4,6 +4,7 @@ resolver = "2"
 # dedicated build; it has its own CI job. Everything else must be checked by a
 # bare `cargo build`/`clippy`.
 default-members = [
+  "kolibrie-api",
   "kolibrie",
   "shared",
   "datalog",
@@ -13,6 +14,7 @@ default-members = [
   "kolibrie-http-server",
 ]
 members = [
+  "kolibrie-api",
   "kolibrie",
   "shared",
   "datalog",

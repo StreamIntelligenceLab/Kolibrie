@@ -8,11 +8,11 @@ description = "A command-line interface for Kolibrie"
 
 [dependencies]
 clap = { workspace = true }
-kolibrie = { path = "../kolibrie" }
+kolibrie-api = { path = "../kolibrie-api" }
 
 [features]
 default = []
-ml = ["kolibrie/ml"]
+ml = ["kolibrie-api/ml"]
 
 [lints]
 workspace = true
