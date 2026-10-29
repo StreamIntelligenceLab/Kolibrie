@@ -8,14 +8,18 @@
  * you can obtain one at https://mozilla.org/MPL/2.0/.
  */
 
+use crate::parse_error::{Expected, ParseError};
 use annotate_snippets::{Annotation, AnnotationKind, Group, Level, Renderer, Snippet};
-use nom::error::Error as NomError;
 
-pub(crate) fn format_parse_error(input: &str, err: nom::Err<NomError<&str>>) -> String {
-    match err {
-        nom::Err::Error(e) | nom::Err::Failure(e) => {
-            let error_pos = e.input;
-            let offset = input.len() - error_pos.len();
+/// Renders a parse failure against the input it came from.
+///
+/// Takes the crate's own [`ParseError`] rather than the parser library's, which is
+/// what keeps `nom` out of this module -- it was the last place outside the parser
+/// that named it.
+pub(crate) fn format_parse_error(input: &str, err: ParseError<'_>) -> String {
+    match err.is_incomplete() {
+        false => {
+            let offset = err.offset_in(input);
 
             // Calculate line and column numbers
             let mut line_no = 1;
@@ -41,44 +45,44 @@ pub(crate) fn format_parse_error(input: &str, err: nom::Err<NomError<&str>>) -> 
                 "[end of input]"
             };
 
-            // Determine error message and label based on nom error kind
-            let (error_title, error_label) = match e.code {
-                nom::error::ErrorKind::Tag => (
+            // Determine error message and label from what the parser wanted
+            let (error_title, error_label) = match err.expected() {
+                Expected::Token => (
                     format!(
                         "Expected a specific SPARQL keyword or token at line {}, column {}",
                         line_no, col_no
                     ),
                     "expected a valid SPARQL keyword here",
                 ),
-                nom::error::ErrorKind::Char => (
+                Expected::Character => (
                     format!(
                         "Expected a specific character at line {}, column {}",
                         line_no, col_no
                     ),
                     "expected a specific character here",
                 ),
-                nom::error::ErrorKind::Alt => (
+                Expected::Alternative => (
                     format!(
                         "Syntax error in SPARQL query at line {}, column {}",
                         line_no, col_no
                     ),
                     "expected one of several alternatives here",
                 ),
-                nom::error::ErrorKind::TakeWhile1 => (
+                Expected::AtLeastOne => (
                     format!(
                         "Invalid character in SPARQL query at line {}, column {}",
                         line_no, col_no
                     ),
                     "unexpected character or sequence",
                 ),
-                nom::error::ErrorKind::Many0 | nom::error::ErrorKind::Many1 => (
+                Expected::Repetition => (
                     format!(
                         "Expected more input or pattern at line {}, column {}",
                         line_no, col_no
                     ),
                     "incomplete pattern or statement",
                 ),
-                nom::error::ErrorKind::Eof => (
+                Expected::EndOfInput => (
                     format!(
                         "Unexpected end of query at line {}, column {}",
                         line_no, col_no
@@ -127,7 +131,7 @@ pub(crate) fn format_parse_error(input: &str, err: nom::Err<NomError<&str>>) -> 
             let message = renderer.render(&report);
             message
         }
-        nom::Err::Incomplete(_) => {
+        true => {
             // Plain, not styled: every caller puts this string into an error value
             // rather than printing it, so ANSI escapes would travel into logs, JSON
             // responses and test comparisons. `styled()` put 26 control characters

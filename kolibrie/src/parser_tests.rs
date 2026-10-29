@@ -8,17 +8,25 @@
  * you can obtain one at https://mozilla.org/MPL/2.0/.
  */
 
+//! Unit tests for the parser's combinators.
+//!
+//! These live inside the crate rather than in `tests/` because they exercise the
+//! combinators, which are `pub(crate)`: an integration test can only reach `pub`
+//! items, and making 26 combinators public to be testable put `nom`'s `IResult` in
+//! this crate's API. Testing internals from inside is what lets the surface stay
+//! small, which is §4's rule, and P5's.
+
 #[cfg(test)]
 mod tests {
-    use kolibrie::neural_relations::lower_ml_predict_alias;
-    use kolibrie::parser::{
+    use crate::neural_relations::lower_ml_predict_alias;
+    use crate::parser::{
         identifier, parse_arithmetic_expression, parse_bind, parse_combined_query_with_options,
         parse_comparison, parse_group_by, parse_limit, parse_literal, parse_ml_predict,
         parse_model_decl, parse_neural_relation_decl, parse_order_by, parse_prefix, parse_rule,
         parse_select, parse_sparql_query, parse_train_neural_relation_decl, parse_triple_block,
         parse_uri, parse_values, predicate, variable,
     };
-    use kolibrie::prelude::*;
+    use crate::prelude::*;
     use shared::hybrid::ThresholdPolicyKind;
     use shared::query::{
         FilterExpression, GroupGraphPattern, ModelArch, NeuralOutputKind, SortDirection,
@@ -1091,11 +1099,11 @@ ML.PREDICT(MODEL "digit_model",
     fn update_validation_reports_the_offending_lexeme() {
         let input = "DELETE DATA { <urn:s> <urn:p> ?illegal }";
         let error = parse_combined_query(input).unwrap_err();
-        let offending = match error {
-            nom::Err::Error(error) | nom::Err::Failure(error) => error.input,
-            nom::Err::Incomplete(_) => panic!("parser unexpectedly requested more input"),
-        };
-        assert_eq!(offending, "?illegal");
+        assert!(
+            !error.is_incomplete(),
+            "parser unexpectedly requested more input"
+        );
+        assert_eq!(error.offending(), "?illegal");
     }
 
     #[test]
@@ -1162,5 +1170,35 @@ ML.PREDICT(MODEL "digit_model",
             "SELECT * WHERE { { ?s <urn:p> ?o } UNION { GRAPH <urn:g> { ?s <urn:q> ?o } } }"
         )
         .is_ok());
+    }
+
+    #[test]
+    fn a_rejected_lexeme_is_reported_without_naming_the_parser_library() {
+        let input = "DELETE DATA { <urn:s> <urn:p> ?illegal }";
+        let error = parse_combined_query(input).expect_err("a variable is illegal here");
+        assert_eq!(error.offending(), "?illegal");
+        assert!(!error.is_incomplete());
+    }
+
+    #[test]
+    fn a_parse_error_offset_points_at_the_rejected_text() {
+        // Not `input.len() - offending.len()`: the parser narrows the error to the
+        // token, so subtracting its length lands past the start of it.
+        let input = "DELETE DATA { <urn:s> <urn:p> ?illegal }";
+        let error = parse_combined_query(input).expect_err("a variable is illegal here");
+        let offset = error.offset_in(input);
+        assert_eq!(&input[offset..offset + "?illegal".len()], "?illegal");
+    }
+
+    #[test]
+    fn what_the_parser_wanted_is_said_in_this_crate_s_words() {
+        use crate::parse_error::Expected;
+        let error = parse_combined_query("DELETE DATA { <urn:s> <urn:p> ?illegal }")
+            .expect_err("a variable is illegal here");
+        assert_ne!(
+            error.expected(),
+            Expected::EndOfInput,
+            "something was rejected, the input did not simply run out"
+        );
     }
 }

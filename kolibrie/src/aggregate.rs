@@ -28,20 +28,6 @@ impl<'a> Aggregate<'a> {
             },
         }
     }
-    pub(crate) fn star_count<V: Ord>(&self, rows: &[HashMap<String, V>]) -> String {
-        if !self.distinct {
-            return rows.len().to_string();
-        }
-        let unique: BTreeSet<Vec<(&String, &V)>> = rows
-            .iter()
-            .map(|row| {
-                let mut entries: Vec<_> = row.iter().collect();
-                entries.sort_by(|left, right| left.0.cmp(right.0));
-                entries
-            })
-            .collect();
-        unique.len().to_string()
-    }
 }
 
 pub(crate) fn value(kind: &str, values: &[&str]) -> Option<String> {

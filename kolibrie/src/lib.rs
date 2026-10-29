@@ -87,6 +87,8 @@ pub mod neural_relations;
 #[cfg(not(feature = "ml"))]
 #[path = "neural_relations_disabled.rs"]
 pub mod neural_relations;
+/// What a failed parse says, without naming the parser library.
+pub mod parse_error;
 pub mod parser;
 pub mod prelude;
 pub mod program;
