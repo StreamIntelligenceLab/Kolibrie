@@ -25,7 +25,7 @@ use shared::query::{
     OrderCondition, SelectQuery, SortDirection, SparqlOperation, UpdateOperation,
 };
 use shared::quoted_triple_store::is_quoted_triple_id;
-use shared::terms::{BindingRef, Bindings, Term};
+use shared::terms::{UNBOUND, BindingRef, Bindings, Term};
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::sync::atomic::{AtomicU64, Ordering as AtomicOrdering};
 
@@ -821,32 +821,19 @@ fn compile_dataset_graph(
 }
 
 fn decode_bindings(bindings: Bindings, database: &SparqlDatabase) -> StringTable {
-    // The schema is the union of every row's variables, not the first row's:
-    // solution mappings are partial, so a variable may be bound only in a later row.
-    let mut variables: Vec<String> = Vec::new();
-    for row in &bindings {
-        let mut names: Vec<&str> = row.keys().map(|key| normalize_variable(key)).collect();
-        // Sorted so the column order does not depend on HashMap iteration order.
-        names.sort_unstable();
-        for name in names {
-            if !variables.iter().any(|v| v == name) {
-                variables.push(name.to_string());
-            }
-        }
-    }
-
-    // Lay the ids out per row first, so the variable names are never touched again.
-    let width = variables.len();
-    let mut rows: Vec<Vec<Option<u32>>> = bindings
+    // Taken apart, not rebuilt. A solution sequence already is a schema and a row of
+    // ids per solution, so the work this used to do here is now redundant twice over:
+    // it scanned every row's keys to recover the schema the sequence already carries,
+    // and it rebuilt a `HashMap` per row to read the ids back out of, then looked each
+    // variable's column up again per entry. On a union of three branches that is
+    // 60,000 maps with owned `String` keys, built and discarded.
+    let (variables, cells) = bindings.into_parts();
+    let mut rows: Vec<Vec<Option<u32>>> = cells
         .into_iter()
         .map(|row| {
-            let mut cells = vec![None; width];
-            for (name, id) in row {
-                if let Some(index) = variables.iter().position(|v| v == normalize_variable(&name)) {
-                    cells[index] = Some(id);
-                }
-            }
-            cells
+            row.into_iter()
+                .map(|id| if id == UNBOUND { None } else { Some(id) })
+                .collect()
         })
         .collect();
 
