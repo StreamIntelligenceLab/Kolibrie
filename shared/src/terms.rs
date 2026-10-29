@@ -40,10 +40,23 @@ pub type Binding = HashMap<String, u32>;
 
 /// The value a cell holds where a row binds nothing.
 ///
-/// Re-exported from [`relation`](crate::relation) so the two sequence types agree on
-/// it. Safe to reserve because neither half of the id space will mint it; see
-/// [`relation::UNBOUND`](crate::relation::UNBOUND).
-pub use crate::relation::UNBOUND;
+/// A solution mapping in SPARQL is *partial*: `OPTIONAL` and `VALUES ... UNDEF` both
+/// produce sequences whose rows bind different variable sets. The map shape said so
+/// by leaving a key out; a fixed-width row has to say it in the cell.
+///
+/// `u32::MAX` is safe to reserve because *both* halves of the id space refuse it.
+/// [`Dictionary::encode`](crate::dictionary::Dictionary::encode) asserts
+/// `next_id < QUOTED_TRIPLE_ID_BIT` (`0x8000_0000`), so an ordinary term id stays in
+/// the lower half. Quoted triple ids climb from that bit upwards and so *could* have
+/// reached the top, which is why
+/// [`QuotedTripleStore::encode`](crate::quoted_triple_store::QuotedTripleStore::encode)
+/// asserts `next_qt_id < u32::MAX`. A variable can be bound to a quoted triple, so
+/// without that second guard this sentinel would have been sound only by accident.
+/// Both guards are pinned by a test below.
+///
+/// Note that `0` would **not** have been safe: `next_id` starts at zero, so the first
+/// term interned has id `0`. Conflating that with "unbound" was a real bug once.
+pub const UNBOUND: u32 = u32::MAX;
 
 /// A solution sequence: the rows a pattern matched.
 ///
@@ -563,5 +576,234 @@ impl Term {
     /// Whether this position is a quoted triple.
     pub fn is_quoted_triple(&self) -> bool {
         matches!(self, Term::QuotedTriple(_))
+    }
+}
+
+#[cfg(test)]
+mod bindings_tests {
+    use super::*;
+
+    fn binding(entries: &[(&str, u32)]) -> Binding {
+        entries
+            .iter()
+            .map(|(name, id)| ((*name).to_string(), *id))
+            .collect()
+    }
+
+    fn sequence(rows: &[&[(&str, u32)]]) -> Bindings {
+        rows.iter().map(|row| binding(row)).collect()
+    }
+
+    #[test]
+    fn an_empty_sequence_is_not_the_unit_sequence() {
+        // The difference is load-bearing: one is a pattern that matched nothing, the
+        // other is success binding nothing, and a join against it is the identity.
+        assert!(Bindings::empty().is_empty());
+        assert_eq!(Bindings::empty().len(), 0);
+        assert!(!Bindings::unit().is_empty());
+        assert_eq!(Bindings::unit().len(), 1);
+        assert!(Bindings::unit().schema().is_empty());
+        assert!(Bindings::unit().row(0).expect("one row").is_empty());
+    }
+
+    #[test]
+    fn a_column_is_resolved_once_and_indexes_every_row() {
+        let bindings = sequence(&[&[("x", 10), ("y", 20)], &[("x", 30), ("y", 40)]]);
+        let x = bindings.column("x").expect("x is a column");
+        let values: Vec<u32> = bindings.cells().iter().map(|row| row[x]).collect();
+        assert_eq!(values, vec![10, 30]);
+        assert_eq!(bindings.column("absent"), None);
+    }
+
+    #[test]
+    fn pushing_a_row_widens_the_schema_for_a_new_variable() {
+        // A scan does not know what it will bind until it binds it, so the schema
+        // grows as rows arrive and the rows already present are padded.
+        let mut bindings = Bindings::empty();
+        bindings.push(binding(&[("x", 1)]));
+        bindings.push(binding(&[("x", 2), ("y", 3)]));
+
+        assert_eq!(bindings.schema(), ["x".to_string(), "y".to_string()]);
+        let first = bindings.row(0).expect("first row");
+        assert_eq!(first.get("x"), Some(1));
+        assert_eq!(first.get("y"), None, "the earlier row never bound y");
+        assert_eq!(bindings.row(1).expect("second row").get("y"), Some(3));
+    }
+
+    #[test]
+    fn a_row_that_does_not_bind_a_variable_reads_as_absent() {
+        // What OPTIONAL produces. The cell holds UNBOUND, and nothing reports it as
+        // a term: not `get`, not `keys`, not `iter`, not `len`.
+        let bindings = sequence(&[&[("x", 1), ("y", 2)], &[("x", 3)]]);
+        let second = bindings.row(1).expect("second row");
+
+        assert_eq!(second.get("y"), None);
+        assert!(!second.contains_key("y"));
+        assert_eq!(second.keys().collect::<Vec<_>>(), vec!["x"]);
+        assert_eq!(second.iter().collect::<Vec<_>>(), vec![("x", 3)]);
+        assert_eq!(second.len(), 1, "one variable bound, not two");
+        assert_eq!(second.to_binding(), binding(&[("x", 3)]));
+    }
+
+    #[test]
+    fn term_id_zero_is_a_term_and_not_unbound() {
+        // Dictionary::next_id starts at 0, so the first term ever interned has id 0.
+        // A sentinel of 0 would have made these two cases indistinguishable.
+        let bindings = sequence(&[&[("x", 0)], &[("y", 0)]]);
+        let x = bindings.column("x").expect("x is a column");
+        assert_eq!(bindings.row(0).expect("first").get("x"), Some(0));
+        assert_eq!(bindings.row(1).expect("second").get("x"), None);
+        assert_eq!(bindings.cells()[1][x], UNBOUND);
+    }
+
+    #[test]
+    fn appending_sequences_with_the_same_schema_keeps_every_row() {
+        let mut left = sequence(&[&[("x", 1)], &[("x", 2)]]);
+        left.append(sequence(&[&[("x", 3)]]));
+        assert_eq!(left.len(), 3);
+        assert_eq!(left.schema(), ["x".to_string()]);
+        let seen: Vec<Option<u32>> = left.iter().map(|row| row.get("x")).collect();
+        assert_eq!(seen, vec![Some(1), Some(2), Some(3)]);
+    }
+
+    #[test]
+    fn appending_sequences_with_different_schemas_unifies_them() {
+        // A union of branches binding different variables: a column only one side
+        // has is unbound in the other side's rows, never silently dropped.
+        let mut left = sequence(&[&[("s", 1), ("v", 2)]]);
+        left.append(sequence(&[&[("s", 3), ("d", 4)]]));
+
+        assert_eq!(left.len(), 2);
+        assert_eq!(left.schema().len(), 3, "s, v and d are all columns");
+        let first = left.row(0).expect("first");
+        assert_eq!((first.get("s"), first.get("v"), first.get("d")), (Some(1), Some(2), None));
+        let second = left.row(1).expect("second");
+        assert_eq!((second.get("s"), second.get("v"), second.get("d")), (Some(3), None, Some(4)));
+    }
+
+    #[test]
+    fn appending_onto_an_empty_sequence_adopts_its_schema() {
+        let mut empty = Bindings::empty();
+        empty.append(sequence(&[&[("x", 1)]]));
+        assert_eq!(empty.schema(), ["x".to_string()]);
+        assert_eq!(empty.row(0).expect("one row").get("x"), Some(1));
+    }
+
+    #[test]
+    fn binding_a_column_gives_every_solution_its_own_value() {
+        // What BIND and ML.PREDICT do: one computed value per solution, attached
+        // under a new name.
+        let mut bindings = sequence(&[&[("x", 1)], &[("x", 2)]]);
+        bindings.bind_column("doubled", vec![10, 20]);
+        assert_eq!(bindings.row(0).expect("first").get("doubled"), Some(10));
+        assert_eq!(bindings.row(1).expect("second").get("doubled"), Some(20));
+    }
+
+    #[test]
+    fn binding_a_column_leaves_a_solution_without_a_value_unbound() {
+        let mut bindings = sequence(&[&[("x", 1)], &[("x", 2)]]);
+        bindings.bind_column("maybe", vec![7, UNBOUND]);
+        assert_eq!(bindings.row(0).expect("first").get("maybe"), Some(7));
+        assert_eq!(bindings.row(1).expect("second").get("maybe"), None);
+    }
+
+    #[test]
+    fn retaining_and_ordering_see_the_values_not_the_cells() {
+        let mut bindings = sequence(&[&[("x", 3)], &[("x", 1)], &[("x", 2)]]);
+        bindings.sort_by(|left, right| left.get("x").cmp(&right.get("x")));
+        assert_eq!(
+            bindings.iter().map(|row| row.get("x")).collect::<Vec<_>>(),
+            vec![Some(1), Some(2), Some(3)]
+        );
+        bindings.retain(|row| row.get("x") != Some(2));
+        assert_eq!(
+            bindings.iter().map(|row| row.get("x")).collect::<Vec<_>>(),
+            vec![Some(1), Some(3)]
+        );
+    }
+
+    #[test]
+    fn equality_compares_what_the_solutions_bind() {
+        // Not the schema's order, and not the padding. Building both through `push`
+        // would not test this: it sorts a row's keys, so both sides come out with the
+        // same representation and comparing the fields directly would agree anyway.
+        // These are laid out deliberately differently.
+        let left = sequence(&[&[("x", 1), ("y", 2)]]);
+        assert_eq!(left.schema(), ["x".to_string(), "y".to_string()]);
+
+        let mut reversed = Bindings::with_schema(vec!["y".into(), "x".into()]);
+        reversed.push_cells(vec![2, 1]);
+        assert_eq!(left, reversed, "column order is not part of what a result says");
+
+        let mut padded = Bindings::with_schema(vec!["x".into(), "y".into(), "gone".into()]);
+        padded.push_cells(vec![1, 2, UNBOUND]);
+        assert_eq!(
+            left, padded,
+            "a column no solution binds is not part of what a result says"
+        );
+
+        assert_ne!(left, sequence(&[&[("x", 1)]]), "binding less is not equal");
+        assert_ne!(left, sequence(&[&[("x", 1), ("y", 9)]]), "values matter");
+    }
+
+    #[test]
+    fn a_round_trip_through_the_map_shape_preserves_partial_rows() {
+        let original = sequence(&[&[("x", 1), ("y", 2)], &[("x", 3)]]);
+        let maps = original.to_maps();
+        assert_eq!(maps.len(), 2);
+        assert!(!maps[1].contains_key("y"), "unbound must not become a term id");
+        assert_eq!(Bindings::from(maps), original);
+    }
+
+    #[test]
+    fn neither_half_of_the_id_space_can_mint_the_unbound_sentinel() {
+        // UNBOUND is only sound because no id can equal it. Each guard is identified
+        // by its message, because these tests run in debug, where the increment past
+        // the end panics on its own and would make this pass with the guard deleted.
+        use crate::dictionary::Dictionary;
+        use crate::quoted_triple_store::{QuotedTripleStore, QUOTED_TRIPLE_ID_BIT};
+
+        let refusal = |f: Box<dyn FnOnce() + 'static>| -> String {
+            let hook = std::panic::take_hook();
+            std::panic::set_hook(Box::new(|_| {}));
+            let caught = std::panic::catch_unwind(std::panic::AssertUnwindSafe(f));
+            std::panic::set_hook(hook);
+            let payload = caught.expect_err("minting the reserved id must panic");
+            payload
+                .downcast_ref::<String>()
+                .cloned()
+                .or_else(|| payload.downcast_ref::<&str>().map(|s| s.to_string()))
+                .unwrap_or_default()
+        };
+
+        let mut dictionary = Dictionary::new();
+        dictionary.next_id = QUOTED_TRIPLE_ID_BIT - 1;
+        assert_ne!(dictionary.encode("urn:the-last-ordinary-term"), UNBOUND);
+        let message = refusal(Box::new(move || {
+            dictionary.encode("urn:one-too-many");
+        }));
+        assert!(
+            message.contains("ID space exhausted"),
+            "the ordinary half must refuse to cross into the quoted triple range: {message}"
+        );
+
+        let mut quoted = QuotedTripleStore::new();
+        quoted.next_qt_id = u32::MAX - 1;
+        assert_ne!(quoted.encode(1, 2, 3), UNBOUND);
+        let message = refusal(Box::new(move || {
+            quoted.encode(4, 5, 6);
+        }));
+        assert!(
+            message.contains("is reserved"),
+            "the quoted half must refuse u32::MAX by its own guard, not by the \
+             debug-only overflow check that disappears in release: {message}"
+        );
+    }
+
+    #[test]
+    #[should_panic(expected = "one value per column")]
+    fn a_row_of_the_wrong_width_is_caught_in_debug() {
+        let mut bindings = Bindings::with_schema(vec!["x".into(), "y".into()]);
+        bindings.push_cells(vec![1]);
     }
 }
