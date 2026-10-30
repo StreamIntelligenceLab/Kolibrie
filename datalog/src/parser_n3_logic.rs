@@ -206,16 +206,10 @@ fn to_term(ut: UnresolvedTerm, graph: &mut Reasoner, prefix_map: &HashMap<String
         UnresolvedTerm::Prefixed(s) => {
             // Expand the prefix!
             let expanded = expand_prefix(&s, prefix_map);
-            let mut dict = graph.dictionary.write().unwrap();
-            let id = dict.encode(&expanded);
-            drop(dict);
-            Term::Constant(id)
+            Term::Constant(graph.encode_term(&expanded))
         }
         UnresolvedTerm::Iri(iri) => {
-            let mut dict = graph.dictionary.write().unwrap();
-            let id = dict.encode(&iri);
-            drop(dict);
-            Term::Constant(id)
+            Term::Constant(graph.encode_term(&iri))
         }
     }
 }
@@ -315,9 +309,10 @@ pub fn parse_n3_rules_for_sds(
     let mut output_iris: Vec<String> = Vec::new();
 
     {
-        let dict = graph.dictionary.read().unwrap();
-
-        // Walk predicate positions only.
+        // Walk predicate positions only. Each decode takes the lock for its own
+        // call, which is what a scoped encoder gives up in exchange for not handing
+        // the lock out; the walk is over rule predicates, not facts.
+        //
         for rule in &rules {
             let preds = rule
                 .premise
@@ -327,7 +322,7 @@ pub fn parse_n3_rules_for_sds(
 
             for term in preds {
                 if let Term::Constant(id) = term {
-                    if let Some(iri) = dict.decode(*id) {
+                    if let Some(iri) = graph.decode_term(*id) {
                         // Check against known window IRIs (longest-first)
                         let matched = sorted_window_iris
                             .iter()

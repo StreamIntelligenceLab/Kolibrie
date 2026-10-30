@@ -254,18 +254,14 @@ fn run_combined_workflow(
 
             // Add inferred facts back with proper encoding and error handling
             for fact in &inferred_facts {
-                let decoded = {
-                    let reasoner_dict = reasoner.dictionary.read().unwrap();
-                    if let (Some(s), Some(p), Some(o)) = (
-                        reasoner_dict.decode(fact.subject),
-                        reasoner_dict.decode(fact.predicate),
-                        reasoner_dict.decode(fact.object),
-                    ) {
-                        Some((s.to_string(), p.to_string(), o.to_string()))
-                    } else {
-                        None
-                    }
-                }; // Reasoner dict lock dropped
+                let decoded = match (
+                    reasoner.decode_term(fact.subject),
+                    reasoner.decode_term(fact.predicate),
+                    reasoner.decode_term(fact.object),
+                ) {
+                    (Some(s), Some(p), Some(o)) => Some((s, p, o)),
+                    _ => None,
+                };
 
                 if let Some((s, p, o)) = decoded {
                     database.add_triple_parts(&s, &p, &o);

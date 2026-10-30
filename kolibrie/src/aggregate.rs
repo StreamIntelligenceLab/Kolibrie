@@ -8,8 +8,8 @@
  * you can obtain one at https://mozilla.org/MPL/2.0/.
  */
 
-use std::collections::{BTreeSet, HashMap};
 
+use std::collections::BTreeSet;
 #[derive(Clone, Copy)]
 pub(crate) struct Aggregate<'a> {
     pub kind: &'a str,

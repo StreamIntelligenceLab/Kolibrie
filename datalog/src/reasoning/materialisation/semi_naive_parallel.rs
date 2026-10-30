@@ -31,7 +31,14 @@ impl Reasoner {
         // Keep track of newly inferred facts so we can return them later
         let mut inferred_so_far = Vec::new();
 
-        let dict = self.dictionary.write().unwrap();
+        // Cloned per inference below, which is this strategy's defect rather than a
+        // detail: a `&mut Dictionary` cannot cross rayon's workers, so each one
+        // interns into a copy and the ids never reach the shared term space. It held
+        // a write lock on the original the whole time for nothing. The strategy has
+        // no callers; this keeps its behaviour and states the problem rather than
+        // dressing it up.
+        let mut dict = shared::dictionary::Dictionary::new();
+        self.with_terms(&mut |shared| dict = shared.clone());
 
         // Repeat until no new facts are inferred
         loop {

@@ -45,12 +45,12 @@ fn main() {
     println!("  Uncertain knowledge (trusts): 7 facts");
     println!("  Initial database size: {} triples", initial_size);
 
-    let knows_id = kg.dictionary.write().unwrap().encode("knows");
-    let connected_id = kg.dictionary.write().unwrap().encode("connected");
-    let trusts_id = kg.dictionary.write().unwrap().encode("trusts");
-    let indirect_id = kg.dictionary.write().unwrap().encode("indirectTrust");
-    let strong_bond_id = kg.dictionary.write().unwrap().encode("strongBond");
-    let trust_comm_id = kg.dictionary.write().unwrap().encode("trustCommunity");
+    let knows_id = kg.encode_term("knows");
+    let connected_id = kg.encode_term("connected");
+    let trusts_id = kg.encode_term("trusts");
+    let indirect_id = kg.encode_term("indirectTrust");
+    let strong_bond_id = kg.encode_term("strongBond");
+    let trust_comm_id = kg.encode_term("trustCommunity");
 
     // Rule 1: knows(X,Y) ∧ knows(Y,Z) -> connected(X,Z)  (two-hop)
     let rule1 = Rule {
@@ -189,7 +189,6 @@ fn main() {
 
     println!("  Inferred connected facts (sample):");
     {
-        let dict = kg.dictionary.read().unwrap();
         let mut shown = 0;
         for t in &facts1 {
             if shown >= 5 {
@@ -198,8 +197,8 @@ fn main() {
             if t.predicate == connected_id {
                 println!(
                     "    {} connected {}",
-                    dict.decode(t.subject).unwrap_or("?"),
-                    dict.decode(t.object).unwrap_or("?")
+                    kg.decode_term(t.subject).unwrap_or_else(|| "?".to_string()),
+                    kg.decode_term(t.object).unwrap_or_else(|| "?".to_string())
                 );
                 shown += 1;
             }
@@ -224,14 +223,13 @@ fn main() {
 
     println!("  indirectTrust facts:");
     {
-        let dict = kg.dictionary.read().unwrap();
         for (triple, tag) in tag_store.iter() {
             if triple.predicate == indirect_id {
                 let prob = AddMultProbability.recover_probability(tag);
                 println!(
                     "    {} indirectTrust {} (prob={:.2})",
-                    dict.decode(triple.subject).unwrap_or("?"),
-                    dict.decode(triple.object).unwrap_or("?"),
+                    kg.decode_term(triple.subject).unwrap_or_else(|| "?".to_string()),
+                    kg.decode_term(triple.object).unwrap_or_else(|| "?".to_string()),
                     prob
                 );
             }
@@ -240,14 +238,13 @@ fn main() {
 
     println!("  strongBond facts:");
     {
-        let dict = kg.dictionary.read().unwrap();
         for (triple, tag) in tag_store.iter() {
             if triple.predicate == strong_bond_id {
                 let prob = AddMultProbability.recover_probability(tag);
                 println!(
                     "    {} strongBond {} (prob={:.2})",
-                    dict.decode(triple.subject).unwrap_or("?"),
-                    dict.decode(triple.object).unwrap_or("?"),
+                    kg.decode_term(triple.subject).unwrap_or_else(|| "?".to_string()),
+                    kg.decode_term(triple.object).unwrap_or_else(|| "?".to_string()),
                     prob
                 );
             }
@@ -269,13 +266,12 @@ fn main() {
 
     println!("  trustCommunity facts:");
     {
-        let dict = kg.dictionary.read().unwrap();
         for t in &facts3 {
             if t.predicate == trust_comm_id {
                 println!(
                     "    {} trustCommunity {}",
-                    dict.decode(t.subject).unwrap_or("?"),
-                    dict.decode(t.object).unwrap_or("?")
+                    kg.decode_term(t.subject).unwrap_or_else(|| "?".to_string()),
+                    kg.decode_term(t.object).unwrap_or_else(|| "?".to_string())
                 );
             }
         }

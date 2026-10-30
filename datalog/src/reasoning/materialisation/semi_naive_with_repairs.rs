@@ -35,8 +35,10 @@ impl Reasoner {
         let mut delta = all_facts.clone();
         let mut inferred_so_far = Vec::new();
 
-        let mut dict = self.dictionary.write().unwrap();
-
+        // Scoped around the whole fixpoint, which is one lock acquisition exactly as
+        // before -- the difference is that the lock cannot outlive the loop.
+        let terms = self.terms();
+        shared::term_encoder::TermEncoder::with_terms(&terms, &mut |dict| {
         loop {
             let mut new_delta = HashSet::new();
 
@@ -48,7 +50,7 @@ impl Reasoner {
                         // Process each conclusion
                         for conclusion in &rule.conclusion {
                             let inferred = replace_variables_with_bound_values(
-                                conclusion, &binding, &mut dict,
+                                conclusion, &binding, dict,
                             );
 
                             // Check if adding this fact would cause inconsistency
@@ -76,6 +78,7 @@ impl Reasoner {
 
             delta = new_delta;
         }
+        });
 
         inferred_so_far
     }

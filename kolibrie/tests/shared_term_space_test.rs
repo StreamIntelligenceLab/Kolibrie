@@ -29,7 +29,7 @@ fn a_term_interned_by_the_reasoner_decodes_through_the_store() {
     reasoner.adopt_terms(database.terms());
 
     // A term the store has never seen, interned on the reasoner's side only.
-    let id = reasoner.dictionary.write().unwrap().encode("urn:brand-new");
+    let id = reasoner.encode_term("urn:brand-new");
 
     // No sync step. The store decodes it because the encoding is shared, not copied.
     assert_eq!(
@@ -46,7 +46,7 @@ fn the_store_and_the_reasoner_agree_on_ids_for_the_same_term() {
 
     let mut reasoner = Reasoner::new();
     reasoner.adopt_terms(database.terms());
-    let from_reasoner = reasoner.dictionary.write().unwrap().encode("urn:shared");
+    let from_reasoner = reasoner.encode_term("urn:shared");
 
     assert_eq!(
         from_store, from_reasoner,
@@ -64,7 +64,7 @@ fn a_reasoner_with_its_own_term_space_does_not_agree() {
     let store_id = database.dictionary_mut().encode("urn:second");
 
     let lonely = Reasoner::new();
-    let lonely_id = lonely.dictionary.write().unwrap().encode("urn:second");
+    let lonely_id = lonely.encode_term("urn:second");
 
     assert_ne!(
         store_id, lonely_id,

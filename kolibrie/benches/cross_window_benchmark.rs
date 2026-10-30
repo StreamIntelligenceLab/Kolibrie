@@ -13,6 +13,7 @@ use shared::rule::Rule;
 use shared::triple::Triple;
 use std::collections::{BTreeSet, HashMap};
 use std::sync::{Arc, RwLock};
+use shared::term_encoder::SharedTerms;
 
 const TRAFFIC_IRI: &str = "http://traffic/";
 const PARKING_IRI: &str = "http://parking/";
@@ -28,7 +29,7 @@ const RULE_N3: &str = r#"
 
 fn parse_rules(dict: &Arc<RwLock<Dictionary>>) -> Vec<Rule> {
     let mut reasoner = Reasoner::new();
-    reasoner.dictionary = Arc::clone(dict);
+    reasoner.adopt_terms(SharedTerms::from_handle(Arc::clone(dict)));
     let window_widths: HashMap<String, u64> = [
         (TRAFFIC_IRI.to_string(), 60),
         (PARKING_IRI.to_string(), 120),

@@ -6,7 +6,7 @@ use shared::terms::Term;
 use std::collections::HashMap;
 
 fn enc(r: &Reasoner, s: &str) -> u32 {
-    r.dictionary.write().unwrap().encode(s)
+    r.encode_term(s)
 }
 
 fn rule(premises: Vec<(Term, Term, Term)>, conclusions: Vec<(Term, Term, Term)>) -> Rule {

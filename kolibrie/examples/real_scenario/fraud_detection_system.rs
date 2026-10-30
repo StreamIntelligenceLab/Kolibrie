@@ -1239,16 +1239,13 @@ fn run_reasoning(database: &mut SparqlDatabase, rules: &[Rule], tx_uri: &str) ->
     let inferred = reasoner.infer_new_facts_semi_naive();
 
     for fact in &inferred {
-        let decoded = {
-            let d = reasoner.dictionary.read().unwrap();
-            match (
-                d.decode(fact.subject),
-                d.decode(fact.predicate),
-                d.decode(fact.object),
-            ) {
-                (Some(s), Some(p), Some(o)) => Some((s.to_string(), p.to_string(), o.to_string())),
-                _ => None,
-            }
+        let decoded = match (
+            reasoner.decode_term(fact.subject),
+            reasoner.decode_term(fact.predicate),
+            reasoner.decode_term(fact.object),
+        ) {
+            (Some(s), Some(p), Some(o)) => Some((s, p, o)),
+            _ => None,
         };
         if let Some((s, p, o)) = decoded {
             database.add_triple_parts(&s, &p, &o);

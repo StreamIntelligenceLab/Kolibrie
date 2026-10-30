@@ -35,11 +35,9 @@ use shared::provenance::Provenance;
 use shared::rule::Rule;
 use shared::rule_index::RuleIndex;
 use shared::tag_store::TagStore;
-use shared::term_encoder::SharedTerms;
+use shared::term_encoder::{SharedTerms, TermEncoder};
 use shared::triple::Triple;
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
-use std::sync::Arc;
-use std::sync::RwLock;
 
 // Logic part: Knowledge Graph
 
@@ -57,7 +55,13 @@ use std::sync::RwLock;
 pub struct Reasoner {
     /// Term interning, shared with the caller rather than owned: a fact inserted
     /// here has to decode to the same string on the other side.
-    pub dictionary: Arc<RwLock<Dictionary>>,
+    ///
+    /// Private, and reached through [`terms`](Self::terms) or
+    /// [`with_terms`](Self::with_terms). It was a public `Arc<RwLock<Dictionary>>`,
+    /// which is P5's "nothing leaks" breached in the plainest way: a caller had to
+    /// name the locking strategy to intern a term, and six places shared a dictionary
+    /// by assigning the field rather than by asking.
+    terms: SharedTerms,
     /// Rules to evaluate. Order does not affect the fixpoint.
     pub rules: Vec<Rule>, // List of dynamic rules
 
@@ -105,16 +109,99 @@ impl Reasoner {
     /// that assigns the handle and then assigns it back to "sync" the result is
     /// doing nothing; see the note this replaced in `kolibrie-http-server`.
     pub fn adopt_terms(&mut self, terms: SharedTerms) {
-        self.dictionary = terms.handle();
+        self.terms = terms;
+    }
+
+    /// The term space this reasoner is using, to share with something else.
+    ///
+    /// The counterpart to [`adopt_terms`](Self::adopt_terms): two components agree on
+    /// a term space by one handing its own over, without either naming how it is
+    /// held.
+    pub fn terms(&self) -> SharedTerms {
+        self.terms.clone()
+    }
+
+    /// Runs `visit` against the dictionary, for the duration of the call only.
+    ///
+    /// The scoped form: the lock is taken and released around `visit`, so a caller
+    /// cannot hold it open across unrelated work, which is what reaching into a
+    /// public handle allowed.
+    pub fn with_terms(&self, visit: &mut dyn FnMut(&mut Dictionary)) {
+        TermEncoder::with_terms(&self.terms, visit);
+    }
+
+    /// Interns `text` in this reasoner's term space and returns its id.
+    ///
+    /// The common case by far, and worth a name: most callers took a write lock to
+    /// encode one term and dropped it again.
+    pub fn encode_term(&self, text: &str) -> u32 {
+        let mut id = 0;
+        self.with_terms(&mut |dictionary| id = dictionary.encode(text));
+        id
+    }
+
+    /// A copy of the term space, for code that reads many terms and writes none.
+    ///
+    /// The scoped encoder deliberately will not hand its lock out, so a read-only
+    /// dump either takes the lock once per term or copies once. Copying is the
+    /// cheaper of the two for `to_dot`, which decodes every subject, predicate and
+    /// object it prints, and it cannot hold the lock while it formats.
+    pub fn dictionary_snapshot(&self) -> Dictionary {
+        let mut copy = Dictionary::new();
+        self.with_terms(&mut |dictionary| copy = dictionary.clone());
+        copy
+    }
+
+    /// Interns a triple's three terms under one lock.
+    ///
+    /// Four callers took a write lock, encoded subject, predicate and object, and
+    /// dropped it. One lock acquisition, as before, but the caller no longer says so.
+    pub fn encode_triple(&self, subject: &str, predicate: &str, object: &str) -> (u32, u32, u32) {
+        let mut ids = (0, 0, 0);
+        self.with_terms(&mut |dictionary| {
+            ids = (
+                dictionary.encode(subject),
+                dictionary.encode(predicate),
+                dictionary.encode(object),
+            );
+        });
+        ids
+    }
+
+    /// Interns whichever of a pattern's positions are given.
+    pub fn encode_pattern(
+        &self,
+        subject: Option<&str>,
+        predicate: Option<&str>,
+        object: Option<&str>,
+    ) -> (Option<u32>, Option<u32>, Option<u32>) {
+        let mut ids = (None, None, None);
+        self.with_terms(&mut |dictionary| {
+            ids = (
+                subject.map(|s| dictionary.encode(s)),
+                predicate.map(|p| dictionary.encode(p)),
+                object.map(|o| dictionary.encode(o)),
+            );
+        });
+        ids
+    }
+
+    /// The string `id` stands for, if this term space knows it.
+    pub fn decode_term(&self, id: u32) -> Option<String> {
+        let mut text = None;
+        self.with_terms(&mut |dictionary| {
+            text = dictionary.decode(id).map(str::to_string);
+        });
+        text
     }
 
     /// An empty reasoner with a fresh dictionary of its own.
     ///
-    /// To share a caller's dictionary instead, assign to
-    /// [`dictionary`](Self::dictionary) before inserting anything.
+    /// To share a caller's term space instead, call
+    /// [`adopt_terms`](Self::adopt_terms) before inserting anything.
     pub fn new() -> Self {
         Self {
-            dictionary: Arc::new(RwLock::new(Dictionary::new())),
+            terms: SharedTerms::new(),
             rules: Vec::new(),
             dataset_index: DatasetIndex::new(),
             rule_index: RuleIndex::new(),
@@ -132,11 +219,7 @@ impl Reasoner {
         object: &str,
         probability: f64,
     ) {
-        let mut dict = self.dictionary.write().unwrap();
-        let s = dict.encode(subject);
-        let p = dict.encode(predicate);
-        let o = dict.encode(object);
-        drop(dict);
+        let (s, p, o) = self.encode_triple(subject, predicate, object);
 
         let triple = Triple {
             subject: s,
@@ -150,10 +233,11 @@ impl Reasoner {
     /// Materialize provenance tags as RDF-star triples so they are queryable via SPARQL-star.
     /// Generates triples of the form: << s p o >> <prob:value> "0.7"^^xsd:double
     pub fn materialize_tags_as_rdf_star<P: Provenance>(&mut self, tag_store: &TagStore<P>) {
-        let mut dict = self.dictionary.write().unwrap();
         let mut qt_store = shared::quoted_triple_store::QuotedTripleStore::new();
-        let rdf_star_triples = tag_store.encode_as_rdf_star(&mut dict, &mut qt_store);
-        drop(dict);
+        let mut rdf_star_triples = Vec::new();
+        self.with_terms(&mut |dictionary| {
+            rdf_star_triples = tag_store.encode_as_rdf_star(dictionary, &mut qt_store);
+        });
 
         for triple in &rdf_star_triples {
             self.dataset_index.insert(triple);
@@ -162,11 +246,7 @@ impl Reasoner {
 
     /// Add an ABox triple (instance-level information)
     pub fn add_abox_triple(&mut self, subject: &str, predicate: &str, object: &str) {
-        let mut dict = self.dictionary.write().unwrap();
-        let s = dict.encode(subject);
-        let p = dict.encode(predicate);
-        let o = dict.encode(object);
-        drop(dict); // Release lock early
+        let (s, p, o) = self.encode_triple(subject, predicate, object); // Release lock early
 
         self.dataset_index.insert(&Triple {
             subject: s,
@@ -187,11 +267,7 @@ impl Reasoner {
         predicate: Option<&str>,
         object: Option<&str>,
     ) -> Vec<Triple> {
-        let mut dict = self.dictionary.write().unwrap();
-        let s = subject.map(|s| dict.encode(s));
-        let p = predicate.map(|p| dict.encode(p));
-        let o = object.map(|o| dict.encode(o));
-        drop(dict); // Release lock early
+        let (s, p, o) = self.encode_pattern(subject, predicate, object); // Release lock early
 
         self.dataset_index.query(s, p, o)
     }

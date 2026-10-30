@@ -68,9 +68,11 @@ impl Reasoner {
         let idx_before_inference = all_facts.len(); // Used to keep track of which facts are inferred by the algorithm
 
         loop {
-            let mut dict = self.dictionary.write().unwrap();
-            let mut inferred_facts_this_round =
-                strat.infer_round(&mut dict, &self.rules, &all_facts, &known_facts);
+            let mut inferred_facts_this_round = HashSet::new();
+            self.with_terms(&mut |dictionary| {
+                inferred_facts_this_round =
+                    strat.infer_round(dictionary, &self.rules, &all_facts, &known_facts);
+            });
 
             if inferred_facts_this_round.is_empty() {
                 break;

@@ -14,6 +14,7 @@ use shared::triple::Triple;
 use std::collections::{BTreeSet, HashMap};
 use std::sync::{Arc, RwLock};
 use std::time::Duration;
+use shared::term_encoder::SharedTerms;
 
 const TRAFFIC_IRI: &str = "http://citybench.example/traffic/";
 const PARKING_IRI: &str = "http://citybench.example/parking/";
@@ -36,7 +37,7 @@ const CROSS_WINDOW_RULES: &str = r#"
 
 fn parse_rules(dict: &Arc<RwLock<Dictionary>>) -> Vec<Rule> {
     let mut reasoner = Reasoner::new();
-    reasoner.dictionary = Arc::clone(dict);
+    reasoner.adopt_terms(SharedTerms::from_handle(Arc::clone(dict)));
     let window_widths = HashMap::from([
         (TRAFFIC_IRI.to_string(), TRAFFIC_ALPHA),
         (PARKING_IRI.to_string(), PARKING_ALPHA),

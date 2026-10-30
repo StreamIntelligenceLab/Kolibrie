@@ -18,6 +18,7 @@
 use crate::cross_window_sds::{translate_datalog_back, translate_sds_to_datalog, Sds};
 use crate::reasoning::Reasoner;
 use shared::dictionary::Dictionary;
+use shared::term_encoder::SharedTerms;
 use shared::rule::Rule;
 use shared::triple::Triple;
 use std::collections::HashMap;
@@ -33,7 +34,7 @@ pub fn naive_sds_plus(
     let annotated = translate_sds_to_datalog(sds, dict, current_time);
 
     let mut reasoner = Reasoner::new();
-    reasoner.dictionary = Arc::clone(dict);
+    reasoner.adopt_terms(SharedTerms::from_handle(Arc::clone(dict)));
 
     for (triple, _expiry) in &annotated {
         reasoner.dataset_index.insert(triple);

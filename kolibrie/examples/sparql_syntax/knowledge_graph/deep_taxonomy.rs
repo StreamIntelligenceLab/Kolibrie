@@ -121,8 +121,7 @@ fn main() {
     }
 
     for (pred_id, _) in &predicate_counts {
-        let dict = kg.dictionary.read().unwrap();
-        let pred_str = dict.decode(*pred_id).unwrap_or("");
+        let pred_str = kg.decode_term(*pred_id).unwrap_or_else(|| "".to_string());
         if pred_str.contains("rdf-syntax-ns#type") || pred_str.ends_with("type") {
             rdf_type_id = Some(*pred_id);
         }

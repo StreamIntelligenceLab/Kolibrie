@@ -178,20 +178,20 @@ fn execute_sdd_rule_batch(db: &mut SparqlDatabase, rule_inputs: &[String]) -> us
             .expect("expected at most one RULE block")
             .cloned()
             .expect("expected RULE block");
-
-        let mut dict = reasoner.dictionary.write().unwrap();
-        let dynamic_rule = convert_combined_rule(parsed_rule, &mut dict, &prefixes);
-        drop(dict);
-        reasoner.add_rule(dynamic_rule);
+        let mut dynamic_rule = None;
+        reasoner.with_terms(&mut |dict| {
+            dynamic_rule = Some(convert_combined_rule(parsed_rule.clone(), dict, &prefixes));
+        });
+        reasoner.add_rule(dynamic_rule.expect("the visitor always runs"));
     }
 
     let (derived_facts, tag_store) = reasoner.infer_new_facts_with_provenance(SddProvenance::new());
-
-    let mut dict = reasoner.dictionary.write().unwrap();
     let mut qt_store = db.quoted_triples_mut();
-    let rdf_star = tag_store.encode_as_rdf_star_with_explanation(&mut dict, &mut qt_store);
+    let mut rdf_star = Vec::new();
+    reasoner.with_terms(&mut |dict| {
+        rdf_star = tag_store.encode_as_rdf_star_with_explanation(dict, &mut qt_store);
+    });
     drop(qt_store);
-    drop(dict);
 
     for triple in rdf_star {
         db.add_triple(triple);

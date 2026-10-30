@@ -22,10 +22,8 @@ fn knowledge_graph() {
     graph.add_abox_triple("Bob", "hasParent", "Charlie");
 
     // Define a dynamic rule: If X hasParent Y and Y hasParent Z, then X hasGrandparent Z
-    let mut dict = graph.dictionary.write().unwrap();
-    let has_parent_id = dict.encode("hasParent");
-    let has_grandparent_id = dict.encode("hasGrandparent");
-    drop(dict);
+    let has_parent_id = graph.encode_term("hasParent");
+    let has_grandparent_id = graph.encode_term("hasGrandparent");
 
     let grandparent_rule = Rule {
         premise: vec![
@@ -56,13 +54,12 @@ fn knowledge_graph() {
     let inferred_facts = graph.infer_new_facts();
 
     // Print inferred facts
-    let dict = graph.dictionary.read().unwrap();
     for triple in inferred_facts {
         println!(
             "{} -- {} -- {}",
-            dict.decode(triple.subject).unwrap(),
-            dict.decode(triple.predicate).unwrap(),
-            dict.decode(triple.object).unwrap()
+            graph.decode_term(triple.subject).unwrap(),
+            graph.decode_term(triple.predicate).unwrap(),
+            graph.decode_term(triple.object).unwrap()
         );
     }
 }
@@ -75,11 +72,9 @@ fn backward_chaining() {
     kg.add_abox_triple("Bob", "parent", "Charlie");
 
     // Encode terms
-    let mut dict = kg.dictionary.write().unwrap();
-    let parent = dict.encode("parent");
-    let ancestor = dict.encode("ancestor");
-    let charlie = dict.encode("Charlie");
-    drop(dict);
+    let parent = kg.encode_term("parent");
+    let ancestor = kg.encode_term("ancestor");
+    let charlie = kg.encode_term("Charlie");
 
     // Rules
     let rule1 = Rule {
@@ -134,11 +129,10 @@ fn backward_chaining() {
     let results = kg.backward_chaining(&query);
 
     // Decode and print results
-    let dict = kg.dictionary.read().unwrap();
     for res in results {
         if let Some(ancestor_term) = res.get("A") {
             if let Term::Constant(ancestor_id) = resolve_term(ancestor_term, &res) {
-                if let Some(ancestor_name) = dict.decode(ancestor_id) {
+                if let Some(ancestor_name) = kg.decode_term(ancestor_id) {
                     println!("Ancestor: {}", ancestor_name);
                 }
             }
@@ -177,11 +171,10 @@ fn test() {
             let inferred_facts = graph.infer_new_facts();
 
             println!("\nOriginal and Inferred Facts:");
-            let dict = graph.dictionary.read().unwrap();
             for triple in old_facts.iter().chain(inferred_facts.iter()) {
-                let s = dict.decode(triple.subject).unwrap();
-                let p = dict.decode(triple.predicate).unwrap();
-                let o = dict.decode(triple.object).unwrap();
+                let s = graph.decode_term(triple.subject).unwrap();
+                let p = graph.decode_term(triple.predicate).unwrap();
+                let o = graph.decode_term(triple.object).unwrap();
                 println!("<{}> -- <{}> -- <{}> .", s, p, o);
             }
         }
@@ -216,11 +209,10 @@ fn test2() {
             let inferred_facts = kg.infer_new_facts();
 
             println!("\nOriginal and Inferred Facts:");
-            let dict = kg.dictionary.read().unwrap();
             for triple in old_facts.iter().chain(inferred_facts.iter()) {
-                let s = dict.decode(triple.subject).unwrap();
-                let p = dict.decode(triple.predicate).unwrap();
-                let o = dict.decode(triple.object).unwrap();
+                let s = kg.decode_term(triple.subject).unwrap();
+                let p = kg.decode_term(triple.predicate).unwrap();
+                let o = kg.decode_term(triple.object).unwrap();
                 println!("<{}> <{}> <{}>.", s, p, o);
             }
         }
@@ -236,11 +228,9 @@ fn inconsistency() {
     kg.add_abox_triple("john", "isA", "student"); // This could be inconsistent
 
     // Encode terms
-    let mut dict = kg.dictionary.write().unwrap();
-    let is_a = dict.encode("isA");
-    let professor = dict.encode("professor");
-    let student = dict.encode("student");
-    drop(dict);
+    let is_a = kg.encode_term("isA");
+    let professor = kg.encode_term("professor");
+    let student = kg.encode_term("student");
 
     // Add a constraint: someone cannot be both a professor and a student
     let constraint = Rule {

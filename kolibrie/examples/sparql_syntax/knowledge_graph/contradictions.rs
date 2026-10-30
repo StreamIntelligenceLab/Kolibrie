@@ -22,11 +22,9 @@ fn example_with_contradictions() -> Reasoner {
     kg.add_abox_triple("john", "enrolledIn", "physics101");
 
     // Add a constraint: No one can be both a professor and a student
-    let mut dict = kg.dictionary.write().unwrap();
-    let isa_id = dict.encode("isA");
-    let professor_id = dict.encode("professor");
-    let student_id = dict.encode("student");
-    drop(dict);
+    let isa_id = kg.encode_term("isA");
+    let professor_id = kg.encode_term("professor");
+    let student_id = kg.encode_term("student");
 
     let constraint = Rule {
         premise: vec![
@@ -48,10 +46,8 @@ fn example_with_contradictions() -> Reasoner {
     kg.add_constraint(constraint);
 
     // Add inference rules
-    let mut dict = kg.dictionary.write().unwrap();
-    let teaches_id = dict.encode("teaches");
-    let enrolled_id = dict.encode("enrolledIn");
-    drop(dict);
+    let teaches_id = kg.encode_term("teaches");
+    let enrolled_id = kg.encode_term("enrolledIn");
 
     let professor_rule = Rule {
         premise: vec![(
@@ -103,20 +99,17 @@ fn main() {
     // Print newly inferred facts
     println!("\nNewly inferred facts:");
     for fact in inferred_facts {
-        let dict = kg.dictionary.read().unwrap();
         println!(
             "{} {} {}",
-            dict.decode(fact.subject).unwrap_or("unknown"),
-            dict.decode(fact.predicate).unwrap_or("unknown"),
-            dict.decode(fact.object).unwrap_or("unknown")
+            kg.decode_term(fact.subject).unwrap_or_else(|| "unknown".to_string()),
+            kg.decode_term(fact.predicate).unwrap_or_else(|| "unknown".to_string()),
+            kg.decode_term(fact.object).unwrap_or_else(|| "unknown".to_string())
         );
     }
 
     // Query for John's status
-    let mut dict = kg.dictionary.write().unwrap();
-    let john_id = dict.encode("john");
-    let isa_id = dict.encode("isA");
-    drop(dict);
+    let john_id = kg.encode_term("john");
+    let isa_id = kg.encode_term("isA");
 
     let query = (
         Term::Constant(john_id),
@@ -128,21 +121,19 @@ fn main() {
     println!("\nQuery results for John's roles:");
     for binding in results {
         if let Some(&role_id) = binding.get("Role") {
-            let dict = kg.dictionary.read().unwrap();
-            println!("Role: {}", dict.decode(role_id).unwrap_or("unknown"));
+            println!("Role: {}", kg.decode_term(role_id).unwrap_or_else(|| "unknown".to_string()));
         }
     }
 }
 
 fn print_all_facts(kg: &Reasoner) {
     let facts = kg.dataset_index.query_default(None, None, None);
-    let dict = kg.dictionary.read().unwrap();
     for fact in facts {
         println!(
             "{} {} {}",
-            dict.decode(fact.subject).unwrap_or("unknown"),
-            dict.decode(fact.predicate).unwrap_or("unknown"),
-            dict.decode(fact.object).unwrap_or("unknown")
+            kg.decode_term(fact.subject).unwrap_or_else(|| "unknown".to_string()),
+            kg.decode_term(fact.predicate).unwrap_or_else(|| "unknown".to_string()),
+            kg.decode_term(fact.object).unwrap_or_else(|| "unknown".to_string())
         );
     }
 }

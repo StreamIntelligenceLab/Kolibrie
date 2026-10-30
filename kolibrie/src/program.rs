@@ -55,6 +55,7 @@ use std::time::{Duration, Instant};
 use datalog::reasoning::materialisation::sdd_seed_materialise::try_infer_new_facts_with_sdd_seed_specs;
 use datalog::reasoning::Reasoner;
 use shared::dictionary::Dictionary;
+use shared::term_encoder::SharedTerms;
 use shared::provenance::Provenance;
 use shared::query::{
     CombinedQuery, CombinedRule, FilterExpression, ModelDecl, NeuralOutputKind, NeuralRelationDecl,
@@ -1670,7 +1671,7 @@ fn run_program(
     let dictionary = Arc::new(RwLock::new(Dictionary::new()));
     let quoted = Arc::new(RwLock::new(QuotedTripleStore::new()));
     let mut reasoner = Reasoner::new();
-    reasoner.dictionary = Arc::clone(&dictionary);
+    reasoner.adopt_terms(SharedTerms::from_handle(Arc::clone(&dictionary)));
     let asserted = copy_asserted_input(
         input,
         program,
@@ -1766,7 +1767,7 @@ fn run_program(
 
     let phase = Instant::now();
     let mut dataset = SparqlDatabase::new();
-    dataset.dictionary = Arc::clone(&dictionary);
+    dataset.adopt_terms(SharedTerms::from_handle(Arc::clone(&dictionary)));
     dataset.quoted_triple_store = Arc::clone(&quoted);
     dataset.prefixes = program.prefixes.clone();
     dataset.set_implicit_neural_materialization(false);

@@ -393,7 +393,11 @@ fn run_negative_stratum_pass<P: Provenance>(
     let all_facts_set: HashSet<Triple> = all_facts.iter().cloned().collect();
     let mut new_derived: Vec<Triple> = Vec::new();
 
-    let mut dict = reasoner.dictionary.write().unwrap();
+    // Scoped around the whole pass, because `replace_variables_with_bound_values`
+    // interns new terms and a copy would throw them away. Taken out of `reasoner`
+    // first so the closure can still insert into its fact base.
+    let terms = reasoner.terms();
+    shared::term_encoder::TermEncoder::with_terms(&terms, &mut |dict| {
 
     for rule in rules {
         // Join all positive premises to get candidate bindings.
@@ -466,7 +470,7 @@ fn run_negative_stratum_pass<P: Provenance>(
             // Derive conclusions.
             for conclusion in &rule.conclusion {
                 let inferred =
-                    replace_variables_with_bound_values(conclusion, &u32_binding, &mut dict);
+                    replace_variables_with_bound_values(conclusion, &u32_binding, dict);
 
                 if !all_facts_set.contains(&inferred) && !new_derived.contains(&inferred) {
                     tag_store.set_tag(&inferred, conclusion_tag.clone());
@@ -479,6 +483,6 @@ fn run_negative_stratum_pass<P: Provenance>(
         }
     }
 
-    drop(dict);
+    });
     new_derived
 }

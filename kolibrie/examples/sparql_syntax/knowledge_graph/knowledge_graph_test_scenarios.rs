@@ -27,8 +27,7 @@ fn test1() {
 
     // Add transitivity rule: likes(X, Y) & likes(Y, Z) => likes(X, Z)
     let likes_id = {
-        let mut dict = kg.dictionary.write().unwrap();
-        dict.encode("likes")
+        kg.encode_term("likes")
     };
 
     kg.add_rule(Rule {
@@ -83,22 +82,20 @@ fn test1() {
 
     println!("person0 likes these people:");
     for triple in results {
-        let dict = kg.dictionary.read().unwrap();
-        let s_str = dict.decode(triple.subject).unwrap();
-        let p_str = dict.decode(triple.predicate).unwrap();
-        let o_str = dict.decode(triple.object).unwrap();
+        let s_str = kg.decode_term(triple.subject).unwrap();
+        let p_str = kg.decode_term(triple.predicate).unwrap();
+        let o_str = kg.decode_term(triple.object).unwrap();
         println!("  {} {} {}", s_str, p_str, o_str);
     }
 
     // Display the newly inferred facts
     println!("Inferred facts:");
     for fact in inferred_facts {
-        let dict = kg.dictionary.read().unwrap();
         println!(
             "({:?}, {:?}, {:?})",
-            dict.decode(fact.subject),
-            dict.decode(fact.predicate),
-            dict.decode(fact.object),
+            kg.decode_term(fact.subject),
+            kg.decode_term(fact.predicate),
+            kg.decode_term(fact.object),
         );
     }
 }
@@ -110,10 +107,9 @@ fn test2() {
 
     for i in 0..5 {
         let (type_id, class_i_id, class_next_id) = {
-            let mut dict = kg.dictionary.write().unwrap();
-            let type_id = dict.encode("type");
-            let class_i_id = dict.encode(&format!("Class{}", i));
-            let class_next_id = dict.encode(&format!("Class{}", i + 1));
+            let type_id = kg.encode_term("type");
+            let class_i_id = kg.encode_term(&format!("Class{}", i));
+            let class_next_id = kg.encode_term(&format!("Class{}", i + 1));
             (type_id, class_i_id, class_next_id)
         };
 
@@ -147,21 +143,19 @@ fn test2() {
 
     println!("myInstance has these types after inference:");
     for triple in &results {
-        let dict = kg.dictionary.read().unwrap();
-        let s_str = dict.decode(triple.subject).unwrap();
-        let p_str = dict.decode(triple.predicate).unwrap();
-        let o_str = dict.decode(triple.object).unwrap();
+        let s_str = kg.decode_term(triple.subject).unwrap();
+        let p_str = kg.decode_term(triple.predicate).unwrap();
+        let o_str = kg.decode_term(triple.object).unwrap();
         println!("  {} {} {}", s_str, p_str, o_str);
     }
 
     println!("Inferred facts:");
     for fact in inferred_facts {
-        let dict = kg.dictionary.read().unwrap();
         println!(
             "({:?}, {:?}, {:?})",
-            dict.decode(fact.subject),
-            dict.decode(fact.predicate),
-            dict.decode(fact.object),
+            kg.decode_term(fact.subject),
+            kg.decode_term(fact.predicate),
+            kg.decode_term(fact.object),
         );
     }
 }
@@ -181,8 +175,7 @@ fn transitivity_benchmark() {
 
         // Only transitivity rule
         let likes_id = {
-            let mut dict = kg.dictionary.write().unwrap();
-            dict.encode("likes")
+            kg.encode_term("likes")
         };
 
         kg.add_rule(Rule {

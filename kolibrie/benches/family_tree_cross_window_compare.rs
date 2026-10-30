@@ -14,6 +14,7 @@ use shared::triple::Triple;
 use std::collections::{BTreeSet, HashMap};
 use std::sync::{Arc, RwLock};
 use std::time::Duration;
+use shared::term_encoder::SharedTerms;
 
 const PARENT_OF_SDS_STREAM_IRI: &str = "http://family.example/sds/stream1/parent-facts/";
 const FAMILY_SDS_STREAM_IRI: &str = "http://family.example/sds/stream2/family-facts/";
@@ -50,7 +51,7 @@ struct TwoStreamFamilyFacts {
 
 fn parse_rules(dict: &Arc<RwLock<Dictionary>>) -> Vec<Rule> {
     let mut reasoner = Reasoner::new();
-    reasoner.dictionary = Arc::clone(dict);
+    reasoner.adopt_terms(SharedTerms::from_handle(Arc::clone(dict)));
     let window_widths = HashMap::from([
         (PARENT_OF_SDS_STREAM_IRI.to_string(), WINDOW_ALPHA),
         (FAMILY_SDS_STREAM_IRI.to_string(), WINDOW_ALPHA),

@@ -205,7 +205,7 @@ fn build_ml_predict_logical_plan(
         .map(|(var, _, _)| var.to_string())
         .collect();
 
-    let buffer_plan = LogicalOperator::buffer(room_data, "ML_INPUT".to_string());
+    let buffer_plan = LogicalOperator::buffer(room_data.into(), "ML_INPUT".to_string());
 
     Ok(LogicalOperator::ml_predict(
         buffer_plan,

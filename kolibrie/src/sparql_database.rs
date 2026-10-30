@@ -2416,6 +2416,21 @@ impl SparqlDatabase {
         shared::term_encoder::SharedTerms::from_handle(Arc::clone(&self.dictionary))
     }
 
+    /// Adopts another component's term space, replacing this store's own.
+    ///
+    /// The counterpart to [`terms`](Self::terms), and the same operation a
+    /// [`Reasoner`](datalog::reasoning::Reasoner) offers, so two components agree on
+    /// one encoding the same way whichever of them is adopting. Several places used
+    /// to assign the dictionary field directly, which only worked from inside this
+    /// crate and said nothing about what it was for.
+    ///
+    /// Sharing, not copying: a term interned afterwards through either side is
+    /// visible to both. Code that assigns a handle and then assigns it back to
+    /// "sync" the result is doing nothing, which `shared_term_space_test` pins.
+    pub fn adopt_terms(&mut self, terms: shared::term_encoder::SharedTerms) {
+        self.dictionary = terms.handle();
+    }
+
     // ── Accessors for fields sealed in stage 2a ─────────────────────────────────
     //
     // Twelve fields left the public API here. They stay `pub(crate)` rather than

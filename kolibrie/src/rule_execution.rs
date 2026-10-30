@@ -127,7 +127,7 @@ pub fn process_rule_definition(
         }
 
         let mut kg = Reasoner::new();
-        kg.dictionary = database.dictionary.clone();
+        kg.adopt_terms(database.terms());
         // Only a windowed rule still needs the store's facts inside `kg`: it clones
         // `kg` into a `'static` callback per window, and a boxed callback cannot
         // borrow the store. Every other path reads the store through `QuadSource`
@@ -140,10 +140,15 @@ pub fn process_rule_definition(
         }
         kg.probability_seeds = database.probability_seeds.clone();
 
-        let mut dict = kg.dictionary.write().unwrap();
-        let dynamic_rule = convert_combined_rule(rule.clone(), &mut dict, &rule_prefixes);
-        drop(dict);
-        database.dictionary = kg.dictionary.clone();
+        // No assignment back afterwards: the store and the reasoner hold one term
+        // space, so a term interned here is already visible through the store. The
+        // line that used to copy it back was a no-op, which
+        // `shared_term_space_test` pins.
+        let mut dynamic_rule = None;
+        kg.with_terms(&mut |dict| {
+            dynamic_rule = Some(convert_combined_rule(rule.clone(), dict, &rule_prefixes));
+        });
+        let dynamic_rule = dynamic_rule.expect("the visitor always runs");
 
         // Check if this rule has windowing - if so, set up RSP processing
         if !rule.window_clause.is_empty() {
@@ -251,11 +256,12 @@ pub fn process_rule_definition(
                         Some(database),
                         shared::provenance::MinMaxProbability,
                     );
-                    let mut dict = kg.dictionary.write().unwrap();
                     let mut qt_store = database.quoted_triple_store.write().unwrap();
-                    let rdf_star = tag_store.encode_as_rdf_star(&mut dict, &mut qt_store);
+                    let mut rdf_star = Vec::new();
+                    kg.with_terms(&mut |dict| {
+                        rdf_star = tag_store.encode_as_rdf_star(dict, &mut qt_store);
+                    });
                     drop(qt_store);
-                    drop(dict);
                     for triple in rdf_star {
                         database.add_triple(triple);
                     }
@@ -266,11 +272,12 @@ pub fn process_rule_definition(
                         Some(database),
                         shared::provenance::AddMultProbability,
                     );
-                    let mut dict = kg.dictionary.write().unwrap();
                     let mut qt_store = database.quoted_triple_store.write().unwrap();
-                    let rdf_star = tag_store.encode_as_rdf_star(&mut dict, &mut qt_store);
+                    let mut rdf_star = Vec::new();
+                    kg.with_terms(&mut |dict| {
+                        rdf_star = tag_store.encode_as_rdf_star(dict, &mut qt_store);
+                    });
                     drop(qt_store);
-                    drop(dict);
                     for triple in rdf_star {
                         database.add_triple(triple);
                     }
@@ -281,11 +288,12 @@ pub fn process_rule_definition(
                         Some(database),
                         shared::provenance::BooleanProvenance,
                     );
-                    let mut dict = kg.dictionary.write().unwrap();
                     let mut qt_store = database.quoted_triple_store.write().unwrap();
-                    let rdf_star = tag_store.encode_as_rdf_star(&mut dict, &mut qt_store);
+                    let mut rdf_star = Vec::new();
+                    kg.with_terms(&mut |dict| {
+                        rdf_star = tag_store.encode_as_rdf_star(dict, &mut qt_store);
+                    });
                     drop(qt_store);
-                    drop(dict);
                     for triple in rdf_star {
                         database.add_triple(triple);
                     }
@@ -305,12 +313,13 @@ pub fn process_rule_definition(
                     let (facts, results, _lineage) = kg
                         .infer_new_facts_with_hybrid_over(Some(database), snapshot, config)
                         .map_err(|error| QueryError::Execution(error.to_string()))?;
-                    let mut dict = kg.dictionary.write().unwrap();
                     let mut qt_store = database.quoted_triple_store.write().unwrap();
-                    let rdf_star =
-                        encode_hybrid_results_as_rdf_star(&results, &mut dict, &mut qt_store);
+                    let mut rdf_star = Vec::new();
+                    kg.with_terms(&mut |dict| {
+                        rdf_star =
+                            encode_hybrid_results_as_rdf_star(&results, dict, &mut qt_store);
+                    });
                     drop(qt_store);
-                    drop(dict);
                     for triple in rdf_star {
                         database.add_triple(triple);
                     }
@@ -320,12 +329,13 @@ pub fn process_rule_definition(
                 "wmc" => {
                     let (facts, tag_store) = kg
                         .infer_new_facts_with_provenance(shared::provenance::WmcProvenance::new());
-                    let mut dict = kg.dictionary.write().unwrap();
                     let mut qt_store = database.quoted_triple_store.write().unwrap();
-                    let rdf_star =
-                        tag_store.encode_as_rdf_star_with_explanation(&mut dict, &mut qt_store);
+                    let mut rdf_star = Vec::new();
+                    kg.with_terms(&mut |dict| {
+                        rdf_star =
+                            tag_store.encode_as_rdf_star_with_explanation(dict, &mut qt_store);
+                    });
                     drop(qt_store);
-                    drop(dict);
                     for triple in rdf_star {
                         database.add_triple(triple);
                     }
@@ -337,12 +347,13 @@ pub fn process_rule_definition(
                         Some(database),
                         shared::sdd::SddProvenance::new(),
                     );
-                    let mut dict = kg.dictionary.write().unwrap();
                     let mut qt_store = database.quoted_triple_store.write().unwrap();
-                    let rdf_star =
-                        tag_store.encode_as_rdf_star_with_explanation(&mut dict, &mut qt_store);
+                    let mut rdf_star = Vec::new();
+                    kg.with_terms(&mut |dict| {
+                        rdf_star =
+                            tag_store.encode_as_rdf_star_with_explanation(dict, &mut qt_store);
+                    });
                     drop(qt_store);
-                    drop(dict);
                     for triple in rdf_star {
                         database.add_triple(triple);
                     }
@@ -376,12 +387,13 @@ pub fn process_rule_definition(
                             )
                         })
                         .collect();
-                    let mut dict = kg.dictionary.write().unwrap();
                     let mut qt_store = database.quoted_triple_store.write().unwrap();
-                    let rdf_star =
-                        encode_hybrid_results_as_rdf_star(&diagnostics, &mut dict, &mut qt_store);
+                    let mut rdf_star = Vec::new();
+                    kg.with_terms(&mut |dict| {
+                        rdf_star =
+                            encode_hybrid_results_as_rdf_star(&diagnostics, dict, &mut qt_store);
+                    });
                     drop(qt_store);
-                    drop(dict);
                     for triple in rdf_star {
                         database.add_triple(triple);
                     }
@@ -392,11 +404,12 @@ pub fn process_rule_definition(
                         Some(database),
                         shared::provenance::MinMaxProbability,
                     );
-                    let mut dict = kg.dictionary.write().unwrap();
                     let mut qt_store = database.quoted_triple_store.write().unwrap();
-                    let rdf_star = tag_store.encode_as_rdf_star(&mut dict, &mut qt_store);
+                    let mut rdf_star = Vec::new();
+                    kg.with_terms(&mut |dict| {
+                        rdf_star = tag_store.encode_as_rdf_star(dict, &mut qt_store);
+                    });
                     drop(qt_store);
-                    drop(dict);
                     for triple in rdf_star {
                         database.add_triple(triple);
                     }

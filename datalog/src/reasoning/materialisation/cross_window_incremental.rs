@@ -29,6 +29,7 @@ use crate::cross_window_sds::{
 use crate::reasoning::materialisation::provenance_semi_naive::semi_naive_with_initial_tags_and_delta;
 use crate::reasoning::Reasoner;
 use shared::dictionary::Dictionary;
+use shared::term_encoder::SharedTerms;
 use shared::provenance::ExpirationProvenance;
 use shared::rule::Rule;
 use shared::tag_store::TagStore;
@@ -74,7 +75,7 @@ pub fn incremental_sds_plus(
         .collect();
 
     let mut reasoner = Reasoner::new();
-    reasoner.dictionary = Arc::clone(dict);
+    reasoner.adopt_terms(SharedTerms::from_handle(Arc::clone(dict)));
 
     for (t, _) in &d_old {
         reasoner.dataset_index.insert(t);

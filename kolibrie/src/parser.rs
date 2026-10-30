@@ -366,7 +366,7 @@ pub(crate) fn parse_register_clause(input: &str) -> IResult<&str, RegisterClause
     let (input, _) = multispace1.parse(input)?;
 
     // Parse stream type (RSTREAM, ISTREAM, DSTREAM)
-    let (input, stream_type) = parse_stream_type(input)?;
+    let (input, stream_type) = parse_stream_type_nom(input)?;
     let (input, _) = multispace1.parse(input)?;
 
     // Parse output stream IRI
@@ -383,7 +383,7 @@ pub(crate) fn parse_register_clause(input: &str) -> IResult<&str, RegisterClause
 
     // Parse optional FROM NAMED WINDOW clause (this comes BEFORE WHERE in your example)
     let (input, window_clause) =
-        many1(preceded(multispace0, parse_from_named_window)).parse(input)?;
+        many1(preceded(multispace0, parse_from_named_window_nom)).parse(input)?;
     let (input, _) = multispace0.parse(input)?;
 
     // Parse WHERE clause with window support
@@ -2527,7 +2527,7 @@ pub(crate) fn parse_ml_predict(input: &str) -> IResult<&str, MLPredictClause<'_>
 }
 
 /// An output stream operator: `RSTREAM`, `ISTREAM`, `DSTREAM` or a custom name.
-pub(crate) fn parse_stream_type(input: &str) -> IResult<&str, StreamType<'_>> {
+pub(crate) fn parse_stream_type_nom(input: &str) -> IResult<&str, StreamType<'_>> {
     let (input, _) = multispace0.parse(input)?;
     let (input, stream_type) = alt((
         tag("RSTREAM").map(|_| StreamType::RStream),
@@ -2542,7 +2542,7 @@ pub(crate) fn parse_stream_type(input: &str) -> IResult<&str, StreamType<'_>> {
 /// A window's width, slide and reporting behaviour.
 ///
 /// Bounds are half-open: `RANGE n` holds `n` timestamps.
-pub(crate) fn parse_window_spec(input: &str) -> IResult<&str, WindowSpec<'_>> {
+pub(crate) fn parse_window_spec_nom(input: &str) -> IResult<&str, WindowSpec<'_>> {
     let (input, _) = multispace0.parse(input)?;
     let (input, _) = char('[').parse(input)?;
     let (input, _) = multispace0.parse(input)?;
@@ -2740,7 +2740,7 @@ fn parse_duration_to_seconds(duration: &str) -> usize {
 }
 
 /// A `FROM NAMED WINDOW` clause binding one window over one stream.
-pub(crate) fn parse_from_named_window(input: &str) -> IResult<&str, WindowClause<'_>> {
+pub(crate) fn parse_from_named_window_nom(input: &str) -> IResult<&str, WindowClause<'_>> {
     let (input, _) = multispace0.parse(input)?;
     let (input, _) = tag("FROM").parse(input)?;
     let (input, _) = multispace1.parse(input)?;
@@ -2774,7 +2774,7 @@ pub(crate) fn parse_from_named_window(input: &str) -> IResult<&str, WindowClause
     let (input, _) = multispace1.parse(input)?;
 
     // Parse window specification with ISO 8601 duration support
-    let (input, window_spec) = parse_window_spec(input)?;
+    let (input, window_spec) = parse_window_spec_nom(input)?;
 
     // Optional: WITH POLICY <policy>
     let (input, policy) = opt(parse_from_named_window_policy).parse(input)?;
@@ -3082,10 +3082,10 @@ pub(crate) fn parse_rule(input: &str) -> IResult<&str, CombinedRule<'_>> {
 
     let (input, stream_type, window_clause) = if has_rsp_elements {
         // RSP parsing path
-        let (input, stream_type) = opt(parse_stream_type).parse(input)?;
+        let (input, stream_type) = opt(parse_stream_type_nom).parse(input)?;
         let (input, _) = multispace0.parse(input)?;
         let (input, window_clause) =
-            many0(preceded(multispace0, parse_from_named_window)).parse(input)?;
+            many0(preceded(multispace0, parse_from_named_window_nom)).parse(input)?;
         let (input, _) = multispace0.parse(input)?;
         (input, stream_type, window_clause)
     } else {
@@ -3600,4 +3600,19 @@ pub fn parse_order_by(input: &str) -> ParseResult<'_, Vec<OrderCondition<'_>>> {
 /// Parses a `LIMIT` clause.
 pub fn parse_limit(input: &str) -> ParseResult<'_, usize> {
     parse_limit_nom(input).map_err(ParseError::from_nom)
+}
+
+/// Parses a `FROM NAMED WINDOW` clause.
+pub fn parse_from_named_window(input: &str) -> ParseResult<'_, WindowClause<'_>> {
+    parse_from_named_window_nom(input).map_err(ParseError::from_nom)
+}
+
+/// Parses an RSP-QL stream type.
+pub fn parse_stream_type(input: &str) -> ParseResult<'_, StreamType<'_>> {
+    parse_stream_type_nom(input).map_err(ParseError::from_nom)
+}
+
+/// Parses a window specification, the `[...]` after a window name.
+pub fn parse_window_spec(input: &str) -> ParseResult<'_, WindowSpec<'_>> {
+    parse_window_spec_nom(input).map_err(ParseError::from_nom)
 }

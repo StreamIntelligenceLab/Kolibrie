@@ -91,9 +91,11 @@ impl Reasoner {
         let idx_before_inference = all_facts.len();
 
         loop {
-            let mut dict = self.dictionary.write().unwrap();
-            let result = strat.infer_round(&mut dict, rules, &all_facts, &known_facts, tag_store);
-            drop(dict);
+            let mut result = None;
+            self.with_terms(&mut |dict| {
+                result = Some(strat.infer_round(dict, rules, &all_facts, &known_facts, tag_store));
+            });
+            let result = result.expect("the visitor always runs");
 
             let has_new_facts = !result.new_facts.is_empty();
 

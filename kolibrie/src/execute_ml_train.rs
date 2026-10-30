@@ -515,7 +515,7 @@ fn loss_gradient(
 /// training example sits in.
 pub fn build_ground_reasoner_from_db(db: &SparqlDatabase, extra_rule: Option<Rule>) -> Reasoner {
     let mut reasoner = Reasoner::new();
-    reasoner.dictionary = db.dictionary.clone();
+    reasoner.adopt_terms(db.terms());
     for triple in db.query_default_triples(None, None, None) {
         reasoner.dataset_index.insert(&triple);
     }
@@ -673,15 +673,13 @@ mod tests {
         }
 
         let mut base_reasoner = build_ground_reasoner_from_db(&db, None);
-        let mut dict = base_reasoner.dictionary.write().unwrap();
         let sample = Term::Variable("sample".to_string());
-        let left_pred = Term::Constant(dict.encode("http://example.org/left"));
-        let right_pred = Term::Constant(dict.encode("http://example.org/right"));
-        let ok_pred = Term::Constant(dict.encode("http://example.org/ok"));
-        let left_value = Term::Constant(dict.encode("L1"));
-        let right_value = Term::Constant(dict.encode("R1"));
-        let yes_value = Term::Constant(dict.encode("yes"));
-        drop(dict);
+        let left_pred = Term::Constant(base_reasoner.encode_term("http://example.org/left"));
+        let right_pred = Term::Constant(base_reasoner.encode_term("http://example.org/right"));
+        let ok_pred = Term::Constant(base_reasoner.encode_term("http://example.org/ok"));
+        let left_value = Term::Constant(base_reasoner.encode_term("L1"));
+        let right_value = Term::Constant(base_reasoner.encode_term("R1"));
+        let yes_value = Term::Constant(base_reasoner.encode_term("yes"));
         base_reasoner.add_rule(Rule {
             premise: vec![
                 (sample.clone(), left_pred, left_value),

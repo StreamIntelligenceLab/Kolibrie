@@ -33,7 +33,7 @@ fn resolve_term_to_string(term: &Term, dictionary: &Dictionary) -> String {
 }
 
 fn triple_patterns_to_dot(triple_patterns: &Vec<TriplePattern>, kg: &Reasoner) -> String {
-    let dict = kg.dictionary.read().unwrap();
+    let dict = kg.dictionary_snapshot();
 
     triple_patterns
         .iter()
@@ -52,7 +52,7 @@ fn get_subject_object_iterator(triple: &Triple) -> impl Iterator<Item = u32> {
 }
 
 fn create_nodes(kg: &Reasoner, out: &mut String) {
-    let dict = kg.dictionary.read().unwrap();
+    let dict = kg.dictionary_snapshot();
 
     // These ids represent nodes in the knowledge graph (one id for each subject or object)
     let mut all_subject_object_ids: Vec<u32> = kg
@@ -85,7 +85,7 @@ fn create_nodes(kg: &Reasoner, out: &mut String) {
 }
 
 fn create_edges(kg: &Reasoner, out: &mut String) {
-    let dict = kg.dictionary.read().unwrap();
+    let dict = kg.dictionary_snapshot();
 
     let all_facts = kg.dataset_index.query(None, None, None);
     for triple in all_facts {

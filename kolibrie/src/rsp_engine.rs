@@ -17,6 +17,7 @@ use crossbeam::channel::{unbounded, Receiver, RecvTimeoutError, Sender};
 use log::{debug, error}; // Use log crate when building application
 use shared::query::{Fallback, SyncPolicy};
 use shared::rule::Rule;
+use shared::term_encoder::SharedTerms;
 use std::collections::HashMap;
 use std::collections::HashSet;
 use std::fmt::Debug;
@@ -417,7 +418,7 @@ where
         // Build the static-data store sharing the same dictionary as the R2R store.
         let mut static_sdb = SparqlDatabase::new();
         if let Some(d) = &shared_dict {
-            static_sdb.dictionary = Arc::clone(d);
+            static_sdb.adopt_terms(SharedTerms::from_handle(Arc::clone(d)));
         }
         let static_db = Arc::new(Mutex::new(static_sdb));
 
@@ -429,7 +430,7 @@ where
                 "Cross-window SDS+ reasoning requires a SimpleR2R shared dictionary".to_string()
             })?;
             let mut reasoner = datalog::reasoning::Reasoner::new();
-            reasoner.dictionary = Arc::clone(dict);
+            reasoner.adopt_terms(SharedTerms::from_handle(Arc::clone(dict)));
             let window_widths: HashMap<String, u64> = query_config
                 .windows
                 .iter()
@@ -485,7 +486,7 @@ where
                         .and_then(|rule| rule.prob_annotation)
                         .and_then(|annotation| annotation.hybrid_config);
                     let mut temp_db = SparqlDatabase::new();
-                    temp_db.dictionary = Arc::clone(&dict);
+                    temp_db.adopt_terms(SharedTerms::from_handle(Arc::clone(&dict)));
                     match process_rule_definition(rule_str, &mut temp_db) {
                         Ok((rule, _)) => {
                             if let Some(simple_r2r) = store.as_any_mut().downcast_mut::<SimpleR2R>()
@@ -1311,7 +1312,7 @@ fn execute_window_plans_on_external_buckets(
 
     for (window, plan) in window_configs.iter().zip(window_plans.iter()) {
         let mut db = SparqlDatabase::new();
-        db.dictionary = Arc::clone(dict);
+        db.adopt_terms(SharedTerms::from_handle(Arc::clone(dict)));
 
         if let Some(triples) = external_buckets.get(&window.window_iri) {
             for triple in triples {
