@@ -230,7 +230,7 @@ pub fn compile_term(
         Term::Variable(trimmed.to_string())
     } else {
         let resolved = resolve_sparql_lexical_value(trimmed, prefixes, database);
-        let mut dict = database.dictionary.write().unwrap();
+        let mut dict = database.dictionary.write();
         Term::Constant(dict.encode(&resolved))
     }
 }

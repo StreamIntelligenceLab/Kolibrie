@@ -862,11 +862,11 @@ mod tests {
         use shared::dataset_index::{GraphId, Quad};
 
         let mut database = SparqlDatabase::new();
-        let predicate = database.dictionary.write().unwrap().encode("urn:p");
+        let predicate = database.dictionary.write().encode("urn:p");
         // Three subjects share one object, so subjects and objects differ
         for subject_name in ["urn:a", "urn:b", "urn:c"] {
-            let subject = database.dictionary.write().unwrap().encode(subject_name);
-            let object = database.dictionary.write().unwrap().encode("urn:shared");
+            let subject = database.dictionary.write().encode(subject_name);
+            let object = database.dictionary.write().encode("urn:shared");
             database.add_quad(Quad {
                 subject,
                 predicate,

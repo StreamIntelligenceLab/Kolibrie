@@ -237,7 +237,7 @@ impl R2ROperator<Triple, Vec<PhysicalOperator>, Vec<(String, String)>> for Simpl
         }
         if !self.last_hybrid_results.is_empty() {
             let annotations = {
-                let mut dict = self.item.dictionary.write().unwrap();
+                let mut dict = self.item.dictionary.write();
                 let mut quoted = self.item.quoted_triple_store.write().unwrap();
                 encode_hybrid_results_as_rdf_star(&self.last_hybrid_results, &mut dict, &mut quoted)
             };

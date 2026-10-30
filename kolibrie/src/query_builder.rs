@@ -412,7 +412,7 @@ impl<'a> QueryBuilder<'a> {
     pub fn get_ordered_decoded_triples(self) -> Vec<(String, String, String)> {
         let db = self.db;
         let triples = self.get_ordered_triples();
-        let dict = db.dictionary.read().unwrap();
+        let dict = db.dictionary.read();
         triples
             .into_iter()
             .map(|triple| {
@@ -434,7 +434,7 @@ impl<'a> QueryBuilder<'a> {
         let triples = self.get_triples();
         let mut results = Vec::with_capacity(triples.len());
 
-        let dict = db.dictionary.read().unwrap();
+        let dict = db.dictionary.read();
         for triple in triples {
             let subject = dict.decode(triple.subject).unwrap_or("").to_string();
             let predicate = dict.decode(triple.predicate).unwrap_or("").to_string();
@@ -456,7 +456,7 @@ impl<'a> QueryBuilder<'a> {
         let triples = self.get_triples();
         let mut results = Vec::with_capacity(triples.len());
 
-        let dict = db.dictionary.read().unwrap();
+        let dict = db.dictionary.read();
         for triple in triples {
             if let Some(s) = dict.decode(triple.subject) {
                 results.push(s.to_string());
@@ -482,7 +482,7 @@ impl<'a> QueryBuilder<'a> {
         let triples = self.get_triples();
         let mut results = Vec::with_capacity(triples.len());
 
-        let dict = db.dictionary.read().unwrap();
+        let dict = db.dictionary.read();
         for triple in triples {
             if let Some(s) = dict.decode(triple.predicate) {
                 results.push(s.to_string());
@@ -508,7 +508,7 @@ impl<'a> QueryBuilder<'a> {
         let triples = self.get_triples();
         let mut results = Vec::with_capacity(triples.len());
 
-        let dict = db.dictionary.read().unwrap();
+        let dict = db.dictionary.read();
         for triple in triples {
             if let Some(s) = dict.decode(triple.object) {
                 results.push(s.to_string());
@@ -569,7 +569,7 @@ impl<'a> QueryBuilder<'a> {
     // Applies all the configured filters and returns the matching triples
     fn apply_filters(self) -> Vec<Triple> {
         let mut results = BTreeSet::new();
-        let dict = self.db.dictionary.read().unwrap();
+        let dict = self.db.dictionary.read();
 
         // Apply basic filters
         let default_triples = self.db.query_default_triples(None, None, None);

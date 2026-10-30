@@ -174,7 +174,7 @@ fn bench_contention(c: &mut Criterion) {
     for threads in [2usize, 4, 8] {
         let chunk = iris.len() / threads;
         group.bench_function(format!("encode_scoped/{threads}"), |b| {
-            let terms = SharedTerms::from_handle(Arc::new(RwLock::new(warm.clone())));
+            let terms = SharedTerms::from_dictionary(warm.clone());
             b.iter(|| {
                 std::thread::scope(|scope| {
                     for part in iris.chunks(chunk) {

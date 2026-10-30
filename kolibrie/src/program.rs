@@ -1364,7 +1364,7 @@ impl ProgramResult {
     }
 
     fn lookup(&self, subject: &str, predicate: &str, object: &str) -> Option<Triple> {
-        let dictionary = self.dataset.dictionary.read().unwrap();
+        let dictionary = self.dataset.dictionary.read();
         Some(Triple {
             subject: *dictionary.string_to_id.get(subject)?,
             predicate: *dictionary.string_to_id.get(predicate)?,
@@ -1414,9 +1414,7 @@ impl ProgramResult {
     pub fn answer_set(&self, predicate: &str) -> Vec<(String, String, f64)> {
         let Some(predicate_id) = self
             .dataset
-            .dictionary
-            .read()
-            .unwrap()
+            .dictionary.read()
             .string_to_id
             .get(predicate)
             .copied()
@@ -1668,10 +1666,10 @@ fn run_program(
     deadline.check()?;
 
     let phase = Instant::now();
-    let dictionary = Arc::new(RwLock::new(Dictionary::new()));
+    let dictionary = SharedTerms::new();
     let quoted = Arc::new(RwLock::new(QuotedTripleStore::new()));
     let mut reasoner = Reasoner::new();
-    reasoner.adopt_terms(SharedTerms::from_handle(Arc::clone(&dictionary)));
+    reasoner.adopt_terms(dictionary.clone());
     let asserted = copy_asserted_input(
         input,
         program,
@@ -1682,7 +1680,7 @@ fn run_program(
         &mut reasoner,
     );
     let seeds = {
-        let mut dict = dictionary.write().unwrap();
+        let mut dict = dictionary.write();
         for rule in &program.rules {
             reasoner.add_rule(rule.encode(&mut dict));
         }
@@ -1703,7 +1701,7 @@ fn run_program(
     }
     for triple in &seed_triples {
         if asserted.contains(triple) {
-            let dict = dictionary.read().unwrap();
+            let dict = dictionary.read();
             return Err(ProgramError::Snapshot(format!(
                 "probabilistic seed {} is also asserted as a certain fact",
                 dict.decode_triple(triple)
@@ -1767,12 +1765,12 @@ fn run_program(
 
     let phase = Instant::now();
     let mut dataset = SparqlDatabase::new();
-    dataset.adopt_terms(SharedTerms::from_handle(Arc::clone(&dictionary)));
+    dataset.adopt_terms(dictionary.clone());
     dataset.quoted_triple_store = Arc::clone(&quoted);
     dataset.prefixes = program.prefixes.clone();
     dataset.set_implicit_neural_materialization(false);
     {
-        let mut dict = dictionary.write().unwrap();
+        let mut dict = dictionary.write();
         let mut qt = quoted.write().unwrap();
         let prob_value = dict.encode(PROB_VALUE_IRI);
         let mut annotations = Vec::with_capacity(hypotheses.len());
@@ -1825,7 +1823,7 @@ fn copy_asserted_input(
     program: &CompiledProgram,
     snapshot: &PredictionSnapshot,
     input_seeds: &HashMap<Triple, f64>,
-    dictionary: &Arc<RwLock<Dictionary>>,
+    dictionary: &SharedTerms,
     quoted: &Arc<RwLock<QuotedTripleStore>>,
     reasoner: &mut Reasoner,
 ) -> HashSet<Triple> {
@@ -1856,7 +1854,7 @@ fn copy_asserted_input(
         input.query_default_triples(None, None, None)
     } else {
         let ids: Vec<u32> = {
-            let dict = input.dictionary.read().unwrap();
+            let dict = input.dictionary.read();
             predicates
                 .iter()
                 .filter_map(|predicate| dict.string_to_id.get(*predicate).copied())
@@ -1867,9 +1865,9 @@ fn copy_asserted_input(
             .collect()
     };
 
-    let source_dictionary = input.dictionary.read().unwrap();
+    let source_dictionary = input.dictionary.read();
     let source_quoted = input.quoted_triple_store.read().unwrap();
-    let mut target_dictionary = dictionary.write().unwrap();
+    let mut target_dictionary = dictionary.write();
     let mut target_quoted = quoted.write().unwrap();
     let mut translated = HashMap::new();
     for triple in source_triples {

@@ -401,7 +401,7 @@ fn substitute_slot(
             .get(name)
             .copied()
             .ok_or_else(|| format!("Variable {} not bound in INPUT row", slot))?;
-        let dict = database.dictionary.read().unwrap();
+        let dict = database.dictionary.read();
         let value = dict
             .decode(id)
             .ok_or_else(|| format!("Dictionary has no entry for id {} ({})", id, slot))?
@@ -500,7 +500,7 @@ pub(crate) fn filter_numeric_features(
         return Vec::new();
     };
 
-    let dict = database.dictionary.read().unwrap();
+    let dict = database.dictionary.read();
     let numeric_vars: Vec<String> = input_variables
         .iter()
         .filter(|var| {

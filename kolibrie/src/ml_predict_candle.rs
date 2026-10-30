@@ -197,7 +197,7 @@ fn build_features_for_rows(
     relation: &NeuralRelationDecl,
     input_rows: &Bindings,
 ) -> CandleResult<Vec<Vec<f64>>> {
-    let dict = database.dictionary.read().unwrap();
+    let dict = database.dictionary.read();
     let mut features: Vec<Vec<f64>> = Vec::with_capacity(input_rows.len());
     for (row_idx, row) in input_rows.iter().enumerate() {
         let mut feature_vec: Vec<f64> = Vec::with_capacity(relation.feature_vars.len());

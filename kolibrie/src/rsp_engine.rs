@@ -409,8 +409,8 @@ where
             debug!("Synchronizing R2R dictionary with Query dictionary");
 
             // Acquire locks on both dictionaries
-            let mut store_dict = simple_r2r.item.dictionary.write().unwrap();
-            let query_dict = query_config.database.dictionary.read().unwrap();
+            let mut store_dict = simple_r2r.item.dictionary.write();
+            let query_dict = query_config.database.dictionary.read();
 
             store_dict.merge(&*query_dict);
 

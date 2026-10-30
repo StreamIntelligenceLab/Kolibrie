@@ -855,7 +855,7 @@ fn decode_bindings(bindings: Bindings, database: &SparqlDatabase) -> StringTable
     let chunk_terms: Vec<Vec<String>> = rows
         .par_chunks_mut(DECODE_LOCK_CHUNK)
         .map(|chunk| {
-            let dictionary = database.dictionary.read().unwrap();
+            let dictionary = database.dictionary.read();
             let quoted = database.quoted_triple_store.read().unwrap();
             let mut local: HashMap<u32, u32> = HashMap::new();
             let mut terms: Vec<String> = Vec::new();
@@ -1598,7 +1598,7 @@ fn allocate_blank_node(label: &str, database: &mut SparqlDatabase) -> u32 {
     loop {
         let allocation = NEXT_UPDATE_BLANK.fetch_add(1, AtomicOrdering::Relaxed);
         let lexical = format!("_:kolibrie-update-{allocation}-{}", &label[2..]);
-        let mut dictionary = database.dictionary.write().unwrap();
+        let mut dictionary = database.dictionary.write();
         if dictionary.string_to_id.contains_key(&lexical) {
             continue;
         }

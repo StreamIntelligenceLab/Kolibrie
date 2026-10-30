@@ -19,6 +19,7 @@ use quick_xml::Reader;
 use rayon::prelude::*;
 use shared::dataset_index::{DatasetIndex, GraphId, Quad};
 use shared::dictionary::Dictionary;
+use shared::term_encoder::SharedTerms;
 use shared::query::{ModelDecl, NeuralRelationDecl, TrainNeuralRelationDecl};
 use shared::quoted_triple_store::{is_quoted_triple_id, QuotedTripleStore};
 use shared::triple::Triple;
@@ -193,38 +194,20 @@ pub struct PlanningStatsSnapshot {
     pub resets: u64,
 }
 
-/// Read guard over the term dictionary, from [`SparqlDatabase::dictionary`].
+/// Read borrow of the term dictionary, from [`SparqlDatabase::dictionary`].
 ///
-/// Derefs to [`Dictionary`], so `db.dictionary().decode(id)` replaces
-/// `db.dictionary.read().unwrap().decode(id)`. Holding the binding holds the lock, so
-/// callers performing several lookups under one lock keep working unchanged.
-#[derive(Debug)]
-pub struct DictionaryRef<'a>(RwLockReadGuard<'a, Dictionary>);
+/// Derefs to [`Dictionary`], so `db.dictionary().decode(id)` reads the term space
+/// without the caller naming how it is shared. Holding the binding holds the borrow,
+/// so callers doing several lookups under one acquisition keep working unchanged.
+///
+/// An alias rather than its own type: the store's term space *is* a
+/// [`SharedTerms`], and two guard types over the one lock would only have to be kept
+/// in step with each other.
+pub type DictionaryRef<'a> = shared::term_encoder::TermsRef<'a>;
 
-impl std::ops::Deref for DictionaryRef<'_> {
-    type Target = Dictionary;
-    fn deref(&self) -> &Self::Target {
-        &self.0
-    }
-}
-
-/// Write guard over the term dictionary, from [`SparqlDatabase::dictionary_mut`].
+/// Write borrow of the term dictionary, from [`SparqlDatabase::dictionary_mut`].
 /// See [`DictionaryRef`].
-#[derive(Debug)]
-pub struct DictionaryMut<'a>(RwLockWriteGuard<'a, Dictionary>);
-
-impl std::ops::Deref for DictionaryMut<'_> {
-    type Target = Dictionary;
-    fn deref(&self) -> &Self::Target {
-        &self.0
-    }
-}
-
-impl std::ops::DerefMut for DictionaryMut<'_> {
-    fn deref_mut(&mut self) -> &mut Self::Target {
-        &mut self.0
-    }
-}
+pub type DictionaryMut<'a> = shared::term_encoder::TermsMut<'a>;
 
 /// Read guard over the quoted-triple store, from [`SparqlDatabase::quoted_triples`].
 ///
@@ -284,7 +267,7 @@ pub struct SparqlDatabase {
     /// Host-selected ML authority
     pub(crate) ml_context: crate::ml_policy::MlExecutionContext,
     pub(crate) dataset_index: DatasetIndex,
-    pub(crate) dictionary: Arc<RwLock<Dictionary>>,
+    pub(crate) dictionary: SharedTerms,
     pub(crate) prefixes: HashMap<String, String>,
     udfs: HashMap<String, ClonableFn>,
     pub(crate) rule_map: HashMap<String, String>,
@@ -319,7 +302,7 @@ impl SparqlDatabase {
         Self {
             ml_context: crate::ml_policy::MlExecutionContext::disabled(),
             dataset_index: DatasetIndex::new(),
-            dictionary: Arc::new(RwLock::new(Dictionary::new())),
+            dictionary: SharedTerms::new(),
             prefixes: HashMap::new(),
             udfs: HashMap::new(),
             rule_map: HashMap::new(),
@@ -364,7 +347,7 @@ impl SparqlDatabase {
             } else {
                 trimmed.to_string()
             };
-            let mut dict = self.dictionary.write().unwrap();
+            let mut dict = self.dictionary.write();
             dict.encode(&cleaned)
         }
     }
@@ -373,10 +356,10 @@ impl SparqlDatabase {
     pub fn decode_any(&self, id: u32) -> Option<String> {
         if is_quoted_triple_id(id) {
             let qt = self.quoted_triple_store.read().unwrap();
-            let dict = self.dictionary.read().unwrap();
+            let dict = self.dictionary.read();
             dict.decode_term(id, &qt)
         } else {
-            let dict = self.dictionary.read().unwrap();
+            let dict = self.dictionary.read();
             dict.decode(id).map(|s| s.to_string())
         }
     }
@@ -607,7 +590,7 @@ impl SparqlDatabase {
         let predicate_id = self.encode_term_star(predicate);
         let object_id = self.encode_term_star(object);
         let graph_id = {
-            let mut dict = self.dictionary.write().unwrap();
+            let mut dict = self.dictionary.write();
             dict.encode(graph)
         };
 
@@ -642,7 +625,7 @@ impl SparqlDatabase {
 
     /// Encodes three lexical terms and adds the resulting triple
     pub fn add_triple_parts(&mut self, subject: &str, predicate: &str, object: &str) {
-        let mut dict = self.dictionary.write().unwrap();
+        let mut dict = self.dictionary.write();
         let subject_id = dict.encode(subject);
         let predicate_id = dict.encode(predicate);
         let object_id = dict.encode(object);
@@ -665,7 +648,7 @@ impl SparqlDatabase {
         object: &str,
         probability: f64,
     ) {
-        let mut dict = self.dictionary.write().unwrap();
+        let mut dict = self.dictionary.write();
         let s = dict.encode(subject);
         let p = dict.encode(predicate);
         let o = dict.encode(object);
@@ -682,7 +665,7 @@ impl SparqlDatabase {
 
     /// Encodes three lexical terms and deletes the resulting triple
     pub fn delete_triple_parts(&mut self, subject: &str, predicate: &str, object: &str) -> bool {
-        let mut dict = self.dictionary.write().unwrap();
+        let mut dict = self.dictionary.write();
         let subject_id = dict.encode(subject);
         let predicate_id = dict.encode(predicate);
         let object_id = dict.encode(object);
@@ -715,7 +698,7 @@ impl SparqlDatabase {
         xml.push_str(">\n");
 
         // Group triples by subject
-        let dict = self.dictionary.read().unwrap();
+        let dict = self.dictionary.read();
         let mut subjects: BTreeMap<String, Vec<(String, String)>> = BTreeMap::new();
         let default_triples = self.query_default_triples(None, None, None);
         for triple in &default_triples {
@@ -880,7 +863,7 @@ impl SparqlDatabase {
         let mut current_predicate = Vec::with_capacity(128);
 
         let (sender, receiver) = unbounded::<Vec<Triple>>();
-        let dictionary = Arc::clone(&self.dictionary);
+        let dictionary = self.dictionary.clone();
         let triples_set = Arc::new(Mutex::new(Vec::new()));
         let num_threads = utils::get_num_cpus();
 
@@ -972,7 +955,7 @@ impl SparqlDatabase {
                                     std::str::from_utf8(&object),
                                 ) {
                                     // Lock the dictionary for encoding
-                                    let mut dict = dictionary.write().unwrap();
+                                    let mut dict = dictionary.write();
                                     let triple = Triple {
                                         subject: dict.encode(subject_str),
                                         predicate: dict.encode(&resolved_predicate),
@@ -996,7 +979,7 @@ impl SparqlDatabase {
                                     {
                                         let resolved_predicate = self.resolve_term(predicate_str);
                                         // Lock the dictionary for encoding
-                                        let mut dict = dictionary.write().unwrap();
+                                        let mut dict = dictionary.write();
                                         let triple = Triple {
                                             subject: dict.encode(subject_str),
                                             predicate: dict.encode(&resolved_predicate),
@@ -1145,7 +1128,7 @@ impl SparqlDatabase {
                                 std::str::from_utf8(&current_subject),
                                 std::str::from_utf8(&object),
                             ) {
-                                let mut dict = self.dictionary.write().unwrap();
+                                let mut dict = self.dictionary.write();
                                 let triple = Triple {
                                     subject: dict.encode(subject_str),
                                     predicate: dict.encode(&resolved_predicate),
@@ -1166,7 +1149,7 @@ impl SparqlDatabase {
                             if let Ok(subject_str) = std::str::from_utf8(&current_subject) {
                                 if let Ok(predicate_str) = std::str::from_utf8(&current_predicate) {
                                     let resolved_predicate = self.resolve_term(predicate_str);
-                                    let mut dict = self.dictionary.write().unwrap();
+                                    let mut dict = self.dictionary.write();
                                     let triple = Triple {
                                         subject: dict.encode(subject_str),
                                         predicate: dict.encode(&resolved_predicate),
@@ -1312,7 +1295,7 @@ impl SparqlDatabase {
                         };
                         this.add_triple(triple);
                     } else {
-                        let mut dict = this.dictionary.write().unwrap();
+                        let mut dict = this.dictionary.write();
                         let triple = Triple {
                             subject: dict.encode(&subject),
                             predicate: dict.encode(&predicate),
@@ -1522,11 +1505,7 @@ impl SparqlDatabase {
         let chunk_size = 1000;
         let chunks: Vec<Vec<String>> = lines.chunks(chunk_size).map(|c| c.to_vec()).collect();
 
-        let partial_results: Vec<(
-            Vec<Triple>,
-            Arc<RwLock<Dictionary>>,
-            HashMap<String, String>,
-        )> = chunks
+        let partial_results: Vec<(Vec<Triple>, SharedTerms, HashMap<String, String>)> = chunks
             .par_iter()
             .map(|chunk| {
                 let mut local_db = SparqlDatabase::new();
@@ -1576,8 +1555,8 @@ impl SparqlDatabase {
             for t in triples {
                 self.add_triple(t);
             }
-            let mut self_dict = self.dictionary.write().unwrap();
-            let other_dict = dict_arc.read().unwrap();
+            let mut self_dict = self.dictionary.write();
+            let other_dict = dict_arc.read();
             self_dict.merge(&other_dict);
             drop(other_dict);
             drop(self_dict);
@@ -1958,7 +1937,7 @@ impl SparqlDatabase {
                         let resolved_predicate = self.resolve_term(&predicate);
                         let resolved_object = self.resolve_term(&object);
 
-                        let mut dict = self.dictionary.write().unwrap();
+                        let mut dict = self.dictionary.write();
                         let triple = Triple {
                             subject: dict.encode(&resolved_subject),
                             predicate: dict.encode(&resolved_predicate),
@@ -2087,8 +2066,8 @@ impl SparqlDatabase {
     /// translated into the merged dictionary rather than assumed compatible —
     /// which is why this returns a third store instead of mutating either.
     pub fn union(&mut self, other: &SparqlDatabase) -> Self {
-        let self_dict = self.dictionary.read().unwrap();
-        let other_dict = other.dictionary.read().unwrap();
+        let self_dict = self.dictionary.read();
+        let other_dict = other.dictionary.read();
         let mut merged_dictionary = self_dict.clone();
         let self_quoted_triples = self.quoted_triple_store.read().unwrap();
         let other_quoted_triples = other.quoted_triple_store.read().unwrap();
@@ -2232,7 +2211,7 @@ impl SparqlDatabase {
 
         Self {
             dataset_index,
-            dictionary: Arc::new(RwLock::new(merged_dictionary)),
+            dictionary: SharedTerms::from_dictionary(merged_dictionary),
             prefixes: self.prefixes.clone(),
             udfs: HashMap::new(),
             rule_map: HashMap::new(),
@@ -2271,7 +2250,7 @@ impl SparqlDatabase {
         let predicate = parts[1];
         let object = parts[2];
 
-        let mut dict = self.dictionary.write().unwrap();
+        let mut dict = self.dictionary.write();
         let subject_id = dict.encode(subject);
         let predicate_id = dict.encode(predicate);
         let object_id = dict.encode(object);
@@ -2386,12 +2365,12 @@ impl SparqlDatabase {
 
     /// Read access to the term dictionary.
     pub fn dictionary(&self) -> DictionaryRef<'_> {
-        DictionaryRef(self.dictionary.read().unwrap())
+        self.dictionary.read()
     }
 
     /// Write access to the term dictionary, for interning new terms.
     pub fn dictionary_mut(&self) -> DictionaryMut<'_> {
-        DictionaryMut(self.dictionary.write().unwrap())
+        self.dictionary.write()
     }
 
     /// Whether `self` and `other` encode terms through the same dictionary, as
@@ -2401,7 +2380,7 @@ impl SparqlDatabase {
     /// actually test — whether two databases are isolated — without the handle
     /// having to be public.
     pub fn shares_dictionary_with(&self, other: &SparqlDatabase) -> bool {
-        Arc::ptr_eq(&self.dictionary, &other.dictionary)
+        self.dictionary.shares_space_with(&other.dictionary)
     }
 
     /// This store's term space, as an encoder another component can adopt.
@@ -2409,11 +2388,11 @@ impl SparqlDatabase {
     /// The way to share one encoding between a store and a reasoner, or between two
     /// engines. It shares rather than copies — a term interned through it is
     /// immediately visible here — and it hands back an opaque
-    /// [`SharedTerms`](shared::term_encoder::SharedTerms) rather than the
+    /// [`SharedTerms`] rather than the
     /// `Arc<RwLock<_>>` underneath, which is what P5 asks and what replaced the two
     /// handle methods this used to sit beside.
-    pub fn terms(&self) -> shared::term_encoder::SharedTerms {
-        shared::term_encoder::SharedTerms::from_handle(Arc::clone(&self.dictionary))
+    pub fn terms(&self) -> SharedTerms {
+        self.dictionary.clone()
     }
 
     /// Adopts another component's term space, replacing this store's own.
@@ -2427,8 +2406,8 @@ impl SparqlDatabase {
     /// Sharing, not copying: a term interned afterwards through either side is
     /// visible to both. Code that assigns a handle and then assigns it back to
     /// "sync" the result is doing nothing, which `shared_term_space_test` pins.
-    pub fn adopt_terms(&mut self, terms: shared::term_encoder::SharedTerms) {
-        self.dictionary = terms.handle();
+    pub fn adopt_terms(&mut self, terms: SharedTerms) {
+        self.dictionary = terms;
     }
 
     // ── Accessors for fields sealed in stage 2a ─────────────────────────────────

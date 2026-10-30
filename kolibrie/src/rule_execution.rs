@@ -172,7 +172,7 @@ pub fn process_rule_definition(
                 let mut current_time = 1;
                 let default_triples = database.query_default_triples(None, None, None);
                 for triple in default_triples.iter() {
-                    let dict = database.dictionary.read().unwrap();
+                    let dict = database.dictionary.read();
                     let window_triple = WindowTriple {
                         s: dict.decode(triple.subject).unwrap_or("").to_string(),
                         p: dict.decode(triple.predicate).unwrap_or("").to_string(),
@@ -461,7 +461,7 @@ pub fn process_retrieve_clause(
         let mut kg = Reasoner::new();
         let default_triples = database.query_default_triples(None, None, None);
         for triple in default_triples.iter() {
-            let dict = database.dictionary.read().unwrap();
+            let dict = database.dictionary.read();
             let subject = dict.decode(triple.subject).map(|s| s.to_string());
             let predicate = dict.decode(triple.predicate).map(|p| p.to_string());
             let object = dict.decode(triple.object).map(|o| o.to_string());
@@ -473,7 +473,7 @@ pub fn process_retrieve_clause(
         }
 
         // Match the pattern against the knowledge graph
-        let mut dict = database.dictionary.write().unwrap();
+        let mut dict = database.dictionary.write();
         let pattern_converted = convert_triple_pattern(*pattern, &mut dict, &database.prefixes);
         drop(dict);
 
@@ -572,7 +572,7 @@ fn create_rsp_window(window_spec: &WindowSpec) -> Result<CSPARQLWindow<WindowTri
 fn register_rule_predicates(rule: &Rule, database: &mut SparqlDatabase) {
     for conclusion in &rule.conclusion {
         if let Term::Constant(code) = conclusion.1 {
-            let dict = database.dictionary.read().unwrap();
+            let dict = database.dictionary.read();
             let expanded = dict.decode(code).unwrap_or_else(|| "").to_string();
             drop(dict);
             let local = if let Some(idx) = expanded.rfind('#') {

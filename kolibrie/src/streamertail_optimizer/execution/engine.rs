@@ -53,7 +53,7 @@ mod tests {
     use shared::dataset_index::Quad;
 
     fn encode(database: &SparqlDatabase, value: &str) -> u32 {
-        database.dictionary.write().unwrap().encode(value)
+        database.dictionary.write().encode(value)
     }
 
     fn row(pairs: &[(&str, u32)]) -> HashMap<String, u32> {
@@ -982,7 +982,7 @@ impl ExecutionEngine {
             .into_par_iter()
             .chunks(FILTER_LOCK_CHUNK)
             .flat_map_iter(|chunk| {
-                let dict = database.dictionary.read().unwrap();
+                let dict = database.dictionary.read();
                 let qt_store = database.quoted_triple_store.read().unwrap();
                 let decoded: Vec<HashMap<String, String>> = chunk
                     .into_iter()
@@ -1112,7 +1112,7 @@ impl ExecutionEngine {
                     .into_par_iter()
                     .chunks(FILTER_LOCK_CHUNK)
                     .flat_map_iter(|chunk| {
-                        let dict = database.dictionary.read().unwrap();
+                        let dict = database.dictionary.read();
                         let kept: Vec<Vec<u32>> = chunk
                             .into_iter()
                             .filter(|row| condition.evaluate_with_ids(row, &schema, &dict))
@@ -1216,7 +1216,7 @@ impl ExecutionEngine {
 
                 if function_name == "CONCAT" {
                     // Decode all needed values first
-                    let dict = database.dictionary.read().unwrap();
+                    let dict = database.dictionary.read();
                     let decoded_values: Vec<Vec<String>> = input_results
                         .iter()
                         .map(|row| {
@@ -1240,7 +1240,7 @@ impl ExecutionEngine {
                     drop(dict);
 
                     // Now encode the concatenated results
-                    let mut dict_write = database.dictionary.write().unwrap();
+                    let mut dict_write = database.dictionary.write();
                     let encoded: Vec<u32> = decoded_values
                         .iter()
                         .map(|decoded_row| dict_write.encode(&decoded_row.join("")))
@@ -1251,7 +1251,7 @@ impl ExecutionEngine {
                     input_results
                 } else if let Some(func) = database.udf(function_name.as_str()) {
                     // Similar fix for UDF
-                    let dict = database.dictionary.read().unwrap();
+                    let dict = database.dictionary.read();
                     let decoded_args: Vec<Vec<String>> = input_results
                         .iter()
                         .map(|row| {
@@ -1274,7 +1274,7 @@ impl ExecutionEngine {
                         .collect();
                     drop(dict);
 
-                    let mut dict_write = database.dictionary.write().unwrap();
+                    let mut dict_write = database.dictionary.write();
                     let encoded: Vec<u32> = decoded_args
                         .iter()
                         .map(|decoded_row| {
@@ -1337,7 +1337,7 @@ impl ExecutionEngine {
                                             row.get(arg_stripped)
                                         } else {
                                             let mut dict =
-                                                database.dictionary.write().unwrap();
+                                                database.dictionary.write();
                                             Some(dict.encode(arg_stripped))
                                         }
                                     })
@@ -1356,7 +1356,7 @@ impl ExecutionEngine {
                     }
                     input_results
                 } else if function_name == "isTRIPLE" {
-                    let mut dict_write = database.dictionary.write().unwrap();
+                    let mut dict_write = database.dictionary.write();
                     let truths: Vec<u32> = input_results
                         .iter()
                         .map(|row| {
@@ -1415,7 +1415,7 @@ impl ExecutionEngine {
                 }
                 let rows = Self::execute_with_ids_and_input(input, database, context, incoming);
                 let data = {
-                    let dict = database.dictionary.read().unwrap();
+                    let dict = database.dictionary.read();
                     rows.iter()
                         .map(|row| {
                             input_variables
@@ -1557,7 +1557,7 @@ impl ExecutionEngine {
                         } else {
                             group.len().to_string()
                         };
-                        let id = database.dictionary.write().unwrap().encode(&count);
+                        let id = database.dictionary.write().encode(&count);
                         result.insert(Self::subquery_output_variable(aggregate), id);
                         continue;
                     }
@@ -1572,7 +1572,7 @@ impl ExecutionEngine {
                     );
                     let output = Self::subquery_output_variable(aggregate);
                     if let Some(value) = value {
-                        let id = database.dictionary.write().unwrap().encode(&value);
+                        let id = database.dictionary.write().encode(&value);
                         result.insert(output, id);
                     } else {
                         result.remove(&output);
@@ -2065,7 +2065,7 @@ impl ExecutionEngine {
     ) -> Bindings {
         let output_var = output_variable.strip_prefix('?').unwrap_or(output_variable);
 
-        let mut dict = database.dictionary.write().unwrap();
+        let mut dict = database.dictionary.write();
         let encoded: Vec<u32> = predictions
             .iter()
             .take(input_results.len())

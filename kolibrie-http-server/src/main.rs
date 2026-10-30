@@ -60,9 +60,10 @@ use std::io::{self, Read, Write};
 use std::net::{TcpListener, TcpStream};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc::{self, Sender};
-use std::sync::{Arc, Mutex, RwLock};
+use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::Duration;
+use shared::term_encoder::SharedTerms;
 
 // ── Session state for persistent RSP engines ────────────────────────────────
 
@@ -1823,7 +1824,7 @@ fn handle_dmtl_register(body: &str, dmtl_sessions: &DmtlSessions) -> String {
     };
 
     let horizon_ms = req.horizon_ms.unwrap_or(60_000);
-    let dict_arc: Arc<RwLock<Dictionary>> = Arc::new(RwLock::new(dict));
+    let dict_arc = SharedTerms::from_dictionary(dict);
 
     let shape_ingester = if shapes.is_empty() {
         None
@@ -1833,7 +1834,7 @@ fn handle_dmtl_register(body: &str, dmtl_sessions: &DmtlSessions) -> String {
 
     let store = IntervalFactStore::new(horizon_ms);
 
-    let mut eval = match DatalogMTLEvaluator::new(rules, store, Arc::clone(&dict_arc)) {
+    let mut eval = match DatalogMTLEvaluator::new(rules, store, dict_arc.clone()) {
         Ok(e) => e,
         Err(e) => {
             eprintln!("DMTL evaluator error: {}", e);
@@ -1897,7 +1898,7 @@ fn handle_dmtl_push(body: &str, dmtl_sessions: &DmtlSessions) -> String {
         None => return json_error_response("Session not found"),
     };
 
-    let dict_arc = Arc::clone(&session.evaluator.dictionary);
+    let dict_arc = session.evaluator.dictionary.clone();
     let triples = match (&mut session.shape_ingester, &req.stream_iri) {
         (Some(ingester), Some(iri)) => {
             let raw = tokenize_and_encode_ntriples(&req.ntriples, &dict_arc);
@@ -1930,7 +1931,7 @@ fn handle_dmtl_push(body: &str, dmtl_sessions: &DmtlSessions) -> String {
     let (derived, metrics) = session.evaluator.advance(req.timestamp, triples);
 
     let decoded: Vec<[String; 3]> = {
-        let dict = session.evaluator.dictionary.read().unwrap();
+        let dict = session.evaluator.dictionary.view();
         derived
             .iter()
             .map(|t| {
@@ -2028,18 +2029,18 @@ fn decode_dmtl_term(val: Option<&str>) -> String {
 }
 
 /// Tokenize N-Triples text and encode each term into the shared dictionary.
-fn tokenize_and_encode_ntriples(ntriples: &str, dict_arc: &Arc<RwLock<Dictionary>>) -> Vec<Triple> {
+fn tokenize_and_encode_ntriples(ntriples: &str, dict_arc: &SharedTerms) -> Vec<Triple> {
     let mut triples = Vec::new();
     for line in ntriples.lines() {
         if let Some([s, p, o]) = tokenize_ntriples_line(line) {
-            let mut dict = dict_arc.write().unwrap();
-            let s_id = dict.encode(&s);
-            let p_id = dict.encode(&p);
-            let o_id = dict.encode(&o);
+            // The shared space, not a view: these terms have to be interned where
+            // everything else will look them up. A view refused the call, which is
+            // what it is for.
+            let (subject, predicate, object) = dict_arc.encode_triple(&s, &p, &o);
             triples.push(Triple {
-                subject: s_id,
-                predicate: p_id,
-                object: o_id,
+                subject,
+                predicate,
+                object,
             });
         }
     }
@@ -2151,7 +2152,7 @@ fn handle_dmtl_static(body: &str) -> String {
     let strategy = req.strategy.as_deref().unwrap_or("interval");
     // Syntax: "rdf" (triple patterns + N-Triples intervals) or "meteor" (Pred(args)@[l,r]).
     let rdf = req.syntax.as_deref().unwrap_or("rdf") != "meteor";
-    let dict: Arc<RwLock<Dictionary>> = Arc::new(RwLock::new(Dictionary::new()));
+    let dict: SharedTerms = SharedTerms::new();
 
     let parsed = if rdf {
         parse_static_rdf(&req, &dict)
@@ -2171,7 +2172,7 @@ fn handle_dmtl_static(body: &str) -> String {
             Ok(m) => m,
             Err(e) => return json_error_response(&format!("ω-materialization: {}", e)),
         };
-        let g = dict.read().unwrap();
+        let g = dict.view();
         for (triple, iv) in &queries {
             entailment.push(DmtlEntailAnswer {
                 query: fmt_fact(triple, iv, &g, rdf),
@@ -2184,7 +2185,7 @@ fn handle_dmtl_static(body: &str) -> String {
         automata::materialize(&rules, iv_facts, 1000).facts
     };
 
-    let g = dict.read().unwrap();
+    let g = dict.view();
     let mut lines: Vec<String> = Vec::new();
     for (triple, ivs) in &fact_map {
         for iv in ivs {
@@ -2210,13 +2211,13 @@ type StaticInput = (
 /// Parse the static request in RDF-style: triple-pattern rules + `<s> <p> <o> @[l,r]` facts.
 fn parse_static_rdf(
     req: &DmtlStaticRequest,
-    dict: &Arc<RwLock<Dictionary>>,
+    dict: &SharedTerms,
 ) -> Result<StaticInput, String> {
-    let rules = {
-        let mut d = dict.write().unwrap();
-        parse_dmtl_rules(&req.program, &mut d, Mode::Static)
-            .map_err(|e| format!("Program parse error: {}", e))?
-    };
+    // Parsing interns, so it needs the shared space rather than a view.
+    let rules = dict
+        .try_with_terms(|d| parse_dmtl_rules(&req.program, d, Mode::Static))
+        .map_err(|e| e.to_string())?
+        .map_err(|e| format!("Program parse error: {}", e))?;
     let facts = parse_dmtl_interval_facts(&req.data, dict)?;
     let queries = match &req.queries {
         Some(q) if !q.trim().is_empty() => parse_dmtl_interval_facts(q, dict)?,
@@ -2228,7 +2229,7 @@ fn parse_static_rdf(
 /// Parse the static request in MeTeoR-style: `Pred(args)` rules + `Pred(args)@[l,r]` facts.
 fn parse_static_meteor(
     req: &DmtlStaticRequest,
-    dict: &Arc<RwLock<Dictionary>>,
+    dict: &SharedTerms,
 ) -> Result<StaticInput, String> {
     let rules = parse_program(&req.program, dict, Mode::Static)
         .map_err(|e| format!("Program parse error: {}", e))?;
@@ -2250,7 +2251,7 @@ fn parse_static_meteor(
 /// Parse RDF interval facts: `<s> <p> <o> @[l,r] .` (one per line).
 fn parse_dmtl_interval_facts(
     text: &str,
-    dict: &Arc<RwLock<Dictionary>>,
+    dict: &SharedTerms,
 ) -> Result<Vec<(Triple, TInterval)>, String> {
     let mut out = Vec::new();
     for (i, raw) in text.lines().enumerate() {
@@ -2272,13 +2273,12 @@ fn parse_dmtl_interval_facts(
         let interval = parse_dmtl_interval(&iv_inner[..rb])?;
         let toks = tokenize_ntriples_line(&line[..at])
             .ok_or_else(|| format!("data line {}: could not parse triple: '{}'", i + 1, line))?;
-        let triple = {
-            let mut d = dict.write().unwrap();
-            Triple {
-                subject: d.encode(&toks[0]),
-                predicate: d.encode(&toks[1]),
-                object: d.encode(&toks[2]),
-            }
+        // Interning, so the shared space rather than a view.
+        let (subject, predicate, object) = dict.encode_triple(&toks[0], &toks[1], &toks[2]);
+        let triple = Triple {
+            subject,
+            predicate,
+            object,
         };
         out.push((
             triple,
