@@ -8,11 +8,9 @@ use datalog::reasoning::materialisation::cross_window_incremental::{
 };
 use datalog::reasoning::materialisation::cross_window_naive::naive_sds_plus;
 use datalog::reasoning::Reasoner;
-use shared::dictionary::Dictionary;
 use shared::rule::Rule;
 use shared::triple::Triple;
 use std::collections::{BTreeSet, HashMap};
-use std::sync::{Arc, RwLock};
 use std::time::Duration;
 use shared::term_encoder::SharedTerms;
 
@@ -35,9 +33,9 @@ const CROSS_WINDOW_RULES: &str = r#"
 { ?road traffic:avgSpeed ?speed . ?lot parking:nearRoad ?road . ?lot parking:occupancy ?occupancy } => { ?road result:congested <true> }
 "#;
 
-fn parse_rules(dict: &Arc<RwLock<Dictionary>>) -> Vec<Rule> {
+fn parse_rules(dict: &SharedTerms) -> Vec<Rule> {
     let mut reasoner = Reasoner::new();
-    reasoner.adopt_terms(SharedTerms::from_handle(Arc::clone(dict)));
+    reasoner.adopt_terms(dict.clone());
     let window_widths = HashMap::from([
         (TRAFFIC_IRI.to_string(), TRAFFIC_ALPHA),
         (PARKING_IRI.to_string(), PARKING_ALPHA),
@@ -113,9 +111,11 @@ fn make_citybench_sds(size: usize, update_ratio_percent: usize) -> Sds {
 
 fn signature(
     result: &HashMap<String, Vec<Triple>>,
-    dict: &Arc<RwLock<Dictionary>>,
+    dict: &SharedTerms,
 ) -> BTreeSet<String> {
-    let d = dict.read().unwrap();
+    // A copy: this decodes every triple it prints, and a scoped encoder will not
+    // hold its lock across the walk.
+    let d = dict.view();
     let mut out = BTreeSet::new();
 
     for (component, triples) in result {
@@ -133,13 +133,13 @@ fn signature(
 fn prepare_incremental_state(
     rules: &[Rule],
     initial_sds: &Sds,
-    dict: &Arc<RwLock<Dictionary>>,
+    dict: &SharedTerms,
 ) -> SdsWithExpiry {
     incremental_sds_plus(rules, initial_sds, &HashMap::new(), dict, INITIAL_TIME)
 }
 
 fn assert_same_results(size: usize, update_ratio_percent: usize) {
-    let dict = Arc::new(RwLock::new(Dictionary::new()));
+    let dict = SharedTerms::new();
     let rules = parse_rules(&dict);
     let initial_sds = make_citybench_sds(size, 0);
     let next_sds = make_citybench_sds(size, update_ratio_percent);
@@ -174,7 +174,7 @@ fn bench_citybench_cross_window(c: &mut Criterion) {
                 BenchmarkId::new("naive_full_rematerialization", &label),
                 &(size, ratio),
                 |b, &(size, ratio)| {
-                    let dict = Arc::new(RwLock::new(Dictionary::new()));
+                    let dict = SharedTerms::new();
                     let rules = parse_rules(&dict);
                     let next_sds = make_citybench_sds(size, ratio);
 
@@ -196,7 +196,7 @@ fn bench_citybench_cross_window(c: &mut Criterion) {
                 BenchmarkId::new("incremental_sds_plus", &label),
                 &(size, ratio),
                 |b, &(size, ratio)| {
-                    let dict = Arc::new(RwLock::new(Dictionary::new()));
+                    let dict = SharedTerms::new();
                     let rules = parse_rules(&dict);
                     let initial_sds = make_citybench_sds(size, 0);
                     let next_sds = make_citybench_sds(size, ratio);

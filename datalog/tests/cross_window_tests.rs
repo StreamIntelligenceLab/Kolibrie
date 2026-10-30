@@ -9,7 +9,6 @@
  */
 
 use std::collections::{HashMap, HashSet};
-use std::sync::{Arc, RwLock};
 
 use datalog::cross_window_sds::{
     all_component_iris, annotate_predicate, sds_with_expiry_to_external, strip_window_prefix,
@@ -21,11 +20,10 @@ use datalog::reasoning::materialisation::cross_window_incremental::{
 };
 use datalog::reasoning::materialisation::cross_window_naive::naive_sds_plus;
 use datalog::reasoning::Reasoner;
-use shared::dictionary::Dictionary;
 use shared::term_encoder::SharedTerms;
 
-fn make_dict() -> Arc<RwLock<Dictionary>> {
-    Arc::new(RwLock::new(Dictionary::new()))
+fn make_dict() -> SharedTerms {
+    SharedTerms::new()
 }
 
 /// Standard two-window SDS for the sensor+map scenario
@@ -67,9 +65,9 @@ const RULE_N3: &str = r#"
 "#;
 
 /// Parse rules from N3, using the shared dict
-fn parse_rules(dict: &Arc<RwLock<Dictionary>>) -> Vec<shared::rule::Rule> {
+fn parse_rules(dict: &SharedTerms) -> Vec<shared::rule::Rule> {
     let mut reasoner = Reasoner::new();
-    reasoner.adopt_terms(SharedTerms::from_handle(Arc::clone(dict)));
+    reasoner.adopt_terms(dict.clone());
     let window_widths: HashMap<String, u64> = [
         ("http://sensor/".to_string(), 10u64),
         ("http://map/".to_string(), 20u64),
@@ -83,7 +81,7 @@ fn parse_rules(dict: &Arc<RwLock<Dictionary>>) -> Vec<shared::rule::Rule> {
 fn pred_strings(
     result: &HashMap<String, Vec<shared::triple::Triple>>,
     comp: &str,
-    dict: &Arc<RwLock<Dictionary>>,
+    dict: &SharedTerms,
 ) -> HashSet<String> {
     result
         .get(comp)
@@ -91,9 +89,7 @@ fn pred_strings(
             triples
                 .iter()
                 .filter_map(|t| {
-                    dict.read()
-                        .unwrap()
-                        .decode(t.predicate)
+                    dict.decode(t.predicate)
                         .map(|s| s.to_string())
                 })
                 .collect()
@@ -150,7 +146,7 @@ fn test_translate_includes_alive() {
 fn test_parser_accepts_missing_final_conclusion_dot() {
     let dict = make_dict();
     let mut reasoner = Reasoner::new();
-    reasoner.adopt_terms(SharedTerms::from_handle(Arc::clone(&dict)));
+    reasoner.adopt_terms(dict.clone());
 
     let (rules, ctx) = parse_n3_rules_for_sds(RULE_N3, &mut reasoner, window_widths()).unwrap();
 
@@ -164,7 +160,7 @@ fn test_parser_accepts_missing_final_conclusion_dot() {
 fn test_parser_shared_prefixes_apply_to_multiple_rules() {
     let dict = make_dict();
     let mut reasoner = Reasoner::new();
-    reasoner.adopt_terms(SharedTerms::from_handle(Arc::clone(&dict)));
+    reasoner.adopt_terms(dict.clone());
 
     let input = r#"
 @prefix ws: <http://sensor/> .
@@ -182,7 +178,7 @@ fn test_parser_shared_prefixes_apply_to_multiple_rules() {
 fn test_parser_rejects_leftover_non_whitespace() {
     let dict = make_dict();
     let mut reasoner = Reasoner::new();
-    reasoner.adopt_terms(SharedTerms::from_handle(Arc::clone(&dict)));
+    reasoner.adopt_terms(dict.clone());
 
     let invalid = format!("{}\nthis is not a rule", RULE_N3);
     let err = parse_n3_rules_for_sds(&invalid, &mut reasoner, window_widths());
@@ -305,7 +301,7 @@ fn test_incremental_map_fact_survives() {
 fn test_expiry_chain_propagation() {
     let dict = make_dict();
     let mut reasoner = Reasoner::new();
-    reasoner.adopt_terms(SharedTerms::from_handle(Arc::clone(&dict)));
+    reasoner.adopt_terms(dict.clone());
 
     let mut sds = Sds::new();
     sds.windows.insert(
@@ -370,7 +366,7 @@ fn test_expiry_chain_propagation() {
 fn test_parse_document_shared_prefixes_multiple_rules() {
     let dict = make_dict();
     let mut reasoner = Reasoner::new();
-    reasoner.adopt_terms(SharedTerms::from_handle(Arc::clone(&dict)));
+    reasoner.adopt_terms(dict.clone());
 
     let document = r#"
 @prefix a: <http://a/> .
@@ -389,7 +385,7 @@ fn test_parse_document_shared_prefixes_multiple_rules() {
 fn test_parse_missing_conclusion_dot_succeeds() {
     let dict = make_dict();
     let mut reasoner = Reasoner::new();
-    reasoner.adopt_terms(SharedTerms::from_handle(Arc::clone(&dict)));
+    reasoner.adopt_terms(dict.clone());
 
     let document = r#"
 @prefix a: <http://a/> .
@@ -409,7 +405,7 @@ fn test_parse_missing_conclusion_dot_succeeds() {
 fn test_parse_document_rejects_leftover_input() {
     let dict = make_dict();
     let mut reasoner = Reasoner::new();
-    reasoner.adopt_terms(SharedTerms::from_handle(Arc::clone(&dict)));
+    reasoner.adopt_terms(dict.clone());
 
     let document = r#"
 @prefix a: <http://a/> .

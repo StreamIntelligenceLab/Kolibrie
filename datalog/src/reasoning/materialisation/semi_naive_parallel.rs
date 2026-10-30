@@ -31,12 +31,26 @@ impl Reasoner {
         // Keep track of newly inferred facts so we can return them later
         let mut inferred_so_far = Vec::new();
 
-        // Cloned per inference below, which is this strategy's defect rather than a
-        // detail: a `&mut Dictionary` cannot cross rayon's workers, so each one
-        // interns into a copy and the ids never reach the shared term space. It held
-        // a write lock on the original the whole time for nothing. The strategy has
-        // no callers; this keeps its behaviour and states the problem rather than
-        // dressing it up.
+        // This strategy is unsound, and the term handling is why. It has no callers.
+        //
+        // A `&mut Dictionary` cannot cross rayon's workers, so the loop below clones
+        // this copy per inference and interns into the clone. Those ids are minted
+        // against a private counter that starts wherever the shared space happened to
+        // be, so:
+        //
+        // - the shared space can later assign the same number to a different term,
+        //   and then a fact stored here decodes to the wrong string;
+        // - two workers in one run mint the same id for different terms, so the
+        //   results are not even internally consistent.
+        //
+        // And the facts are not discarded: the loop inserts them into
+        // `self.dataset_index` and returns them. So this fabricates term ids and
+        // stores them as if they were real, rather than merely losing them, which is
+        // what an earlier version of this comment said.
+        //
+        // Fixing it means keeping the parallel section free of interning -- deriving
+        // conclusions as unresolved terms and interning them sequentially afterwards
+        // -- which is a rewrite of the strategy rather than a change to this line.
         let mut dict = shared::dictionary::Dictionary::new();
         self.with_terms(&mut |shared| dict = shared.clone());
 

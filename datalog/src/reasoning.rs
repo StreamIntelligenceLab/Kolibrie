@@ -35,7 +35,7 @@ use shared::provenance::Provenance;
 use shared::rule::Rule;
 use shared::rule_index::RuleIndex;
 use shared::tag_store::TagStore;
-use shared::term_encoder::{SharedTerms, TermEncoder};
+use shared::term_encoder::{SharedTerms, TermEncoder, TermView};
 use shared::triple::Triple;
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 
@@ -140,16 +140,15 @@ impl Reasoner {
         id
     }
 
-    /// A copy of the term space, for code that reads many terms and writes none.
+    /// A read-only copy of the term space, for decoding many ids at once.
     ///
-    /// The scoped encoder deliberately will not hand its lock out, so a read-only
-    /// dump either takes the lock once per term or copies once. Copying is the
-    /// cheaper of the two for `to_dot`, which decodes every subject, predicate and
-    /// object it prints, and it cannot hold the lock while it formats.
-    pub fn dictionary_snapshot(&self) -> Dictionary {
-        let mut copy = Dictionary::new();
-        self.with_terms(&mut |dictionary| copy = dictionary.clone());
-        copy
+    /// The scoped encoder will not hand its lock out, so code that decodes every
+    /// term it prints either takes the lock per term or copies once. This copies, and
+    /// returns a [`TermView`] rather than a `Dictionary` so that interning into the
+    /// copy is not expressible -- see that type for why it would be wrong and not
+    /// merely useless.
+    pub fn term_view(&self) -> TermView {
+        self.terms.view()
     }
 
     /// Interns a triple's three terms under one lock.
@@ -157,15 +156,7 @@ impl Reasoner {
     /// Four callers took a write lock, encoded subject, predicate and object, and
     /// dropped it. One lock acquisition, as before, but the caller no longer says so.
     pub fn encode_triple(&self, subject: &str, predicate: &str, object: &str) -> (u32, u32, u32) {
-        let mut ids = (0, 0, 0);
-        self.with_terms(&mut |dictionary| {
-            ids = (
-                dictionary.encode(subject),
-                dictionary.encode(predicate),
-                dictionary.encode(object),
-            );
-        });
-        ids
+        self.terms.encode_triple(subject, predicate, object)
     }
 
     /// Interns whichever of a pattern's positions are given.
@@ -327,5 +318,75 @@ impl Reasoner {
             }
         }
         repairs
+    }
+}
+
+#[cfg(test)]
+mod term_space_tests {
+    use super::*;
+
+    #[test]
+    fn two_components_adopting_one_space_agree_on_ids() {
+        // The invariant the scoped API exists to provide.
+        let left = Reasoner::new();
+        let mut right = Reasoner::new();
+        right.adopt_terms(left.terms());
+
+        let from_left = left.encode_term("urn:shared");
+        let from_right = right.encode_term("urn:shared");
+        assert_eq!(from_left, from_right, "one term space mints one id per term");
+
+        // And a term interned on one side is visible from the other, with no copying
+        // back: that is what sharing means, and what the removed sync-back assumed.
+        let late = right.encode_term("urn:late");
+        assert_eq!(left.decode_term(late).as_deref(), Some("urn:late"));
+    }
+
+    #[test]
+    fn two_dictionaries_from_one_starting_point_mint_colliding_ids() {
+        // Why `term_view` hands out a read-only view instead of a `Dictionary`.
+        //
+        // This is the underlying fact, shown against `Dictionary` directly, because
+        // the hazard it used to allow is no longer expressible through the reasoner:
+        // a `TermView` has no `encode`. Were it still a copy, a fact built from an id
+        // minted in it would decode, through the shared space, to someone else's
+        // term -- corrupting the fact base rather than losing the term.
+        let reasoner = Reasoner::new();
+        reasoner.encode_term("urn:already-here");
+
+        let mut copy = Dictionary::new();
+        reasoner.with_terms(&mut |shared| copy = shared.clone());
+
+        let in_copy = copy.encode("urn:only-in-the-copy");
+        let in_shared = reasoner.encode_term("urn:only-in-the-shared-space");
+
+        assert_eq!(
+            in_copy, in_shared,
+            "both counters stood in the same place, so they hand out the same number"
+        );
+        assert_eq!(
+            reasoner.decode_term(in_copy).as_deref(),
+            Some("urn:only-in-the-shared-space"),
+            "the id minted in the copy names a different term in the shared space"
+        );
+    }
+
+    #[test]
+    fn a_view_does_not_see_terms_interned_after_it() {
+        // The staleness half, which `TermView` does not and cannot prevent. It is
+        // sound rather than wrong -- a blank, not someone else's term -- and every
+        // caller is safe because the ids it decodes come from facts already stored,
+        // so they predate the view.
+        let reasoner = Reasoner::new();
+        let before = reasoner.encode_term("urn:before");
+        let view = reasoner.term_view();
+        let after = reasoner.encode_term("urn:after");
+
+        assert_eq!(view.decode(before), Some("urn:before"));
+        assert_eq!(
+            view.decode(after),
+            None,
+            "a view cannot know a term interned after it was taken"
+        );
     }
 }

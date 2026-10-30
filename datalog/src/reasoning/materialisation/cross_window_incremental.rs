@@ -28,14 +28,12 @@ use crate::cross_window_sds::{
 };
 use crate::reasoning::materialisation::provenance_semi_naive::semi_naive_with_initial_tags_and_delta;
 use crate::reasoning::Reasoner;
-use shared::dictionary::Dictionary;
 use shared::term_encoder::SharedTerms;
 use shared::provenance::ExpirationProvenance;
 use shared::rule::Rule;
 use shared::tag_store::TagStore;
 use shared::triple::Triple;
 use std::collections::HashMap;
-use std::sync::{Arc, RwLock};
 
 /// Internal incremental state: maps component IRI → (annotated-triple → expiry)
 pub type SdsWithExpiry = HashMap<String, HashMap<Triple, u64>>;
@@ -45,7 +43,7 @@ pub fn incremental_sds_plus(
     rules: &[Rule],
     sds_current: &Sds,
     sds_plus_old: &SdsWithExpiry,
-    dict: &Arc<RwLock<Dictionary>>,
+    dict: &SharedTerms,
     current_time: u64,
 ) -> SdsWithExpiry {
     let d_base = translate_sds_to_datalog(sds_current, dict, current_time);
@@ -75,7 +73,7 @@ pub fn incremental_sds_plus(
         .collect();
 
     let mut reasoner = Reasoner::new();
-    reasoner.adopt_terms(SharedTerms::from_handle(Arc::clone(dict)));
+    reasoner.adopt_terms(dict.clone());
 
     for (t, _) in &d_old {
         reasoner.dataset_index.insert(t);
@@ -111,7 +109,7 @@ pub fn incremental_sds_plus(
     let mut result: SdsWithExpiry = HashMap::new();
 
     for triple in all_facts {
-        let pred_str = match dict.read().unwrap().decode(triple.predicate) {
+        let pred_str = match dict.decode(triple.predicate).as_deref() {
             Some(s) => s.to_string(),
             None => continue,
         };

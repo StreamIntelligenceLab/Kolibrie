@@ -39,12 +39,10 @@ use datalog::reasoning::materialisation::cross_window_incremental::{
     incremental_sds_plus, SdsWithExpiry,
 };
 use datalog::reasoning::materialisation::cross_window_naive::naive_sds_plus;
-use shared::dictionary::Dictionary;
 use shared::hybrid::{
     normalize_stream_iri, HybridError, HybridProbabilityResult, SeedId, SeedRegistry,
 };
 use shared::triple::Triple;
-use std::sync::RwLock;
 
 // Re-exports to preserve the public API used by kolibrie-http-server and examples.
 /// Assembling an engine from a parsed query. Lives here rather than in
@@ -332,7 +330,12 @@ where
     cross_window_context: Option<WindowContext>,
     cross_window_sds_plus: Arc<Mutex<SdsWithExpiry>>,
     cross_window_latest_contents: Arc<Mutex<HashMap<String, Vec<(Triple, u64)>>>>,
-    cross_window_dictionary: Option<Arc<RwLock<Dictionary>>>,
+    /// The term space the cross-window reasoner shares with the R2R store.
+    ///
+    /// A `SharedTerms` rather than the handle underneath: the engine passes it to
+    /// datalog's cross-window entry points, which take one too, so the handle no
+    /// longer has to be named anywhere along the way.
+    cross_window_dictionary: Option<SharedTerms>,
     cross_window_output_iris: Arc<Vec<String>>,
     cross_window_reasoning_mode: CrossWindowReasoningMode,
     hybrid_seed_registry: Arc<Mutex<SeedRegistry>>,
@@ -400,7 +403,7 @@ where
         let shared_dict = store
             .as_any_mut()
             .downcast_mut::<SimpleR2R>()
-            .map(|s| Arc::clone(&s.item.dictionary));
+            .map(|s| s.item.terms());
 
         if let Some(simple_r2r) = store.as_any_mut().downcast_mut::<SimpleR2R>() {
             debug!("Synchronizing R2R dictionary with Query dictionary");
@@ -417,8 +420,8 @@ where
 
         // Build the static-data store sharing the same dictionary as the R2R store.
         let mut static_sdb = SparqlDatabase::new();
-        if let Some(d) = &shared_dict {
-            static_sdb.adopt_terms(SharedTerms::from_handle(Arc::clone(d)));
+        if let Some(terms) = &shared_dict {
+            static_sdb.adopt_terms(terms.clone());
         }
         let static_db = Arc::new(Mutex::new(static_sdb));
 
@@ -430,7 +433,7 @@ where
                 "Cross-window SDS+ reasoning requires a SimpleR2R shared dictionary".to_string()
             })?;
             let mut reasoner = datalog::reasoning::Reasoner::new();
-            reasoner.adopt_terms(SharedTerms::from_handle(Arc::clone(dict)));
+            reasoner.adopt_terms(dict.clone());
             let window_widths: HashMap<String, u64> = query_config
                 .windows
                 .iter()
@@ -477,7 +480,7 @@ where
             if let Some(dict) = store
                 .as_any_mut()
                 .downcast_mut::<SimpleR2R>()
-                .map(|s| Arc::clone(&s.item.dictionary))
+                .map(|s| s.item.terms())
             {
                 for rule_str in &sparql_rules {
                     let parsed_hybrid_config = crate::parser::parse_combined_query(rule_str)
@@ -486,7 +489,7 @@ where
                         .and_then(|rule| rule.prob_annotation)
                         .and_then(|annotation| annotation.hybrid_config);
                     let mut temp_db = SparqlDatabase::new();
-                    temp_db.adopt_terms(SharedTerms::from_handle(Arc::clone(&dict)));
+                    temp_db.adopt_terms(dict.clone());
                     match process_rule_definition(rule_str, &mut temp_db) {
                         Ok((rule, _)) => {
                             if let Some(simple_r2r) = store.as_any_mut().downcast_mut::<SimpleR2R>()
@@ -1240,13 +1243,15 @@ fn build_cross_window_sds(
     window_configs: &[RSPWindow],
     latest_contents: &HashMap<String, Vec<(Triple, u64)>>,
     static_db: &Arc<Mutex<SparqlDatabase>>,
-    dict: &Arc<RwLock<Dictionary>>,
+    dict: &SharedTerms,
     output_iris: &[String],
 ) -> Sds {
     let mut sds = Sds::new();
 
     {
-        let dict_r = dict.read().unwrap();
+        // A copy, because this decodes every triple in every window and a scoped
+        // encoder will not hold its lock across the walk.
+        let dict_r = dict.view();
         for window in window_configs {
             let triples = latest_contents
                 .get(&window.window_iri)
@@ -1282,7 +1287,9 @@ fn build_cross_window_sds(
 
     let static_triples = {
         let db = static_db.lock().unwrap();
-        let dict_r = dict.read().unwrap();
+        // A copy, because this decodes every triple in every window and a scoped
+        // encoder will not hold its lock across the walk.
+        let dict_r = dict.view();
         db.query_default_triples(None, None, None)
             .into_iter()
             .filter_map(|triple| {
@@ -1306,13 +1313,13 @@ fn execute_window_plans_on_external_buckets(
     window_configs: &[RSPWindow],
     window_plans: &[PhysicalOperator],
     external_buckets: &HashMap<String, Vec<Triple>>,
-    dict: &Arc<RwLock<Dictionary>>,
+    dict: &SharedTerms,
 ) -> HashMap<String, Vec<HashMap<String, String>>> {
     let mut materialized = HashMap::new();
 
     for (window, plan) in window_configs.iter().zip(window_plans.iter()) {
         let mut db = SparqlDatabase::new();
-        db.adopt_terms(SharedTerms::from_handle(Arc::clone(dict)));
+        db.adopt_terms(dict.clone());
 
         if let Some(triples) = external_buckets.get(&window.window_iri) {
             for triple in triples {
@@ -1338,7 +1345,7 @@ fn emit_cross_window_results<O>(
     rules: &[Rule],
     previous_sds_plus: &Arc<Mutex<SdsWithExpiry>>,
     latest_contents: &Arc<Mutex<HashMap<String, Vec<(Triple, u64)>>>>,
-    dict: &Arc<RwLock<Dictionary>>,
+    dict: &SharedTerms,
     output_iris: &[String],
     mode: CrossWindowReasoningMode,
 ) where

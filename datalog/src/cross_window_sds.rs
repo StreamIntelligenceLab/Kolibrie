@@ -25,10 +25,9 @@
 //! `event_time + alpha > current_time`, so the interval is half-open and a fact
 //! expiring exactly now has already gone.
 
-use shared::dictionary::Dictionary;
 use shared::triple::Triple;
 use std::collections::{HashMap, HashSet};
-use std::sync::{Arc, RwLock};
+use shared::term_encoder::SharedTerms;
 
 /// Canonical annotated predicate: `window_iri + local_name`
 pub fn annotate_predicate(window_iri: &str, local_name: &str) -> String {
@@ -107,7 +106,7 @@ pub fn all_component_iris(sds: &Sds) -> Vec<String> {
 /// datalog triples with per-fact expiration times
 pub fn translate_sds_to_datalog(
     sds: &Sds,
-    dict: &Arc<RwLock<Dictionary>>,
+    dict: &SharedTerms,
     current_time: u64,
 ) -> Vec<(Triple, u64)> {
     let mut result = Vec::new();
@@ -119,13 +118,7 @@ pub fn translate_sds_to_datalog(
                 continue;
             }
             let annotated_pred = annotate_predicate(window_iri, &wt.predicate);
-            let (s, p, o) = {
-                let mut d = dict.write().unwrap();
-                let s = d.encode(&wt.subject);
-                let p = d.encode(&annotated_pred);
-                let o = d.encode(&wt.object);
-                (s, p, o)
-            };
+            let (s, p, o) = dict.encode_triple(&wt.subject, &annotated_pred, &wt.object);
             result.push((
                 Triple {
                     subject: s,
@@ -140,13 +133,7 @@ pub fn translate_sds_to_datalog(
     for (static_graph_iri, triples) in &sds.static_graphs {
         for (s_str, p_str, o_str) in triples {
             let annotated_pred = annotate_predicate(static_graph_iri, p_str);
-            let (s, p, o) = {
-                let mut d = dict.write().unwrap();
-                let s = d.encode(s_str);
-                let p = d.encode(&annotated_pred);
-                let o = d.encode(o_str);
-                (s, p, o)
-            };
+            let (s, p, o) = dict.encode_triple(s_str, &annotated_pred, o_str);
             result.push((
                 Triple {
                     subject: s,
@@ -165,20 +152,20 @@ pub fn translate_sds_to_datalog(
 /// annotated predicates and route each triple to its component bucket
 pub fn translate_datalog_back(
     facts: &[Triple],
-    dict: &Arc<RwLock<Dictionary>>,
+    dict: &SharedTerms,
     sds: &Sds,
 ) -> HashMap<String, Vec<Triple>> {
     let component_iris = all_component_iris(sds);
     let mut result: HashMap<String, Vec<Triple>> = HashMap::new();
 
     for triple in facts {
-        let pred_str = match dict.read().unwrap().decode(triple.predicate) {
+        let pred_str = match dict.decode(triple.predicate).as_deref() {
             Some(s) => s.to_string(),
             None => continue,
         };
 
         if let Some((comp_iri, local_name)) = strip_window_prefix(&pred_str, &component_iris) {
-            let stripped_pred = dict.write().unwrap().encode(local_name);
+            let stripped_pred = dict.encode(local_name);
             let stripped = Triple {
                 subject: triple.subject,
                 predicate: stripped_pred,
@@ -197,20 +184,20 @@ pub fn translate_datalog_back(
 /// External view for the incremental `SdsWithExpiry` state
 pub fn sds_with_expiry_to_external(
     internal: &HashMap<String, HashMap<Triple, u64>>,
-    dict: &Arc<RwLock<Dictionary>>,
+    dict: &SharedTerms,
     component_iris: &[String],
 ) -> HashMap<String, Vec<Triple>> {
     let mut result: HashMap<String, Vec<Triple>> = HashMap::new();
 
     for (comp_iri, fact_map) in internal {
         for (triple, _expiry) in fact_map {
-            let pred_str = match dict.read().unwrap().decode(triple.predicate) {
+            let pred_str = match dict.decode(triple.predicate).as_deref() {
                 Some(s) => s.to_string(),
                 None => continue,
             };
 
             if let Some((_matched, local_name)) = strip_window_prefix(&pred_str, component_iris) {
-                let stripped_pred = dict.write().unwrap().encode(local_name);
+                let stripped_pred = dict.encode(local_name);
                 let stripped = Triple {
                     subject: triple.subject,
                     predicate: stripped_pred,
@@ -227,11 +214,9 @@ pub fn sds_with_expiry_to_external(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use shared::dictionary::Dictionary;
-    use std::sync::{Arc, RwLock};
 
-    fn make_dict() -> Arc<RwLock<Dictionary>> {
-        Arc::new(RwLock::new(Dictionary::new()))
+    fn make_dict() -> SharedTerms {
+        SharedTerms::new()
     }
 
     fn make_sds() -> Sds {
@@ -324,10 +309,7 @@ mod tests {
         let triples = &back["http://sensor/"];
         assert_eq!(triples.len(), 1);
         // predicate should be stripped to "reading"
-        let pred_str = dict
-            .read()
-            .unwrap()
-            .decode(triples[0].predicate)
+        let pred_str = dict.decode(triples[0].predicate)
             .unwrap()
             .to_string();
         assert_eq!(pred_str, "reading");

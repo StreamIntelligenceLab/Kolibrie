@@ -23,10 +23,8 @@ use shared::hybrid::{
     SeedSnapshot,
 };
 use shared::rule::Rule;
-use shared::term_encoder::SharedTerms;
 use shared::triple::Triple;
 use std::collections::HashMap;
-use std::sync::Arc;
 
 #[cfg(not(test))]
 use log::{debug, error};
@@ -167,7 +165,7 @@ impl R2ROperator<Triple, Vec<PhysicalOperator>, Vec<(String, String)>> for Simpl
             return Ok(());
         }
         let mut temp_reasoner = Reasoner::new();
-        temp_reasoner.adopt_terms(SharedTerms::from_handle(Arc::clone(&self.item.dictionary)));
+        temp_reasoner.adopt_terms(self.item.terms());
         let mut remaining = data;
         loop {
             match parse_n3_rule(remaining, &mut temp_reasoner) {
@@ -204,7 +202,7 @@ impl R2ROperator<Triple, Vec<PhysicalOperator>, Vec<(String, String)>> for Simpl
         }
 
         let mut reasoner = Reasoner::new();
-        reasoner.adopt_terms(SharedTerms::from_handle(Arc::clone(&self.item.dictionary)));
+        reasoner.adopt_terms(self.item.terms());
         // The window's facts are read straight from `self.item` rather than inserted
         // here first. Building a second set of sorted indexes over content this
         // operator is about to throw away was the whole cost, and inference flattens

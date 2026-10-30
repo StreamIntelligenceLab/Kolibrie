@@ -8,11 +8,9 @@ use datalog::reasoning::materialisation::cross_window_incremental::{
 };
 use datalog::reasoning::materialisation::cross_window_naive::naive_sds_plus;
 use datalog::reasoning::Reasoner;
-use shared::dictionary::Dictionary;
 use shared::rule::Rule;
 use shared::triple::Triple;
 use std::collections::{BTreeSet, HashMap};
-use std::sync::{Arc, RwLock};
 use shared::term_encoder::SharedTerms;
 
 const TRAFFIC_IRI: &str = "http://traffic/";
@@ -27,9 +25,9 @@ const RULE_N3: &str = r#"
 { ?road wt:avgSpeed ?s . ?lot wp:nearRoad ?road . ?lot wp:occupancy ?occ } => { ?road wr:congested <true> }
 "#;
 
-fn parse_rules(dict: &Arc<RwLock<Dictionary>>) -> Vec<Rule> {
+fn parse_rules(dict: &SharedTerms) -> Vec<Rule> {
     let mut reasoner = Reasoner::new();
-    reasoner.adopt_terms(SharedTerms::from_handle(Arc::clone(dict)));
+    reasoner.adopt_terms(dict.clone());
     let window_widths: HashMap<String, u64> = [
         (TRAFFIC_IRI.to_string(), 60),
         (PARKING_IRI.to_string(), 120),
@@ -103,9 +101,11 @@ fn make_sds(n: usize, update_ratio_percent: usize) -> Sds {
 
 fn signature(
     result: &HashMap<String, Vec<Triple>>,
-    dict: &Arc<RwLock<Dictionary>>,
+    dict: &SharedTerms,
 ) -> BTreeSet<String> {
-    let d = dict.read().unwrap();
+    // A copy: this decodes every triple it prints, and a scoped encoder will not
+    // hold its lock across the walk.
+    let d = dict.view();
     let mut out = BTreeSet::new();
     for (component, triples) in result {
         for triple in triples {
@@ -119,7 +119,7 @@ fn signature(
 }
 
 fn assert_correctness(n: usize, update_ratio: usize) {
-    let dict = Arc::new(RwLock::new(Dictionary::new()));
+    let dict = SharedTerms::new();
     let rules = parse_rules(&dict);
     let sds_initial = make_sds(n, 0);
     let sds_next = make_sds(n, update_ratio);
@@ -148,7 +148,7 @@ fn bench_naive(c: &mut Criterion) {
                 |b, &(n, ratio)| {
                     b.iter_batched(
                         || {
-                            let dict = Arc::new(RwLock::new(Dictionary::new()));
+                            let dict = SharedTerms::new();
                             let rules = parse_rules(&dict);
                             let sds = make_sds(n, ratio);
                             (dict, rules, sds)
@@ -183,7 +183,7 @@ fn bench_incremental(c: &mut Criterion) {
                 |b, &(n, ratio)| {
                     b.iter_batched(
                         || {
-                            let dict = Arc::new(RwLock::new(Dictionary::new()));
+                            let dict = SharedTerms::new();
                             let rules = parse_rules(&dict);
                             let sds_initial = make_sds(n, 0);
                             let sds_next = make_sds(n, ratio);

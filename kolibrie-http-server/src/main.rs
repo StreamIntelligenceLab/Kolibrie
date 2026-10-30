@@ -1201,7 +1201,7 @@ fn execute_sparql_with_policy(
             // Decode all triples to owned strings using database.dictionary BEFORE
             // creating kg's mutable borrow — avoids the RwLockReadGuard conflict.
             let decoded_triples: Vec<(String, String, String)> = {
-                let dict_guard = kg.dictionary_snapshot();
+                let dict_guard = kg.term_view();
                 database
                     .query_default_triples(None, None, None)
                     .into_iter()

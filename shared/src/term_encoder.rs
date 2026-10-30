@@ -117,13 +117,109 @@ impl SharedTerms {
         Self(handle)
     }
 
+    /// Interns `text` and returns its id.
+    ///
+    /// The common case, named so a caller does not reach for the handle to do it.
+    pub fn encode(&self, text: &str) -> u32 {
+        let mut id = 0;
+        self.with_terms(&mut |dictionary| id = dictionary.encode(text));
+        id
+    }
+
+    /// Interns three terms under one lock, which is what a triple needs.
+    pub fn encode_triple(&self, subject: &str, predicate: &str, object: &str) -> (u32, u32, u32) {
+        let mut ids = (0, 0, 0);
+        self.with_terms(&mut |dictionary| {
+            ids = (
+                dictionary.encode(subject),
+                dictionary.encode(predicate),
+                dictionary.encode(object),
+            );
+        });
+        ids
+    }
+
+    /// The string `id` stands for, if this term space knows it.
+    pub fn decode(&self, id: u32) -> Option<String> {
+        let mut text = None;
+        self.with_terms(&mut |dictionary| {
+            text = dictionary.decode(id).map(str::to_string);
+        });
+        text
+    }
+
     /// The underlying handle, for the components that still take one directly.
     ///
-    /// This is the seam: while `Reasoner::dictionary` and `SparqlDatabase` are typed
-    /// in terms of the handle, an encoder has to be able to produce it. It is the
-    /// reason this type is a wrapper rather than a replacement.
+    /// The seam, and a shrinking one. `SparqlDatabase` is still typed in terms of
+    /// the handle internally, so an encoder has to be able to produce it; everything
+    /// that merely wanted to *share* a term space now asks for one instead. Closing
+    /// this means converting that field, which 67 call sites read directly.
     pub fn handle(&self) -> Arc<RwLock<Dictionary>> {
         Arc::clone(&self.0)
+    }
+}
+
+/// A read-only copy of a term space.
+///
+/// What a caller gets when it needs to decode many ids and cannot hold the shared
+/// lock across the walk -- printing a graph, serialising a result, comparing two
+/// runs. It answers [`decode`](Self::decode) and nothing else.
+///
+/// # Why it is not just a `Dictionary`
+///
+/// It used to be, and that was a trap. An owned `Dictionary` has `encode` on it, and
+/// interning into a copy is not merely ineffective: the copy's next id starts
+/// wherever the shared space's was, so a term interned here can be handed a number
+/// the shared space later gives to a *different* term. A fact built from such an id
+/// corrupts the fact base rather than losing it. `semi_naive_parallel` does exactly
+/// that and is unsound for it.
+///
+/// Documentation did not stop it, so the type does: there is no way to intern
+/// through this. To intern, use the shared encoder.
+///
+/// # It can still be stale
+///
+/// A term interned after the view is taken is missing from it, and decoding such an
+/// id yields `None`. That is sound rather than wrong -- a blank, not someone else's
+/// term -- and every caller is safe for one reason: the ids it decodes come from
+/// facts that were already stored, so they predate the view.
+#[derive(Debug, Clone)]
+pub struct TermView(Dictionary);
+
+impl TermView {
+    /// The string `id` stands for, or `None` if this view does not have it.
+    pub fn decode(&self, id: u32) -> Option<&str> {
+        self.0.decode(id)
+    }
+
+    /// The string `id` stands for, following quoted triples through `qt_store`.
+    pub fn decode_term(
+        &self,
+        id: u32,
+        qt_store: &crate::quoted_triple_store::QuotedTripleStore,
+    ) -> Option<String> {
+        self.0.decode_term(id, qt_store)
+    }
+
+    /// How many terms the view holds.
+    pub fn len(&self) -> usize {
+        self.0.id_to_string.len()
+    }
+
+    /// Whether the view holds nothing.
+    pub fn is_empty(&self) -> bool {
+        self.0.id_to_string.is_empty()
+    }
+}
+
+impl SharedTerms {
+    /// A read-only copy, for decoding many ids without holding the lock.
+    ///
+    /// See [`TermView`] for when this is the right tool and what it cannot do.
+    pub fn view(&self) -> TermView {
+        let mut copy = Dictionary::new();
+        self.with_terms(&mut |dictionary| copy = dictionary.clone());
+        TermView(copy)
     }
 }
 
