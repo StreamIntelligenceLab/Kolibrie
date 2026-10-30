@@ -20,10 +20,9 @@
 //! tick every fact holding in the store is recorded, then coalesced on output.
 
 use std::collections::{BTreeSet, HashMap};
-use std::sync::{Arc, RwLock};
 use std::time::Instant;
 
-use shared::dictionary::Dictionary;
+use shared::term_encoder::SharedTerms;
 use shared::terms::{Term, TriplePattern};
 use shared::triple::Triple;
 
@@ -126,7 +125,7 @@ fn main() {
     let data_text = std::fs::read_to_string(&data_path)
         .unwrap_or_else(|e| fail(&format!("cannot read {}: {}", data_path, e)));
 
-    let dict = Arc::new(RwLock::new(Dictionary::new()));
+    let dict = SharedTerms::new();
     let rules = parse_program(&program_text, &dict, mode).unwrap_or_else(|e| fail(&e));
     let facts = parse_data(&data_text, &dict).unwrap_or_else(|e| fail(&e));
 
@@ -200,7 +199,7 @@ fn run<S: TemporalStore>(
     store: S,
     rules: Vec<DatalogMTLRule>,
     facts: &[TemporalFact],
-    dict: &Arc<RwLock<Dictionary>>,
+    dict: &SharedTerms,
     horizon: u64,
     skip_empty: bool,
 ) -> RunOutput {
@@ -249,7 +248,7 @@ fn run<S: TemporalStore>(
     let reason_micros = start.elapsed().as_micros();
     let atom_count = holds.len();
 
-    let dict_guard = dict.read().unwrap();
+    let dict_guard = dict.view();
     RunOutput {
         interval_lines: format_tick_sets(&holds, &dict_guard),
         reason_micros,
@@ -263,7 +262,7 @@ fn run<S: TemporalStore>(
 fn run_interval(
     rules: Vec<DatalogMTLRule>,
     facts: &[TemporalFact],
-    dict: &Arc<RwLock<Dictionary>>,
+    dict: &SharedTerms,
     horizon: u64,
 ) -> RunOutput {
     let iv_facts: Vec<(Triple, TInterval)> = facts
@@ -292,7 +291,7 @@ fn run_interval(
     holds.retain(|_, set| !set.is_empty());
     let atom_count = holds.len();
 
-    let dict_guard = dict.read().unwrap();
+    let dict_guard = dict.view();
     RunOutput {
         interval_lines: format_tick_sets(&holds, &dict_guard),
         reason_micros,
@@ -307,7 +306,7 @@ fn run_interval(
 fn run_omega(
     rules: Vec<DatalogMTLRule>,
     facts: &[TemporalFact],
-    dict: &Arc<RwLock<Dictionary>>,
+    dict: &SharedTerms,
     horizon: u64,
     entail_file: Option<String>,
     timing: bool,
@@ -336,7 +335,7 @@ fn run_omega(
         let text = std::fs::read_to_string(&path)
             .unwrap_or_else(|e| fail(&format!("cannot read {}: {}", path, e)));
         let queries = parse_data(&text, dict).unwrap_or_else(|e| fail(&e));
-        let g = dict.read().unwrap();
+        let g = dict.view();
         for q in queries {
             let holds = automata::entails(
                 &model,
@@ -364,7 +363,7 @@ fn run_omega(
         }
     }
     holds.retain(|_, set| !set.is_empty());
-    let g = dict.read().unwrap();
+    let g = dict.view();
     if timing {
         println!(
             "{{\"reason_ms\": {:.3}, \"atoms\": {}}}",
@@ -384,12 +383,12 @@ fn run_omega(
 fn relevant_ticks(
     rules: &[DatalogMTLRule],
     facts: &[TemporalFact],
-    dict: &Arc<RwLock<Dictionary>>,
+    dict: &SharedTerms,
     horizon: u64,
     skip_empty: bool,
 ) -> Vec<bool> {
     let n = (horizon + 1) as usize;
-    let rdf_type = dict.write().unwrap().encode(RDF_TYPE);
+    let rdf_type = dict.encode(RDF_TYPE);
     let reach = if !skip_empty || is_recursive(rules, rdf_type) {
         horizon
     } else {

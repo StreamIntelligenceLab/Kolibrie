@@ -42,13 +42,12 @@ use crate::metrics::TickMetrics;
 use crate::store::TemporalStore;
 use crate::syntax::{DatalogMTLRule, Interval, TemporalAtom};
 use crate::validate::validate_rules;
-use shared::dictionary::Dictionary;
 use shared::pattern::construct_triple;
 use shared::terms::{BindingRef, Bindings, Term, TriplePattern};
 use shared::triple::Triple;
 use std::collections::HashSet;
-use std::sync::{Arc, RwLock};
 use std::time::Instant;
+use shared::term_encoder::{SharedTerms, TermEncoder};
 
 /// A validated rule set together with the store it reads and writes.
 ///
@@ -63,7 +62,7 @@ pub struct DatalogMTLEvaluator<S: TemporalStore> {
     pub store: S,
     /// Term interning, shared with the caller: ids in the rules and the store
     /// have to mean the same thing outside.
-    pub dictionary: Arc<RwLock<Dictionary>>,
+    pub dictionary: SharedTerms,
     /// Maximum interval width across all rules. Used for eviction cutoff.
     w_max: u64,
 }
@@ -92,7 +91,7 @@ impl<S: TemporalStore> DatalogMTLEvaluator<S> {
     pub fn new(
         rules: Vec<DatalogMTLRule>,
         store: S,
-        dictionary: Arc<RwLock<Dictionary>>,
+        dictionary: SharedTerms,
     ) -> Result<Self, String> {
         validate_rules(&rules)?;
         let w_max = compute_w_max(&rules);
@@ -123,9 +122,11 @@ impl<S: TemporalStore> DatalogMTLEvaluator<S> {
                 let bindings = self.evaluate_rule(rule, t, &mut metrics);
                 metrics.rules_fired += bindings.len();
                 for binding in bindings {
-                    let mut dict = self.dictionary.write().unwrap();
-                    let derived = construct_triple(&rule.head, &binding, &mut dict);
-                    drop(dict);
+                    let mut derived = None;
+                    self.dictionary.with_terms(&mut |dict| {
+                        derived = Some(construct_triple(&rule.head, &binding, dict));
+                    });
+                    let derived = derived.expect("the visitor always runs");
                     if !all_derived.contains(&derived) {
                         all_derived.insert(derived.clone());
                         new_this_round.push(derived.clone());

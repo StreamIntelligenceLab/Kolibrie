@@ -10,21 +10,20 @@
 
 use crate::parser::{parse_data, parse_program as parse_program_raw, RDF_TYPE};
 use crate::syntax::{DatalogMTLRule, Interval, Mode, TemporalAtom};
-use shared::dictionary::Dictionary;
 use shared::terms::Term;
-use std::sync::{Arc, RwLock};
+use shared::term_encoder::SharedTerms;
 
-fn dict() -> Arc<RwLock<Dictionary>> {
-    Arc::new(RwLock::new(Dictionary::new()))
+fn dict() -> SharedTerms {
+    SharedTerms::new()
 }
 
 /// Parse in streaming mode (past-only) — the default for these tests.
-fn parse_program(text: &str, d: &Arc<RwLock<Dictionary>>) -> Result<Vec<DatalogMTLRule>, String> {
+fn parse_program(text: &str, d: &SharedTerms) -> Result<Vec<DatalogMTLRule>, String> {
     parse_program_raw(text, d, Mode::Streaming)
 }
 
-fn id(d: &Arc<RwLock<Dictionary>>, s: &str) -> u32 {
-    d.write().unwrap().encode(s)
+fn id(d: &SharedTerms, s: &str) -> u32 {
+    d.encode(s)
 }
 
 /// Unary body atom maps to (?x rdf:type A) and Diamondminus -> Diamond.

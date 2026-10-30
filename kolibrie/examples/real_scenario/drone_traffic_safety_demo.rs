@@ -23,9 +23,10 @@ use std::collections::HashSet;
 use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream};
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, Mutex, RwLock};
+use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
+use shared::term_encoder::SharedTerms;
 
 const PORT: u16 = 7879;
 const TICK_MS: u64 = 1000;
@@ -246,7 +247,7 @@ fn main() {
     // The dictionary lives out here so the HTTP thread can intern IRIs from
     // user-typed rules into the SAME dictionary the engine matches against —
     // Term::Constant ids are per-Dictionary and would otherwise match nothing.
-    let dictionary = Arc::new(RwLock::new(Dictionary::new()));
+    let dictionary = SharedTerms::new();
     let vocab = init_vocab(&dictionary);
     let config: Config = Arc::new(ConfigHandle::new(
         DEFAULT_RULES,
@@ -257,7 +258,7 @@ fn main() {
     start_demo_loop(
         Arc::clone(&events),
         Arc::clone(&state),
-        Arc::clone(&dictionary),
+        dictionary.clone(),
         vocab.clone(),
         Arc::clone(&config),
     );
@@ -315,7 +316,7 @@ impl DemoState {
 fn start_demo_loop(
     events: EventLog,
     state: Arc<Mutex<DemoState>>,
-    dictionary: Arc<RwLock<Dictionary>>,
+    dictionary: SharedTerms,
     vocab: Vocab,
     config: Config,
 ) {
@@ -335,7 +336,7 @@ fn start_demo_loop(
         let mut evaluator = DatalogMTLEvaluator::new(
             rules,
             IntervalFactStore::new(STORE_HORIZON_TICKS),
-            Arc::clone(&dictionary),
+            dictionary.clone(),
         )
         .expect("DatalogMTL rule setup failed");
 
@@ -425,7 +426,7 @@ fn apply_config(
     evaluator: &mut DatalogMTLEvaluator<IntervalFactStore>,
     staleness_ticks: &mut u64,
     static_facts: &mut Vec<Triple>,
-    dictionary: &Arc<RwLock<Dictionary>>,
+    dictionary: &SharedTerms,
     config: &Config,
 ) -> Result<(), String> {
     // Re-validate here: it is the only fallible step in `new`, so checking first
@@ -446,7 +447,7 @@ fn apply_config(
     *staleness_ticks = shape_staleness(&p.shapes);
     *static_facts = p.static_facts;
     *ingester = ShapeIngester::new(p.shapes);
-    *evaluator = DatalogMTLEvaluator::new(p.rules, store, Arc::clone(dictionary))?;
+    *evaluator = DatalogMTLEvaluator::new(p.rules, store, dictionary.clone())?;
     *config.current.lock().unwrap() = p.text;
     Ok(())
 }
@@ -454,7 +455,7 @@ fn apply_config(
 fn start_http_server(
     events: EventLog,
     state: Arc<Mutex<DemoState>>,
-    dictionary: Arc<RwLock<Dictionary>>,
+    dictionary: SharedTerms,
     config: Config,
     port: u16,
 ) {
@@ -464,7 +465,7 @@ fn start_http_server(
         for stream in listener.incoming().flatten() {
             let events = Arc::clone(&events);
             let state = Arc::clone(&state);
-            let dictionary = Arc::clone(&dictionary);
+            let dictionary = dictionary.clone();
             let config = Arc::clone(&config);
             thread::spawn(move || handle_connection(stream, events, state, dictionary, config));
         }
@@ -540,7 +541,7 @@ fn handle_connection(
     mut stream: TcpStream,
     events: EventLog,
     state: Arc<Mutex<DemoState>>,
-    dictionary: Arc<RwLock<Dictionary>>,
+    dictionary: SharedTerms,
     config: Config,
 ) {
     let Some((method, path, body)) = read_request(&mut stream) else {
@@ -591,7 +592,7 @@ fn get_config(stream: TcpStream, config: &Config) {
 fn post_config(
     stream: TcpStream,
     body: &str,
-    dictionary: &Arc<RwLock<Dictionary>>,
+    dictionary: &SharedTerms,
     config: &Config,
 ) {
     let req: ConfigUpdate = match serde_json::from_str(body) {
@@ -755,7 +756,7 @@ fn build_tick(
     state: &mut DemoState,
     ingester: &mut ShapeIngester,
     evaluator: &mut DatalogMTLEvaluator<IntervalFactStore>,
-    dictionary: &Arc<RwLock<Dictionary>>,
+    dictionary: &SharedTerms,
     vocab: &Vocab,
     config: &Config,
     staleness_ticks: u64,
@@ -856,7 +857,7 @@ fn telemetry_for_drone(
     t: u64,
     zones: &[Zone],
     vocab: &Vocab,
-    dictionary: &Arc<RwLock<Dictionary>>,
+    dictionary: &SharedTerms,
     ingester: &mut ShapeIngester,
 ) -> (Vec<Triple>, Vec<String>) {
     let drone_id = if drone.id == "droneA" {
@@ -1017,9 +1018,9 @@ const MAX_ALERTS: usize = 20;
 fn alerts_from_derived(
     derived: &[Triple],
     rules: &[DatalogMTLRule],
-    dictionary: &Arc<RwLock<Dictionary>>,
+    dictionary: &SharedTerms,
 ) -> Vec<AlertView> {
-    let dict = dictionary.read().unwrap();
+    let dict = dictionary.view();
     let mut alerts = Vec::new();
     let mut seen: HashSet<(String, u32)> = HashSet::new();
 
@@ -1065,8 +1066,8 @@ fn head_matches(head: &(Term, Term, Term), t: &Triple) -> bool {
     m(&head.0, t.subject) && m(&head.1, t.predicate) && m(&head.2, t.object)
 }
 
-fn decode_triples(triples: &[Triple], dictionary: &Arc<RwLock<Dictionary>>) -> Vec<String> {
-    let dict = dictionary.read().unwrap();
+fn decode_triples(triples: &[Triple], dictionary: &SharedTerms) -> Vec<String> {
+    let dict = dictionary.view();
     triples
         .iter()
         .map(|triple| dict.decode_triple(triple))
@@ -1082,7 +1083,7 @@ fn local(dict: &Dictionary, id: u32) -> String {
         .to_string()
 }
 
-fn init_vocab(dictionary: &Arc<RwLock<Dictionary>>) -> Vocab {
+fn init_vocab(dictionary: &SharedTerms) -> Vocab {
     Vocab {
         rdf_type: encode(
             dictionary,
@@ -1323,8 +1324,8 @@ fn zone_id(id: &str, vocab: &Vocab) -> u32 {
     }
 }
 
-fn encode(dictionary: &Arc<RwLock<Dictionary>>, value: &str) -> u32 {
-    dictionary.write().unwrap().encode(value)
+fn encode(dictionary: &SharedTerms, value: &str) -> u32 {
+    dictionary.encode(value)
 }
 
 fn triple(subject: u32, predicate: u32, object: u32) -> Triple {

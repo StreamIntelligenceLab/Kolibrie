@@ -8,17 +8,16 @@
  * you can obtain one at https://mozilla.org/MPL/2.0/.
  */
 
-use shared::dictionary::Dictionary;
 use shared::terms::Term;
 use shared::triple::Triple;
-use std::sync::{Arc, RwLock};
+use shared::term_encoder::SharedTerms;
 
-pub fn make_dict() -> Arc<RwLock<Dictionary>> {
-    Arc::new(RwLock::new(Dictionary::new()))
+pub fn make_dict() -> SharedTerms {
+    SharedTerms::new()
 }
 
-pub fn enc(dict: &Arc<RwLock<Dictionary>>, s: &str) -> u32 {
-    dict.write().unwrap().encode(s)
+pub fn enc(dict: &SharedTerms, s: &str) -> u32 {
+    dict.encode(s)
 }
 
 pub fn triple(s: u32, p: u32, o: u32) -> Triple {

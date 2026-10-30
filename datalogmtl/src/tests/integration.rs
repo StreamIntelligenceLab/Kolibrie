@@ -38,17 +38,17 @@ fn test_phase2_parity() {
     let dict1 = make_dict();
     let dict2 = make_dict();
 
-    let a = dict1.write().unwrap().encode(":a");
-    let b = dict1.write().unwrap().encode(":b");
-    let location = dict1.write().unwrap().encode(":location");
-    let was_near = dict1.write().unwrap().encode(":wasNear");
-    let room1 = dict1.write().unwrap().encode(":room1");
+    let a = dict1.encode(":a");
+    let b = dict1.encode(":b");
+    let location = dict1.encode(":location");
+    let was_near = dict1.encode(":wasNear");
+    let room1 = dict1.encode(":room1");
     // Mirror in dict2
-    let _ = dict2.write().unwrap().encode(":a");
-    let _ = dict2.write().unwrap().encode(":b");
-    let _ = dict2.write().unwrap().encode(":location");
-    let _ = dict2.write().unwrap().encode(":wasNear");
-    let _ = dict2.write().unwrap().encode(":room1");
+    let _ = dict2.encode(":a");
+    let _ = dict2.encode(":b");
+    let _ = dict2.encode(":location");
+    let _ = dict2.encode(":wasNear");
+    let _ = dict2.encode(":room1");
 
     let rules1 = make_diamond_rules(location, was_near);
     let rules2 = make_diamond_rules(location, was_near);

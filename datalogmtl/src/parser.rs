@@ -27,10 +27,9 @@
 //! fragment and produce a descriptive error.
 
 use crate::syntax::{DatalogMTLRule, Interval, Mode, TemporalAtom};
-use shared::dictionary::Dictionary;
 use shared::terms::{Term, TriplePattern};
 use shared::triple::Triple;
-use std::sync::{Arc, RwLock};
+use shared::term_encoder::SharedTerms;
 
 /// Full IRI for the `rdf:type` predicate used to encode unary atoms.
 pub const RDF_TYPE: &str = "http://www.w3.org/1999/02/22-rdf-syntax-ns#type";
@@ -56,7 +55,7 @@ pub struct TemporalFact {
 /// `Streaming` mode they are rejected (they require the whole timeline).
 pub fn parse_program(
     text: &str,
-    dict: &Arc<RwLock<Dictionary>>,
+    dict: &SharedTerms,
     mode: Mode,
 ) -> Result<Vec<DatalogMTLRule>, String> {
     let mut rules = Vec::new();
@@ -73,7 +72,7 @@ pub fn parse_program(
 }
 
 /// Parse a data file (one fact per non-empty, non-comment line).
-pub fn parse_data(text: &str, dict: &Arc<RwLock<Dictionary>>) -> Result<Vec<TemporalFact>, String> {
+pub fn parse_data(text: &str, dict: &SharedTerms) -> Result<Vec<TemporalFact>, String> {
     let mut facts = Vec::new();
     for (i, raw) in text.lines().enumerate() {
         let line = strip_line(raw);
@@ -94,7 +93,7 @@ pub fn parse_data(text: &str, dict: &Arc<RwLock<Dictionary>>) -> Result<Vec<Temp
 fn parse_rule(
     line: &str,
     _lineno: usize,
-    dict: &Arc<RwLock<Dictionary>>,
+    dict: &SharedTerms,
     mode: Mode,
 ) -> Result<DatalogMTLRule, String> {
     let Some((head_str, body_str)) = line.split_once(":-") else {
@@ -134,7 +133,7 @@ fn parse_rule(
 /// Parse a single body literal into a (possibly nested) `TemporalAtom`.
 fn parse_literal(
     s: &str,
-    dict: &Arc<RwLock<Dictionary>>,
+    dict: &SharedTerms,
     mode: Mode,
 ) -> Result<TemporalAtom, String> {
     // Binary Since (past): `L Since[a,b] R` (whitespace already stripped).
@@ -188,7 +187,7 @@ fn parse_binary(
     s: &str,
     idx: usize,
     kw: &str,
-    dict: &Arc<RwLock<Dictionary>>,
+    dict: &SharedTerms,
     mode: Mode,
 ) -> Result<(Interval, Box<TemporalAtom>, Box<TemporalAtom>), String> {
     let left = &s[..idx];
@@ -271,7 +270,7 @@ fn any_operator_prefix(s: &str) -> bool {
 // Fact parsing
 // ────────────────────────────────────────────────────────────────
 
-fn parse_fact(line: &str, dict: &Arc<RwLock<Dictionary>>) -> Result<TemporalFact, String> {
+fn parse_fact(line: &str, dict: &SharedTerms) -> Result<TemporalFact, String> {
     let Some((atom_str, span)) = line.rsplit_once('@') else {
         return Err("fact missing '@<interval>'".into());
     };
@@ -334,7 +333,7 @@ fn split_atom(s: &str) -> Result<(&str, Vec<&str>), String> {
 /// Map an atom to a triple *pattern* (rule context: uppercase args are variables).
 fn atom_to_pattern(
     s: &str,
-    dict: &Arc<RwLock<Dictionary>>,
+    dict: &SharedTerms,
     _rule_ctx: bool,
 ) -> Result<TriplePattern, String> {
     let (functor, args) = split_atom(s)?;
@@ -366,7 +365,7 @@ fn atom_to_pattern(
 }
 
 /// Map an atom to a *ground* triple (data context: all args are constants).
-fn atom_to_ground_triple(s: &str, dict: &Arc<RwLock<Dictionary>>) -> Result<Triple, String> {
+fn atom_to_ground_triple(s: &str, dict: &SharedTerms) -> Result<Triple, String> {
     let (functor, args) = split_atom(s)?;
     if functor.is_empty() {
         return Err("empty predicate name".into());
@@ -403,7 +402,7 @@ fn atom_to_ground_triple(s: &str, dict: &Arc<RwLock<Dictionary>>) -> Result<Trip
 }
 
 /// A rule-context term: uppercase first letter => variable, else constant.
-fn term_of(tok: &str, dict: &Arc<RwLock<Dictionary>>) -> Result<Term, String> {
+fn term_of(tok: &str, dict: &SharedTerms) -> Result<Term, String> {
     let tok = tok.trim();
     let Some(first) = tok.chars().next() else {
         return Err("empty argument".into());
@@ -415,8 +414,8 @@ fn term_of(tok: &str, dict: &Arc<RwLock<Dictionary>>) -> Result<Term, String> {
     }
 }
 
-fn encode(dict: &Arc<RwLock<Dictionary>>, s: &str) -> u32 {
-    dict.write().unwrap().encode(s)
+fn encode(dict: &SharedTerms, s: &str) -> u32 {
+    dict.encode(s)
 }
 
 // ────────────────────────────────────────────────────────────────

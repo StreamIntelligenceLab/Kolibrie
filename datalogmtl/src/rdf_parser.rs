@@ -72,7 +72,6 @@
 //! mistaken for a comment and `.` in a host name does not terminate a block.
 
 use std::collections::HashMap;
-use std::sync::{Arc, RwLock};
 
 use shared::dictionary::Dictionary;
 use shared::terms::{Term, TriplePattern};
@@ -80,6 +79,7 @@ use shared::triple::Triple;
 
 use crate::stream::{StalenessPolicy, StreamShape};
 use crate::syntax::{DatalogMTLRule, Interval, Mode, TemporalAtom};
+use shared::term_encoder::SharedTerms;
 
 /// Prefix label (without the trailing `:`) → IRI namespace.
 type PrefixMap = HashMap<String, String>;
@@ -351,12 +351,10 @@ fn ground_term(term: &Term, index: usize, position: &str) -> Result<u32, String>
 /// holding a lock on the same dictionary.
 pub fn parse_facts_shared(
     text: &str,
-    dict: &Arc<RwLock<Dictionary>>,
+    dict: &SharedTerms,
 ) -> Result<Vec<Triple>, String> {
-    let mut guard = dict
-        .write()
-        .map_err(|_| "dictionary lock poisoned".to_string())?;
-    parse_facts(text, &mut guard)
+    dict.try_with_terms(|guard| parse_facts(text, guard))
+        .map_err(|_| "dictionary lock poisoned".to_string())?
 }
 
 /// Parse a bare `start,end` interval body (the text between `[` and `]`).
@@ -382,13 +380,11 @@ pub fn parse_interval(s: &str) -> Result<Interval, String> {
 /// holding a lock on the same dictionary.
 pub fn parse_rules_shared(
     text: &str,
-    dict: &Arc<RwLock<Dictionary>>,
+    dict: &SharedTerms,
     mode: Mode,
 ) -> Result<Vec<DatalogMTLRule>, String> {
-    let mut guard = dict
-        .write()
-        .map_err(|_| "dictionary lock poisoned".to_string())?;
-    parse_rules(text, &mut guard, mode)
+    dict.try_with_terms(|guard| parse_rules(text, guard, mode))
+        .map_err(|_| "dictionary lock poisoned".to_string())?
 }
 
 /// [`parse_stream_shapes`] for callers holding a shared dictionary.
@@ -397,12 +393,10 @@ pub fn parse_rules_shared(
 /// holding a lock on the same dictionary.
 pub fn parse_stream_shapes_shared(
     text: &str,
-    dict: &Arc<RwLock<Dictionary>>,
+    dict: &SharedTerms,
 ) -> Result<Vec<StreamShape>, String> {
-    let mut guard = dict
-        .write()
-        .map_err(|_| "dictionary lock poisoned".to_string())?;
-    parse_stream_shapes(text, &mut guard)
+    dict.try_with_terms(|guard| parse_stream_shapes(text, guard))
+        .map_err(|_| "dictionary lock poisoned".to_string())?
 }
 
 // ── Comment stripping and PREFIX extraction ───────────────────────────────────
