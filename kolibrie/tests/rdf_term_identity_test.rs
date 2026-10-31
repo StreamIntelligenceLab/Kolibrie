@@ -619,3 +619,65 @@ fn a_second_n3_read_keeps_its_own_document() {
         "both documents must survive, with the terms they were written with"
     );
 }
+
+// ── Streaming ───────────────────────────────────────────────────────────────────
+//
+// A stream has many documents, so per-document scoping meets its limit here. Each
+// arriving element is its own document in RDF's terms, but the dictionary never
+// forgets a term: minting a node per element makes it grow without bound, and
+// `Dictionary::encode` asserts rather than wraps when ids reach the quoted-triple
+// range, so a long-running stream would not merely leak but eventually panic.
+//
+// A stream therefore shares one scope across its elements. That is bounded, keeps the
+// stream's labels apart from every file's and every other stream's, and matches what
+// the engine did before scoping existed — so it is not a change in stream semantics,
+// only a change in what the labels are spelled as.
+
+#[test]
+fn a_stream_does_not_grow_the_dictionary_per_element() {
+    use kolibrie::rsp::r2r::R2ROperator;
+    let mut operator = kolibrie::rsp::simple_r2r::SimpleR2R::new();
+    for index in 0..200 {
+        let _ = operator.parse_data(&format!("_:b <urn:reading> <urn:v{}> .\n", index % 3));
+    }
+    let with_blank_nodes = operator.item.dictionary().string_to_id.len();
+
+    let mut control = kolibrie::rsp::simple_r2r::SimpleR2R::new();
+    for index in 0..200 {
+        let _ = control.parse_data(&format!("<urn:s> <urn:reading> <urn:v{}> .\n", index % 3));
+    }
+    let without_blank_nodes = control.item.dictionary().string_to_id.len();
+
+    assert_eq!(
+        with_blank_nodes, without_blank_nodes,
+        "200 elements naming one blank node must intern no more terms than the same \
+         stream without one; a fresh scope per element interned 204 against 5"
+    );
+}
+
+#[test]
+fn two_streams_do_not_share_a_blank_node() {
+    // The property the stream scope still has to provide: bounded within a stream,
+    // separate between streams.
+    use kolibrie::rsp::r2r::R2ROperator;
+    let mut first = kolibrie::rsp::simple_r2r::SimpleR2R::new();
+    let mut second = kolibrie::rsp::simple_r2r::SimpleR2R::new();
+    let from_first = first.parse_data("_:b <urn:p> <urn:o> .\n");
+    let from_second = second.parse_data("_:b <urn:p> <urn:o> .\n");
+    let first_label = first
+        .item
+        .dictionary()
+        .decode(from_first[0].subject)
+        .expect("a term")
+        .to_string();
+    let second_label = second
+        .item
+        .dictionary()
+        .decode(from_second[0].subject)
+        .expect("a term")
+        .to_string();
+    assert_ne!(
+        first_label, second_label,
+        "two streams are two documents, so their labels must differ"
+    );
+}

@@ -1695,7 +1695,26 @@ impl SparqlDatabase {
     pub fn parse_ntriples(&mut self, ntriples_data: &str) -> Vec<Vec<(String, String, String)>> {
         // One scope for this document, taken before the chunks fan out so that every
         // chunk relabels `_:b` the same way and the node stays one node.
-        let document = rdf_term::next_document_scope();
+        self.parse_ntriples_in_scope(ntriples_data, rdf_term::next_document_scope())
+    }
+
+    /// Parses N-Triples, relabelling blank nodes into a scope the caller chooses.
+    ///
+    /// For callers whose document boundary is not one call. A stream is the case this
+    /// exists for: each arriving element is its own document in RDF's terms, but the
+    /// dictionary never forgets a term, so minting a node per element grows it
+    /// without bound and eventually trips the assertion guarding the id space. A
+    /// long-running stream therefore shares one scope across its elements, which is
+    /// bounded, and keeps its labels separate from every file and every other stream.
+    ///
+    /// Obtain a scope from
+    /// [`next_document_scope`](shared::rdf_term::next_document_scope); reusing one is
+    /// exactly how two reads are declared to be the same document.
+    pub fn parse_ntriples_in_scope(
+        &mut self,
+        ntriples_data: &str,
+        document: u64,
+    ) -> Vec<Vec<(String, String, String)>> {
         let lines: Vec<&str> = ntriples_data.lines().collect();
         let chunk_size = 1000;
         let chunks: Vec<&[&str]> = lines.chunks(chunk_size).collect();
@@ -1763,6 +1782,20 @@ impl SparqlDatabase {
     /// Parses and encodes N-Triples without adding them to the store.
     pub fn parse_and_encode_ntriples(&mut self, ntriples_data: &str) -> Vec<Triple> {
         let partial_results = self.parse_ntriples(ntriples_data);
+
+        self.encode_triples(partial_results)
+    }
+
+    /// Parses and encodes N-Triples in a scope the caller chooses.
+    ///
+    /// See [`parse_ntriples_in_scope`](Self::parse_ntriples_in_scope) for when a
+    /// caller should hold its own scope rather than take a fresh one per call.
+    pub fn parse_and_encode_ntriples_in_scope(
+        &mut self,
+        ntriples_data: &str,
+        document: u64,
+    ) -> Vec<Triple> {
+        let partial_results = self.parse_ntriples_in_scope(ntriples_data, document);
 
         self.encode_triples(partial_results)
     }

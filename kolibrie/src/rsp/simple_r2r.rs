@@ -49,6 +49,16 @@ pub struct SimpleR2R {
     /// Reasoning rules applied to each window's content.
     pub rules: Vec<Rule>,
     derived_triples: Vec<Triple>,
+    /// The blank-node scope every element of this stream is read in.
+    ///
+    /// One scope for the operator's whole life, not one per element. Each arriving
+    /// element is its own document in RDF's terms, but the dictionary never forgets a
+    /// term, so a fresh scope per element would mint a term per element and grow it
+    /// without bound -- measured at 204 terms over 200 elements against 5 for the
+    /// same stream without blank nodes -- until the assertion guarding the id space
+    /// fired. Sharing one scope is bounded, and still keeps this stream's labels
+    /// apart from every file's and every other stream's.
+    document: u64,
     hybrid_config: Option<HybridConfig>,
     live_seed_snapshot: SeedSnapshot,
     last_hybrid_results: HashMap<Triple, HybridProbabilityResult>,
@@ -78,6 +88,7 @@ impl SimpleR2R {
             execution_mode: QueryExecutionMode::Standard,
             rules: Vec::new(),
             derived_triples: Vec::new(),
+            document: shared::rdf_term::next_document_scope(),
             hybrid_config: None,
             live_seed_snapshot: SeedSnapshot::default(),
             last_hybrid_results: HashMap::new(),
@@ -92,6 +103,7 @@ impl SimpleR2R {
             execution_mode,
             rules: Vec::new(),
             derived_triples: Vec::new(),
+            document: shared::rdf_term::next_document_scope(),
             hybrid_config: None,
             live_seed_snapshot: SeedSnapshot::default(),
             last_hybrid_results: HashMap::new(),
@@ -265,6 +277,7 @@ impl R2ROperator<Triple, Vec<PhysicalOperator>, Vec<(String, String)>> for Simpl
     }
 
     fn parse_data(&mut self, data: &str) -> Vec<Triple> {
-        self.item.parse_and_encode_ntriples(data)
+        self.item
+            .parse_and_encode_ntriples_in_scope(data, self.document)
     }
 }
