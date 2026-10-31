@@ -19,6 +19,7 @@ use quick_xml::Reader;
 use rayon::prelude::*;
 use shared::dataset_index::{DatasetIndex, GraphId, Quad};
 use shared::dictionary::Dictionary;
+use shared::rdf_term;
 use shared::term_encoder::SharedTerms;
 use shared::query::{ModelDecl, NeuralRelationDecl, TrainNeuralRelationDecl};
 use shared::quoted_triple_store::{is_quoted_triple_id, QuotedTripleStore};
@@ -52,49 +53,6 @@ fn escape_ntriples_literal(value: &str) -> String {
             other => vec![other],
         })
         .collect()
-}
-
-/// Decodes the lexical value of an N-Triples/N-Quads double-quoted literal
-fn decode_ntriples_literal(term: &str) -> Option<(String, &str)> {
-    let body = term.strip_prefix('"')?;
-    let mut characters = body.char_indices();
-    let mut value = String::new();
-
-    while let Some((offset, character)) = characters.next() {
-        match character {
-            '"' => return Some((value, &body[offset + character.len_utf8()..])),
-            '\\' => {
-                let (_, escaped) = characters.next()?;
-                match escaped {
-                    't' => value.push('\t'),
-                    'b' => value.push('\u{0008}'),
-                    'n' => value.push('\n'),
-                    'r' => value.push('\r'),
-                    'f' => value.push('\u{000c}'),
-                    '"' => value.push('"'),
-                    '\'' => value.push('\''),
-                    '\\' => value.push('\\'),
-                    'u' | 'U' => {
-                        let digits = if escaped == 'u' { 4 } else { 8 };
-                        let mut scalar = String::with_capacity(digits);
-                        for _ in 0..digits {
-                            let (_, digit) = characters.next()?;
-                            if !digit.is_ascii_hexdigit() {
-                                return None;
-                            }
-                            scalar.push(digit);
-                        }
-                        let scalar = u32::from_str_radix(&scalar, 16).ok()?;
-                        value.push(char::from_u32(scalar)?);
-                    }
-                    _ => return None,
-                }
-            }
-            character => value.push(character),
-        }
-    }
-
-    None
 }
 
 pub(crate) fn reencode_term_id(
@@ -341,8 +299,12 @@ impl SparqlDatabase {
             let cleaned = if trimmed.starts_with('<') && trimmed.ends_with('>') {
                 trimmed[1..trimmed.len() - 1].to_string()
             } else if trimmed.starts_with('"') {
-                decode_ntriples_literal(trimmed)
-                    .map(|(value, _)| value)
+                // Through the same canonicaliser the reader uses. This used to keep
+                // only the lexical form, so a literal that arrived here already
+                // spelled canonically had its datatype stripped back off -- the same
+                // loss as the reader's, in a second place, undoing the first fix.
+                // Canonicalising is idempotent, so it is correct on either path.
+                rdf_term::canonicalise_literal(trimmed)
                     .unwrap_or_else(|| trimmed.trim_matches('"').to_string())
             } else {
                 trimmed.to_string()
@@ -1489,8 +1451,13 @@ impl SparqlDatabase {
             term.to_string()
         } else if term.starts_with('<') && term.ends_with('>') {
             term[1..term.len() - 1].to_string()
-        } else if term.starts_with('"') && term.ends_with('"') {
-            term[1..term.len() - 1].to_string()
+        } else if term.starts_with('"') {
+            // Handed on whole, suffix included. Trimming the quotes here turned
+            // `"30"^^xsd:integer` into `30"^^xsd:integer`, because the term neither
+            // ends in a quote nor is a bare word: a stray quote, and a prefix that
+            // was never expanded. The quotes belong to the literal's syntax and come
+            // off when it is spelled canonically, which needs the prefix table.
+            term.to_string()
         } else {
             term.trim_matches('"').to_string()
         }
@@ -1876,16 +1843,14 @@ impl SparqlDatabase {
             return term[1..term.len() - 1].to_string();
         }
 
-        // Handle literals (keep quotes and datatype/language info)
+        // Literals are spelled canonically, so that two literals share a spelling
+        // exactly when RDF says they are one term. This used to return the lexical
+        // form alone for a typed literal, which discarded the datatype: `"25"`,
+        // `"25"^^xsd:integer` and `"25"^^xsd:string` all became `25`, and nothing
+        // downstream could tell them apart or write them back out.
         if term.starts_with('"') {
-            if let Some((literal_value, rest)) = decode_ntriples_literal(term) {
-                if rest.is_empty() {
-                    return literal_value;
-                } else if rest.starts_with("^^") {
-                    return literal_value;
-                } else if rest.starts_with('@') {
-                    return format!("{literal_value}{rest}");
-                }
+            if let Some(canonical) = rdf_term::canonicalise_literal(term) {
+                return canonical;
             }
         }
 
@@ -1960,22 +1925,22 @@ impl SparqlDatabase {
                 .trim_end_matches('>')
                 .to_string()
         } else if term.starts_with('"') {
-            // It's a literal, possibly with a datatype or language tag
+            // A literal, possibly with a datatype or language tag. The datatype may
+            // be written prefixed (`xsd:integer`), so it is resolved against the
+            // prefix table before the whole literal is spelled canonically -- the
+            // same spelling the N-Triples reader produces, so that Turtle and
+            // N-Triples mint one id for one term. They did not: this path emitted
+            // `"25"^^http://...` with no angle brackets, which is a third spelling
+            // of a term the reader and `tag_store` already spelled two ways.
             if let Some(pos) = term.rfind('"') {
                 let literal = &term[..=pos]; // Include the closing quote
                 let rest = &term[pos + 1..]; // After the closing quote
-                let mut result = literal.to_string();
-                if rest.starts_with("^^") {
-                    // It's a typed literal
-                    let datatype = rest[2..].trim();
-                    let resolved_datatype = self.resolve_term(datatype);
-                    result.push_str("^^");
-                    result.push_str(&resolved_datatype);
-                } else if rest.starts_with('@') {
-                    // It's a language-tagged literal
-                    result.push_str(rest);
-                }
-                result
+                let resolved = if let Some(datatype) = rest.strip_prefix("^^") {
+                    format!("{}^^<{}>", literal, self.resolve_term(datatype.trim()))
+                } else {
+                    format!("{}{}", literal, rest)
+                };
+                rdf_term::canonicalise_literal(&resolved).unwrap_or(resolved)
             } else {
                 // Malformed literal
                 term.to_string()
@@ -2034,8 +1999,31 @@ impl SparqlDatabase {
             term.trim_start_matches('<')
                 .trim_end_matches('>')
                 .to_string()
-        } else if term.starts_with('"') && term.ends_with('"') {
-            term.trim_matches('"').to_string()
+        } else if term.starts_with('"') {
+            // A literal, with or without a datatype or language suffix. Its datatype
+            // may be a prefixed name, and this is the only place holding the prefix
+            // table, so the canonical spelling is produced here rather than earlier.
+            //
+            // A suffixed literal used to fall through to the prefixed-name branch
+            // below, where `"30"^^xsd:integer` was split on its first colon into the
+            // prefix `"30"^^xsd` -- never found, so it reported a failure and
+            // returned the term unchanged.
+            if let Some(position) = term.rfind('"') {
+                let literal = &term[..=position];
+                let rest = term[position + 1..].trim();
+                let resolved = if let Some(datatype) = rest.strip_prefix("^^") {
+                    format!(
+                        "{}^^<{}>",
+                        literal,
+                        self.resolve_query_term(datatype.trim(), prefixes)
+                    )
+                } else {
+                    format!("{}{}", literal, rest)
+                };
+                rdf_term::canonicalise_literal(&resolved).unwrap_or(resolved)
+            } else {
+                term.to_string()
+            }
         } else if term.contains(':')
             && !term.starts_with("http://")
             && !term.starts_with("https://")

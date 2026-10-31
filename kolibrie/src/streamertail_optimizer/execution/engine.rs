@@ -1423,7 +1423,7 @@ impl ExecutionEngine {
                                 .map(|var| {
                                     row.get(Self::normalize_variable(var))
                                         .and_then(|id| dict.decode(id))
-                                        .and_then(|value| value.parse::<f64>().ok())
+                                        .and_then(shared::rdf_term::numeric_value)
                                 })
                                 .collect::<Option<Vec<_>>>()
                         })

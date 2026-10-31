@@ -32,13 +32,16 @@ impl<'a> OrderKey<'a> {
                 number: 0.0,
                 lexical: "",
             },
-            Some(value) => match value.parse::<f64>() {
-                Ok(number) => OrderKey {
+            // A term sorts by the number it denotes, which lives in its lexical
+            // form rather than its spelling. Comparing spellings put
+            // `"7"^^<...>` after `"21"^^<...>`.
+            Some(value) => match shared::rdf_term::numeric_value(value) {
+                Some(number) => OrderKey {
                     class: CLASS_NUMBER,
                     number,
                     lexical: value,
                 },
-                Err(_) => OrderKey {
+                None => OrderKey {
                     class: CLASS_OTHER,
                     number: 0.0,
                     lexical: value,

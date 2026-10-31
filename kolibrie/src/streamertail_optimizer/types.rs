@@ -384,10 +384,12 @@ impl Condition {
             }
             ConditionExpression::ArithmeticComparison(left, operator, right) => {
                 let resolver = |variable: &str| {
-                    result
-                        .get(Self::normalize_variable(variable))?
-                        .parse::<f64>()
-                        .ok()
+                    // By value, not by spelling: the lexical comparison path goes
+                    // through `normalize_lexical`, and arithmetic has to agree with
+                    // it or a typed literal is a number in one and not the other.
+                    shared::rdf_term::numeric_value(
+                        result.get(Self::normalize_variable(variable))?,
+                    )
                 };
                 let (Ok(left), Ok(right)) = (
                     Self::evaluate_arithmetic(left, &resolver),
@@ -406,10 +408,12 @@ impl Condition {
             ConditionExpression::Not(inner) => self.evaluate_filter(inner, result).negate(),
             ConditionExpression::ArithmeticExpr(expression) => {
                 let resolver = |variable: &str| {
-                    result
-                        .get(Self::normalize_variable(variable))?
-                        .parse::<f64>()
-                        .ok()
+                    // By value, not by spelling: the lexical comparison path goes
+                    // through `normalize_lexical`, and arithmetic has to agree with
+                    // it or a typed literal is a number in one and not the other.
+                    shared::rdf_term::numeric_value(
+                        result.get(Self::normalize_variable(variable))?,
+                    )
                 };
                 Self::evaluate_arithmetic(expression, &resolver)
                     .map(|value| Truth::from_bool(value != 0.0))
@@ -542,7 +546,7 @@ impl Condition {
             ConditionExpression::ArithmeticComparison(left, operator, right) => {
                 let resolver = |variable: &str| {
                     let id = Self::bound_value(variable, row, schema)?;
-                    dictionary.decode(id)?.parse::<f64>().ok()
+                    shared::rdf_term::numeric_value(dictionary.decode(id)?)
                 };
                 let (Ok(left), Ok(right)) = (
                     Self::evaluate_arithmetic(left, &resolver),
@@ -564,7 +568,7 @@ impl Condition {
             ConditionExpression::ArithmeticExpr(expression) => {
                 let resolver = |variable: &str| {
                     let id = Self::bound_value(variable, row, schema)?;
-                    dictionary.decode(id)?.parse::<f64>().ok()
+                    shared::rdf_term::numeric_value(dictionary.decode(id)?)
                 };
                 Self::evaluate_arithmetic(expression, &resolver)
                     .map(|value| Truth::from_bool(value != 0.0))

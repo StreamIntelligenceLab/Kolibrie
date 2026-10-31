@@ -43,9 +43,12 @@ pub(crate) fn value(kind: &str, values: &[&str]) -> Option<String> {
     match descriptor.kind {
         "COUNT" => Some(values.len().to_string()),
         "SUM" | "AVG" => {
+            // Through the term's value, not its spelling: a typed literal keeps its
+            // datatype now, and parsing the spelling would find no number at all,
+            // turning every SUM over typed data into no answer.
             let numbers = values
                 .iter()
-                .map(|v| v.parse::<f64>().ok())
+                .map(|v| shared::rdf_term::numeric_value(v))
                 .collect::<Option<Vec<_>>>()?;
             let mut result = numbers.iter().sum::<f64>();
             if descriptor.kind == "AVG" && !numbers.is_empty() {
