@@ -165,6 +165,20 @@ pub fn canonicalise_literal(text: &str) -> Option<String> {
     ))
 }
 
+/// Spells a blank node belonging to one document, from the label as written.
+///
+/// The counterpart to [`spell_literal`], and the way to build a blank node without
+/// knowing either half of the convention: that the term carries a `_:` prefix, and
+/// that the label has to be scoped or it collides with every other document's.
+/// `label` is the bare label, so `"b"` rather than `"_:b"`.
+///
+/// There is deliberately no equivalent for an IRI. An IRI is spelled as itself, so a
+/// constructor would be the identity function and would only suggest that something
+/// is being done to it.
+pub fn spell_blank_node(label: &str, document: u64) -> String {
+    scope_blank_node(&format!("_:{label}"), document).into_owned()
+}
+
 /// A fresh document scope, for relabelling the blank nodes of one document.
 ///
 /// One per document read, taken before parsing begins so that parallel chunks of the
@@ -592,6 +606,16 @@ mod tests {
             scope_blank_node("_:kolibrie-doc-x", 7),
             "_:kolibrie-doc-7-kolibrie-doc-x"
         );
+    }
+
+    #[test]
+    fn a_blank_node_can_be_built_from_its_bare_label() {
+        let document = next_document_scope();
+        let built = spell_blank_node("b", document);
+        assert_eq!(kind_of(&built), TermKind::BlankNode);
+        // The same term the readers produce for `_:b` in that document, so a term
+        // built by hand joins against one that was read.
+        assert_eq!(built, scope_blank_node("_:b", document));
     }
 
     #[test]

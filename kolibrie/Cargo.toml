@@ -129,6 +129,10 @@ path = "benches/micro_field_access.rs"
 harness = false
 
 [[example]]
+name = "rdf_terms"
+path = "examples/rdf_terms/rdf_terms.rs"
+
+[[example]]
 name = "replay_profile"
 path = "examples/replay_profile/replay_profile.rs"
 
