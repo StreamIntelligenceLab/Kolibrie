@@ -165,6 +165,67 @@ pub fn canonicalise_literal(text: &str) -> Option<String> {
     ))
 }
 
+/// A fresh document scope, for relabelling the blank nodes of one document.
+///
+/// One per document read, taken before parsing begins so that parallel chunks of the
+/// same document share it. Monotonic and never reused, which is what makes two reads
+/// of the same file two sets of nodes -- as RDF requires, since a label identifies a
+/// node only within the document it was read from.
+pub fn next_document_scope() -> u64 {
+    static NEXT_DOCUMENT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+    NEXT_DOCUMENT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+}
+
+/// Rewrites a blank node label so that it belongs to one document, leaving any other
+/// term untouched.
+///
+/// A blank node label means nothing outside its document (RDF 1.1 §3.4), so two files
+/// each saying `_:b` describe two different nodes and merging them must keep them
+/// apart. Relabelling is forced rather than chosen: the dictionary keys on a term's
+/// text, so two distinct nodes must have two distinct spellings.
+///
+/// The written label stays legible at the end of the new one, and the form matches
+/// what SPARQL updates already mint for the same reason, `_:kolibrie-update-N-label`.
+///
+/// Returns the term borrowed when nothing needed rewriting, so the ordinary case of a
+/// document without blank nodes costs no allocation.
+pub fn scope_blank_node<'a>(term: &'a str, document: u64) -> std::borrow::Cow<'a, str> {
+    match term.strip_prefix("_:") {
+        Some(label) => std::borrow::Cow::Owned(format!(
+            "_:kolibrie-doc-{document}-{}",
+            strip_scope(label)
+        )),
+        None => std::borrow::Cow::Borrowed(term),
+    }
+}
+
+/// Removes a scope this crate added, leaving the label as it was written.
+///
+/// Scoping replaces a previous scope instead of nesting inside it, because reading a
+/// graph back from its own serialisation is a new document and scopes it again: a
+/// label would otherwise collect one prefix per round trip and grow without bound.
+/// The node is still a new node each time, which is what RDF says and what the
+/// replaced counter records; only the spelling stays a sane length.
+///
+/// A label a user genuinely wrote as `kolibrie-doc-5-x` is indistinguishable from one
+/// this produced, and is treated as the latter.
+fn strip_scope(label: &str) -> &str {
+    for marker in ["kolibrie-doc-", "kolibrie-update-"] {
+        let Some(rest) = label.strip_prefix(marker) else {
+            continue;
+        };
+        let digits = rest
+            .find(|c: char| !c.is_ascii_digit())
+            .unwrap_or(rest.len());
+        if digits > 0 {
+            if let Some(stripped) = rest[digits..].strip_prefix('-') {
+                return stripped;
+            }
+        }
+    }
+    label
+}
+
 /// The number a term denotes, or `None` if it denotes none.
 ///
 /// Reads the lexical form before parsing, which is the whole point: a literal's
@@ -460,6 +521,77 @@ mod tests {
             let read = read_literal(&spelled).expect("a literal");
             assert_eq!(read.lexical, text, "round trip of {text:?} via {spelled:?}");
         }
+    }
+
+    #[test]
+    fn a_scoped_label_is_still_a_blank_node_and_still_legible() {
+        let scoped = scope_blank_node("_:b", 7);
+        assert_eq!(scoped, "_:kolibrie-doc-7-b");
+        assert_eq!(kind_of(&scoped), TermKind::BlankNode);
+        assert!(scoped.ends_with('b'), "the written label stays readable");
+    }
+
+    #[test]
+    fn scoping_leaves_every_other_kind_of_term_alone() {
+        for term in ["http://example/x", "25", "\"25\"^^<http://x>", "\"hello\"@en"] {
+            assert_eq!(scope_blank_node(term, 7), term, "{term:?} is not a blank node");
+            assert!(
+                matches!(scope_blank_node(term, 7), std::borrow::Cow::Borrowed(_)),
+                "{term:?} should not have been reallocated"
+            );
+        }
+    }
+
+    #[test]
+    fn two_scopes_give_one_label_two_terms_and_one_scope_gives_it_one() {
+        // Both halves of the property: labels separate across documents and stay
+        // shared within one. Minting per occurrence would satisfy the first and
+        // destroy every blank-node-linked structure in the graph.
+        let (first, second) = (next_document_scope(), next_document_scope());
+        assert_ne!(first, second, "each document gets its own scope");
+        assert_ne!(
+            scope_blank_node("_:b", first),
+            scope_blank_node("_:b", second)
+        );
+        assert_eq!(
+            scope_blank_node("_:b", first),
+            scope_blank_node("_:b", first)
+        );
+    }
+
+    #[test]
+    fn scoping_replaces_a_previous_scope_rather_than_nesting_in_it() {
+        // Reading a graph back from its own serialisation scopes it again, so
+        // without this a label would collect one prefix per round trip.
+        let once = scope_blank_node("_:b", 1).into_owned();
+        let twice = scope_blank_node(&once, 2).into_owned();
+        let thrice = scope_blank_node(&twice, 3).into_owned();
+        assert_eq!(once, "_:kolibrie-doc-1-b");
+        assert_eq!(twice, "_:kolibrie-doc-2-b");
+        assert_eq!(thrice, "_:kolibrie-doc-3-b");
+        // Still a new node each time, which is the point; only the spelling stays
+        // a sane length.
+        assert_ne!(once, twice);
+        assert_ne!(twice, thrice);
+    }
+
+    #[test]
+    fn scoping_also_replaces_the_scope_a_sparql_update_minted() {
+        let from_update = "_:kolibrie-update-42-blank";
+        assert_eq!(
+            scope_blank_node(from_update, 7),
+            "_:kolibrie-doc-7-blank",
+            "an update's scope is replaced too, so a round trip does not nest it"
+        );
+    }
+
+    #[test]
+    fn a_label_that_merely_looks_scoped_is_left_as_written() {
+        // No digits, so not a scope this crate wrote.
+        assert_eq!(
+            scope_blank_node("_:kolibrie-doc-x", 7),
+            "_:kolibrie-doc-7-kolibrie-doc-x"
+        );
     }
 
     #[test]

@@ -126,7 +126,25 @@ fn nquads_round_trip_keeps_default_and_named_quads() {
         r#"SELECT ?s WHERE { ?s <http://example.com/p> "quoted \"value\"" }"#,
     );
     assert_eq!(escaped_literal_rows.len(), 1);
-    assert!(escaped_literal_rows[0][0].starts_with("_:kolibrie-update-"));
+    // Still a blank node, and still carrying the label it was written with.
+    //
+    // This used to assert the `_:kolibrie-update-` prefix specifically, which pinned
+    // a blank node label's lexical form across a serialise-and-re-read. RDF 1.1
+    // section 3.4 makes that form insignificant, and reading a serialisation is
+    // reading a new document, so its blank nodes are a fresh set and are scoped
+    // again -- by the reader now, which is what stops two documents sharing a node.
+    // What this round trip has to show is what its sibling assertion above shows for
+    // the serialised form: that the node survives as a node rather than becoming an
+    // IRI or losing its shape.
+    let restored_label = &escaped_literal_rows[0][0];
+    assert!(
+        restored_label.starts_with("_:"),
+        "a blank node must come back as a blank node, got {restored_label:?}"
+    );
+    assert!(
+        restored_label.ends_with("blank"),
+        "the label it was written with should still be legible, got {restored_label:?}"
+    );
 }
 
 /// Splits an HTTP response from `answer` into its status and body.

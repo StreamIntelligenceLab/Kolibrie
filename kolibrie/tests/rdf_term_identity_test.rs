@@ -416,3 +416,206 @@ fn rdf_xml_does_not_let_a_language_outlive_its_element() {
         "the plain literal must stay plain"
     );
 }
+
+// ── Blank nodes ─────────────────────────────────────────────────────────────────
+//
+// A blank node label identifies a node *within the document it was read from* and
+// means nothing outside it (RDF 1.1 §3.4). Two files each saying `_:b` describe two
+// different nodes, and merging them must keep them apart. The readers interned the
+// label itself, so the two became one node and the merge silently fused unrelated
+// statements — the one case in this file where the defect invents a fact rather than
+// losing one.
+//
+// SPARQL updates already scoped their labels, minting `_:kolibrie-update-N-label`;
+// the readers did not. Relabelling is forced rather than chosen: the dictionary keys
+// on a term's text, so two distinct nodes must have two distinct spellings.
+
+/// The subject terms of a database, as stored.
+fn stored_subjects(database: &SparqlDatabase) -> Vec<String> {
+    let dictionary = database.dictionary();
+    let mut subjects: Vec<String> = database
+        .query_default_triples(None, None, None)
+        .into_iter()
+        .map(|triple| {
+            dictionary
+                .decode(triple.subject)
+                .unwrap_or("<undecodable>")
+                .to_string()
+        })
+        .collect();
+    subjects.sort();
+    subjects
+}
+
+#[test]
+fn two_documents_do_not_share_a_blank_node() {
+    let mut database = SparqlDatabase::new();
+    database.parse_ntriples_and_add("_:b <urn:p> <urn:first> .\n");
+    database.parse_ntriples_and_add("_:b <urn:p> <urn:second> .\n");
+    let subjects = stored_subjects(&database);
+    assert_eq!(subjects.len(), 2, "two triples, got {subjects:?}");
+    assert_ne!(
+        subjects[0], subjects[1],
+        "`_:b` in two documents is two nodes, so merging them must not fuse the two \
+         statements onto one subject"
+    );
+}
+
+#[test]
+fn one_document_keeps_its_blank_node_shared() {
+    // The other half, and the one scoping can break: within a document the label
+    // does identify one node, so two statements about `_:b` are about one subject.
+    // Minting a fresh node per occurrence would satisfy the test above and destroy
+    // every blank-node-linked structure in the graph.
+    let mut database = SparqlDatabase::new();
+    database.parse_ntriples_and_add("_:b <urn:p> <urn:first> .\n_:b <urn:q> <urn:second> .\n");
+    let subjects = stored_subjects(&database);
+    assert_eq!(subjects.len(), 2, "two triples, got {subjects:?}");
+    assert_eq!(
+        subjects[0], subjects[1],
+        "one document's `_:b` is one node in every statement that names it"
+    );
+}
+
+#[test]
+fn a_blank_node_label_is_distinguishable_from_the_label_it_was_written_as() {
+    // Scoping has to be visible in the term, since that is the only place identity
+    // can live, but the label it came from should still be legible in it -- the
+    // convention SPARQL updates already set.
+    let mut database = SparqlDatabase::new();
+    database.parse_ntriples_and_add("_:original <urn:p> <urn:o> .\n");
+    let subjects = stored_subjects(&database);
+    assert!(
+        subjects[0].starts_with("_:"),
+        "still a blank node: {:?}",
+        subjects[0]
+    );
+    assert_ne!(subjects[0], "_:original", "the bare label cannot be the term");
+    assert!(
+        subjects[0].ends_with("original"),
+        "the written label should remain legible, got {:?}",
+        subjects[0]
+    );
+}
+
+#[test]
+fn turtle_scopes_blank_nodes_as_well() {
+    let mut database = SparqlDatabase::new();
+    database.parse_turtle("_:b <urn:p> <urn:first> .\n");
+    database.parse_turtle("_:b <urn:p> <urn:second> .\n");
+    let subjects = stored_subjects(&database);
+    assert_eq!(subjects.len(), 2, "two triples, got {subjects:?}");
+    assert_ne!(
+        subjects[0], subjects[1],
+        "the Turtle reader must scope labels the way the N-Triples reader does"
+    );
+}
+
+#[test]
+fn a_blank_node_in_the_object_is_scoped_with_its_subject() {
+    // Within one document a label names one node wherever it appears, including
+    // across positions: this is the shape that makes a blank node useful at all.
+    let mut database = SparqlDatabase::new();
+    database.parse_ntriples_and_add("<urn:s> <urn:p> _:b .\n_:b <urn:q> <urn:o> .\n");
+    let dictionary = database.dictionary();
+    let triples = database.query_default_triples(None, None, None);
+    let object_of_first = triples
+        .iter()
+        .find(|t| dictionary.decode(t.subject) == Some("urn:s"))
+        .map(|t| t.object)
+        .expect("the statement about urn:s");
+    let subject_of_second = triples
+        .iter()
+        .find(|t| dictionary.decode(t.subject) != Some("urn:s"))
+        .map(|t| t.subject)
+        .expect("the statement about the blank node");
+    assert_eq!(
+        object_of_first, subject_of_second,
+        "the object of one statement and the subject of the other are the same node"
+    );
+}
+
+#[test]
+fn nquads_scopes_blank_nodes_including_the_graph_name() {
+    let mut database = SparqlDatabase::new();
+    database.parse_nquads_and_add("_:b <urn:p> <urn:first> .\n");
+    database.parse_nquads_and_add("_:b <urn:p> <urn:second> .\n");
+    let subjects = stored_subjects(&database);
+    assert_eq!(subjects.len(), 2, "two quads, got {subjects:?}");
+    assert_ne!(subjects[0], subjects[1]);
+}
+
+#[test]
+fn n3_scopes_blank_nodes_as_well() {
+    let mut database = SparqlDatabase::new();
+    database.parse_n3("_:b <urn:p> <urn:first> .\n");
+    database.parse_n3("_:b <urn:p> <urn:second> .\n");
+    let subjects = stored_subjects(&database);
+    assert_eq!(subjects.len(), 2, "two triples, got {subjects:?}");
+    assert_ne!(subjects[0], subjects[1]);
+}
+
+#[test]
+fn a_blank_node_inside_a_quoted_triple_is_scoped_too() {
+    // Scoping only the outermost term would leave a nested label bare, so two
+    // documents would still share the node a quoted triple asserts about.
+    let mut database = SparqlDatabase::new();
+    database.parse_ntriples_and_add("<< _:b <urn:p> <urn:o> >> <urn:says> <urn:first> .\n");
+    database.parse_ntriples_and_add("<< _:b <urn:p> <urn:o> >> <urn:says> <urn:second> .\n");
+    // A quoted triple is a tagged id that the dictionary alone cannot resolve, so
+    // these are decoded through the store rather than with `stored_subjects`.
+    let mut subjects: Vec<String> = database
+        .query_default_triples(None, None, None)
+        .into_iter()
+        .map(|triple| {
+            database
+                .decode_any(triple.subject)
+                .unwrap_or_else(|| "<undecodable>".to_string())
+        })
+        .collect();
+    subjects.sort();
+    assert_eq!(subjects.len(), 2, "two triples, got {subjects:?}");
+    assert_ne!(
+        subjects[0], subjects[1],
+        "the quoted triples name different blank nodes, so they are different terms"
+    );
+    assert!(
+        !subjects.iter().any(|term| term.contains("<< _:b ")),
+        "no bare label should survive inside a quoted triple: {subjects:?}"
+    );
+}
+
+#[test]
+fn a_second_n3_read_keeps_its_own_document() {
+    // Not about terms' spelling but about their ids, and found by the test above.
+    // Each parallel chunk parsed into its own database and its triples were then
+    // inserted carrying that database's ids, while only the dictionaries were
+    // merged. With an empty target both numbered terms in the same order, so the
+    // first read looked right; a second read reinterpreted its ids as the first
+    // document's terms, storing a copy of the first document in place of the second.
+    let mut database = SparqlDatabase::new();
+    database.parse_n3("<urn:a> <urn:p> <urn:first> .\n");
+    database.parse_n3("<urn:b> <urn:q> <urn:second> .\n");
+    let dictionary = database.dictionary();
+    let mut rows: Vec<String> = database
+        .query_default_triples(None, None, None)
+        .into_iter()
+        .map(|triple| {
+            format!(
+                "{} {} {}",
+                dictionary.decode(triple.subject).unwrap_or("?"),
+                dictionary.decode(triple.predicate).unwrap_or("?"),
+                dictionary.decode(triple.object).unwrap_or("?")
+            )
+        })
+        .collect();
+    rows.sort();
+    assert_eq!(
+        rows,
+        vec![
+            "urn:a urn:p urn:first".to_string(),
+            "urn:b urn:q urn:second".to_string(),
+        ],
+        "both documents must survive, with the terms they were written with"
+    );
+}

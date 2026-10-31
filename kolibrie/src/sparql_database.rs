@@ -314,6 +314,35 @@ impl SparqlDatabase {
         }
     }
 
+    /// Rewrites every blank node label in `term` into `document`'s scope.
+    ///
+    /// Recurses through a quoted triple, so a label nested inside one is scoped with
+    /// the rest of its document rather than left as the bare label the file wrote.
+    ///
+    /// Guarded on the term containing `_:` at all, since a term without it cannot
+    /// hold a blank node at any depth and most documents hold none; a literal that
+    /// happens to contain those two characters falls through unchanged.
+    fn scope_blank_nodes(&self, term: String, document: u64) -> String {
+        if !term.contains("_:") {
+            return term;
+        }
+        let trimmed = term.trim();
+        if trimmed.starts_with("<<") && trimmed.ends_with(">>") {
+            let inner = trimmed[2..trimmed.len() - 2].trim();
+            let (subject, predicate, object) = Self::split_quoted_triple_content(inner);
+            return format!(
+                "<< {} {} {} >>",
+                self.scope_blank_nodes(subject, document),
+                self.scope_blank_nodes(predicate, document),
+                self.scope_blank_nodes(object, document)
+            );
+        }
+        if trimmed.starts_with("_:") {
+            return rdf_term::scope_blank_node(trimmed, document).into_owned();
+        }
+        term
+    }
+
     /// Decode a u32 ID that may be a regular dictionary ID or a quoted triple ID
     pub fn decode_any(&self, id: u32) -> Option<String> {
         if is_quoted_triple_id(id) {
@@ -1211,6 +1240,8 @@ impl SparqlDatabase {
     /// Parses Turtle and adds the triples, honouring `@prefix` declarations and
     /// the `;` and `,` abbreviations.
     pub fn parse_turtle(&mut self, turtle_data: &str) {
+        // One scope for this document; see `parse_ntriples`.
+        let document = rdf_term::next_document_scope();
         for raw_line in turtle_data.lines() {
             let line = raw_line.trim();
 
@@ -1290,10 +1321,13 @@ impl SparqlDatabase {
 
                     let subject =
                         this.resolve_query_term(&Self::clean_turtle_term(s_raw), &this.prefixes);
+                    let subject = this.scope_blank_nodes(subject, document);
                     let predicate =
                         this.resolve_query_term(&Self::clean_turtle_term(p_raw), &this.prefixes);
+                    let predicate = this.scope_blank_nodes(predicate, document);
                     let object = this
                         .resolve_query_term(&Self::clean_turtle_term(&object_part), &this.prefixes);
+                    let object = this.scope_blank_nodes(object, document);
 
                     // Emit the main triple
                     if subject.starts_with("<<") || object.starts_with("<<") {
@@ -1518,11 +1552,20 @@ impl SparqlDatabase {
     ///
     /// Only the Datalog-expressible fragment; a full N3 reasoner is future work.
     pub fn parse_n3(&mut self, n3_data: &str) {
+        // One scope for this document, taken before the chunks fan out; see
+        // `parse_ntriples`.
+        let document = rdf_term::next_document_scope();
         let lines: Vec<String> = n3_data.lines().map(|l| l.trim().to_string()).collect();
         let chunk_size = 1000;
         let chunks: Vec<Vec<String>> = lines.chunks(chunk_size).map(|c| c.to_vec()).collect();
 
-        let partial_results: Vec<(Vec<Triple>, SharedTerms, HashMap<String, String>)> = chunks
+        type ChunkResult = (
+            Vec<Triple>,
+            SharedTerms,
+            Arc<RwLock<QuotedTripleStore>>,
+            HashMap<String, String>,
+        );
+        let partial_results: Vec<ChunkResult> = chunks
             .par_iter()
             .map(|chunk| {
                 let mut local_db = SparqlDatabase::new();
@@ -1554,7 +1597,7 @@ impl SparqlDatabase {
                         statement.push_str(line);
                         statement.push(' ');
                         if line.ends_with('.') {
-                            local_db.parse_statement(statement.trim());
+                            local_db.parse_statement(statement.trim(), document);
                             statement.clear();
                         }
                     }
@@ -1563,20 +1606,67 @@ impl SparqlDatabase {
                 (
                     local_db.query_default_triples(None, None, None),
                     local_db.dictionary,
+                    local_db.quoted_triple_store,
                     local_db.prefixes,
                 )
             })
             .collect();
 
-        for (triples, dict_arc, pref) in partial_results {
-            for t in triples {
-                self.add_triple(t);
+        for (triples, dict_arc, quoted_arc, pref) in partial_results {
+            // A chunk's ids belong to the chunk's own dictionary, so they are
+            // translated rather than inserted: id 3 there and id 3 here name
+            // different terms. Merging the dictionaries and keeping the ids was
+            // sound only while this store was empty and both assigned ids in the
+            // same order, so the first read of a document worked and every later one
+            // reinterpreted the new document's ids as the earlier one's terms --
+            // silently storing a copy of the first document instead of the second.
+            let translated: Vec<Triple> = {
+                let source_dictionary = dict_arc.read();
+                let source_quoted = quoted_arc.read().unwrap_or_else(|p| p.into_inner());
+                let mut target_dictionary = self.dictionary.write();
+                let mut target_quoted =
+                    self.quoted_triple_store.write().unwrap_or_else(|p| p.into_inner());
+                let mut seen = HashMap::new();
+                let reencode = |id: u32,
+                                    target_dictionary: &mut Dictionary,
+                                    target_quoted: &mut QuotedTripleStore,
+                                    seen: &mut HashMap<u32, u32>| {
+                    reencode_term_id(
+                        id,
+                        &source_dictionary,
+                        &source_quoted,
+                        target_dictionary,
+                        target_quoted,
+                        seen,
+                    )
+                };
+                triples
+                    .iter()
+                    .map(|triple| Triple {
+                        subject: reencode(
+                            triple.subject,
+                            &mut target_dictionary,
+                            &mut target_quoted,
+                            &mut seen,
+                        ),
+                        predicate: reencode(
+                            triple.predicate,
+                            &mut target_dictionary,
+                            &mut target_quoted,
+                            &mut seen,
+                        ),
+                        object: reencode(
+                            triple.object,
+                            &mut target_dictionary,
+                            &mut target_quoted,
+                            &mut seen,
+                        ),
+                    })
+                    .collect()
+            };
+            for triple in translated {
+                self.add_triple(triple);
             }
-            let mut self_dict = self.dictionary.write();
-            let other_dict = dict_arc.read();
-            self_dict.merge(&other_dict);
-            drop(other_dict);
-            drop(self_dict);
             for (k, v) in pref {
                 self.prefixes.insert(k, v);
             }
@@ -1603,6 +1693,9 @@ impl SparqlDatabase {
     /// Returns one group per chunk. The `a` shorthand is expanded to the full RDF
     /// type IRI in predicate position.
     pub fn parse_ntriples(&mut self, ntriples_data: &str) -> Vec<Vec<(String, String, String)>> {
+        // One scope for this document, taken before the chunks fan out so that every
+        // chunk relabels `_:b` the same way and the node stays one node.
+        let document = rdf_term::next_document_scope();
         let lines: Vec<&str> = ntriples_data.lines().collect();
         let chunk_size = 1000;
         let chunks: Vec<&[&str]> = lines.chunks(chunk_size).collect();
@@ -1633,7 +1726,11 @@ impl SparqlDatabase {
                     if let Some((subject, predicate, object)) =
                         self.parse_ntriples_line(line_without_dot)
                     {
-                        local_triples.push((subject, predicate, object));
+                        local_triples.push((
+                            self.scope_blank_nodes(subject, document),
+                            self.scope_blank_nodes(predicate, document),
+                            self.scope_blank_nodes(object, document),
+                        ));
                     }
                 }
 
@@ -1672,6 +1769,9 @@ impl SparqlDatabase {
 
     /// Parses N-Quads and adds them, preserving named graphs.
     pub fn parse_nquads_and_add(&mut self, nquads_data: &str) {
+        // One scope for this document; see `parse_ntriples`. A graph name may be a
+        // blank node too, and is scoped with the rest of the document.
+        let document = rdf_term::next_document_scope();
         for raw_line in nquads_data.lines() {
             let line = raw_line.trim();
             if line.is_empty() || line.starts_with('#') {
@@ -1688,6 +1788,10 @@ impl SparqlDatabase {
             if let Some((subject, predicate, object, graph)) =
                 self.parse_nquads_line(line_without_dot)
             {
+                let subject = self.scope_blank_nodes(subject, document);
+                let predicate = self.scope_blank_nodes(predicate, document);
+                let object = self.scope_blank_nodes(object, document);
+                let graph = graph.map(|name| self.scope_blank_nodes(name, document));
                 match graph {
                     Some(graph) => {
                         self.add_quad_parts(&subject, &predicate, &object, &graph);
@@ -1908,7 +2012,7 @@ impl SparqlDatabase {
         term.to_string()
     }
 
-    fn parse_statement(&mut self, statement: &str) {
+    fn parse_statement(&mut self, statement: &str, document: u64) {
         let mut tokens = statement.split_whitespace().peekable();
         let mut subject = String::new();
         let mut predicate = String::new();
@@ -1949,8 +2053,12 @@ impl SparqlDatabase {
 
                         // Resolve terms and store the triple
                         let resolved_subject = self.resolve_term(&subject);
+                        let resolved_subject = self.scope_blank_nodes(resolved_subject, document);
                         let resolved_predicate = self.resolve_term(&predicate);
+                        let resolved_predicate =
+                            self.scope_blank_nodes(resolved_predicate, document);
                         let resolved_object = self.resolve_term(&object);
+                        let resolved_object = self.scope_blank_nodes(resolved_object, document);
 
                         let mut dict = self.dictionary.write();
                         let triple = Triple {
