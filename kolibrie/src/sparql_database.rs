@@ -823,6 +823,16 @@ impl SparqlDatabase {
 
         let mut current_subject = Vec::with_capacity(128);
         let mut current_predicate = Vec::with_capacity(128);
+        // A property element carries its literal's datatype, but the literal itself
+        // arrives later as a text event, so it is remembered here and spent there.
+        // Not inherited: `rdf:datatype` describes the one literal it sits on.
+        let mut current_datatype = Vec::with_capacity(64);
+        // `xml:lang` *is* inherited -- it scopes to an element and its descendants
+        // (XML 1.0 section 2.12) -- so the tag in force is a stack rather than a
+        // field: each start element pushes its own tag or the one it inherits, and
+        // each end element pops. A single field would miss the common case of a
+        // document declaring its language once, on the root.
+        let mut language_scope: Vec<Vec<u8>> = Vec::new();
 
         let (sender, receiver) = unbounded::<Vec<Triple>>();
         let dictionary = self.dictionary.clone();
@@ -857,7 +867,28 @@ impl SparqlDatabase {
             let mut triples = Vec::with_capacity(8192);
             loop {
                 match reader.read_event() {
-                    Ok(Event::Start(ref e)) => match e.name() {
+                    Ok(Event::Start(ref e)) => {
+                        // The datatype resets, so one property's cannot reach the
+                        // next property's literal; the language starts from whatever
+                        // encloses this element and is overridden only if this
+                        // element says so. `rdf:datatype` is an absolute IRI by
+                        // definition and needs no prefix expansion.
+                        current_datatype.truncate(0);
+                        let mut language = language_scope.last().cloned().unwrap_or_default();
+                        for attr in e.attributes().filter_map(Result::ok) {
+                            match attr.key {
+                                QName(b"rdf:datatype") => {
+                                    current_datatype.extend_from_slice(&attr.value)
+                                }
+                                QName(b"xml:lang") => {
+                                    language.clear();
+                                    language.extend_from_slice(&attr.value);
+                                }
+                                _ => {}
+                            }
+                        }
+                        language_scope.push(language);
+                        match e.name() {
                         QName(b"rdf:RDF") => {
                             for attr in e.attributes().filter_map(Result::ok) {
                                 let key = attr.key;
@@ -901,7 +932,8 @@ impl SparqlDatabase {
                             let resolved_predicate = self.resolve_term(&name_str);
                             current_predicate = resolved_predicate.clone().into_bytes();
                         }
-                    },
+                        }
+                    }
                     Ok(Event::Empty(ref e)) => {
                         if let Ok(predicate) = std::str::from_utf8(e.name().as_ref()) {
                             let resolved_predicate = self.resolve_term(predicate);
@@ -940,12 +972,26 @@ impl SparqlDatabase {
                                         std::str::from_utf8(&current_predicate)
                                     {
                                         let resolved_predicate = self.resolve_term(predicate_str);
+                                        // Spelled the way every other reader spells
+                                        // it. This used to encode the text alone, so
+                                        // a document saying xsd:integer or @en
+                                        // produced a plain literal regardless.
+                                        let object = rdf_term::spell_literal(
+                                            trimmed_object,
+                                            std::str::from_utf8(&current_datatype)
+                                                .ok()
+                                                .filter(|iri| !iri.is_empty()),
+                                            language_scope
+                                                .last()
+                                                .and_then(|tag| std::str::from_utf8(tag).ok())
+                                                .filter(|tag| !tag.is_empty()),
+                                        );
                                         // Lock the dictionary for encoding
                                         let mut dict = dictionary.write();
                                         let triple = Triple {
                                             subject: dict.encode(subject_str),
                                             predicate: dict.encode(&resolved_predicate),
-                                            object: dict.encode(trimmed_object),
+                                            object: dict.encode(&object),
                                         };
                                         drop(dict); // Release the lock
                                         triples.push(triple);
@@ -955,6 +1001,10 @@ impl SparqlDatabase {
                         }
                     }
                     Ok(Event::End(ref e)) => {
+                        // Leaving the element the tag was scoped to. A pop on an
+                        // empty stack is a no-op, so malformed nesting cannot panic
+                        // here; `Event::Empty` never pushed, so it must not pop.
+                        language_scope.pop();
                         if e.name() == QName(b"rdf:Description") {
                             current_subject.truncate(0);
                             current_predicate.truncate(0);

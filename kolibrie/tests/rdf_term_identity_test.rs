@@ -263,3 +263,156 @@ fn stored_objects(database: &SparqlDatabase) -> Vec<String> {
         })
         .collect()
 }
+
+// ── RDF/XML ─────────────────────────────────────────────────────────────────────
+//
+// RDF/XML carries a literal's datatype on the enclosing property element, as
+// `rdf:datatype`, and its language as `xml:lang`. The reader looked at neither, so
+// every literal it produced was a plain one whatever the document said — the same
+// loss as the N-Triples reader's, by a different route.
+
+#[test]
+fn rdf_xml_keeps_a_datatype() {
+    let mut database = SparqlDatabase::new();
+    database.parse_rdf(&format!(
+        r#"<rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#"
+                   xmlns:ex="http://example.org/">
+             <rdf:Description rdf:about="urn:a">
+               <ex:age rdf:datatype="{XSD_INTEGER}">30</ex:age>
+             </rdf:Description>
+           </rdf:RDF>"#
+    ));
+    let stored = stored_objects(&database);
+    assert_eq!(stored.len(), 1, "one triple, got {stored:?}");
+    assert_eq!(
+        stored,
+        object_terms(&format!("<urn:a> <urn:age> \"30\"^^<{XSD_INTEGER}> .\n")),
+        "RDF/XML must spell a typed literal the way N-Triples does"
+    );
+}
+
+#[test]
+fn rdf_xml_keeps_a_language_tag() {
+    let mut database = SparqlDatabase::new();
+    database.parse_rdf(
+        r#"<rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#"
+                   xmlns:rdfs="http://www.w3.org/2000/01/rdf-schema#">
+             <rdf:Description rdf:about="urn:a">
+               <rdfs:label xml:lang="en">hello</rdfs:label>
+             </rdf:Description>
+           </rdf:RDF>"#,
+    );
+    let stored = stored_objects(&database);
+    assert_eq!(stored.len(), 1, "one triple, got {stored:?}");
+    assert_eq!(
+        stored,
+        object_terms("<urn:a> <urn:label> \"hello\"@en .\n"),
+        "RDF/XML must spell a tagged literal the way N-Triples does"
+    );
+}
+
+#[test]
+fn rdf_xml_leaves_a_plain_literal_alone() {
+    // The guard on the change: a property element with neither attribute still
+    // produces the plain literal it always did.
+    let mut database = SparqlDatabase::new();
+    database.parse_rdf(
+        r#"<rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#"
+                   xmlns:ex="http://example.org/">
+             <rdf:Description rdf:about="urn:a">
+               <ex:age>30</ex:age>
+             </rdf:Description>
+           </rdf:RDF>"#,
+    );
+    assert_eq!(stored_objects(&database), vec!["30".to_string()]);
+}
+
+#[test]
+fn rdf_xml_does_not_carry_a_datatype_to_the_next_literal() {
+    // State kept across elements is the obvious way to get this wrong: the second
+    // property element has no datatype and must not inherit the first one's.
+    let mut database = SparqlDatabase::new();
+    database.parse_rdf(&format!(
+        r#"<rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#"
+                   xmlns:ex="http://example.org/">
+             <rdf:Description rdf:about="urn:a">
+               <ex:age rdf:datatype="{XSD_INTEGER}">30</ex:age>
+               <ex:nickname>bob</ex:nickname>
+             </rdf:Description>
+           </rdf:RDF>"#
+    ));
+    let mut stored = stored_objects(&database);
+    stored.sort();
+    assert_eq!(
+        stored,
+        vec![
+            "\"30\"^^<http://www.w3.org/2001/XMLSchema#integer>".to_string(),
+            "bob".to_string(),
+        ],
+        "the plain literal must stay plain"
+    );
+}
+
+#[test]
+fn rdf_xml_inherits_a_language_from_an_enclosing_element() {
+    // `xml:lang` is scoped to an element and its descendants (XML 1.0 §2.12, and
+    // RDF/XML §6.1.2 builds on it), and documents routinely declare it once on the
+    // root. A reader that only looks at the property element itself sees none.
+    let mut database = SparqlDatabase::new();
+    database.parse_rdf(
+        r#"<rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#"
+                   xmlns:ex="http://example.org/" xml:lang="fr">
+             <rdf:Description rdf:about="urn:a">
+               <ex:label>bonjour</ex:label>
+             </rdf:Description>
+           </rdf:RDF>"#,
+    );
+    assert_eq!(
+        stored_objects(&database),
+        object_terms("<urn:a> <urn:label> \"bonjour\"@fr .\n")
+    );
+}
+
+#[test]
+fn rdf_xml_lets_an_inner_language_override_an_outer_one() {
+    let mut database = SparqlDatabase::new();
+    database.parse_rdf(
+        r#"<rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#"
+                   xmlns:ex="http://example.org/" xml:lang="fr">
+             <rdf:Description rdf:about="urn:a">
+               <ex:label xml:lang="en">hello</ex:label>
+               <ex:other>bonjour</ex:other>
+             </rdf:Description>
+           </rdf:RDF>"#,
+    );
+    let mut stored = stored_objects(&database);
+    stored.sort();
+    assert_eq!(
+        stored,
+        vec!["\"bonjour\"@fr".to_string(), "\"hello\"@en".to_string()],
+        "the inner tag wins where it is given, and the outer one resumes after it"
+    );
+}
+
+#[test]
+fn rdf_xml_does_not_let_a_language_outlive_its_element() {
+    // The failure a scope stack exists to prevent: the tag leaking to a sibling that
+    // closed over nothing.
+    let mut database = SparqlDatabase::new();
+    database.parse_rdf(
+        r#"<rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#"
+                   xmlns:ex="http://example.org/">
+             <rdf:Description rdf:about="urn:a">
+               <ex:label xml:lang="en">hello</ex:label>
+               <ex:plain>30</ex:plain>
+             </rdf:Description>
+           </rdf:RDF>"#,
+    );
+    let mut stored = stored_objects(&database);
+    stored.sort();
+    assert_eq!(
+        stored,
+        vec!["\"hello\"@en".to_string(), "30".to_string()],
+        "the plain literal must stay plain"
+    );
+}
