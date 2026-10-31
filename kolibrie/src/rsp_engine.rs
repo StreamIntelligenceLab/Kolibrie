@@ -17,6 +17,7 @@ use crossbeam::channel::{unbounded, Receiver, RecvTimeoutError, Sender};
 use log::{debug, error}; // Use log crate when building application
 use shared::query::{Fallback, SyncPolicy};
 use shared::rule::Rule;
+use shared::terms::TextBindings;
 use shared::term_encoder::SharedTerms;
 use std::collections::HashMap;
 use std::collections::HashSet;
@@ -115,7 +116,7 @@ pub struct WindowResult {
     pub window_iri: String,
     /// Solutions, as decoded variable bindings — text, not dictionary ids, because
     /// a result crossing between windows cannot assume one dictionary.
-    pub results: Vec<HashMap<String, String>>,
+    pub results: TextBindings,
     /// When the window fired.
     pub timestamp: usize,
     /// The window's content with per-triple timestamps, for cross-window reasoning.
@@ -176,7 +177,7 @@ macro_rules! create_window_processor {
 
                 let window_res = WindowResult {
                     window_iri: $window_iri.clone(),
-                    results: Vec::new(),
+                    results: TextBindings::new(),
                     timestamp: ts,
                     raw_triples,
                 };
@@ -229,15 +230,13 @@ macro_rules! create_window_processor {
             drop(store);
 
             if $has_joins {
-                let mut mapped_results: Vec<HashMap<String, String>> = Vec::new();
-                mapped_results.reserve(results.len());
-
+                let mut mapped_results = TextBindings::new();
                 for res in &results {
                     if let Some(bindings) =
                         (res as &dyn std::any::Any).downcast_ref::<Vec<(String, String)>>()
                     {
-                        let map: HashMap<String, String> = bindings.iter().cloned().collect();
-                        mapped_results.push(map);
+                        mapped_results
+                            .push_pairs(bindings.iter().map(|(k, v)| (k.as_str(), v.clone())));
                     }
                 }
 
@@ -328,7 +327,7 @@ where
     // RSP-QL Query Plan using Volcano optimizer
     rsp_query_plan: RSPQueryPlan,
     /// Latest materialized results per window (replace semantics); SingleThread only.
-    single_thread_last_materialized: Arc<Mutex<HashMap<String, Vec<HashMap<String, String>>>>>,
+    single_thread_last_materialized: Arc<Mutex<HashMap<String, TextBindings>>>,
     /// Synchronization policy governing multi-window coordination.
     sync_policy: SyncPolicy,
     /// Separate store for static background triples (never touched by window processors).
@@ -686,8 +685,7 @@ where
 
         self.coordinator_thread = Some(thread::spawn(move || {
             // Latest results per window (replace semantics)
-            let mut last_materialized: HashMap<String, Vec<HashMap<String, String>>> =
-                HashMap::new();
+            let mut last_materialized: HashMap<String, TextBindings> = HashMap::new();
             // Windows that have fired since the last reset
             let mut cycle_triggered: HashSet<String> = HashSet::new();
             // When the first window fired in the current cycle
@@ -1230,7 +1228,7 @@ where
 /// and call `consumer` for each output binding.
 /// Called from both the coordinator thread and the SingleThread processor.
 fn emit_results<O>(
-    last_materialized: &HashMap<String, Vec<HashMap<String, String>>>,
+    last_materialized: &HashMap<String, TextBindings>,
     static_data_plan: &Option<PhysicalOperator>,
     static_db: &Arc<Mutex<SparqlDatabase>>,
     r2s: &Arc<Mutex<Relation2StreamOperator<O>>>,
@@ -1244,7 +1242,7 @@ fn emit_results<O>(
     let final_results = if let Some(ref plan) = static_data_plan {
         let static_bindings = execute_plan_as_bindings(static_db, plan);
         debug!("emit_results: static bindings = {}", static_bindings.len());
-        natural_join(&joined, &static_bindings)
+        joined.join(&static_bindings)
     } else {
         joined
     };
@@ -1253,10 +1251,12 @@ fn emit_results<O>(
         "emit_results: emitting {} bindings before R2S filter",
         final_results.len()
     );
-    let outputs: Vec<O> = final_results
-        .into_iter()
-        .map(|b| {
-            let mut kv: Vec<(String, String)> = b.into_iter().collect();
+    let outputs: Vec<O> = (0..final_results.len())
+        .map(|row| {
+            let mut kv: Vec<(String, String)> = final_results
+                .pairs(row)
+                .map(|(name, value)| (name.to_string(), value.to_string()))
+                .collect();
             kv.sort_unstable_by(|a, b| a.0.cmp(&b.0));
             kv.into()
         })
@@ -1267,65 +1267,20 @@ fn emit_results<O>(
     }
 }
 
-/// Natural join of two binding sets: compatible bindings are merged, incompatible ones are dropped.
-/// Produces the Cartesian product when the two sets share no variables.
-fn natural_join(
-    left: &[HashMap<String, String>],
-    right: &[HashMap<String, String>],
-) -> Vec<HashMap<String, String>> {
-    if left.is_empty() || right.is_empty() {
-        return Vec::new();
+/// Join the results of every window that has fired.
+///
+/// [`TextBindings::join`] carries the semantics; this only decides the order, and no
+/// longer clones every row of every window to do it -- it used to collect the buffers
+/// into an owned `Vec` before joining any of them.
+fn join_window_results(window_buffers: &HashMap<String, TextBindings>) -> TextBindings {
+    let mut windows = window_buffers.values();
+    let Some(first) = windows.next() else {
+        return TextBindings::new();
+    };
+    let mut joined = first.clone();
+    for window in windows {
+        joined = joined.join(window);
     }
-
-    let mut result = Vec::new();
-
-    for left_binding in left {
-        for right_binding in right {
-            // Check compatibility: shared variables must agree on value
-            let mut compatible = true;
-            for (var, val) in left_binding {
-                if let Some(right_val) = right_binding.get(var) {
-                    if val != right_val {
-                        compatible = false;
-                        break;
-                    }
-                }
-            }
-
-            if compatible {
-                let mut merged = left_binding.clone();
-                for (k, v) in right_binding {
-                    merged.insert(k.clone(), v.clone());
-                }
-                result.push(merged);
-            }
-        }
-    }
-
-    result
-}
-
-/// Join results from multiple windows using natural join semantics.
-fn join_window_results(
-    window_buffers: &HashMap<String, Vec<HashMap<String, String>>>,
-) -> Vec<HashMap<String, String>> {
-    if window_buffers.is_empty() {
-        return Vec::new();
-    }
-
-    let mut all_windows: Vec<Vec<HashMap<String, String>>> =
-        window_buffers.values().cloned().collect();
-
-    if all_windows.len() == 1 {
-        return all_windows.into_iter().next().unwrap();
-    }
-
-    // Iteratively natural-join all window result sets
-    let mut joined = all_windows.remove(0);
-    for window_results in all_windows {
-        joined = natural_join(&joined, &window_results);
-    }
-
     joined
 }
 
@@ -1334,9 +1289,11 @@ fn join_window_results(
 fn execute_plan_as_bindings(
     static_db: &Arc<Mutex<SparqlDatabase>>,
     plan: &PhysicalOperator,
-) -> Vec<HashMap<String, String>> {
+) -> TextBindings {
     let mut db = static_db.lock().unwrap();
-    ExecutionEngine::execute(plan, &mut *db)
+    // The optimizer still answers with a map per row, so this is the boundary where
+    // that shape ends.
+    TextBindings::from_maps(&ExecutionEngine::execute(plan, &mut *db))
 }
 
 fn build_cross_window_sds(
@@ -1414,7 +1371,7 @@ fn execute_window_plans_on_external_buckets(
     window_plans: &[PhysicalOperator],
     external_buckets: &HashMap<String, Vec<Triple>>,
     dict: &SharedTerms,
-) -> HashMap<String, Vec<HashMap<String, String>>> {
+) -> HashMap<String, TextBindings> {
     let mut materialized = HashMap::new();
 
     for (window, plan) in window_configs.iter().zip(window_plans.iter()) {
@@ -1428,7 +1385,10 @@ fn execute_window_plans_on_external_buckets(
         }
 
         let results = ExecutionEngine::execute(plan, &mut db);
-        materialized.insert(window.window_iri.clone(), results);
+        materialized.insert(
+            window.window_iri.clone(),
+            TextBindings::from_maps(&results),
+        );
     }
 
     materialized

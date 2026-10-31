@@ -807,3 +807,399 @@ mod bindings_tests {
         bindings.push_cells(vec![1]);
     }
 }
+
+/// Solution rows whose cells are terms as text, not dictionary ids.
+///
+/// The unencoded sibling of [`Bindings`], and for the same reason
+/// [`TermTriple`](crate::rdf_term::TermTriple) exists: an id means nothing outside
+/// the dictionary that minted it, so a solution crossing out of one store carries
+/// text. The RSP coordinator is where this bites — it joins results from windows
+/// that need not share a dictionary.
+///
+/// # Why not a map per row
+///
+/// It was `Vec<HashMap<String, String>>`, which is the shape
+/// [`Bindings`] replaced on the encoded side after measuring a 4.7x difference on
+/// the join. The same two costs apply here and one is worse: a variable is hashed
+/// once per row per column rather than resolved to a column once for the whole
+/// sequence, and here the keys are strings rather than `u32`.
+///
+/// # Partial rows
+///
+/// A cell is `Option<String>` because a solution mapping is a partial function:
+/// `OPTIONAL` and `VALUES … UNDEF` produce rows that bind different variables. The
+/// map shape said so by leaving a key out, and [`Bindings`] says so with a sentinel
+/// id; neither trick is available for a `String`, since the empty string is a
+/// perfectly good literal.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct TextBindings {
+    /// Variable names, in column order.
+    schema: Vec<String>,
+    /// One row per solution, each `schema.len()` wide.
+    rows: Vec<Vec<Option<String>>>,
+}
+
+impl TextBindings {
+    /// No rows and no variables.
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// An empty sequence over a known schema.
+    pub fn with_schema(schema: Vec<String>) -> Self {
+        Self {
+            schema,
+            rows: Vec::new(),
+        }
+    }
+
+    /// The variables, in column order.
+    pub fn schema(&self) -> &[String] {
+        &self.schema
+    }
+
+    /// How many solutions.
+    pub fn len(&self) -> usize {
+        self.rows.len()
+    }
+
+    /// Whether there are no solutions.
+    pub fn is_empty(&self) -> bool {
+        self.rows.is_empty()
+    }
+
+    /// The column `variable` occupies, if it is in the schema.
+    pub fn column(&self, variable: &str) -> Option<usize> {
+        self.schema.iter().position(|name| name == variable)
+    }
+
+    /// The value of `variable` in row `row`, or `None` when unbound or absent.
+    pub fn get(&self, row: usize, variable: &str) -> Option<&str> {
+        let column = self.column(variable)?;
+        self.rows.get(row)?.get(column)?.as_deref()
+    }
+
+    /// The rows, each as a slice aligned with [`schema`](Self::schema).
+    pub fn rows(&self) -> &[Vec<Option<String>>] {
+        &self.rows
+    }
+
+    /// The bound cells of row `row`, as variable and value.
+    ///
+    /// Skips unbound cells, so a partial row yields fewer pairs than the schema is
+    /// wide — which is what a consumer building a solution wants.
+    pub fn pairs(&self, row: usize) -> impl Iterator<Item = (&str, &str)> + '_ {
+        self.schema
+            .iter()
+            .zip(self.rows.get(row).map(Vec::as_slice).unwrap_or(&[]))
+            .filter_map(|(name, cell)| cell.as_deref().map(|value| (name.as_str(), value)))
+    }
+
+    /// Adds a row from variable and value pairs, widening the schema as needed.
+    pub fn push_pairs<I, K, V>(&mut self, pairs: I)
+    where
+        I: IntoIterator<Item = (K, V)>,
+        K: AsRef<str>,
+        V: Into<String>,
+    {
+        let mut row = vec![None; self.schema.len()];
+        for (variable, value) in pairs {
+            let variable = variable.as_ref();
+            let column = match self.column(variable) {
+                Some(column) => column,
+                None => {
+                    self.schema.push(variable.to_string());
+                    // Widen the rows already stored, so every row stays as wide as
+                    // the schema.
+                    for existing in &mut self.rows {
+                        existing.push(None);
+                    }
+                    row.push(None);
+                    self.schema.len() - 1
+                }
+            };
+            row[column] = Some(value.into());
+        }
+        self.rows.push(row);
+    }
+
+    /// Natural join: rows that agree on every shared variable, merged.
+    ///
+    /// Produces the Cartesian product when the two sides share no variable, which is
+    /// what the cross-window case usually is — two windows binding different
+    /// variables.
+    ///
+    /// An unbound cell is compatible with any value, because a solution mapping is a
+    /// partial function and two mappings are compatible where both are defined
+    /// (SPARQL 1.1 §18.5). That is why this compares rather than hashes: a hash join
+    /// on the shared columns cannot express "unbound matches anything", and getting
+    /// it wrong would silently drop or invent solutions. Shared columns are resolved
+    /// once from the two schemas instead of being looked up per row, which is the
+    /// cost the map shape paid.
+    pub fn join(&self, other: &TextBindings) -> TextBindings {
+        if self.is_empty() || other.is_empty() {
+            return TextBindings::new();
+        }
+
+        // Column pairs the two sides share, resolved once.
+        let shared: Vec<(usize, usize)> = self
+            .schema
+            .iter()
+            .enumerate()
+            .filter_map(|(left, name)| other.column(name).map(|right| (left, right)))
+            .collect();
+
+        // Output schema: this side's variables, then the ones only `other` has.
+        let mut schema = self.schema.clone();
+        let carried: Vec<(usize, usize)> = other
+            .schema
+            .iter()
+            .enumerate()
+            .filter(|(_, name)| !self.schema.contains(name))
+            .map(|(right, name)| {
+                schema.push(name.clone());
+                (right, schema.len() - 1)
+            })
+            .collect();
+
+        let mut rows = Vec::new();
+        for left_row in &self.rows {
+            for right_row in &other.rows {
+                let compatible = shared.iter().all(|&(left, right)| {
+                    match (&left_row[left], &right_row[right]) {
+                        (Some(left), Some(right)) => left == right,
+                        // Unbound on either side: compatible, and the bound value
+                        // wins in the merged row.
+                        _ => true,
+                    }
+                });
+                if !compatible {
+                    continue;
+                }
+                let mut row = vec![None; schema.len()];
+                row[..left_row.len()].clone_from_slice(left_row);
+                for &(right, target) in &carried {
+                    row[target] = right_row[right].clone();
+                }
+                // A variable both sides share takes whichever side bound it.
+                for &(left, right) in &shared {
+                    if row[left].is_none() {
+                        row[left] = right_row[right].clone();
+                    }
+                }
+                rows.push(row);
+            }
+        }
+        TextBindings { schema, rows }
+    }
+
+    /// Appends another sequence's rows, widening the schema to cover both.
+    ///
+    /// Concatenation, not a join: the rows stand alongside each other rather than
+    /// being combined. A variable only the other side has is unbound in the rows
+    /// already here, which is what a partial row is for.
+    pub fn extend(&mut self, other: TextBindings) {
+        // Where the schemas already agree, the rows can move across untouched.
+        if self.schema == other.schema {
+            self.rows.extend(other.rows);
+            return;
+        }
+        let columns: Vec<usize> = other
+            .schema
+            .iter()
+            .map(|name| match self.column(name) {
+                Some(column) => column,
+                None => {
+                    self.schema.push(name.clone());
+                    for existing in &mut self.rows {
+                        existing.push(None);
+                    }
+                    self.schema.len() - 1
+                }
+            })
+            .collect();
+        for incoming in other.rows {
+            let mut row = vec![None; self.schema.len()];
+            for (cell, &column) in incoming.into_iter().zip(&columns) {
+                row[column] = cell;
+            }
+            self.rows.push(row);
+        }
+    }
+
+    /// Builds from the map-per-row shape, for a boundary that still produces it.
+    pub fn from_maps(maps: &[HashMap<String, String>]) -> Self {
+        let mut bindings = TextBindings::new();
+        for map in maps {
+            bindings.push_pairs(map.iter().map(|(k, v)| (k.as_str(), v.clone())));
+        }
+        bindings
+    }
+}
+
+#[cfg(test)]
+mod text_bindings_tests {
+    use super::TextBindings;
+
+    fn row(bindings: &TextBindings, index: usize) -> Vec<(String, String)> {
+        let mut pairs: Vec<(String, String)> = bindings
+            .pairs(index)
+            .map(|(k, v)| (k.to_string(), v.to_string()))
+            .collect();
+        pairs.sort();
+        pairs
+    }
+
+    #[test]
+    fn a_row_answers_by_name_without_a_map() {
+        let mut bindings = TextBindings::new();
+        bindings.push_pairs([("s", "urn:a"), ("o", "25")]);
+        assert_eq!(bindings.len(), 1);
+        assert_eq!(bindings.get(0, "s"), Some("urn:a"));
+        assert_eq!(bindings.get(0, "o"), Some("25"));
+        assert_eq!(bindings.get(0, "missing"), None);
+    }
+
+    #[test]
+    fn a_later_row_can_introduce_a_variable_and_the_earlier_rows_stay_aligned() {
+        let mut bindings = TextBindings::new();
+        bindings.push_pairs([("s", "urn:a")]);
+        bindings.push_pairs([("s", "urn:b"), ("extra", "1")]);
+        assert_eq!(bindings.schema().len(), 2);
+        assert_eq!(bindings.rows()[0].len(), 2, "the first row was widened");
+        assert_eq!(bindings.get(0, "extra"), None, "and left unbound");
+        assert_eq!(bindings.get(1, "extra"), Some("1"));
+    }
+
+    #[test]
+    fn an_unbound_cell_is_not_an_empty_string() {
+        // The empty string is a perfectly good literal, which is why a cell is an
+        // Option rather than using "" as a sentinel.
+        let mut bindings = TextBindings::new();
+        bindings.push_pairs([("s", ""), ("t", "x")]);
+        assert_eq!(bindings.get(0, "s"), Some(""));
+        assert_eq!(row(&bindings, 0), vec![
+            ("s".to_string(), String::new()),
+            ("t".to_string(), "x".to_string()),
+        ]);
+    }
+
+    #[test]
+    fn a_partial_row_yields_only_its_bound_cells() {
+        let mut bindings = TextBindings::new();
+        bindings.push_pairs([("s", "urn:a"), ("o", "25")]);
+        bindings.push_pairs([("s", "urn:b")]);
+        assert_eq!(row(&bindings, 1), vec![("s".to_string(), "urn:b".to_string())]);
+    }
+
+    #[test]
+    fn joining_on_no_shared_variable_is_the_cartesian_product() {
+        // The cross-window case: two windows binding different variables.
+        let mut left = TextBindings::new();
+        left.push_pairs([("s", "a")]);
+        left.push_pairs([("s", "b")]);
+        let mut right = TextBindings::new();
+        right.push_pairs([("t", "x")]);
+        right.push_pairs([("t", "y")]);
+        let joined = left.join(&right);
+        assert_eq!(joined.len(), 4);
+        assert_eq!(joined.schema(), ["s", "t"]);
+    }
+
+    #[test]
+    fn joining_on_a_shared_variable_keeps_only_agreeing_rows() {
+        let mut left = TextBindings::new();
+        left.push_pairs([("s", "a"), ("x", "1")]);
+        left.push_pairs([("s", "b"), ("x", "2")]);
+        let mut right = TextBindings::new();
+        right.push_pairs([("s", "a"), ("y", "9")]);
+        let joined = left.join(&right);
+        assert_eq!(joined.len(), 1);
+        assert_eq!(
+            row(&joined, 0),
+            vec![
+                ("s".to_string(), "a".to_string()),
+                ("x".to_string(), "1".to_string()),
+                ("y".to_string(), "9".to_string()),
+            ]
+        );
+    }
+
+    #[test]
+    fn an_unbound_shared_variable_is_compatible_with_any_value() {
+        // SPARQL 1.1 section 18.5: two solution mappings are compatible where both
+        // are defined. This is the case a hash join on the shared columns cannot
+        // express, and the reason this one compares.
+        let mut left = TextBindings::new();
+        left.push_pairs([("s", "a"), ("x", "1")]);
+        left.push_pairs([("x", "2")]); // `s` unbound
+        let mut right = TextBindings::new();
+        right.push_pairs([("s", "a")]);
+        right.push_pairs([("s", "b")]);
+        let joined = left.join(&right);
+        // Row one joins only `s=a`; row two is unbound on `s` so it joins both.
+        assert_eq!(joined.len(), 3, "got {joined:?}");
+        // And the merged row takes the bound side's value.
+        let values: Vec<Option<&str>> = (0..joined.len()).map(|i| joined.get(i, "s")).collect();
+        assert_eq!(values, vec![Some("a"), Some("a"), Some("b")]);
+    }
+
+    #[test]
+    fn joining_with_an_empty_side_is_empty() {
+        let mut left = TextBindings::new();
+        left.push_pairs([("s", "a")]);
+        assert!(left.join(&TextBindings::new()).is_empty());
+        assert!(TextBindings::new().join(&left).is_empty());
+    }
+
+    #[test]
+    fn extending_concatenates_rows_rather_than_joining_them() {
+        let mut left = TextBindings::new();
+        left.push_pairs([("s", "a")]);
+        let mut right = TextBindings::new();
+        right.push_pairs([("s", "b")]);
+        left.extend(right);
+        assert_eq!(left.len(), 2, "two rows, not a join");
+        assert_eq!(left.get(0, "s"), Some("a"));
+        assert_eq!(left.get(1, "s"), Some("b"));
+    }
+
+    #[test]
+    fn extending_with_a_wider_schema_leaves_the_earlier_rows_unbound() {
+        let mut left = TextBindings::new();
+        left.push_pairs([("s", "a")]);
+        let mut right = TextBindings::new();
+        right.push_pairs([("s", "b"), ("t", "x")]);
+        left.extend(right);
+        assert_eq!(left.schema().len(), 2);
+        assert_eq!(left.get(0, "t"), None, "the row that predates the column");
+        assert_eq!(left.get(1, "t"), Some("x"));
+    }
+
+    #[test]
+    fn extending_realigns_a_schema_given_in_another_order() {
+        // The cells have to follow their names, not their positions.
+        let mut left = TextBindings::with_schema(vec!["s".into(), "t".into()]);
+        left.push_pairs([("s", "a"), ("t", "x")]);
+        let mut right = TextBindings::with_schema(vec!["t".into(), "s".into()]);
+        right.push_pairs([("t", "y"), ("s", "b")]);
+        left.extend(right);
+        assert_eq!(left.get(1, "s"), Some("b"), "not y");
+        assert_eq!(left.get(1, "t"), Some("y"), "not b");
+    }
+
+    #[test]
+    fn building_from_maps_matches_building_from_pairs() {
+        use std::collections::HashMap;
+        let maps = vec![HashMap::from([
+            ("s".to_string(), "urn:a".to_string()),
+            ("o".to_string(), "25".to_string()),
+        ])];
+        let from_maps = TextBindings::from_maps(&maps);
+        let mut from_pairs = TextBindings::new();
+        from_pairs.push_pairs([("s", "urn:a"), ("o", "25")]);
+        // Schema order follows insertion, which a HashMap does not fix, so the rows
+        // are compared by content.
+        assert_eq!(row(&from_maps, 0), row(&from_pairs, 0));
+    }
+}
