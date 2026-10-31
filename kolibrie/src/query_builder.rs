@@ -781,9 +781,9 @@ impl<'a> QueryBuilder<'a> {
 
         if let Some(runner) = self.runner.as_mut() {
             let triple = WindowTriple {
-                s: subject.to_string(),
-                p: predicate.to_string(),
-                o: object.to_string(),
+                subject: subject.to_string(),
+                predicate: predicate.to_string(),
+                object: object.to_string(),
             };
             runner.push(triple, timestamp);
             self.current_timestamp = timestamp;
@@ -863,29 +863,29 @@ impl<'a> QueryBuilder<'a> {
 
             // Apply subject filter
             if let Some(filter) = &self.subject_filter {
-                matches &= Self::apply_filter(filter, &window_triple.s);
+                matches &= Self::apply_filter(filter, &window_triple.subject);
             }
 
             // Apply predicate filter
             if matches {
                 if let Some(filter) = &self.predicate_filter {
-                    matches &= Self::apply_filter(filter, &window_triple.p);
+                    matches &= Self::apply_filter(filter, &window_triple.predicate);
                 }
             }
 
             // Apply object filter
             if matches {
                 if let Some(filter) = &self.object_filter {
-                    matches &= Self::apply_filter(filter, &window_triple.o);
+                    matches &= Self::apply_filter(filter, &window_triple.object);
                 }
             }
 
             if matches {
                 // Convert to Triple (simplified encoding)
                 let triple = Triple {
-                    subject: self.encode_string(&window_triple.s),
-                    predicate: self.encode_string(&window_triple.p),
-                    object: self.encode_string(&window_triple.o),
+                    subject: self.encode_string(&window_triple.subject),
+                    predicate: self.encode_string(&window_triple.predicate),
+                    object: self.encode_string(&window_triple.object),
                 };
 
                 // Apply custom filter if present

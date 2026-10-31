@@ -20,6 +20,7 @@ use rayon::prelude::*;
 use shared::dataset_index::{DatasetIndex, GraphId, Quad};
 use shared::dictionary::Dictionary;
 use shared::rdf_term;
+use shared::rdf_term::TermTriple;
 use shared::term_encoder::SharedTerms;
 use shared::query::{ModelDecl, NeuralRelationDecl, TrainNeuralRelationDecl};
 use shared::quoted_triple_store::{is_quoted_triple_id, QuotedTripleStore};
@@ -1694,7 +1695,7 @@ impl SparqlDatabase {
     ///
     /// Returns one group per chunk. The `a` shorthand is expanded to the full RDF
     /// type IRI in predicate position.
-    pub fn parse_ntriples(&mut self, ntriples_data: &str) -> Vec<Vec<(String, String, String)>> {
+    pub fn parse_ntriples(&mut self, ntriples_data: &str) -> Vec<Vec<TermTriple>> {
         // One scope for this document, taken before the chunks fan out so that every
         // chunk relabels `_:b` the same way and the node stays one node.
         self.parse_ntriples_in_scope(ntriples_data, rdf_term::next_document_scope())
@@ -1716,12 +1717,12 @@ impl SparqlDatabase {
         &mut self,
         ntriples_data: &str,
         document: u64,
-    ) -> Vec<Vec<(String, String, String)>> {
+    ) -> Vec<Vec<TermTriple>> {
         let lines: Vec<&str> = ntriples_data.lines().collect();
         let chunk_size = 1000;
         let chunks: Vec<&[&str]> = lines.chunks(chunk_size).collect();
 
-        let partial_results: Vec<Vec<(String, String, String)>> = chunks
+        let partial_results: Vec<Vec<TermTriple>> = chunks
             .par_iter()
             .map(|chunk| {
                 let mut local_triples = Vec::new();
@@ -1747,11 +1748,11 @@ impl SparqlDatabase {
                     if let Some((subject, predicate, object)) =
                         self.parse_ntriples_line(line_without_dot)
                     {
-                        local_triples.push((
-                            self.scope_blank_nodes(subject, document),
-                            self.scope_blank_nodes(predicate, document),
-                            self.scope_blank_nodes(object, document),
-                        ));
+                        local_triples.push(TermTriple {
+                            subject: self.scope_blank_nodes(subject, document),
+                            predicate: self.scope_blank_nodes(predicate, document),
+                            object: self.scope_blank_nodes(object, document),
+                        });
                     }
                 }
 
@@ -1765,11 +1766,16 @@ impl SparqlDatabase {
     /// Interns lexical triples into encoded ones.
     pub fn encode_triples(
         &mut self,
-        non_encoded_triples: Vec<Vec<(String, String, String)>>,
+        non_encoded_triples: Vec<Vec<TermTriple>>,
     ) -> Vec<Triple> {
         let mut encoded_triples = Vec::new();
         for triple_strings in non_encoded_triples {
-            for (subject, predicate, object) in triple_strings {
+            for TermTriple {
+                subject,
+                predicate,
+                object,
+            } in triple_strings
+            {
                 let main_triple = Triple {
                     subject: self.encode_term_star(&subject),
                     predicate: self.encode_term_star(&predicate),

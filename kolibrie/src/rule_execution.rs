@@ -174,9 +174,9 @@ pub fn process_rule_definition(
                 for triple in default_triples.iter() {
                     let dict = database.dictionary.read();
                     let window_triple = WindowTriple {
-                        s: dict.decode(triple.subject).unwrap_or("").to_string(),
-                        p: dict.decode(triple.predicate).unwrap_or("").to_string(),
-                        o: dict.decode(triple.object).unwrap_or("").to_string(),
+                        subject: dict.decode(triple.subject).unwrap_or("").to_string(),
+                        predicate: dict.decode(triple.predicate).unwrap_or("").to_string(),
+                        object: dict.decode(triple.object).unwrap_or("").to_string(),
                     };
                     drop(dict);
 
@@ -196,9 +196,9 @@ pub fn process_rule_definition(
                         let mut window_kg = kg_clone.clone();
                         for window_triple in content.iter() {
                             window_kg.add_abox_triple(
-                                &window_triple.s,
-                                &window_triple.p,
-                                &window_triple.o,
+                                &window_triple.subject,
+                                &window_triple.predicate,
+                                &window_triple.object,
                             );
                         }
 

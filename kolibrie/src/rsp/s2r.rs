@@ -553,17 +553,11 @@ where
 
 /// A triple as it travels through a window, in decoded text form.
 ///
-/// Text rather than dictionary ids because a window is not bound to any one
-/// store's dictionary.
-#[derive(Eq, PartialEq, Clone, Debug, Hash)]
-pub struct WindowTriple {
-    /// Subject.
-    pub s: String,
-    /// Predicate.
-    pub p: String,
-    /// Object.
-    pub o: String,
-}
+/// Text rather than dictionary ids because a window is not bound to any one store's
+/// dictionary, which is the same reason the parsers hand back text on the way in.
+/// It was its own three-field struct until both were found to be one thing; the name
+/// stays because a window's item type reads better for it.
+pub type WindowTriple = shared::rdf_term::TermTriple;
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -592,9 +586,9 @@ mod tests {
 
         for i in 0..10 {
             let triple = WindowTriple {
-                s: format!("s{}", i),
-                p: "p".to_string(),
-                o: "o".to_string(),
+                subject: format!("s{}", i),
+                predicate: "p".to_string(),
+                object: "o".to_string(),
             };
             window.add_to_window(triple, i);
         }
@@ -629,9 +623,9 @@ mod tests {
 
         for i in 0..10 {
             let triple = WindowTriple {
-                s: format!("s{}", i),
-                p: "p".to_string(),
-                o: "o".to_string(),
+                subject: format!("s{}", i),
+                predicate: "p".to_string(),
+                object: "o".to_string(),
             };
             window.add_to_window(triple, i);
         }

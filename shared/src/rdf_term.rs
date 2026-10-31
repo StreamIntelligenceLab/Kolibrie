@@ -165,6 +165,80 @@ pub fn canonicalise_literal(text: &str) -> Option<String> {
     ))
 }
 
+/// A triple of canonical term spellings: a triple no dictionary has seen.
+///
+/// What a triple is before it is interned, and after it is decoded. Ids are only
+/// meaningful against the dictionary that minted them, so anything crossing out of
+/// one store -- a parsed document on its way in, a window's content, a result going
+/// to another system -- has to carry text instead. Several places had worked that out
+/// independently and each named it differently, or not at all.
+///
+/// # Ground terms, not patterns
+///
+/// Every component is a term. A triple *pattern* may hold a variable, compares
+/// differently and binds rather than matches, so it is a different type and stays
+/// one: `(String, String, String)` appears all over this workspace for patterns,
+/// filter comparisons and diagnostics, and folding those in would conflate a
+/// variable with a term named `?s`.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub struct TermTriple {
+    /// The subject: an IRI or a blank node.
+    pub subject: String,
+    /// The predicate: an IRI.
+    pub predicate: String,
+    /// The object: an IRI, a blank node or a literal.
+    pub object: String,
+}
+
+impl TermTriple {
+    /// A triple from its three terms.
+    pub fn new(
+        subject: impl Into<String>,
+        predicate: impl Into<String>,
+        object: impl Into<String>,
+    ) -> Self {
+        Self {
+            subject: subject.into(),
+            predicate: predicate.into(),
+            object: object.into(),
+        }
+    }
+
+    /// Writes the triple as one line of N-Triples, terminator included.
+    ///
+    /// Each term through [`to_ntriples_term`], so an IRI gets its brackets, a
+    /// literal keeps its datatype and a blank node stays a blank node.
+    pub fn to_ntriples(&self) -> String {
+        format!(
+            "{} {} {} .\n",
+            to_ntriples_term(&self.subject),
+            to_ntriples_term(&self.predicate),
+            to_ntriples_term(&self.object)
+        )
+    }
+
+    /// The three terms, in order.
+    pub fn terms(&self) -> [&str; 3] {
+        [&self.subject, &self.predicate, &self.object]
+    }
+}
+
+impl From<(String, String, String)> for TermTriple {
+    fn from((subject, predicate, object): (String, String, String)) -> Self {
+        Self {
+            subject,
+            predicate,
+            object,
+        }
+    }
+}
+
+impl From<TermTriple> for (String, String, String) {
+    fn from(triple: TermTriple) -> Self {
+        (triple.subject, triple.predicate, triple.object)
+    }
+}
+
 /// The well-known path RDF 1.1 §3.5 gives Skolem IRIs.
 ///
 /// Reserved by RFC 8615 for exactly this, so an IRI minted under it cannot collide
@@ -877,6 +951,27 @@ mod tests {
                 "{label:?} did not survive"
             );
         }
+    }
+
+    #[test]
+    fn a_triple_writes_each_term_as_its_own_kind() {
+        let triple = TermTriple::new(
+            "urn:a",
+            "urn:age",
+            spell_literal("30", Some(XSD_INTEGER), None),
+        );
+        assert_eq!(
+            triple.to_ntriples(),
+            format!("<urn:a> <urn:age> \"30\"^^<{XSD_INTEGER}> .\n")
+        );
+    }
+
+    #[test]
+    fn a_triple_converts_to_and_from_the_tuple_it_replaces() {
+        let tuple = ("urn:a".to_string(), "urn:p".to_string(), "25".to_string());
+        let triple: TermTriple = tuple.clone().into();
+        assert_eq!(triple, TermTriple::new("urn:a", "urn:p", "25"));
+        assert_eq!(<(String, String, String)>::from(triple), tuple);
     }
 
     #[test]
