@@ -784,3 +784,101 @@ fn every_term_survives_a_round_trip_through_the_wire() {
         ]
     );
 }
+
+// ── Exchanging data between systems ─────────────────────────────────────────────
+//
+// The plain serialisers emit document-local blank node labels, which are sound within
+// one store and unsound the moment two stores merge each other's output: a label means
+// nothing outside its document, and the scope counter is process-local, so two
+// instances both mint `_:kolibrie-doc-1-b` for their first document. RDF 1.1 §3.5
+// answers that by replacing blank nodes with IRIs, which are global.
+
+#[test]
+fn two_instances_would_collide_without_skolemisation() {
+    // Why skolemisation is needed rather than nice to have. Each store is a fresh
+    // process-local counter in a real deployment, which this cannot simulate in one
+    // process -- so it asserts the weaker, sufficient fact: the label carries no
+    // trace of which instance minted it, and nothing else in it would separate them.
+    let mut database = SparqlDatabase::new();
+    database.parse_ntriples_and_add("_:b <urn:p> <urn:o> .\n");
+    let wire = database.generate_ntriples();
+    assert!(
+        wire.contains("_:kolibrie-doc-"),
+        "the plain form emits a document-local label: {wire:?}"
+    );
+    assert!(
+        !wire.contains("well-known"),
+        "and says nothing about who minted it: {wire:?}"
+    );
+}
+
+#[test]
+fn skolemising_replaces_a_blank_node_with_an_iri_under_the_given_authority() {
+    let mut database = SparqlDatabase::new();
+    database.parse_ntriples_and_add("_:b <urn:p> <urn:o> .\n");
+    let wire = database.generate_ntriples_skolemised("http://alice.example");
+    assert!(
+        wire.contains("<http://alice.example/.well-known/genid/"),
+        "got {wire:?}"
+    );
+    assert!(!wire.contains("_:"), "no blank node should remain: {wire:?}");
+}
+
+#[test]
+fn two_authorities_do_not_collide() {
+    // The property that makes a merge safe.
+    let mut database = SparqlDatabase::new();
+    database.parse_ntriples_and_add("_:b <urn:p> <urn:o> .\n");
+    let from_alice = database.generate_ntriples_skolemised("http://alice.example");
+    let from_bob = database.generate_ntriples_skolemised("http://bob.example");
+    assert_ne!(from_alice, from_bob);
+
+    // Merged into one store, they are two nodes rather than one.
+    let mut merged = SparqlDatabase::new();
+    merged.parse_ntriples_and_add(&from_alice);
+    merged.parse_ntriples_and_add(&from_bob);
+    let subjects = stored_subjects(&merged);
+    assert_eq!(subjects.len(), 2, "two nodes, got {subjects:?}");
+    assert_ne!(subjects[0], subjects[1]);
+}
+
+#[test]
+fn a_skolemised_node_arrives_as_an_iri_and_can_be_turned_back() {
+    use shared::rdf_term::{deskolemise, kind_of, skolemise, TermKind};
+
+    let mut database = SparqlDatabase::new();
+    database.parse_ntriples_and_add("_:b <urn:p> <urn:o> .\n");
+    let wire = database.generate_ntriples_skolemised("http://alice.example");
+
+    let mut receiver = SparqlDatabase::new();
+    receiver.parse_ntriples_and_add(&wire);
+    let arrived = &stored_subjects(&receiver)[0];
+
+    // An IRI on arrival, which is what keeps a merge between systems sound.
+    assert_eq!(kind_of(arrived), TermKind::Iri, "got {arrived:?}");
+
+    // Recoverable for a consumer that would rather have the node back. The exact
+    // label depends on a counter shared across this binary's tests, so what is
+    // pinned is that it comes back as a blank node and skolemises to the same IRI.
+    let recovered = deskolemise(arrived).expect("a Skolem IRI");
+    assert!(recovered.starts_with("_:"), "got {recovered:?}");
+    assert_eq!(
+        skolemise(&recovered, "http://alice.example"),
+        arrived.as_str(),
+        "deskolemising and skolemising again should be a round trip"
+    );
+}
+
+#[test]
+fn skolemisation_does_not_touch_a_literal_that_mentions_a_label() {
+    // Rewriting the serialised text would find `_:b` inside this literal, which is
+    // not a term at all.
+    let mut database = SparqlDatabase::new();
+    database.parse_ntriples_and_add("<urn:a> <urn:says> \"see _:b here\" .\n");
+    let wire = database.generate_ntriples_skolemised("http://alice.example");
+    assert!(
+        wire.contains("\"see _:b here\""),
+        "the literal must be untouched, got {wire:?}"
+    );
+    assert!(!wire.contains("well-known"), "nothing to skolemise: {wire:?}");
+}

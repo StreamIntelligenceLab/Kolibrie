@@ -690,7 +690,15 @@ impl SparqlDatabase {
     }
 
     /// Serializes all triples as N-Triples-star format
+    /// Blank nodes are written with their document-local labels, which is sound
+    /// within one store and unsound across two: see
+    /// [`generate_ntriples_skolemised`](Self::generate_ntriples_skolemised) for the
+    /// form to exchange.
     pub fn generate_ntriples(&self) -> String {
+        self.write_ntriples(None)
+    }
+
+    fn write_ntriples(&self, skolem_base: Option<&str>) -> String {
         let mut output = String::new();
         for triple in self.query_default_triples(None, None, None) {
             let s = self.decode_any(triple.subject).unwrap_or_default();
@@ -704,17 +712,64 @@ impl SparqlDatabase {
             // quoted a second time, which demotes it to a plain one.
             output.push_str(&format!(
                 "{} {} {} .\n",
-                rdf_term::to_ntriples_term(&s),
-                rdf_term::to_ntriples_term(&p),
-                rdf_term::to_ntriples_term(&o)
+                Self::write_term(&s, skolem_base),
+                Self::write_term(&p, skolem_base),
+                Self::write_term(&o, skolem_base)
             ));
         }
         output
     }
 
+    /// Serialises every graph as N-Quads, replacing blank nodes with Skolem IRIs
+    /// under `base`.
+    ///
+    /// See [`generate_ntriples_skolemised`](Self::generate_ntriples_skolemised).
+    pub fn generate_nquads_skolemised(&self, base: &str) -> String {
+        self.write_nquads(Some(base))
+    }
+
+    /// Serialises the default graph as N-Triples, replacing blank nodes with Skolem
+    /// IRIs under `base`.
+    ///
+    /// The form to publish or exchange. A blank node label means nothing outside the
+    /// document it came from, so two systems merging each other's output would fuse
+    /// unrelated nodes -- the plain serialisers emit document-local labels and are
+    /// sound only within one store. RDF 1.1 §3.5 answers that by replacing blank
+    /// nodes with IRIs, which are global; a receiver may keep them as IRIs, which is
+    /// what makes the merge safe, or recover the nodes with
+    /// [`deskolemise`](shared::rdf_term::deskolemise).
+    ///
+    /// `base` must be an authority the caller controls, and is not defaulted: a
+    /// Skolem IRI is unique because its authority is, and defaulting it would mint
+    /// the same IRI on two machines and put the collision back.
+    pub fn generate_ntriples_skolemised(&self, base: &str) -> String {
+        self.write_ntriples(Some(base))
+    }
+
+    /// Writes one term, replacing a blank node with a Skolem IRI when asked.
+    ///
+    /// Applied per term rather than to the serialised text. Rewriting the text would
+    /// have to find blank node labels in it, and a literal reading `"see _:b here"`
+    /// contains one that is not a term at all.
+    fn write_term(spelling: &str, skolem_base: Option<&str>) -> String {
+        match skolem_base {
+            Some(base) => rdf_term::to_ntriples_term(&rdf_term::skolemise(spelling, base)),
+            None => rdf_term::to_ntriples_term(spelling),
+        }
+    }
+
     /// Serialises every graph as N-Quads, which unlike N-Triples preserves named
     /// graphs.
+    ///
+    /// Blank nodes are written with their document-local labels, which is sound
+    /// within one store and unsound across two: see
+    /// [`generate_nquads_skolemised`](Self::generate_nquads_skolemised) for the form
+    /// to exchange.
     pub fn generate_nquads(&self) -> String {
+        self.write_nquads(None)
+    }
+
+    fn write_nquads(&self, skolem_base: Option<&str>) -> String {
         let mut output = String::new();
         for quad in self.dataset_index.all_quads() {
             let s = self.decode_any(quad.subject).unwrap_or_default();
@@ -724,16 +779,16 @@ impl SparqlDatabase {
             // See `generate_ntriples`: this handled blank nodes and non-http IRIs
             // correctly but still quoted a typed or language-tagged literal a second
             // time, turning it into a plain literal whose text looks typed.
-            let s_str = rdf_term::to_ntriples_term(&s);
-            let p_str = rdf_term::to_ntriples_term(&p);
-            let o_str = rdf_term::to_ntriples_term(&o);
+            let s_str = Self::write_term(&s, skolem_base);
+            let p_str = Self::write_term(&p, skolem_base);
+            let o_str = Self::write_term(&o, skolem_base);
             match quad.graph {
                 GraphId::Default => {
                     output.push_str(&format!("{} {} {} .\n", s_str, p_str, o_str));
                 }
                 GraphId::Named(graph_id) => {
                     let graph = self.decode_any(graph_id).unwrap_or_default();
-                    let graph = rdf_term::to_ntriples_term(&graph);
+                    let graph = Self::write_term(&graph, skolem_base);
                     output.push_str(&format!("{} {} {} {} .\n", s_str, p_str, o_str, graph));
                 }
             }

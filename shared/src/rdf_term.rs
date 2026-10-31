@@ -165,6 +165,101 @@ pub fn canonicalise_literal(text: &str) -> Option<String> {
     ))
 }
 
+/// The well-known path RDF 1.1 §3.5 gives Skolem IRIs.
+///
+/// Reserved by RFC 8615 for exactly this, so an IRI minted under it cannot collide
+/// with one an application chose, and a consumer that recognises the path knows the
+/// IRI stands for what was a blank node.
+pub const SKOLEM_PATH: &str = "/.well-known/genid/";
+
+/// A Skolem IRI for `label`, under an authority the caller controls.
+///
+/// `base` has to be supplied rather than defaulted, and that is the point: a Skolem
+/// IRI is globally unique because the authority minting it is, and this crate has no
+/// identity of its own to offer. Defaulting it would mint the same IRI on two
+/// machines and reintroduce the collision skolemisation exists to remove.
+pub fn skolem_iri(label: &str, base: &str) -> String {
+    format!(
+        "{}{SKOLEM_PATH}{}",
+        base.trim_end_matches('/'),
+        encode_label(label)
+    )
+}
+
+/// Replaces a blank node with a Skolem IRI, leaving every other term untouched.
+///
+/// What to do at an exchange boundary. A blank node label means nothing outside its
+/// document, so two systems merging each other's blank nodes fuse unrelated nodes;
+/// RDF 1.1 §3.5 answers that by replacing them with IRIs, which are global. The
+/// receiver may keep them as IRIs -- which is what makes the merge safe -- or turn
+/// them back with [`deskolemise`].
+pub fn skolemise<'a>(spelling: &'a str, base: &str) -> std::borrow::Cow<'a, str> {
+    match spelling.strip_prefix("_:") {
+        Some(label) => std::borrow::Cow::Owned(skolem_iri(label, base)),
+        None => std::borrow::Cow::Borrowed(spelling),
+    }
+}
+
+/// Recovers the blank node a Skolem IRI stands for, or `None` for any other term.
+///
+/// Optional by design: a consumer is entitled to leave a Skolem IRI as an IRI, and
+/// doing so is what keeps a merge sound. This is for a consumer that would rather
+/// have the blank node back, and recognises the IRI by its well-known path rather
+/// than by its authority, so it works on IRIs any publisher minted.
+pub fn deskolemise(spelling: &str) -> Option<String> {
+    let (_, label) = spelling.split_once(SKOLEM_PATH)?;
+    if label.is_empty() || label.contains('/') {
+        return None;
+    }
+    Some(format!("_:{}", decode_label(label)))
+}
+
+/// Percent-encodes the characters that would end a label's IRI path segment early.
+///
+/// Deliberately narrow. A well-formed N-Triples blank node label is already a valid
+/// IRI path segment -- letters, digits, `_`, `-`, `.` and Unicode are all permitted
+/// in an IRI -- so nothing read from a document needs this. A label built by hand
+/// through [`spell_blank_node`] can hold anything, and these are the characters that
+/// would make the result a different IRI, or no IRI at all.
+fn encode_label(label: &str) -> String {
+    let mut out = String::with_capacity(label.len());
+    for character in label.chars() {
+        match character {
+            '%' | '/' | '?' | '#' | '[' | ']' | '\\' => {
+                out.push_str(&format!("%{:02X}", character as u32));
+            }
+            character if character.is_whitespace() || character.is_control() => {
+                for byte in character.to_string().bytes() {
+                    out.push_str(&format!("%{byte:02X}"));
+                }
+            }
+            character => out.push(character),
+        }
+    }
+    out
+}
+
+/// The inverse of [`encode_label`].
+fn decode_label(label: &str) -> String {
+    let mut bytes = Vec::with_capacity(label.len());
+    let mut characters = label.chars();
+    while let Some(character) = characters.next() {
+        if character != '%' {
+            let mut buffer = [0u8; 4];
+            bytes.extend_from_slice(character.encode_utf8(&mut buffer).as_bytes());
+            continue;
+        }
+        let high = characters.next().and_then(|c| c.to_digit(16));
+        let low = characters.next().and_then(|c| c.to_digit(16));
+        match (high, low) {
+            (Some(high), Some(low)) => bytes.push((high * 16 + low) as u8),
+            // Not an escape after all, so it stands for itself rather than vanishing.
+            _ => bytes.push(b'%'),
+        }
+    }
+    String::from_utf8_lossy(&bytes).into_owned()
+}
+
 /// Writes a term's canonical spelling as N-Triples term syntax.
 ///
 /// The inverse of what the readers do, and the half of the term model that was
@@ -695,6 +790,92 @@ mod tests {
                 written.clone()
             };
             assert_eq!(read_back, spelling, "{written:?} did not read back");
+        }
+    }
+
+    #[test]
+    fn a_blank_node_becomes_an_iri_under_the_well_known_path() {
+        let skolem = skolemise("_:kolibrie-doc-7-b", "http://example.org");
+        assert_eq!(
+            skolem,
+            "http://example.org/.well-known/genid/kolibrie-doc-7-b"
+        );
+        // An IRI, not a blank node, which is the whole point: it is global.
+        assert_eq!(kind_of(&skolem), TermKind::Iri);
+    }
+
+    #[test]
+    fn skolemising_leaves_every_other_kind_of_term_alone() {
+        for term in ["http://example/x", "25", "\"25\"^^<http://x>", "\"hello\"@en"] {
+            assert_eq!(skolemise(term, "http://example.org"), term);
+            assert!(
+                matches!(skolemise(term, "http://example.org"), std::borrow::Cow::Borrowed(_)),
+                "{term:?} should not have been reallocated"
+            );
+        }
+    }
+
+    #[test]
+    fn two_bases_give_one_label_two_iris() {
+        // The property skolemisation exists for: two systems exchanging data no
+        // longer collide, because the authority minting the IRI differs.
+        assert_ne!(
+            skolemise("_:b", "http://alice.example"),
+            skolemise("_:b", "http://bob.example")
+        );
+    }
+
+    #[test]
+    fn a_trailing_slash_on_the_base_does_not_double_up() {
+        assert_eq!(
+            skolemise("_:b", "http://example.org/"),
+            skolemise("_:b", "http://example.org")
+        );
+    }
+
+    #[test]
+    fn a_skolem_iri_gives_its_blank_node_back() {
+        let original = "_:kolibrie-doc-7-b";
+        let skolem = skolemise(original, "http://example.org").into_owned();
+        assert_eq!(deskolemise(&skolem).as_deref(), Some(original));
+        // Recognised by the well-known path, so an IRI any publisher minted works.
+        assert_eq!(
+            deskolemise("https://other.example/.well-known/genid/xyz").as_deref(),
+            Some("_:xyz")
+        );
+    }
+
+    #[test]
+    fn an_ordinary_iri_is_not_mistaken_for_a_skolem_one() {
+        assert_eq!(deskolemise("http://example.org/thing"), None);
+        assert_eq!(deskolemise("_:b"), None, "a blank node is not a Skolem IRI");
+        // A path continuing past the label is some other resource, not a node.
+        assert_eq!(
+            deskolemise("http://example.org/.well-known/genid/a/b"),
+            None
+        );
+        assert_eq!(deskolemise("http://example.org/.well-known/genid/"), None);
+    }
+
+    #[test]
+    fn an_awkward_label_survives_the_round_trip_as_a_single_iri_segment() {
+        // A label built by hand can hold anything; these are the characters that
+        // would otherwise end the path segment early or change the IRI.
+        for label in ["a/b", "a?b", "a#b", "a b", "a%b", "100%", "héllo"] {
+            let skolem = skolemise(&format!("_:{label}"), "http://example.org").into_owned();
+            let segment = skolem
+                .split_once(SKOLEM_PATH)
+                .expect("minted under the well-known path")
+                .1;
+            assert!(
+                !segment.contains('/'),
+                "{skolem:?} must be one path segment, got segment {segment:?}"
+            );
+            assert_eq!(
+                deskolemise(&skolem).as_deref(),
+                Some(format!("_:{label}").as_str()),
+                "{label:?} did not survive"
+            );
         }
     }
 
