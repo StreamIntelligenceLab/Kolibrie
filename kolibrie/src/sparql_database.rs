@@ -28,33 +28,6 @@ use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::sync::Arc;
 use std::sync::{Mutex, RwLock, RwLockReadGuard, RwLockWriteGuard};
 
-fn looks_like_absolute_iri(value: &str) -> bool {
-    let Some((scheme, _)) = value.split_once(':') else {
-        return false;
-    };
-    let mut characters = scheme.chars();
-    characters
-        .next()
-        .is_some_and(|first| first.is_ascii_alphabetic())
-        && characters.all(|character| {
-            character.is_ascii_alphanumeric() || matches!(character, '+' | '-' | '.')
-        })
-}
-
-fn escape_ntriples_literal(value: &str) -> String {
-    value
-        .chars()
-        .flat_map(|character| match character {
-            '\\' => "\\\\".chars().collect::<Vec<_>>(),
-            '"' => "\\\"".chars().collect(),
-            '\n' => "\\n".chars().collect(),
-            '\r' => "\\r".chars().collect(),
-            '\t' => "\\t".chars().collect(),
-            other => vec![other],
-        })
-        .collect()
-}
-
 pub(crate) fn reencode_term_id(
     id: u32,
     source_dictionary: &Dictionary,
@@ -724,21 +697,17 @@ impl SparqlDatabase {
             let p = self.decode_any(triple.predicate).unwrap_or_default();
             let o = self.decode_any(triple.object).unwrap_or_default();
 
-            let s_str = if s.starts_with("<<") {
-                s
-            } else {
-                format!("<{}>", s)
-            };
-            let p_str = format!("<{}>", p);
-            let o_str = if o.starts_with("<<") {
-                o
-            } else if o.starts_with("http://") || o.starts_with("https://") {
-                format!("<{}>", o)
-            } else {
-                format!("\"{}\"", o)
-            };
-
-            output.push_str(&format!("{} {} {} .\n", s_str, p_str, o_str));
+            // Every position through the one writer. Written by hand, this emitted
+            // `<_:b>` for a blank node, which is an IRI and not a blank node;
+            // `"urn:a"` for any IRI whose scheme was not http, which is a literal;
+            // an unescaped literal, which breaks on a quote; and a typed literal
+            // quoted a second time, which demotes it to a plain one.
+            output.push_str(&format!(
+                "{} {} {} .\n",
+                rdf_term::to_ntriples_term(&s),
+                rdf_term::to_ntriples_term(&p),
+                rdf_term::to_ntriples_term(&o)
+            ));
         }
         output
     }
@@ -752,30 +721,19 @@ impl SparqlDatabase {
             let p = self.decode_any(quad.predicate).unwrap_or_default();
             let o = self.decode_any(quad.object).unwrap_or_default();
 
-            let s_str = if s.starts_with("<<") || s.starts_with("_:") {
-                s
-            } else {
-                format!("<{}>", s)
-            };
-            let p_str = format!("<{}>", p);
-            let o_str = if o.starts_with("<<") || o.starts_with("_:") {
-                o
-            } else if looks_like_absolute_iri(&o) {
-                format!("<{}>", o)
-            } else {
-                format!("\"{}\"", escape_ntriples_literal(&o))
-            };
+            // See `generate_ntriples`: this handled blank nodes and non-http IRIs
+            // correctly but still quoted a typed or language-tagged literal a second
+            // time, turning it into a plain literal whose text looks typed.
+            let s_str = rdf_term::to_ntriples_term(&s);
+            let p_str = rdf_term::to_ntriples_term(&p);
+            let o_str = rdf_term::to_ntriples_term(&o);
             match quad.graph {
                 GraphId::Default => {
                     output.push_str(&format!("{} {} {} .\n", s_str, p_str, o_str));
                 }
                 GraphId::Named(graph_id) => {
                     let graph = self.decode_any(graph_id).unwrap_or_default();
-                    let graph = if graph.starts_with("_:") {
-                        graph
-                    } else {
-                        format!("<{}>", graph)
-                    };
+                    let graph = rdf_term::to_ntriples_term(&graph);
                     output.push_str(&format!("{} {} {} {} .\n", s_str, p_str, o_str, graph));
                 }
             }
@@ -805,12 +763,7 @@ impl SparqlDatabase {
         }
 
         for (subject, predicates) in &subjects {
-            let s_str = if subject.starts_with("<<") {
-                subject.clone()
-            } else {
-                format!("<{}>", subject)
-            };
-            output.push_str(&s_str);
+            output.push_str(&rdf_term::to_ntriples_term(subject));
 
             let pred_count = predicates.len();
             for (i, (predicate, objects)) in predicates.iter().enumerate() {
@@ -819,20 +772,14 @@ impl SparqlDatabase {
                 } else {
                     output.push_str(" ;\n    ");
                 }
-                output.push_str(&format!("<{}>", predicate));
+                output.push_str(&rdf_term::to_ntriples_term(predicate));
 
                 for (j, obj) in objects.iter().enumerate() {
                     if j > 0 {
                         output.push_str(" ,");
                     }
                     output.push(' ');
-                    if obj.starts_with("<<") {
-                        output.push_str(obj);
-                    } else if obj.starts_with("http://") || obj.starts_with("https://") {
-                        output.push_str(&format!("<{}>", obj));
-                    } else {
-                        output.push_str(&format!("\"{}\"", obj));
-                    }
+                    output.push_str(&rdf_term::to_ntriples_term(obj));
                 }
 
                 if i == pred_count - 1 {

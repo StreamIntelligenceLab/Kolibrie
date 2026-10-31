@@ -681,3 +681,106 @@ fn two_streams_do_not_share_a_blank_node() {
         "two streams are two documents, so their labels must differ"
     );
 }
+
+// ── The wire form ───────────────────────────────────────────────────────────────
+//
+// A canonical spelling is deliberately not a wire form: an IRI is stored bare and a
+// plain literal unquoted, which keeps identity cheap and left every existing term
+// untouched. Writing that text straight out produced `http://example/x .` for an IRI
+// and a typed literal quoted a second time — a plain literal whose text merely looks
+// typed, which any other RDF tool reads as a string.
+//
+// It went unnoticed because these readers re-canonicalise what they read, so a round
+// trip through Kolibrie recovered the datatype. Only a second implementation would
+// have noticed, which is exactly the case that matters for exchanging data between
+// systems, so these assert the emitted text rather than what re-reading gives back.
+
+fn wire_of(ntriples: &str) -> String {
+    let mut database = SparqlDatabase::new();
+    database.parse_ntriples_and_add(ntriples);
+    database.generate_ntriples()
+}
+
+#[test]
+fn a_typed_literal_goes_out_as_a_typed_literal() {
+    let wire = wire_of(&format!("<urn:a> <urn:age> \"30\"^^<{XSD_INTEGER}> .\n"));
+    assert!(
+        wire.contains(&format!("\"30\"^^<{XSD_INTEGER}>")),
+        "the datatype must be on the wire, got {wire:?}"
+    );
+    assert!(
+        !wire.contains("\"\\\""),
+        "the literal must not be quoted twice, got {wire:?}"
+    );
+}
+
+#[test]
+fn a_language_tagged_literal_goes_out_with_its_tag() {
+    let wire = wire_of("<urn:a> <urn:name> \"Alice\"@en .\n");
+    assert!(wire.contains("\"Alice\"@en"), "got {wire:?}");
+}
+
+#[test]
+fn an_iri_goes_out_in_brackets_whatever_its_scheme() {
+    // `urn:` is not `http:`, and used to be written as a literal.
+    let wire = wire_of("<urn:a> <urn:at> <urn:place> .\n");
+    assert!(wire.contains("<urn:place>"), "got {wire:?}");
+    assert!(!wire.contains("\"urn:place\""), "an IRI is not a literal: {wire:?}");
+}
+
+#[test]
+fn a_blank_node_goes_out_as_a_blank_node() {
+    // `<_:b>` is an IRI, not a blank node. generate_nquads guarded this; the
+    // N-Triples writer did not.
+    let wire = wire_of("_:b <urn:p> <urn:o> .\n");
+    assert!(!wire.contains("<_:"), "a blank node is not an IRI: {wire:?}");
+    assert!(wire.contains("_:kolibrie-doc-"), "got {wire:?}");
+}
+
+#[test]
+fn a_literal_containing_a_quote_goes_out_escaped() {
+    let wire = wire_of("<urn:a> <urn:says> \"she said \\\"hi\\\"\" .\n");
+    assert!(
+        wire.contains("\\\""),
+        "an embedded quote must be escaped, got {wire:?}"
+    );
+    // And the escaping has to be recoverable: re-reading gives the original text.
+    let mut back = SparqlDatabase::new();
+    back.parse_ntriples_and_add(&wire);
+    let dictionary = back.dictionary();
+    let objects: Vec<String> = back
+        .query_default_triples(None, None, None)
+        .into_iter()
+        .map(|triple| dictionary.decode(triple.object).unwrap_or("?").to_string())
+        .collect();
+    assert_eq!(objects, vec!["she said \"hi\"".to_string()]);
+}
+
+#[test]
+fn every_term_survives_a_round_trip_through_the_wire() {
+    let source = format!(
+        "<urn:a> <urn:age> \"30\"^^<{XSD_INTEGER}> .\n\
+         <urn:a> <urn:name> \"Alice\"@en .\n\
+         <urn:a> <urn:nick> \"Ali\" .\n\
+         <urn:a> <urn:at> <urn:place> .\n"
+    );
+    let wire = wire_of(&source);
+    let mut back = SparqlDatabase::new();
+    back.parse_ntriples_and_add(&wire);
+    let dictionary = back.dictionary();
+    let mut objects: Vec<String> = back
+        .query_default_triples(None, None, None)
+        .into_iter()
+        .map(|triple| dictionary.decode(triple.object).unwrap_or("?").to_string())
+        .collect();
+    objects.sort();
+    assert_eq!(
+        objects,
+        vec![
+            format!("\"30\"^^<{XSD_INTEGER}>"),
+            "\"Alice\"@en".to_string(),
+            "Ali".to_string(),
+            "urn:place".to_string(),
+        ]
+    );
+}

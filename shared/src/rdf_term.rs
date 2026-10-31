@@ -165,6 +165,36 @@ pub fn canonicalise_literal(text: &str) -> Option<String> {
     ))
 }
 
+/// Writes a term's canonical spelling as N-Triples term syntax.
+///
+/// The inverse of what the readers do, and the half of the term model that was
+/// missing. A canonical spelling is deliberately *not* a wire form: an IRI is stored
+/// bare and a plain literal unquoted, because that keeps identity cheap and leaves
+/// existing terms untouched. Handing that text straight to a file is what produced
+/// `http://example/x .` for an IRI and `"\"25\"^^<...>"` for a typed literal -- the
+/// latter being a plain literal whose text happens to look like a typed one, which
+/// any other RDF tool reads as a string.
+///
+/// It survived unnoticed because this crate's own readers re-canonicalise what they
+/// read, so a round trip through Kolibrie recovered the datatype. Only a second
+/// implementation would have noticed, which is the case that matters for exchanging
+/// data between systems.
+pub fn to_ntriples_term(spelling: &str) -> String {
+    // A quoted triple is already written in its own bracketed form, and a blank node
+    // label is already N-Triples syntax.
+    if spelling.starts_with("<<") || spelling.starts_with("_:") {
+        return spelling.to_string();
+    }
+    match kind_of(spelling) {
+        TermKind::Iri => format!("<{spelling}>"),
+        TermKind::BlankNode => spelling.to_string(),
+        // A quoted spelling is already N-Triples literal syntax, datatype or language
+        // tag included, so it is passed through rather than quoted a second time.
+        TermKind::Literal if spelling.starts_with('"') => spelling.to_string(),
+        TermKind::Literal => format!("\"{}\"", escape_lexical(spelling)),
+    }
+}
+
 /// Spells a blank node belonging to one document, from the label as written.
 ///
 /// The counterpart to [`spell_literal`], and the way to build a blank node without
@@ -616,6 +646,56 @@ mod tests {
         // The same term the readers produce for `_:b` in that document, so a term
         // built by hand joins against one that was read.
         assert_eq!(built, scope_blank_node("_:b", document));
+    }
+
+    #[test]
+    fn a_term_is_written_as_the_n_triples_syntax_for_its_kind() {
+        assert_eq!(to_ntriples_term("http://example/x"), "<http://example/x>");
+        assert_eq!(to_ntriples_term("urn:a"), "<urn:a>");
+        assert_eq!(to_ntriples_term("_:kolibrie-doc-1-b"), "_:kolibrie-doc-1-b");
+        assert_eq!(to_ntriples_term("25"), "\"25\"");
+        assert_eq!(to_ntriples_term("hello world"), "\"hello world\"");
+    }
+
+    #[test]
+    fn a_typed_literal_is_not_quoted_a_second_time() {
+        // The bug this exists to stop: quoting the canonical spelling again turns a
+        // typed literal into a plain one whose text looks typed, which this crate's
+        // own readers then recover from and nobody else can.
+        let typed = spell_literal("25", Some(XSD_INTEGER), None);
+        assert_eq!(to_ntriples_term(&typed), format!("\"25\"^^<{XSD_INTEGER}>"));
+        let tagged = spell_literal("hello", None, Some("en"));
+        assert_eq!(to_ntriples_term(&tagged), "\"hello\"@en");
+    }
+
+    #[test]
+    fn a_written_term_reads_back_as_the_term_it_was_written_from() {
+        // Round trip through the wire syntax, which is the property an exchange
+        // between two systems depends on.
+        for spelling in [
+            "http://example/x".to_string(),
+            "urn:a".to_string(),
+            "_:kolibrie-doc-1-b".to_string(),
+            spell_literal("25", None, None),
+            spell_literal("25", Some(XSD_INTEGER), None),
+            spell_literal("hello", None, Some("en")),
+            spell_literal("a\"b\\c", None, None),
+        ] {
+            let written = to_ntriples_term(&spelling);
+            // What a reader does with that text: strip the IRI brackets, or
+            // canonicalise the literal.
+            let read_back = if let Some(iri) = written
+                .strip_prefix('<')
+                .and_then(|rest| rest.strip_suffix('>'))
+            {
+                iri.to_string()
+            } else if written.starts_with('"') {
+                canonicalise_literal(&written).expect("a literal")
+            } else {
+                written.clone()
+            };
+            assert_eq!(read_back, spelling, "{written:?} did not read back");
+        }
     }
 
     #[test]
