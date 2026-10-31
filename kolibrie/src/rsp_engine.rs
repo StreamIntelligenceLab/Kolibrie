@@ -124,6 +124,7 @@ pub struct WindowResult {
 
 const CROSS_WINDOW_STATIC_IRI: &str = "urn:kolibrie:static:";
 
+
 /// The callback the output stream is delivered to.
 ///
 /// `Send + Sync` because a multi-threaded engine invokes it from a window's own
@@ -264,6 +265,10 @@ macro_rules! register_window {
     };
     (MultiThread, $window:expr, $processor:expr, $window_iri:expr) => {{
         let receiver = $window.register();
+        // The handle is kept, not dropped: `stop` joins it. The thread ends when
+        // `CSPARQLWindow::stop` drops the content sender, and a channel yields what
+        // is queued before it reports disconnection, so joining here means every
+        // flushed window has been processed and has forwarded its result.
         thread::spawn(move || {
             loop {
                 match receiver.recv() {
@@ -277,7 +282,7 @@ macro_rules! register_window {
                 }
             }
             debug!("Shutdown complete for window {}!", $window_iri);
-        });
+        })
     }};
 }
 
@@ -311,9 +316,15 @@ where
     window_configs: Vec<RSPWindow>,
     query_execution_mode: QueryExecutionMode,
     operation_mode: OperationMode,
-    // Channel for collecting window results for cross-window joins
-    window_result_sender: Sender<WindowResult>,
+    // Channel for collecting window results for cross-window joins.
+    // An `Option` so `stop` can drop the engine's own sender: the coordinator ends
+    // on disconnection, which cannot happen while this is held.
+    window_result_sender: Option<Sender<WindowResult>>,
     window_result_receiver: Receiver<WindowResult>,
+    /// One per window under [`OperationMode::MultiThread`], joined by [`Self::stop`].
+    window_threads: Vec<thread::JoinHandle<()>>,
+    /// The coordinator, when the query needs one. Also joined by [`Self::stop`].
+    coordinator_thread: Option<thread::JoinHandle<()>>,
     // RSP-QL Query Plan using Volcano optimizer
     rsp_query_plan: RSPQueryPlan,
     /// Latest materialized results per window (replace semantics); SingleThread only.
@@ -545,8 +556,10 @@ where
             window_configs: query_config.windows.clone(),
             query_execution_mode,
             operation_mode,
-            window_result_sender: result_sender,
+            window_result_sender: Some(result_sender),
             window_result_receiver: result_receiver,
+            window_threads: Vec::new(),
+            coordinator_thread: None,
             rsp_query_plan,
             single_thread_last_materialized: Arc::new(Mutex::new(HashMap::new())),
             sync_policy,
@@ -587,12 +600,17 @@ where
             || self.windows.len() > 1
             || self.rsp_query_plan.static_data_plan.is_some();
 
+        let mut window_threads = Vec::new();
         for (window_idx, window) in self.windows.iter_mut().enumerate() {
             let query = self.rsp_query_plan.window_plans[window_idx].clone();
             let window_iri = self.window_configs[window_idx].window_iri.clone();
             let window_iri_for_thread = window_iri.clone(); // Clone for MultiThread usage
             let query_execution_mode = self.query_execution_mode;
-            let window_result_sender = self.window_result_sender.clone();
+            let window_result_sender = self
+                .window_result_sender
+                .as_ref()
+                .expect("windows are registered during construction, long before stop")
+                .clone();
             let r2r_store = self.r2r.clone();
             let cross_window_enabled = self.cross_window_enabled;
             let seed_registry = Arc::clone(&self.hybrid_seed_registry);
@@ -631,15 +649,21 @@ where
                     register_window!(SingleThread, window, processor);
                 }
                 OperationMode::MultiThread => {
-                    register_window!(MultiThread, window, processor, window_iri_for_thread);
+                    window_threads.push(register_window!(
+                        MultiThread,
+                        window,
+                        processor,
+                        window_iri_for_thread
+                    ));
                 }
             }
         }
+        self.window_threads = window_threads;
     }
 
     /// Start a coordinator thread that collects and joins results from multiple windows
     /// (and optionally joins with static background data), respecting `sync_policy`.
-    fn start_cross_window_coordinator(&self)
+    fn start_cross_window_coordinator(&mut self)
     where
         O: From<Vec<(String, String)>>,
     {
@@ -660,7 +684,7 @@ where
         let window_configs = self.window_configs.clone();
         let window_plans = self.rsp_query_plan.window_plans.clone();
 
-        thread::spawn(move || {
+        self.coordinator_thread = Some(thread::spawn(move || {
             // Latest results per window (replace semantics)
             let mut last_materialized: HashMap<String, Vec<HashMap<String, String>>> =
                 HashMap::new();
@@ -868,8 +892,49 @@ where
                 }
             }
 
+            // Shutdown flush. A window that fired after the last emission holds results
+            // that were never published, and on a loaded machine that is the common
+            // case rather than a corner: the coordinator may not be scheduled until
+            // `stop` has already flushed every window, so it drains a queue in which
+            // one window's first (often empty) result completes the cycle and emits,
+            // and that window's real results arrive afterwards with nothing left to
+            // pair them against. Dropping them discarded a complete, non-empty set the
+            // engine was holding -- the whole point of `stop` being a flush.
+            //
+            // Guarded on `cycle_triggered`, so a shutdown that follows an emission with
+            // nothing new since does not republish the same relation.
+            if !cycle_triggered.is_empty() && last_materialized.len() == num_windows {
+                if cross_window_enabled {
+                    if let Some(dict) = &cross_window_dictionary {
+                        emit_cross_window_results(
+                            &window_configs,
+                            &window_plans,
+                            &static_data_plan,
+                            &static_db,
+                            &r2s_operator,
+                            max_ts,
+                            &consumer,
+                            &cross_window_rules,
+                            &cross_window_sds_plus,
+                            &cross_window_latest_contents,
+                            dict,
+                            &cross_window_output_iris,
+                            cross_window_reasoning_mode,
+                        );
+                    }
+                } else {
+                    emit_results(
+                        &last_materialized,
+                        &static_data_plan,
+                        &static_db,
+                        &r2s_operator,
+                        max_ts,
+                        &consumer,
+                    );
+                }
+            }
             debug!("Coordinator: shutdown complete");
-        });
+        }));
     }
 
     /// Add data to appropriate window based on stream IRI
@@ -1010,11 +1075,28 @@ where
         }
     }
 
-    /// Flushes every window and closes the output.
+    /// Flushes every window, closes the output, and waits for the results.
     ///
     /// Required under [`OperationMode::SingleThread`]: it is what delivers the
     /// results. Flushing ignores the report strategies, so content that had not
     /// yet met its reporting condition is published too.
+    ///
+    /// # Every result has been delivered when this returns
+    ///
+    /// Under [`OperationMode::MultiThread`] that guarantee used to be missing, and
+    /// callers stood in for it by sleeping. Flushing a window only *queues* its
+    /// content for that window's thread, which then forwards a result to the
+    /// coordinator, which joins and calls the consumer — two handoffs that `stop`
+    /// did not await, so whether a result had arrived was a race. `rsp_engine_test`
+    /// slept two seconds and still failed about one run in six.
+    ///
+    /// Both stages are joined now, in order. A channel yields everything queued
+    /// before it reports disconnection, so neither join can drop a result: the
+    /// window threads end once their content sender is gone and the coordinator ends
+    /// once the last result sender is, which is why the engine's own sender is
+    /// dropped here rather than held until the engine is.
+    ///
+    /// Calling this twice is harmless; the second call has nothing left to join.
     pub fn stop(&mut self) {
         for window in &mut self.windows {
             window.flush();
@@ -1022,6 +1104,24 @@ where
         }
         if matches!(self.operation_mode, OperationMode::SingleThread) {
             self.process_single_thread_window_results();
+            return;
+        }
+
+        // Stage one: each window thread drains the content just flushed to it and
+        // sends its result on.
+        for handle in self.window_threads.drain(..) {
+            if handle.join().is_err() {
+                error!("A window thread panicked; its results are missing");
+            }
+        }
+
+        // Stage two: with every window thread gone, the only remaining result sender
+        // is this one. Dropping it lets the coordinator finish the queue and exit.
+        drop(self.window_result_sender.take());
+        if let Some(coordinator) = self.coordinator_thread.take() {
+            if coordinator.join().is_err() {
+                error!("The coordinator thread panicked; cross-window results are missing");
+            }
         }
     }
 
