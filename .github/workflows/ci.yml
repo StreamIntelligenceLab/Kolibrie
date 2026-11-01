@@ -118,6 +118,15 @@ jobs:
       # reads source only and needs no build.
       - name: kolibrie's module graph is acyclic
         run: python3 scripts/module_graph.py --check
+      # The README is the first thing a reader tries and nothing checked it: sixteen
+      # of its twenty-three examples did not compile when this check was written.
+      - name: the README's examples compile
+        run: python3 scripts/readme_examples.py
+      # docs/api.md is generated, and generating it is only worth anything if a
+      # stale copy fails. The 371 hand-written lines it replaced documented three
+      # methods that no longer existed.
+      - name: docs/api.md matches the source
+        run: python3 scripts/api_surface.py --check
       # unreachable_pub reached zero workspace-wide in step 4b.
       - name: unreachable_pub, default features
         run: scripts/check_lint.sh unreachable_pub -- --workspace --all-targets
