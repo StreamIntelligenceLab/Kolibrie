@@ -12,8 +12,6 @@
 [![Chat Server](https://img.shields.io/badge/chat-discord-7289da.svg)](https://discord.gg/KcFXrUUyYm)
 <!--![Crates.io](https://img.shields.io/crates/v/sparql_database.svg)-->
 
-[ [English](README.md) | [Nederlands](docs/README.nl.md) | [Deutsch](docs/README.de.md) | [Español](docs/README.es.md) | [Français](docs/README.fr.md) | [日本語](docs/README.ja.md) ]
-
 **Kolibrie** is a high-performance, concurrent, and feature-rich SPARQL query engine implemented in Rust. Designed for scalability and efficiency, it leverages Rust's robust concurrency model and advanced optimizations, including SIMD (Single Instruction, Multiple Data) and parallel processing with Rayon, to handle large-scale RDF (Resource Description Framework) datasets seamlessly.
 
 With a comprehensive API, **Kolibrie** facilitates parsing, storing, and querying RDF data using SPARQL, Turtle, and N3 formats. Its advanced filtering, aggregation, join operations, and sophisticated optimization strategies make it a suitable choice for applications requiring complex semantic data processing. Additionally, the integration of the Volcano Optimizer and Knowledge Graph capabilities empowers users to perform cost-effective query planning and leverage rule-based inference for enhanced data insights.
@@ -778,10 +776,11 @@ arranged into layers, and what depends on what — is in
 `scripts/module_graph.py`.
 
 There used to be 371 lines here restating method signatures by hand, and they
-drifted: three methods that no longer exist were documented for a while after they
-were removed, in this file and in four translations. `scripts/verify.sh` now checks
-that `docs/api.md` matches the source and that every example in this README still
-compiles, so neither can go stale quietly again.
+drifted: three methods that no longer existed were documented for a while after they
+were removed, here and in five translations that are gone for the same reason --
+nothing checked any of them. `scripts/verify.sh` now checks that `docs/api.md`
+matches the source and that every example in this README still compiles, so neither
+can go stale quietly again.
 
 [`cargo doc --workspace --open`]: https://doc.rust-lang.org/cargo/commands/cargo-doc.html
 

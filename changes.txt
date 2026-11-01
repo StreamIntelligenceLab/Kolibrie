@@ -668,6 +668,8 @@
 667. Add both to verify.sh and to CI, which is the whole point: a generated listing nobody regenerates is a listing nobody can trust, and --check fails when the surface moved without it
 668. Update the README for the public API it never mentioned: typed terms with their datatypes and language tags, blank node scoping, skolemisation for exchange, the kolibrie-api facade, and what the Python bindings now cover. Two new sections carry worked examples, which the new check holds honest
 669. Keep the Volcano optimizer section, contrary to the request that prompted this. It reads as internal and it is not: streamertail_optimizer is pub mod, Streamertail is publicly re-exported, and two examples construct one the way a consumer would. The condition given was to remove it if it were not public API, and it is
+670. Remove the five translated READMEs -- Dutch, German, Spanish, French and Japanese -- rather than repair them. They carried the same hand-written API sections entry 665 deleted from the English one, documenting the same three methods that no longer exist, plus their own copies of examples that stopped compiling; nothing checked any of it, and the drift was invisible because no reader of the English README would see it. Keeping them would mean five more copies of every example for scripts/readme_examples.py to compile and five more surfaces to update per API change
+671. Remove what pointed at them: the language bar at the top of the README, and the sentence about the drift, which cited four translations and now says five and why they went. Every local markdown link in the repository resolves
 
 0.2.0
 1. Add support multiple window + static data for RSP engine
