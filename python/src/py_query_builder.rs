@@ -15,7 +15,7 @@ use pyo3::prelude::*;
 use pyo3::types::PyAny;
 use std::collections::HashMap;
 use std::path::Path;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, MutexGuard};
 
 enum LoadFormat {
     Turtle,
@@ -48,6 +48,20 @@ fn normalize_load_format(path: &str, format: Option<&str>) -> PyResult<LoadForma
     }
 }
 
+/// Locks a mutex, turning a poisoned lock into a Python exception.
+///
+/// Every lock in this file goes through this. They had been handled three ways: two
+/// different messages for the same condition, and -- in ten places -- not handled at
+/// all. A swallowed lock did nothing and said nothing: `count` answered zero, the
+/// accessors answered an empty list, and `add_stream_triple` returned success having
+/// stored nothing. None of those is distinguishable by a caller from a query that
+/// simply matched nothing, which is the ambiguity `exec_query` was changed to avoid.
+fn locked<'a, T>(mutex: &'a Mutex<T>, what: &str) -> PyResult<MutexGuard<'a, T>> {
+    mutex
+        .lock()
+        .map_err(|_| PyRuntimeError::new_err(format!("{what} lock poisoned")))
+}
+
 #[pyclass(name = "SparqlDatabase")]
 pub struct PySparqlDatabase {
     db: Arc<Mutex<SparqlDatabase>>,
@@ -77,16 +91,14 @@ impl PySparqlDatabase {
     }
 
     #[pyo3(signature = (subject, predicate, object))]
-    pub fn add_triple(&self, subject: &str, predicate: &str, object: &str) {
-        if let Ok(mut db) = self.db.lock() {
-            db.add_triple_parts(subject, predicate, object);
-        }
+    pub fn add_triple(&self, subject: &str, predicate: &str, object: &str) -> PyResult<()> {
+        locked(&self.db, "database")?.add_triple_parts(subject, predicate, object);
+        Ok(())
     }
 
-    fn parse_turtle(&self, turtle: &str) {
-        if let Ok(mut db) = self.db.lock() {
-            db.parse_turtle(turtle);
-        }
+    fn parse_turtle(&self, turtle: &str) -> PyResult<()> {
+        locked(&self.db, "database")?.parse_turtle(turtle);
+        Ok(())
     }
 
     /// Load N-Triples from a string.
@@ -98,10 +110,7 @@ impl PySparqlDatabase {
     /// Blank node labels are scoped to this call, which is one document. Two calls
     /// naming `_:b` describe two different nodes, as RDF says they do.
     fn load_ntriples(&self, ntriples: &str) -> PyResult<()> {
-        let mut db = self
-            .db
-            .lock()
-            .map_err(|_| PyErr::new::<PyRuntimeError, _>("database lock poisoned"))?;
+        let mut db = locked(&self.db, "database")?;
         db.parse_ntriples_and_add(ntriples);
         Ok(())
     }
@@ -112,19 +121,13 @@ impl PySparqlDatabase {
     /// within this store and unsound across two: see `to_ntriples_skolemised` for
     /// the form to publish or exchange.
     fn to_ntriples(&self) -> PyResult<String> {
-        let db = self
-            .db
-            .lock()
-            .map_err(|_| PyErr::new::<PyRuntimeError, _>("database lock poisoned"))?;
+        let db = locked(&self.db, "database")?;
         Ok(db.generate_ntriples())
     }
 
     /// Serialise every graph as N-Quads, which unlike N-Triples keeps named graphs.
     fn to_nquads(&self) -> PyResult<String> {
-        let db = self
-            .db
-            .lock()
-            .map_err(|_| PyErr::new::<PyRuntimeError, _>("database lock poisoned"))?;
+        let db = locked(&self.db, "database")?;
         Ok(db.generate_nquads())
     }
 
@@ -136,20 +139,14 @@ impl PySparqlDatabase {
     /// is globally unique because its authority is, which is why there is no
     /// default for it.
     fn to_ntriples_skolemised(&self, base: &str) -> PyResult<String> {
-        let db = self
-            .db
-            .lock()
-            .map_err(|_| PyErr::new::<PyRuntimeError, _>("database lock poisoned"))?;
+        let db = locked(&self.db, "database")?;
         Ok(db.generate_ntriples_skolemised(base))
     }
 
     /// Serialise as N-Quads, replacing blank nodes with Skolem IRIs under `base`.
     /// See `to_ntriples_skolemised`.
     fn to_nquads_skolemised(&self, base: &str) -> PyResult<String> {
-        let db = self
-            .db
-            .lock()
-            .map_err(|_| PyErr::new::<PyRuntimeError, _>("database lock poisoned"))?;
+        let db = locked(&self.db, "database")?;
         Ok(db.generate_nquads_skolemised(base))
     }
 
@@ -165,10 +162,7 @@ impl PySparqlDatabase {
         let path_str: String = path_obj.extract()?;
         let load_format = normalize_load_format(&path_str, format)?;
 
-        let mut db = self
-            .db
-            .lock()
-            .map_err(|_| PyRuntimeError::new_err("Failed to acquire database lock"))?;
+        let mut db = locked(&self.db, "database")?;
 
         match load_format {
             LoadFormat::Turtle => {
@@ -201,10 +195,7 @@ impl PySparqlDatabase {
     /// nothing, where it previously also meant the query was rejected or the
     /// database lock was poisoned.
     fn exec_query(&self, query: &str) -> PyResult<Vec<Vec<String>>> {
-        let mut db = self
-            .db
-            .lock()
-            .map_err(|_| PyErr::new::<PyRuntimeError, _>("database lock poisoned"))?;
+        let mut db = locked(&self.db, "database")?;
         execute(query, &mut db)
             .map(|solutions| solutions.into_rows())
             .map_err(|error| PyErr::new::<PyRuntimeError, _>(error.to_string()))
@@ -214,10 +205,7 @@ impl PySparqlDatabase {
     /// Syntax and execution failures are raised instead of being returned as
     /// an ambiguous result table.
     fn update(&self, update: &str) -> PyResult<()> {
-        let mut db = self
-            .db
-            .lock()
-            .map_err(|_| PyRuntimeError::new_err("Failed to acquire database lock"))?;
+        let mut db = locked(&self.db, "database")?;
         kolibrie_core::execute_query::execute_sparql_update(update, &mut db)
             .map(|_| ())
             .map_err(PyValueError::new_err)
@@ -430,7 +418,8 @@ impl PyStreamingQuery {
                 object.to_string(),
             );
 
-            if let Ok(mut results) = self.results.lock() {
+            {
+                let mut results = locked(&self.results, "results")?;
                 // Apply distinct filter if configured
                 if self.config.distinct {
                     // Check if this triple already exists in any result batch
@@ -469,7 +458,8 @@ impl PyStreamingQuery {
 
     /// Get streaming results
     fn get_stream_results(&self) -> PyResult<Vec<Vec<(String, String, String)>>> {
-        if let Ok(results) = self.results.lock() {
+        {
+            let results = locked(&self.results, "results")?;
             let mut current_results = results.clone();
 
             // Apply offset if configured
@@ -492,10 +482,6 @@ impl PyStreamingQuery {
             }
 
             Ok(current_results)
-        } else {
-            Err(PyErr::new::<PyRuntimeError, _>(
-                "Failed to acquire results lock",
-            ))
         }
     }
 
@@ -506,14 +492,8 @@ impl PyStreamingQuery {
 
     /// Clear accumulated streaming results
     fn clear_stream_results(&self) -> PyResult<()> {
-        if let Ok(mut results) = self.results.lock() {
-            results.clear();
-            Ok(())
-        } else {
-            Err(PyErr::new::<PyRuntimeError, _>(
-                "Failed to acquire results lock",
-            ))
-        }
+        locked(&self.results, "results")?.clear();
+        Ok(())
     }
 
     /// Stop the streaming query
@@ -807,58 +787,43 @@ impl PyQueryBuilder {
     }
 
     /// Build and execute the query, returning decoded (s,p,o) tuples.
-    fn get_decoded_triples(&self) -> Vec<(String, String, String)> {
-        if let Ok(db) = self.db.lock() {
-            let qb = self.build_rust_query_builder(&*db);
-            qb.get_decoded_triples()
-        } else {
-            Vec::new() // Return empty vector if lock fails
-        }
+    fn get_decoded_triples(&self) -> PyResult<Vec<(String, String, String)>> {
+        let db = locked(&self.db, "database")?;
+        let qb = self.build_rust_query_builder(&*db);
+        Ok(qb.get_decoded_triples())
     }
 
     /// Return just the decoded subjects.
-    fn get_subjects(&self) -> Vec<String> {
-        if let Ok(db) = self.db.lock() {
-            let qb = self.build_rust_query_builder(&*db);
-            qb.get_subjects()
-        } else {
-            Vec::new()
-        }
+    fn get_subjects(&self) -> PyResult<Vec<String>> {
+        let db = locked(&self.db, "database")?;
+        let qb = self.build_rust_query_builder(&*db);
+        Ok(qb.get_subjects())
     }
 
     /// Return just the decoded predicates.
-    fn get_predicates(&self) -> Vec<String> {
-        if let Ok(db) = self.db.lock() {
-            let qb = self.build_rust_query_builder(&*db);
-            qb.get_predicates()
-        } else {
-            Vec::new()
-        }
+    fn get_predicates(&self) -> PyResult<Vec<String>> {
+        let db = locked(&self.db, "database")?;
+        let qb = self.build_rust_query_builder(&*db);
+        Ok(qb.get_predicates())
     }
 
     /// Return just the decoded objects.
-    fn get_objects(&self) -> Vec<String> {
-        if let Ok(db) = self.db.lock() {
-            let qb = self.build_rust_query_builder(&*db);
-            qb.get_objects()
-        } else {
-            Vec::new()
-        }
+    fn get_objects(&self) -> PyResult<Vec<String>> {
+        let db = locked(&self.db, "database")?;
+        let qb = self.build_rust_query_builder(&*db);
+        Ok(qb.get_objects())
     }
 
     /// Count the number of matches.
-    fn count(&self) -> usize {
-        if let Ok(db) = self.db.lock() {
-            let qb = self.build_rust_query_builder(&*db);
-            qb.count()
-        } else {
-            0 // Return 0 if lock fails
-        }
+    fn count(&self) -> PyResult<usize> {
+        let db = locked(&self.db, "database")?;
+        let qb = self.build_rust_query_builder(&*db);
+        Ok(qb.count())
     }
 
     /// Group results by subject, returning a dictionary.
-    fn group_by_subject(&self) -> HashMap<String, Vec<(String, String, String)>> {
-        let results = self.get_decoded_triples();
+    fn group_by_subject(&self) -> PyResult<HashMap<String, Vec<(String, String, String)>>> {
+        let results = self.get_decoded_triples()?;
         let mut groups = HashMap::new();
 
         for (s, p, o) in results {
@@ -867,12 +832,12 @@ impl PyQueryBuilder {
                 .or_insert_with(Vec::new)
                 .push((s, p, o));
         }
-        groups
+        Ok(groups)
     }
 
     /// Group results by predicate, returning a dictionary.
-    fn group_by_predicate(&self) -> HashMap<String, Vec<(String, String, String)>> {
-        let results = self.get_decoded_triples();
+    fn group_by_predicate(&self) -> PyResult<HashMap<String, Vec<(String, String, String)>>> {
+        let results = self.get_decoded_triples()?;
         let mut groups = HashMap::new();
 
         for (s, p, o) in results {
@@ -881,12 +846,12 @@ impl PyQueryBuilder {
                 .or_insert_with(Vec::new)
                 .push((s, p, o));
         }
-        groups
+        Ok(groups)
     }
 
     /// Group results by object, returning a dictionary.
-    fn group_by_object(&self) -> HashMap<String, Vec<(String, String, String)>> {
-        let results = self.get_decoded_triples();
+    fn group_by_object(&self) -> PyResult<HashMap<String, Vec<(String, String, String)>>> {
+        let results = self.get_decoded_triples()?;
         let mut groups = HashMap::new();
 
         for (s, p, o) in results {
@@ -895,7 +860,7 @@ impl PyQueryBuilder {
                 .or_insert_with(Vec::new)
                 .push((s, p, o));
         }
-        groups
+        Ok(groups)
     }
 }
 
