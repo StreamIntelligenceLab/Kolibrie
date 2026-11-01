@@ -1088,6 +1088,13 @@ impl SparqlDatabase {
 
         let mut current_subject = Vec::with_capacity(128);
         let mut current_predicate = Vec::with_capacity(128);
+        // The same two as in `parse_rdf`, which this duplicates: a property element
+        // declares its literal's datatype and language, and the literal arrives
+        // later as a text event. Fixing one reader left this one still discarding
+        // both, so an RDF/XML file read from disk and the same document read from a
+        // string produced different terms.
+        let mut current_datatype = Vec::with_capacity(64);
+        let mut language_scope: Vec<Vec<u8>> = Vec::new();
 
         // First, read prefixes before spawning worker threads
         let mut buf = Vec::new();
@@ -1131,7 +1138,24 @@ impl SparqlDatabase {
         let mut triples = Vec::with_capacity(8192);
         loop {
             match xml_reader.read_event_into(&mut buf) {
-                Ok(Event::Start(ref e)) => match e.name() {
+                Ok(Event::Start(ref e)) => {
+                        current_datatype.truncate(0);
+                        let mut language =
+                            language_scope.last().cloned().unwrap_or_default();
+                        for attr in e.attributes().filter_map(Result::ok) {
+                            match attr.key {
+                                QName(b"rdf:datatype") => {
+                                    current_datatype.extend_from_slice(&attr.value)
+                                }
+                                QName(b"xml:lang") => {
+                                    language.clear();
+                                    language.extend_from_slice(&attr.value);
+                                }
+                                _ => {}
+                            }
+                        }
+                        language_scope.push(language);
+                        match e.name() {
                     QName(b"rdf:Description") => {
                         for attr in e.attributes().filter_map(Result::ok) {
                             if attr.key == QName(b"rdf:about") {
@@ -1157,7 +1181,8 @@ impl SparqlDatabase {
                         let resolved_predicate = self.resolve_term(&name_str);
                         current_predicate = resolved_predicate.clone().into_bytes();
                     }
-                },
+                        }
+                }
                 Ok(Event::Empty(ref e)) => {
                     if let Ok(predicate) = std::str::from_utf8(e.name().as_ref()) {
                         let resolved_predicate = self.resolve_term(predicate);
@@ -1193,11 +1218,21 @@ impl SparqlDatabase {
                             if let Ok(subject_str) = std::str::from_utf8(&current_subject) {
                                 if let Ok(predicate_str) = std::str::from_utf8(&current_predicate) {
                                     let resolved_predicate = self.resolve_term(predicate_str);
+                                    let object = rdf_term::spell_literal(
+                                        trimmed_object,
+                                        std::str::from_utf8(&current_datatype)
+                                            .ok()
+                                            .filter(|iri| !iri.is_empty()),
+                                        language_scope
+                                            .last()
+                                            .and_then(|tag| std::str::from_utf8(tag).ok())
+                                            .filter(|tag| !tag.is_empty()),
+                                    );
                                     let mut dict = self.dictionary.write();
                                     let triple = Triple {
                                         subject: dict.encode(subject_str),
                                         predicate: dict.encode(&resolved_predicate),
-                                        object: dict.encode(trimmed_object),
+                                        object: dict.encode(&object),
                                     };
                                     drop(dict);
                                     triples.push(triple);
@@ -1207,6 +1242,7 @@ impl SparqlDatabase {
                     }
                 }
                 Ok(Event::End(ref e)) => {
+                    language_scope.pop();
                     if e.name() == QName(b"rdf:Description") {
                         current_subject.clear();
                         current_predicate.clear();

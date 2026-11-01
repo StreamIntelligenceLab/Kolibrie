@@ -42,19 +42,22 @@ impl PyFilterCondition {
 #[pyclass(name = "Term")]
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 enum Term {
+    // Named rather than positional, so Python reads `term.name` and `term.id`
+    // instead of `term._0`, which is what pyo3 calls an unnamed field and is not
+    // something an example should have to show.
     #[pyo3(name = "Variable")]
-    Variable(String),
+    Variable { name: String },
 
     #[pyo3(name = "Constant")]
-    Constant(u32),
+    Constant { id: u32 },
 }
 
 #[pymethods]
 impl Term {
     fn __repr__(&self) -> String {
         match self {
-            Term::Variable(value) => format!("Term.Variable({value:?})"),
-            Term::Constant(value) => format!("Term.Constant({value})"),
+            Term::Variable { name } => format!("Term.Variable({name:?})"),
+            Term::Constant { id } => format!("Term.Constant({id})"),
         }
     }
 
@@ -260,6 +263,16 @@ impl PyKnowledgeGraph {
         id
     }
 
+    /// The text an id stands for, or `None` if this graph never assigned it.
+    ///
+    /// The inverse of `encode_term`, and needed to read anything the graph answers
+    /// in terms of ids rather than strings. `backward_chaining` is the case that
+    /// forced it: its bindings carry `Term.Constant(0)`, which says nothing without
+    /// this.
+    fn decode_term(&self, id: u32) -> Option<String> {
+        self.inner.decode_term(id)
+    }
+
     fn add_constraint(&mut self, rule: PyRule) {
         let converted_rule = shared::rule::Rule {
             premise: rule
@@ -348,17 +361,19 @@ impl PyKnowledgeGraph {
 /// Converts Python `Term` to `reasoning::Term`
 fn convert_term(term: Term) -> shared::terms::Term {
     match term {
-        Term::Variable(v) => shared::terms::Term::Variable(v),
-        Term::Constant(c) => shared::terms::Term::Constant(c),
+        Term::Variable { name } => shared::terms::Term::Variable(name),
+        Term::Constant { id } => shared::terms::Term::Constant(id),
     }
 }
 
 /// Converts `reasoning::Term` to Python `Term`
 fn convert_term_back(term: shared::terms::Term) -> Term {
     match term {
-        shared::terms::Term::Variable(v) => Term::Variable(v),
-        shared::terms::Term::Constant(c) => Term::Constant(c),
-        shared::terms::Term::QuotedTriple(_) => Term::Variable("__quoted_triple".to_string()),
+        shared::terms::Term::Variable(name) => Term::Variable { name },
+        shared::terms::Term::Constant(id) => Term::Constant { id },
+        shared::terms::Term::QuotedTriple(_) => Term::Variable {
+            name: "__quoted_triple".to_string(),
+        },
     }
 }
 

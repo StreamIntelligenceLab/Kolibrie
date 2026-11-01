@@ -10,9 +10,9 @@
 
 //! Python bindings for Kolibrie, exported as the `kolibrie` extension module.
 //!
-//! Three surfaces, registered by the submodules here: the SPARQL query builder, the
-//! Datalog knowledge graph, and the term helpers that let a caller read a value out
-//! of a term instead of parsing the string a query handed back.
+//! Four surfaces, registered by the submodules here: the SPARQL query builder, the
+//! Datalog knowledge graph, the term helpers that let a caller read a value out of a
+//! term instead of parsing the string a query handed back, and the RSP engine.
 //!
 //! The interesting documentation for this crate is the Python API rather than this
 //! Rust shim, which is why the `[lib]` sets `doc = false`.
@@ -24,6 +24,7 @@
 mod py_knowledge_graph;
 mod py_query_builder;
 mod py_rdf_term;
+mod py_rsp;
 
 use pyo3::prelude::*;
 
@@ -36,5 +37,8 @@ fn kolibrie(m: &Bound<'_, PyModule>) -> PyResult<()> {
     // Register the term helpers, so a caller can read a value out of a term
     // rather than parsing its spelling
     py_rdf_term::register(m)?;
+    // Register the RSP engine: RSP-QL over real windows, not the list the query
+    // builder's `as_stream` accumulates
+    py_rsp::register(m)?;
     Ok(())
 }
