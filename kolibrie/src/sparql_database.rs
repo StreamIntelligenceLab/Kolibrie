@@ -1537,7 +1537,14 @@ impl SparqlDatabase {
             // Keep quoted triples as-is
             term.to_string()
         } else if term.starts_with('<') && term.ends_with('>') {
-            term[1..term.len() - 1].to_string()
+            // Brackets kept, not stripped. They are the only thing distinguishing an
+            // absolute IRI from a prefixed name once the text is bare, and
+            // `resolve_query_term` is the one that needs to tell them apart: it
+            // strips them itself, while a bare `urn:a` reaching it is read as the
+            // prefix `urn` and reported as a failed resolution. Every non-http IRI
+            // in a Turtle document logged one -- two per triple, for subject and
+            // predicate -- while parsing correctly regardless.
+            term.to_string()
         } else if term.starts_with('"') {
             // Handed on whole, suffix included. Trimming the quotes here turned
             // `"30"^^xsd:integer` into `30"^^xsd:integer`, because the term neither

@@ -10,10 +10,12 @@
 
 //! Python bindings for Kolibrie, exported as the `kolibrie` extension module.
 //!
-//! Two surfaces, registered by the submodules here: the SPARQL query builder and
-//! the Datalog knowledge graph. The interesting documentation for this crate is
-//! the Python API rather than this Rust shim, which is why the `[lib]` sets
-//! `doc = false`.
+//! Three surfaces, registered by the submodules here: the SPARQL query builder, the
+//! Datalog knowledge graph, and the term helpers that let a caller read a value out
+//! of a term instead of parsing the string a query handed back.
+//!
+//! The interesting documentation for this crate is the Python API rather than this
+//! Rust shim, which is why the `[lib]` sets `doc = false`.
 //!
 //! The library must be *named* `kolibrie` for Python to import it under that
 //! name, which collides with the `kolibrie` crate's own rustdoc output and is the
@@ -21,6 +23,7 @@
 
 mod py_knowledge_graph;
 mod py_query_builder;
+mod py_rdf_term;
 
 use pyo3::prelude::*;
 
@@ -30,5 +33,8 @@ fn kolibrie(m: &Bound<'_, PyModule>) -> PyResult<()> {
     py_knowledge_graph::register(m)?;
     // Register the SPARQL‐QueryBuilder types
     py_query_builder::register(m)?;
+    // Register the term helpers, so a caller can read a value out of a term
+    // rather than parsing its spelling
+    py_rdf_term::register(m)?;
     Ok(())
 }
