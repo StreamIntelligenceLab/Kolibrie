@@ -1,21 +1,19 @@
 //! Forward chaining: deriving every fact the rules entail.
 //!
 //! All of these run to a fixpoint. They differ in what they cost and in what they
-//! record on the way, and the repair variant additionally alters the fact base
-//! before it starts, so it is the one that can disagree about the result.
+//! record on the way, so every one of them agrees about which facts follow.
 //!
 //! | strategy | entry point | records per fact |
 //! |---|---|---|
 //! | naive | `Reasoner::infer_new_facts_naive` | — |
 //! | semi-naive | `Reasoner::infer_new_facts_semi_naive` | — |
 //! | semi-naive, parallel | `Reasoner::infer_new_facts_semi_naive_parallel` | — |
-//! | semi-naive, repairing | `Reasoner::infer_new_facts_semi_naive_with_repairs` | — |
 //! | provenance | [`provenance_semi_naive`] | a semiring tag |
 //! | lineage | [`hybrid_materialisation`] | a Boolean lineage formula |
 //! | SDD-seeded | [`sdd_seed_materialise`] | an SDD node |
 //! | cross-window | [`cross_window_naive`], [`cross_window_incremental`] | an expiry time |
 //!
-//! The first four live in `pub(crate)` modules on purpose. Their methods are
+//! The first three live in `pub(crate)` modules on purpose. Their methods are
 //! inherent on [`Reasoner`](crate::reasoning::Reasoner) and so remain reachable
 //! through the type; it is the module path, not the method, that is not API.
 
@@ -33,7 +31,6 @@ use std::collections::HashMap;
 pub(crate) mod my_naive;
 pub(crate) mod semi_naive;
 pub(crate) mod semi_naive_parallel;
-pub(crate) mod semi_naive_with_repairs;
 
 pub mod cross_window_incremental;
 pub mod cross_window_naive;

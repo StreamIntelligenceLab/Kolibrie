@@ -937,49 +937,6 @@ let query_pattern = (
 let results = kg.backward_chaining(&query_pattern);
 ```
 
-#### `add_constraint(&mut self, constraint: Rule)`
-
-Fügt eine Integritätsbedingung hinzu.
-
-```rust
-kg.add_constraint(constraint);
-```
-
-#### `infer_new_facts_semi_naive_with_repairs(&mut self) -> Vec<Triple>`
-
-Führt Inferenz durch und behandelt Inkonsistenzen mittels automatischer Reparatur.
-
-```rust
-let inferred = kg.infer_new_facts_semi_naive_with_repairs();
-```
-
-#### `query_with_repairs(&self, query: &TriplePattern) -> Vec<HashMap<String, u32>>`
-
-Fragt den Wissensgraphen mit inkonsistenz-toleranter Semantik (IAR) ab.
-
-```rust
-let results = kg.query_with_repairs(&query_pattern);
-```
-
-## Leistung
-
-**Kolibrie** ist für hohe Leistung optimiert durch:
-
-* **Paralleles Parsen und Verarbeiten**: Nutzt Rayon und Crossbeam für Multi-Threaded Datenparsen und Abfrageausführung.
-* **SIMD-Instruktionen**: Implementiert SIMD-Operationen zur Beschleunigung von Filter- und Aggregationsaufgaben.
-* **Volcano Optimizer**: Verwendet einen kostenbasierten Query-Optimizer, um effiziente physische Ausführungspläne zu generieren und die Abfrageausführungszeit zu minimieren.
-* **Wissensgraph-Inferenz**: Nutzt regelbasierte Inferenz und Backward Chaining, um neues Wissen abzuleiten, ohne signifikante Leistungseinbußen.
-* **Effiziente Datenstrukturen**: Verwendet `BTreeSet` für sortierte Speicherung und `HashMap` für Prefix-Verwaltung, was schnelle Datenabfrage und -manipulation gewährleistet.
-* **Speicheroptimierung**: Verwendet Dictionary-Encoding zur Minimierung des Speicherverbrauchs durch Wiederverwendung wiederholter Terme.
-
-### Benchmarking-Ergebnisse
-
-Unsere Benchmarks zeigen die überlegene Performance von Kolibrie im Vergleich zu anderen beliebten RDF-Engines. Die folgenden Tests wurden durchgeführt mit:
-
-* **Datensatz**: [WatDiv](https://dsg.uwaterloo.ca/watdiv/) 10M-Triple-Benchmark
-* **Oxigraph-Konfiguration**: RocksDB-Backend für optimale Performance
-* **Deep Taxonomy Reasoning**: Hierarchie-Tiefentests bis zu 10K Ebenen
-
 #### WatDiv 10M - Vergleich der Abfrage-Performance (je 20 Läufe)
 
 ![WatDiv 10M Query Performance](img/image1.png)

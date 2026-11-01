@@ -1003,48 +1003,6 @@ let query_pattern = (
 let results = kg.backward_chaining(&query_pattern);
 ```
 
-#### `add_constraint(&mut self, constraint: Rule)`
-
-Adds an integrity constraint to the knowledge graph. 
-
-```rust
-kg.add_constraint(constraint);
-```
-
-#### `infer_new_facts_semi_naive_with_repairs(&mut self) -> Vec<Triple>`
-
-Performs inference while handling inconsistencies through automatic repair.
-
-```rust
-let inferred = kg.infer_new_facts_semi_naive_with_repairs();
-```
-
-#### `query_with_repairs(&self, query: &TriplePattern) -> Vec<HashMap<String, u32>>`
-
-Queries the knowledge graph using inconsistency-tolerant semantics (IAR).
-
-```rust
-let results = kg.query_with_repairs(&query_pattern);
-```
-
-## Performance
-
-**Kolibrie** is optimized for high performance through:
-
-- **Parallel Parsing and Processing**: Utilizes Rayon and Crossbeam for multi-threaded data parsing and query execution.
-- **SIMD Instructions**: Implements SIMD operations to accelerate filtering and aggregation tasks.
-- **Volcano Optimizer**: Employs a cost-based query optimizer to generate efficient physical execution plans, minimizing query execution time.
-- **Knowledge Graph Inference**: Leverages rule-based inference and backward chaining to derive new knowledge without significant performance overhead. 
-- **Efficient Data Structures**: Employs `BTreeSet` for sorted storage and `HashMap` for prefix management, ensuring quick data retrieval and manipulation. 
-- **Memory Optimization**: Uses dictionary encoding to minimize memory footprint by reusing repeated terms.
-
-### Benchmarking Results
-
-Our benchmarks demonstrate Kolibrie's superior performance compared to other popular RDF engines.  The following tests were conducted using:
-- **Dataset**: [WatDiv](https://dsg.uwaterloo.ca/watdiv/) 10M triples benchmark
-- **Oxigraph Configuration**: RocksDB backend for optimal performance
-- **Deep Taxonomy Reasoning**: Hierarchy depth testing up to 10K levels
-
 #### WatDiv 10M - Query Performance Comparison (20 runs each)
 
 ![WatDiv 10M Query Performance](docs/img/image1.png)

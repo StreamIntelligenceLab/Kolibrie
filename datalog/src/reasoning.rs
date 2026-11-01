@@ -17,13 +17,11 @@
 //! matching method on the reasoner rather than by naming a strategy type: several of
 //! those submodules are `pub(crate)`, and their methods are reachable through
 //! [`Reasoner`] regardless. [`backward_chaining`] proves a single goal without
-//! materialising anything, [`repairs`] answers queries over an inconsistent fact
-//! base, and [`to_dot`] renders the whole thing for inspection.
+//! materialising anything, and [`to_dot`] renders the whole thing for inspection.
 
 pub mod backward_chaining;
 pub mod helpers;
 pub mod materialisation;
-pub mod repairs;
 pub mod rules;
 pub mod to_dot;
 
@@ -37,7 +35,7 @@ use shared::rule_index::RuleIndex;
 use shared::tag_store::TagStore;
 use shared::term_encoder::{SharedTerms, TermEncoder, TermView};
 use shared::triple::Triple;
-use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap};
 
 // Logic part: Knowledge Graph
 
@@ -70,9 +68,6 @@ pub struct Reasoner {
     pub dataset_index: DatasetIndex,
     /// Predicate-to-rule lookup, so a fact only tries rules that could match it.
     pub rule_index: RuleIndex,
-    /// Constraints for the repair-based strategies. These are not evaluated as
-    /// rules: a violated constraint means the fact base needs repairing.
-    pub constraints: Vec<Rule>,
     /// Input probabilities for provenance seeding. Only the provenance strategies
     /// read this; the plain ones ignore it entirely.
     pub probability_seeds: HashMap<Triple, f64>, // Input probabilities for provenance seeding
@@ -196,7 +191,6 @@ impl Reasoner {
             rules: Vec::new(),
             dataset_index: DatasetIndex::new(),
             rule_index: RuleIndex::new(),
-            constraints: Vec::new(),
             probability_seeds: HashMap::new(),
         }
     }
@@ -263,62 +257,8 @@ impl Reasoner {
         self.dataset_index.query(s, p, o)
     }
 
-    /// Add new method to handle constraints
-    pub fn add_constraint(&mut self, constraint: Rule) {
-        self.constraints.push(constraint);
-    }
 
-    /// New method to check if a set of facts violates constraints
-    fn violates_constraints(&self, facts: &HashSet<Triple>) -> bool {
-        for constraint in &self.constraints {
-            let bindings = join_rule(constraint, facts, facts);
-            if !bindings.is_empty() {
-                return true;
-            }
-        }
-        false
-    }
 
-    /// New method to find repairs
-    fn compute_repairs(&self, facts: &HashSet<Triple>) -> Vec<HashSet<Triple>> {
-        let mut repairs = Vec::new();
-        let mut work_queue = vec![facts.clone()];
-        let mut seen = BTreeSet::new(); // Using BTreeSet instead of HashSet
-
-        while let Some(current_set) = work_queue.pop() {
-            // Convert current_set to a Vec for consistent ordering when inserting into seen
-            let current_vec: Vec<_> = current_set.iter().cloned().collect();
-
-            // Skip if we've seen this combination before
-            if !seen.insert(current_vec.clone()) {
-                continue;
-            }
-
-            if !self.violates_constraints(&current_set) {
-                // Found a consistent subset
-                let is_maximal = repairs.iter().all(|repair: &HashSet<Triple>| {
-                    !repair.is_superset(&current_set) || repair == &current_set
-                });
-
-                if is_maximal {
-                    repairs.push(current_set);
-                }
-            } else {
-                // Try removing each fact to create new candidate repairs
-                for fact in current_set.iter() {
-                    let mut new_set = current_set.clone();
-                    new_set.remove(fact);
-
-                    // Convert new_set to Vec for checking seen
-                    let new_vec: Vec<_> = new_set.iter().cloned().collect();
-                    if !seen.contains(&new_vec) {
-                        work_queue.push(new_set);
-                    }
-                }
-            }
-        }
-        repairs
-    }
 }
 
 #[cfg(test)]

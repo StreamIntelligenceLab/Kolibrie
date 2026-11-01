@@ -938,49 +938,6 @@ let query_pattern = (
 let results = kg.backward_chaining(&query_pattern);
 ```
 
-#### `add_constraint(&mut self, constraint: Rule)`
-
-Añade una restricción de integridad.
-
-```rust
-kg.add_constraint(constraint);
-```
-
-#### `infer_new_facts_semi_naive_with_repairs(&mut self) -> Vec<Triple>`
-
-Realiza inferencia manejando inconsistencias mediante reparación automática.
-
-```rust
-let inferred = kg.infer_new_facts_semi_naive_with_repairs();
-```
-
-#### `query_with_repairs(&self, query: &TriplePattern) -> Vec<HashMap<String, u32>>`
-
-Consulta usando semánticas tolerantes a inconsistencias (IAR).
-
-```rust
-let results = kg.query_with_repairs(&query_pattern);
-```
-
-## Rendimiento
-
-**Kolibrie** está optimizado para alto rendimiento mediante:
-
-* **Análisis y Procesamiento Paralelo**: Utiliza Rayon y Crossbeam para el análisis de datos multi-threaded y la ejecución de consultas.
-* **Instrucciones SIMD**: Implementa operaciones SIMD para acelerar tareas de filtrado y agregación.
-* **Volcano Optimizer**: Emplea un optimizador de consultas basado en costos para generar planes de ejecución física eficientes, minimizando el tiempo de ejecución de consultas.
-* **Inferencia del Grafo de Conocimiento**: Aprovecha la inferencia basada en reglas y backward chaining para derivar nuevos conocimientos sin una sobrecarga significativa de rendimiento.
-* **Estructuras de Datos Eficientes**: Emplea `BTreeSet` para almacenamiento ordenado y `HashMap` para la gestión de prefijos, asegurando una rápida recuperación y manipulación de datos.
-* **Optimización de Memoria**: Utiliza codificación de diccionario para minimizar la huella de memoria reutilizando términos repetidos.
-
-### Resultados de Benchmarking
-
-Nuestros benchmarks demuestran el rendimiento superior de Kolibrie frente a otros motores RDF populares. Las siguientes pruebas se realizaron usando:
-
-* **Dataset**: benchmark [WatDiv](https://dsg.uwaterloo.ca/watdiv/) 10M triples
-* **Configuración de Oxigraph**: backend RocksDB para rendimiento óptimo
-* **Razonamiento de Taxonomía Profunda**: pruebas de profundidad jerárquica hasta 10K niveles
-
 #### WatDiv 10M - Comparación de Rendimiento de Consultas (20 ejecuciones cada una)
 
 ![WatDiv 10M Query Performance](img/image1.png)

@@ -23,8 +23,6 @@
 //! - **Streaming.** [`cross_window_sds`] represents an RSP-QL streaming dataset, so
 //!   a rule can span several sliding windows; facts carry expiry times and leave the
 //!   materialisation as their window moves past them.
-//! - **Inconsistency.** [`reasoning::repairs`] answers queries under
-//!   inconsistency-tolerant semantics instead of refusing to reason.
 
 pub mod cross_window_sds;
 pub mod parser_n3_logic;

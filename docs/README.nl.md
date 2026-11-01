@@ -832,43 +832,6 @@ let inferred = kg.infer_new_facts_semi_naive_parallel();
 let results = kg.backward_chaining(&query_pattern);
 ```
 
-#### `add_constraint(&mut self, constraint: Rule)`
-
-```rust
-kg.add_constraint(constraint);
-```
-
-#### `infer_new_facts_semi_naive_with_repairs(&mut self) -> Vec<Triple>`
-
-```rust
-let inferred = kg.infer_new_facts_semi_naive_with_repairs();
-```
-
-#### `query_with_repairs(&self, query: &TriplePattern) -> Vec<HashMap<String, u32>>`
-
-```rust
-let results = kg.query_with_repairs(&query_pattern);
-```
-
-## Prestaties
-
-**Kolibrie** is geoptimaliseerd voor hoge prestaties door middel van:
-
-* **Parallel Parsen en Verwerken**: Rayon en Crossbeam voor multi-threaded parsing en query-uitvoering.
-* **SIMD Instructies**: Versnelt filtering en aggregaties.
-* **Volcano Optimizer**: Kostengebaseerde selectie van fysieke plannen.
-* **Rule-based Inferentie**: Efficiënte forward/backward chaining.
-* **Efficiënte Datastructuren**: Geïndexeerde opslag en slimme dictionary encoding.
-* **Geheugenoptimalisatie**: Hergebruik van termen via dictionary encoding.
-
-### Benchmarking Resultaten
-
-Onze benchmarks tonen de sterke prestaties van Kolibrie tegenover andere populaire RDF/SPARQL engines. De volgende tests werden uitgevoerd met:
-
-* **Dataset**: [WatDiv](https://dsg.uwaterloo.ca/watdiv/) 10M triples
-* **Oxigraph Configuratie**: RocksDB backend voor optimale performance
-* **Deep Taxonomy Reasoning**: hiërarchische dieptes tot 10K niveaus
-
 #### WatDiv 10M - Query Performance Vergelijking (20 runs per query)
 
 ![WatDiv 10M Query Performance](img/image1.png)

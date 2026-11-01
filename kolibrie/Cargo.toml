@@ -217,10 +217,6 @@ name = "datalog_example"
 path = "examples/sparql_syntax/knowledge_graph/datalog_example.rs"
 
 [[example]]
-name = "contradictions"
-path = "examples/sparql_syntax/knowledge_graph/contradictions.rs"
-
-[[example]]
 name = "deep_taxonomy"
 path = "examples/sparql_syntax/knowledge_graph/deep_taxonomy.rs"
 
