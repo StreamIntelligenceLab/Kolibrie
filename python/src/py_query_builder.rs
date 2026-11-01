@@ -89,6 +89,70 @@ impl PySparqlDatabase {
         }
     }
 
+    /// Load N-Triples from a string.
+    ///
+    /// The counterpart to `parse_turtle`, and the format data usually arrives in
+    /// over a wire: `load_file` could already read N-Triples from disk, so text
+    /// held in memory had to be written to a file first.
+    ///
+    /// Blank node labels are scoped to this call, which is one document. Two calls
+    /// naming `_:b` describe two different nodes, as RDF says they do.
+    fn load_ntriples(&self, ntriples: &str) -> PyResult<()> {
+        let mut db = self
+            .db
+            .lock()
+            .map_err(|_| PyErr::new::<PyRuntimeError, _>("database lock poisoned"))?;
+        db.parse_ntriples_and_add(ntriples);
+        Ok(())
+    }
+
+    /// Serialise the default graph as N-Triples.
+    ///
+    /// Blank nodes are written with their document-local labels, which is sound
+    /// within this store and unsound across two: see `to_ntriples_skolemised` for
+    /// the form to publish or exchange.
+    fn to_ntriples(&self) -> PyResult<String> {
+        let db = self
+            .db
+            .lock()
+            .map_err(|_| PyErr::new::<PyRuntimeError, _>("database lock poisoned"))?;
+        Ok(db.generate_ntriples())
+    }
+
+    /// Serialise every graph as N-Quads, which unlike N-Triples keeps named graphs.
+    fn to_nquads(&self) -> PyResult<String> {
+        let db = self
+            .db
+            .lock()
+            .map_err(|_| PyErr::new::<PyRuntimeError, _>("database lock poisoned"))?;
+        Ok(db.generate_nquads())
+    }
+
+    /// Serialise as N-Triples, replacing blank nodes with Skolem IRIs under `base`.
+    ///
+    /// The form to publish or exchange. A blank node label means nothing outside
+    /// the document it came from, so two systems merging each other's output would
+    /// fuse unrelated nodes. `base` must be an authority you control: a Skolem IRI
+    /// is globally unique because its authority is, which is why there is no
+    /// default for it.
+    fn to_ntriples_skolemised(&self, base: &str) -> PyResult<String> {
+        let db = self
+            .db
+            .lock()
+            .map_err(|_| PyErr::new::<PyRuntimeError, _>("database lock poisoned"))?;
+        Ok(db.generate_ntriples_skolemised(base))
+    }
+
+    /// Serialise as N-Quads, replacing blank nodes with Skolem IRIs under `base`.
+    /// See `to_ntriples_skolemised`.
+    fn to_nquads_skolemised(&self, base: &str) -> PyResult<String> {
+        let db = self
+            .db
+            .lock()
+            .map_err(|_| PyErr::new::<PyRuntimeError, _>("database lock poisoned"))?;
+        Ok(db.generate_nquads_skolemised(base))
+    }
+
     #[pyo3(signature = (path, format=None))]
     fn load_file(
         &self,

@@ -157,10 +157,74 @@ def exchanging_data():
     assert kolibrie.to_ntriples_term(node) == node
 
 
+def publishing_and_merging():
+    heading("Publishing a graph, and merging someone else's")
+    # Two systems, each with its own document that happens to use the label `_:b`.
+    document = '_:b <urn:reading> "1" .\n'
+
+    alice = kolibrie.SparqlDatabase()
+    alice.load_ntriples(document)
+    bob = kolibrie.SparqlDatabase()
+    bob.load_ntriples(document)
+
+    # Published plainly, both carry a document-local label -- and because each
+    # process counts its own scopes from one, two systems can mint the same label.
+    print(f"  alice, plain       {alice.to_ntriples().strip()}")
+    print(f"  bob,   plain       {bob.to_ntriples().strip()}")
+
+    # Skolemised under each authority, they cannot collide.
+    from_alice = alice.to_ntriples_skolemised("http://alice.example")
+    from_bob = bob.to_ntriples_skolemised("http://bob.example")
+    print(f"  alice, skolemised  {from_alice.strip()}")
+    print(f"  bob,   skolemised  {from_bob.strip()}")
+    assert from_alice != from_bob
+
+    # Merged into one store, they stay two nodes -- though in *this* process that
+    # much was already true, since alice and bob drew consecutive scopes from one
+    # counter. Two machines would both start at one and mint the same label, and
+    # that is the collision skolemisation removes.
+    merged = kolibrie.SparqlDatabase()
+    merged.load_ntriples(from_alice)
+    merged.load_ntriples(from_bob)
+    subjects = {s for s, in merged.exec_query("SELECT ?s WHERE { ?s <urn:reading> ?o }")}
+    print(f"  merged subjects    {len(subjects)}")
+    assert len(subjects) == 2, f"two nodes, got {subjects}"
+    assert all(kolibrie.term_kind(s) == "iri" for s in subjects), subjects
+
+    # So this is the assertion that carries the weight: one label, two authorities,
+    # two IRIs. It is what the merge would rest on if these were separate machines.
+    shared_label = kolibrie.make_blank_node("b", kolibrie.new_document_scope())
+    as_alice = kolibrie.skolemise(shared_label, "http://alice.example")
+    as_bob = kolibrie.skolemise(shared_label, "http://bob.example")
+    print(f"  one label, as alice {as_alice}")
+    print(f"  one label, as bob   {as_bob}")
+    assert as_alice != as_bob, "the authority is what separates them"
+    assert kolibrie.deskolemise(as_alice) == kolibrie.deskolemise(as_bob) == shared_label
+
+    # A round trip keeps every term, datatype and tag included.
+    source = (
+        '<urn:a> <urn:age> "30"^^<http://www.w3.org/2001/XMLSchema#integer> .\n'
+        '<urn:a> <urn:name> "Alice"@en .\n'
+        '<urn:a> <urn:nick> "Ali" .\n'
+    )
+    there = kolibrie.SparqlDatabase()
+    there.load_ntriples(source)
+    back = kolibrie.SparqlDatabase()
+    back.load_ntriples(there.to_ntriples())
+    objects = sorted(o for _, o in back.exec_query("SELECT ?s ?o WHERE { ?s ?p ?o }"))
+    print(f"  round-tripped      {objects}")
+    assert objects == [
+        '"30"^^<http://www.w3.org/2001/XMLSchema#integer>',
+        '"Alice"@en',
+        "Ali",
+    ], objects
+
+
 if __name__ == "__main__":
     what_a_query_returns()
     reading_a_value()
     building_terms()
     blank_nodes()
     exchanging_data()
+    publishing_and_merging()
     print("\nall assertions held")
