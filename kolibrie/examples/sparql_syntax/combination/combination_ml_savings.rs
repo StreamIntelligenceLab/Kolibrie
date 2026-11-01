@@ -7,7 +7,7 @@
  * you can obtain one at https://mozilla.org/MPL/2.0/.
  */
 
-use kolibrie::execute_ml::execute_ml_prediction_from_clause;
+use kolibrie::ml::execute::execute_ml_prediction_from_clause;
 use kolibrie::execute_query::execute;
 use kolibrie::parser::parse_standalone_rule;
 use kolibrie::rule_execution::process_rule_definition;
@@ -132,7 +132,7 @@ fn predict_savings(
 ) -> Result<
     (
         Vec<SavingsPrediction>,
-        kolibrie::execute_ml::MLPredictTiming,
+        kolibrie::ml::execute::MLPredictTiming,
     ),
     Box<dyn Error>,
 > {
@@ -169,7 +169,7 @@ fn predict_savings(
     let prediction_results = ml_handler.predict(best_model, features)?;
 
     // Create timing structure
-    let timing = kolibrie::execute_ml::MLPredictTiming {
+    let timing = kolibrie::ml::execute::MLPredictTiming {
         total_time: 0.0,          // Will be updated by execute_ml_prediction_from_clause
         rust_to_python_time: 0.0, // Will be updated by execute_ml_prediction_from_clause
         python_preprocessing_time: prediction_results.timing.preprocessing_time,

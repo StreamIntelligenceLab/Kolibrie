@@ -15,7 +15,7 @@ use crate::execute_query::query_training_rows;
 use shared::query::{CombinedRule, MLPredictClause};
 use shared::triple::Triple;
 
-use crate::ml_predict_candle::try_candle_predict;
+use crate::ml::predict_candle::try_candle_predict;
 use crate::sparql_database::SparqlDatabase;
 use shared::terms::Bindings;
 

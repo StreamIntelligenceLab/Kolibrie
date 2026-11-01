@@ -13,8 +13,8 @@ use std::time::Instant;
 
 use datalog::reasoning::materialisation::sdd_seed_materialise::infer_new_facts_with_sdd_seed_specs;
 use datalog::reasoning::Reasoner;
-use kolibrie::execute_ml_train::execute_ml_training_owned;
-use kolibrie::neural_relations::{lower_train_decl_to_owned, register_neural_declarations};
+use kolibrie::ml::execute_train::execute_ml_training_owned;
+use kolibrie::ml::neural_relations::{lower_train_decl_to_owned, register_neural_declarations};
 use kolibrie::parser::parse_combined_query;
 use kolibrie::sparql_database::SparqlDatabase;
 use ml::MlpNeuralPredicate;

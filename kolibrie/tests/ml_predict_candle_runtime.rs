@@ -95,7 +95,7 @@ TRAIN NEURAL RELATION ex:predictedDigit {{
 "#,
         save_path = save_path,
     );
-    kolibrie::neural_relations::execute_neural_program(db, &program)
+    kolibrie::ml::neural_relations::execute_neural_program(db, &program)
         .expect("training program failed");
     clear_materialized_predicate(db, "http://example.org/predictedDigit");
 }
@@ -133,7 +133,7 @@ TRAIN NEURAL RELATION ex:isFraud {{
 "#,
         save_path = save_path,
     );
-    kolibrie::neural_relations::execute_neural_program(db, &program)
+    kolibrie::ml::neural_relations::execute_neural_program(db, &program)
         .expect("binary training program failed");
     clear_materialized_predicate(db, "http://example.org/isFraud");
 }
@@ -271,7 +271,7 @@ ML.PREDICT(MODEL "digit_model",
 )
 "#;
 
-    kolibrie::neural_relations::execute_neural_program(&mut db, predict)
+    kolibrie::ml::neural_relations::execute_neural_program(&mut db, predict)
         .expect("top-level ML.PREDICT failed");
 
     let count = count_triples_with_predicate(&db, "http://example.org/predictedDigit");
@@ -318,7 +318,7 @@ ML.PREDICT(MODEL "shared_model",
 )
 "#;
 
-    let err = kolibrie::neural_relations::execute_neural_program(&mut db, program)
+    let err = kolibrie::ml::neural_relations::execute_neural_program(&mut db, program)
         .expect_err("ambiguous model-to-relation mapping should fail");
     assert!(
         err.to_string().contains("matches 2 NEURAL RELATION"),

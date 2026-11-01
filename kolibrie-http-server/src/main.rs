@@ -26,7 +26,7 @@
 //! invalid, rather than starting and refusing requests later. Over HTTP that
 //! context never carries trusted-local authority: the server does not train, does
 //! not write artifacts, and does not accept model declarations from a query. See
-//! `kolibrie`'s `ml_policy` for what the modes mean.
+//! `kolibrie`'s `ml::policy` for what the modes mean.
 //!
 //! Binds `0.0.0.0`, so it is reachable from outside the host. There is no
 //! authentication of any kind.

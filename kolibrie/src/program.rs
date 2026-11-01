@@ -2223,10 +2223,10 @@ fn run_neural(
         let mut view = SparqlDatabase::new();
         view.model_decls = plan.models.clone();
         view.neural_relation_decls = plan.relations.clone();
-        let mut clause = crate::neural_relations::lower_train_decl_to_owned(&view, &train.decl)
+        let mut clause = crate::ml::neural_relations::lower_train_decl_to_owned(&view, &train.decl)
             .map_err(ProgramError::Execution)?;
         clause.save_path = None;
-        let (model, neural_timings) = crate::execute_ml_train::execute_supervised_training(
+        let (model, neural_timings) = crate::ml::execute_train::execute_supervised_training(
             &clause,
             model_hidden_layers(&train.model),
             input,

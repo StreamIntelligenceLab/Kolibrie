@@ -41,31 +41,6 @@ _15 public items across 1 file._
 
 The engine: store, parser, query execution, RSP.
 
-### `kolibrie/src/execute_ml.rs`
-
-```rust
-pub struct MLPredictTiming
-pub fn print_breakdown(&self)
-pub fn execute_ml_prediction_from_clause<F, G, T, U>( ml_predict: &MLPredictClause, database: &SparqlDatabase, model: &str, extract_data: F, predict: G, ) -> Result<(Vec<U>, MLPredictTiming), Box<dyn Error>>
-pub fn execute_ml_prediction_with_handler<F, G, T, U>( ml_predict: &MLPredictClause, database: &SparqlDatabase, ml_handler: &MLHandler, best_model_name: &str, extract_data: F, predict: G, ) -> Result<(Vec<U>, MLPredictTiming), Box<dyn Error>>
-pub fn setup_ml_handler(model: &str) -> Result<(MLHandler, String), Box<dyn Error>>
-```
-
-### `kolibrie/src/execute_ml_train.rs`
-
-```rust
-pub struct OwnedNeuralChoice
-pub enum OwnedNeuralGroupType
-pub struct OwnedNeuralCallSpec
-pub struct OwnedNeuralTrainingClause
-pub struct NeuralTrainingTimings
-pub fn execute_ml_training_owned( clause: &OwnedNeuralTrainingClause, base_reasoner: &Reasoner, db: &mut SparqlDatabase, ) -> TrainResult<MlpNeuralPredicate>
-pub fn execute_ml_training_owned_seeded( clause: &OwnedNeuralTrainingClause, base_reasoner: &Reasoner, db: &mut SparqlDatabase, seed: u64, ) -> TrainResult<MlpNeuralPredicate>
-pub fn execute_ml_training_owned_seeded_timed( clause: &OwnedNeuralTrainingClause, base_reasoner: &Reasoner, db: &mut SparqlDatabase, seed: u64, ) -> TrainResult<(MlpNeuralPredicate, NeuralTrainingTimings)>
-pub fn execute_supervised_training( clause: &OwnedNeuralTrainingClause, hidden: &[usize], db: &mut SparqlDatabase, seed: Option<u64>, ) -> TrainResult<(MlpNeuralPredicate, NeuralTrainingTimings)>
-pub fn build_ground_reasoner_from_db(db: &SparqlDatabase, extra_rule: Option<Rule>) -> Reasoner
-```
-
 ### `kolibrie/src/execute_query.rs`
 
 ```rust
@@ -87,6 +62,69 @@ pub struct UpdateSummary
 pub fn execute_query_rayon_parallel2_volcano( sparql: &str, database: &mut SparqlDatabase, ) -> Vec<Vec<String>>
 pub fn execute_sparql_query( sparql: &str, database: &mut SparqlDatabase, ) -> Result<Vec<Vec<String>>, QueryError>
 pub fn execute_sparql_update( sparql: &str, database: &mut SparqlDatabase, ) -> Result<UpdateSummary, String>
+```
+
+### `kolibrie/src/ml/execute.rs`
+
+```rust
+pub struct MLPredictTiming
+pub fn print_breakdown(&self)
+pub fn execute_ml_prediction_from_clause<F, G, T, U>( ml_predict: &MLPredictClause, database: &SparqlDatabase, model: &str, extract_data: F, predict: G, ) -> Result<(Vec<U>, MLPredictTiming), Box<dyn Error>>
+pub fn execute_ml_prediction_with_handler<F, G, T, U>( ml_predict: &MLPredictClause, database: &SparqlDatabase, ml_handler: &MLHandler, best_model_name: &str, extract_data: F, predict: G, ) -> Result<(Vec<U>, MLPredictTiming), Box<dyn Error>>
+pub fn setup_ml_handler(model: &str) -> Result<(MLHandler, String), Box<dyn Error>>
+```
+
+### `kolibrie/src/ml/execute_train.rs`
+
+```rust
+pub struct OwnedNeuralChoice
+pub enum OwnedNeuralGroupType
+pub struct OwnedNeuralCallSpec
+pub struct OwnedNeuralTrainingClause
+pub struct NeuralTrainingTimings
+pub fn execute_ml_training_owned( clause: &OwnedNeuralTrainingClause, base_reasoner: &Reasoner, db: &mut SparqlDatabase, ) -> TrainResult<MlpNeuralPredicate>
+pub fn execute_ml_training_owned_seeded( clause: &OwnedNeuralTrainingClause, base_reasoner: &Reasoner, db: &mut SparqlDatabase, seed: u64, ) -> TrainResult<MlpNeuralPredicate>
+pub fn execute_ml_training_owned_seeded_timed( clause: &OwnedNeuralTrainingClause, base_reasoner: &Reasoner, db: &mut SparqlDatabase, seed: u64, ) -> TrainResult<(MlpNeuralPredicate, NeuralTrainingTimings)>
+pub fn execute_supervised_training( clause: &OwnedNeuralTrainingClause, hidden: &[usize], db: &mut SparqlDatabase, seed: Option<u64>, ) -> TrainResult<(MlpNeuralPredicate, NeuralTrainingTimings)>
+pub fn build_ground_reasoner_from_db(db: &SparqlDatabase, extra_rule: Option<Rule>) -> Reasoner
+```
+
+### `kolibrie/src/ml/neural_relations.rs`
+
+```rust
+pub use crate::neural_registry::register_neural_declarations
+pub const DISTRIBUTION_REQUIRES_PROGRAM: &str = "ML.PREDICT ... OUTPUT ?v DISTRIBUTION runs only through kolibrie::program
+pub fn lower_train_decl_to_owned( database: &SparqlDatabase, train_decl: &TrainNeuralRelationDecl, ) -> Result<OwnedNeuralTrainingClause, String>
+pub fn execute_train_decl( database: &mut SparqlDatabase, train_decl: &TrainNeuralRelationDecl, ) -> NeuralResult<()>
+pub fn execute_top_level_ml_predict( database: &mut SparqlDatabase, ml_predict: &MLPredictClause<'_>, prefixes: &HashMap<String, String>, ) -> NeuralResult<()>
+pub fn execute_neural_program( database: &mut SparqlDatabase, program: &str, ) -> Result<(), crate::execute_query::QueryError>
+pub fn materialize_neural_relation( database: &mut SparqlDatabase, predicate: &str, ) -> NeuralResult<()>
+pub fn materialize_neural_relations_for_patterns( database: &mut SparqlDatabase, patterns: &[(&str, &str, &str)], prefixes: &HashMap<String, String>, ) -> Result<(), String>
+pub use crate::ml::syntax::lower_ml_predict_alias
+pub struct NeuralRuntime
+```
+
+### `kolibrie/src/ml/neural_relations_disabled.rs`
+
+```rust
+pub use crate::ml::syntax::lower_ml_predict_alias
+pub use crate::neural_registry::register_neural_declarations
+pub fn execute_train_decl( _db: &mut SparqlDatabase, _train: &TrainNeuralRelationDecl, ) -> Result<(), Box<dyn std::error::Error>>
+pub fn materialize_neural_relations_for_patterns( db: &mut SparqlDatabase, _patterns: &[(&str, &str, &str)], _prefixes: &HashMap<String, String>, ) -> Result<(), String>
+pub fn execute_neural_program(_db: &mut SparqlDatabase, _program: &str) -> Result<(), String>
+pub struct NeuralRuntime
+```
+
+### `kolibrie/src/ml/runtime.rs`
+
+```rust
+pub trait MlRuntime: Send + Sync
+```
+
+### `kolibrie/src/ml/syntax.rs`
+
+```rust
+pub fn lower_ml_predict_alias( ml_predict: &MLPredictClause<'_>, ) -> Result<NeuralRelationDecl, String>
 ```
 
 ### `kolibrie/src/ml_policy.rs`
@@ -115,50 +153,12 @@ pub fn save_local_artifact(&self, filename: &str, bytes: &[u8]) -> Result<(), Ml
 pub fn validate_request( &self, query: &CombinedQuery<'_>, predicts: &PredictInputs<'_>, has_registered_relations: bool, ) -> Result<(), MlError>
 ```
 
-### `kolibrie/src/ml_runtime.rs`
-
-```rust
-pub trait MlRuntime: Send + Sync
-```
-
-### `kolibrie/src/ml_syntax.rs`
-
-```rust
-pub fn lower_ml_predict_alias( ml_predict: &MLPredictClause<'_>, ) -> Result<NeuralRelationDecl, String>
-```
-
 ### `kolibrie/src/neural_registry.rs`
 
 ```rust
 pub fn default_model_artifact_path(model_name: &str) -> String
 pub fn register_neural_declarations( database: &mut SparqlDatabase, prefixes: &HashMap<String, String>, model_decls: &[ModelDecl], neural_relation_decls: &[NeuralRelationDecl], train_neural_relation_decls: &[TrainNeuralRelationDecl], )
 pub fn register_neural_declarations_checked( database: &mut SparqlDatabase, prefixes: &HashMap<String, String>, model_decls: &[ModelDecl], neural_relation_decls: &[NeuralRelationDecl], train_neural_relation_decls: &[TrainNeuralRelationDecl], ) -> Result<(), String>
-```
-
-### `kolibrie/src/neural_relations.rs`
-
-```rust
-pub use crate::neural_registry::register_neural_declarations
-pub const DISTRIBUTION_REQUIRES_PROGRAM: &str = "ML.PREDICT ... OUTPUT ?v DISTRIBUTION runs only through kolibrie::program
-pub fn lower_train_decl_to_owned( database: &SparqlDatabase, train_decl: &TrainNeuralRelationDecl, ) -> Result<OwnedNeuralTrainingClause, String>
-pub fn execute_train_decl( database: &mut SparqlDatabase, train_decl: &TrainNeuralRelationDecl, ) -> NeuralResult<()>
-pub fn execute_top_level_ml_predict( database: &mut SparqlDatabase, ml_predict: &MLPredictClause<'_>, prefixes: &HashMap<String, String>, ) -> NeuralResult<()>
-pub fn execute_neural_program( database: &mut SparqlDatabase, program: &str, ) -> Result<(), crate::execute_query::QueryError>
-pub fn materialize_neural_relation( database: &mut SparqlDatabase, predicate: &str, ) -> NeuralResult<()>
-pub fn materialize_neural_relations_for_patterns( database: &mut SparqlDatabase, patterns: &[(&str, &str, &str)], prefixes: &HashMap<String, String>, ) -> Result<(), String>
-pub use crate::ml_syntax::lower_ml_predict_alias
-pub struct NeuralRuntime
-```
-
-### `kolibrie/src/neural_relations_disabled.rs`
-
-```rust
-pub use crate::ml_syntax::lower_ml_predict_alias
-pub use crate::neural_registry::register_neural_declarations
-pub fn execute_train_decl( _db: &mut SparqlDatabase, _train: &TrainNeuralRelationDecl, ) -> Result<(), Box<dyn std::error::Error>>
-pub fn materialize_neural_relations_for_patterns( db: &mut SparqlDatabase, _patterns: &[(&str, &str, &str)], _prefixes: &HashMap<String, String>, ) -> Result<(), String>
-pub fn execute_neural_program(_db: &mut SparqlDatabase, _program: &str) -> Result<(), String>
-pub struct NeuralRuntime
 ```
 
 ### `kolibrie/src/parse_error.rs`

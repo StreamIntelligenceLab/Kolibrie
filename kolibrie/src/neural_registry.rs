@@ -12,7 +12,7 @@
 //!
 //! Registration is not execution. Putting a declaration on a store needs the store,
 //! the ML policy and the declaration types, and none of the machinery that later
-//! runs a model, so it sits below [`neural_relations`](crate::neural_relations)
+//! runs a model, so it sits below [`neural_relations`](crate::ml::neural_relations)
 //! rather than inside it. `parser`, `execute_query` and `program` all register
 //! declarations and none of them should have to reach into the ML runtime to do it.
 //!

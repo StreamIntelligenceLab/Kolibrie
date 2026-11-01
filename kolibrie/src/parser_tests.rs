@@ -18,7 +18,7 @@
 
 #[cfg(test)]
 mod tests {
-    use crate::neural_relations::lower_ml_predict_alias;
+    use crate::ml::neural_relations::lower_ml_predict_alias;
     use crate::parser::{
         identifier, parse_arithmetic_expression, parse_bind, parse_combined_query_with_options,
         parse_comparison, parse_group_by, parse_limit, parse_literal, parse_ml_predict,

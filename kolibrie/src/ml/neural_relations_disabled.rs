@@ -8,7 +8,7 @@
  * you can obtain one at https://mozilla.org/MPL/2.0/.
  */
 
-//! Stand-ins for [`neural_relations`](crate::neural_relations) when the `ml` feature
+//! Stand-ins for [`neural_relations`](crate::ml::neural_relations) when the `ml` feature
 //! is off.
 //!
 //! Every entry point here mirrors the real one's signature and refuses with
@@ -19,7 +19,7 @@
 //! declares no models and no neural relations succeeds, because it asked for nothing
 //! the feature provides. Only a request that actually needs a model fails.
 
-pub use crate::ml_syntax::lower_ml_predict_alias;
+pub use crate::ml::syntax::lower_ml_predict_alias;
 // Registration is not gated, so the real one serves both builds.
 pub use crate::neural_registry::register_neural_declarations;
 use crate::sparql_database::SparqlDatabase;
@@ -60,7 +60,7 @@ pub fn execute_neural_program(_db: &mut SparqlDatabase, _program: &str) -> Resul
 #[derive(Debug, Clone, Copy, Default)]
 pub struct NeuralRuntime;
 
-impl crate::ml_runtime::MlRuntime for NeuralRuntime {
+impl crate::ml::runtime::MlRuntime for NeuralRuntime {
     fn materialize_for_patterns(
         &self,
         database: &mut SparqlDatabase,

@@ -32,7 +32,7 @@ use shared::query::{
 };
 use shared::triple::Triple;
 
-use crate::execute_ml_train::{
+use crate::ml::execute_train::{
     build_ground_reasoner_from_db, execute_ml_training_owned, execute_ml_training_owned_seeded,
     OwnedNeuralCallSpec, OwnedNeuralChoice, OwnedNeuralGroupType, OwnedNeuralTrainingClause,
 };
@@ -308,7 +308,7 @@ pub fn execute_top_level_ml_predict(
     }
 
     let encoded_rows = encode_prediction_rows(database, &rows);
-    let dispatch = crate::ml_predict_candle::try_candle_predict_by_model_name(
+    let dispatch = crate::ml::predict_candle::try_candle_predict_by_model_name(
         database,
         ml_predict.model,
         &encoded_rows,
@@ -541,7 +541,7 @@ pub fn materialize_neural_relations_for_patterns(
     Ok(())
 }
 
-pub use crate::ml_syntax::lower_ml_predict_alias;
+pub use crate::ml::syntax::lower_ml_predict_alias;
 
 #[cfg(test)]
 mod tests {
@@ -835,7 +835,7 @@ WHERE {
 #[derive(Debug, Clone, Copy, Default)]
 pub struct NeuralRuntime;
 
-impl crate::ml_runtime::MlRuntime for NeuralRuntime {
+impl crate::ml::runtime::MlRuntime for NeuralRuntime {
     fn materialize_for_patterns(
         &self,
         database: &mut SparqlDatabase,
@@ -868,7 +868,7 @@ impl crate::ml_runtime::MlRuntime for NeuralRuntime {
         rule: &mut shared::query::CombinedRule<'_>,
         prefixes: &std::collections::HashMap<String, String>,
     ) -> Result<Vec<shared::triple::Triple>, crate::query_error::QueryError> {
-        crate::ml_predict_runtime::execute_ml_predict_clause(clause, rule, database, prefixes)
+        crate::ml::predict_runtime::execute_ml_predict_clause(clause, rule, database, prefixes)
             .map_err(|error| crate::query_error::QueryError::Execution(error.to_string()))
     }
 }

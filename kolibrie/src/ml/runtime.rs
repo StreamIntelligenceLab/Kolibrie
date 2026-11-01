@@ -18,7 +18,7 @@
 //! which sits above query evaluation and depends on it.
 //!
 //! So `execute_query` and `rule_execution` used to call up into
-//! [`neural_relations`](crate::neural_relations) directly, and the five modules
+//! [`neural_relations`](crate::ml::neural_relations) directly, and the five modules
 //! involved formed the crate's last dependency cycle. They now call through this
 //! trait, which names only [`SparqlDatabase`], [`QueryError`] and the declaration
 //! types — all of which sit below both layers.

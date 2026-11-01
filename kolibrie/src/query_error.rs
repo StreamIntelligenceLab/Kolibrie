@@ -11,7 +11,7 @@
 //! [`QueryError`]: why a request could not be answered.
 //!
 //! Its own module rather than part of [`execute_query`](crate::execute_query),
-//! because [`ml_runtime`](crate::ml_runtime) names it in a trait that
+//! because [`ml_runtime`](crate::ml::runtime) names it in a trait that
 //! `execute_query` then calls through. An error type that several layers return has
 //! to sit below all of them.
 //!

@@ -47,7 +47,7 @@
 //! | [`streamertail_optimizer`] | cost-based logical-to-physical planning |
 //! | [`rsp`], [`rsp_engine`] | RDF stream processing: windows, joins, output streams |
 //! | [`program`] | probabilistic programs over rules, with provenance |
-//! | [`ml_policy`], [`neural_relations`] | model declarations and the authority to run them |
+//! | [`ml`] | model declarations, the authority to run them, and the runtime |
 //! | [`query_builder`] | a programmatic alternative to writing SPARQL text |
 //!
 //! Reasoning itself lives outside this crate: `datalog` for the Datalog subset and
@@ -59,34 +59,22 @@
 // not intend to support. Promote one back the moment something outside needs it.
 mod aggregate;
 pub(crate) mod error_handler;
-pub mod ml_policy;
-pub mod ml_runtime;
-mod ml_syntax;
 #[cfg(test)]
 extern crate self as kolibrie;
-/// Running an `ML.PREDICT` clause through the Python backend.
-#[cfg(feature = "ml")]
-pub mod execute_ml;
-/// Training a model declared by a `TRAIN` clause.
-#[cfg(feature = "ml")]
-pub mod execute_ml_train;
 /// Query evaluation, including the SIMD and Rayon-parallel variants.
 pub mod execute_query;
+// Documented by its own `//!` header. A `///` summary here would merge with that
+// and resolve its links in this scope rather than in `ml`, which is the trap
+// `scripts/verify.sh` warns about and which this walked into first time.
+pub mod ml;
+// The ML *contract*, deliberately outside [`ml`]: the engine depends on these three
+// and they reach back no further than the store, while everything inside `ml`
+// depends on the engine. Folding all ten into one module made a leaf and a consumer
+// the same node and closed a cycle across seven modules, which is how the direction
+// of this dependency came to be measured rather than assumed.
+pub mod ml_policy;
 pub(crate) mod ml_feature_loader;
-#[cfg(feature = "ml")]
-pub(crate) mod ml_predict_candle;
-#[cfg(feature = "ml")]
-pub(crate) mod ml_predict_runtime;
 pub mod neural_registry;
-/// Predicates whose facts come from a model rather than from data.
-#[cfg(feature = "ml")]
-pub mod neural_relations;
-/// Stubs standing in for [`neural_relations`] when the `ml` feature is off, so the
-/// rest of the crate compiles without PyO3 and a caller gets a clear
-/// `ML_FEATURE_DISABLED` error rather than a missing symbol.
-#[cfg(not(feature = "ml"))]
-#[path = "neural_relations_disabled.rs"]
-pub mod neural_relations;
 /// What a failed parse says, without naming the parser library.
 pub mod parse_error;
 pub mod parser;
@@ -108,7 +96,7 @@ pub(crate) mod term_order;
 /// Small helpers: user-defined function wrappers, timestamps, a demo server.
 pub mod utils;
 
-/// Which [`MlRuntime`](ml_runtime::MlRuntime) the query layer calls through.
+/// Which [`MlRuntime`](ml::runtime::MlRuntime) the query layer calls through.
 ///
 /// The crate root is the one place that may name both the abstraction and the
 /// implementation, which is what keeps `execute_query` and `rule_execution` from
@@ -117,12 +105,12 @@ pub mod utils;
 /// instead; until then, a `static` chosen by the feature flag does the same job
 /// without a registration step, so no caller has to install anything.
 pub(crate) mod ml_runtime_impl {
-    use crate::ml_runtime::MlRuntime;
+    use crate::ml::runtime::MlRuntime;
 
-    // No `cfg` here: `neural_relations` is already either the real module or the
+    // No `cfg` here: `ml::neural_relations` is already either the real module or the
     // `#[path]`-substituted disabled one, so naming its `NeuralRuntime` picks the
     // right implementation for the build on its own.
-    static RUNTIME: crate::neural_relations::NeuralRuntime = crate::neural_relations::NeuralRuntime;
+    static RUNTIME: crate::ml::neural_relations::NeuralRuntime = crate::ml::neural_relations::NeuralRuntime;
 
     /// The runtime for this build.
     pub(crate) fn runtime() -> &'static dyn MlRuntime {

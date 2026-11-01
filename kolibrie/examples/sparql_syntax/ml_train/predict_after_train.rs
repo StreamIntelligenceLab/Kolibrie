@@ -8,7 +8,7 @@
  * you can obtain one at https://mozilla.org/MPL/2.0/.
  */
 
-use kolibrie::neural_relations::execute_neural_program;
+use kolibrie::ml::neural_relations::execute_neural_program;
 use kolibrie::sparql_database::SparqlDatabase;
 
 fn tmp_model_path(name: &str) -> String {
