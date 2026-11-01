@@ -247,8 +247,20 @@ pub fn parse_n3_document<'a>(
         .map(|(k, v)| (k.to_string(), v.to_string()))
         .collect();
 
-    let (input, first_rule) = preceded(multispace0, parse_unresolved_rule).parse(input)?;
-    let (input, rest_rules) = many0(preceded(multispace0, parse_unresolved_rule)).parse(input)?;
+    // A rule may be terminated by `.`, as every N3 statement is, and
+    // `parse_unresolved_rule` stops at the conclusion's closing brace. Accepting the
+    // terminator here is what lets a document be written the conventional way: this
+    // function requires the whole input to be consumed, so a trailing dot used to
+    // make it fail with `Eof` while the single-rule parser silently left the dot
+    // behind and looked fine.
+    let terminated = |input| {
+        let (input, rule) = preceded(multispace0, parse_unresolved_rule).parse(input)?;
+        let (input, _) = opt(preceded(multispace0, nom::character::complete::char('.')))
+            .parse(input)?;
+        Ok((input, rule))
+    };
+    let (input, first_rule) = terminated(input)?;
+    let (input, rest_rules) = many0(terminated).parse(input)?;
 
     let (input, _) = multispace0.parse(input)?;
     if !input.is_empty() {

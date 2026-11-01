@@ -9,6 +9,7 @@
  */
 
 use datalog::reasoning::Reasoner;
+use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
 use std::collections::HashMap;
 
@@ -263,6 +264,32 @@ impl PyKnowledgeGraph {
         id
     }
 
+    /// Adds every rule in an N3 document, and returns how many were added.
+    ///
+    /// `{ premise } => { conclusion } .` under `@prefix` declarations, which is how
+    /// a rule is usually written down rather than assembled:
+    ///
+    /// ```text
+    /// @prefix ex: <http://example.org/> .
+    /// { ?x ex:hasParent ?y . ?y ex:hasParent ?z . } => { ?x ex:hasGrandparent ?z . }
+    /// ```
+    ///
+    /// Building the same rule through `Rule`, `TriplePattern` and `Term` means
+    /// naming every constant by the id `encode_term` gave it; this interns them for
+    /// you, against this graph's own dictionary, so the rule matches its facts.
+    ///
+    /// One prefix block covers every rule in the document, so rules written
+    /// together keep their context.
+    fn add_n3_rules(&mut self, n3: &str) -> PyResult<usize> {
+        let (_, (_prefixes, rules)) = datalog::parser_n3_logic::parse_n3_document(n3, &mut self.inner)
+            .map_err(|error| PyValueError::new_err(format!("could not parse the N3 rules: {error}")))?;
+        let added = rules.len();
+        for rule in rules {
+            self.inner.add_rule(rule);
+        }
+        Ok(added)
+    }
+
     /// The text an id stands for, or `None` if this graph never assigned it.
     ///
     /// The inverse of `encode_term`, and needed to read anything the graph answers
@@ -273,89 +300,8 @@ impl PyKnowledgeGraph {
         self.inner.decode_term(id)
     }
 
-    fn add_constraint(&mut self, rule: PyRule) {
-        let converted_rule = shared::rule::Rule {
-            premise: rule
-                .premise
-                .into_iter()
-                .map(|p| {
-                    (
-                        convert_term(p.subject),
-                        convert_term(p.predicate),
-                        convert_term(p.object),
-                    )
-                })
-                .collect(),
 
-            negative_premise: vec![],
 
-            filters: rule
-                .filters
-                .into_iter()
-                .map(|f| shared::rule::FilterCondition {
-                    variable: f.variable,
-                    operator: f.operator,
-                    value: f.value,
-                })
-                .collect(),
-
-            conclusion: rule
-                .conclusion
-                .into_iter()
-                .map(|c| {
-                    (
-                        convert_term(c.subject),
-                        convert_term(c.predicate),
-                        convert_term(c.object),
-                    )
-                })
-                .collect(),
-        };
-
-        self.inner.add_constraint(converted_rule);
-    }
-
-    fn query_with_repairs(&mut self, query: PyTriplePattern) -> Vec<HashMap<String, Term>> {
-        let rust_query = (
-            convert_term(query.subject),
-            convert_term(query.predicate),
-            convert_term(query.object),
-        );
-
-        // `results` is a `Bindings`
-        let results = self.inner.query_with_repairs(&rust_query);
-
-        results
-            .into_iter()
-            .map(|bindings| {
-                bindings
-                    .into_iter()
-                    .map(|(key, value)| {
-                        // Wrap u32 in Term::Constant
-                        let term = shared::terms::Term::Constant(value);
-                        (key, convert_term_back(term))
-                    })
-                    .collect()
-            })
-            .collect()
-    }
-
-    fn infer_new_facts_semi_naive_with_repairs(&mut self) -> Vec<(String, String, String)> {
-        let inferred = self.inner.infer_new_facts_semi_naive_with_repairs();
-
-        // Acquire read lock once for all decoding operations
-        let decoded_results: Vec<(String, String, String)> = inferred
-            .into_iter()
-            .map(|triple| {
-                let s = self.inner.decode_term(triple.subject).unwrap_or_default();
-                let p = self.inner.decode_term(triple.predicate).unwrap_or_default();
-                let o = self.inner.decode_term(triple.object).unwrap_or_default();
-                (s, p, o)
-            })
-            .collect();
-
-        decoded_results
-    }
 }
 
 /// Converts Python `Term` to `reasoning::Term`

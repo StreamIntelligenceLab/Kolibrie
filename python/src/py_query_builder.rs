@@ -201,6 +201,38 @@ impl PySparqlDatabase {
             .map_err(|error| PyErr::new::<PyRuntimeError, _>(error.to_string()))
     }
 
+    /// Parses a Kolibrie `RULE` block, runs it, and returns the triples it derived.
+    ///
+    /// The `CONSTRUCT` form, written down rather than assembled:
+    ///
+    /// ```text
+    /// RULE :Grandparent :-
+    /// CONSTRUCT { ?x <urn:hasGrandparent> ?z . }
+    /// WHERE { ?x <urn:hasParent> ?y . ?y <urn:hasParent> ?z . } .
+    /// ```
+    ///
+    /// The derived triples are added to this store, and the prefixes the rule
+    /// declared are registered on it, so a later query can use them. Each derived
+    /// triple comes back as `(subject, predicate, object)` in canonical spelling.
+    ///
+    /// A `PROB(...)` annotation on the rule is accepted and governs how the
+    /// derivation is weighted; a rule naming a model the host has not approved is
+    /// refused before anything is parsed.
+    fn add_rule(&self, rule: &str) -> PyResult<Vec<(String, String, String)>> {
+        let mut db = locked(&self.db, "database")?;
+        let (_rule, derived) =
+            kolibrie_core::rule_execution::process_rule_definition(rule, &mut db)
+                .map_err(|error| PyValueError::new_err(error.to_string()))?;
+        let dictionary = db.dictionary();
+        Ok(derived
+            .into_iter()
+            .map(|triple| {
+                let term = |id| dictionary.decode(id).unwrap_or("").to_string();
+                (term(triple.subject), term(triple.predicate), term(triple.object))
+            })
+            .collect())
+    }
+
     /// Execute INSERT/DELETE DATA or a template-based INSERT/DELETE WHERE.
     /// Syntax and execution failures are raised instead of being returned as
     /// an ambiguous result table.
