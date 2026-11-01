@@ -427,7 +427,7 @@ pub fn set_query_execution_mode(mut self, mode: QueryExecutionMode) -> RSPBuilde
 pub fn build(mut self) -> Result<RSPEngine<I, O>, String>
 ```
 
-### `kolibrie/src/rsp_engine.rs`
+### `kolibrie/src/rsp_engine/mod.rs`
 
 ```rust
 pub use builder::{RSPBuilder, RSPQueryConfig}
