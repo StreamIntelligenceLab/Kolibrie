@@ -496,8 +496,6 @@ dependencies = [
 name = "datalogmtl"
 version = "0.3.0"
 dependencies = [
- "rayon",
- "serde",
  "shared",
 ]
 
@@ -2088,7 +2086,6 @@ version = "0.3.0"
 dependencies = [
  "rayon",
  "serde",
- "serde_json",
 ]
 
 [[package]]
