@@ -228,8 +228,10 @@ fn main() {
                 let prob = AddMultProbability.recover_probability(tag);
                 println!(
                     "    {} indirectTrust {} (prob={:.2})",
-                    kg.decode_term(triple.subject).unwrap_or_else(|| "?".to_string()),
-                    kg.decode_term(triple.object).unwrap_or_else(|| "?".to_string()),
+                    kg.decode_term(triple.subject)
+                        .unwrap_or_else(|| "?".to_string()),
+                    kg.decode_term(triple.object)
+                        .unwrap_or_else(|| "?".to_string()),
                     prob
                 );
             }
@@ -243,8 +245,10 @@ fn main() {
                 let prob = AddMultProbability.recover_probability(tag);
                 println!(
                     "    {} strongBond {} (prob={:.2})",
-                    kg.decode_term(triple.subject).unwrap_or_else(|| "?".to_string()),
-                    kg.decode_term(triple.object).unwrap_or_else(|| "?".to_string()),
+                    kg.decode_term(triple.subject)
+                        .unwrap_or_else(|| "?".to_string()),
+                    kg.decode_term(triple.object)
+                        .unwrap_or_else(|| "?".to_string()),
                     prob
                 );
             }

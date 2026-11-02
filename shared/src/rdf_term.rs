@@ -404,10 +404,9 @@ pub fn next_document_scope() -> u64 {
 /// document without blank nodes costs no allocation.
 pub fn scope_blank_node<'a>(term: &'a str, document: u64) -> std::borrow::Cow<'a, str> {
     match term.strip_prefix("_:") {
-        Some(label) => std::borrow::Cow::Owned(format!(
-            "_:kolibrie-doc-{document}-{}",
-            strip_scope(label)
-        )),
+        Some(label) => {
+            std::borrow::Cow::Owned(format!("_:kolibrie-doc-{document}-{}", strip_scope(label)))
+        }
         None => std::borrow::Cow::Borrowed(term),
     }
 }
@@ -628,11 +627,19 @@ mod tests {
             let read = read_literal(&spelled)
                 .unwrap_or_else(|| panic!("{spelled:?} should read back as a literal"));
             assert_eq!(read.lexical, lexical, "lexical form of {spelled:?}");
-            assert_eq!(read.language.as_deref(), language, "language of {spelled:?}");
+            assert_eq!(
+                read.language.as_deref(),
+                language,
+                "language of {spelled:?}"
+            );
             // A plain and an xsd:string literal share a spelling, so the datatype
             // comes back absent for both; everything else round-trips exactly.
             let expected = datatype.filter(|iri| *iri != XSD_STRING);
-            assert_eq!(read.datatype.as_deref(), expected, "datatype of {spelled:?}");
+            assert_eq!(
+                read.datatype.as_deref(),
+                expected,
+                "datatype of {spelled:?}"
+            );
         }
     }
 
@@ -687,7 +694,11 @@ mod tests {
             Some(-3.5)
         );
         assert_eq!(numeric_value("hello"), None);
-        assert_eq!(numeric_value("http://example/25"), None, "an IRI is not a number");
+        assert_eq!(
+            numeric_value("http://example/25"),
+            None,
+            "an IRI is not a number"
+        );
     }
 
     #[test]
@@ -698,7 +709,10 @@ mod tests {
             lexical_value(&spell_literal("25", Some(XSD_INTEGER), None)),
             "25"
         );
-        assert_eq!(lexical_value(&spell_literal("hello", None, Some("en"))), "hello");
+        assert_eq!(
+            lexical_value(&spell_literal("hello", None, Some("en"))),
+            "hello"
+        );
     }
 
     #[test]
@@ -746,8 +760,17 @@ mod tests {
 
     #[test]
     fn scoping_leaves_every_other_kind_of_term_alone() {
-        for term in ["http://example/x", "25", "\"25\"^^<http://x>", "\"hello\"@en"] {
-            assert_eq!(scope_blank_node(term, 7), term, "{term:?} is not a blank node");
+        for term in [
+            "http://example/x",
+            "25",
+            "\"25\"^^<http://x>",
+            "\"hello\"@en",
+        ] {
+            assert_eq!(
+                scope_blank_node(term, 7),
+                term,
+                "{term:?} is not a blank node"
+            );
             assert!(
                 matches!(scope_blank_node(term, 7), std::borrow::Cow::Borrowed(_)),
                 "{term:?} should not have been reallocated"
@@ -880,10 +903,18 @@ mod tests {
 
     #[test]
     fn skolemising_leaves_every_other_kind_of_term_alone() {
-        for term in ["http://example/x", "25", "\"25\"^^<http://x>", "\"hello\"@en"] {
+        for term in [
+            "http://example/x",
+            "25",
+            "\"25\"^^<http://x>",
+            "\"hello\"@en",
+        ] {
             assert_eq!(skolemise(term, "http://example.org"), term);
             assert!(
-                matches!(skolemise(term, "http://example.org"), std::borrow::Cow::Borrowed(_)),
+                matches!(
+                    skolemise(term, "http://example.org"),
+                    std::borrow::Cow::Borrowed(_)
+                ),
                 "{term:?} should not have been reallocated"
             );
         }

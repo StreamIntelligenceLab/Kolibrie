@@ -9,10 +9,10 @@ use datalog::reasoning::materialisation::cross_window_incremental::{
 use datalog::reasoning::materialisation::cross_window_naive::naive_sds_plus;
 use datalog::reasoning::Reasoner;
 use shared::rule::Rule;
+use shared::term_encoder::SharedTerms;
 use shared::triple::Triple;
 use std::collections::{BTreeSet, HashMap};
 use std::time::Duration;
-use shared::term_encoder::SharedTerms;
 
 const TRAFFIC_IRI: &str = "http://citybench.example/traffic/";
 const PARKING_IRI: &str = "http://citybench.example/parking/";
@@ -109,10 +109,7 @@ fn make_citybench_sds(size: usize, update_ratio_percent: usize) -> Sds {
     sds
 }
 
-fn signature(
-    result: &HashMap<String, Vec<Triple>>,
-    dict: &SharedTerms,
-) -> BTreeSet<String> {
+fn signature(result: &HashMap<String, Vec<Triple>>, dict: &SharedTerms) -> BTreeSet<String> {
     // A copy: this decodes every triple it prints, and a scoped encoder will not
     // hold its lock across the walk.
     let d = dict.view();

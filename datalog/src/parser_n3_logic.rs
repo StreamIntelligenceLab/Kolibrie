@@ -208,9 +208,7 @@ fn to_term(ut: UnresolvedTerm, graph: &mut Reasoner, prefix_map: &HashMap<String
             let expanded = expand_prefix(&s, prefix_map);
             Term::Constant(graph.encode_term(&expanded))
         }
-        UnresolvedTerm::Iri(iri) => {
-            Term::Constant(graph.encode_term(&iri))
-        }
+        UnresolvedTerm::Iri(iri) => Term::Constant(graph.encode_term(&iri)),
     }
 }
 
@@ -255,8 +253,8 @@ pub fn parse_n3_document<'a>(
     // behind and looked fine.
     let terminated = |input| {
         let (input, rule) = preceded(multispace0, parse_unresolved_rule).parse(input)?;
-        let (input, _) = opt(preceded(multispace0, nom::character::complete::char('.')))
-            .parse(input)?;
+        let (input, _) =
+            opt(preceded(multispace0, nom::character::complete::char('.'))).parse(input)?;
         Ok((input, rule))
     };
     let (input, first_rule) = terminated(input)?;

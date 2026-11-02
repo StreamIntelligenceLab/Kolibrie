@@ -17,8 +17,8 @@
 
 use crate::cross_window_sds::{translate_datalog_back, translate_sds_to_datalog, Sds};
 use crate::reasoning::Reasoner;
-use shared::term_encoder::SharedTerms;
 use shared::rule::Rule;
+use shared::term_encoder::SharedTerms;
 use shared::triple::Triple;
 use std::collections::HashMap;
 

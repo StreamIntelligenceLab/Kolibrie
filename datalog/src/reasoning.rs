@@ -256,9 +256,6 @@ impl Reasoner {
 
         self.dataset_index.query(s, p, o)
     }
-
-
-
 }
 
 #[cfg(test)]
@@ -274,7 +271,10 @@ mod term_space_tests {
 
         let from_left = left.encode_term("urn:shared");
         let from_right = right.encode_term("urn:shared");
-        assert_eq!(from_left, from_right, "one term space mints one id per term");
+        assert_eq!(
+            from_left, from_right,
+            "one term space mints one id per term"
+        );
 
         // And a term interned on one side is visible from the other, with no copying
         // back: that is what sharing means, and what the removed sync-back assumed.

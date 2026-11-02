@@ -32,7 +32,9 @@
 */
 
 use datalog::reasoning::Reasoner;
-use kolibrie::ml::execute::{execute_ml_prediction_with_handler, setup_ml_handler, MLPredictTiming};
+use kolibrie::ml::execute::{
+    execute_ml_prediction_with_handler, setup_ml_handler, MLPredictTiming,
+};
 use kolibrie::parser::parse_standalone_rule;
 use kolibrie::rsp_engine::{QueryExecutionMode, RSPBuilder, ResultConsumer, SimpleR2R};
 use kolibrie::rule_execution::process_rule_definition;

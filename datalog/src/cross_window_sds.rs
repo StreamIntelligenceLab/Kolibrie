@@ -25,9 +25,9 @@
 //! `event_time + alpha > current_time`, so the interval is half-open and a fact
 //! expiring exactly now has already gone.
 
+use shared::term_encoder::SharedTerms;
 use shared::triple::Triple;
 use std::collections::{HashMap, HashSet};
-use shared::term_encoder::SharedTerms;
 
 /// Canonical annotated predicate: `window_iri + local_name`
 pub fn annotate_predicate(window_iri: &str, local_name: &str) -> String {
@@ -309,9 +309,7 @@ mod tests {
         let triples = &back["http://sensor/"];
         assert_eq!(triples.len(), 1);
         // predicate should be stripped to "reading"
-        let pred_str = dict.decode(triples[0].predicate)
-            .unwrap()
-            .to_string();
+        let pred_str = dict.decode(triples[0].predicate).unwrap().to_string();
         assert_eq!(pred_str, "reading");
     }
 }

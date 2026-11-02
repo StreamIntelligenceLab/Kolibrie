@@ -26,9 +26,7 @@ fn test1() {
     }
 
     // Add transitivity rule: likes(X, Y) & likes(Y, Z) => likes(X, Z)
-    let likes_id = {
-        kg.encode_term("likes")
-    };
+    let likes_id = { kg.encode_term("likes") };
 
     kg.add_rule(Rule {
         premise: vec![
@@ -174,9 +172,7 @@ fn transitivity_benchmark() {
         }
 
         // Only transitivity rule
-        let likes_id = {
-            kg.encode_term("likes")
-        };
+        let likes_id = { kg.encode_term("likes") };
 
         kg.add_rule(Rule {
             premise: vec![

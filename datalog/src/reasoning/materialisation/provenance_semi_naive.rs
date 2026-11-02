@@ -398,91 +398,89 @@ fn run_negative_stratum_pass<P: Provenance>(
     // first so the closure can still insert into its fact base.
     let terms = reasoner.terms();
     shared::term_encoder::TermEncoder::with_terms(&terms, &mut |dict| {
-
-    for rule in rules {
-        // Join all positive premises to get candidate bindings.
-        let mut bindings: Vec<BTreeMap<String, String>> = vec![BTreeMap::new()];
-        for prem in &rule.premise {
-            bindings = join_premise_with_hash_join(prem, &all_facts, bindings, &dict);
-            if bindings.is_empty() {
-                break;
-            }
-        }
-
-        for binding in &bindings {
-            let u32_binding = convert_string_binding_to_u32(binding, &dict);
-
-            if !evaluate_filters(&u32_binding, &rule.filters, &dict) {
-                continue;
-            }
-
-            // Conjunction of positive premise tags (⊗).
-            let pos_triples = resolve_premise_triples(&rule.premise, &u32_binding);
-            let pos_tag = pos_triples
-                .iter()
-                .map(|t| tag_store.get_tag(t))
-                .fold(provenance.one(), |acc, tag| {
-                    provenance.conjunction(&acc, &tag)
-                });
-
-            if pos_tag == provenance.zero() {
-                continue;
-            }
-
-            // Conjunction of NAF contributions for each negated atom (⊗).
-            let mut neg_tag = provenance.one();
-            for neg_pat in &rule.negative_premise {
-                let s = resolve_term(&neg_pat.0, &u32_binding);
-                let p = resolve_term(&neg_pat.1, &u32_binding);
-                let o = resolve_term(&neg_pat.2, &u32_binding);
-
-                let contrib = match (s, p, o) {
-                    (Some(s), Some(p), Some(o)) => {
-                        let neg_triple = Triple {
-                            subject: s,
-                            predicate: p,
-                            object: o,
-                        };
-                        if all_facts_set.contains(&neg_triple) {
-                            // Fact present -> negate its provenance tag.
-                            provenance.negate(&tag_store.get_tag(&neg_triple))
-                        } else {
-                            // Fact absent -> NOT absent = certainly true = one().
-                            provenance.one()
-                        }
-                    }
-                    // Unbound variable in negated atom — safety check should have
-                    // caught this; treat as zero (cannot fire).
-                    _ => provenance.zero(),
-                };
-
-                neg_tag = provenance.conjunction(&neg_tag, &contrib);
-                if neg_tag == provenance.zero() {
+        for rule in rules {
+            // Join all positive premises to get candidate bindings.
+            let mut bindings: Vec<BTreeMap<String, String>> = vec![BTreeMap::new()];
+            for prem in &rule.premise {
+                bindings = join_premise_with_hash_join(prem, &all_facts, bindings, &dict);
+                if bindings.is_empty() {
                     break;
                 }
             }
 
-            let conclusion_tag = provenance.conjunction(&pos_tag, &neg_tag);
-            if conclusion_tag == provenance.zero() {
-                continue;
-            }
+            for binding in &bindings {
+                let u32_binding = convert_string_binding_to_u32(binding, &dict);
 
-            // Derive conclusions.
-            for conclusion in &rule.conclusion {
-                let inferred =
-                    replace_variables_with_bound_values(conclusion, &u32_binding, dict);
+                if !evaluate_filters(&u32_binding, &rule.filters, &dict) {
+                    continue;
+                }
 
-                if !all_facts_set.contains(&inferred) && !new_derived.contains(&inferred) {
-                    tag_store.set_tag(&inferred, conclusion_tag.clone());
-                    reasoner.dataset_index.insert(&inferred);
-                    new_derived.push(inferred);
-                } else {
-                    tag_store.update_disjunction(&inferred, &conclusion_tag);
+                // Conjunction of positive premise tags (⊗).
+                let pos_triples = resolve_premise_triples(&rule.premise, &u32_binding);
+                let pos_tag = pos_triples
+                    .iter()
+                    .map(|t| tag_store.get_tag(t))
+                    .fold(provenance.one(), |acc, tag| {
+                        provenance.conjunction(&acc, &tag)
+                    });
+
+                if pos_tag == provenance.zero() {
+                    continue;
+                }
+
+                // Conjunction of NAF contributions for each negated atom (⊗).
+                let mut neg_tag = provenance.one();
+                for neg_pat in &rule.negative_premise {
+                    let s = resolve_term(&neg_pat.0, &u32_binding);
+                    let p = resolve_term(&neg_pat.1, &u32_binding);
+                    let o = resolve_term(&neg_pat.2, &u32_binding);
+
+                    let contrib = match (s, p, o) {
+                        (Some(s), Some(p), Some(o)) => {
+                            let neg_triple = Triple {
+                                subject: s,
+                                predicate: p,
+                                object: o,
+                            };
+                            if all_facts_set.contains(&neg_triple) {
+                                // Fact present -> negate its provenance tag.
+                                provenance.negate(&tag_store.get_tag(&neg_triple))
+                            } else {
+                                // Fact absent -> NOT absent = certainly true = one().
+                                provenance.one()
+                            }
+                        }
+                        // Unbound variable in negated atom — safety check should have
+                        // caught this; treat as zero (cannot fire).
+                        _ => provenance.zero(),
+                    };
+
+                    neg_tag = provenance.conjunction(&neg_tag, &contrib);
+                    if neg_tag == provenance.zero() {
+                        break;
+                    }
+                }
+
+                let conclusion_tag = provenance.conjunction(&pos_tag, &neg_tag);
+                if conclusion_tag == provenance.zero() {
+                    continue;
+                }
+
+                // Derive conclusions.
+                for conclusion in &rule.conclusion {
+                    let inferred =
+                        replace_variables_with_bound_values(conclusion, &u32_binding, dict);
+
+                    if !all_facts_set.contains(&inferred) && !new_derived.contains(&inferred) {
+                        tag_store.set_tag(&inferred, conclusion_tag.clone());
+                        reasoner.dataset_index.insert(&inferred);
+                        new_derived.push(inferred);
+                    } else {
+                        tag_store.update_disjunction(&inferred, &conclusion_tag);
+                    }
                 }
             }
         }
-    }
-
     });
     new_derived
 }

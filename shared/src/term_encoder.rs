@@ -190,7 +190,11 @@ impl SharedTerms {
     /// them where the borrow does fit one.
     #[inline]
     pub fn read(&self) -> TermsRef<'_> {
-        TermsRef(self.0.read().unwrap_or_else(|poisoned| poisoned.into_inner()))
+        TermsRef(
+            self.0
+                .read()
+                .unwrap_or_else(|poisoned| poisoned.into_inner()),
+        )
     }
 
     /// Borrows the space for interning, for as long as the returned value lives.
@@ -200,7 +204,11 @@ impl SharedTerms {
     /// decode is parallel only because it does.
     #[inline]
     pub fn write(&self) -> TermsMut<'_> {
-        TermsMut(self.0.write().unwrap_or_else(|poisoned| poisoned.into_inner()))
+        TermsMut(
+            self.0
+                .write()
+                .unwrap_or_else(|poisoned| poisoned.into_inner()),
+        )
     }
 }
 
@@ -308,7 +316,6 @@ impl TermView {
     }
 }
 
-
 /// Immutable access to the copy, so anything taking `&Dictionary` still works.
 ///
 /// This does not reopen the hazard: `Dictionary::encode` takes `&mut self`, and a
@@ -341,7 +348,10 @@ impl SharedTerms {
     /// So this is the third option -- a shared lock, held only for the call, with no
     /// guard escaping and no copy made.
     pub fn with_terms_read<R>(&self, visit: impl FnOnce(&Dictionary) -> R) -> R {
-        let guard = self.0.read().unwrap_or_else(|poisoned| poisoned.into_inner());
+        let guard = self
+            .0
+            .read()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         visit(&guard)
     }
 
@@ -429,7 +439,9 @@ mod scope_tests {
         assert_eq!(terms.decode(minted).as_deref(), Some("urn:written"));
         // and the read scope agrees, so the two are one space
         assert_eq!(
-            terms.with_terms_read(|d| d.decode(minted).map(str::to_string)).as_deref(),
+            terms
+                .with_terms_read(|d| d.decode(minted).map(str::to_string))
+                .as_deref(),
             Some("urn:written")
         );
     }
@@ -495,7 +507,11 @@ mod tests {
         // to the other.
         let a = SharedTerms::new();
         let b = SharedTerms::new();
-        assert_eq!(a.encode("urn:same"), b.encode("urn:same"), "same id, by luck");
+        assert_eq!(
+            a.encode("urn:same"),
+            b.encode("urn:same"),
+            "same id, by luck"
+        );
         assert!(!a.shares_space_with(&b));
         let only_in_a = a.encode("urn:later");
         assert_eq!(b.decode(only_in_a), None);

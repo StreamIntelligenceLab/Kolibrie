@@ -72,8 +72,8 @@ pub mod ml;
 // depends on the engine. Folding all ten into one module made a leaf and a consumer
 // the same node and closed a cycle across seven modules, which is how the direction
 // of this dependency came to be measured rather than assumed.
-pub mod ml_policy;
 pub(crate) mod ml_feature_loader;
+pub mod ml_policy;
 pub mod neural_registry;
 /// What a failed parse says, without naming the parser library.
 pub mod parse_error;
@@ -110,7 +110,8 @@ pub(crate) mod ml_runtime_impl {
     // No `cfg` here: `ml::neural_relations` is already either the real module or the
     // `#[path]`-substituted disabled one, so naming its `NeuralRuntime` picks the
     // right implementation for the build on its own.
-    static RUNTIME: crate::ml::neural_relations::NeuralRuntime = crate::ml::neural_relations::NeuralRuntime;
+    static RUNTIME: crate::ml::neural_relations::NeuralRuntime =
+        crate::ml::neural_relations::NeuralRuntime;
 
     /// The runtime for this build.
     pub(crate) fn runtime() -> &'static dyn MlRuntime {

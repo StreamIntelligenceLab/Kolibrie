@@ -316,8 +316,7 @@ pub fn process_rule_definition(
                     let mut qt_store = database.quoted_triple_store.write().unwrap();
                     let mut rdf_star = Vec::new();
                     kg.with_terms(&mut |dict| {
-                        rdf_star =
-                            encode_hybrid_results_as_rdf_star(&results, dict, &mut qt_store);
+                        rdf_star = encode_hybrid_results_as_rdf_star(&results, dict, &mut qt_store);
                     });
                     drop(qt_store);
                     for triple in rdf_star {

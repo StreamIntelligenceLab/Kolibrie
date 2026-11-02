@@ -24,7 +24,7 @@ use rayon::prelude::*;
 use shared::dataset_index::{GraphId, GraphTerm, QuadPattern};
 use shared::query::SortDirection;
 use shared::quoted_triple_store::is_quoted_triple_id;
-use shared::terms::{UNBOUND, Bindings, Term};
+use shared::terms::{Bindings, Term, UNBOUND};
 
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::sync::Arc;
@@ -86,7 +86,8 @@ mod tests {
                     row(&[("x", 1), ("b", 11)]),
                     row(&[("x", 1), ("b", 12)]),
                     row(&[("x", 3), ("b", 13)]),
-                ].into(),
+                ]
+                .into(),
             ),
             // Right side leaves the key variable unbound
             (
@@ -390,7 +391,8 @@ mod tests {
                 row(&[]),
                 row(&[("x", a), ("keep", 7)]),
                 row(&[("x", d), ("keep", 8)]),
-            ].into(),
+            ]
+            .into(),
         );
 
         // Unbound `row(&[])` matches both self-referential quads; `x = a` extends and
@@ -476,7 +478,8 @@ mod tests {
                 row(&[]),
                 row(&[("g", second), ("tag", 1)]),
                 row(&[("g", hidden), ("tag", 2)]),
-            ].into(),
+            ]
+            .into(),
         );
         let mut graphs = vec![GraphId::Named(first), GraphId::Named(second)];
         graphs.sort_unstable();
@@ -521,7 +524,12 @@ mod tests {
         );
         let second_row = row(&[("tag", 3), ("s", subject), ("o", values[2])]);
         assert_eq!(results, vec![second_row.clone(), second_row].into());
-        let results = scan(&database, &named_pattern(hidden), dataset(), vec![row(&[])].into());
+        let results = scan(
+            &database,
+            &named_pattern(hidden),
+            dataset(),
+            vec![row(&[])].into(),
+        );
         assert!(results.is_empty());
     }
 
@@ -618,7 +626,8 @@ mod tests {
                 row(&[("tag", 1)]),
                 row(&[("s", second), ("tag", 2)]),
                 row(&[("s", second), ("who", alice)]),
-            ].into(),
+            ]
+            .into(),
         );
 
         let mut expected: Bindings =
@@ -1045,7 +1054,8 @@ impl ExecutionEngine {
         #[cfg(debug_assertions)]
         let declared = operator.output_variables(incoming.schema());
 
-        let produced = Self::execute_with_ids_and_input_inner(operator, database, context, incoming);
+        let produced =
+            Self::execute_with_ids_and_input_inner(operator, database, context, incoming);
 
         #[cfg(debug_assertions)]
         for row in &produced {
@@ -1195,12 +1205,8 @@ impl ExecutionEngine {
             }
             PhysicalOperator::Subquery { inner, spec } => {
                 // A subquery has its own variable scope and is evaluated once
-                let inner_results = Self::execute_with_ids_and_input(
-                    inner,
-                    database,
-                    context,
-                    Bindings::unit(),
-                );
+                let inner_results =
+                    Self::execute_with_ids_and_input(inner, database, context, Bindings::unit());
                 let finalized = Self::finalize_subquery(inner_results, spec, database);
                 Self::join_solution_sequences(incoming, finalized)
             }
@@ -1336,8 +1342,7 @@ impl ExecutionEngine {
                                         if Self::is_variable(arg) {
                                             row.get(arg_stripped)
                                         } else {
-                                            let mut dict =
-                                                database.dictionary.write();
+                                            let mut dict = database.dictionary.write();
                                             Some(dict.encode(arg_stripped))
                                         }
                                     })
@@ -1364,8 +1369,11 @@ impl ExecutionEngine {
                                 return UNBOUND;
                             };
                             match row.get(Self::normalize_variable(arg)) {
-                                Some(id) => dict_write
-                                    .encode(if is_quoted_triple_id(id) { "true" } else { "false" }),
+                                Some(id) => dict_write.encode(if is_quoted_triple_id(id) {
+                                    "true"
+                                } else {
+                                    "false"
+                                }),
                                 None => UNBOUND,
                             }
                         })
@@ -1732,7 +1740,13 @@ impl ExecutionEngine {
                 GraphTerm::Default => {
                     if let Some(active_graph) = context.active_graph {
                         Self::scan_one_graph(
-                            database, pattern, &layout, active_graph, None, &base, &mut rows,
+                            database,
+                            pattern,
+                            &layout,
+                            active_graph,
+                            None,
+                            &base,
+                            &mut rows,
                         );
                     } else {
                         Self::scan_query_default(
@@ -1812,8 +1826,15 @@ impl ExecutionEngine {
                     continue;
                 }
                 Self::match_quad(
-                    database, pattern, layout, quad.subject, quad.predicate, quad.object, None,
-                    base, rows,
+                    database,
+                    pattern,
+                    layout,
+                    quad.subject,
+                    quad.predicate,
+                    quad.object,
+                    None,
+                    base,
+                    rows,
                 );
             }
         }
@@ -1851,8 +1872,15 @@ impl ExecutionEngine {
         {
             exec_count!(QUADS_EXAMINED);
             Self::match_quad(
-                database, pattern, layout, quad.subject, quad.predicate, quad.object, fresh_graph,
-                &base, rows,
+                database,
+                pattern,
+                layout,
+                quad.subject,
+                quad.predicate,
+                quad.object,
+                fresh_graph,
+                &base,
+                rows,
             );
         }
     }

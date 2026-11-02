@@ -281,8 +281,10 @@ impl PyKnowledgeGraph {
     /// One prefix block covers every rule in the document, so rules written
     /// together keep their context.
     fn add_n3_rules(&mut self, n3: &str) -> PyResult<usize> {
-        let (_, (_prefixes, rules)) = datalog::parser_n3_logic::parse_n3_document(n3, &mut self.inner)
-            .map_err(|error| PyValueError::new_err(format!("could not parse the N3 rules: {error}")))?;
+        let (_, (_prefixes, rules)) =
+            datalog::parser_n3_logic::parse_n3_document(n3, &mut self.inner).map_err(|error| {
+                PyValueError::new_err(format!("could not parse the N3 rules: {error}"))
+            })?;
         let added = rules.len();
         for rule in rules {
             self.inner.add_rule(rule);
@@ -299,9 +301,6 @@ impl PyKnowledgeGraph {
     fn decode_term(&self, id: u32) -> Option<String> {
         self.inner.decode_term(id)
     }
-
-
-
 }
 
 /// Converts Python `Term` to `reasoning::Term`

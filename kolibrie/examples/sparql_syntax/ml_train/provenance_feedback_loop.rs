@@ -6,8 +6,8 @@
  *   -> SPARQL-star feature query -> train a neural relation -> feed predictions back into RULE syntax
  */
 
-use kolibrie::ml::execute_train::build_ground_reasoner_from_db;
 use kolibrie::execute_query::execute;
+use kolibrie::ml::execute_train::build_ground_reasoner_from_db;
 use kolibrie::ml::neural_relations::execute_neural_program;
 use kolibrie::parser::{convert_combined_rule, parse_combined_query};
 use kolibrie::rule_execution::process_rule_definition;

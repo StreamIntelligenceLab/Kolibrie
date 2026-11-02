@@ -8,9 +8,9 @@
  * you can obtain one at https://mozilla.org/MPL/2.0/.
  */
 
+use shared::term_encoder::SharedTerms;
 use shared::terms::Term;
 use shared::triple::Triple;
-use shared::term_encoder::SharedTerms;
 
 pub fn make_dict() -> SharedTerms {
     SharedTerms::new()

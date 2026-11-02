@@ -206,7 +206,6 @@ fn build_features_for_rows(
             let id = row
                 .get(key)
                 .or_else(|| row.get(var.as_str()))
-                
                 .ok_or_else(|| {
                     format!(
                         "Row {}: feature variable {} not present in INPUT query result",

@@ -228,7 +228,11 @@ impl PySparqlDatabase {
             .into_iter()
             .map(|triple| {
                 let term = |id| dictionary.decode(id).unwrap_or("").to_string();
-                (term(triple.subject), term(triple.predicate), term(triple.object))
+                (
+                    term(triple.subject),
+                    term(triple.predicate),
+                    term(triple.object),
+                )
             })
             .collect())
     }

@@ -76,9 +76,12 @@ fn literals() {
     // Bare where it can be, quoted where it must be. A well-formed IRI cannot begin
     // with a quote, so nothing quoted can be mistaken for one -- which is what lets
     // the common cases stay unquoted and unchanged.
-    println!("  all three are literals: {}", [&plain, &typed, &tagged]
-        .iter()
-        .all(|term| kind_of(term) == TermKind::Literal));
+    println!(
+        "  all three are literals: {}",
+        [&plain, &typed, &tagged]
+            .iter()
+            .all(|term| kind_of(term) == TermKind::Literal)
+    );
 
     // A lexical form containing a quote or a backslash is escaped, or the spelling
     // would read back as a different term.
@@ -98,7 +101,10 @@ fn which_terms_are_the_same() {
     // spelling and therefore one id.
     let plain = spell_literal("25", None, None);
     let as_string = spell_literal("25", Some(XSD_STRING), None);
-    println!("  \"25\" and \"25\"^^xsd:string      same term? {}", plain == as_string);
+    println!(
+        "  \"25\" and \"25\"^^xsd:string      same term? {}",
+        plain == as_string
+    );
 
     // Differing only in datatype is still two terms. This is the distinction the
     // readers used to lose: both became `25`, and the datatype was unrecoverable.
@@ -159,7 +165,8 @@ fn reading_a_value_back() {
 
     // With N-Triples text already in hand -- from a file, a request body, a header --
     // this is what turns it into the term the readers would have produced.
-    let from_text = rdf_term::canonicalise_literal("\"42\"^^<http://www.w3.org/2001/XMLSchema#integer>");
+    let from_text =
+        rdf_term::canonicalise_literal("\"42\"^^<http://www.w3.org/2001/XMLSchema#integer>");
     println!(
         "  canonicalise_literal of N-Triples text -> {}",
         from_text.as_deref().unwrap_or("<not a literal>")
@@ -182,7 +189,11 @@ fn blank_nodes() {
     println!("  `_:b` in one document   {in_first}");
     println!("  `_:b` in another        {in_second}");
     println!("  same node? {}", in_first == in_second);
-    println!("  still blank nodes? {:?} / {:?}", kind_of(&in_first), kind_of(&in_second));
+    println!(
+        "  still blank nodes? {:?} / {:?}",
+        kind_of(&in_first),
+        kind_of(&in_second)
+    );
 
     // Within one document the label does identify one node, which is what makes a
     // blank node useful: it links statements together.
@@ -219,7 +230,11 @@ fn terms_in_a_store() {
             let predicate = dictionary.decode(triple.predicate).unwrap_or("?");
             let object = dictionary.decode(triple.object).unwrap_or("?");
             (
-                predicate.rsplit('/').next().unwrap_or(predicate).to_string(),
+                predicate
+                    .rsplit('/')
+                    .next()
+                    .unwrap_or(predicate)
+                    .to_string(),
                 format!("{object}  [{:?}]", kind_of(object)),
             )
         })

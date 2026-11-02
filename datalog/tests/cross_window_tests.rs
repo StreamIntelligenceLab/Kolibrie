@@ -88,10 +88,7 @@ fn pred_strings(
         .map(|triples| {
             triples
                 .iter()
-                .filter_map(|t| {
-                    dict.decode(t.predicate)
-                        .map(|s| s.to_string())
-                })
+                .filter_map(|t| dict.decode(t.predicate).map(|s| s.to_string()))
                 .collect()
         })
         .unwrap_or_default()

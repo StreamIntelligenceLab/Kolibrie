@@ -17,8 +17,8 @@ use crossbeam::channel::{unbounded, Receiver, RecvTimeoutError, Sender};
 use log::{debug, error}; // Use log crate when building application
 use shared::query::{Fallback, SyncPolicy};
 use shared::rule::Rule;
-use shared::terms::TextBindings;
 use shared::term_encoder::SharedTerms;
+use shared::terms::TextBindings;
 use std::collections::HashMap;
 use std::collections::HashSet;
 use std::fmt::Debug;
@@ -124,7 +124,6 @@ pub struct WindowResult {
 }
 
 const CROSS_WINDOW_STATIC_IRI: &str = "urn:kolibrie:static:";
-
 
 /// The callback the output stream is delivered to.
 ///
@@ -1385,10 +1384,7 @@ fn execute_window_plans_on_external_buckets(
         }
 
         let results = ExecutionEngine::execute(plan, &mut db);
-        materialized.insert(
-            window.window_iri.clone(),
-            TextBindings::from_maps(&results),
-        );
+        materialized.insert(window.window_iri.clone(), TextBindings::from_maps(&results));
     }
 
     materialized

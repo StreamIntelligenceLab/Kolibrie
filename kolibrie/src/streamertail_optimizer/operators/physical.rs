@@ -410,10 +410,7 @@ impl PhysicalOperator {
                             // Same rule the executor applies in
                             // `ExecutionEngine::subquery_output_variable`: the alias
                             // when renamed, otherwise the variable itself.
-                            let name = projection
-                                .alias
-                                .as_deref()
-                                .unwrap_or(&projection.variable);
+                            let name = projection.alias.as_deref().unwrap_or(&projection.variable);
                             push_variable(name, variables);
                         }
                     }
@@ -454,7 +451,10 @@ impl PhysicalOperator {
 
 /// Appends a variable name, without its sigil, if it is not already present.
 fn push_variable(name: &str, variables: &mut Vec<String>) {
-    let name = name.strip_prefix('?').or_else(|| name.strip_prefix('$')).unwrap_or(name);
+    let name = name
+        .strip_prefix('?')
+        .or_else(|| name.strip_prefix('$'))
+        .unwrap_or(name);
     if !variables.iter().any(|existing| existing == name) {
         variables.push(name.to_string());
     }

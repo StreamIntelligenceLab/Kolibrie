@@ -54,6 +54,7 @@ use kolibrie::rule_execution::process_rule_definition;
 use kolibrie::sparql_database::SparqlDatabase;
 use serde::{Deserialize, Serialize};
 use shared::dictionary::Dictionary;
+use shared::term_encoder::SharedTerms;
 use shared::triple::Triple;
 use std::collections::HashMap;
 use std::io::{self, Read, Write};
@@ -63,7 +64,6 @@ use std::sync::mpsc::{self, Sender};
 use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::Duration;
-use shared::term_encoder::SharedTerms;
 
 // ── Session state for persistent RSP engines ────────────────────────────────
 
@@ -2209,10 +2209,7 @@ type StaticInput = (
 );
 
 /// Parse the static request in RDF-style: triple-pattern rules + `<s> <p> <o> @[l,r]` facts.
-fn parse_static_rdf(
-    req: &DmtlStaticRequest,
-    dict: &SharedTerms,
-) -> Result<StaticInput, String> {
+fn parse_static_rdf(req: &DmtlStaticRequest, dict: &SharedTerms) -> Result<StaticInput, String> {
     // Parsing interns, so it needs the shared space rather than a view.
     let rules = dict
         .try_with_terms(|d| parse_dmtl_rules(&req.program, d, Mode::Static))
@@ -2227,10 +2224,7 @@ fn parse_static_rdf(
 }
 
 /// Parse the static request in MeTeoR-style: `Pred(args)` rules + `Pred(args)@[l,r]` facts.
-fn parse_static_meteor(
-    req: &DmtlStaticRequest,
-    dict: &SharedTerms,
-) -> Result<StaticInput, String> {
+fn parse_static_meteor(req: &DmtlStaticRequest, dict: &SharedTerms) -> Result<StaticInput, String> {
     let rules = parse_program(&req.program, dict, Mode::Static)
         .map_err(|e| format!("Program parse error: {}", e))?;
     let to_iv = |fs: Vec<datalogmtl::parser::TemporalFact>| -> Vec<(Triple, TInterval)> {

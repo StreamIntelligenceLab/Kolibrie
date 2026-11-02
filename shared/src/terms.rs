@@ -151,7 +151,9 @@ impl<'a> BindingRef<'a> {
 
     /// This solution as a map, for a caller that needs to own and mutate one.
     pub fn to_binding(&self) -> Binding {
-        self.iter().map(|(name, id)| (name.to_string(), id)).collect()
+        self.iter()
+            .map(|(name, id)| (name.to_string(), id))
+            .collect()
     }
 
     /// The raw cells, in the sequence's column order.
@@ -367,7 +369,8 @@ impl Bindings {
     /// Keeps only the solutions satisfying `keep`.
     pub fn retain(&mut self, mut keep: impl FnMut(BindingRef<'_>) -> bool) {
         let schema = &self.schema;
-        self.cells.retain(|cells| keep(BindingRef { schema, cells }));
+        self.cells
+            .retain(|cells| keep(BindingRef { schema, cells }));
     }
 
     /// Discards all but the first `rows` solutions.
@@ -386,12 +389,21 @@ impl Bindings {
     }
 
     /// Orders the solutions by `compare`.
-    pub fn sort_by(&mut self, mut compare: impl FnMut(BindingRef<'_>, BindingRef<'_>) -> std::cmp::Ordering) {
+    pub fn sort_by(
+        &mut self,
+        mut compare: impl FnMut(BindingRef<'_>, BindingRef<'_>) -> std::cmp::Ordering,
+    ) {
         let schema = self.schema.clone();
         self.cells.sort_by(|left, right| {
             compare(
-                BindingRef { schema: &schema, cells: left },
-                BindingRef { schema: &schema, cells: right },
+                BindingRef {
+                    schema: &schema,
+                    cells: left,
+                },
+                BindingRef {
+                    schema: &schema,
+                    cells: right,
+                },
             )
         });
     }
@@ -410,7 +422,9 @@ impl Bindings {
     ///
     /// In debug builds, if `values` is longer than the sequence.
     pub fn bind_column(&mut self, variable: &str, values: impl IntoIterator<Item = u32>) {
-        debug_assert!(self.schema.iter().all(|name| name != variable) || self.column(variable).is_some());
+        debug_assert!(
+            self.schema.iter().all(|name| name != variable) || self.column(variable).is_some()
+        );
         let column = self.column_for(variable);
         let mut filled = 0usize;
         for (row, value) in self.cells.iter_mut().zip(values) {
@@ -676,9 +690,15 @@ mod bindings_tests {
         assert_eq!(left.len(), 2);
         assert_eq!(left.schema().len(), 3, "s, v and d are all columns");
         let first = left.row(0).expect("first");
-        assert_eq!((first.get("s"), first.get("v"), first.get("d")), (Some(1), Some(2), None));
+        assert_eq!(
+            (first.get("s"), first.get("v"), first.get("d")),
+            (Some(1), Some(2), None)
+        );
         let second = left.row(1).expect("second");
-        assert_eq!((second.get("s"), second.get("v"), second.get("d")), (Some(3), None, Some(4)));
+        assert_eq!(
+            (second.get("s"), second.get("v"), second.get("d")),
+            (Some(3), None, Some(4))
+        );
     }
 
     #[test]
@@ -733,7 +753,10 @@ mod bindings_tests {
 
         let mut reversed = Bindings::with_schema(vec!["y".into(), "x".into()]);
         reversed.push_cells(vec![2, 1]);
-        assert_eq!(left, reversed, "column order is not part of what a result says");
+        assert_eq!(
+            left, reversed,
+            "column order is not part of what a result says"
+        );
 
         let mut padded = Bindings::with_schema(vec!["x".into(), "y".into(), "gone".into()]);
         padded.push_cells(vec![1, 2, UNBOUND]);
@@ -751,7 +774,10 @@ mod bindings_tests {
         let original = sequence(&[&[("x", 1), ("y", 2)], &[("x", 3)]]);
         let maps = original.to_maps();
         assert_eq!(maps.len(), 2);
-        assert!(!maps[1].contains_key("y"), "unbound must not become a term id");
+        assert!(
+            !maps[1].contains_key("y"),
+            "unbound must not become a term id"
+        );
         assert_eq!(Bindings::from(maps), original);
     }
 
@@ -1078,10 +1104,13 @@ mod text_bindings_tests {
         let mut bindings = TextBindings::new();
         bindings.push_pairs([("s", ""), ("t", "x")]);
         assert_eq!(bindings.get(0, "s"), Some(""));
-        assert_eq!(row(&bindings, 0), vec![
-            ("s".to_string(), String::new()),
-            ("t".to_string(), "x".to_string()),
-        ]);
+        assert_eq!(
+            row(&bindings, 0),
+            vec![
+                ("s".to_string(), String::new()),
+                ("t".to_string(), "x".to_string()),
+            ]
+        );
     }
 
     #[test]
@@ -1089,7 +1118,10 @@ mod text_bindings_tests {
         let mut bindings = TextBindings::new();
         bindings.push_pairs([("s", "urn:a"), ("o", "25")]);
         bindings.push_pairs([("s", "urn:b")]);
-        assert_eq!(row(&bindings, 1), vec![("s".to_string(), "urn:b".to_string())]);
+        assert_eq!(
+            row(&bindings, 1),
+            vec![("s".to_string(), "urn:b".to_string())]
+        );
     }
 
     #[test]

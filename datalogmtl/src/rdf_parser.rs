@@ -349,10 +349,7 @@ fn ground_term(term: &Term, index: usize, position: &str) -> Result<u32, String>
 ///
 /// Takes the write lock for the whole parse — never call it while already
 /// holding a lock on the same dictionary.
-pub fn parse_facts_shared(
-    text: &str,
-    dict: &SharedTerms,
-) -> Result<Vec<Triple>, String> {
+pub fn parse_facts_shared(text: &str, dict: &SharedTerms) -> Result<Vec<Triple>, String> {
     dict.try_with_terms(|guard| parse_facts(text, guard))
         .map_err(|_| "dictionary lock poisoned".to_string())?
 }

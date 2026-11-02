@@ -166,7 +166,10 @@ mod tests {
         };
         let shown = error.to_string();
         assert!(shown.contains("could not parse from"));
-        assert!(shown.ends_with("..."), "a long lexeme is truncated: {shown}");
+        assert!(
+            shown.ends_with("..."),
+            "a long lexeme is truncated: {shown}"
+        );
         assert!(
             shown.len() < 100,
             "the message does not carry the whole input"

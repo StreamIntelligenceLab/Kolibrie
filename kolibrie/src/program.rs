@@ -55,7 +55,6 @@ use std::time::{Duration, Instant};
 use datalog::reasoning::materialisation::sdd_seed_materialise::try_infer_new_facts_with_sdd_seed_specs;
 use datalog::reasoning::Reasoner;
 use shared::dictionary::Dictionary;
-use shared::term_encoder::SharedTerms;
 use shared::provenance::Provenance;
 use shared::query::{
     CombinedQuery, CombinedRule, FilterExpression, ModelDecl, NeuralOutputKind, NeuralRelationDecl,
@@ -66,6 +65,7 @@ use shared::rule::{FilterCondition, Rule};
 use shared::sdd::{SddBudgetError, SddId, SddLimits, SddProvenance};
 use shared::seed_spec::{ExclusiveChoice, SeedSpec};
 use shared::tag_store::TagStore;
+use shared::term_encoder::SharedTerms;
 use shared::terms::{Term, TriplePattern};
 use shared::triple::Triple;
 
@@ -1414,7 +1414,8 @@ impl ProgramResult {
     pub fn answer_set(&self, predicate: &str) -> Vec<(String, String, f64)> {
         let Some(predicate_id) = self
             .dataset
-            .dictionary.read()
+            .dictionary
+            .read()
             .string_to_id
             .get(predicate)
             .copied()

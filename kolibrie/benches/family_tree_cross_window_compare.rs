@@ -9,10 +9,10 @@ use datalog::reasoning::materialisation::cross_window_incremental::{
 use datalog::reasoning::materialisation::cross_window_naive::naive_sds_plus;
 use datalog::reasoning::Reasoner;
 use shared::rule::Rule;
+use shared::term_encoder::SharedTerms;
 use shared::triple::Triple;
 use std::collections::{BTreeSet, HashMap};
 use std::time::Duration;
-use shared::term_encoder::SharedTerms;
 
 const PARENT_OF_SDS_STREAM_IRI: &str = "http://family.example/sds/stream1/parent-facts/";
 const FAMILY_SDS_STREAM_IRI: &str = "http://family.example/sds/stream2/family-facts/";
@@ -148,10 +148,7 @@ fn build_next_sds(facts: &TwoStreamFamilyFacts) -> Sds {
     build_two_stream_sds(facts.parent_of.clone(), facts.other.clone())
 }
 
-fn signature(
-    result: &HashMap<String, Vec<Triple>>,
-    dict: &SharedTerms,
-) -> BTreeSet<String> {
+fn signature(result: &HashMap<String, Vec<Triple>>, dict: &SharedTerms) -> BTreeSet<String> {
     // A copy: this decodes every triple it prints, and a scoped encoder will not
     // hold its lock across the walk.
     let d = dict.view();
@@ -169,11 +166,7 @@ fn signature(
     out
 }
 
-fn prepare_old_materialization(
-    rules: &[Rule],
-    old_sds: &Sds,
-    dict: &SharedTerms,
-) -> SdsWithExpiry {
+fn prepare_old_materialization(rules: &[Rule], old_sds: &Sds, dict: &SharedTerms) -> SdsWithExpiry {
     incremental_sds_plus(rules, old_sds, &HashMap::new(), dict, INITIAL_TIME)
 }
 

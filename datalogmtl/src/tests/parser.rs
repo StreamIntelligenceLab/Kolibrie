@@ -10,8 +10,8 @@
 
 use crate::parser::{parse_data, parse_program as parse_program_raw, RDF_TYPE};
 use crate::syntax::{DatalogMTLRule, Interval, Mode, TemporalAtom};
-use shared::terms::Term;
 use shared::term_encoder::SharedTerms;
+use shared::terms::Term;
 
 fn dict() -> SharedTerms {
     SharedTerms::new()

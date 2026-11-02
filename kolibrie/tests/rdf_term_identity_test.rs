@@ -88,9 +88,7 @@ fn a_datatype_survives_a_round_trip() {
     // Stronger than distinctness, and the property that actually matters for a store:
     // the datatype has to be *recoverable*, not merely accounted for. A term that
     // comes back without it cannot be serialised back to the graph that was read.
-    let objects = object_terms(&format!(
-        "<urn:s1> <urn:p> \"25\"^^<{XSD_INTEGER}> .\n"
-    ));
+    let objects = object_terms(&format!("<urn:s1> <urn:p> \"25\"^^<{XSD_INTEGER}> .\n"));
     assert_eq!(objects.len(), 1);
     assert!(
         objects[0].contains(XSD_INTEGER),
@@ -104,9 +102,8 @@ fn a_language_tag_is_not_part_of_the_lexical_form() {
     // `"hello"@en` has lexical form `hello` and language `en`. A plain literal whose
     // lexical form is the six characters `hello@en` is a different term. Gluing the
     // tag onto the text makes them one.
-    let objects = object_terms(
-        "<urn:s1> <urn:p> \"hello\"@en .\n<urn:s2> <urn:p> \"hello@en\" .\n",
-    );
+    let objects =
+        object_terms("<urn:s1> <urn:p> \"hello\"@en .\n<urn:s2> <urn:p> \"hello@en\" .\n");
     assert_eq!(objects.len(), 2, "both triples should be stored");
     assert_ne!(
         objects[0], objects[1],
@@ -224,9 +221,7 @@ fn every_reader_spells_one_term_one_way() {
     // data loaded as Turtle could never join against data loaded as N-Triples. All
     // three of these used to differ: N-Triples kept only the lexical form, and Turtle
     // produced `30"^^xsd:integer` -- a stray quote, and a prefix never expanded.
-    let from_ntriples = object_terms(&format!(
-        "<urn:a> <urn:age> \"30\"^^<{XSD_INTEGER}> .\n"
-    ));
+    let from_ntriples = object_terms(&format!("<urn:a> <urn:age> \"30\"^^<{XSD_INTEGER}> .\n"));
 
     let mut prefixed = SparqlDatabase::new();
     prefixed.parse_turtle(
@@ -490,7 +485,10 @@ fn a_blank_node_label_is_distinguishable_from_the_label_it_was_written_as() {
         "still a blank node: {:?}",
         subjects[0]
     );
-    assert_ne!(subjects[0], "_:original", "the bare label cannot be the term");
+    assert_ne!(
+        subjects[0], "_:original",
+        "the bare label cannot be the term"
+    );
     assert!(
         subjects[0].ends_with("original"),
         "the written label should remain legible, got {:?}",
@@ -725,7 +723,10 @@ fn an_iri_goes_out_in_brackets_whatever_its_scheme() {
     // `urn:` is not `http:`, and used to be written as a literal.
     let wire = wire_of("<urn:a> <urn:at> <urn:place> .\n");
     assert!(wire.contains("<urn:place>"), "got {wire:?}");
-    assert!(!wire.contains("\"urn:place\""), "an IRI is not a literal: {wire:?}");
+    assert!(
+        !wire.contains("\"urn:place\""),
+        "an IRI is not a literal: {wire:?}"
+    );
 }
 
 #[test]
@@ -733,7 +734,10 @@ fn a_blank_node_goes_out_as_a_blank_node() {
     // `<_:b>` is an IRI, not a blank node. generate_nquads guarded this; the
     // N-Triples writer did not.
     let wire = wire_of("_:b <urn:p> <urn:o> .\n");
-    assert!(!wire.contains("<_:"), "a blank node is not an IRI: {wire:?}");
+    assert!(
+        !wire.contains("<_:"),
+        "a blank node is not an IRI: {wire:?}"
+    );
     assert!(wire.contains("_:kolibrie-doc-"), "got {wire:?}");
 }
 
@@ -821,7 +825,10 @@ fn skolemising_replaces_a_blank_node_with_an_iri_under_the_given_authority() {
         wire.contains("<http://alice.example/.well-known/genid/"),
         "got {wire:?}"
     );
-    assert!(!wire.contains("_:"), "no blank node should remain: {wire:?}");
+    assert!(
+        !wire.contains("_:"),
+        "no blank node should remain: {wire:?}"
+    );
 }
 
 #[test]
@@ -880,5 +887,8 @@ fn skolemisation_does_not_touch_a_literal_that_mentions_a_label() {
         wire.contains("\"see _:b here\""),
         "the literal must be untouched, got {wire:?}"
     );
-    assert!(!wire.contains("well-known"), "nothing to skolemise: {wire:?}");
+    assert!(
+        !wire.contains("well-known"),
+        "nothing to skolemise: {wire:?}"
+    );
 }

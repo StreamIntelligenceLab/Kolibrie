@@ -508,7 +508,7 @@ pub fn parse_n3(&mut self, n3_data: &str)
 pub fn parse_ntriples_and_add(&mut self, ntriples_data: &str)
 pub fn parse_ntriples(&mut self, ntriples_data: &str) -> Vec<Vec<TermTriple>>
 pub fn parse_ntriples_in_scope( &mut self, ntriples_data: &str, document: u64, ) -> Vec<Vec<TermTriple>>
-pub fn encode_triples( &mut self, non_encoded_triples: Vec<Vec<TermTriple>>, ) -> Vec<Triple>
+pub fn encode_triples(&mut self, non_encoded_triples: Vec<Vec<TermTriple>>) -> Vec<Triple>
 pub fn parse_and_encode_ntriples(&mut self, ntriples_data: &str) -> Vec<Triple>
 pub fn parse_and_encode_ntriples_in_scope( &mut self, ntriples_data: &str, document: u64, ) -> Vec<Triple>
 pub fn parse_nquads_and_add(&mut self, nquads_data: &str)
@@ -1224,7 +1224,7 @@ pub fn retain(&mut self, mut keep: impl FnMut(BindingRef<'_>) -> bool)
 pub fn truncate(&mut self, rows: usize)
 pub fn clear(&mut self)
 pub fn dedup(&mut self)
-pub fn sort_by(&mut self, mut compare: impl FnMut(BindingRef<'_>, BindingRef<'_>) -> std::cmp::Ordering)
+pub fn sort_by( &mut self, mut compare: impl FnMut(BindingRef<'_>, BindingRef<'_>) -> std::cmp::Ordering, )
 pub fn bind_column(&mut self, variable: &str, values: impl IntoIterator<Item = u32>)
 pub fn cells(&self) -> &[Vec<u32>]
 pub fn cells_mut(&mut self) -> &mut [Vec<u32>]
@@ -1392,7 +1392,7 @@ pub fn replace_variables_with_bound_values( conclusion: &TriplePattern, vars: &H
 
 ```rust
 pub use shared::pattern::{construct_triple, matches_rule_pattern}
-pub fn join_rule( rule: &Rule, all_facts: &HashSet<Triple>, delta: &HashSet<Triple>, ) -> Bindings
+pub fn join_rule(rule: &Rule, all_facts: &HashSet<Triple>, delta: &HashSet<Triple>) -> Bindings
 pub fn join_remaining( rule: &Rule, changed_idx: usize, all_facts: &HashSet<Triple>, binding: HashMap<String, u32>, ) -> Bindings
 pub fn evaluate_filters( bindings: &HashMap<String, u32>, filters: &Vec<FilterCondition>, dict: &Dictionary, ) -> bool
 pub fn join_premise_with_hash_join( premise: &TriplePattern, all_facts: &[Triple], current_bindings: Vec<BTreeMap<String, String>>, dict: &Dictionary, ) -> Vec<BTreeMap<String, String>>
@@ -1549,7 +1549,7 @@ pub fn parse_data(text: &str, dict: &SharedTerms) -> Result<Vec<TemporalFact>, S
 pub fn parse_rules( text: &str, dict: &mut Dictionary, mode: Mode, ) -> Result<Vec<DatalogMTLRule>, String>
 pub fn parse_stream_shapes(text: &str, dict: &mut Dictionary) -> Result<Vec<StreamShape>, String>
 pub fn parse_facts(text: &str, dict: &mut Dictionary) -> Result<Vec<Triple>, String>
-pub fn parse_facts_shared( text: &str, dict: &SharedTerms, ) -> Result<Vec<Triple>, String>
+pub fn parse_facts_shared(text: &str, dict: &SharedTerms) -> Result<Vec<Triple>, String>
 pub fn parse_interval(s: &str) -> Result<Interval, String>
 pub fn parse_rules_shared( text: &str, dict: &SharedTerms, mode: Mode, ) -> Result<Vec<DatalogMTLRule>, String>
 pub fn parse_stream_shapes_shared( text: &str, dict: &SharedTerms, ) -> Result<Vec<StreamShape>, String>

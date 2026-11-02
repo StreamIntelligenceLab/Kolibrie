@@ -30,9 +30,9 @@
 //! window and waits for the coordinator, so a caller does not have to sleep and hope.
 
 use kolibrie_core::rsp::r2r::R2ROperator;
+use kolibrie_core::rsp::simple_r2r::QueryExecutionMode;
 use kolibrie_core::rsp::simple_r2r::SimpleR2R;
 use kolibrie_core::rsp_engine::{RSPBuilder, RSPEngine, ResultConsumer};
-use kolibrie_core::rsp::simple_r2r::QueryExecutionMode;
 use pyo3::exceptions::{PyRuntimeError, PyValueError};
 use pyo3::prelude::*;
 use pyo3::types::PyModule;
@@ -85,9 +85,10 @@ impl PyRspEngine {
         let engine: RSPEngine<Triple, Solution> = RSPBuilder::new()
             .add_rsp_ql_query(rsp_ql_query)
             .add_consumer(consumer)
-            .add_r2r(Box::new(SimpleR2R::with_execution_mode(
-                QueryExecutionMode::Volcano,
-            )) as Box<dyn R2ROperator<Triple, _, Solution>>)
+            .add_r2r(
+                Box::new(SimpleR2R::with_execution_mode(QueryExecutionMode::Volcano))
+                    as Box<dyn R2ROperator<Triple, _, Solution>>,
+            )
             .build()
             .map_err(PyValueError::new_err)?;
 

@@ -19,6 +19,7 @@ use shared::dictionary::Dictionary;
 use shared::terms::Term;
 use shared::triple::Triple;
 
+use shared::term_encoder::SharedTerms;
 use std::collections::HashSet;
 use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream};
@@ -26,7 +27,6 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
-use shared::term_encoder::SharedTerms;
 
 const PORT: u16 = 7879;
 const TICK_MS: u64 = 1000;
@@ -589,12 +589,7 @@ fn get_config(stream: TcpStream, config: &Config) {
 /// box is wrong. `validate_rules` matters here because the RDF parser — unlike
 /// the MeTeoR one — does not run it, so an unsafe head variable would otherwise
 /// only fail later, inside the tick loop, where the user cannot see it.
-fn post_config(
-    stream: TcpStream,
-    body: &str,
-    dictionary: &SharedTerms,
-    config: &Config,
-) {
+fn post_config(stream: TcpStream, body: &str, dictionary: &SharedTerms, config: &Config) {
     let req: ConfigUpdate = match serde_json::from_str(body) {
         Ok(r) => r,
         Err(e) => return config_error(stream, "request", &e.to_string()),

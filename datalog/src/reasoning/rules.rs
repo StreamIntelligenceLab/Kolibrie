@@ -21,11 +21,7 @@ use shared::triple::Triple;
 use std::collections::{BTreeMap, HashMap, HashSet};
 
 /// Given a rule, a set of all facts, and a set of "changed" facts (delta)
-pub fn join_rule(
-    rule: &Rule,
-    all_facts: &HashSet<Triple>,
-    delta: &HashSet<Triple>,
-) -> Bindings {
+pub fn join_rule(rule: &Rule, all_facts: &HashSet<Triple>, delta: &HashSet<Triple>) -> Bindings {
     let n = rule.premise.len();
     let mut results = Bindings::empty();
 

@@ -9,9 +9,9 @@ use datalog::reasoning::materialisation::cross_window_incremental::{
 use datalog::reasoning::materialisation::cross_window_naive::naive_sds_plus;
 use datalog::reasoning::Reasoner;
 use shared::rule::Rule;
+use shared::term_encoder::SharedTerms;
 use shared::triple::Triple;
 use std::collections::{BTreeSet, HashMap};
-use shared::term_encoder::SharedTerms;
 
 const TRAFFIC_IRI: &str = "http://traffic/";
 const PARKING_IRI: &str = "http://parking/";
@@ -99,10 +99,7 @@ fn make_sds(n: usize, update_ratio_percent: usize) -> Sds {
     sds
 }
 
-fn signature(
-    result: &HashMap<String, Vec<Triple>>,
-    dict: &SharedTerms,
-) -> BTreeSet<String> {
+fn signature(result: &HashMap<String, Vec<Triple>>, dict: &SharedTerms) -> BTreeSet<String> {
     // A copy: this decodes every triple it prints, and a scoped encoder will not
     // hold its lock across the walk.
     let d = dict.view();

@@ -43,6 +43,7 @@
 //! the entry points above, which at least confine the exposure to a return type you
 //! can discard.
 
+use crate::parse_error::{ParseError, ParseResult};
 use nom::{
     branch::alt,
     bytes::complete::{tag, take_until, take_while1},
@@ -55,7 +56,6 @@ use nom::{
 use rayon::str;
 use shared::dictionary::Dictionary;
 use shared::hybrid::{HybridConfig, ThresholdPolicyKind};
-use crate::parse_error::{ParseError, ParseResult};
 
 #[cfg(test)]
 #[path = "parser_tests.rs"]
@@ -132,7 +132,7 @@ pub(crate) fn parse_predicate_object(input: &str) -> IResult<&str, (&str, &str)>
     let (input, p) = predicate(input)?;
     let (input, _) = multispace1.parse(input)?;
     let (input, o) = alt((
-        parse_quoted_triple_nom,                // << s p o >> (RDF-star)
+        parse_quoted_triple_nom,            // << s p o >> (RDF-star)
         parse_uri,                          // <http://...>
         variable,                           // ?variable
         parse_literal,                      // "literal"
@@ -148,7 +148,7 @@ pub(crate) fn parse_predicate_object(input: &str) -> IResult<&str, (&str, &str)>
 /// abbreviations into separate patterns.
 pub(crate) fn parse_triple_block_nom(input: &str) -> IResult<&str, Vec<(&str, &str, &str)>> {
     let (input, subject) = alt((
-        parse_quoted_triple_nom,                // << s p o >> (RDF-star)
+        parse_quoted_triple_nom,            // << s p o >> (RDF-star)
         parse_uri,                          // <http://...>
         variable,                           // ?variable
         recognize((char(':'), identifier)), // :localname
@@ -398,8 +398,7 @@ pub(crate) fn parse_register_clause(input: &str) -> IResult<&str, RegisterClause
             window_blocks,
             ..
         },
-    ) =
-        parse_where_nom(input)?;
+    ) = parse_where_nom(input)?;
 
     Ok((
         input,
@@ -2334,7 +2333,9 @@ fn parse_top_level_neural_decls(
 }
 
 /// A `TRAIN` declaration: data source, loss, optimiser and hyperparameters.
-pub(crate) fn parse_train_neural_relation_decl(input: &str) -> IResult<&str, TrainNeuralRelationDecl> {
+pub(crate) fn parse_train_neural_relation_decl(
+    input: &str,
+) -> IResult<&str, TrainNeuralRelationDecl> {
     let (input, _) = multispace0.parse(input)?;
     let (input, _) = tag("TRAIN").parse(input)?;
     let (input, _) = multispace1.parse(input)?;
@@ -2488,13 +2489,13 @@ pub(crate) fn parse_ml_predict(input: &str) -> IResult<&str, MLPredictClause<'_>
             // Parse WHERE patterns and filters (simplified - use your actual WHERE parser)
             let where_clause = &input_query[where_idx + 5..].trim();
             // This is a placeholder - you should use your actual pattern and filter parser here
-            let (_rest, WhereClause { patterns, filters, .. }) =
-                parse_where_nom(where_clause).unwrap_or_else(|_| {
-                    (
-                        where_clause,
-                        WhereClause::default(),
-                    )
-                });
+            let (
+                _rest,
+                WhereClause {
+                    patterns, filters, ..
+                },
+            ) = parse_where_nom(where_clause)
+                .unwrap_or_else(|_| (where_clause, WhereClause::default()));
 
             where_patterns = patterns;
             filter_conditions = filters;
@@ -3110,8 +3111,7 @@ pub(crate) fn parse_rule(input: &str) -> IResult<&str, CombinedRule<'_>> {
             window_blocks,
             negated_patterns: neg_patterns,
         },
-    ) =
-        parse_where_nom(input)?;
+    ) = parse_where_nom(input)?;
     let body = (patterns, filters, values_clause, binds, subqueries);
 
     // Optional dot at the end of rule

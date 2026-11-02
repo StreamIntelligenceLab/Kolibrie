@@ -7,10 +7,10 @@
 //! panics rather than degrading.
 
 use crate::reasoning::Reasoner;
+use shared::term_encoder::TermView;
 use shared::terms::{Term, TriplePattern};
 use shared::triple::Triple;
 use std::collections::HashSet;
-use shared::term_encoder::TermView;
 
 /// Contains a method to convert a specific data structure into a representation in the DOT language
 /// For better visualisation

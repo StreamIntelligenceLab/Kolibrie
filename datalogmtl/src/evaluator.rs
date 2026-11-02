@@ -43,11 +43,11 @@ use crate::store::TemporalStore;
 use crate::syntax::{DatalogMTLRule, Interval, TemporalAtom};
 use crate::validate::validate_rules;
 use shared::pattern::construct_triple;
+use shared::term_encoder::{SharedTerms, TermEncoder};
 use shared::terms::{BindingRef, Bindings, Term, TriplePattern};
 use shared::triple::Triple;
 use std::collections::HashSet;
 use std::time::Instant;
-use shared::term_encoder::{SharedTerms, TermEncoder};
 
 /// A validated rule set together with the store it reads and writes.
 ///
@@ -153,12 +153,7 @@ impl<S: TemporalStore> DatalogMTLEvaluator<S> {
     }
 
     /// Evaluate one rule at time t. Returns all satisfying variable bindings.
-    fn evaluate_rule(
-        &self,
-        rule: &DatalogMTLRule,
-        t: u64,
-        metrics: &mut TickMetrics,
-    ) -> Bindings {
+    fn evaluate_rule(&self, rule: &DatalogMTLRule, t: u64, metrics: &mut TickMetrics) -> Bindings {
         // Step 1: seed bindings from all Base atoms at the current snapshot,
         // using indexed store lookups and indexed joins (no full-fact scan).
         let base_atoms: Vec<&TriplePattern> = rule
@@ -276,7 +271,8 @@ impl<S: TemporalStore> DatalogMTLEvaluator<S> {
         let mut results = Bindings::empty();
         for binding in bindings {
             for &t_prime in &timestamps {
-                let inner_bindings = self.eval_atom_at(inner, t_prime, &Bindings::single(binding.to_binding()));
+                let inner_bindings =
+                    self.eval_atom_at(inner, t_prime, &Bindings::single(binding.to_binding()));
                 results.extend(inner_bindings);
             }
         }
@@ -308,7 +304,8 @@ impl<S: TemporalStore> DatalogMTLEvaluator<S> {
         let mut results = Bindings::empty();
         'outer: for binding in bindings {
             // Seed candidates from the first integer point.
-            let mut candidates = self.eval_atom_at(inner, lo, &Bindings::single(binding.to_binding()));
+            let mut candidates =
+                self.eval_atom_at(inner, lo, &Bindings::single(binding.to_binding()));
             if candidates.is_empty() {
                 continue 'outer;
             }
@@ -317,7 +314,8 @@ impl<S: TemporalStore> DatalogMTLEvaluator<S> {
             for t_prime in (lo + 1)..=hi {
                 let mut surviving = Bindings::empty();
                 for candidate in candidates {
-                    let check = self.eval_atom_at(inner, t_prime, &Bindings::single(candidate.clone()));
+                    let check =
+                        self.eval_atom_at(inner, t_prime, &Bindings::single(candidate.clone()));
                     if !check.is_empty() {
                         surviving.push(candidate);
                     }
@@ -350,7 +348,8 @@ impl<S: TemporalStore> DatalogMTLEvaluator<S> {
         };
         let mut results = Bindings::empty();
         for binding in bindings {
-            let inner_results = self.eval_atom_at(inner, t_prev, &Bindings::single(binding.to_binding()));
+            let inner_results =
+                self.eval_atom_at(inner, t_prev, &Bindings::single(binding.to_binding()));
             results.extend(inner_results);
         }
         results
@@ -378,7 +377,8 @@ impl<S: TemporalStore> DatalogMTLEvaluator<S> {
         for binding in bindings {
             'reset: for &t_prime in since_timestamps.iter().rev() {
                 scan_depth += 1;
-                let psi_results = self.eval_atom_at(psi, t_prime, &Bindings::single(binding.to_binding()));
+                let psi_results =
+                    self.eval_atom_at(psi, t_prime, &Bindings::single(binding.to_binding()));
                 if psi_results.is_empty() {
                     continue;
                 }
@@ -387,7 +387,8 @@ impl<S: TemporalStore> DatalogMTLEvaluator<S> {
                 // an uncovered integer point makes the continuation fail).
                 for t_pp in (t_prime + 1)..=t {
                     scan_depth += 1;
-                    let phi_results = self.eval_atom_at(phi, t_pp, &Bindings::single(binding.to_binding()));
+                    let phi_results =
+                        self.eval_atom_at(phi, t_pp, &Bindings::single(binding.to_binding()));
                     if phi_results.is_empty() {
                         continue 'reset;
                     }
@@ -401,12 +402,7 @@ impl<S: TemporalStore> DatalogMTLEvaluator<S> {
 
     /// Evaluate a single TemporalAtom at a fixed time point t_prime,
     /// starting from the given partial bindings.
-    fn eval_atom_at(
-        &self,
-        atom: &TemporalAtom,
-        t_prime: u64,
-        bindings: &Bindings,
-    ) -> Bindings {
+    fn eval_atom_at(&self, atom: &TemporalAtom, t_prime: u64, bindings: &Bindings) -> Bindings {
         match atom {
             TemporalAtom::Base(pattern) => {
                 let mut results = Bindings::empty();

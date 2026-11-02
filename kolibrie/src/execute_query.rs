@@ -25,7 +25,7 @@ use shared::query::{
     OrderCondition, SelectQuery, SortDirection, SparqlOperation, UpdateOperation,
 };
 use shared::quoted_triple_store::is_quoted_triple_id;
-use shared::terms::{UNBOUND, BindingRef, Bindings, Term};
+use shared::terms::{BindingRef, Bindings, Term, UNBOUND};
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::sync::atomic::{AtomicU64, Ordering as AtomicOrdering};
 
@@ -1222,7 +1222,8 @@ fn apply_order_by(table: &mut StringTable, conditions: &[OrderCondition<'_>]) {
     // sorted in place.
     let mut rows = std::mem::take(&mut table.rows);
     let terms = &table.terms;
-    let term = |cell: Option<u32>| cell.and_then(|cell| terms.get(cell as usize).map(String::as_str));
+    let term =
+        |cell: Option<u32>| cell.and_then(|cell| terms.get(cell as usize).map(String::as_str));
     rows.sort_by(|left, right| {
         for (column, direction) in &keys {
             let Some(column) = *column else { continue };
@@ -1455,9 +1456,7 @@ fn instantiate_graph(
     database: &mut SparqlDatabase,
 ) -> Result<Option<GraphId>, String> {
     if is_variable(graph) {
-        return Ok(binding
-            .get(normalize_variable(graph))
-            .map(GraphId::Named));
+        return Ok(binding.get(normalize_variable(graph)).map(GraphId::Named));
     }
     match compile_graph_term(graph, prefixes, database)? {
         GraphTerm::Named(graph) => Ok(Some(GraphId::Named(graph))),

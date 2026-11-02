@@ -32,22 +32,27 @@ fn database_with_distinct_objects() -> SparqlDatabase {
     for i in 0..ROWS {
         // Subject and object both unique and tied to each other, so a row that reads
         // the wrong term table entry disagrees with its own subject.
-        data.push_str(&format!(
-            "<urn:s{i}> <urn:p> <urn:o{i}> .\n"
-        ));
+        data.push_str(&format!("<urn:s{i}> <urn:p> <urn:o{i}> .\n"));
     }
-    kolibrie::execute_query::execute_sparql_update(&format!("INSERT DATA {{\n{data}\n}}"), &mut database)
-        .expect("fixture must load");
+    kolibrie::execute_query::execute_sparql_update(
+        &format!("INSERT DATA {{\n{data}\n}}"),
+        &mut database,
+    )
+    .expect("fixture must load");
     database
 }
 
 #[test]
 fn every_row_past_the_first_chunk_keeps_its_own_value() {
     let mut database = database_with_distinct_objects();
-    let solutions = execute("SELECT ?s ?o WHERE { ?s <urn:p> ?o }", &mut database)
-        .expect("query should run");
+    let solutions =
+        execute("SELECT ?s ?o WHERE { ?s <urn:p> ?o }", &mut database).expect("query should run");
 
-    assert_eq!(solutions.len(), ROWS, "the fixture must span several chunks");
+    assert_eq!(
+        solutions.len(),
+        ROWS,
+        "the fixture must span several chunks"
+    );
 
     // Checked against the values the fixture put in, not against each other. Both
     // columns of a row shift by the same amount when the prefix sum is wrong, so a
@@ -71,7 +76,10 @@ fn every_row_past_the_first_chunk_keeps_its_own_value() {
         "every row must be distinct: a repeated pair means a chunk read another \
          chunk's terms"
     );
-    assert_eq!(seen, expected, "the values read back must be the ones stored");
+    assert_eq!(
+        seen, expected,
+        "the values read back must be the ones stored"
+    );
 }
 
 #[test]
@@ -100,7 +108,10 @@ fn materialising_a_multi_chunk_result_agrees_with_borrowing_it() {
             .map(|value| value.as_deref().unwrap_or_default())
             .collect();
         let materialised: Vec<&str> = materialised.iter().map(String::as_str).collect();
-        assert_eq!(borrowed, materialised, "row {row} differs between read paths");
+        assert_eq!(
+            borrowed, materialised,
+            "row {row} differs between read paths"
+        );
     }
 }
 

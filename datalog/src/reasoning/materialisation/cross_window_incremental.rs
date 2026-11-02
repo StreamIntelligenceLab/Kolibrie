@@ -28,10 +28,10 @@ use crate::cross_window_sds::{
 };
 use crate::reasoning::materialisation::provenance_semi_naive::semi_naive_with_initial_tags_and_delta;
 use crate::reasoning::Reasoner;
-use shared::term_encoder::SharedTerms;
 use shared::provenance::ExpirationProvenance;
 use shared::rule::Rule;
 use shared::tag_store::TagStore;
+use shared::term_encoder::SharedTerms;
 use shared::triple::Triple;
 use std::collections::HashMap;
 

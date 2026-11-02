@@ -27,9 +27,9 @@
 //! fragment and produce a descriptive error.
 
 use crate::syntax::{DatalogMTLRule, Interval, Mode, TemporalAtom};
+use shared::term_encoder::SharedTerms;
 use shared::terms::{Term, TriplePattern};
 use shared::triple::Triple;
-use shared::term_encoder::SharedTerms;
 
 /// Full IRI for the `rdf:type` predicate used to encode unary atoms.
 pub const RDF_TYPE: &str = "http://www.w3.org/1999/02/22-rdf-syntax-ns#type";
@@ -131,11 +131,7 @@ fn parse_rule(
 }
 
 /// Parse a single body literal into a (possibly nested) `TemporalAtom`.
-fn parse_literal(
-    s: &str,
-    dict: &SharedTerms,
-    mode: Mode,
-) -> Result<TemporalAtom, String> {
+fn parse_literal(s: &str, dict: &SharedTerms, mode: Mode) -> Result<TemporalAtom, String> {
     // Binary Since (past): `L Since[a,b] R` (whitespace already stripped).
     if let Some(idx) = find_kw_depth0(s, "Since") {
         let (interval, phi, psi) = parse_binary(s, idx, "Since", dict, mode)?;
@@ -331,11 +327,7 @@ fn split_atom(s: &str) -> Result<(&str, Vec<&str>), String> {
 }
 
 /// Map an atom to a triple *pattern* (rule context: uppercase args are variables).
-fn atom_to_pattern(
-    s: &str,
-    dict: &SharedTerms,
-    _rule_ctx: bool,
-) -> Result<TriplePattern, String> {
+fn atom_to_pattern(s: &str, dict: &SharedTerms, _rule_ctx: bool) -> Result<TriplePattern, String> {
     let (functor, args) = split_atom(s)?;
     if functor.is_empty() {
         return Err("empty predicate name".into());

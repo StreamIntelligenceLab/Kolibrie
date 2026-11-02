@@ -19,11 +19,11 @@ use quick_xml::Reader;
 use rayon::prelude::*;
 use shared::dataset_index::{DatasetIndex, GraphId, Quad};
 use shared::dictionary::Dictionary;
+use shared::query::{ModelDecl, NeuralRelationDecl, TrainNeuralRelationDecl};
+use shared::quoted_triple_store::{is_quoted_triple_id, QuotedTripleStore};
 use shared::rdf_term;
 use shared::rdf_term::TermTriple;
 use shared::term_encoder::SharedTerms;
-use shared::query::{ModelDecl, NeuralRelationDecl, TrainNeuralRelationDecl};
-use shared::quoted_triple_store::{is_quoted_triple_id, QuotedTripleStore};
 use shared::triple::Triple;
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::sync::Arc;
@@ -921,49 +921,51 @@ impl SparqlDatabase {
                         }
                         language_scope.push(language);
                         match e.name() {
-                        QName(b"rdf:RDF") => {
-                            for attr in e.attributes().filter_map(Result::ok) {
-                                let key = attr.key;
-                                let value = attr.value;
-                                if key.as_ref().starts_with(b"xmlns:") {
-                                    let prefix = std::str::from_utf8(&key.as_ref()[6..])
-                                        .unwrap_or("")
-                                        .to_string();
-                                    let uri = std::str::from_utf8(&value).unwrap_or("").to_string();
-                                    self.prefixes.insert(prefix, uri);
-                                } else if key.as_ref() == b"xmlns" {
-                                    // Default namespace
-                                    let uri = std::str::from_utf8(&value).unwrap_or("").to_string();
-                                    self.prefixes.insert("".to_string(), uri);
+                            QName(b"rdf:RDF") => {
+                                for attr in e.attributes().filter_map(Result::ok) {
+                                    let key = attr.key;
+                                    let value = attr.value;
+                                    if key.as_ref().starts_with(b"xmlns:") {
+                                        let prefix = std::str::from_utf8(&key.as_ref()[6..])
+                                            .unwrap_or("")
+                                            .to_string();
+                                        let uri =
+                                            std::str::from_utf8(&value).unwrap_or("").to_string();
+                                        self.prefixes.insert(prefix, uri);
+                                    } else if key.as_ref() == b"xmlns" {
+                                        // Default namespace
+                                        let uri =
+                                            std::str::from_utf8(&value).unwrap_or("").to_string();
+                                        self.prefixes.insert("".to_string(), uri);
+                                    }
                                 }
                             }
-                        }
-                        QName(b"rdf:Description") => {
-                            for attr in e.attributes().filter_map(Result::ok) {
-                                if attr.key == QName(b"rdf:about") {
-                                    current_subject.truncate(0);
-                                    current_subject.extend_from_slice(&attr.value);
+                            QName(b"rdf:Description") => {
+                                for attr in e.attributes().filter_map(Result::ok) {
+                                    if attr.key == QName(b"rdf:about") {
+                                        current_subject.truncate(0);
+                                        current_subject.extend_from_slice(&attr.value);
+                                    }
                                 }
                             }
-                        }
-                        QName(b"rdfs:Class") | QName(b"rdf:type") => {
-                            current_predicate.truncate(0);
-                            current_predicate.extend_from_slice(b"rdf:type");
-                        }
-                        QName(b"rdfs:subClassOf") => {
-                            current_predicate.truncate(0);
-                            current_predicate.extend_from_slice(b"rdfs:subClassOf");
-                        }
-                        QName(b"rdfs:label") => {
-                            current_predicate.truncate(0);
-                            current_predicate.extend_from_slice(b"rdfs:label");
-                        }
-                        name => {
-                            let name_str =
-                                std::str::from_utf8(name.as_ref()).unwrap_or("").to_string();
-                            let resolved_predicate = self.resolve_term(&name_str);
-                            current_predicate = resolved_predicate.clone().into_bytes();
-                        }
+                            QName(b"rdfs:Class") | QName(b"rdf:type") => {
+                                current_predicate.truncate(0);
+                                current_predicate.extend_from_slice(b"rdf:type");
+                            }
+                            QName(b"rdfs:subClassOf") => {
+                                current_predicate.truncate(0);
+                                current_predicate.extend_from_slice(b"rdfs:subClassOf");
+                            }
+                            QName(b"rdfs:label") => {
+                                current_predicate.truncate(0);
+                                current_predicate.extend_from_slice(b"rdfs:label");
+                            }
+                            name => {
+                                let name_str =
+                                    std::str::from_utf8(name.as_ref()).unwrap_or("").to_string();
+                                let resolved_predicate = self.resolve_term(&name_str);
+                                current_predicate = resolved_predicate.clone().into_bytes();
+                            }
                         }
                     }
                     Ok(Event::Empty(ref e)) => {
@@ -1139,49 +1141,49 @@ impl SparqlDatabase {
         loop {
             match xml_reader.read_event_into(&mut buf) {
                 Ok(Event::Start(ref e)) => {
-                        current_datatype.truncate(0);
-                        let mut language =
-                            language_scope.last().cloned().unwrap_or_default();
-                        for attr in e.attributes().filter_map(Result::ok) {
-                            match attr.key {
-                                QName(b"rdf:datatype") => {
-                                    current_datatype.extend_from_slice(&attr.value)
+                    current_datatype.truncate(0);
+                    let mut language = language_scope.last().cloned().unwrap_or_default();
+                    for attr in e.attributes().filter_map(Result::ok) {
+                        match attr.key {
+                            QName(b"rdf:datatype") => {
+                                current_datatype.extend_from_slice(&attr.value)
+                            }
+                            QName(b"xml:lang") => {
+                                language.clear();
+                                language.extend_from_slice(&attr.value);
+                            }
+                            _ => {}
+                        }
+                    }
+                    language_scope.push(language);
+                    match e.name() {
+                        QName(b"rdf:Description") => {
+                            for attr in e.attributes().filter_map(Result::ok) {
+                                if attr.key == QName(b"rdf:about") {
+                                    current_subject.clear();
+                                    current_subject.extend_from_slice(&attr.value);
                                 }
-                                QName(b"xml:lang") => {
-                                    language.clear();
-                                    language.extend_from_slice(&attr.value);
-                                }
-                                _ => {}
                             }
                         }
-                        language_scope.push(language);
-                        match e.name() {
-                    QName(b"rdf:Description") => {
-                        for attr in e.attributes().filter_map(Result::ok) {
-                            if attr.key == QName(b"rdf:about") {
-                                current_subject.clear();
-                                current_subject.extend_from_slice(&attr.value);
-                            }
+                        QName(b"rdfs:Class") | QName(b"rdf:type") => {
+                            current_predicate.clear();
+                            current_predicate.extend_from_slice(b"rdf:type");
+                        }
+                        QName(b"rdfs:subClassOf") => {
+                            current_predicate.clear();
+                            current_predicate.extend_from_slice(b"rdfs:subClassOf");
+                        }
+                        QName(b"rdfs:label") => {
+                            current_predicate.clear();
+                            current_predicate.extend_from_slice(b"rdfs:label");
+                        }
+                        name => {
+                            let name_str =
+                                std::str::from_utf8(name.as_ref()).unwrap_or("").to_string();
+                            let resolved_predicate = self.resolve_term(&name_str);
+                            current_predicate = resolved_predicate.clone().into_bytes();
                         }
                     }
-                    QName(b"rdfs:Class") | QName(b"rdf:type") => {
-                        current_predicate.clear();
-                        current_predicate.extend_from_slice(b"rdf:type");
-                    }
-                    QName(b"rdfs:subClassOf") => {
-                        current_predicate.clear();
-                        current_predicate.extend_from_slice(b"rdfs:subClassOf");
-                    }
-                    QName(b"rdfs:label") => {
-                        current_predicate.clear();
-                        current_predicate.extend_from_slice(b"rdfs:label");
-                    }
-                    name => {
-                        let name_str = std::str::from_utf8(name.as_ref()).unwrap_or("").to_string();
-                        let resolved_predicate = self.resolve_term(&name_str);
-                        current_predicate = resolved_predicate.clone().into_bytes();
-                    }
-                        }
                 }
                 Ok(Event::Empty(ref e)) => {
                     if let Ok(predicate) = std::str::from_utf8(e.name().as_ref()) {
@@ -1670,13 +1672,15 @@ impl SparqlDatabase {
                 let source_dictionary = dict_arc.read();
                 let source_quoted = quoted_arc.read().unwrap_or_else(|p| p.into_inner());
                 let mut target_dictionary = self.dictionary.write();
-                let mut target_quoted =
-                    self.quoted_triple_store.write().unwrap_or_else(|p| p.into_inner());
+                let mut target_quoted = self
+                    .quoted_triple_store
+                    .write()
+                    .unwrap_or_else(|p| p.into_inner());
                 let mut seen = HashMap::new();
                 let reencode = |id: u32,
-                                    target_dictionary: &mut Dictionary,
-                                    target_quoted: &mut QuotedTripleStore,
-                                    seen: &mut HashMap<u32, u32>| {
+                                target_dictionary: &mut Dictionary,
+                                target_quoted: &mut QuotedTripleStore,
+                                seen: &mut HashMap<u32, u32>| {
                     reencode_term_id(
                         id,
                         &source_dictionary,
@@ -1807,10 +1811,7 @@ impl SparqlDatabase {
 
     // Encode triples
     /// Interns lexical triples into encoded ones.
-    pub fn encode_triples(
-        &mut self,
-        non_encoded_triples: Vec<Vec<TermTriple>>,
-    ) -> Vec<Triple> {
+    pub fn encode_triples(&mut self, non_encoded_triples: Vec<Vec<TermTriple>>) -> Vec<Triple> {
         let mut encoded_triples = Vec::new();
         for triple_strings in non_encoded_triples {
             for TermTriple {
