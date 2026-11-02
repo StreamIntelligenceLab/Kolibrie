@@ -840,7 +840,7 @@ impl crate::ml::runtime::MlRuntime for NeuralRuntime {
         &self,
         database: &mut SparqlDatabase,
         patterns: &[(&str, &str, &str)],
-        prefixes: &std::collections::HashMap<String, String>,
+        prefixes: &HashMap<String, String>,
     ) -> Result<(), String> {
         materialize_neural_relations_for_patterns(database, patterns, prefixes)
     }
@@ -848,7 +848,7 @@ impl crate::ml::runtime::MlRuntime for NeuralRuntime {
     fn execute_train_decl(
         &self,
         database: &mut SparqlDatabase,
-        declaration: &shared::query::TrainNeuralRelationDecl,
+        declaration: &TrainNeuralRelationDecl,
     ) -> Result<(), String> {
         execute_train_decl(database, declaration).map_err(|error| error.to_string())
     }
@@ -864,10 +864,10 @@ impl crate::ml::runtime::MlRuntime for NeuralRuntime {
     fn execute_predict_clause(
         &self,
         database: &mut SparqlDatabase,
-        clause: &shared::query::MLPredictClause<'_>,
+        clause: &MLPredictClause<'_>,
         rule: &mut shared::query::CombinedRule<'_>,
-        prefixes: &std::collections::HashMap<String, String>,
-    ) -> Result<Vec<shared::triple::Triple>, crate::query_error::QueryError> {
+        prefixes: &HashMap<String, String>,
+    ) -> Result<Vec<Triple>, crate::query_error::QueryError> {
         crate::ml::predict_runtime::execute_ml_predict_clause(clause, rule, database, prefixes)
             .map_err(|error| crate::query_error::QueryError::Execution(error.to_string()))
     }
