@@ -29,10 +29,14 @@
 # `#[cfg(feature = "ml")]`, and eight unreachable-pub items were missed that way.
 set -uo pipefail
 
-cd "$(dirname "$0")/.." || exit 1
+# Resolved before the `cd` below, not after: `BASH_SOURCE` is relative to the caller's
+# directory, so computing it afterwards looks for the helper in the repository root.
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
-: "${DYLD_LIBRARY_PATH:=/opt/homebrew/Cellar/python@3.11/3.11.11/Frameworks/Python.framework/Versions/3.11/lib:$HOME/miniconda3/lib}"
-export DYLD_LIBRARY_PATH
+cd "$SCRIPT_DIR/.." || exit 1
+
+# Derived, not hardcoded, and named for the running platform; see the comments there.
+. "$SCRIPT_DIR/python_env.sh"
 
 LINT="${1:-}"
 [ -z "$LINT" ] && { echo "usage: $0 <lint> [--only <prefix>] -- <cargo args>" >&2; exit 2; }

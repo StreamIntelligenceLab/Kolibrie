@@ -17,15 +17,31 @@ set -u
 OUT="${1:-/tmp/kolibrie-verify}"
 mkdir -p "$OUT"
 
-: "${DYLD_LIBRARY_PATH:=/opt/homebrew/Cellar/python@3.11/3.11.11/Frameworks/Python.framework/Versions/3.11/lib:$HOME/miniconda3/lib}"
-export DYLD_LIBRARY_PATH
+# Derived, not hardcoded, and named for the running platform; see the comments there.
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/python_env.sh"
 
 fail=0
+
+# Per-phase wall time. Without it, "verify.sh is slow" is unactionable: a first
+# attempt to speed this up timed each cargo command standing alone, summed to 42
+# seconds, and missed most of the run.
+#
+# No EXIT trap: it fires in every subshell too, and the first version of this
+# printed a timing line for every command substitution in the script.
+phase_start=$(date +%s)
+phase_name=""
+phase() {
+  local now; now=$(date +%s)
+  [ -n "$phase_name" ] && printf "   (%ds)\n" "$((now - phase_start))"
+  phase_start=$now
+  phase_name="$1"
+  echo "== $1 =="
+}
 
 # Deliberately NOT --all-targets: that pulls the four heavy bench sweeps into the
 # test run in debug mode, where citybench_cross_window_compare does not finish.
 # Benches are compile-checked separately below.
-echo "== tests =="
+phase "tests"
 cargo test --workspace --no-fail-fast > "$OUT/test.log" 2>&1
 awk '/^test result/ {p+=$4; f+=$6} END {printf "   passed: %d  failed: %d\n", p, f}' "$OUT/test.log"
 if grep -qE '^test .* FAILED$' "$OUT/test.log"; then
@@ -42,7 +58,7 @@ for check in \
   "ml:cargo check -p kolibrie --features ml"
 do
   name="${check%%:*}"; cmd="${check#*:}"
-  echo "== $name =="
+  phase "$name"
   $cmd --message-format short > "$OUT/$name.log" 2>&1
   n=$(grep -cE '^[^ ]+: error|^error' "$OUT/$name.log")
   echo "   errors: $n"
@@ -53,7 +69,7 @@ done
 # being so. One `use crate::` in the wrong direction puts a cycle back, and a cycle
 # costs nothing at runtime, so it is invisible until someone tries to split the
 # crate. `scripts/module_graph.py` is a pure source read and takes under a second.
-echo "== module graph =="
+phase "module graph"
 if python3 scripts/module_graph.py --check > "$OUT/graph.log" 2>&1; then
   sed 's/^/   /' "$OUT/graph.log"
 else
@@ -72,7 +88,7 @@ fi
 # from the same trap twice -- a `///` summary written on a `pub mod` whose file
 # already has a `//!` header, which merge and then resolve in the parent module's
 # scope -- and one from removing an import that only a doc link still used.
-echo "== rustdoc =="
+phase "rustdoc"
 RUSTDOCFLAGS="-D rustdoc::broken_intra_doc_links" \
   cargo doc --workspace --no-deps > "$OUT/doc.log" 2>&1
 n=$(grep -cE '^error' "$OUT/doc.log")
@@ -85,7 +101,7 @@ fi
 # Runs the examples, which the compile check above cannot speak for: three examples
 # were broken for months while compiling cleanly. Adds about a minute, most of it two
 # streaming demos sleeping through timed windows.
-echo "== example smoke run =="
+phase "example smoke run"
 if scripts/smoke_examples.py "$OUT" > "$OUT/smoke.log" 2>&1; then
   grep -E '^   ran:' "$OUT/smoke.log"
 else
@@ -100,7 +116,7 @@ fi
 # both became private, built a `Rule` without its `negative_premise`, and imported
 # `datalog::knowledge_graph` under a name it no longer has. Compile-only on purpose:
 # whether an example *runs* is the smoke run's question about `kolibrie/examples`.
-echo "== README examples =="
+phase "README examples"
 if python3 scripts/readme_examples.py > "$OUT/readme.log" 2>&1; then
   grep -E '^   ok:|^compiling' "$OUT/readme.log" | sed 's/^/   /'
 else
@@ -112,7 +128,7 @@ fi
 # it cannot drift. This fails when the public surface moved and nobody regenerated --
 # which is how 371 hand-written lines in the README came to document three methods
 # that no longer existed.
-echo "== api surface =="
+phase "api surface"
 if python3 scripts/api_surface.py --check > "$OUT/api.log" 2>&1; then
   sed 's/^/   /' "$OUT/api.log"
 else
@@ -120,10 +136,11 @@ else
   fail=1
 fi
 
-echo "== warnings (default features) =="
+phase "warnings (default features)"
 grep -oE 'warning: [a-z].*' "$OUT/check.log" 2>/dev/null | wc -l | sed 's/^/   raw warning lines: /'
 echo "   (run scripts/warning_report.py after a clean build for the per-lint count)"
 
+[ -n "$phase_name" ] && printf "   (%ds)\n" "$(( $(date +%s) - phase_start ))"
 echo
 echo "logs in $OUT"
 exit "$fail"

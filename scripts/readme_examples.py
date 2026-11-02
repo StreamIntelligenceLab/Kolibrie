@@ -40,7 +40,6 @@ Exits non-zero if any block fails, naming the README line it starts at.
 import argparse
 import pathlib
 import re
-import shutil
 import subprocess
 import sys
 
@@ -112,11 +111,20 @@ def as_program(code: str, preamble: str = "") -> str:
 
 
 def write_crate(cases: list[tuple[int, str, str]]) -> None:
-    """A crate whose examples are the README's blocks."""
-    if WORKSPACE.exists():
-        shutil.rmtree(WORKSPACE)
-    (WORKSPACE / "examples").mkdir(parents=True)
-    (WORKSPACE / "src").mkdir()
+    """A crate whose examples are the README's blocks.
+
+    The crate is rebuilt in place rather than from scratch, because its `target/`
+    is what makes a second run cheap: recreating the directory each time meant
+    compiling all twenty-five blocks cold, every time, which is most of a minute
+    nobody needs to spend twice. Only `examples/` is cleared, so a block that moved
+    to another line does not leave a stale file behind to be compiled forever.
+    """
+    examples = WORKSPACE / "examples"
+    if examples.exists():
+        for stale in examples.glob("readme_line_*.rs"):
+            stale.unlink()
+    examples.mkdir(parents=True, exist_ok=True)
+    (WORKSPACE / "src").mkdir(exist_ok=True)
     (WORKSPACE / "src" / "lib.rs").write_text("//! Nothing: the examples are the point.\n")
     # Paths are absolute so the crate can live under `target/` without being part of
     # the workspace, which it must not be -- a member would be built by every
@@ -180,8 +188,6 @@ def main() -> int:
     )
     if result.returncode == 0:
         print(f"   ok: all {len(cases)} compile")
-        if not arguments.keep:
-            shutil.rmtree(WORKSPACE, ignore_errors=True)
         return 0
 
     # Name the README line, not the generated file: the reader has to fix the README.

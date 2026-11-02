@@ -12,10 +12,17 @@ fn main() {
     let mut stream_counter = 0;
     let mut total_alerts = 0;
 
-    // Set up the streaming simulation to run for 24 seconds
-    // This simulates a real-world scenario where data comes in batches every few seconds
-    let stream_duration = Duration::from_secs(24);
-    let batch_interval = Duration::from_secs(3); // New sensor data arrives every 3 seconds
+    // Eight batches, paced so the stream is visibly continuous without the example
+    // becoming the slowest thing in `scripts/verify.sh`. It used to run for
+    // twenty-four seconds at three seconds a batch; the same eight batches at half a
+    // second take four.
+    //
+    // Nothing here is driven by a wall clock. The `TICK TIME_DRIVEN` in the rule
+    // text below is parsed and the rule runs, but this example builds no RSPEngine
+    // and streams into no window -- so the pacing is narrative, and shortening it
+    // changes the output not at all.
+    let stream_duration = Duration::from_secs(4);
+    let batch_interval = Duration::from_millis(500);
     let start_time = SystemTime::now();
 
     println!("Starting continuous stream simulation...");

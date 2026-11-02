@@ -88,14 +88,29 @@ clap = { version = "4.5.45", features = ["derive"] }
 [profile.bench]
 debug = true
 
+# Tuned for the edit-build-test cycle, not for the speed of the resulting binary.
+# It was `opt-level = 2`, `lto = "thin"`, `incremental = false`: a release-grade build
+# for every `cargo test`, which cost 436 seconds to rebuild and test after a one-line
+# edit and left 19GB in `target/debug/examples`.
+#
+# `debug-assertions` and `overflow-checks` stay on: they are the reason a dev build is
+# worth running at all, and they catch arithmetic the release profile silently wraps.
 [profile.dev]
-opt-level = 2
+# 1, not 0: measured. At 0 a one-line edit cost 162 seconds against 149 at 1, and a
+# cold build 328 against 295 -- the tests run slow enough unoptimised to outweigh
+# what the codegen saves.
+opt-level = 1
+# Full debug info. `debug = 1` (line tables only) was measured and rejected: it does
+# shrink the example binaries by a third, 4.5MB mean to 3.0MB, but it bought no time
+# anywhere. A one-line edit plus test cost 160 seconds against 149, a cold build 282
+# against 295, and the example smoke run 182 seconds against 124 -- two of the three
+# moved the wrong way. The binaries being large is not what makes the suite slow, so
+# there is nothing to trade a debugger for.
 debug = true
 debug-assertions = true
 overflow-checks = true
-lto = "thin"
 panic = 'unwind'
-incremental = false
+incremental = true
 codegen-units = 256
 
 [profile.release]

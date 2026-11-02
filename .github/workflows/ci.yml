@@ -30,13 +30,51 @@ jobs:
           else
             cargo build --workspace --all-targets
           fi
+      # `--all-targets` is deliberately present in the build above and absent here.
+      # In a test run it pulls in the 13 `harness = false` bench targets, which
+      # criterion then runs in test mode, and `citybench_cross_window_compare` does
+      # not survive that: SIGKILLed in a 7.7GB container, and 12.3GB resident after
+      # ten minutes on a 48GB host while still growing, against the 16GB of an
+      # `ubuntu-latest` runner. The build step already compile-checks every target,
+      # so dropping it here loses no coverage -- and gains doc tests, which
+      # `--all-targets` excludes.
       - name: Test
         run: |
           if [ "${{ matrix.features }}" = "no-default" ]; then
-            cargo test --workspace --all-targets --no-default-features
+            cargo test --workspace --no-default-features
           else
-            cargo test --workspace --all-targets
+            cargo test --workspace
           fi
+
+      # Runs the examples rather than only compiling them. This workflow compiled
+      # them for months while three were broken anyway: a rule syntax the parser
+      # rejects, an absolute path into a personal directory, and a gitignored
+      # dataset. None of those is visible to `cargo build`.
+      #
+      # Default features only: the script skips every example carrying
+      # `required-features`, and the no-default leg has not built them.
+      #
+      # Costs about 18s here, reusing the build above. The same run takes 185s on
+      # macOS, where a per-binary Gatekeeper assessment dominates and is charged
+      # again after every relink; Linux has no equivalent, and a second run costs
+      # the same as the first.
+      - name: Run the examples
+        if: matrix.features == 'default'
+        run: python3 scripts/smoke_examples.py "${{ runner.temp }}/smoke"
+
+      # The script keeps each failing example's output in a file and prints only the
+      # name and the path. That path dies with the runner, so without this a failure
+      # here is unreproducible -- the same mistake `scripts/verify.sh` was written to
+      # stop: never summarise output without retaining it.
+      - name: Show the failing examples' output
+        if: failure() && matrix.features == 'default'
+        run: |
+          shopt -s nullglob
+          for f in "${{ runner.temp }}"/smoke/examples/*.log; do
+            echo "::group::$(basename "$f")"
+            cat "$f"
+            echo "::endgroup::"
+          done
 
   # Blocking since the workspace was formatted. The one-off `cargo fmt --all` that
   # this was waiting on landed as 182 files and ~1,578 hunks, so the tree now matches

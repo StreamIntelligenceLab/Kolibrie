@@ -21,10 +21,8 @@ set -u
 
 cd "$(dirname "$0")/.." || exit 1
 
-# Match scripts/verify.sh: only fill this in if the caller has not, so an
-# environment that already works is never overridden.
-: "${DYLD_LIBRARY_PATH:=/opt/homebrew/Cellar/python@3.11/3.11.11/Frameworks/Python.framework/Versions/3.11/lib:$HOME/miniconda3/lib}"
-export DYLD_LIBRARY_PATH
+# Derived, not hardcoded, and named for the running platform; see the comments there.
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/python_env.sh"
 
 ITER="${1:-15}"
 shift || true

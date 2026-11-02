@@ -142,12 +142,18 @@ Prefer it over looping `cargo test`: a full workspace run takes ~3 minutes, and
 eight of them once failed to reproduce a 1-in-25 flake that this found on its
 first pass. Exits non-zero if anything failed.
 
-On macOS, anything linking `ml`/`python` needs the Python dylib on the library
-path:
+Anything built with the `ml` feature needs Python's shared library on the loader's
+path. Source the helper rather than writing a path down: it derives the directory
+from the interpreter pyo3 resolves, and sets whichever variable the running platform
+reads, so it works on Linux and in CI as well as on macOS.
 
 ```bash
-export DYLD_LIBRARY_PATH=/opt/homebrew/Cellar/python@3.11/<version>/Frameworks/Python.framework/Versions/3.11/lib
+. scripts/python_env.sh
 ```
+
+`verify.sh`, `check_lint.sh` and `flakehunt.sh` already do this. The default suite
+does not need it at all -- pyo3 bakes an absolute rpath into the binaries it links,
+and all 773 tests pass with nothing set.
 
 ## Writing documentation
 
