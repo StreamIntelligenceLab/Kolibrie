@@ -8,11 +8,17 @@
  * you can obtain one at https://mozilla.org/MPL/2.0/.
  */
 
+//! [`Streamertail`]: enumerating candidate plans and selecting the cheapest.
+//!
+//! Translates a logical plan into a physical one, choosing a join algorithm and scan
+//! strategy per operator from what the cost model predicts rather than from the order
+//! the query was written in.
+
 use super::cost::{collect_pattern_variables, CostEstimator};
 use super::execution::{DatasetView, ExecutionEngine};
 use super::operators::{LogicalOperator, PhysicalOperator};
-use super::stats::DatabaseStats;
 use super::types::{ConditionArithmetic, ConditionExpression};
+use crate::stats::DatabaseStats;
 
 use crate::sparql_database::SparqlDatabase;
 use shared::dataset_index::{GraphTerm, QuadPattern};
@@ -22,10 +28,27 @@ use std::sync::Arc;
 
 /// Volcano-style query optimizer with cost-based optimization
 pub struct Streamertail {
+    /// Plans already costed, keyed by a canonical form of the logical subplan, so
+    /// a repeated subexpression is not re-optimised.
     pub memo: HashMap<String, PhysicalOperator>,
+    /// Variables the query projects, which decides what may be dropped early.
     pub selected_variables: Vec<String>,
+    /// Statistics the cost model reads. Shared, and possibly slightly stale under
+    /// the store's bounded statistics policy.
     pub stats: Arc<DatabaseStats>,
     dataset: Option<DatasetView>,
+}
+
+// Summarised rather than derived: the memo holds a physical plan per costed
+// subexpression, so the derived form prints every plan considered.
+impl std::fmt::Debug for Streamertail {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Streamertail")
+            .field("memoised_plans", &self.memo.len())
+            .field("selected_variables", &self.selected_variables)
+            .field("has_dataset", &self.dataset.is_some())
+            .finish_non_exhaustive()
+    }
 }
 
 fn serialize_arith_expr(expr: &ConditionArithmetic) -> String {
@@ -58,7 +81,7 @@ fn serialize_arith_expr(expr: &ConditionArithmetic) -> String {
 impl Streamertail {
     /// Creates a new volcano optimizer
     pub fn new(database: &SparqlDatabase) -> Self {
-        let stats = Arc::new(DatabaseStats::gather_stats_fast(database));
+        let stats = Arc::new(database.gather_stats());
         Self {
             memo: HashMap::new(),
             selected_variables: Vec::new(),
@@ -67,6 +90,10 @@ impl Streamertail {
         }
     }
 
+    /// An optimizer reusing an existing statistics snapshot.
+    ///
+    /// Preferred over rebuilding: collecting statistics scans the store, so a
+    /// per-query rebuild would cost more than the planning it informs.
     pub fn with_cached_stats(stats: Arc<DatabaseStats>) -> Self {
         Self {
             memo: HashMap::new(),
@@ -240,8 +267,7 @@ impl Streamertail {
             order.push(next);
         }
 
-        let mut ordered: Vec<Option<QuadPattern>> =
-            patterns.into_iter().map(Some).collect();
+        let mut ordered: Vec<Option<QuadPattern>> = patterns.into_iter().map(Some).collect();
         order
             .into_iter()
             .map(|index| ordered[index].take().expect("each pattern is used once"))
@@ -267,16 +293,6 @@ impl Streamertail {
         ExecutionEngine::execute_with_dataset(plan, database, dataset)
     }
 
-    /// Executes an optimized plan against a replacement SPARQL dataset, returning id bindings
-    pub fn execute_plan_with_ids_and_dataset(
-        &self,
-        plan: &PhysicalOperator,
-        database: &mut SparqlDatabase,
-        dataset: &DatasetView,
-    ) -> Vec<HashMap<String, u32>> {
-        ExecutionEngine::execute_with_ids_and_dataset(plan, database, dataset)
-    }
-
     /// Optimizes and executes a logical plan in one step
     pub fn optimize_and_execute(
         &mut self,
@@ -299,7 +315,7 @@ impl Streamertail {
         }
 
         // Count subject-centered stars only. Object-position "stars" can explode
-        let mut var_counts: std::collections::BTreeMap<String, Vec<usize>> = BTreeMap::new();
+        let mut var_counts: BTreeMap<String, Vec<usize>> = BTreeMap::new();
 
         for (idx, pattern) in patterns.iter().enumerate() {
             if let Term::Variable(var) = &pattern.0 {
@@ -725,9 +741,7 @@ impl Streamertail {
         match plan {
             LogicalOperator::Buffer { .. } | LogicalOperator::Values { .. } => true,
             LogicalOperator::Unit | LogicalOperator::Scan { .. } => false,
-            LogicalOperator::Union { branches } => {
-                branches.iter().any(Self::carries_inline_data)
-            }
+            LogicalOperator::Union { branches } => branches.iter().any(Self::carries_inline_data),
             LogicalOperator::Graph { input, .. }
             | LogicalOperator::Selection {
                 predicate: input, ..
@@ -887,7 +901,7 @@ impl Streamertail {
 
     /// Updates the optimizer's statistics
     pub fn update_stats(&mut self, database: &SparqlDatabase) {
-        self.stats = Arc::new(DatabaseStats::gather_stats_fast(database));
+        self.stats = Arc::new(database.gather_stats());
         self.memo.clear(); // Clear memo as stats have changed
     }
 
@@ -1069,9 +1083,7 @@ mod tests {
         stats.predicate_distinct_objects.insert(NEXT, 45_000);
         stats.predicate_distinct_subjects.insert(TYPE, 10);
         stats.predicate_distinct_objects.insert(TYPE, 1);
-        stats
-            .graph_cardinalities
-            .insert(GraphId::Default, 100_000);
+        stats.graph_cardinalities.insert(GraphId::Default, 100_000);
         Arc::new(stats)
     }
 

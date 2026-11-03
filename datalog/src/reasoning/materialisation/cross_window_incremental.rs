@@ -8,16 +8,32 @@
  * you can obtain one at https://mozilla.org/MPL/2.0/.
  */
 
-use crate::cross_window_sds::{Sds, all_component_iris, strip_window_prefix, translate_sds_to_datalog};
-use crate::reasoning::Reasoner;
+//! Maintaining a materialised streaming dataset across ticks instead of rebuilding it.
+//!
+//! Carries the previous result forward as [`SdsWithExpiry`] and derives only from
+//! the facts that arrived since, which is what makes the cost proportional to the
+//! delta rather than to the window contents.
+//!
+//! Expiry is what makes this possible without recomputing: every derived fact is
+//! tagged with an [`ExpirationProvenance`]
+//! tag giving the time it stops holding, which is the minimum over the facts it was
+//! derived from, so a fact leaving a window retracts its consequences without any
+//! search for them.
+//!
+//! [`cross_window_naive`](super::cross_window_naive) computes the same thing the
+//! slow way and is the oracle this is tested against.
+
+use crate::cross_window_sds::{
+    all_component_iris, strip_window_prefix, translate_sds_to_datalog, Sds,
+};
 use crate::reasoning::materialisation::provenance_semi_naive::semi_naive_with_initial_tags_and_delta;
-use shared::dictionary::Dictionary;
+use crate::reasoning::Reasoner;
 use shared::provenance::ExpirationProvenance;
 use shared::rule::Rule;
 use shared::tag_store::TagStore;
+use shared::term_encoder::SharedTerms;
 use shared::triple::Triple;
 use std::collections::HashMap;
-use std::sync::{Arc, RwLock};
 
 /// Internal incremental state: maps component IRI → (annotated-triple → expiry)
 pub type SdsWithExpiry = HashMap<String, HashMap<Triple, u64>>;
@@ -27,7 +43,7 @@ pub fn incremental_sds_plus(
     rules: &[Rule],
     sds_current: &Sds,
     sds_plus_old: &SdsWithExpiry,
-    dict: &Arc<RwLock<Dictionary>>,
+    dict: &SharedTerms,
     current_time: u64,
 ) -> SdsWithExpiry {
     let d_base = translate_sds_to_datalog(sds_current, dict, current_time);
@@ -57,7 +73,7 @@ pub fn incremental_sds_plus(
         .collect();
 
     let mut reasoner = Reasoner::new();
-    reasoner.dictionary = Arc::clone(dict);
+    reasoner.adopt_terms(dict.clone());
 
     for (t, _) in &d_old {
         reasoner.dataset_index.insert(t);
@@ -82,6 +98,7 @@ pub fn incremental_sds_plus(
     let initial_delta: Vec<Triple> = d_new.iter().map(|(t, _)| t.clone()).collect();
     let (_new_triples, tag_store) = semi_naive_with_initial_tags_and_delta(
         &mut reasoner,
+        None,
         ExpirationProvenance,
         initial_tags,
         initial_delta,
@@ -92,7 +109,7 @@ pub fn incremental_sds_plus(
     let mut result: SdsWithExpiry = HashMap::new();
 
     for triple in all_facts {
-        let pred_str = match dict.read().unwrap().decode(triple.predicate) {
+        let pred_str = match dict.decode(triple.predicate).as_deref() {
             Some(s) => s.to_string(),
             None => continue,
         };
@@ -108,4 +125,3 @@ pub fn incremental_sds_plus(
 
     result
 }
-

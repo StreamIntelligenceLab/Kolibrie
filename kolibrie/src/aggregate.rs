@@ -8,15 +8,14 @@
  * you can obtain one at https://mozilla.org/MPL/2.0/.
  */
 
-use std::collections::{BTreeSet, HashMap};
-
+use std::collections::BTreeSet;
 #[derive(Clone, Copy)]
 pub(crate) struct Aggregate<'a> {
     pub kind: &'a str,
     pub distinct: bool,
 }
 impl<'a> Aggregate<'a> {
-    pub fn parse(kind: &'a str) -> Self {
+    pub(crate) fn parse(kind: &'a str) -> Self {
         match kind.strip_suffix("_DISTINCT") {
             Some(kind) => Self {
                 kind,
@@ -27,20 +26,6 @@ impl<'a> Aggregate<'a> {
                 distinct: false,
             },
         }
-    }
-    pub fn star_count<V: Ord>(&self, rows: &[HashMap<String, V>]) -> String {
-        if !self.distinct {
-            return rows.len().to_string();
-        }
-        let unique: BTreeSet<Vec<(&String, &V)>> = rows
-            .iter()
-            .map(|row| {
-                let mut entries: Vec<_> = row.iter().collect();
-                entries.sort_by(|left, right| left.0.cmp(right.0));
-                entries
-            })
-            .collect();
-        unique.len().to_string()
     }
 }
 
@@ -57,9 +42,12 @@ pub(crate) fn value(kind: &str, values: &[&str]) -> Option<String> {
     match descriptor.kind {
         "COUNT" => Some(values.len().to_string()),
         "SUM" | "AVG" => {
+            // Through the term's value, not its spelling: a typed literal keeps its
+            // datatype now, and parsing the spelling would find no number at all,
+            // turning every SUM over typed data into no answer.
             let numbers = values
                 .iter()
-                .map(|v| v.parse::<f64>().ok())
+                .map(|v| shared::rdf_term::numeric_value(v))
                 .collect::<Option<Vec<_>>>()?;
             let mut result = numbers.iter().sum::<f64>();
             if descriptor.kind == "AVG" && !numbers.is_empty() {

@@ -8,8 +8,7 @@
  * you can obtain one at https://mozilla.org/MPL/2.0/.
  */
 
-use kolibrie::execute_query::*;
-use kolibrie::sparql_database::*;
+use kolibrie::prelude::*;
 
 fn main() {
     let rdf_data = r#"
@@ -67,7 +66,7 @@ fn main() {
         </rdf:Description>
     </rdf:RDF>
     "#;
-    
+
     let mut database = SparqlDatabase::new();
     database.parse_rdf(rdf_data);
 
@@ -83,11 +82,16 @@ fn main() {
     }
     LIMIT 2"#;
 
-    let results_limited = execute_query_rayon_parallel2_volcano(sparql_with_limit, &mut database);
+    let results_limited = execute(sparql_with_limit, &mut database)
+        .expect("query should run")
+        .into_rows();
     println!("Results with LIMIT 2:");
     for result in results_limited {
         if let [name, type_, attendees] = &result[..] {
-            println!("  Name: {}, Type: {}, Attendees: {}", name, type_, attendees);
+            println!(
+                "  Name: {}, Type: {}, Attendees: {}",
+                name, type_, attendees
+            );
         }
     }
 }

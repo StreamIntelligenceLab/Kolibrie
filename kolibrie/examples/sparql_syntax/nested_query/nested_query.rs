@@ -8,8 +8,7 @@
  * you can obtain one at https://mozilla.org/MPL/2.0/.
  */
 
-use kolibrie::execute_query::*;
-use kolibrie::sparql_database::*;
+use kolibrie::prelude::*;
 
 fn simple_select() {
     let rdf_data = r#"
@@ -47,7 +46,9 @@ fn simple_select() {
         }
     }"#;
 
-    let results = execute_query_rayon_parallel2_volcano(sparql, &mut database);
+    let results = execute(sparql, &mut database)
+        .expect("query should run")
+        .into_rows();
 
     // Now the main function is responsible for printing the results
     println!("Results: {:?}", results);
@@ -56,4 +57,3 @@ fn simple_select() {
 fn main() {
     simple_select();
 }
-

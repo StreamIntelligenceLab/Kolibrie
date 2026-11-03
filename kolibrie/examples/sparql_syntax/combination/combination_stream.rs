@@ -8,8 +8,9 @@
  * you can obtain one at https://mozilla.org/MPL/2.0/.
  */
 
-use kolibrie::execute_query::*;
-use kolibrie::parser::*;
+use kolibrie::parser::{parse_from_named_window, parse_stream_type, parse_window_spec};
+use kolibrie::prelude::*;
+use kolibrie::rule_execution::process_rule_definition;
 use kolibrie::sparql_database::SparqlDatabase;
 
 fn main() {
@@ -50,8 +51,11 @@ fn main() {
 
     let mut database = SparqlDatabase::new();
     database.parse_rdf(rdf_xml_data);
-    println!("Database RDF triples: {:#?}", database.query_default_triples(None, None, None));
-    println!("Total triples loaded: {}", database.dataset_index.len_default());
+    println!(
+        "Database RDF triples: {:#?}",
+        database.query_default_triples(None, None, None)
+    );
+    println!("Total triples loaded: {}", database.default_triple_count());
 
     // Basic RSP rule with RSTREAM and sliding window
     println!("\n=== Basic RSP Windowing Rule ===");
@@ -73,7 +77,7 @@ WHERE {
 
     println!("Processing RSP rule with RSTREAM and sliding window...");
     // DEBUG: Track database state before windowing
-    let triples_before_rsp = database.dataset_index.len_default();
+    let triples_before_rsp = database.default_triple_count();
     println!(
         "DEBUG: Database has {} triples before RSP processing",
         triples_before_rsp
@@ -82,7 +86,7 @@ WHERE {
     let rule_result = process_rule_definition(rsp_rule_basic, &mut database);
 
     // DEBUG: Track database state after windowing
-    let triples_after_rsp = database.dataset_index.len_default();
+    let triples_after_rsp = database.default_triple_count();
     println!(
         "DEBUG: Database has {} triples after RSP processing (+{})",
         triples_after_rsp,
@@ -101,7 +105,7 @@ WHERE {
 
             // DEBUG: Analyze inferred facts for windowing evidence
             for (i, triple) in inferred_facts.iter().enumerate() {
-                let dict = database.dictionary.read().unwrap();
+                let dict = database.dictionary();
                 let s = dict.decode(triple.subject).unwrap_or("unknown");
                 let p = dict.decode(triple.predicate).unwrap_or("unknown");
                 let o = dict.decode(triple.object).unwrap_or("unknown");
@@ -115,11 +119,8 @@ WHERE {
             println!("Rule structure: {:#?}", rule);
             println!("Inferred {} new fact(s):", inferred_facts.len());
             for triple in inferred_facts.iter() {
-                let dict = database.dictionary.read().unwrap();
-                println!(
-                    "  {}",
-                    database.triple_to_string(triple, &*dict)
-                );
+                let dict = database.dictionary();
+                println!("  {}", database.triple_to_string(triple, &*dict));
             }
         }
         Err(e) => println!("Failed to process RSP rule: {}", e),
@@ -144,7 +145,7 @@ WHERE {
 
     println!("Processing ISTREAM rule with tumbling window...");
     // DEBUG: Track ISTREAM behavior
-    let triples_before_istream = database.dataset_index.len_default();
+    let triples_before_istream = database.default_triple_count();
     println!(
         "DEBUG: Database has {} triples before ISTREAM processing",
         triples_before_istream
@@ -152,7 +153,7 @@ WHERE {
 
     let rule_result2 = process_rule_definition(rsp_rule_istream, &mut database);
 
-    let triples_after_istream = database.dataset_index.len_default();
+    let triples_after_istream = database.default_triple_count();
     println!(
         "DEBUG: Database has {} triples after ISTREAM processing (+{})",
         triples_after_istream,
@@ -187,11 +188,8 @@ WHERE {
             println!("Rule has windowing: {}", rule.premise.len() > 0);
             println!("Inferred {} new fact(s):", inferred_facts.len());
             for triple in inferred_facts.iter() {
-                let dict = database.dictionary.read().unwrap();
-                println!(
-                    "  {}",
-                    database.triple_to_string(triple, &*dict)
-                );
+                let dict = database.dictionary();
+                println!("  {}", database.triple_to_string(triple, &*dict));
             }
         }
         Err(e) => println!("Failed to process ISTREAM rule: {}", e),
@@ -229,7 +227,7 @@ ML.PREDICT(
 
     println!("Processing DSTREAM rule with range window and ML.PREDICT...");
     // DEBUG: Track DSTREAM behavior
-    let triples_before_dstream = database.dataset_index.len_default();
+    let triples_before_dstream = database.default_triple_count();
     println!(
         "DEBUG: Database has {} triples before DSTREAM processing",
         triples_before_dstream
@@ -237,7 +235,7 @@ ML.PREDICT(
 
     let rule_result3 = process_rule_definition(rsp_rule_ml, &mut database);
 
-    let triples_after_dstream = database.dataset_index.len_default();
+    let triples_after_dstream = database.default_triple_count();
     println!(
         "DEBUG: Database has {} triples after DSTREAM processing (+{})",
         triples_after_dstream,
@@ -278,11 +276,8 @@ ML.PREDICT(
             println!("Rule has {} filter conditions", rule.filters.len());
             println!("Inferred {} new fact(s):", inferred_facts.len());
             for triple in inferred_facts.iter() {
-                let dict = database.dictionary.read().unwrap();
-                println!(
-                    "  {}",
-                    database.triple_to_string(triple, &*dict)
-                );
+                let dict = database.dictionary();
+                println!("  {}", database.triple_to_string(triple, &*dict));
             }
         }
         Err(e) => println!("Failed to process DSTREAM + ML rule: {}", e),
@@ -364,7 +359,9 @@ WHERE {
 }"#;
 
     println!("Querying for temperature alerts...");
-    let query_results = execute_query_rayon_parallel2_volcano(alert_query, &mut database);
+    let query_results = execute(alert_query, &mut database)
+        .expect("query should run")
+        .into_rows();
     println!("Alert query results: {:?}", query_results);
 
     // DEBUG: Validate windowing results
@@ -387,7 +384,9 @@ WHERE {
 }"#;
 
     println!("Querying for new high readings...");
-    let reading_results = execute_query_rayon_parallel2_volcano(new_reading_query, &mut database);
+    let reading_results = execute(new_reading_query, &mut database)
+        .expect("query should run")
+        .into_rows();
     println!("New reading query results: {:?}", reading_results);
 
     // DEBUG: Validate ISTREAM results
@@ -407,7 +406,9 @@ WHERE {
 }"#;
 
     println!("Querying for predicted levels...");
-    let prediction_results = execute_query_rayon_parallel2_volcano(prediction_query, &mut database);
+    let prediction_results = execute(prediction_query, &mut database)
+        .expect("query should run")
+        .into_rows();
     println!("Prediction query results: {:?}", prediction_results);
 
     // DEBUG: Validate DSTREAM results
@@ -435,13 +436,24 @@ WHERE {
     }
 
     println!("\n=== RSP Windowing Demo Complete ===");
-    println!("Total triples in database: {}", database.dataset_index.len_default());
+    println!(
+        "Total triples in database: {}",
+        database.default_triple_count()
+    );
     println!("Parser successfully handled all RSP windowing syntax!");
 
     // DEBUG: Final database state
     println!("DEBUG: Final database state:");
-    println!("   - Started with: {} triples", database.dataset_index.len_default());
-    println!("   - Final count: {} triples", database.dataset_index.len_default());
-    println!("   - Total added: {} triples", database.dataset_index.len_default() - 15); // 15 original triples
+    println!(
+        "   - Started with: {} triples",
+        database.default_triple_count()
+    );
+    println!(
+        "   - Final count: {} triples",
+        database.default_triple_count()
+    );
+    println!(
+        "   - Total added: {} triples",
+        database.default_triple_count() - 15
+    ); // 15 original triples
 }
-

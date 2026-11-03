@@ -8,10 +8,26 @@
  * you can obtain one at https://mozilla.org/MPL/2.0/.
  */
 
-use shared::dictionary::Dictionary;
+//! An RSP-QL streaming dataset (SDS), and its translation to and from plain Datalog.
+//!
+//! Datalog has no notion of a window, so a rule spanning several windows is
+//! evaluated by flattening the SDS into ordinary triples with the originating window
+//! encoded into the predicate as `window_iri + local_name` — see
+//! [`annotate_predicate`]. [`strip_window_prefix`] reverses it, and
+//! [`all_component_iris`] sorts longest-first because one component IRI can be a
+//! prefix of another, where the shorter one would otherwise match first and strip
+//! too little.
+//!
+//! # Time
+//!
+//! A fact carries the timestamp it arrived at and a window carries a width `alpha`
+//! in the same unit. A fact is alive at `current_time` when
+//! `event_time + alpha > current_time`, so the interval is half-open and a fact
+//! expiring exactly now has already gone.
+
+use shared::term_encoder::SharedTerms;
 use shared::triple::Triple;
 use std::collections::{HashMap, HashSet};
-use std::sync::{Arc, RwLock};
 
 /// Canonical annotated predicate: `window_iri + local_name`
 pub fn annotate_predicate(window_iri: &str, local_name: &str) -> String {
@@ -34,9 +50,11 @@ pub fn strip_window_prefix<'a, 'b>(
 /// A single RDF triple from a streaming window, carrying its stream-level timestamp
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct WindowedTriple {
+    /// Subject IRI, as a string: not yet interned.
     pub subject: String,
     /// Local predicate name under the owning window IRI.  NOT a full IRI
     pub predicate: String,
+    /// Object IRI or literal, as a string.
     pub object: String,
     /// `t_d`: the timestamp at which this triple arrived in the stream
     pub event_time: u64,
@@ -47,18 +65,25 @@ pub struct WindowedTriple {
 pub struct WindowData {
     /// Window width α (in the same time unit as event_time)
     pub alpha: u64,
+    /// Contents of the window, including triples that have already expired:
+    /// liveness is decided per fact at translation time, not on arrival.
     pub triples: Vec<WindowedTriple>,
 }
 
 /// An RSP-QL Streaming Dataset (SDS) at a point in time
 #[derive(Clone, Debug, Default)]
 pub struct Sds {
+    /// Sliding windows, by window IRI.
     pub windows: HashMap<String, WindowData>,
+    /// Non-streaming graphs, by graph IRI. These never expire.
     pub static_graphs: HashMap<String, Vec<(String, String, String)>>,
+    /// IRIs that only ever appear in rule conclusions. They hold no input facts
+    /// but their prefixes still have to be strippable, so they are listed.
     pub output_iris: HashSet<String>,
 }
 
 impl Sds {
+    /// An empty streaming dataset: no windows, no static graphs, no outputs.
     pub fn new() -> Self {
         Self::default()
     }
@@ -81,7 +106,7 @@ pub fn all_component_iris(sds: &Sds) -> Vec<String> {
 /// datalog triples with per-fact expiration times
 pub fn translate_sds_to_datalog(
     sds: &Sds,
-    dict: &Arc<RwLock<Dictionary>>,
+    dict: &SharedTerms,
     current_time: u64,
 ) -> Vec<(Triple, u64)> {
     let mut result = Vec::new();
@@ -93,28 +118,30 @@ pub fn translate_sds_to_datalog(
                 continue;
             }
             let annotated_pred = annotate_predicate(window_iri, &wt.predicate);
-            let (s, p, o) = {
-                let mut d = dict.write().unwrap();
-                let s = d.encode(&wt.subject);
-                let p = d.encode(&annotated_pred);
-                let o = d.encode(&wt.object);
-                (s, p, o)
-            };
-            result.push((Triple { subject: s, predicate: p, object: o }, expiry));
+            let (s, p, o) = dict.encode_triple(&wt.subject, &annotated_pred, &wt.object);
+            result.push((
+                Triple {
+                    subject: s,
+                    predicate: p,
+                    object: o,
+                },
+                expiry,
+            ));
         }
     }
 
     for (static_graph_iri, triples) in &sds.static_graphs {
         for (s_str, p_str, o_str) in triples {
             let annotated_pred = annotate_predicate(static_graph_iri, p_str);
-            let (s, p, o) = {
-                let mut d = dict.write().unwrap();
-                let s = d.encode(s_str);
-                let p = d.encode(&annotated_pred);
-                let o = d.encode(o_str);
-                (s, p, o)
-            };
-            result.push((Triple { subject: s, predicate: p, object: o }, u64::MAX));
+            let (s, p, o) = dict.encode_triple(s_str, &annotated_pred, o_str);
+            result.push((
+                Triple {
+                    subject: s,
+                    predicate: p,
+                    object: o,
+                },
+                u64::MAX,
+            ));
         }
     }
 
@@ -125,26 +152,29 @@ pub fn translate_sds_to_datalog(
 /// annotated predicates and route each triple to its component bucket
 pub fn translate_datalog_back(
     facts: &[Triple],
-    dict: &Arc<RwLock<Dictionary>>,
+    dict: &SharedTerms,
     sds: &Sds,
 ) -> HashMap<String, Vec<Triple>> {
     let component_iris = all_component_iris(sds);
     let mut result: HashMap<String, Vec<Triple>> = HashMap::new();
 
     for triple in facts {
-        let pred_str = match dict.read().unwrap().decode(triple.predicate) {
+        let pred_str = match dict.decode(triple.predicate).as_deref() {
             Some(s) => s.to_string(),
             None => continue,
         };
 
         if let Some((comp_iri, local_name)) = strip_window_prefix(&pred_str, &component_iris) {
-            let stripped_pred = dict.write().unwrap().encode(local_name);
+            let stripped_pred = dict.encode(local_name);
             let stripped = Triple {
                 subject: triple.subject,
                 predicate: stripped_pred,
                 object: triple.object,
             };
-            result.entry(comp_iri.to_string()).or_default().push(stripped);
+            result
+                .entry(comp_iri.to_string())
+                .or_default()
+                .push(stripped);
         }
     }
 
@@ -154,20 +184,20 @@ pub fn translate_datalog_back(
 /// External view for the incremental `SdsWithExpiry` state
 pub fn sds_with_expiry_to_external(
     internal: &HashMap<String, HashMap<Triple, u64>>,
-    dict: &Arc<RwLock<Dictionary>>,
+    dict: &SharedTerms,
     component_iris: &[String],
 ) -> HashMap<String, Vec<Triple>> {
     let mut result: HashMap<String, Vec<Triple>> = HashMap::new();
 
     for (comp_iri, fact_map) in internal {
         for (triple, _expiry) in fact_map {
-            let pred_str = match dict.read().unwrap().decode(triple.predicate) {
+            let pred_str = match dict.decode(triple.predicate).as_deref() {
                 Some(s) => s.to_string(),
                 None => continue,
             };
 
             if let Some((_matched, local_name)) = strip_window_prefix(&pred_str, component_iris) {
-                let stripped_pred = dict.write().unwrap().encode(local_name);
+                let stripped_pred = dict.encode(local_name);
                 let stripped = Triple {
                     subject: triple.subject,
                     predicate: stripped_pred,
@@ -184,11 +214,9 @@ pub fn sds_with_expiry_to_external(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::{Arc, RwLock};
-    use shared::dictionary::Dictionary;
 
-    fn make_dict() -> Arc<RwLock<Dictionary>> {
-        Arc::new(RwLock::new(Dictionary::new()))
+    fn make_dict() -> SharedTerms {
+        SharedTerms::new()
     }
 
     fn make_sds() -> Sds {
@@ -235,8 +263,11 @@ mod tests {
         let dict = make_dict();
         let sds = make_sds(); // event_time=5, alpha=10 → expiry=15
         let translated = translate_sds_to_datalog(&sds, &dict, 15); // current_time=15
-        // expiry=15 is NOT > 15, so filtered out
-        assert!(translated.is_empty(), "fact with expiry=15 at current_time=15 should be filtered");
+                                                                    // expiry=15 is NOT > 15, so filtered out
+        assert!(
+            translated.is_empty(),
+            "fact with expiry=15 at current_time=15 should be filtered"
+        );
     }
 
     #[test]
@@ -267,7 +298,10 @@ mod tests {
         let sds = make_sds();
         let translated = translate_sds_to_datalog(&sds, &dict, 0);
         let back = translate_datalog_back(
-            &translated.iter().map(|(t, _)| t.clone()).collect::<Vec<_>>(),
+            &translated
+                .iter()
+                .map(|(t, _)| t.clone())
+                .collect::<Vec<_>>(),
             &dict,
             &sds,
         );
@@ -275,7 +309,7 @@ mod tests {
         let triples = &back["http://sensor/"];
         assert_eq!(triples.len(), 1);
         // predicate should be stripped to "reading"
-        let pred_str = dict.read().unwrap().decode(triples[0].predicate).unwrap().to_string();
+        let pred_str = dict.decode(triples[0].predicate).unwrap().to_string();
         assert_eq!(pred_str, "reading");
     }
 }

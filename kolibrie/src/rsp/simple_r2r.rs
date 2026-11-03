@@ -7,44 +7,88 @@
 * you can obtain one at https://mozilla.org/MPL/2.0/.
 */
 
+//! A straightforward [`R2ROperator`] backed by a
+//! [`SparqlDatabase`].
+//!
+//! Loads each window's content into a store and evaluates the query against it:
+//! correct, and enough for a window whose content fits in memory.
+
 use crate::rsp::r2r::{AsAnyMut, R2ROperator};
-use crate::rsp_engine::QueryExecutionMode;
 use crate::sparql_database::SparqlDatabase;
 use crate::streamertail_optimizer::{ExecutionEngine, PhysicalOperator};
 use datalog::parser_n3_logic::parse_n3_rule;
 use datalog::reasoning::Reasoner;
-use shared::rule::Rule;
-use shared::triple::Triple;
 use shared::hybrid::{
     encode_hybrid_results_as_rdf_star, HybridConfig, HybridError, HybridProbabilityResult,
     SeedSnapshot,
 };
+use shared::rule::Rule;
+use shared::triple::Triple;
 use std::collections::HashMap;
-use std::sync::Arc;
 
 #[cfg(not(test))]
 use log::{debug, error};
 #[cfg(test)]
 use std::{println as debug, println as error};
 
+/// Which evaluation path a window's query takes.
+#[derive(Clone, Copy, Debug)]
+pub enum QueryExecutionMode {
+    /// Direct evaluation, without cost-based planning.
+    Standard,
+    /// Through the [`streamertail_optimizer`](crate::streamertail_optimizer),
+    /// which costs alternative plans first.
+    Volcano,
+}
+/// An [`R2ROperator`] that loads each window's content into a store and queries it.
 pub struct SimpleR2R {
+    /// The store holding the current window's content plus any background data.
     pub item: SparqlDatabase,
+    /// Whether queries run through the standard path or the Volcano optimizer.
     pub execution_mode: QueryExecutionMode,
+    /// Reasoning rules applied to each window's content.
     pub rules: Vec<Rule>,
     derived_triples: Vec<Triple>,
+    /// The blank-node scope every element of this stream is read in.
+    ///
+    /// One scope for the operator's whole life, not one per element. Each arriving
+    /// element is its own document in RDF's terms, but the dictionary never forgets a
+    /// term, so a fresh scope per element would mint a term per element and grow it
+    /// without bound -- measured at 204 terms over 200 elements against 5 for the
+    /// same stream without blank nodes -- until the assertion guarding the id space
+    /// fired. Sharing one scope is bounded, and still keeps this stream's labels
+    /// apart from every file's and every other stream's.
+    document: u64,
     hybrid_config: Option<HybridConfig>,
     live_seed_snapshot: SeedSnapshot,
     last_hybrid_results: HashMap<Triple, HybridProbabilityResult>,
     last_hybrid_error: Option<String>,
 }
 
+// Summarised rather than derived: `item` is a whole store, so the derived form would
+// print the window's content plus any background data on every log line.
+impl std::fmt::Debug for SimpleR2R {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("SimpleR2R")
+            .field("quads", &self.item.quad_count())
+            .field("execution_mode", &self.execution_mode)
+            .field("rules", &self.rules.len())
+            .field("derived_triples", &self.derived_triples.len())
+            .field("hybrid", &self.hybrid_config.is_some())
+            .field("last_hybrid_error", &self.last_hybrid_error)
+            .finish_non_exhaustive()
+    }
+}
+
 impl SimpleR2R {
+    /// An operator with an empty store and no rules.
     pub fn new() -> Self {
         SimpleR2R {
             item: SparqlDatabase::new(),
             execution_mode: QueryExecutionMode::Standard,
             rules: Vec::new(),
             derived_triples: Vec::new(),
+            document: shared::rdf_term::next_document_scope(),
             hybrid_config: None,
             live_seed_snapshot: SeedSnapshot::default(),
             last_hybrid_results: HashMap::new(),
@@ -52,12 +96,14 @@ impl SimpleR2R {
         }
     }
 
+    /// As [`Self::new`], choosing how queries are executed.
     pub fn with_execution_mode(execution_mode: QueryExecutionMode) -> Self {
         SimpleR2R {
             item: SparqlDatabase::new(),
             execution_mode,
             rules: Vec::new(),
             derived_triples: Vec::new(),
+            document: shared::rdf_term::next_document_scope(),
             hybrid_config: None,
             live_seed_snapshot: SeedSnapshot::default(),
             last_hybrid_results: HashMap::new(),
@@ -65,13 +111,19 @@ impl SimpleR2R {
         }
     }
 
+    /// Replaces the rules applied to each window's content.
     pub fn add_reasoning_rules(&mut self, rules: Vec<Rule>) {
         self.rules.extend(rules);
     }
 
+    /// Enables probabilistic evaluation with this configuration.
     pub fn set_hybrid_config(&mut self, config: HybridConfig) -> Result<(), HybridError> {
         config.validate()?;
-        if self.hybrid_config.as_ref().is_some_and(|existing| existing != &config) {
+        if self
+            .hybrid_config
+            .as_ref()
+            .is_some_and(|existing| existing != &config)
+        {
             return Err(HybridError::InvalidConfig(
                 "conflicting hybrid configurations in one materialisation group".into(),
             ));
@@ -80,17 +132,27 @@ impl SimpleR2R {
         Ok(())
     }
 
+    /// Supplies the seeds the current window's uncertain items were registered
+    /// under, which probabilistic evaluation needs to resolve its literals.
     pub fn set_live_seed_snapshot(&mut self, snapshot: SeedSnapshot) {
         self.live_seed_snapshot = snapshot;
     }
 
+    /// Probabilities from the most recent evaluation, by fact.
     pub fn last_hybrid_results(&self) -> &HashMap<Triple, HybridProbabilityResult> {
         &self.last_hybrid_results
     }
 
-    pub fn last_hybrid_error(&self) -> Option<&str> { self.last_hybrid_error.as_deref() }
+    /// Why the most recent probabilistic evaluation failed, if it did. Evaluation
+    /// failing does not stop the window from reporting its deterministic results.
+    pub fn last_hybrid_error(&self) -> Option<&str> {
+        self.last_hybrid_error.as_deref()
+    }
 
-    pub fn hybrid_enabled(&self) -> bool { self.hybrid_config.is_some() }
+    /// Whether probabilistic evaluation is configured.
+    pub fn hybrid_enabled(&self) -> bool {
+        self.hybrid_config.is_some()
+    }
 }
 
 /// Allow downcasting from trait objects by exposing Any for mutable references.
@@ -115,7 +177,7 @@ impl R2ROperator<Triple, Vec<PhysicalOperator>, Vec<(String, String)>> for Simpl
             return Ok(());
         }
         let mut temp_reasoner = Reasoner::new();
-        temp_reasoner.dictionary = Arc::clone(&self.item.dictionary);
+        temp_reasoner.adopt_terms(self.item.terms());
         let mut remaining = data;
         loop {
             match parse_n3_rule(remaining, &mut temp_reasoner) {
@@ -152,16 +214,21 @@ impl R2ROperator<Triple, Vec<PhysicalOperator>, Vec<(String, String)>> for Simpl
         }
 
         let mut reasoner = Reasoner::new();
-        reasoner.dictionary = Arc::clone(&self.item.dictionary);
-        for triple in self.item.query_default_triples(None, None, None) {
-            reasoner.dataset_index.insert(&triple);
-        }
+        reasoner.adopt_terms(self.item.terms());
+        // The window's facts are read straight from `self.item` rather than inserted
+        // here first. Building a second set of sorted indexes over content this
+        // operator is about to throw away was the whole cost, and inference flattens
+        // it back into a `Vec` immediately.
         reasoner.rules = self.rules.clone();
         self.last_hybrid_results.clear();
         self.last_hybrid_error = None;
 
         let derived = if let Some(config) = &self.hybrid_config {
-            match reasoner.infer_new_facts_with_hybrid(self.live_seed_snapshot.clone(), config) {
+            match reasoner.infer_new_facts_with_hybrid_over(
+                Some(&self.item),
+                self.live_seed_snapshot.clone(),
+                config,
+            ) {
                 Ok((derived, results, _lineage)) => {
                     self.last_hybrid_results = results;
                     derived
@@ -173,7 +240,7 @@ impl R2ROperator<Triple, Vec<PhysicalOperator>, Vec<(String, String)>> for Simpl
                 }
             }
         } else {
-            reasoner.infer_new_facts_semi_naive()
+            reasoner.infer_new_facts_semi_naive_over(&self.item)
         };
         debug!("materialize: {} facts derived by reasoning", derived.len());
         for t in &derived {
@@ -182,13 +249,9 @@ impl R2ROperator<Triple, Vec<PhysicalOperator>, Vec<(String, String)>> for Simpl
         }
         if !self.last_hybrid_results.is_empty() {
             let annotations = {
-                let mut dict = self.item.dictionary.write().unwrap();
+                let mut dict = self.item.dictionary.write();
                 let mut quoted = self.item.quoted_triple_store.write().unwrap();
-                encode_hybrid_results_as_rdf_star(
-                    &self.last_hybrid_results,
-                    &mut dict,
-                    &mut quoted,
-                )
+                encode_hybrid_results_as_rdf_star(&self.last_hybrid_results, &mut dict, &mut quoted)
             };
             for annotation in annotations {
                 self.item.add_triple(annotation.clone());
@@ -214,7 +277,7 @@ impl R2ROperator<Triple, Vec<PhysicalOperator>, Vec<(String, String)>> for Simpl
     }
 
     fn parse_data(&mut self, data: &str) -> Vec<Triple> {
-        self.item.parse_and_encode_ntriples(data)
+        self.item
+            .parse_and_encode_ntriples_in_scope(data, self.document)
     }
 }
-

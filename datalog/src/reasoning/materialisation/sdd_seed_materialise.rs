@@ -8,6 +8,18 @@
  * you can obtain one at https://mozilla.org/MPL/2.0/.
  */
 
+//! Materialisation whose seeds are compiled into an SDD as they are inserted.
+//!
+//! The reason to build the diagram up front rather than from a lineage formula
+//! afterwards is mutual exclusion. An exclusive group — one of these choices holds,
+//! not several — is expressed as an `exactly_one` constraint conjoined onto each
+//! choice's tag, and that constraint has to be in the diagram before derivation
+//! starts for the derived facts to inherit it.
+//!
+//! [`try_infer_new_facts_with_sdd_seed_specs`] is the same thing under an
+//! [`SddLimits`] budget, and reports exhaustion as an error
+//! rather than running until it finishes.
+
 use shared::sdd::{BoolOp, SddBudgetError, SddLimits, SddProvenance, VarKind};
 use shared::seed_spec::SeedSpec;
 use shared::tag_store::TagStore;
@@ -24,6 +36,17 @@ fn zero_triple() -> Triple {
     }
 }
 
+/// Materialises from SDD-compiled seeds, with no budget.
+///
+/// Inserts each seed fact into `reasoner` and tags it with its SDD node, so an
+/// exclusive group's `exactly_one` constraint is already in the diagram before
+/// derivation starts and every fact derived from a choice inherits it.
+///
+/// # Panics
+///
+/// If the provenance manager's lock is poisoned. Use
+/// [`try_infer_new_facts_with_sdd_seed_specs`] where compilation may blow up: this
+/// one has no budget and will keep going.
 pub fn infer_new_facts_with_sdd_seed_specs(
     reasoner: &mut Reasoner,
     seeds: Vec<SeedSpec>,
@@ -35,12 +58,18 @@ pub fn infer_new_facts_with_sdd_seed_specs(
         let mut mgr = provenance.manager().lock().unwrap();
         for seed in seeds {
             match seed {
-                SeedSpec::Independent { triple, prob, seed_id } => {
+                SeedSpec::Independent {
+                    triple,
+                    prob,
+                    seed_id,
+                } => {
                     mgr.ensure_variable(seed_id, prob);
                     let tag = mgr.literal(seed_id, true);
                     initial_tags.set_tag(&triple, tag);
                     if seed_id as usize >= initial_tags.seed_triples.len() {
-                        initial_tags.seed_triples.resize(seed_id as usize + 1, zero_triple());
+                        initial_tags
+                            .seed_triples
+                            .resize(seed_id as usize + 1, zero_triple());
                     }
                     initial_tags.seed_triples[seed_id as usize] = triple.clone();
                     reasoner.insert_ground_triple(triple);
@@ -61,9 +90,12 @@ pub fn infer_new_facts_with_sdd_seed_specs(
                         let tag = mgr.apply(lit, eo, BoolOp::And);
                         initial_tags.set_tag(&choice.triple, tag);
                         if choice.choice_id as usize >= initial_tags.seed_triples.len() {
-                            initial_tags.seed_triples.resize(choice.choice_id as usize + 1, zero_triple());
+                            initial_tags
+                                .seed_triples
+                                .resize(choice.choice_id as usize + 1, zero_triple());
                         }
-                        initial_tags.seed_triples[choice.choice_id as usize] = choice.triple.clone();
+                        initial_tags.seed_triples[choice.choice_id as usize] =
+                            choice.triple.clone();
                         reasoner.insert_ground_triple(choice.triple);
                     }
                 }
@@ -71,16 +103,23 @@ pub fn infer_new_facts_with_sdd_seed_specs(
         }
     }
 
-    semi_naive_with_initial_tags(reasoner, provenance, initial_tags)
+    semi_naive_with_initial_tags(reasoner, None, provenance, initial_tags)
 }
 
 fn record_seed_triple(tags: &mut TagStore<SddProvenance>, variable: u32, triple: &Triple) {
     if variable as usize >= tags.seed_triples.len() {
-        tags.seed_triples.resize(variable as usize + 1, zero_triple());
+        tags.seed_triples
+            .resize(variable as usize + 1, zero_triple());
     }
     tags.seed_triples[variable as usize] = triple.clone();
 }
 
+/// As [`infer_new_facts_with_sdd_seed_specs`], under an explicit budget.
+///
+/// # Errors
+///
+/// Reports budget exhaustion instead of continuing. Nothing is rolled back: the
+/// reasoner may already hold the seed facts inserted before the budget ran out.
 pub fn try_infer_new_facts_with_sdd_seed_specs(
     reasoner: &mut Reasoner,
     seeds: Vec<SeedSpec>,
@@ -91,7 +130,11 @@ pub fn try_infer_new_facts_with_sdd_seed_specs(
 
     for seed in seeds {
         match seed {
-            SeedSpec::Independent { triple, prob, seed_id } => {
+            SeedSpec::Independent {
+                triple,
+                prob,
+                seed_id,
+            } => {
                 let tag = provenance.try_with_budget(|mgr, budget| {
                     mgr.ensure_variable(seed_id, prob);
                     mgr.try_literal(seed_id, true, budget)
@@ -126,7 +169,8 @@ pub fn try_infer_new_facts_with_sdd_seed_specs(
         }
     }
 
-    let (facts, tags) = semi_naive_with_initial_tags(reasoner, provenance.clone(), initial_tags);
+    let (facts, tags) =
+        semi_naive_with_initial_tags(reasoner, None, provenance.clone(), initial_tags);
     match provenance.budget_error() {
         Some(error) => Err(error),
         None => Ok((facts, tags)),

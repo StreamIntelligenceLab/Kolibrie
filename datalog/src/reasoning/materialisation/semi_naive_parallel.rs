@@ -1,13 +1,25 @@
+//! Semi-naive forward chaining with the delta scanned in parallel.
+//!
+//! Unfinished, and currently has no callers; retained because the approach is worth
+//! keeping rather than because it is ready. It takes the dictionary write lock for
+//! the whole fixpoint, which serialises anything else holding the same dictionary,
+//! so the parallelism it adds inside the loop is paid for outside it.
+
+use crate::reasoning::materialisation::replace_variables_with_bound_values;
+use crate::reasoning::rules::matches_rule_pattern;
+use crate::reasoning::Reasoner;
+use rayon::prelude::*;
+use shared::triple::Triple;
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
-use shared::triple::Triple;
-use rayon::prelude::*;
-use crate::reasoning::materialisation::replace_variables_with_bound_values;
-use crate::reasoning::Reasoner;
-use crate::reasoning::rules::matches_rule_pattern;
 
 impl Reasoner {
-
+    /// Semi-naive forward chaining with each round's delta scanned across rayon's
+    /// thread pool.
+    ///
+    /// Unfinished and currently unused. It holds the dictionary write lock for the
+    /// whole fixpoint, so no other holder of that dictionary makes progress while
+    /// it runs.
     pub fn infer_new_facts_semi_naive_parallel(&mut self) -> Vec<Triple> {
         // Collect all known facts
         let all_initial = self.dataset_index.query(None, None, None);
@@ -19,7 +31,28 @@ impl Reasoner {
         // Keep track of newly inferred facts so we can return them later
         let mut inferred_so_far = Vec::new();
 
-        let dict = self.dictionary.write().unwrap();
+        // This strategy is unsound, and the term handling is why. It has no callers.
+        //
+        // A `&mut Dictionary` cannot cross rayon's workers, so the loop below clones
+        // this copy per inference and interns into the clone. Those ids are minted
+        // against a private counter that starts wherever the shared space happened to
+        // be, so:
+        //
+        // - the shared space can later assign the same number to a different term,
+        //   and then a fact stored here decodes to the wrong string;
+        // - two workers in one run mint the same id for different terms, so the
+        //   results are not even internally consistent.
+        //
+        // And the facts are not discarded: the loop inserts them into
+        // `self.dataset_index` and returns them. So this fabricates term ids and
+        // stores them as if they were real, rather than merely losing them, which is
+        // what an earlier version of this comment said.
+        //
+        // Fixing it means keeping the parallel section free of interning -- deriving
+        // conclusions as unresolved terms and interning them sequentially afterwards
+        // -- which is a rewrite of the strategy rather than a change to this line.
+        let mut dict = shared::dictionary::Dictionary::new();
+        self.with_terms(&mut |shared| dict = shared.clone());
 
         // Repeat until no new facts are inferred
         loop {
@@ -84,11 +117,12 @@ impl Reasoner {
                                                     rule.conclusion
                                                         .iter()
                                                         .filter_map(|conclusion| {
-                                                            let inferred = replace_variables_with_bound_values(
-                                                                conclusion,
-                                                                &variable_bindings_2,
-                                                                &mut dict.clone(),
-                                                            );
+                                                            let inferred =
+                                                                replace_variables_with_bound_values(
+                                                                    conclusion,
+                                                                    &variable_bindings_2,
+                                                                    &mut dict.clone(),
+                                                                );
                                                             if !all_facts_arc.contains(&inferred) {
                                                                 Some(inferred)
                                                             } else {
@@ -125,11 +159,12 @@ impl Reasoner {
                                                     rule.conclusion
                                                         .iter()
                                                         .filter_map(|conclusion| {
-                                                            let inferred = replace_variables_with_bound_values(
-                                                                conclusion,
-                                                                &variable_bindings_2b,
-                                                                &mut dict.clone(),
-                                                            );
+                                                            let inferred =
+                                                                replace_variables_with_bound_values(
+                                                                    conclusion,
+                                                                    &variable_bindings_2b,
+                                                                    &mut dict.clone(),
+                                                                );
                                                             if !all_facts_arc.contains(&inferred) {
                                                                 Some(inferred)
                                                             } else {
@@ -175,5 +210,4 @@ impl Reasoner {
 
         inferred_so_far
     }
-
 }

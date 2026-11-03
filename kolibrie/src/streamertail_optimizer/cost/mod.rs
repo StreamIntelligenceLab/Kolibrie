@@ -8,6 +8,11 @@
  * you can obtain one at https://mozilla.org/MPL/2.0/.
  */
 
+//! Estimating what a plan will cost.
+//!
+//! Ranks alternative physical plans by predicted cardinality and work. The estimates
+//! only need to order plans correctly, not predict absolute runtime.
+
 pub mod estimator;
 
 pub use estimator::{collect_pattern_variables, normalize_variable, CostConstants, CostEstimator};

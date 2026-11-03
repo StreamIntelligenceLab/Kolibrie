@@ -19,7 +19,9 @@ use std::sync::{Arc, Mutex};
 pub struct SddId(u32);
 
 impl SddId {
+    /// The constant false node. Always id 0, so it needs no lookup.
     pub const FALSE: SddId = SddId(0);
+    /// The constant true node. Always id 1.
     pub const TRUE: SddId = SddId(1);
 }
 
@@ -37,10 +39,21 @@ impl std::fmt::Debug for SddId {
 type VTreeId = u32;
 
 #[derive(Debug, Clone)]
-#[allow(dead_code)]
 enum VTreeNode {
-    Leaf { var: u32 },
-    Internal { left: VTreeId, right: VTreeId },
+    // Written when the leaf is created, never read back: lookups go through
+    // `var_to_vtree`, which holds the same mapping in the useful direction. Kept
+    // rather than deleted because a vtree leaf that does not record its variable
+    // is not a vtree leaf — the structure would no longer be interpretable on its
+    // own. The allow is narrowed to this field so anything else that dies in this
+    // enum still warns.
+    Leaf {
+        #[allow(dead_code)]
+        var: u32,
+    },
+    Internal {
+        left: VTreeId,
+        right: VTreeId,
+    },
 }
 
 /// An element in a Decision node: (prime, sub) pair.
@@ -77,13 +90,22 @@ enum UniqueKey {
 /// Boolean operator for Apply.
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 pub enum BoolOp {
+    /// Conjunction.
     And,
+    /// Disjunction.
     Or,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// Why an interruptible SDD operation gave up.
+///
+/// Compilation can blow up combinatorially, so operations run under a budget and
+/// report this rather than running unbounded. A caller seeing either should treat
+/// the result as unavailable and fall back to an approximate method.
 pub enum SddBudgetError {
+    /// The caller-supplied deadline passed.
     DeadlineExceeded,
+    /// The node limit was reached.
     NodeBudgetExceeded,
 }
 
@@ -94,7 +116,21 @@ pub struct SddOperationBudget<'a> {
     deadline_available: &'a mut dyn FnMut() -> bool,
 }
 
+// Cannot derive: the deadline is a `&mut dyn FnMut`, which has no `Debug`. Calling it
+// here would consume part of the budget being reported on, so it is named and not
+// invoked.
+impl std::fmt::Debug for SddOperationBudget<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("SddOperationBudget")
+            .field("max_nodes", &self.max_nodes)
+            .field("deadline_available", &"<closure>")
+            .finish()
+    }
+}
+
 impl<'a> SddOperationBudget<'a> {
+    /// A budget of `max_nodes`, abandoned early once `deadline_available` returns
+    /// `false`.
     pub fn new(max_nodes: usize, deadline_available: &'a mut dyn FnMut() -> bool) -> Self {
         Self {
             max_nodes,
@@ -128,8 +164,11 @@ impl<'a> SddOperationBudget<'a> {
 /// - ExclusiveGroup: `∂WMC/∂p = WMC(x=1)` only (neg weight = 1.0, constant w.r.t. p)
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum VarKind {
+    /// Independent of every other variable; its negative weight is `1 - p`.
     Independent,
-    ExclusiveGroup(u32), // u32 = group_id
+    /// One alternative in a mutually exclusive group, identified by group id. Its
+    /// negative weight is fixed at 1, which is what changes the gradient formula.
+    ExclusiveGroup(u32),
 }
 
 /// Arena-based SDD manager with unique table and apply cache.
@@ -155,6 +194,10 @@ pub struct SddManager {
 }
 
 impl SddManager {
+    /// A manager holding only the constant nodes.
+    ///
+    /// [`SddId::FALSE`] and [`SddId::TRUE`] are pre-seeded at indices 0 and 1, so
+    /// the constants are addressable without a lookup.
     pub fn new() -> Self {
         let mut nodes = Vec::new();
         nodes.push(SddNode::False); // index 0
@@ -1243,9 +1286,12 @@ pub struct SddProvenance {
     guard: Option<Arc<SddGuard>>,
 }
 
+/// Ceilings applied to every operation on an [`SddProvenance`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct SddLimits {
+    /// Largest number of nodes an operation may add before abandoning.
     pub max_nodes: usize,
+    /// Wall-clock deadline, if any.
     pub deadline: Option<std::time::Instant>,
 }
 
@@ -1256,6 +1302,8 @@ struct SddGuard {
 }
 
 impl SddProvenance {
+    /// An unbounded manager. Compilation may take arbitrarily long; prefer
+    /// [`Self::with_limits`] where a query has a time budget.
     pub fn new() -> Self {
         Self {
             manager: Arc::new(Mutex::new(SddManager::new())),
@@ -1263,6 +1311,11 @@ impl SddProvenance {
         }
     }
 
+    /// A manager that abandons operations exceeding `limits`.
+    ///
+    /// The first breach is recorded and every later operation fails with the same
+    /// error, so one exhausted budget does not yield partial results that look
+    /// complete.
     pub fn with_limits(limits: SddLimits) -> Self {
         Self {
             manager: Arc::new(Mutex::new(SddManager::new())),
@@ -1278,15 +1331,23 @@ impl SddProvenance {
         &self.manager
     }
 
+    /// The budget error this manager latched, if any. `None` means no operation has
+    /// breached its limits.
     pub fn budget_error(&self) -> Option<SddBudgetError> {
         self.guard
             .as_ref()
             .and_then(|guard| *guard.error.lock().unwrap())
     }
 
+    /// Runs `operation` against the manager under this instance's limits.
+    ///
+    /// Fails immediately if a previous operation already breached the budget.
     pub fn try_with_budget<T>(
         &self,
-        operation: impl FnOnce(&mut SddManager, &mut SddOperationBudget<'_>) -> Result<T, SddBudgetError>,
+        operation: impl FnOnce(
+            &mut SddManager,
+            &mut SddOperationBudget<'_>,
+        ) -> Result<T, SddBudgetError>,
     ) -> Result<T, SddBudgetError> {
         let (max_nodes, deadline) = match &self.guard {
             Some(guard) => {
@@ -1297,7 +1358,8 @@ impl SddProvenance {
             }
             None => (usize::MAX, None),
         };
-        let mut available = || deadline.map_or(true, |deadline| std::time::Instant::now() < deadline);
+        let mut available =
+            || deadline.map_or(true, |deadline| std::time::Instant::now() < deadline);
         let mut budget = SddOperationBudget::new(max_nodes, &mut available);
         let mut manager = self.manager.lock().unwrap();
         let result = operation(&mut manager, &mut budget);

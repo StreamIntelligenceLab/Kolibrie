@@ -1,2 +1,12 @@
 *.rdf filter=lfs diff=lfs merge=lfs -text
 datasets/*.rdf filter=lfs diff=lfs merge=lfs -text
+
+# Rust sources are LF. `cargo fmt` rewrites whatever it touches to LF regardless of
+# what the file had, so without this the endings drift back into the diff every time
+# the formatter runs — which it now does as a blocking CI check. Verified by
+# restoring one CRLF file and running `cargo fmt -p datalog` over it.
+#
+# Scoped to `*.rs` deliberately. Six .py, six .md, LICENSE and .dockerignore are
+# still CRLF; nothing formats or complains about those, so normalising them would be
+# churn without a reason.
+*.rs text eol=lf

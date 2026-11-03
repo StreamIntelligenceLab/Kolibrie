@@ -12,7 +12,8 @@
 //!
 //! Counters are process-global because scans run across rayon threads. Totals
 //! are reproducible for a given plan and dataset, but concurrent queries share
-//! them, so a reader must [`reset`] first and run one query at a time.
+//! them, so a reader must call `reset` first and run one query at a time.
+//! (`reset` and `snapshot` exist only under the `exec-stats` feature.)
 
 #[cfg(feature = "exec-stats")]
 mod counters {

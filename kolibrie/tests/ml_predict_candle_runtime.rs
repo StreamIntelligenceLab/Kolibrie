@@ -10,7 +10,7 @@
 
 #![cfg(feature = "ml")]
 
-use kolibrie::parser::process_rule_definition;
+use kolibrie::rule_execution::process_rule_definition;
 use kolibrie::sparql_database::SparqlDatabase;
 
 #[path = "common/ml_local.rs"]
@@ -55,7 +55,7 @@ fn populate_binary_db(db: &mut SparqlDatabase) {
 }
 
 fn clear_materialized_predicate(db: &mut SparqlDatabase, predicate: &str) {
-    if let Some(triples) = db.neural_materialized_triples.remove(predicate) {
+    if let Some(triples) = db.take_neural_materialized(predicate) {
         for triple in triples {
             db.delete_triple(&triple);
         }
@@ -95,7 +95,7 @@ TRAIN NEURAL RELATION ex:predictedDigit {{
 "#,
         save_path = save_path,
     );
-    kolibrie::neural_relations::execute_neural_program(db, &program)
+    kolibrie::ml::neural_relations::execute_neural_program(db, &program)
         .expect("training program failed");
     clear_materialized_predicate(db, "http://example.org/predictedDigit");
 }
@@ -133,14 +133,14 @@ TRAIN NEURAL RELATION ex:isFraud {{
 "#,
         save_path = save_path,
     );
-    kolibrie::neural_relations::execute_neural_program(db, &program)
+    kolibrie::ml::neural_relations::execute_neural_program(db, &program)
         .expect("binary training program failed");
     clear_materialized_predicate(db, "http://example.org/isFraud");
 }
 
 /// Decode the first object for a matching subject and predicate
 fn lookup_object(db: &SparqlDatabase, subject_iri: &str, predicate_iri: &str) -> Option<String> {
-    let dict = db.dictionary.read().unwrap();
+    let dict = db.dictionary();
     let s = *dict.string_to_id.get(subject_iri)?;
     let p = *dict.string_to_id.get(predicate_iri)?;
     let triples = db.query_default_triples(Some(s), Some(p), None);
@@ -153,8 +153,10 @@ fn lookup_object(db: &SparqlDatabase, subject_iri: &str, predicate_iri: &str) ->
 }
 
 fn count_triples_with_predicate(db: &SparqlDatabase, predicate_iri: &str) -> usize {
-    let dict = db.dictionary.read().unwrap();
-    let Some(&pred_id) = dict.string_to_id.get(predicate_iri) else { return 0; };
+    let dict = db.dictionary();
+    let Some(&pred_id) = dict.string_to_id.get(predicate_iri) else {
+        return 0;
+    };
     db.query_default_triples(None, Some(pred_id), None).len()
 }
 
@@ -190,11 +192,7 @@ ML.PREDICT(MODEL "digit_model",
 
     process_rule_definition(rule, &mut db).expect("rule processing failed");
 
-    for (subject, expected_label) in [
-        ("s0", "A"),
-        ("s2", "B"),
-        ("s4", "C"),
-    ] {
+    for (subject, expected_label) in [("s0", "A"), ("s2", "B"), ("s4", "C")] {
         let got = lookup_object(&db, subject, "http://example.org/predictedDigit");
         assert_eq!(
             got.as_deref(),
@@ -248,6 +246,11 @@ ML.PREDICT(MODEL "digit_model",
 #[test]
 fn top_level_ml_predict_materializes_after_training() {
     let mut db = ml_local::database();
+    // Asserts exact labels, so it is seeded for the same reason
+    // `rerun_cleans_stale_predictions` is: an unseeded initialisation can leave a
+    // sample misclassified. This one had not been seen to fail, but it is flaky by
+    // construction rather than by luck.
+    db.set_training_seed(Some(7));
     populate_multiclass_db(&mut db);
     train_multiclass(&mut db, &tmp_model_path("top_level"));
 
@@ -268,7 +271,7 @@ ML.PREDICT(MODEL "digit_model",
 )
 "#;
 
-    kolibrie::neural_relations::execute_neural_program(&mut db, predict)
+    kolibrie::ml::neural_relations::execute_neural_program(&mut db, predict)
         .expect("top-level ML.PREDICT failed");
 
     let count = count_triples_with_predicate(&db, "http://example.org/predictedDigit");
@@ -315,10 +318,10 @@ ML.PREDICT(MODEL "shared_model",
 )
 "#;
 
-    let err = kolibrie::neural_relations::execute_neural_program(&mut db, program)
+    let err = kolibrie::ml::neural_relations::execute_neural_program(&mut db, program)
         .expect_err("ambiguous model-to-relation mapping should fail");
     assert!(
-        err.contains("matches 2 NEURAL RELATION"),
+        err.to_string().contains("matches 2 NEURAL RELATION"),
         "unexpected error: {}",
         err
     );
@@ -356,7 +359,10 @@ ML.PREDICT(MODEL "fraud_model",
 
     // Every positive and negative row gets `isFraud true`
     let fraud_count = count_triples_with_predicate(&db, "http://example.org/isFraud");
-    assert_eq!(fraud_count, 4, "binary ML.PREDICT should emit for every row");
+    assert_eq!(
+        fraud_count, 4,
+        "binary ML.PREDICT should emit for every row"
+    );
 
     // Companion probability predicate appends _prob to the full IRI
     let prob_count = count_triples_with_predicate(&db, "http://example.org/isFraud_prob");
@@ -381,6 +387,11 @@ ML.PREDICT(MODEL "fraud_model",
 #[test]
 fn rerun_cleans_stale_predictions() {
     let mut db = ml_local::database();
+    // This asserts one exact predicted label, so it needs the model to have learned
+    // the task. Weight initialisation is unseeded by default, and an unlucky draw
+    // left s0 misclassified after 80 epochs on three features, failing this about
+    // once in twenty runs.
+    db.set_training_seed(Some(7));
     populate_multiclass_db(&mut db);
     train_multiclass(&mut db, &tmp_model_path("rerun"));
 
@@ -557,7 +568,8 @@ ML.PREDICT(MODEL "digit_model",
 "#;
     let result = process_rule_definition(rule, &mut db);
     match result {
-        Err(msg) => {
+        Err(error) => {
+            let msg = error.to_string();
             assert!(
                 msg.contains("is not referenced by any conclusion triple"),
                 "expected unused-output error, got: {}",
@@ -599,7 +611,8 @@ ML.PREDICT(MODEL "other_model",
 "#;
     let result = process_rule_definition(rule, &mut db);
     match result {
-        Err(msg) => {
+        Err(error) => {
+            let msg = error.to_string();
             assert!(
                 msg.contains("other_model") && msg.contains("digit_model"),
                 "expected model-mismatch error, got: {}",
@@ -641,7 +654,8 @@ ML.PREDICT(MODEL "digit_model",
 "#;
     let result = process_rule_definition(rule, &mut db);
     match result {
-        Err(msg) => {
+        Err(error) => {
+            let msg = error.to_string();
             assert!(
                 msg.contains("?sample") && msg.contains("not bound by INPUT"),
                 "expected bindings-coverage error, got: {}",
@@ -684,7 +698,8 @@ ML.PREDICT(MODEL "digit_model",
 "#;
     let result = process_rule_definition(rule, &mut db);
     match result {
-        Err(msg) => {
+        Err(error) => {
+            let msg = error.to_string();
             assert!(
                 msg.contains("multiple conclusion predicates"),
                 "expected single-predicate invariant error, got: {}",

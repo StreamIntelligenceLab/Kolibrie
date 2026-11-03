@@ -50,12 +50,18 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             counter, counter, counter
         );
         for triple in engine.parse_data(&ntriples) {
+            // `counter` is the stream's clock. The window is `[RANGE 10 STEP 5]`
+            // with no `TICK` clause, so it fires on these timestamps and not on
+            // elapsed wall time -- which is why this loop does not sleep. It used
+            // to sleep a second per iteration, twenty-one seconds in all, for no
+            // effect on the result beyond making the example the slowest thing in
+            // `scripts/verify.sh` after one other.
             engine.add_to_stream("policyStream", triple, counter);
         }
-        std::thread::sleep(std::time::Duration::from_secs(1));
     }
 
+    // No sleep after stopping either: `stop` flushes every window and waits for the
+    // coordinator, so every result has been delivered by the time it returns.
     engine.stop();
-    std::thread::sleep(std::time::Duration::from_secs(1));
     Ok(())
 }

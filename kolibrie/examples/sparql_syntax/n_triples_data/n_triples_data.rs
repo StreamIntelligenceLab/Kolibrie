@@ -8,8 +8,7 @@
  * you can obtain one at https://mozilla.org/MPL/2.0/.
  */
 
-use kolibrie::execute_query::*;
-use kolibrie::sparql_database::*;
+use kolibrie::prelude::*;
 
 fn n_triple_simple_query() {
     let mut db = SparqlDatabase::new();
@@ -34,7 +33,9 @@ fn n_triple_simple_query() {
         ?friend ex:name ?name
     }"#;
 
-    let results = execute_query_rayon_parallel2_volcano(sparql_query, &mut db);
+    let results = execute(sparql_query, &mut db)
+        .expect("query should run")
+        .into_rows();
     println!("Query Results:");
     for result in results {
         if let [name] = &result[..] {

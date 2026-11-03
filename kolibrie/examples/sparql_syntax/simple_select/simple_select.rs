@@ -8,8 +8,7 @@
  * you can obtain one at https://mozilla.org/MPL/2.0/.
  */
 
-use kolibrie::execute_query::*;
-use kolibrie::sparql_database::*;
+use kolibrie::prelude::*;
 
 // Simple select
 fn simple_select() {
@@ -36,7 +35,9 @@ fn simple_select() {
 
     let sparql = r#"PREFIX ex: <http://example.org/> SELECT ?person ?location WHERE {?person ex:worksAt ?location}"#;
 
-    let results = execute_query_rayon_parallel2_volcano(sparql, &mut database);
+    let results = execute(sparql, &mut database)
+        .expect("query should run")
+        .into_rows();
 
     // Now the main function is responsible for printing the results
     println!("Results:");
@@ -48,5 +49,5 @@ fn simple_select() {
 }
 
 fn main() {
-  simple_select();
+    simple_select();
 }

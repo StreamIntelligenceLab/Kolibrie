@@ -1,12 +1,13 @@
 [package]
 name = "kolibrie"
-version = "0.1.1"
+version.workspace      = true
 authors = ["Volodymyr Kadzhaia <vkadzhaia@gmail.com>", "Pieter Bonte <pieter.bonte@kuleuven.be>"]
 description = """
 A SPARQL database and RDF toolkit
 """
-edition = "2021"
-license = "MPL-2.0"
+edition.workspace      = true
+license.workspace      = true
+rust-version.workspace = true
 categories = ["database", "database-implementations", "data-structures"]
 keywords = ["database", "rdf", "graph-database", "sparql", "sql"]
 readme = "README.md"
@@ -27,20 +28,22 @@ url = { workspace = true }
 percent-encoding = { workspace = true }
 httparse = { workspace = true }
 crossbeam = { workspace = true }
-pyo3 = { workspace = true, optional = true }
+pyo3 = { workspace = true, optional = true, features = ["auto-initialize"] }
 shared = { path = "../shared" }
 datalog =  { path = "../datalog" }
 datalogmtl = { path = "../datalogmtl" }
 ml = { path = "../ml", optional = true }
-chrono = "0.4.40"
-rumqttc = "0.21.0"
 log = "0.4.27"
 annotate-snippets = "0.12.10"
 
-[target.'cfg(unix)'.dependencies]
+# Example-only since `utils::get_num_cpus` moved to `std::thread::available_parallelism`.
+# The one remaining user is the repro_sensor_path_benchmark example, which reads
+# resident set size and has no std equivalent to reach for. Normal dependencies here
+# would make every consumer of `kolibrie` pull them for nothing.
+[target.'cfg(unix)'.dev-dependencies]
 libc = "0.2.161"
 
-[target.'cfg(windows)'.dependencies]
+[target.'cfg(windows)'.dev-dependencies]
 winapi = { version = "0.3.9", features = ["processthreadsapi", "psapi", "sysinfoapi"] }
 
 [features]
@@ -50,6 +53,10 @@ exec-stats = []
 
 [dev-dependencies]
 criterion = "0.5.1"
+# Used only by examples/real_scenario and the ML combination examples.
+# As normal deps these dragged tokio + rustls into every consumer of kolibrie.
+chrono = "0.4.40"
+rumqttc = "0.21.0"
 
 [lib]
 path = "src/lib.rs"
@@ -89,6 +96,42 @@ name = "optimizer_hotpath"
 path = "benches/optimizer_hotpath.rs"
 harness = false
 
+[[bench]]
+name = "micro_dictionary"
+path = "benches/micro_dictionary.rs"
+harness = false
+
+# Heavy tier: thread-contention sweep over the shared dictionary. Research rather
+# than a refactor guard, so `perf_bench.sh routine` does not run it.
+[[bench]]
+name = "contended_dictionary"
+path = "benches/contended_dictionary.rs"
+harness = false
+
+[[bench]]
+name = "micro_pattern"
+path = "benches/micro_pattern.rs"
+harness = false
+
+[[bench]]
+name = "micro_scan"
+path = "benches/micro_scan.rs"
+harness = false
+
+[[bench]]
+name = "micro_join"
+path = "benches/micro_join.rs"
+harness = false
+
+[[bench]]
+name = "micro_field_access"
+path = "benches/micro_field_access.rs"
+harness = false
+
+[[example]]
+name = "rdf_terms"
+path = "examples/rdf_terms/rdf_terms.rs"
+
 [[example]]
 name = "replay_profile"
 path = "examples/replay_profile/replay_profile.rs"
@@ -112,10 +155,6 @@ path = "examples/synthetic_data/gen_data.rs"
 [[example]]
 name = "sparql_syntax"
 path = "examples/sparql_syntax/sparql_syntax.rs"
-
-[[example]]
-name = "http_check"
-path = "examples/http_test/http_check.rs"
 
 [[example]]
 name = "advanced_join"
@@ -176,18 +215,6 @@ path = "examples/sparql_syntax/knowledge_graph/knowledge_graph_test_scenarios.rs
 [[example]]
 name = "datalog_example"
 path = "examples/sparql_syntax/knowledge_graph/datalog_example.rs"
-
-[[example]]
-name = "hierarchy_reasoning_advanced"
-path = "examples/sparql_syntax/knowledge_graph/hierarchy_reasoning_advanced.rs"
-
-[[example]]
-name = "hierarchy_reasoning"
-path = "examples/sparql_syntax/knowledge_graph/hierarchy_reasoning.rs"
-
-[[example]]
-name = "contradictions"
-path = "examples/sparql_syntax/knowledge_graph/contradictions.rs"
 
 [[example]]
 name = "deep_taxonomy"
@@ -367,3 +394,6 @@ path = "examples/real_scenario/drone_traffic_safety_demo.rs"
 [[example]]
 name = "combined_rules_example"
 path = "examples/sparql_syntax/knowledge_graph/combined_rules_example.rs"
+
+[lints]
+workspace = true

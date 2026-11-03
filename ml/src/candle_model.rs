@@ -8,6 +8,30 @@
  * you can obtain one at https://mozilla.org/MPL/2.0/.
  */
 
+//! A small feed-forward network, for gradients that arrive from outside it.
+//!
+//! Ordinary training differentiates a loss over labels. Neural relations do not:
+//! the signal is a weighted-model-count gradient computed over a probabilistic
+//! program, one partial derivative per output variable, which
+//! [`MlpNeuralPredicate::surrogate_backward`] accepts in place of a loss.
+//!
+//! # Forward and backward are a queue, not a pair of calls
+//!
+//! [`forward_with_grads`](MlpNeuralPredicate::forward_with_grads) pushes its
+//! activations onto an internal queue and
+//! [`surrogate_backward`](MlpNeuralPredicate::surrogate_backward) pops the oldest,
+//! so the two must be called in matching FIFO order. Gradients then *accumulate*
+//! until [`zero_grads`](MlpNeuralPredicate::zero_grads) clears them, which is what
+//! lets one optimiser step cover several forward passes.
+//! [`predict`](MlpNeuralPredicate::predict) caches nothing and so cannot be
+//! followed by a backward pass.
+//!
+//! # Implementation note
+//!
+//! Despite the name and the `candle` dependency, the arithmetic is plain Rust over
+//! `Vec<Vec<f64>>`; candle supplies the `Tensor` the forward pass hands back and
+//! nothing else. There is no GPU path here.
+
 use std::cell::RefCell;
 use std::collections::{HashMap, VecDeque};
 use std::error::Error;
@@ -15,7 +39,6 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use candle_core::{Device, Tensor};
-use candle_nn::VarMap;
 use rand::{Rng, SeedableRng};
 use serde::{Deserialize, Serialize};
 
@@ -24,8 +47,11 @@ use shared::query::OptimizerKind;
 type MlResult<T> = Result<T, Box<dyn Error>>;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+/// What the output layer means, which decides its width and its activation.
 pub enum OutputType {
+    /// One output, squashed to a probability.
     Binary,
+    /// One output per class, normalised across them, so they sum to 1.
     Categorical(usize),
 }
 
@@ -69,8 +95,17 @@ struct SavedModel {
     output_type: OutputType,
 }
 
+/// A feed-forward network with ReLU hidden layers.
+///
+/// Interior-mutable throughout: a forward pass records activations and a backward
+/// pass accumulates gradients, both through `&self`, so one of these can be shared
+/// where a `&mut` would not fit. The cost is that the forward/backward pairing is
+/// a runtime contract rather than a borrow-checked one — see the module
+/// documentation.
+///
+/// No public fields: the parameters are reachable only through the methods here,
+/// so their representation stays a private matter.
 pub struct MlpNeuralPredicate {
-    pub varmap: VarMap,
     layers: RefCell<Vec<DenseLayer>>,
     hidden_act: Activation,
     output_type: OutputType,
@@ -79,16 +114,73 @@ pub struct MlpNeuralPredicate {
     adam_state: RefCell<AdamState>,
 }
 
+// Summarised rather than derived: the parameters are the bulk of this type, and a
+// layer-shape list is what a reader is checking. `try_borrow` because a `Debug` impl
+// must not panic, and the layers are borrowed during a forward pass.
+impl std::fmt::Debug for MlpNeuralPredicate {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let mut s = f.debug_struct("MlpNeuralPredicate");
+        match self.layers.try_borrow() {
+            Ok(layers) => {
+                let shape: Vec<(usize, usize)> = layers
+                    .iter()
+                    .map(|l| (l.weights.first().map_or(0, Vec::len), l.weights.len()))
+                    .collect();
+                s.field("layers", &shape);
+            }
+            Err(_) => {
+                s.field("layers", &"<in use>");
+            }
+        }
+        s.field("hidden_act", &self.hidden_act)
+            .field("output_type", &self.output_type)
+            .field(
+                "queued_forwards",
+                &self
+                    .forward_queue
+                    .try_borrow()
+                    .map_or(None, |q| Some(q.len())),
+            )
+            .finish_non_exhaustive()
+    }
+}
+
 impl MlpNeuralPredicate {
+    /// A network with randomly initialised weights and zero biases.
+    ///
+    /// `hidden` gives the width of each hidden layer in order, and may be empty
+    /// for a network with no hidden layer. Weights are drawn uniformly from
+    /// `-sqrt(2/in_dim)..sqrt(2/in_dim)`, scaled per layer to keep activations
+    /// from vanishing as depth grows.
+    ///
+    /// Unseeded, so two networks built from the same arguments differ. Use
+    /// [`new_seeded`](Self::new_seeded) where that matters.
     pub fn new(input_dim: usize, hidden: &[usize], output_type: OutputType) -> MlResult<Self> {
         Self::new_with_rng(input_dim, hidden, output_type, &mut rand::rng())
     }
 
-    pub fn new_seeded(input_dim: usize, hidden: &[usize], output_type: OutputType, seed: u64) -> MlResult<Self> {
-        Self::new_with_rng(input_dim, hidden, output_type, &mut rand::rngs::StdRng::seed_from_u64(seed))
+    /// As [`new`](Self::new), with initialisation drawn from `seed` so the
+    /// network is reproducible.
+    pub fn new_seeded(
+        input_dim: usize,
+        hidden: &[usize],
+        output_type: OutputType,
+        seed: u64,
+    ) -> MlResult<Self> {
+        Self::new_with_rng(
+            input_dim,
+            hidden,
+            output_type,
+            &mut rand::rngs::StdRng::seed_from_u64(seed),
+        )
     }
 
-    fn new_with_rng(input_dim: usize, hidden: &[usize], output_type: OutputType, rng: &mut impl Rng) -> MlResult<Self> {
+    fn new_with_rng(
+        input_dim: usize,
+        hidden: &[usize],
+        output_type: OutputType,
+        rng: &mut impl Rng,
+    ) -> MlResult<Self> {
         let mut dims = Vec::with_capacity(hidden.len() + 2);
         dims.push(input_dim);
         dims.extend_from_slice(hidden);
@@ -118,7 +210,6 @@ impl MlpNeuralPredicate {
         let adam_state = zero_adam_for_layers(&layers);
 
         Ok(Self {
-            varmap: VarMap::new(),
             layers: RefCell::new(layers),
             hidden_act: Activation::Relu,
             output_type,
@@ -128,15 +219,31 @@ impl MlpNeuralPredicate {
         })
     }
 
+    /// A forward pass that keeps what a backward pass will need.
+    ///
+    /// Returns the outputs twice over: as a `Tensor` for callers threading one
+    /// through candle, and as rows of `f64` for everything else. Queues the
+    /// activations for exactly one
+    /// [`surrogate_backward`](Self::surrogate_backward), so calling this twice
+    /// without a backward pass in between leaves two entries queued and they are
+    /// consumed oldest first.
     pub fn forward_with_grads(&self, rows: &[Vec<f64>]) -> MlResult<(Tensor, Vec<Vec<f64>>)> {
         self.forward_impl(rows, true)
     }
 
+    /// A forward pass that keeps nothing.
+    ///
+    /// One row of outputs per input row. Cannot be followed by
+    /// [`surrogate_backward`](Self::surrogate_backward), which has nothing to pop.
     pub fn predict(&self, rows: &[Vec<f64>]) -> MlResult<Vec<Vec<f64>>> {
         Ok(self.forward_impl(rows, false)?.1)
     }
 
-    fn forward_impl(&self, rows: &[Vec<f64>], retain_cache: bool) -> MlResult<(Tensor, Vec<Vec<f64>>)> {
+    fn forward_impl(
+        &self,
+        rows: &[Vec<f64>],
+        retain_cache: bool,
+    ) -> MlResult<(Tensor, Vec<Vec<f64>>)> {
         let layers = self.layers.borrow();
         if rows.is_empty() {
             let out_dim = output_dim(self.output_type);
@@ -167,16 +274,22 @@ impl MlpNeuralPredicate {
 
         let mut activations = rows.to_vec();
         for (layer_idx, layer) in layers.iter().enumerate() {
-            if retain_cache { cache.layer_inputs.push(activations.clone()); }
+            if retain_cache {
+                cache.layer_inputs.push(activations.clone());
+            }
             let z = linear_batch(&activations, layer);
-            if retain_cache { cache.pre_activations.push(z.clone()); }
+            if retain_cache {
+                cache.pre_activations.push(z.clone());
+            }
             activations = if layer_idx + 1 == layers.len() {
                 output_activation(&z, self.output_type)
             } else {
                 hidden_activation(&z, self.hidden_act)
             };
         }
-        if retain_cache { cache.outputs = activations.clone(); }
+        if retain_cache {
+            cache.outputs = activations.clone();
+        }
 
         let flat: Vec<f32> = activations
             .iter()
@@ -188,10 +301,32 @@ impl MlpNeuralPredicate {
             &Device::Cpu,
         )?;
         drop(layers);
-        if retain_cache { self.forward_queue.borrow_mut().push_back(cache); }
+        if retain_cache {
+            self.forward_queue.borrow_mut().push_back(cache);
+        }
         Ok((tensor, activations))
     }
 
+    /// Backpropagates a gradient supplied by the caller instead of one derived
+    /// from a loss.
+    ///
+    /// `wmc_grads` carries one map per sample, from probabilistic-program variable
+    /// to that variable's partial derivative, and `var_to_col` says which output
+    /// column each variable corresponds to. Samples whose gradients are all
+    /// effectively zero are skipped rather than propagated.
+    ///
+    /// Gradients **accumulate** into internal state; they do not replace what is
+    /// there. [`zero_grads`](Self::zero_grads) between batches, or one batch's
+    /// gradients leak into the next.
+    ///
+    /// `tracked` is not read. It is accepted so callers can pass the tensor from
+    /// [`forward_with_grads`](Self::forward_with_grads), but the pass uses the
+    /// queued activations, not this argument.
+    ///
+    /// # Errors
+    ///
+    /// If no queued forward pass is available, or if the queued one covered a
+    /// different number of samples than `wmc_grads` does.
     pub fn surrogate_backward(
         &self,
         tracked: &Tensor,
@@ -276,13 +411,33 @@ impl MlpNeuralPredicate {
         Ok(())
     }
 
+    /// Clears accumulated gradients **and** discards any queued forward passes.
+    ///
+    /// The second half matters: this is also how to recover after an aborted
+    /// batch, since a queued activation set with no backward pass would otherwise
+    /// be consumed by the next one and silently mismatch.
     pub fn zero_grads(&self) {
         let layers = self.layers.borrow();
         *self.grad_state.borrow_mut() = zero_grads_for_layers(&layers);
         self.forward_queue.borrow_mut().clear();
     }
 
-    pub fn optimizer_step(&self, optimizer: OptimizerKind, learning_rate: f64, example_count: usize) {
+    /// Applies the accumulated gradients and updates the weights.
+    ///
+    /// Gradients are divided by `example_count`, so that value must be the number
+    /// of samples that actually contributed since the last
+    /// [`zero_grads`](Self::zero_grads) — not the batch size, which differs
+    /// whenever a sample was skipped for having no gradient. An
+    /// `example_count` of 0 is a no-op rather than a division by zero.
+    ///
+    /// Does not clear the gradients; call
+    /// [`zero_grads`](Self::zero_grads) before the next batch.
+    pub fn optimizer_step(
+        &self,
+        optimizer: OptimizerKind,
+        learning_rate: f64,
+        example_count: usize,
+    ) {
         let mut layers = self.layers.borrow_mut();
         let grads = self.grad_state.borrow_mut();
         if example_count == 0 {
@@ -354,6 +509,12 @@ impl MlpNeuralPredicate {
     }
 
     /// Serialize without filesystem side effects
+    ///
+    /// JSON, and the float round-trip through
+    /// [`from_bytes`](Self::from_bytes) is bit-exact — but only because
+    /// `serde_json` is built with `float_roundtrip`. Without that feature its
+    /// parser can land one ULP off while serialisation stays exact, which made
+    /// save-then-load lossy and produced a 1-in-25 test flake.
     pub fn to_bytes(&self) -> MlResult<Vec<u8>> {
         let payload = SavedModel {
             layers: self.layers.borrow().clone(),
@@ -363,6 +524,13 @@ impl MlpNeuralPredicate {
         Ok(serde_json::to_vec_pretty(&payload)?)
     }
 
+    /// Reads a model from `path`.
+    ///
+    /// Verifies only that the file's shape matches the arguments, which is what
+    /// [`from_bytes`](Self::from_bytes) checks. It does not verify *which* file it
+    /// read: the digest pinning that makes a swapped artifact fail rather than
+    /// silently change behaviour lives in `kolibrie`'s `ml_policy`, so prefer the
+    /// policy path and reserve this for a file the caller already trusts.
     pub fn load(
         input_dim: usize,
         hidden: &[usize],
@@ -557,7 +725,12 @@ mod tests {
             assert_eq!(a.predict(&rows).unwrap(), expected);
         }
         assert_eq!(a.forward_queue.borrow().len(), 1);
-        a.surrogate_backward(&tracked, &[HashMap::from([(0, -1.0)])], &HashMap::from([(0, 0)])).unwrap();
+        a.surrogate_backward(
+            &tracked,
+            &[HashMap::from([(0, -1.0)])],
+            &HashMap::from([(0, 0)]),
+        )
+        .unwrap();
         assert!(a.forward_queue.borrow().is_empty());
         assert!(a.predict(&[vec![0.0]]).is_err());
     }
@@ -572,10 +745,29 @@ mod tests {
             MlpNeuralPredicate::from_bytes(2, &[3], OutputType::Categorical(2), &bytes).is_err()
         );
         let loaded = MlpNeuralPredicate::from_bytes(2, &[3], OutputType::Binary, &bytes).unwrap();
-        assert_eq!(
-            model.forward_with_grads(&[vec![1.0, 2.0]]).unwrap().1,
-            loaded.forward_with_grads(&[vec![1.0, 2.0]]).unwrap().1
-        );
+
+        // Serialisation fidelity is asserted on the bytes, which is both exact and
+        // deterministic — and a stronger claim than matching forward outputs.
+        assert_eq!(loaded.to_bytes().unwrap(), bytes);
+
+        // Forward outputs get a tolerance rather than equality. candle's CPU matmul
+        // reduces in an order that depends on how rayon partitions the work, so two
+        // calls with byte-identical weights can disagree in the last bit when the
+        // machine is busy. Asserting equality here failed about 1 run in 25 under the
+        // default parallel test harness, and never with --test-threads=1, on exactly
+        // that: left [[0.3958277324801351]] vs right [[0.39582773248013514]].
+        let expected = model.forward_with_grads(&[vec![1.0, 2.0]]).unwrap().1;
+        let actual = loaded.forward_with_grads(&[vec![1.0, 2.0]]).unwrap().1;
+        assert_eq!(expected.len(), actual.len());
+        for (expected_row, actual_row) in expected.iter().zip(&actual) {
+            assert_eq!(expected_row.len(), actual_row.len());
+            for (e, a) in expected_row.iter().zip(actual_row) {
+                assert!(
+                    (e - a).abs() < 1e-12,
+                    "forward outputs diverged: {e} vs {a}"
+                );
+            }
+        }
     }
 
     #[test]
@@ -590,7 +782,11 @@ mod tests {
         }
     }
 
-    fn linear_model(output: OutputType, weights: Vec<Vec<f64>>, bias: Vec<f64>) -> MlpNeuralPredicate {
+    fn linear_model(
+        output: OutputType,
+        weights: Vec<Vec<f64>>,
+        bias: Vec<f64>,
+    ) -> MlpNeuralPredicate {
         let model = MlpNeuralPredicate::new(weights[0].len(), &[], output).unwrap();
         {
             let mut layers = model.layers.borrow_mut();
@@ -600,9 +796,17 @@ mod tests {
         model
     }
 
-    fn accumulated_bias_grads(model: &MlpNeuralPredicate, row: &[f64], d_output: &[f64]) -> Vec<f64> {
+    fn accumulated_bias_grads(
+        model: &MlpNeuralPredicate,
+        row: &[f64],
+        d_output: &[f64],
+    ) -> Vec<f64> {
         let (tracked, _) = model.forward_with_grads(&[row.to_vec()]).unwrap();
-        let grads: HashMap<u32, f64> = d_output.iter().enumerate().map(|(i, g)| (i as u32, *g)).collect();
+        let grads: HashMap<u32, f64> = d_output
+            .iter()
+            .enumerate()
+            .map(|(i, g)| (i as u32, *g))
+            .collect();
         let cols: HashMap<u32, usize> = (0..d_output.len()).map(|i| (i as u32, i)).collect();
         model.surrogate_backward(&tracked, &[grads], &cols).unwrap();
         let state = model.grad_state.borrow();
@@ -637,7 +841,11 @@ mod tests {
                 up[k] += h;
                 down[k] -= h;
                 let numeric = (loss(&up) - loss(&down)) / (2.0 * h);
-                assert!((analytic[k] - numeric).abs() <= 1e-6, "{k}: {} vs {numeric}", analytic[k]);
+                assert!(
+                    (analytic[k] - numeric).abs() <= 1e-6,
+                    "{k}: {} vs {numeric}",
+                    analytic[k]
+                );
             }
         }
     }
@@ -654,12 +862,21 @@ mod tests {
             let analytic = accumulated_bias_grads(&model, &row, &d_output)[0];
             let loss = |b: f64| {
                 let z: f64 = weights[0].iter().zip(&row).map(|(w, x)| w * x).sum::<f64>() + b;
-                let softplus = |v: f64| if v > 0.0 { v + (-v).exp().ln_1p() } else { v.exp().ln_1p() };
+                let softplus = |v: f64| {
+                    if v > 0.0 {
+                        v + (-v).exp().ln_1p()
+                    } else {
+                        v.exp().ln_1p()
+                    }
+                };
                 label * softplus(-z) + (1.0 - label) * softplus(z)
             };
             let h = 1e-6;
             let numeric = (loss(bias + h) - loss(bias - h)) / (2.0 * h);
-            assert!((analytic - numeric).abs() <= 1e-6, "{label} {bias}: {analytic} vs {numeric}");
+            assert!(
+                (analytic - numeric).abs() <= 1e-6,
+                "{label} {bias}: {analytic} vs {numeric}"
+            );
         }
     }
 
@@ -673,7 +890,11 @@ mod tests {
                 accumulated_bias_grads(&model, &row, &[0.5]);
                 model.optimizer_step(OptimizerKind::Sgd, 0.1, *count);
                 let layers = model.layers.borrow();
-                vec![layers[0].bias[0], layers[0].weights[0][0] - 0.1, layers[0].weights[0][1] - 0.2]
+                vec![
+                    layers[0].bias[0],
+                    layers[0].weights[0][0] - 0.1,
+                    layers[0].weights[0][1] - 0.2,
+                ]
             })
             .collect();
         for (one, two) in steps[0].iter().zip(&steps[1]) {

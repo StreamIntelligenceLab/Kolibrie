@@ -8,8 +8,7 @@
  * you can obtain one at https://mozilla.org/MPL/2.0/.
  */
 
-use kolibrie::execute_query::*;
-use kolibrie::sparql_database::*;
+use kolibrie::prelude::*;
 
 fn select() {
     // Define the RDF/XML string representing the inserted triples
@@ -35,11 +34,13 @@ fn select() {
     let sparql_query = r#"PREFIX ex: <http://example.org/> SELECT ?person WHERE {?person ex:hasOccupation "Engineer"}"#;
 
     // Execute the query on the database
-    let results = execute_query_rayon_parallel2_volcano(sparql_query, &mut database);
+    let results = execute(sparql_query, &mut database)
+        .expect("query should run")
+        .into_rows();
 
     println!("{:?}", results);
 
-    let dict = database.dictionary.read().unwrap();
+    let dict = database.dictionary();
     for triple in database.query_default_triples(None, None, None) {
         let subject = dict.decode(triple.subject).unwrap_or_default();
         let predicate = dict.decode(triple.predicate).unwrap_or_default();
@@ -47,7 +48,6 @@ fn select() {
         println!("Triple: ({}, {}, {})", subject, predicate, object);
     }
     drop(dict);
-    
 
     // Output the results (if any)
     for result in results {
@@ -60,4 +60,3 @@ fn select() {
 fn main() {
     select();
 }
-

@@ -6,10 +6,11 @@
  *   -> SPARQL-star feature query -> train a neural relation -> feed predictions back into RULE syntax
  */
 
-use kolibrie::execute_query::execute_query_rayon_parallel2_volcano;
-use kolibrie::execute_ml_train::build_ground_reasoner_from_db;
-use kolibrie::neural_relations::execute_neural_program;
-use kolibrie::parser::{convert_combined_rule, parse_combined_query, process_rule_definition};
+use kolibrie::execute_query::execute;
+use kolibrie::ml::execute_train::build_ground_reasoner_from_db;
+use kolibrie::ml::neural_relations::execute_neural_program;
+use kolibrie::parser::{convert_combined_rule, parse_combined_query};
+use kolibrie::rule_execution::process_rule_definition;
 use kolibrie::sparql_database::SparqlDatabase;
 use shared::sdd::SddProvenance;
 
@@ -113,7 +114,10 @@ fn build_feedback_program() -> String {
         String::new(),
         "MODEL \"response_model\" {".to_string(),
         "    ARCH MLP { HIDDEN [8, 4] }".to_string(),
-        format!("    OUTPUT EXCLUSIVE {{ <{}monitor>, <{}dispatch> }}", EX, EX),
+        format!(
+            "    OUTPUT EXCLUSIVE {{ <{}monitor>, <{}dispatch> }}",
+            EX, EX
+        ),
         "}".to_string(),
         String::new(),
         "NEURAL RELATION ex:predictedResponse USING MODEL \"response_model\" {".to_string(),
@@ -156,15 +160,15 @@ ORDER BY ?sensor"#
 
 fn execute_sdd_rule_batch(db: &mut SparqlDatabase, rule_inputs: &[String]) -> usize {
     let mut reasoner = build_ground_reasoner_from_db(db, None);
-    reasoner.probability_seeds = db.probability_seeds.clone();
+    reasoner.probability_seeds = db.probability_seeds().clone();
 
     for rule_input in rule_inputs {
         db.register_prefixes_from_query(rule_input);
-        let (_rest, combined) = parse_combined_query(rule_input)
-            .expect("failed to parse provenance rule");
+        let (_rest, combined) =
+            parse_combined_query(rule_input).expect("failed to parse provenance rule");
 
         for (prefix, uri) in &combined.prefixes {
-            db.prefixes.insert(prefix.clone(), uri.clone());
+            db.add_prefix(prefix.clone(), uri.clone());
         }
 
         let mut prefixes = combined.prefixes.clone();
@@ -174,20 +178,20 @@ fn execute_sdd_rule_batch(db: &mut SparqlDatabase, rule_inputs: &[String]) -> us
             .expect("expected at most one RULE block")
             .cloned()
             .expect("expected RULE block");
-
-        let mut dict = reasoner.dictionary.write().unwrap();
-        let dynamic_rule = convert_combined_rule(parsed_rule, &mut dict, &prefixes);
-        drop(dict);
-        reasoner.add_rule(dynamic_rule);
+        let mut dynamic_rule = None;
+        reasoner.with_terms(&mut |dict| {
+            dynamic_rule = Some(convert_combined_rule(parsed_rule.clone(), dict, &prefixes));
+        });
+        reasoner.add_rule(dynamic_rule.expect("the visitor always runs"));
     }
 
     let (derived_facts, tag_store) = reasoner.infer_new_facts_with_provenance(SddProvenance::new());
-
-    let mut dict = reasoner.dictionary.write().unwrap();
-    let mut qt_store = db.quoted_triple_store.write().unwrap();
-    let rdf_star = tag_store.encode_as_rdf_star_with_explanation(&mut dict, &mut qt_store);
+    let mut qt_store = db.quoted_triples_mut();
+    let mut rdf_star = Vec::new();
+    reasoner.with_terms(&mut |dict| {
+        rdf_star = tag_store.encode_as_rdf_star_with_explanation(dict, &mut qt_store);
+    });
     drop(qt_store);
-    drop(dict);
 
     for triple in rdf_star {
         db.add_triple(triple);
@@ -332,11 +336,7 @@ fn print_rows(title: &str, rows: &[Vec<String>]) {
 
 fn shorten(value: &str) -> String {
     if value.starts_with(EX) {
-        value
-            .rsplit(['/', '#'])
-            .next()
-            .unwrap_or(value)
-            .to_string()
+        value.rsplit(['/', '#']).next().unwrap_or(value).to_string()
     } else {
         value.to_string()
     }
@@ -403,9 +403,17 @@ fn main() {
         if let Some(prob) = case.hr_prob {
             add_probabilistic_fact(&mut db, &sensor, &iri("hrEvidence"), prob);
         }
-        add_probabilistic_fact(&mut db, &sensor, &iri("pressureEvidence"), case.pressure_prob);
+        add_probabilistic_fact(
+            &mut db,
+            &sensor,
+            &iri("pressureEvidence"),
+            case.pressure_prob,
+        );
     }
-    println!("  Added {} labeled sensors and seeded uncertain evidence facts", sensors.len());
+    println!(
+        "  Added {} labeled sensors and seeded uncertain evidence facts",
+        sensors.len()
+    );
 
     println!("\n[2/5] Running provenance-aware RULE syntax");
     let temp_rule = rule_risk_from_temp_pressure();
@@ -415,9 +423,14 @@ fn main() {
     println!();
     print_block("  RULE :RiskFromHrPressure", &hr_rule);
     let provenance_inferred = execute_sdd_rule_batch(&mut db, &[temp_rule, hr_rule]);
-    println!("\n  Shared SDD inference produced {} new provenance-tagged facts", provenance_inferred);
+    println!(
+        "\n  Shared SDD inference produced {} new provenance-tagged facts",
+        provenance_inferred
+    );
 
-    let risk_rows = execute_query_rayon_parallel2_volcano(&risk_signal_query(), &mut db);
+    let risk_rows = execute(&risk_signal_query(), &mut db)
+        .expect("query should run")
+        .into_rows();
     println!("\n  Derived {} riskSignal facts", risk_rows.len());
 
     println!("\n[3/5] Inspecting provenance with SPARQL-star and building neural features");
@@ -426,7 +439,10 @@ fn main() {
     let provenance_rows = provenance_rows_from_rdf_star(&db);
     print_rows("  Provenance rows", &provenance_rows);
     let feature_count = materialize_feature_triples_from_rows(&mut db, &provenance_rows);
-    println!("  Materialized {} numeric feature rows for training", feature_count);
+    println!(
+        "  Materialized {} numeric feature rows for training",
+        feature_count
+    );
 
     println!("\n[4/5] Training and materializing the neural relation");
     let neural_program = build_feedback_program();
@@ -435,22 +451,34 @@ fn main() {
 
     let prediction_query = prediction_query();
     print_block("  Prediction query", &prediction_query);
-    let prediction_rows = execute_query_rayon_parallel2_volcano(&prediction_query, &mut db);
+    let prediction_rows = execute(&prediction_query, &mut db)
+        .expect("query should run")
+        .into_rows();
     print_rows("  Predicted responses", &prediction_rows);
 
     println!("\n[5/5] Feeding predictions back into RULE syntax");
     let feedback_rule = feedback_rule();
     print_block("  RULE :OpenDispatchCase", &feedback_rule);
-    let (_rule, inferred) = process_rule_definition(&feedback_rule, &mut db)
-        .expect("feedback rule execution failed");
-    println!("  Rule inference produced {} new dispatchCase facts", inferred.len());
+    let (_rule, inferred) =
+        process_rule_definition(&feedback_rule, &mut db).expect("feedback rule execution failed");
+    println!(
+        "  Rule inference produced {} new dispatchCase facts",
+        inferred.len()
+    );
 
     let case_query = dispatch_case_query();
     print_block("  Final SELECT query", &case_query);
-    let case_rows = execute_query_rayon_parallel2_volcano(&case_query, &mut db);
+    let case_rows = execute(&case_query, &mut db)
+        .expect("query should run")
+        .into_rows();
     print_rows("  Dispatch cases opened by the rule", &case_rows);
 
     println!("\nModel saved to {MODEL_PATH}");
 }
 
-mod local_ml { include!(concat!(env!("CARGO_MANIFEST_DIR"), "/examples/support/ml_context.rs")); }
+mod local_ml {
+    include!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/examples/support/ml_context.rs"
+    ));
+}

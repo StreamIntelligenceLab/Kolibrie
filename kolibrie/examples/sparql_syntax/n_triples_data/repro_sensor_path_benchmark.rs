@@ -8,7 +8,7 @@
  * you can obtain one at https://mozilla.org/MPL/2.0/.
  */
 
-use kolibrie::execute_query::execute_query_rayon_parallel2_volcano;
+use kolibrie::execute_query::execute;
 use kolibrie::sparql_database::SparqlDatabase;
 use std::fs;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -50,23 +50,104 @@ struct QueryMeasurement {
     end_rss_bytes: Option<u64>,
 }
 
+/// Sensors in the generated stand-in corpus, each monitoring one chain.
+const GENERATED_SENSORS: usize = 2_000;
+
+/// Segments per chain. Six is the query's window, so a chain of this length yields
+/// `GENERATED_CHAIN - 5` matches, and anything shorter yields none.
+const GENERATED_CHAIN: usize = 10;
+
+/// One chain in this many is left unmatched, by having its middle segment monitored
+/// by nobody. Without that the query matches every window it looks at, which makes
+/// the join cheaper than the corpus this was written against.
+const GENERATED_BROKEN_IN: usize = 4;
+
+/// N-Triples in the shape [`REPRO_QUERY`] looks for: chains of `base:connectsTo`
+/// segments, all `base:monitoredBy` one `base:Sensor`, everything typed.
+///
+/// A stand-in for the Train Benchmark corpus, not a reproduction of it. Timings taken
+/// against this are comparable with each other and with nothing else.
+fn generated_dataset() -> String {
+    const BASE: &str = "http://www.semanticweb.org/ontologies/2015/trainbenchmark#";
+    const RDF_TYPE: &str = "http://www.w3.org/1999/02/22-rdf-syntax-ns#type";
+    let mut out = String::new();
+    for sensor in 0..GENERATED_SENSORS {
+        let broken = sensor % GENERATED_BROKEN_IN == 0;
+        out.push_str(&format!(
+            "<{BASE}sensor{sensor}> <{RDF_TYPE}> <{BASE}Sensor> .\n"
+        ));
+        for segment in 0..GENERATED_CHAIN {
+            let id = format!("{BASE}segment{sensor}_{segment}");
+            out.push_str(&format!("<{id}> <{RDF_TYPE}> <{BASE}Segment> .\n"));
+            // The break leaves one segment unmonitored, so no window containing it
+            // can satisfy the query's six `monitoredBy` patterns.
+            if !(broken && segment == GENERATED_CHAIN / 2) {
+                out.push_str(&format!(
+                    "<{id}> <{BASE}monitoredBy> <{BASE}sensor{sensor}> .\n"
+                ));
+            }
+            if segment + 1 < GENERATED_CHAIN {
+                out.push_str(&format!(
+                    "<{id}> <{BASE}connectsTo> <{BASE}segment{sensor}_{}> .\n",
+                    segment + 1
+                ));
+            }
+        }
+    }
+    out
+}
+
+/// The corpus file, if one is to be found.
+///
+/// First argument, then `KOLIBRIE_REPRO_DATASET`, then the path this example was
+/// written against — which `.gitignore` excludes, so a fresh checkout never has it.
+/// Returns `None` when none of them is readable, and the corpus is generated instead;
+/// the example used to fail with a bare `No such file or directory` here.
+fn dataset_path() -> Option<String> {
+    let mut candidates = std::env::args()
+        .nth(1)
+        .into_iter()
+        .chain(std::env::var("KOLIBRIE_REPRO_DATASET").ok())
+        .chain(std::iter::once(
+            "../benchmark_dataset/repro-data.nt".to_string(),
+        ));
+    candidates.find(|path| fs::metadata(path).is_ok())
+}
+
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     std::env::set_current_dir(std::path::Path::new(env!("CARGO_MANIFEST_DIR")))?;
 
-    let file_path = "../benchmark_dataset/repro-data.nt";
-    let metadata = fs::metadata(file_path)?;
-    let data = fs::read_to_string(file_path)?;
+    let data = match dataset_path() {
+        Some(path) => {
+            let bytes = fs::metadata(&path)?.len();
+            let data = fs::read_to_string(&path)?;
+            println!("Dataset: {}", path);
+            println!("File size: {:.2} MB", bytes as f64 / 1_048_576.0);
+            data
+        }
+        None => {
+            let data = generated_dataset();
+            println!(
+                "Dataset: generated ({} sensors, chains of {})",
+                GENERATED_SENSORS, GENERATED_CHAIN
+            );
+            println!("Size: {:.2} MB", data.len() as f64 / 1_048_576.0);
+            println!(
+                "NOTE: this is a stand-in, not the Train Benchmark corpus. Timings are \
+                 comparable with each other and with nothing else. Pass a path to an \
+                 N-Triples file, or set KOLIBRIE_REPRO_DATASET, to measure the real one."
+            );
+            data
+        }
+    };
     let line_count = data.lines().count();
-
-    println!("Dataset: {}", file_path);
-    println!("File size: {:.2} MB", metadata.len() as f64 / 1_048_576.0);
     println!("Input lines: {}", line_count);
 
     let load_start = Instant::now();
     let mut db = SparqlDatabase::new();
     db.parse_ntriples_and_add(&data);
     let load_time = load_start.elapsed();
-    println!("Loaded triples: {}", db.dataset_index.len_default());
+    println!("Loaded triples: {}", db.default_triple_count());
     println!("Load time: {:.3}s", load_time.as_secs_f64());
 
     let stats_start = Instant::now();
@@ -78,15 +159,19 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut legacy_db = db.clone();
     let mut optimized_db = db.clone();
 
-    let legacy = measure_query("execute_query_rayon_parallel2_volcano (warmup)", || {
-        kolibrie::execute_query::execute_query_rayon_parallel2_volcano(REPRO_QUERY, &mut legacy_db)
+    let legacy = measure_query("execute (warmup)", || {
+        execute(REPRO_QUERY, &mut legacy_db)
+            .expect("query should run")
+            .into_rows()
     });
-    print_measurement("execute_query_rayon_parallel2_volcano (warmup)", &legacy);
+    print_measurement("execute (warmup)", &legacy);
 
-    let optimized = measure_query("execute_query_rayon_parallel2_volcano", || {
-        execute_query_rayon_parallel2_volcano(REPRO_QUERY, &mut optimized_db)
+    let optimized = measure_query("execute", || {
+        execute(REPRO_QUERY, &mut optimized_db)
+            .expect("query should run")
+            .into_rows()
     });
-    print_measurement("execute_query_rayon_parallel2_volcano", &optimized);
+    print_measurement("execute", &optimized);
 
     if legacy.rows.len() != optimized.rows.len() {
         eprintln!(
@@ -172,6 +257,11 @@ fn bytes_to_mb(bytes: u64) -> f64 {
     bytes as f64 / 1_048_576.0
 }
 
+// SAFETY: `counters` is zeroed and has its `cb` set to its own size before the call,
+// which is the contract `GetProcessMemoryInfo` documents; the pointer is to a live
+// local, and `GetCurrentProcess` returns a pseudo-handle that needs no closing. The
+// return value is checked before any field is read.
+#[allow(unsafe_code)]
 #[cfg(windows)]
 fn current_rss_bytes() -> Option<u64> {
     use std::mem::{size_of, zeroed};
@@ -194,6 +284,10 @@ fn current_rss_bytes() -> Option<u64> {
     }
 }
 
+// SAFETY: `sysconf` takes an integer name and returns a long, touching no memory the
+// caller owns. `_SC_PAGESIZE` is a valid name, and a non-positive result is treated as
+// failure rather than used as a multiplier.
+#[allow(unsafe_code)]
 #[cfg(all(unix, not(target_os = "macos")))]
 fn current_rss_bytes() -> Option<u64> {
     let statm = fs::read_to_string("/proc/self/statm").ok()?;
@@ -206,6 +300,15 @@ fn current_rss_bytes() -> Option<u64> {
     }
 }
 
+// SAFETY: `getrusage` writes into the `rusage` it is given, and a zeroed `rusage` is a
+// valid initial value for a plain C struct of integers. `RUSAGE_SELF` is a valid who
+// argument, and the return value is checked before `ru_maxrss` is read.
+//
+// Note this measures something different from the other two: `ru_maxrss` is *peak*
+// resident size, where /proc/self/statm and `WorkingSetSize` are current. On macOS it
+// is already in bytes, where Linux reports it in kilobytes. So the figure this example
+// prints on macOS is a high-water mark and will not fall back down.
+#[allow(unsafe_code)]
 #[cfg(target_os = "macos")]
 fn current_rss_bytes() -> Option<u64> {
     unsafe {

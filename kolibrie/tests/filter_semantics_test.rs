@@ -79,7 +79,10 @@ fn numeric_comparison_is_unaffected() {
 #[test]
 fn comparing_a_string_against_a_number_is_an_error_and_drops_the_row() {
     let mut database = people();
-    assert_eq!(names_where(&mut database, r#"?n > 5"#), Vec::<Vec<String>>::new());
+    assert_eq!(
+        names_where(&mut database, r#"?n > 5"#),
+        Vec::<Vec<String>>::new()
+    );
 }
 
 // ---------------------------------------------------------------------------

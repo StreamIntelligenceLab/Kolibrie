@@ -1,7 +1,20 @@
 [workspace]
 resolver = "2"
-default-members = ["kolibrie", "shared", "datalog", "cli", "kolibrie-http-server"]
+# `python` is excluded from default-members because it is a cdylib and needs a
+# dedicated build; it has its own CI job. Everything else must be checked by a
+# bare `cargo build`/`clippy`.
+default-members = [
+  "kolibrie-api",
+  "kolibrie",
+  "shared",
+  "datalog",
+  "datalogmtl",
+  "ml",
+  "cli",
+  "kolibrie-http-server",
+]
 members = [
+  "kolibrie-api",
   "kolibrie",
   "shared",
   "datalog",
@@ -16,10 +29,48 @@ exclude = [
   "target/", # exclude bench testing
 ]
 
+[workspace.package]
+version      = "0.3.0"
+edition      = "2021"
+license      = "MPL-2.0"
+# Floor imposed by the dependency tree (hashbrown / indexmap / toml_edit all
+# declare 1.85). Enforced by a dedicated CI job, not merely declared.
+rust-version = "1.85"
+authors      = [
+  "Volodymyr Kadzhaia <vkadzhaia@gmail.com>",
+  "Pieter Bonte <pieter.bonte@kuleuven.be>",
+]
+repository   = "https://github.com/StreamIntelligenceLab/Kolibrie"
+
+# Everything starts at `warn`. Escalation to `deny` happens per crate, once that
+# crate's count reaches zero — see the architecture doc, §8.
+[workspace.lints.rust]
+# The workhorse for the surface-shrinking work: flags every `pub` item that is
+# not reachable from the crate root, i.e. exactly the set that should be
+# `pub(crate)`.
+unreachable_pub               = "warn"
+missing_docs                  = "warn"
+missing_debug_implementations = "warn"
+unused_qualifications         = "warn"
+unused_lifetimes              = "warn"
+unsafe_code                   = "warn"
+
+[workspace.lints.clippy]
+all = { level = "warn", priority = -1 }
+missing_errors_doc = "warn"
+missing_panics_doc = "warn"
+# Deliberately off: too noisy to be useful before the surface shrinks.
+must_use_candidate      = "allow"
+module_name_repetitions = "allow"
+
 [workspace.dependencies]
 quick-xml = "0.38.1"
 serde = { version = "1.0", features = ["derive"] }
-serde_json = "1.0"
+# `float_roundtrip` makes f64 PARSING bit-exact. Without it serde_json uses a fast
+# path that can land 1 ULP off, while serialisation (ryu) is already exact — so
+# save-then-load silently perturbs floats. That made ml model persistence lossy and
+# produced a 1-in-25 flake in byte_loading_checks_all_layer_dimensions.
+serde_json = { version = "1.0", features = ["float_roundtrip"] }
 regex = "1"
 rand = "0.9.2"
 rayon = "1.10.0"
@@ -28,20 +79,38 @@ url = "2.5.2"
 percent-encoding = "2.3.1"
 httparse = "1.9.4"
 crossbeam = "0.8.4"
-pyo3 = { version = "0.25.1", features = ["extension-module", "auto-initialize", "abi3-py310"] }
+# Features are declared per-consumer: `extension-module` is correct only for the
+# cdylib and actively breaks crates that EMBED Python (it suppresses libpython
+# linking). See python/ and ml/.
+pyo3 = { version = "0.25.1" }
 clap = { version = "4.5.45", features = ["derive"] }
 
 [profile.bench]
 debug = true
 
+# Tuned for the edit-build-test cycle, not for the speed of the resulting binary.
+# It was `opt-level = 2`, `lto = "thin"`, `incremental = false`: a release-grade build
+# for every `cargo test`, which cost 436 seconds to rebuild and test after a one-line
+# edit and left 19GB in `target/debug/examples`.
+#
+# `debug-assertions` and `overflow-checks` stay on: they are the reason a dev build is
+# worth running at all, and they catch arithmetic the release profile silently wraps.
 [profile.dev]
-opt-level = 2
+# 1, not 0: measured. At 0 a one-line edit cost 162 seconds against 149 at 1, and a
+# cold build 328 against 295 -- the tests run slow enough unoptimised to outweigh
+# what the codegen saves.
+opt-level = 1
+# Full debug info. `debug = 1` (line tables only) was measured and rejected: it does
+# shrink the example binaries by a third, 4.5MB mean to 3.0MB, but it bought no time
+# anywhere. A one-line edit plus test cost 160 seconds against 149, a cold build 282
+# against 295, and the example smoke run 182 seconds against 124 -- two of the three
+# moved the wrong way. The binaries being large is not what makes the suite slow, so
+# there is nothing to trade a debugger for.
 debug = true
 debug-assertions = true
 overflow-checks = true
-lto = "thin"
 panic = 'unwind'
-incremental = false
+incremental = true
 codegen-units = 256
 
 [profile.release]

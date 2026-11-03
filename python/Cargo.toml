@@ -1,15 +1,22 @@
 [package]
 name = "kolibrie-python"
-version = "0.1.1"
-edition = "2021"
+version.workspace      = true
+edition.workspace      = true
+license.workspace      = true
+rust-version.workspace = true
 description = "Python Binding"
 
 [lib]
+# Must be `kolibrie` so Python imports it under that name; it therefore
+# collides with the `kolibrie` crate's rustdoc output, which made
+# `cargo doc --workspace` fail outright. The interesting documentation for this
+# crate is the Python API, not its Rust surface, so it is excluded.
 name = "kolibrie"
 crate-type = ["cdylib"]
+doc = false
 
 [dependencies]
-pyo3 = { workspace = true }
+pyo3 = { workspace = true, features = ["extension-module", "abi3-py310"] }
 datalog = { path = "../datalog" }
 shared = { path = "../shared" }
 kolibrie_core = { package = "kolibrie", path = "../kolibrie" }
@@ -17,3 +24,6 @@ kolibrie_core = { package = "kolibrie", path = "../kolibrie" }
 [features]
 default = []
 ml = ["kolibrie_core/ml"]
+
+[lints]
+workspace = true

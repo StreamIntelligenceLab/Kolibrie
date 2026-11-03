@@ -1,6 +1,4 @@
-use criterion::{
-    black_box, criterion_group, criterion_main, BenchmarkId, Criterion, Throughput,
-};
+use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criterion, Throughput};
 use datalog::cross_window_sds::{
     all_component_iris, sds_with_expiry_to_external, Sds, WindowData, WindowedTriple,
 };
@@ -10,11 +8,10 @@ use datalog::reasoning::materialisation::cross_window_incremental::{
 };
 use datalog::reasoning::materialisation::cross_window_naive::naive_sds_plus;
 use datalog::reasoning::Reasoner;
-use shared::dictionary::Dictionary;
 use shared::rule::Rule;
+use shared::term_encoder::SharedTerms;
 use shared::triple::Triple;
 use std::collections::{BTreeSet, HashMap};
-use std::sync::{Arc, RwLock};
 use std::time::Duration;
 
 const TRAFFIC_IRI: &str = "http://citybench.example/traffic/";
@@ -36,9 +33,9 @@ const CROSS_WINDOW_RULES: &str = r#"
 { ?road traffic:avgSpeed ?speed . ?lot parking:nearRoad ?road . ?lot parking:occupancy ?occupancy } => { ?road result:congested <true> }
 "#;
 
-fn parse_rules(dict: &Arc<RwLock<Dictionary>>) -> Vec<Rule> {
+fn parse_rules(dict: &SharedTerms) -> Vec<Rule> {
     let mut reasoner = Reasoner::new();
-    reasoner.dictionary = Arc::clone(dict);
+    reasoner.adopt_terms(dict.clone());
     let window_widths = HashMap::from([
         (TRAFFIC_IRI.to_string(), TRAFFIC_ALPHA),
         (PARKING_IRI.to_string(), PARKING_ALPHA),
@@ -112,11 +109,10 @@ fn make_citybench_sds(size: usize, update_ratio_percent: usize) -> Sds {
     sds
 }
 
-fn signature(
-    result: &HashMap<String, Vec<Triple>>,
-    dict: &Arc<RwLock<Dictionary>>,
-) -> BTreeSet<String> {
-    let d = dict.read().unwrap();
+fn signature(result: &HashMap<String, Vec<Triple>>, dict: &SharedTerms) -> BTreeSet<String> {
+    // A copy: this decodes every triple it prints, and a scoped encoder will not
+    // hold its lock across the walk.
+    let d = dict.view();
     let mut out = BTreeSet::new();
 
     for (component, triples) in result {
@@ -134,13 +130,13 @@ fn signature(
 fn prepare_incremental_state(
     rules: &[Rule],
     initial_sds: &Sds,
-    dict: &Arc<RwLock<Dictionary>>,
+    dict: &SharedTerms,
 ) -> SdsWithExpiry {
     incremental_sds_plus(rules, initial_sds, &HashMap::new(), dict, INITIAL_TIME)
 }
 
 fn assert_same_results(size: usize, update_ratio_percent: usize) {
-    let dict = Arc::new(RwLock::new(Dictionary::new()));
+    let dict = SharedTerms::new();
     let rules = parse_rules(&dict);
     let initial_sds = make_citybench_sds(size, 0);
     let next_sds = make_citybench_sds(size, update_ratio_percent);
@@ -149,8 +145,7 @@ fn assert_same_results(size: usize, update_ratio_percent: usize) {
     let naive = naive_sds_plus(&rules, &next_sds, &dict, CURRENT_TIME);
     let incremental = incremental_sds_plus(&rules, &next_sds, &previous, &dict, CURRENT_TIME);
     let component_iris = all_component_iris(&next_sds);
-    let incremental_external =
-        sds_with_expiry_to_external(&incremental, &dict, &component_iris);
+    let incremental_external = sds_with_expiry_to_external(&incremental, &dict, &component_iris);
 
     assert_eq!(
         signature(&naive, &dict),
@@ -176,7 +171,7 @@ fn bench_citybench_cross_window(c: &mut Criterion) {
                 BenchmarkId::new("naive_full_rematerialization", &label),
                 &(size, ratio),
                 |b, &(size, ratio)| {
-                    let dict = Arc::new(RwLock::new(Dictionary::new()));
+                    let dict = SharedTerms::new();
                     let rules = parse_rules(&dict);
                     let next_sds = make_citybench_sds(size, ratio);
 
@@ -198,7 +193,7 @@ fn bench_citybench_cross_window(c: &mut Criterion) {
                 BenchmarkId::new("incremental_sds_plus", &label),
                 &(size, ratio),
                 |b, &(size, ratio)| {
-                    let dict = Arc::new(RwLock::new(Dictionary::new()));
+                    let dict = SharedTerms::new();
                     let rules = parse_rules(&dict);
                     let initial_sds = make_citybench_sds(size, 0);
                     let next_sds = make_citybench_sds(size, ratio);

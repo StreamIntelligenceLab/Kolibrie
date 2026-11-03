@@ -12,7 +12,7 @@
 //! produces. Every test here fixes a dataset, then asserts that writing the
 //! same patterns in different source orders yields the same solution bag.
 
-use kolibrie::execute_query::{execute_query_rayon_parallel2_volcano, execute_sparql_update};
+use kolibrie::execute_query::{execute, execute_sparql_update};
 use kolibrie::sparql_database::SparqlDatabase;
 
 fn bag(mut rows: Vec<Vec<String>>) -> Vec<Vec<String>> {
@@ -21,7 +21,9 @@ fn bag(mut rows: Vec<Vec<String>>) -> Vec<Vec<String>> {
 }
 
 fn query(database: &mut SparqlDatabase, sparql: &str) -> Vec<Vec<String>> {
-    bag(execute_query_rayon_parallel2_volcano(sparql, database))
+    bag(execute(sparql, database)
+        .expect("query should run")
+        .into_rows())
 }
 
 /// A path `n0 -> n1 -> ... -> n8` where only `n0` carries the anchor type,
@@ -38,11 +40,7 @@ fn chain_database() -> SparqlDatabase {
     }
     triples.push_str("<urn:n0> <urn:type> <urn:Anchor> .\n");
 
-    execute_sparql_update(
-        &format!("INSERT DATA {{\n{}}}", triples),
-        &mut database,
-    )
-    .unwrap();
+    execute_sparql_update(&format!("INSERT DATA {{\n{}}}", triples), &mut database).unwrap();
     database
 }
 
@@ -57,11 +55,7 @@ fn chain_patterns(links: usize) -> Vec<String> {
 fn chain_query(links: usize, anchor_at: usize) -> String {
     let mut patterns = chain_patterns(links);
     patterns.insert(anchor_at, "?x0 <urn:type> <urn:Anchor> .".to_string());
-    format!(
-        "SELECT ?x0 ?x{} WHERE {{ {} }}",
-        links,
-        patterns.join(" ")
-    )
+    format!("SELECT ?x0 ?x{} WHERE {{ {} }}", links, patterns.join(" "))
 }
 
 #[test]
@@ -205,10 +199,7 @@ fn repeated_variable_within_one_pattern_matches_only_self_loops() {
     .unwrap();
 
     assert_eq!(
-        query(
-            &mut database,
-            r#"SELECT ?x WHERE { ?x <urn:self> ?x . }"#,
-        ),
+        query(&mut database, r#"SELECT ?x WHERE { ?x <urn:self> ?x . }"#,),
         vec![vec!["urn:a".to_string()], vec!["urn:d".to_string()]]
     );
 }

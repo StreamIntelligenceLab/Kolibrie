@@ -8,7 +8,7 @@
  * you can obtain one at https://mozilla.org/MPL/2.0/.
  */
 
-use kolibrie::execute_query::*;
+use kolibrie::prelude::*;
 use kolibrie::sparql_database::SparqlDatabase;
 
 fn simple_select_synth_data(file_path: &str) {
@@ -26,13 +26,18 @@ fn simple_select_synth_data(file_path: &str) {
         ?employee ds:annual_salary ?salary
     }"#;
 
-    let results = execute_query_rayon_parallel2_volcano(sparql, &mut database);
+    let results = execute(sparql, &mut database)
+        .expect("query should run")
+        .into_rows();
 
     println!("Results:");
     for result in results {
         if let [employee, workplace_homepage, salary] = &result[..] {
             // Process your results here
-            println!("?employee = {} ?workplaceHomepage = {} ?salary = {}", employee, workplace_homepage, salary);
+            println!(
+                "?employee = {} ?workplaceHomepage = {} ?salary = {}",
+                employee, workplace_homepage, salary
+            );
         }
     }
 }

@@ -8,7 +8,7 @@
  * you can obtain one at https://mozilla.org/MPL/2.0/.
  */
 
-use kolibrie::neural_relations::execute_neural_program;
+use kolibrie::ml::neural_relations::execute_neural_program;
 use kolibrie::sparql_database::SparqlDatabase;
 
 fn tmp_model_path(name: &str) -> String {
@@ -16,7 +16,12 @@ fn tmp_model_path(name: &str) -> String {
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_nanos())
         .unwrap_or(0);
-    format!("kolibrie_example_{}_{}_{}.bin", name, std::process::id(), nanos)
+    format!(
+        "kolibrie_example_{}_{}_{}.bin",
+        name,
+        std::process::id(),
+        nanos
+    )
 }
 
 fn main() {
@@ -69,10 +74,7 @@ TRAIN NEURAL RELATION ex:predictedDigit {{
 "#
     );
     execute_neural_program(&mut database, &program).expect("training failed");
-    if let Some(triples) = database
-        .neural_materialized_triples
-        .remove("http://example.org/predictedDigit")
-    {
+    if let Some(triples) = database.take_neural_materialized("http://example.org/predictedDigit") {
         for triple in triples {
             database.delete_triple(&triple);
         }
@@ -97,7 +99,7 @@ ML.PREDICT(MODEL "digit_model",
 
     execute_neural_program(&mut database, predict).expect("top-level ML.PREDICT failed");
 
-    let dict = database.dictionary.read().unwrap();
+    let dict = database.dictionary();
     let pred_id = dict
         .string_to_id
         .get("http://example.org/predictedDigit")
@@ -112,4 +114,9 @@ ML.PREDICT(MODEL "digit_model",
     }
 }
 
-mod local_ml { include!(concat!(env!("CARGO_MANIFEST_DIR"), "/examples/support/ml_context.rs")); }
+mod local_ml {
+    include!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/examples/support/ml_context.rs"
+    ));
+}

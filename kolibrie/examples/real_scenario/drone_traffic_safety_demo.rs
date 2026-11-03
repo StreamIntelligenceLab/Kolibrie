@@ -19,11 +19,12 @@ use shared::dictionary::Dictionary;
 use shared::terms::Term;
 use shared::triple::Triple;
 
+use shared::term_encoder::SharedTerms;
 use std::collections::HashSet;
 use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream};
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, Mutex, RwLock};
+use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -246,21 +247,27 @@ fn main() {
     // The dictionary lives out here so the HTTP thread can intern IRIs from
     // user-typed rules into the SAME dictionary the engine matches against —
     // Term::Constant ids are per-Dictionary and would otherwise match nothing.
-    let dictionary = Arc::new(RwLock::new(Dictionary::new()));
+    let dictionary = SharedTerms::new();
     let vocab = init_vocab(&dictionary);
-    let config: Config =
-        Arc::new(ConfigHandle::new(DEFAULT_RULES, DEFAULT_SHAPES, DEFAULT_STATIC));
+    let config: Config = Arc::new(ConfigHandle::new(
+        DEFAULT_RULES,
+        DEFAULT_SHAPES,
+        DEFAULT_STATIC,
+    ));
 
     start_demo_loop(
         Arc::clone(&events),
         Arc::clone(&state),
-        Arc::clone(&dictionary),
+        dictionary.clone(),
         vocab.clone(),
         Arc::clone(&config),
     );
     start_http_server(events, state, dictionary, config, PORT);
 
-    println!("Ghent drone safety demo running at http://127.0.0.1:{}/", PORT);
+    println!(
+        "Ghent drone safety demo running at http://127.0.0.1:{}/",
+        PORT
+    );
     loop {
         thread::sleep(Duration::from_secs(60));
     }
@@ -273,7 +280,10 @@ impl DemoState {
             drone_a: DroneRuntime {
                 id: "droneA",
                 label: "Drone A",
-                position: LatLng { lat: 51.0261, lng: 3.7178 },
+                position: LatLng {
+                    lat: 51.0261,
+                    lng: 3.7178,
+                },
                 altitude_m: 80,
                 automated: true,
                 last_telemetry_ms: 0,
@@ -284,7 +294,10 @@ impl DemoState {
             drone_b: DroneRuntime {
                 id: "droneB",
                 label: "Drone B",
-                position: LatLng { lat: 51.0518, lng: 3.7179 },
+                position: LatLng {
+                    lat: 51.0518,
+                    lng: 3.7179,
+                },
                 altitude_m: 70,
                 automated: false,
                 last_telemetry_ms: 0,
@@ -303,7 +316,7 @@ impl DemoState {
 fn start_demo_loop(
     events: EventLog,
     state: Arc<Mutex<DemoState>>,
-    dictionary: Arc<RwLock<Dictionary>>,
+    dictionary: SharedTerms,
     vocab: Vocab,
     config: Config,
 ) {
@@ -319,11 +332,11 @@ fn start_demo_loop(
             .expect("default background facts must parse");
 
         let mut staleness_ticks = shape_staleness(&shapes);
-        let mut ingester = ShapeIngester::new(shapes, Arc::clone(&dictionary));
+        let mut ingester = ShapeIngester::new(shapes);
         let mut evaluator = DatalogMTLEvaluator::new(
             rules,
             IntervalFactStore::new(STORE_HORIZON_TICKS),
-            Arc::clone(&dictionary),
+            dictionary.clone(),
         )
         .expect("DatalogMTL rule setup failed");
 
@@ -413,7 +426,7 @@ fn apply_config(
     evaluator: &mut DatalogMTLEvaluator<IntervalFactStore>,
     staleness_ticks: &mut u64,
     static_facts: &mut Vec<Triple>,
-    dictionary: &Arc<RwLock<Dictionary>>,
+    dictionary: &SharedTerms,
     config: &Config,
 ) -> Result<(), String> {
     // Re-validate here: it is the only fallible step in `new`, so checking first
@@ -433,8 +446,8 @@ fn apply_config(
 
     *staleness_ticks = shape_staleness(&p.shapes);
     *static_facts = p.static_facts;
-    *ingester = ShapeIngester::new(p.shapes, Arc::clone(dictionary));
-    *evaluator = DatalogMTLEvaluator::new(p.rules, store, Arc::clone(dictionary))?;
+    *ingester = ShapeIngester::new(p.shapes);
+    *evaluator = DatalogMTLEvaluator::new(p.rules, store, dictionary.clone())?;
     *config.current.lock().unwrap() = p.text;
     Ok(())
 }
@@ -442,7 +455,7 @@ fn apply_config(
 fn start_http_server(
     events: EventLog,
     state: Arc<Mutex<DemoState>>,
-    dictionary: Arc<RwLock<Dictionary>>,
+    dictionary: SharedTerms,
     config: Config,
     port: u16,
 ) {
@@ -452,11 +465,9 @@ fn start_http_server(
         for stream in listener.incoming().flatten() {
             let events = Arc::clone(&events);
             let state = Arc::clone(&state);
-            let dictionary = Arc::clone(&dictionary);
+            let dictionary = dictionary.clone();
             let config = Arc::clone(&config);
-            thread::spawn(move || {
-                handle_connection(stream, events, state, dictionary, config)
-            });
+            thread::spawn(move || handle_connection(stream, events, state, dictionary, config));
         }
     });
 }
@@ -492,7 +503,11 @@ fn read_request(stream: &mut TcpStream) -> Option<(String, String, String)> {
 
     let head = std::str::from_utf8(&raw[..header_end]).ok()?;
     let request_line = head.lines().next().unwrap_or("");
-    let method = request_line.split_whitespace().next().unwrap_or("").to_string();
+    let method = request_line
+        .split_whitespace()
+        .next()
+        .unwrap_or("")
+        .to_string();
     let path = request_line
         .split_whitespace()
         .nth(1)
@@ -526,7 +541,7 @@ fn handle_connection(
     mut stream: TcpStream,
     events: EventLog,
     state: Arc<Mutex<DemoState>>,
-    dictionary: Arc<RwLock<Dictionary>>,
+    dictionary: SharedTerms,
     config: Config,
 ) {
     let Some((method, path, body)) = read_request(&mut stream) else {
@@ -574,12 +589,7 @@ fn get_config(stream: TcpStream, config: &Config) {
 /// box is wrong. `validate_rules` matters here because the RDF parser — unlike
 /// the MeTeoR one — does not run it, so an unsafe head variable would otherwise
 /// only fail later, inside the tick loop, where the user cannot see it.
-fn post_config(
-    stream: TcpStream,
-    body: &str,
-    dictionary: &Arc<RwLock<Dictionary>>,
-    config: &Config,
-) {
+fn post_config(stream: TcpStream, body: &str, dictionary: &SharedTerms, config: &Config) {
     let req: ConfigUpdate = match serde_json::from_str(body) {
         Ok(r) => r,
         Err(e) => return config_error(stream, "request", &e.to_string()),
@@ -641,7 +651,12 @@ fn serve_html(stream: TcpStream) {
         .join("examples/real_scenario/drone_traffic_safety_demo.html");
     match std::fs::read(path) {
         Ok(body) => write_response(stream, 200, "text/html; charset=utf-8", &body),
-        Err(_) => write_response(stream, 404, "text/plain; charset=utf-8", b"Demo HTML not found"),
+        Err(_) => write_response(
+            stream,
+            404,
+            "text/plain; charset=utf-8",
+            b"Demo HTML not found",
+        ),
     }
 }
 
@@ -694,7 +709,10 @@ fn update_drone_b(stream: TcpStream, body: &str, state: Arc<Mutex<DemoState>>) {
 
     let mut guard = state.lock().unwrap();
     let now = guard.elapsed_ms();
-    guard.drone_b.position = LatLng { lat: update.lat, lng: update.lng };
+    guard.drone_b.position = LatLng {
+        lat: update.lat,
+        lng: update.lng,
+    };
     guard.drone_b.last_telemetry_ms = now;
     drop(guard);
 
@@ -733,7 +751,7 @@ fn build_tick(
     state: &mut DemoState,
     ingester: &mut ShapeIngester,
     evaluator: &mut DatalogMTLEvaluator<IntervalFactStore>,
-    dictionary: &Arc<RwLock<Dictionary>>,
+    dictionary: &SharedTerms,
     vocab: &Vocab,
     config: &Config,
     staleness_ticks: u64,
@@ -834,13 +852,26 @@ fn telemetry_for_drone(
     t: u64,
     zones: &[Zone],
     vocab: &Vocab,
-    dictionary: &Arc<RwLock<Dictionary>>,
+    dictionary: &SharedTerms,
     ingester: &mut ShapeIngester,
 ) -> (Vec<Triple>, Vec<String>) {
-    let drone_id = if drone.id == "droneA" { vocab.drone_a } else { vocab.drone_b };
-    let obs = encode(dictionary, &format!("http://utm.example.org/obs/{}-{}", drone.id, t));
-    let tlm = encode(dictionary, &format!("http://utm.example.org/telemetry/{}-{}", drone.id, t));
-    let position = encode(dictionary, &format!("{:.6},{:.6}", drone.position.lat, drone.position.lng));
+    let drone_id = if drone.id == "droneA" {
+        vocab.drone_a
+    } else {
+        vocab.drone_b
+    };
+    let obs = encode(
+        dictionary,
+        &format!("http://utm.example.org/obs/{}-{}", drone.id, t),
+    );
+    let tlm = encode(
+        dictionary,
+        &format!("http://utm.example.org/telemetry/{}-{}", drone.id, t),
+    );
+    let position = encode(
+        dictionary,
+        &format!("{:.6},{:.6}", drone.position.lat, drone.position.lng),
+    );
     let altitude = encode(dictionary, &drone.altitude_m.to_string());
     let event = RdfEvent {
         stream_iri: TELEMETRY_STREAM.to_string(),
@@ -888,7 +919,11 @@ fn telemetry_for_drone(
     facts.push(triple(
         drone_id,
         vocab.dront_on_flight_plan,
-        if off_plan { vocab.xsd_false } else { vocab.xsd_true },
+        if off_plan {
+            vocab.xsd_false
+        } else {
+            vocab.xsd_true
+        },
     ));
 
     drone.previous_zones = current_zones;
@@ -978,9 +1013,9 @@ const MAX_ALERTS: usize = 20;
 fn alerts_from_derived(
     derived: &[Triple],
     rules: &[DatalogMTLRule],
-    dictionary: &Arc<RwLock<Dictionary>>,
+    dictionary: &SharedTerms,
 ) -> Vec<AlertView> {
-    let dict = dictionary.read().unwrap();
+    let dict = dictionary.view();
     let mut alerts = Vec::new();
     let mut seen: HashSet<(String, u32)> = HashSet::new();
 
@@ -1026,9 +1061,12 @@ fn head_matches(head: &(Term, Term, Term), t: &Triple) -> bool {
     m(&head.0, t.subject) && m(&head.1, t.predicate) && m(&head.2, t.object)
 }
 
-fn decode_triples(triples: &[Triple], dictionary: &Arc<RwLock<Dictionary>>) -> Vec<String> {
-    let dict = dictionary.read().unwrap();
-    triples.iter().map(|triple| dict.decode_triple(triple)).collect()
+fn decode_triples(triples: &[Triple], dictionary: &SharedTerms) -> Vec<String> {
+    let dict = dictionary.view();
+    triples
+        .iter()
+        .map(|triple| dict.decode_triple(triple))
+        .collect()
 }
 
 fn local(dict: &Dictionary, id: u32) -> String {
@@ -1040,9 +1078,12 @@ fn local(dict: &Dictionary, id: u32) -> String {
         .to_string()
 }
 
-fn init_vocab(dictionary: &Arc<RwLock<Dictionary>>) -> Vocab {
+fn init_vocab(dictionary: &SharedTerms) -> Vocab {
     Vocab {
-        rdf_type: encode(dictionary, "http://www.w3.org/1999/02/22-rdf-syntax-ns#type"),
+        rdf_type: encode(
+            dictionary,
+            "http://www.w3.org/1999/02/22-rdf-syntax-ns#type",
+        ),
         sosa_observation: encode(dictionary, "http://www.w3.org/ns/sosa/Observation"),
         sosa_made_by_sensor: encode(dictionary, "http://www.w3.org/ns/sosa/madeBySensor"),
         sosa_has_result: encode(dictionary, "http://www.w3.org/ns/sosa/hasResult"),
@@ -1185,21 +1226,30 @@ fn zones() -> Vec<Zone> {
             id: "hospital",
             label: "UZ Gent Hospital",
             kind: "restricted",
-            center: LatLng { lat: 51.0257, lng: 3.7297 },
+            center: LatLng {
+                lat: 51.0257,
+                lng: 3.7297,
+            },
             radius_m: 620.0,
         },
         Zone {
             id: "government",
             label: "Ghent City Hall",
             kind: "restricted",
-            center: LatLng { lat: 51.05444, lng: 3.72528 },
+            center: LatLng {
+                lat: 51.05444,
+                lng: 3.72528,
+            },
             radius_m: 320.0,
         },
         Zone {
             id: "event",
             label: "Citadelpark Event",
             kind: "restricted",
-            center: LatLng { lat: 51.0379, lng: 3.7201 },
+            center: LatLng {
+                lat: 51.0379,
+                lng: 3.7201,
+            },
             radius_m: 720.0,
         },
     ]
@@ -1209,19 +1259,33 @@ fn scripted_drone_a(tick: u64) -> LatLng {
     let cycle = tick % 95_000;
     let lat = 51.02565;
     if cycle <= 12_000 {
-        interpolate(LatLng { lat, lng: 3.7178 }, LatLng { lat, lng: 3.7252 }, cycle as f64 / 12_000.0)
+        interpolate(
+            LatLng { lat, lng: 3.7178 },
+            LatLng { lat, lng: 3.7252 },
+            cycle as f64 / 12_000.0,
+        )
     } else if cycle <= 50_000 {
         let progress = (cycle - 12_000) as f64 / 38_000.0;
-        interpolate(LatLng { lat, lng: 3.7252 }, LatLng { lat, lng: 3.7316 }, progress)
+        interpolate(
+            LatLng { lat, lng: 3.7252 },
+            LatLng { lat, lng: 3.7316 },
+            progress,
+        )
     } else if cycle <= 68_000 {
         interpolate(
             LatLng { lat, lng: 3.7316 },
-            LatLng { lat: 51.0262, lng: 3.7385 },
+            LatLng {
+                lat: 51.0262,
+                lng: 3.7385,
+            },
             (cycle - 50_000) as f64 / 18_000.0,
         )
     } else {
         interpolate(
-            LatLng { lat: 51.0262, lng: 3.7385 },
+            LatLng {
+                lat: 51.0262,
+                lng: 3.7385,
+            },
             LatLng { lat, lng: 3.7178 },
             (cycle - 68_000) as f64 / 27_000.0,
         )
@@ -1242,8 +1306,7 @@ fn haversine_m(a: LatLng, b: LatLng) -> f64 {
     let d_lng = (b.lng - a.lng).to_radians();
     let lat1 = a.lat.to_radians();
     let lat2 = b.lat.to_radians();
-    let h = (d_lat / 2.0).sin().powi(2)
-        + lat1.cos() * lat2.cos() * (d_lng / 2.0).sin().powi(2);
+    let h = (d_lat / 2.0).sin().powi(2) + lat1.cos() * lat2.cos() * (d_lng / 2.0).sin().powi(2);
     2.0 * r * h.sqrt().atan2((1.0 - h).sqrt())
 }
 
@@ -1256,11 +1319,14 @@ fn zone_id(id: &str, vocab: &Vocab) -> u32 {
     }
 }
 
-fn encode(dictionary: &Arc<RwLock<Dictionary>>, value: &str) -> u32 {
-    dictionary.write().unwrap().encode(value)
+fn encode(dictionary: &SharedTerms, value: &str) -> u32 {
+    dictionary.encode(value)
 }
 
 fn triple(subject: u32, predicate: u32, object: u32) -> Triple {
-    Triple { subject, predicate, object }
+    Triple {
+        subject,
+        predicate,
+        object,
+    }
 }
-

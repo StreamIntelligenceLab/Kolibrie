@@ -8,7 +8,7 @@
  * you can obtain one at https://mozilla.org/MPL/2.0/.
  */
 
-use kolibrie::parser::*;
+use kolibrie::prelude::*;
 
 fn main() {
     let query = r#"RETRIEVE SOME ACTIVE STREAM ?s FROM <http://my.org/catalog>
@@ -35,7 +35,7 @@ WHERE {
             println!("Query parsed successfully!");
             println!("Remaining input: '{}'", remaining.trim());
             println!();
-            
+
             // Print RETRIEVE clause details
             if let Some(retrieve) = &parsed_query.retrieve_clause {
                 println!("RETRIEVE Clause:");
@@ -43,17 +43,19 @@ WHERE {
                 println!("  State: {:?}", retrieve.state);
                 println!("  Variable: {}", retrieve.variable);
                 println!("  From IRI: {}", retrieve.from_iri);
-                println!("  Graph patterns ({} triples):", retrieve.graph_pattern.len());
+                println!(
+                    "  Graph patterns ({} triples):",
+                    retrieve.graph_pattern.len()
+                );
                 for (i, (s, p, o)) in retrieve.graph_pattern.iter().enumerate() {
                     println!("    {}: {} {} {}", i + 1, s, p, o);
                 }
                 println!();
             }
             println!("All components parsed successfully!");
-        },
+        }
         Err(e) => {
             println!("Error: {:?}", e);
-            
         }
     }
 }

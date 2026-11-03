@@ -8,7 +8,9 @@
  * you can obtain one at https://mozilla.org/MPL/2.0/.
  */
 
-pub mod exec_stats;
+//! Running a chosen physical plan.
+
 pub mod engine;
+pub mod exec_stats;
 
 pub use engine::{DatasetView, ExecutionContext, ExecutionEngine};

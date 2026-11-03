@@ -8,14 +8,14 @@
  * you can obtain one at https://mozilla.org/MPL/2.0/.
  */
 
+use kolibrie_core::execute_query::execute;
+use kolibrie_core::sparql_database::SparqlDatabase;
 use pyo3::exceptions::{PyOSError, PyRuntimeError, PyValueError};
 use pyo3::prelude::*;
 use pyo3::types::PyAny;
-use kolibrie_core::execute_query::execute_query_rayon_parallel2_volcano;
-use kolibrie_core::sparql_database::SparqlDatabase;
-use std::path::Path;
-use std::sync::{Arc, Mutex};
 use std::collections::HashMap;
+use std::path::Path;
+use std::sync::{Arc, Mutex, MutexGuard};
 
 enum LoadFormat {
     Turtle,
@@ -48,9 +48,37 @@ fn normalize_load_format(path: &str, format: Option<&str>) -> PyResult<LoadForma
     }
 }
 
+/// Locks a mutex, turning a poisoned lock into a Python exception.
+///
+/// Every lock in this file goes through this. They had been handled three ways: two
+/// different messages for the same condition, and -- in ten places -- not handled at
+/// all. A swallowed lock did nothing and said nothing: `count` answered zero, the
+/// accessors answered an empty list, and `add_stream_triple` returned success having
+/// stored nothing. None of those is distinguishable by a caller from a query that
+/// simply matched nothing, which is the ambiguity `exec_query` was changed to avoid.
+fn locked<'a, T>(mutex: &'a Mutex<T>, what: &str) -> PyResult<MutexGuard<'a, T>> {
+    mutex
+        .lock()
+        .map_err(|_| PyRuntimeError::new_err(format!("{what} lock poisoned")))
+}
+
 #[pyclass(name = "SparqlDatabase")]
 pub struct PySparqlDatabase {
     db: Arc<Mutex<SparqlDatabase>>,
+}
+
+// Summarised rather than derived: this wraps a whole store. `try_lock` because a
+// `Debug` impl must not block — Python can reach this from any thread, including one
+// that already holds the lock.
+impl std::fmt::Debug for PySparqlDatabase {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let mut s = f.debug_struct("SparqlDatabase");
+        match self.db.try_lock() {
+            Ok(db) => s.field("quads", &db.quad_count()),
+            Err(_) => s.field("quads", &"<locked>"),
+        }
+        .finish()
+    }
 }
 
 #[pymethods]
@@ -63,29 +91,78 @@ impl PySparqlDatabase {
     }
 
     #[pyo3(signature = (subject, predicate, object))]
-    pub fn add_triple(&self, subject: &str, predicate: &str, object: &str) {
-        if let Ok(mut db) = self.db.lock() {
-            db.add_triple_parts(subject, predicate, object);
-        }
+    pub fn add_triple(&self, subject: &str, predicate: &str, object: &str) -> PyResult<()> {
+        locked(&self.db, "database")?.add_triple_parts(subject, predicate, object);
+        Ok(())
     }
 
-    fn parse_turtle(&self, turtle: &str) {
-        if let Ok(mut db) = self.db.lock() {
-            db.parse_turtle(turtle);
-        }
+    fn parse_turtle(&self, turtle: &str) -> PyResult<()> {
+        locked(&self.db, "database")?.parse_turtle(turtle);
+        Ok(())
+    }
+
+    /// Load N-Triples from a string.
+    ///
+    /// The counterpart to `parse_turtle`, and the format data usually arrives in
+    /// over a wire: `load_file` could already read N-Triples from disk, so text
+    /// held in memory had to be written to a file first.
+    ///
+    /// Blank node labels are scoped to this call, which is one document. Two calls
+    /// naming `_:b` describe two different nodes, as RDF says they do.
+    fn load_ntriples(&self, ntriples: &str) -> PyResult<()> {
+        let mut db = locked(&self.db, "database")?;
+        db.parse_ntriples_and_add(ntriples);
+        Ok(())
+    }
+
+    /// Serialise the default graph as N-Triples.
+    ///
+    /// Blank nodes are written with their document-local labels, which is sound
+    /// within this store and unsound across two: see `to_ntriples_skolemised` for
+    /// the form to publish or exchange.
+    fn to_ntriples(&self) -> PyResult<String> {
+        let db = locked(&self.db, "database")?;
+        Ok(db.generate_ntriples())
+    }
+
+    /// Serialise every graph as N-Quads, which unlike N-Triples keeps named graphs.
+    fn to_nquads(&self) -> PyResult<String> {
+        let db = locked(&self.db, "database")?;
+        Ok(db.generate_nquads())
+    }
+
+    /// Serialise as N-Triples, replacing blank nodes with Skolem IRIs under `base`.
+    ///
+    /// The form to publish or exchange. A blank node label means nothing outside
+    /// the document it came from, so two systems merging each other's output would
+    /// fuse unrelated nodes. `base` must be an authority you control: a Skolem IRI
+    /// is globally unique because its authority is, which is why there is no
+    /// default for it.
+    fn to_ntriples_skolemised(&self, base: &str) -> PyResult<String> {
+        let db = locked(&self.db, "database")?;
+        Ok(db.generate_ntriples_skolemised(base))
+    }
+
+    /// Serialise as N-Quads, replacing blank nodes with Skolem IRIs under `base`.
+    /// See `to_ntriples_skolemised`.
+    fn to_nquads_skolemised(&self, base: &str) -> PyResult<String> {
+        let db = locked(&self.db, "database")?;
+        Ok(db.generate_nquads_skolemised(base))
     }
 
     #[pyo3(signature = (path, format=None))]
-    fn load_file(&self, py: Python<'_>, path: &Bound<'_, PyAny>, format: Option<&str>) -> PyResult<()> {
+    fn load_file(
+        &self,
+        py: Python<'_>,
+        path: &Bound<'_, PyAny>,
+        format: Option<&str>,
+    ) -> PyResult<()> {
         let os = py.import("os")?;
         let path_obj = os.getattr("fspath")?.call1((path,))?;
         let path_str: String = path_obj.extract()?;
         let load_format = normalize_load_format(&path_str, format)?;
 
-        let mut db = self
-            .db
-            .lock()
-            .map_err(|_| PyRuntimeError::new_err("Failed to acquire database lock"))?;
+        let mut db = locked(&self.db, "database")?;
 
         match load_format {
             LoadFormat::Turtle => {
@@ -111,23 +188,61 @@ impl PySparqlDatabase {
         Ok(())
     }
 
-    fn exec_query(&self, query: &str) -> Vec<Vec<String>> {
-        if let Ok(mut db) = self.db.lock() {
-            execute_query_rayon_parallel2_volcano(query, &mut db)
-        } else {
-            Vec::new()
-        }
+    /// Execute a SELECT and return its rows.
+    ///
+    /// Raises on a syntax or execution failure rather than returning an empty
+    /// table, matching `update` below: an empty list now means the query matched
+    /// nothing, where it previously also meant the query was rejected or the
+    /// database lock was poisoned.
+    fn exec_query(&self, query: &str) -> PyResult<Vec<Vec<String>>> {
+        let mut db = locked(&self.db, "database")?;
+        execute(query, &mut db)
+            .map(|solutions| solutions.into_rows())
+            .map_err(|error| PyErr::new::<PyRuntimeError, _>(error.to_string()))
+    }
+
+    /// Parses a Kolibrie `RULE` block, runs it, and returns the triples it derived.
+    ///
+    /// The `CONSTRUCT` form, written down rather than assembled:
+    ///
+    /// ```text
+    /// RULE :Grandparent :-
+    /// CONSTRUCT { ?x <urn:hasGrandparent> ?z . }
+    /// WHERE { ?x <urn:hasParent> ?y . ?y <urn:hasParent> ?z . } .
+    /// ```
+    ///
+    /// The derived triples are added to this store, and the prefixes the rule
+    /// declared are registered on it, so a later query can use them. Each derived
+    /// triple comes back as `(subject, predicate, object)` in canonical spelling.
+    ///
+    /// A `PROB(...)` annotation on the rule is accepted and governs how the
+    /// derivation is weighted; a rule naming a model the host has not approved is
+    /// refused before anything is parsed.
+    fn add_rule(&self, rule: &str) -> PyResult<Vec<(String, String, String)>> {
+        let mut db = locked(&self.db, "database")?;
+        let (_rule, derived) =
+            kolibrie_core::rule_execution::process_rule_definition(rule, &mut db)
+                .map_err(|error| PyValueError::new_err(error.to_string()))?;
+        let dictionary = db.dictionary();
+        Ok(derived
+            .into_iter()
+            .map(|triple| {
+                let term = |id| dictionary.decode(id).unwrap_or("").to_string();
+                (
+                    term(triple.subject),
+                    term(triple.predicate),
+                    term(triple.object),
+                )
+            })
+            .collect())
     }
 
     /// Execute INSERT/DELETE DATA or a template-based INSERT/DELETE WHERE.
     /// Syntax and execution failures are raised instead of being returned as
     /// an ambiguous result table.
     fn update(&self, update: &str) -> PyResult<()> {
-        let mut db = self
-            .db
-            .lock()
-            .map_err(|_| PyRuntimeError::new_err("Failed to acquire database lock"))?;
-        db.execute_update(update)
+        let mut db = locked(&self.db, "database")?;
+        kolibrie_core::execute_query::execute_sparql_update(update, &mut db)
             .map(|_| ())
             .map_err(PyValueError::new_err)
     }
@@ -152,7 +267,7 @@ impl PySparqlDatabase {
             limit: None,
             offset: None,
             sort_direction: PySortDirection::Ascending,
-            
+
             // RSP fields
             window_width: None,
             window_slide: None,
@@ -165,14 +280,14 @@ impl PySparqlDatabase {
 }
 
 #[pyclass(name = "SortDirection")]
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub enum PySortDirection {
     Ascending,
     Descending,
 }
 
 #[pyclass(name = "StreamOperator")]
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub enum PyStreamOperator {
     RSTREAM,
     ISTREAM,
@@ -181,7 +296,7 @@ pub enum PyStreamOperator {
 
 // Simple enum for report strategies
 #[pyclass(name = "ReportStrategy")]
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub enum PyReportStrategy {
     NonEmptyContent(),
     OnContentChange(),
@@ -190,7 +305,7 @@ pub enum PyReportStrategy {
 }
 
 #[pyclass(name = "PeriodicReportStrategy")]
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct PyPeriodicReportStrategy {
     period: usize,
 }
@@ -201,7 +316,7 @@ impl PyPeriodicReportStrategy {
     fn new(period: usize) -> Self {
         Self { period }
     }
-    
+
     #[getter]
     fn period(&self) -> usize {
         self.period
@@ -209,7 +324,7 @@ impl PyPeriodicReportStrategy {
 }
 
 #[pyclass(name = "Tick")]
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub enum PyTick {
     TimeDriven,
     TupleDriven,
@@ -222,6 +337,19 @@ pub struct PyStreamingQuery {
     config: StreamingConfig,
     // Store accumulated results
     results: Arc<Mutex<Vec<Vec<(String, String, String)>>>>,
+}
+
+// Summarised rather than derived: `results` accumulates every solution the stream has
+// produced. Not locked, for the reason given on [`PySparqlDatabase`].
+impl std::fmt::Debug for PyStreamingQuery {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let mut s = f.debug_struct("StreamingQuery");
+        match self.results.try_lock() {
+            Ok(r) => s.field("results", &r.len()),
+            Err(_) => s.field("results", &"<locked>"),
+        }
+        .finish_non_exhaustive()
+    }
 }
 
 #[derive(Clone)]
@@ -242,7 +370,7 @@ struct StreamingConfig {
     distinct: bool,
     limit: Option<usize>,
     offset: Option<usize>,
-    
+
     // RSP config
     window_width: Option<usize>,
     window_slide: Option<usize>,
@@ -264,9 +392,15 @@ impl PyStreamingQuery {
 #[pymethods]
 impl PyStreamingQuery {
     /// Add a triple to the stream
-    fn add_stream_triple(&self, subject: &str, predicate: &str, object: &str, _timestamp: usize) -> PyResult<()> {
+    fn add_stream_triple(
+        &self,
+        subject: &str,
+        predicate: &str,
+        object: &str,
+        _timestamp: usize,
+    ) -> PyResult<()> {
         let mut matches = true;
-        
+
         // Apply subject filters
         if let Some(ref s) = self.config.subject {
             matches &= subject == s;
@@ -280,7 +414,7 @@ impl PyStreamingQuery {
         if let Some(ref s) = self.config.subject_ending {
             matches &= subject.ends_with(s);
         }
-        
+
         // Apply predicate filters
         if matches {
             if let Some(ref p) = self.config.predicate {
@@ -296,7 +430,7 @@ impl PyStreamingQuery {
                 matches &= predicate.ends_with(p);
             }
         }
-        
+
         // Apply object filters
         if matches {
             if let Some(ref o) = self.config.object {
@@ -312,11 +446,16 @@ impl PyStreamingQuery {
                 matches &= object.ends_with(o);
             }
         }
-        
+
         if matches {
-            let triple = (subject.to_string(), predicate.to_string(), object.to_string());
-            
-            if let Ok(mut results) = self.results.lock() {
+            let triple = (
+                subject.to_string(),
+                predicate.to_string(),
+                object.to_string(),
+            );
+
+            {
+                let mut results = locked(&self.results, "results")?;
                 // Apply distinct filter if configured
                 if self.config.distinct {
                     // Check if this triple already exists in any result batch
@@ -331,10 +470,10 @@ impl PyStreamingQuery {
                         return Ok(());
                     }
                 }
-                
+
                 // Create a new result batch with this triple
                 let mut batch = vec![triple];
-                
+
                 // Apply limit if configured
                 if let Some(limit) = self.config.limit {
                     let total_count: usize = results.iter().map(|batch| batch.len()).sum();
@@ -345,19 +484,20 @@ impl PyStreamingQuery {
                         batch.truncate(limit);
                     }
                 }
-                
+
                 results.push(batch);
             }
         }
-        
+
         Ok(())
     }
 
     /// Get streaming results
     fn get_stream_results(&self) -> PyResult<Vec<Vec<(String, String, String)>>> {
-        if let Ok(results) = self.results.lock() {
+        {
+            let results = locked(&self.results, "results")?;
             let mut current_results = results.clone();
-            
+
             // Apply offset if configured
             if let Some(offset) = self.config.offset {
                 let total_triples: usize = current_results.iter().map(|batch| batch.len()).sum();
@@ -376,10 +516,8 @@ impl PyStreamingQuery {
                     current_results.clear();
                 }
             }
-            
+
             Ok(current_results)
-        } else {
-            Err(PyErr::new::<pyo3::exceptions::PyRuntimeError, _>("Failed to acquire results lock"))
         }
     }
 
@@ -390,12 +528,8 @@ impl PyStreamingQuery {
 
     /// Clear accumulated streaming results
     fn clear_stream_results(&self) -> PyResult<()> {
-        if let Ok(mut results) = self.results.lock() {
-            results.clear();
-            Ok(())
-        } else {
-            Err(PyErr::new::<pyo3::exceptions::PyRuntimeError, _>("Failed to acquire results lock"))
-        }
+        locked(&self.results, "results")?.clear();
+        Ok(())
     }
 
     /// Stop the streaming query
@@ -457,7 +591,7 @@ pub struct PyQueryBuilder {
     limit: Option<usize>,
     offset: Option<usize>,
     sort_direction: PySortDirection,
-    
+
     // RSP fields (simplified)
     window_width: Option<usize>,
     window_slide: Option<usize>,
@@ -465,6 +599,39 @@ pub struct PyQueryBuilder {
     tick_strategy: PyTick,
     stream_operator: Option<PyStreamOperator>,
     periodic_periods: Vec<usize>, // Store periodic periods separately
+}
+
+// Summarised rather than derived: `db` is a whole store, and the filter fields are
+// numerous enough that printing only the ones that are set is more readable than
+// twenty `None`s.
+impl std::fmt::Debug for PyQueryBuilder {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let set: Vec<&str> = [
+            ("subject", self.subject.is_some()),
+            ("subject_like", self.subject_like.is_some()),
+            ("subject_starting", self.subject_starting.is_some()),
+            ("subject_ending", self.subject_ending.is_some()),
+            ("predicate", self.predicate.is_some()),
+            ("predicate_like", self.predicate_like.is_some()),
+            ("predicate_starting", self.predicate_starting.is_some()),
+            ("predicate_ending", self.predicate_ending.is_some()),
+            ("object", self.object.is_some()),
+            ("object_like", self.object_like.is_some()),
+            ("object_starting", self.object_starting.is_some()),
+            ("object_ending", self.object_ending.is_some()),
+        ]
+        .iter()
+        .filter(|(_, present)| *present)
+        .map(|(name, _)| *name)
+        .collect();
+        f.debug_struct("QueryBuilder")
+            .field("filters", &set)
+            .field("distinct", &self.distinct)
+            .field("limit", &self.limit)
+            .field("offset", &self.offset)
+            .field("sort_direction", &self.sort_direction)
+            .finish_non_exhaustive()
+    }
 }
 
 #[pymethods]
@@ -489,7 +656,7 @@ impl PyQueryBuilder {
         new_builder.object = Some(obj.to_owned());
         new_builder
     }
-    
+
     /// Filter subjects containing a substring.
     fn with_subject_like(&self, pattern: &str) -> Self {
         let mut new_builder = self.clone();
@@ -552,7 +719,7 @@ impl PyQueryBuilder {
         new_builder.object_ending = Some(suffix.to_owned());
         new_builder
     }
-    
+
     /// Only return distinct results.
     fn distinct(&self) -> Self {
         let mut new_builder = self.clone();
@@ -587,7 +754,7 @@ impl PyQueryBuilder {
         new_builder.sort_direction = PySortDirection::Descending;
         new_builder
     }
-    
+
     /// Configure windowing for stream processing.
     fn window(&self, width: usize, slide: usize) -> Self {
         let mut new_builder = self.clone();
@@ -643,7 +810,7 @@ impl PyQueryBuilder {
             distinct: self.distinct,
             limit: self.limit,
             offset: self.offset,
-            
+
             window_width: self.window_width,
             window_slide: self.window_slide,
             report_strategies: self.report_strategies.clone(),
@@ -651,91 +818,85 @@ impl PyQueryBuilder {
             stream_operator: self.stream_operator.clone(),
             periodic_periods: self.periodic_periods.clone(),
         };
-        
+
         Ok(PyStreamingQuery::new(config))
     }
-    
+
     /// Build and execute the query, returning decoded (s,p,o) tuples.
-    fn get_decoded_triples(&self) -> Vec<(String,String,String)> {
-        if let Ok(db) = self.db.lock() {
-            let qb = self.build_rust_query_builder(&*db);
-            qb.get_decoded_triples()
-        } else {
-            Vec::new() // Return empty vector if lock fails
-        }
+    fn get_decoded_triples(&self) -> PyResult<Vec<(String, String, String)>> {
+        let db = locked(&self.db, "database")?;
+        let qb = self.build_rust_query_builder(&*db);
+        Ok(qb.get_decoded_triples())
     }
 
     /// Return just the decoded subjects.
-    fn get_subjects(&self) -> Vec<String> {
-        if let Ok(db) = self.db.lock() {
-            let qb = self.build_rust_query_builder(&*db);
-            qb.get_subjects()
-        } else {
-            Vec::new()
-        }
+    fn get_subjects(&self) -> PyResult<Vec<String>> {
+        let db = locked(&self.db, "database")?;
+        let qb = self.build_rust_query_builder(&*db);
+        Ok(qb.get_subjects())
     }
 
     /// Return just the decoded predicates.
-    fn get_predicates(&self) -> Vec<String> {
-        if let Ok(db) = self.db.lock() {
-            let qb = self.build_rust_query_builder(&*db);
-            qb.get_predicates()
-        } else {
-            Vec::new()
-        }
+    fn get_predicates(&self) -> PyResult<Vec<String>> {
+        let db = locked(&self.db, "database")?;
+        let qb = self.build_rust_query_builder(&*db);
+        Ok(qb.get_predicates())
     }
 
     /// Return just the decoded objects.
-    fn get_objects(&self) -> Vec<String> {
-        if let Ok(db) = self.db.lock() {
-            let qb = self.build_rust_query_builder(&*db);
-            qb.get_objects()
-        } else {
-            Vec::new()
-        }
+    fn get_objects(&self) -> PyResult<Vec<String>> {
+        let db = locked(&self.db, "database")?;
+        let qb = self.build_rust_query_builder(&*db);
+        Ok(qb.get_objects())
     }
 
     /// Count the number of matches.
-    fn count(&self) -> usize {
-        if let Ok(db) = self.db.lock() {
-            let qb = self.build_rust_query_builder(&*db);
-            qb.count()
-        } else {
-            0 // Return 0 if lock fails
-        }
+    fn count(&self) -> PyResult<usize> {
+        let db = locked(&self.db, "database")?;
+        let qb = self.build_rust_query_builder(&*db);
+        Ok(qb.count())
     }
 
     /// Group results by subject, returning a dictionary.
-    fn group_by_subject(&self) -> HashMap<String, Vec<(String, String, String)>> {
-        let results = self.get_decoded_triples();
+    fn group_by_subject(&self) -> PyResult<HashMap<String, Vec<(String, String, String)>>> {
+        let results = self.get_decoded_triples()?;
         let mut groups = HashMap::new();
-        
+
         for (s, p, o) in results {
-            groups.entry(s.clone()).or_insert_with(Vec::new).push((s, p, o));
+            groups
+                .entry(s.clone())
+                .or_insert_with(Vec::new)
+                .push((s, p, o));
         }
-        groups
+        Ok(groups)
     }
 
     /// Group results by predicate, returning a dictionary.
-    fn group_by_predicate(&self) -> HashMap<String, Vec<(String, String, String)>> {
-        let results = self.get_decoded_triples();
+    fn group_by_predicate(&self) -> PyResult<HashMap<String, Vec<(String, String, String)>>> {
+        let results = self.get_decoded_triples()?;
         let mut groups = HashMap::new();
-        
+
         for (s, p, o) in results {
-            groups.entry(p.clone()).or_insert_with(Vec::new).push((s, p, o));
+            groups
+                .entry(p.clone())
+                .or_insert_with(Vec::new)
+                .push((s, p, o));
         }
-        groups
+        Ok(groups)
     }
 
     /// Group results by object, returning a dictionary.
-    fn group_by_object(&self) -> HashMap<String, Vec<(String, String, String)>> {
-        let results = self.get_decoded_triples();
+    fn group_by_object(&self) -> PyResult<HashMap<String, Vec<(String, String, String)>>> {
+        let results = self.get_decoded_triples()?;
         let mut groups = HashMap::new();
-        
+
         for (s, p, o) in results {
-            groups.entry(o.clone()).or_insert_with(Vec::new).push((s, p, o));
+            groups
+                .entry(o.clone())
+                .or_insert_with(Vec::new)
+                .push((s, p, o));
         }
-        groups
+        Ok(groups)
     }
 }
 
@@ -759,7 +920,7 @@ impl Clone for PyQueryBuilder {
             limit: self.limit,
             offset: self.offset,
             sort_direction: self.sort_direction.clone(),
-            
+
             // RSP fields
             window_width: self.window_width,
             window_slide: self.window_slide,
@@ -773,56 +934,89 @@ impl Clone for PyQueryBuilder {
 
 impl PyQueryBuilder {
     /// Helper method to build the Rust QueryBuilder with all configured filters
-    fn build_rust_query_builder<'a>(&self, db: &'a SparqlDatabase) -> kolibrie_core::query_builder::QueryBuilder<'a> {
+    fn build_rust_query_builder<'a>(
+        &self,
+        db: &'a SparqlDatabase,
+    ) -> kolibrie_core::query_builder::QueryBuilder<'a> {
         use kolibrie_core::query_builder::QueryBuilder;
-        
+
         let mut qb = QueryBuilder::new(db);
-        
+
         // Apply exact filters
-        if let Some(ref s) = self.subject { qb = qb.with_subject(s); }
-        if let Some(ref p) = self.predicate { qb = qb.with_predicate(p); }
-        if let Some(ref o) = self.object { qb = qb.with_object(o); }
-        
+        if let Some(ref s) = self.subject {
+            qb = qb.with_subject(s);
+        }
+        if let Some(ref p) = self.predicate {
+            qb = qb.with_predicate(p);
+        }
+        if let Some(ref o) = self.object {
+            qb = qb.with_object(o);
+        }
+
         // Apply pattern filters
-        if let Some(ref s) = self.subject_like { qb = qb.with_subject_like(s); }
-        if let Some(ref s) = self.subject_starting { qb = qb.with_subject_starting(s); }
-        if let Some(ref s) = self.subject_ending { qb = qb.with_subject_ending(s); }
-        
-        if let Some(ref p) = self.predicate_like { qb = qb.with_predicate_like(p); }
-        if let Some(ref p) = self.predicate_starting { qb = qb.with_predicate_starting(p); }
-        if let Some(ref p) = self.predicate_ending { qb = qb.with_predicate_ending(p); }
-        
-        if let Some(ref o) = self.object_like { qb = qb.with_object_like(o); }
-        if let Some(ref o) = self.object_starting { qb = qb.with_object_starting(o); }
-        if let Some(ref o) = self.object_ending { qb = qb.with_object_ending(o); }
-        
+        if let Some(ref s) = self.subject_like {
+            qb = qb.with_subject_like(s);
+        }
+        if let Some(ref s) = self.subject_starting {
+            qb = qb.with_subject_starting(s);
+        }
+        if let Some(ref s) = self.subject_ending {
+            qb = qb.with_subject_ending(s);
+        }
+
+        if let Some(ref p) = self.predicate_like {
+            qb = qb.with_predicate_like(p);
+        }
+        if let Some(ref p) = self.predicate_starting {
+            qb = qb.with_predicate_starting(p);
+        }
+        if let Some(ref p) = self.predicate_ending {
+            qb = qb.with_predicate_ending(p);
+        }
+
+        if let Some(ref o) = self.object_like {
+            qb = qb.with_object_like(o);
+        }
+        if let Some(ref o) = self.object_starting {
+            qb = qb.with_object_starting(o);
+        }
+        if let Some(ref o) = self.object_ending {
+            qb = qb.with_object_ending(o);
+        }
+
         // Apply modifiers
-        if self.distinct { qb = qb.distinct(); }
-        if let Some(n) = self.limit { qb = qb.limit(n); }
-        if let Some(n) = self.offset { qb = qb.offset(n); }
-        
+        if self.distinct {
+            qb = qb.distinct();
+        }
+        if let Some(n) = self.limit {
+            qb = qb.limit(n);
+        }
+        if let Some(n) = self.offset {
+            qb = qb.offset(n);
+        }
+
         // Apply sort direction
         match self.sort_direction {
             PySortDirection::Ascending => qb = qb.asc(),
             PySortDirection::Descending => qb = qb.desc(),
         }
-        
+
         qb
     }
 }
 
-pub fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
+pub(crate) fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     // Register classes
     m.add_class::<PySparqlDatabase>()?;
     m.add_class::<PyQueryBuilder>()?;
     m.add_class::<PyStreamingQuery>()?;
     m.add_class::<PyPeriodicReportStrategy>()?;
-    
+
     // Register enums
     m.add_class::<PySortDirection>()?;
     m.add_class::<PyStreamOperator>()?;
     m.add_class::<PyReportStrategy>()?;
     m.add_class::<PyTick>()?;
-    
+
     Ok(())
 }

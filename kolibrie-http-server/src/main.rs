@@ -8,34 +8,60 @@
  * you can obtain one at https://mozilla.org/MPL/2.0/.
  */
 
+//! The Kolibrie HTTP server: a REST surface and the browser playground, on port 8080.
+//!
+//! A hand-rolled server over [`std::net::TcpListener`] with a thread
+//! per connection — no framework. Three families of endpoint, each keyed by a
+//! session the client creates first:
+//!
+//! | endpoint | purpose |
+//! |---|---|
+//! | `POST /query` | one-shot SPARQL over posted data |
+//! | `POST /rsp-query`, `/rsp/register`, `/rsp/push`, `GET /rsp/events/<id>` | RSP-QL streaming, results delivered as server-sent events |
+//! | `POST /datalogmtl/register`, `/datalogmtl/push`, `/datalogmtl/static`, `GET /datalogmtl/events/<id>` | DatalogMTL, streaming or whole-timeline |
+//!
+//! # Trust
+//!
+//! The ML context is resolved once at startup and the process **exits** if it is
+//! invalid, rather than starting and refusing requests later. Over HTTP that
+//! context never carries trusted-local authority: the server does not train, does
+//! not write artifacts, and does not accept model declarations from a query. See
+//! `kolibrie`'s `ml::policy` for what the modes mean.
+//!
+//! Binds `0.0.0.0`, so it is reachable from outside the host. There is no
+//! authentication of any kind.
+
 use datalog::parser_n3_logic::parse_n3_rule;
 use datalog::reasoning::Reasoner;
-use kolibrie::parser::process_rule_definition;
+use datalogmtl::automata::{
+    self,
+    interval::{TInterval, NEG_INF, POS_INF},
+};
+use datalogmtl::evaluator::DatalogMTLEvaluator;
+use datalogmtl::meteor_fmt;
+use datalogmtl::parser::{parse_data, parse_program};
+use datalogmtl::rdf_parser::{
+    parse_interval as parse_dmtl_interval, parse_rules as parse_dmtl_rules, parse_stream_shapes,
+};
+use datalogmtl::store::IntervalFactStore;
+use datalogmtl::stream::{RdfEvent, ShapeIngester};
+use datalogmtl::syntax::{DatalogMTLRule, Mode};
+use kolibrie::execute_query::QueryError;
 use kolibrie::rsp_engine::{
     OperationMode, QueryExecutionMode, RSPBuilder, ResultConsumer, SimpleR2R,
 };
+use kolibrie::rule_execution::process_rule_definition;
 use kolibrie::sparql_database::SparqlDatabase;
 use serde::{Deserialize, Serialize};
 use shared::dictionary::Dictionary;
+use shared::term_encoder::SharedTerms;
 use shared::triple::Triple;
-use datalogmtl::evaluator::DatalogMTLEvaluator;
-use datalogmtl::store::IntervalFactStore;
-use datalogmtl::syntax::{DatalogMTLRule, Mode};
-use datalogmtl::stream::{ShapeIngester, RdfEvent};
-use datalogmtl::parser::{parse_program, parse_data};
-use datalogmtl::rdf_parser::{
-    parse_rules as parse_dmtl_rules,
-    parse_stream_shapes,
-    parse_interval as parse_dmtl_interval,
-};
-use datalogmtl::automata::{self, interval::{TInterval, NEG_INF, POS_INF}};
-use datalogmtl::meteor_fmt;
 use std::collections::HashMap;
 use std::io::{self, Read, Write};
 use std::net::{TcpListener, TcpStream};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc::{self, Sender};
-use std::sync::{Arc, Mutex, RwLock};
+use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::Duration;
 
@@ -256,7 +282,7 @@ fn term_to_ntriples_token(term: &str) -> String {
 
 /// Export every triple in `db` as an N-Triples string.
 fn db_to_ntriples(db: &SparqlDatabase) -> String {
-    let dict = db.dictionary.read().unwrap();
+    let dict = db.dictionary();
     let mut out = String::new();
     let triples = db.query_default_triples(None, None, None);
     for triple in &triples {
@@ -382,6 +408,28 @@ fn http_ml_context(
             }
         })
         .as_ref()
+}
+
+/// The response for a failed query, mapping [`QueryError`] to this server's wire
+/// codes.
+///
+/// Goes through [`ml_error_response`] rather than matching the variants against a
+/// second status table: three other callers still pass bare strings, so the table has
+/// to stay there, and two copies of it would drift.
+///
+/// The mapping is deliberately the one that was in place when these errors were
+/// `String`s. Every non-ML failure — a syntax error included — reports as
+/// `QUERY_EXECUTION_FAILED` with 400. For a parse failure that is misleading, and the
+/// variants now make a `QUERY_PARSE_ERROR` possible, but adding one changes what
+/// clients receive and is not part of this change.
+fn query_error_response(error: &QueryError) -> String {
+    let code = match error {
+        QueryError::Ml(policy) => policy.to_string(),
+        QueryError::Parse(_) | QueryError::Unsupported(_) | QueryError::Execution(_) => {
+            "QUERY_EXECUTION_FAILED".to_string()
+        }
+    };
+    ml_error_response(&code)
 }
 
 fn ml_error_response(error: &str) -> String {
@@ -722,7 +770,11 @@ fn find_crlf(bytes: &[u8]) -> Option<usize> {
     bytes.windows(2).position(|window| window == b"\r\n")
 }
 
-fn handle_request(request: &HttpRequest, sessions: &Sessions, dmtl_sessions: &DmtlSessions) -> String {
+fn handle_request(
+    request: &HttpRequest,
+    sessions: &Sessions,
+    dmtl_sessions: &DmtlSessions,
+) -> String {
     let method = request.method.as_str();
     let path = request.path.as_str();
 
@@ -809,14 +861,11 @@ fn rsp_register(body: &str, sessions: &Sessions) -> String {
 
     // Validate RSP policy before creating a session
     let policy_db = SparqlDatabase::new();
-    for text in std::iter::once(&req.query)
-        .chain(req.sparql_rules.iter().flatten())
-    {
-        if let Err(error) = kolibrie::execute_query::validate_query_policy(
-            &strip_hash_comments(text),
-            &policy_db,
-        ) {
-            return ml_error_response(&error);
+    for text in std::iter::once(&req.query).chain(req.sparql_rules.iter().flatten()) {
+        if let Err(error) =
+            kolibrie::execute_query::validate_query_policy(&strip_hash_comments(text), &policy_db)
+        {
+            return query_error_response(&error);
         }
     }
     println!("RSP register: building engine for new session");
@@ -1095,13 +1144,13 @@ fn execute_sparql_with_policy(
     );
 
     let mut database = SparqlDatabase::new();
-    database.ml_context = context.clone();
+    database.set_ml_context(context.clone());
     // Validate the full request before changing database state
     for text in queries.iter().chain(rules.iter()) {
         if let Err(error) =
             kolibrie::execute_query::validate_query_policy(&strip_hash_comments(text), &database)
         {
-            return ml_error_response(&error);
+            return query_error_response(&error);
         }
     }
 
@@ -1145,14 +1194,15 @@ fn execute_sparql_with_policy(
         if has_n3_rule_text(&n3_rules_text) {
             println!("Processing N3 logic rules from N3 Logic sub-tab...");
 
-            // Mirror the database dictionary so term encodings are shared
+            // One term space between the store and the reasoner, so a term either
+            // interns once or decodes consistently on both sides.
             let mut kg = Reasoner::new();
-            kg.dictionary = database.dictionary.clone();
+            kg.adopt_terms(database.terms());
 
             // Decode all triples to owned strings using database.dictionary BEFORE
             // creating kg's mutable borrow — avoids the RwLockReadGuard conflict.
             let decoded_triples: Vec<(String, String, String)> = {
-                let dict_guard = kg.dictionary.read().unwrap();
+                let dict_guard = kg.term_view();
                 database
                     .query_default_triples(None, None, None)
                     .into_iter()
@@ -1188,9 +1238,7 @@ fn execute_sparql_with_policy(
 
                     // **IMPORTANT**: Register N3 prefixes with the database so SPARQL rules can use them
                     for (prefix, uri) in prefixes {
-                        database
-                            .prefixes
-                            .insert(prefix.to_string(), uri.to_string());
+                        database.add_prefix(prefix.to_string(), uri.to_string());
                     }
 
                     // Register the rule and infer new facts
@@ -1203,10 +1251,12 @@ fn execute_sparql_with_policy(
                         database.add_triple(triple);
                     }
 
-                    // Sync the enriched dictionary back so SPARQL can decode the new terms
-                    database.dictionary = kg.dictionary.clone();
+                    // No dictionary sync here on purpose. The store and the
+                    // reasoner share one encoding, so terms interned while inferring
+                    // were already visible to SPARQL; the assignment that used to sit
+                    // here handed the store back the handle it already held.
 
-                    if database.dataset_index.len_default() > 0 {
+                    if database.default_triple_count() > 0 {
                         database.invalidate_stats_cache();
                         database.get_or_build_stats();
                         database.build_all_indexes();
@@ -1260,7 +1310,7 @@ fn execute_sparql_with_policy(
             context,
         ) {
             Ok(rows) => rows,
-            Err(error) => return ml_error_response(&error),
+            Err(error) => return query_error_response(&error),
         };
 
         let execution_time = start_time.elapsed().as_secs_f64() * 1000.0;
@@ -1311,7 +1361,7 @@ fn execute_rsp_query(body: &str) -> String {
         &strip_hash_comments(&request.query),
         &SparqlDatabase::new(),
     ) {
-        return ml_error_response(&error);
+        return query_error_response(&error);
     }
     println!("RSP_REQUEST event_count={}", request.events.len());
 
@@ -1442,20 +1492,25 @@ mod tests {
 
     #[test]
     fn rsp_policy_rejection_precedes_session_creation() {
-        let declaration = r#"MODEL "unapproved" { ARCH MLP { HIDDEN [4] } OUTPUT BINARY { true } }"#;
+        let declaration =
+            r#"MODEL "unapproved" { ARCH MLP { HIDDEN [4] } OUTPUT BINARY { true } }"#;
         let expected = if cfg!(feature = "ml") { "403" } else { "503" };
         let body = serde_json::json!({"query":declaration}).to_string();
         assert!(super::execute_rsp_query(&body).starts_with(&format!("HTTP/1.1 {expected}")));
-        let sessions: super::Sessions = std::sync::Arc::new(std::sync::Mutex::new(
-            std::collections::HashMap::new(),
-        ));
+        let sessions: super::Sessions =
+            std::sync::Arc::new(std::sync::Mutex::new(std::collections::HashMap::new()));
         let query = "REGISTER RSTREAM <urn:out> AS SELECT * FROM NAMED WINDOW :w ON <urn:in> [RANGE 3 STEP 1] WHERE { WINDOW :w { ?s ?p ?o } }";
         let body = serde_json::json!({"query":query,"sparql_rules":[declaration]}).to_string();
         let response = super::rsp_register(&body, &sessions);
-        assert!(response.starts_with(&format!("HTTP/1.1 {expected}")), "{response}");
+        assert!(
+            response.starts_with(&format!("HTTP/1.1 {expected}")),
+            "{response}"
+        );
         assert!(sessions.lock().unwrap().is_empty());
-        assert!(super::execute_rsp_query(&serde_json::json!({"query":query}).to_string())
-            .starts_with("HTTP/1.1 200"));
+        assert!(
+            super::execute_rsp_query(&serde_json::json!({"query":query}).to_string())
+                .starts_with("HTTP/1.1 200")
+        );
     }
 
     #[cfg(feature = "ml")]
@@ -1576,6 +1631,63 @@ mod tests {
         );
         assert!(response.starts_with("HTTP/1.1 200"));
         assert!(response.contains("7"));
+    }
+
+    // Pins the wire format across the move from `String` errors to `QueryError`.
+    // Each case is the response the string-matching version produced for the same
+    // failure, so a change to `query_error_response` that clients would notice fails
+    // here rather than in a browser.
+    #[test]
+    fn query_error_responses_keep_their_wire_codes() {
+        use kolibrie::execute_query::QueryError;
+        use kolibrie::ml_policy::MlError;
+
+        for (error, expected_code) in [
+            (QueryError::Ml(MlError::Disabled), "ML_FEATURE_DISABLED"),
+            (QueryError::Ml(MlError::Forbidden), "ML_FORBIDDEN"),
+            (
+                QueryError::Ml(MlError::InvalidArtifact),
+                "ML_INVALID_ARTIFACT",
+            ),
+            (
+                QueryError::Ml(MlError::InvalidConfiguration),
+                "ML_INVALID_CONFIGURATION",
+            ),
+            // Not in the status table, so it lands on the default arm, as it did
+            // when it arrived as the string "ML_EXECUTION_FAILED".
+            (
+                QueryError::Ml(MlError::ExecutionFailed),
+                "QUERY_EXECUTION_FAILED",
+            ),
+            (QueryError::Parse("boom".into()), "QUERY_EXECUTION_FAILED"),
+            (
+                QueryError::Unsupported("boom".into()),
+                "QUERY_EXECUTION_FAILED",
+            ),
+            (
+                QueryError::Execution("boom".into()),
+                "QUERY_EXECUTION_FAILED",
+            ),
+        ] {
+            let actual = super::query_error_response(&error);
+            assert_eq!(
+                actual,
+                super::ml_error_response(expected_code),
+                "{error:?} should respond exactly as the code {expected_code} did"
+            );
+            assert!(actual.contains(expected_code), "{actual}");
+        }
+    }
+
+    // A parse failure carries the offending snippet. It must not reach the client.
+    #[test]
+    fn query_error_responses_do_not_leak_the_request() {
+        use kolibrie::execute_query::QueryError;
+
+        let error = QueryError::Parse("SELECT ?secret WHERE { canary }".to_string());
+        let response = super::query_error_response(&error);
+        assert!(!response.contains("canary"), "{response}");
+        assert!(!response.contains("secret"), "{response}");
     }
 
     #[test]
@@ -1712,17 +1824,17 @@ fn handle_dmtl_register(body: &str, dmtl_sessions: &DmtlSessions) -> String {
     };
 
     let horizon_ms = req.horizon_ms.unwrap_or(60_000);
-    let dict_arc: Arc<RwLock<Dictionary>> = Arc::new(RwLock::new(dict));
+    let dict_arc = SharedTerms::from_dictionary(dict);
 
     let shape_ingester = if shapes.is_empty() {
         None
     } else {
-        Some(ShapeIngester::new(shapes, Arc::clone(&dict_arc)))
+        Some(ShapeIngester::new(shapes))
     };
 
     let store = IntervalFactStore::new(horizon_ms);
 
-    let mut eval = match DatalogMTLEvaluator::new(rules, store, Arc::clone(&dict_arc)) {
+    let mut eval = match DatalogMTLEvaluator::new(rules, store, dict_arc.clone()) {
         Ok(e) => e,
         Err(e) => {
             eprintln!("DMTL evaluator error: {}", e);
@@ -1733,7 +1845,10 @@ fn handle_dmtl_register(body: &str, dmtl_sessions: &DmtlSessions) -> String {
     if let Some(bg) = &req.background_ntriples {
         if !bg.trim().is_empty() {
             let triples = tokenize_and_encode_ntriples(bg, &dict_arc);
-            println!("DMTL register: {} background triple(s) at t=0", triples.len());
+            println!(
+                "DMTL register: {} background triple(s) at t=0",
+                triples.len()
+            );
             eval.advance(0, triples);
         }
     }
@@ -1747,9 +1862,16 @@ fn handle_dmtl_register(body: &str, dmtl_sessions: &DmtlSessions) -> String {
             sse_sender: Arc::new(Mutex::new(None)),
         },
     );
-    println!("DMTL register: session {} created, stream_iris: {:?}", session_id, stream_iris);
+    println!(
+        "DMTL register: session {} created, stream_iris: {:?}",
+        session_id, stream_iris
+    );
 
-    let json = serde_json::to_string(&DmtlRegisterResponse { session_id, stream_iris }).unwrap_or_default();
+    let json = serde_json::to_string(&DmtlRegisterResponse {
+        session_id,
+        stream_iris,
+    })
+    .unwrap_or_default();
     format!(
         "HTTP/1.1 200 OK\r\n\
          Content-Type: application/json\r\n\
@@ -1776,11 +1898,15 @@ fn handle_dmtl_push(body: &str, dmtl_sessions: &DmtlSessions) -> String {
         None => return json_error_response("Session not found"),
     };
 
-    let dict_arc = Arc::clone(&session.evaluator.dictionary);
+    let dict_arc = session.evaluator.dictionary.clone();
     let triples = match (&mut session.shape_ingester, &req.stream_iri) {
         (Some(ingester), Some(iri)) => {
             let raw = tokenize_and_encode_ntriples(&req.ntriples, &dict_arc);
-            let event = RdfEvent { stream_iri: iri.clone(), timestamp: req.timestamp, triples: raw };
+            let event = RdfEvent {
+                stream_iri: iri.clone(),
+                timestamp: req.timestamp,
+                triples: raw,
+            };
             // Emit the shape's EXPIRY facts for channels that went quiet before
             // evicting them, otherwise a stale source disappears silently.
             let expired: Vec<Triple> = ingester
@@ -1797,18 +1923,25 @@ fn handle_dmtl_push(body: &str, dmtl_sessions: &DmtlSessions) -> String {
     };
     println!(
         "DMTL push: {} triple(s) at t={} (session {})",
-        triples.len(), req.timestamp, req.session_id
+        triples.len(),
+        req.timestamp,
+        req.session_id
     );
 
     let (derived, metrics) = session.evaluator.advance(req.timestamp, triples);
 
     let decoded: Vec<[String; 3]> = {
-        let dict = session.evaluator.dictionary.read().unwrap();
-        derived.iter().map(|t| [
-            decode_dmtl_term(dict.decode(t.subject)),
-            decode_dmtl_term(dict.decode(t.predicate)),
-            decode_dmtl_term(dict.decode(t.object)),
-        ]).collect()
+        let dict = session.evaluator.dictionary.view();
+        derived
+            .iter()
+            .map(|t| {
+                [
+                    decode_dmtl_term(dict.decode(t.subject)),
+                    decode_dmtl_term(dict.decode(t.predicate)),
+                    decode_dmtl_term(dict.decode(t.object)),
+                ]
+            })
+            .collect()
     };
 
     let tick_result = DmtlTickResult {
@@ -1896,18 +2029,19 @@ fn decode_dmtl_term(val: Option<&str>) -> String {
 }
 
 /// Tokenize N-Triples text and encode each term into the shared dictionary.
-fn tokenize_and_encode_ntriples(
-    ntriples: &str,
-    dict_arc: &Arc<RwLock<Dictionary>>,
-) -> Vec<Triple> {
+fn tokenize_and_encode_ntriples(ntriples: &str, dict_arc: &SharedTerms) -> Vec<Triple> {
     let mut triples = Vec::new();
     for line in ntriples.lines() {
         if let Some([s, p, o]) = tokenize_ntriples_line(line) {
-            let mut dict = dict_arc.write().unwrap();
-            let s_id = dict.encode(&s);
-            let p_id = dict.encode(&p);
-            let o_id = dict.encode(&o);
-            triples.push(Triple { subject: s_id, predicate: p_id, object: o_id });
+            // The shared space, not a view: these terms have to be interned where
+            // everything else will look them up. A view refused the call, which is
+            // what it is for.
+            let (subject, predicate, object) = dict_arc.encode_triple(&s, &p, &o);
+            triples.push(Triple {
+                subject,
+                predicate,
+                object,
+            });
         }
     }
     triples
@@ -1930,50 +2064,66 @@ fn tokenize_ntriples_line(line: &str) -> Option<[String; 3]> {
         while i < bytes.len() && (bytes[i] == b' ' || bytes[i] == b'\t') {
             i += 1;
         }
-        if i >= bytes.len() { break; }
+        if i >= bytes.len() {
+            break;
+        }
 
         match bytes[i] {
             b'<' => {
                 i += 1;
                 let start = i;
-                while i < bytes.len() && bytes[i] != b'>' { i += 1; }
+                while i < bytes.len() && bytes[i] != b'>' {
+                    i += 1;
+                }
                 tokens.push(String::from_utf8_lossy(&bytes[start..i]).into_owned());
-                if i < bytes.len() { i += 1; } // skip '>'
+                if i < bytes.len() {
+                    i += 1;
+                } // skip '>'
             }
             b'"' => {
                 let start = i;
                 i += 1;
                 while i < bytes.len() {
-                    if bytes[i] == b'\\' { i += 2; continue; }
-                    if bytes[i] == b'"' { i += 1; break; }
+                    if bytes[i] == b'\\' {
+                        i += 2;
+                        continue;
+                    }
+                    if bytes[i] == b'"' {
+                        i += 1;
+                        break;
+                    }
                     i += 1;
                 }
                 // Consume optional @lang tag or ^^<datatype>
                 if i < bytes.len() && bytes[i] == b'@' {
-                    while i < bytes.len() && bytes[i] != b' ' && bytes[i] != b'\t' { i += 1; }
+                    while i < bytes.len() && bytes[i] != b' ' && bytes[i] != b'\t' {
+                        i += 1;
+                    }
                 } else if i + 1 < bytes.len() && bytes[i] == b'^' && bytes[i + 1] == b'^' {
                     i += 2;
                     if i < bytes.len() && bytes[i] == b'<' {
                         i += 1;
-                        while i < bytes.len() && bytes[i] != b'>' { i += 1; }
-                        if i < bytes.len() { i += 1; }
+                        while i < bytes.len() && bytes[i] != b'>' {
+                            i += 1;
+                        }
+                        if i < bytes.len() {
+                            i += 1;
+                        }
                     }
                 }
                 tokens.push(String::from_utf8_lossy(&bytes[start..i]).into_owned());
             }
             b'_' if i + 1 < bytes.len() && bytes[i + 1] == b':' => {
                 let start = i;
-                while i < bytes.len()
-                    && bytes[i] != b' '
-                    && bytes[i] != b'\t'
-                    && bytes[i] != b'.'
-                {
+                while i < bytes.len() && bytes[i] != b' ' && bytes[i] != b'\t' && bytes[i] != b'.' {
                     i += 1;
                 }
                 tokens.push(String::from_utf8_lossy(&bytes[start..i]).into_owned());
             }
             b'.' => break, // end-of-triple marker
-            _ => { i += 1; }
+            _ => {
+                i += 1;
+            }
         }
     }
 
@@ -2002,9 +2152,13 @@ fn handle_dmtl_static(body: &str) -> String {
     let strategy = req.strategy.as_deref().unwrap_or("interval");
     // Syntax: "rdf" (triple patterns + N-Triples intervals) or "meteor" (Pred(args)@[l,r]).
     let rdf = req.syntax.as_deref().unwrap_or("rdf") != "meteor";
-    let dict: Arc<RwLock<Dictionary>> = Arc::new(RwLock::new(Dictionary::new()));
+    let dict: SharedTerms = SharedTerms::new();
 
-    let parsed = if rdf { parse_static_rdf(&req, &dict) } else { parse_static_meteor(&req, &dict) };
+    let parsed = if rdf {
+        parse_static_rdf(&req, &dict)
+    } else {
+        parse_static_meteor(&req, &dict)
+    };
     let (rules, iv_facts, queries) = match parsed {
         Ok(v) => v,
         Err(e) => return json_error_response(&e),
@@ -2018,7 +2172,7 @@ fn handle_dmtl_static(body: &str) -> String {
             Ok(m) => m,
             Err(e) => return json_error_response(&format!("ω-materialization: {}", e)),
         };
-        let g = dict.read().unwrap();
+        let g = dict.view();
         for (triple, iv) in &queries {
             entailment.push(DmtlEntailAnswer {
                 query: fmt_fact(triple, iv, &g, rdf),
@@ -2031,7 +2185,7 @@ fn handle_dmtl_static(body: &str) -> String {
         automata::materialize(&rules, iv_facts, 1000).facts
     };
 
-    let g = dict.read().unwrap();
+    let g = dict.view();
     let mut lines: Vec<String> = Vec::new();
     for (triple, ivs) in &fact_map {
         for iv in ivs {
@@ -2040,19 +2194,27 @@ fn handle_dmtl_static(body: &str) -> String {
     }
     lines.sort();
 
-    let resp = DmtlStaticResponse { facts: lines, entailment, note };
+    let resp = DmtlStaticResponse {
+        facts: lines,
+        entailment,
+        note,
+    };
     json_response(&serde_json::to_string(&resp).unwrap_or_default())
 }
 
-type StaticInput = (Vec<DatalogMTLRule>, Vec<(Triple, TInterval)>, Vec<(Triple, TInterval)>);
+type StaticInput = (
+    Vec<DatalogMTLRule>,
+    Vec<(Triple, TInterval)>,
+    Vec<(Triple, TInterval)>,
+);
 
 /// Parse the static request in RDF-style: triple-pattern rules + `<s> <p> <o> @[l,r]` facts.
-fn parse_static_rdf(req: &DmtlStaticRequest, dict: &Arc<RwLock<Dictionary>>) -> Result<StaticInput, String> {
-    let rules = {
-        let mut d = dict.write().unwrap();
-        parse_dmtl_rules(&req.program, &mut d, Mode::Static)
-            .map_err(|e| format!("Program parse error: {}", e))?
-    };
+fn parse_static_rdf(req: &DmtlStaticRequest, dict: &SharedTerms) -> Result<StaticInput, String> {
+    // Parsing interns, so it needs the shared space rather than a view.
+    let rules = dict
+        .try_with_terms(|d| parse_dmtl_rules(&req.program, d, Mode::Static))
+        .map_err(|e| e.to_string())?
+        .map_err(|e| format!("Program parse error: {}", e))?;
     let facts = parse_dmtl_interval_facts(&req.data, dict)?;
     let queries = match &req.queries {
         Some(q) if !q.trim().is_empty() => parse_dmtl_interval_facts(q, dict)?,
@@ -2062,64 +2224,102 @@ fn parse_static_rdf(req: &DmtlStaticRequest, dict: &Arc<RwLock<Dictionary>>) -> 
 }
 
 /// Parse the static request in MeTeoR-style: `Pred(args)` rules + `Pred(args)@[l,r]` facts.
-fn parse_static_meteor(req: &DmtlStaticRequest, dict: &Arc<RwLock<Dictionary>>) -> Result<StaticInput, String> {
+fn parse_static_meteor(req: &DmtlStaticRequest, dict: &SharedTerms) -> Result<StaticInput, String> {
     let rules = parse_program(&req.program, dict, Mode::Static)
         .map_err(|e| format!("Program parse error: {}", e))?;
     let to_iv = |fs: Vec<datalogmtl::parser::TemporalFact>| -> Vec<(Triple, TInterval)> {
-        fs.into_iter().map(|f| (f.triple, TInterval::closed(f.start as i64, f.end as i64))).collect()
+        fs.into_iter()
+            .map(|f| (f.triple, TInterval::closed(f.start as i64, f.end as i64)))
+            .collect()
     };
     let facts = to_iv(parse_data(&req.data, dict).map_err(|e| format!("Data parse error: {}", e))?);
     let queries = match &req.queries {
-        Some(q) if !q.trim().is_empty() =>
-            to_iv(parse_data(q, dict).map_err(|e| format!("Query parse error: {}", e))?),
+        Some(q) if !q.trim().is_empty() => {
+            to_iv(parse_data(q, dict).map_err(|e| format!("Query parse error: {}", e))?)
+        }
         _ => Vec::new(),
     };
     Ok((rules, facts, queries))
 }
 
 /// Parse RDF interval facts: `<s> <p> <o> @[l,r] .` (one per line).
-fn parse_dmtl_interval_facts(text: &str, dict: &Arc<RwLock<Dictionary>>) -> Result<Vec<(Triple, TInterval)>, String> {
+fn parse_dmtl_interval_facts(
+    text: &str,
+    dict: &SharedTerms,
+) -> Result<Vec<(Triple, TInterval)>, String> {
     let mut out = Vec::new();
     for (i, raw) in text.lines().enumerate() {
         let line = raw.trim();
-        if line.is_empty() || line.starts_with('#') { continue; }
-        let at = line.find("@[")
-            .ok_or_else(|| format!("data line {}: interval fact needs '@[l,r]': '{}'", i + 1, line))?;
+        if line.is_empty() || line.starts_with('#') {
+            continue;
+        }
+        let at = line.find("@[").ok_or_else(|| {
+            format!(
+                "data line {}: interval fact needs '@[l,r]': '{}'",
+                i + 1,
+                line
+            )
+        })?;
         let iv_inner = &line[at + 2..];
-        let rb = iv_inner.find(']')
+        let rb = iv_inner
+            .find(']')
             .ok_or_else(|| format!("data line {}: missing ']' in interval: '{}'", i + 1, line))?;
         let interval = parse_dmtl_interval(&iv_inner[..rb])?;
         let toks = tokenize_ntriples_line(&line[..at])
             .ok_or_else(|| format!("data line {}: could not parse triple: '{}'", i + 1, line))?;
-        let triple = {
-            let mut d = dict.write().unwrap();
-            Triple { subject: d.encode(&toks[0]), predicate: d.encode(&toks[1]), object: d.encode(&toks[2]) }
+        // Interning, so the shared space rather than a view.
+        let (subject, predicate, object) = dict.encode_triple(&toks[0], &toks[1], &toks[2]);
+        let triple = Triple {
+            subject,
+            predicate,
+            object,
         };
-        out.push((triple, TInterval::closed(interval.start as i64, interval.end as i64)));
+        out.push((
+            triple,
+            TInterval::closed(interval.start as i64, interval.end as i64),
+        ));
     }
     Ok(out)
 }
 
 /// Format a materialized fact as `<atom>@[l,r]` in the requested syntax.
 fn fmt_fact(triple: &Triple, iv: &TInterval, dict: &Dictionary, rdf: bool) -> String {
-    let atom = if rdf { fmt_rdf_triple(triple, dict) } else { meteor_fmt::atom_string(triple, dict) };
+    let atom = if rdf {
+        fmt_rdf_triple(triple, dict)
+    } else {
+        meteor_fmt::atom_string(triple, dict)
+    };
     format!("{}@{}", atom, fmt_tinterval(iv))
 }
 
 /// Render a triple in RDF/N-Triples style: `<s> <p> <o>` (literals/blanks as-is).
 fn fmt_rdf_triple(triple: &Triple, dict: &Dictionary) -> String {
     let d = |id| dict.decode(id).unwrap_or("?");
-    format!("{} {} {}",
+    format!(
+        "{} {} {}",
         term_to_ntriples_token(d(triple.subject)),
         term_to_ntriples_token(d(triple.predicate)),
-        term_to_ntriples_token(d(triple.object)))
+        term_to_ntriples_token(d(triple.object))
+    )
 }
 
 /// Render a `TInterval` as `[l,r]` / `(l,r)` with `±inf` for unbounded tails.
 fn fmt_tinterval(iv: &TInterval) -> String {
-    let l = if iv.start == NEG_INF { "-inf".to_string() } else { iv.start.to_string() };
-    let r = if iv.end == POS_INF { "+inf".to_string() } else { iv.end.to_string() };
-    format!("{}{},{}{}",
-        if iv.start_open { "(" } else { "[" }, l, r,
-        if iv.end_open { ")" } else { "]" })
+    let l = if iv.start == NEG_INF {
+        "-inf".to_string()
+    } else {
+        iv.start.to_string()
+    };
+    let r = if iv.end == POS_INF {
+        "+inf".to_string()
+    } else {
+        iv.end.to_string()
+    };
+    format!(
+        "{}{},{}{}",
+        if iv.start_open { "(" } else { "[" },
+        l,
+        r,
+        if iv.end_open { ")" } else { "]" }
+    )
 }

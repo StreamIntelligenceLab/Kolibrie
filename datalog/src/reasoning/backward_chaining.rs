@@ -1,8 +1,21 @@
-use std::collections::HashMap;
+//! Goal-directed evaluation: proving one query without materialising everything.
+//!
+//! Unification works over [`Term`] rather than over dictionary
+//! ids alone, because a goal can carry unbound variables where a fact never does.
+//! Quoted triples unify component-wise.
+//!
+//! # Depth limit
+//!
+//! There is no loop check. Recursion is bounded by a hard-coded depth of 10, and
+//! exceeding it yields no bindings, which is indistinguishable from the goal having
+//! no proof. A recursive rule set deeper than that silently answers nothing, so
+//! forward chaining is the safer choice when the rules are known to recurse.
+
+use crate::reasoning::Reasoner;
 use shared::rule::Rule;
 use shared::terms::{Term, TriplePattern};
 use shared::triple::Triple;
-use crate::reasoning::Reasoner;
+use std::collections::HashMap;
 
 fn unify_patterns(
     pattern1: &TriplePattern,
@@ -46,7 +59,8 @@ fn unify_terms(term1: &Term, term2: &Term, bindings: &mut HashMap<String, Term>)
                 && unify_terms(&qt1.1, &qt2.1, bindings)
                 && unify_terms(&qt1.2, &qt2.2, bindings)
         }
-        (Term::Variable(v), Term::QuotedTriple(qt)) | (Term::QuotedTriple(qt), Term::Variable(v)) => {
+        (Term::Variable(v), Term::QuotedTriple(qt))
+        | (Term::QuotedTriple(qt), Term::Variable(v)) => {
             bindings.insert(v.clone(), Term::QuotedTriple(qt.clone()));
             true
         }
@@ -54,6 +68,12 @@ fn unify_terms(term1: &Term, term2: &Term, bindings: &mut HashMap<String, Term>)
     }
 }
 
+/// Follows a variable through the binding chain to whatever it ultimately stands for.
+///
+/// Chains, because unification can bind one variable to another: resolving `?x`
+/// where `?x` is bound to `?y` and `?y` to a constant yields the constant. An
+/// unbound variable resolves to itself, so the result is a `Term` and not an
+/// `Option`.
 pub fn resolve_term<'a>(term: &'a Term, bindings: &'a HashMap<String, Term>) -> Term {
     match term {
         Term::Variable(v) => {
@@ -152,8 +172,6 @@ impl Reasoner {
         let mut variable_counter = 0;
         self.backward_chaining_helper(query, &bindings, 0, &mut variable_counter)
     }
-
-
 
     /// Recursive helper for backward chaining. Depth-limited to prevent infinite loops.
     fn backward_chaining_helper(

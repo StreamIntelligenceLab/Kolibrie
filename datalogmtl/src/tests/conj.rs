@@ -15,9 +15,9 @@ use crate::rdf_parser::parse_rules;
 use crate::store::TemporalSnapshotStore;
 use crate::syntax::Mode;
 use shared::dictionary::Dictionary;
-use std::sync::{Arc, RwLock};
 
 use super::{enc, make_dict, triple};
+use shared::term_encoder::SharedTerms;
 
 /// The zone-transition rule: in one restricted zone for 10 consecutive ticks,
 /// having been in a *differently* classified zone 10–20 ticks before that.
@@ -31,7 +31,7 @@ PREFIX d: <http://x/>
 "#;
 
 struct Fixture {
-    dict: Arc<RwLock<Dictionary>>,
+    dict: SharedTerms,
     zone_a: u32,
     zone_b: u32,
     in_zone: u32,
@@ -61,10 +61,11 @@ fn fixture() -> Fixture {
 /// then zoneB (Restricted2) for ticks 13..=25. Returns the ticks at which the
 /// head was derived.
 fn run(rule_text: &str, f: &Fixture) -> Vec<u64> {
-    let rules = {
-        let mut d = f.dict.write().unwrap();
-        parse_rules(rule_text, &mut d, Mode::Streaming).expect("rule should parse")
-    };
+    let rules = f
+        .dict
+        .try_with_terms(|d| parse_rules(rule_text, d, Mode::Streaming))
+        .expect("the term space is usable")
+        .expect("rule should parse");
     let store = TemporalSnapshotStore::new(200);
     let mut eval = DatalogMTLEvaluator::new(rules, store, f.dict.clone()).unwrap();
 
@@ -82,7 +83,10 @@ fn run(rule_text: &str, f: &Fixture) -> Vec<u64> {
         });
 
         let (derived, _) = eval.advance(t, facts);
-        if derived.iter().any(|d| d.predicate == f.test_pred && d.object == f.zone_b) {
+        if derived
+            .iter()
+            .any(|d| d.predicate == f.test_pred && d.object == f.zone_b)
+        {
             fired.push(t);
         }
     }
@@ -115,17 +119,19 @@ fn test_conjunction_under_box_is_stronger_than_hoisting() {
     // Classification for zoneB is withheld until tick 20, well after the drone
     // enters it at tick 13.
     let f = fixture();
-    let rules = {
-        let mut d = f.dict.write().unwrap();
-        parse_rules(
+    let rules = f
+        .dict
+        .try_with_terms(|d| {
+            parse_rules(
             "PREFIX d: <http://x/>\n\
              [scoped] (?dr, d:test, ?z) :- Box[0,5]((?dr, d:inZone, ?z), (?z, d:status, d:Restricted2)).\n\
              [hoisted] (?dr, d:test2, ?z) :- Box[0,5](?dr, d:inZone, ?z), (?z, d:status, d:Restricted2).",
-            &mut d,
+            d,
             Mode::Streaming,
-        )
-        .unwrap()
-    };
+            )
+        })
+        .expect("the term space is usable")
+        .unwrap();
     let test2 = enc(&f.dict, "http://x/test2");
 
     let store = TemporalSnapshotStore::new(200);
@@ -150,9 +156,17 @@ fn test_conjunction_under_box_is_stronger_than_hoisting() {
     }
 
     // Hoisted: needs inZone over [t-5,t] and the class at t only -> fires at 20.
-    assert_eq!(hoisted_first, Some(20), "hoisted form only needs the class now");
+    assert_eq!(
+        hoisted_first,
+        Some(20),
+        "hoisted form only needs the class now"
+    );
     // Scoped: needs the class at every point of [t-5,t] too -> fires 5 ticks later.
-    assert_eq!(scoped_first, Some(25), "scoped form needs the class all window");
+    assert_eq!(
+        scoped_first,
+        Some(25),
+        "scoped form needs the class all window"
+    );
 }
 
 /// Nested operators read additively, and `compute_w_max` must say so — it drives

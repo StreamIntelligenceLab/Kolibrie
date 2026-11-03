@@ -23,8 +23,7 @@
  *
  */
 
-use kolibrie::execute_query::*;
-use kolibrie::sparql_database::*;
+use kolibrie::prelude::*;
 use std::fs::File;
 use std::io::{BufRead, BufReader};
 use std::time::Instant;
@@ -92,7 +91,10 @@ fn parse_large_ntriples_file(
     println!("Building indexes...");
     let index_start = Instant::now();
     db.build_all_indexes();
-    println!("Indexes built in {:.2} seconds", index_start.elapsed().as_secs_f64());
+    println!(
+        "Indexes built in {:.2} seconds",
+        index_start.elapsed().as_secs_f64()
+    );
 
     Ok(db)
 }
@@ -578,7 +580,7 @@ fn run_all_queries(db: &mut SparqlDatabase) {
 
         for _ in 0..ITERATIONS {
             let start = Instant::now();
-            let _ = execute_query_rayon_parallel2_volcano(query, db);
+            let _ = execute(query, db).expect("query should run").into_rows();
             let elapsed = start.elapsed().as_secs_f64();
             total_time += elapsed;
         }
@@ -591,7 +593,7 @@ fn run_all_queries(db: &mut SparqlDatabase) {
 fn main() {
     // Set current directory to the root of the project
     std::env::set_current_dir(std::path::Path::new(env!("CARGO_MANIFEST_DIR")))
-    .expect("Failed to set project root as current directory");
+        .expect("Failed to set project root as current directory");
 
     let file_path = "../benchmark_dataset/watdiv.10M.nt";
 

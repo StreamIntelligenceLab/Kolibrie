@@ -8,11 +8,42 @@
  * you can obtain one at https://mozilla.org/MPL/2.0/.
  */
 
-use crate::neural_relations::{
-    execute_train_decl, materialize_neural_relations_for_patterns,
-};
-use crate::sparql_database::SparqlDatabase;
-use datalog::reasoning::Reasoner;
+//! Parsing SPARQL, RSP-QL, and the rule and ML extensions.
+//!
+//! Produces the lexical syntax tree defined in [`shared::query`]: terms keep their
+//! source spelling and nothing is prefix-expanded or interned here. See that module
+//! for why the two stages are separate.
+//!
+//! # What to call
+//!
+//! | entry point | for |
+//! |---|---|
+//! | [`parse_combined_query`] | anything — standard SPARQL plus every extension, with the prefix map |
+//! | [`parse_sparql_query`] | a standalone SELECT, when the prefix map is not needed |
+//! | [`parse_standalone_rule`] | one `RULE` block |
+//! | [`convert_combined_rule`] | lower a parsed rule to a [`Rule`] bound to a dictionary |
+//!
+//! Running a parsed rule against a store is
+//! [`rule_execution`](crate::rule_execution), not this module. Parsing text and
+//! executing against a database are separate jobs, and this one does only the first:
+//! nothing here depends on anything else in the crate.
+//!
+//! Everything else here is a grammar fragment. They are public because
+//! `tests/parser_test.rs` is an integration test and therefore outside the crate, so
+//! exercising a combinator directly requires exporting it — not because callers are
+//! expected to assemble their own grammar. Moving those cases to unit tests inside
+//! this module would let the fragments become `pub(crate)`.
+//!
+//! # `nom` is in the signatures
+//!
+//! Every function here returns `nom::IResult`, so a `nom` major-version bump is a
+//! breaking change for anyone who names one of these types. That violates P5 of the
+//! architecture proposal ("nothing leaks"), and §4 resolves it by giving the parser
+//! crate its own error type and keeping the combinators internal. Until then, prefer
+//! the entry points above, which at least confine the exposure to a return type you
+//! can discard.
+
+use crate::parse_error::{ParseError, ParseResult};
 use nom::{
     branch::alt,
     bytes::complete::{tag, take_until, take_while1},
@@ -24,36 +55,31 @@ use nom::{
 };
 use rayon::str;
 use shared::dictionary::Dictionary;
-use shared::hybrid::{
-    encode_hybrid_results_as_rdf_star, HybridConfig, HybridMetrics, HybridProbabilityResult,
-    HybridReason, SeedSnapshot, ThresholdPolicyKind,
-};
-use shared::provenance::Provenance;
+use shared::hybrid::{HybridConfig, ThresholdPolicyKind};
+
+#[cfg(test)]
+#[path = "parser_tests.rs"]
+mod parser_tests;
 use shared::query::*;
 use shared::rule::FilterCondition;
 use shared::rule::Rule;
 use shared::terms::*;
-use shared::triple::Triple;
 // Add RSP imports
-use crate::rsp::r2s::{Relation2StreamOperator, StreamOperator};
-use crate::rsp::s2r::{
-    CSPARQLWindow, ContentContainer, Report, ReportStrategy, Tick, WindowTriple,
-};
 use std::collections::HashMap;
 use std::time::Duration;
 
-// Helper function to recognize identifiers
-pub fn identifier(input: &str) -> IResult<&str, &str> {
+/// One or more alphanumerics, `_` or `-`. The bare name part of a prefixed term.
+pub(crate) fn identifier(input: &str) -> IResult<&str, &str> {
     take_while1(|c: char| c.is_alphanumeric() || c == '_' || c == '-').parse(input)
 }
 
-// Parser for a prefixed identifier like ex:worksAt
-pub fn prefixed_identifier(input: &str) -> IResult<&str, &str> {
+/// A prefixed name such as `ex:worksAt`, returned unexpanded.
+pub(crate) fn prefixed_identifier(input: &str) -> IResult<&str, &str> {
     sparql_prefixed_name(input)
 }
 
-// Parser for a predicate (either prefixed or unprefixed)
-pub fn predicate(input: &str) -> IResult<&str, &str> {
+/// A predicate position: a full IRI, a variable, or a prefixed name.
+pub(crate) fn predicate(input: &str) -> IResult<&str, &str> {
     alt((
         parse_uri,
         variable,
@@ -64,13 +90,15 @@ pub fn predicate(input: &str) -> IResult<&str, &str> {
     .parse(input)
 }
 
-// Parser for SPARQL variables (e.g., ?person or $person)
-pub fn variable(input: &str) -> IResult<&str, &str> {
+/// A variable, with its `?` or `$` sigil retained.
+pub(crate) fn variable(input: &str) -> IResult<&str, &str> {
     sparql_variable(input)
 }
 
-// Parser for a literal value within double quotes
-pub fn parse_literal(input: &str) -> IResult<&str, &str> {
+/// A double-quoted literal, rejecting the triple-quoted form.
+///
+/// The quotes and any datatype or language suffix stay in the returned slice.
+pub(crate) fn parse_literal(input: &str) -> IResult<&str, &str> {
     let (remaining, literal) = sparql_quoted_literal(input)?;
     if !literal.starts_with('"') || literal.starts_with("\"\"\"") {
         return sparql_error(literal, nom::error::ErrorKind::Char);
@@ -88,65 +116,23 @@ pub fn parse_literal(input: &str) -> IResult<&str, &str> {
     sparql_error(literal, nom::error::ErrorKind::Escaped)
 }
 
-// Parser for a URI within angle brackets
-pub fn parse_uri(input: &str) -> IResult<&str, &str> {
+/// An IRI in angle brackets, or a prefixed name. Brackets are retained.
+pub(crate) fn parse_uri(input: &str) -> IResult<&str, &str> {
     sparql_iri(input).map(|(remaining, iri)| (remaining, &iri[1..iri.len() - 1]))
-}
-
-// Parser for a full URI including angle brackets (e.g., `<http://...>`)
-pub fn parse_full_uri(input: &str) -> IResult<&str, &str> {
-    sparql_iri(input)
-}
-
-// Parser for a full literal including quotes and optional lang/datatype
-pub fn parse_full_literal(input: &str) -> IResult<&str, &str> {
-    sparql_quoted_literal(input)
-}
-
-/// Parse a subject or object that can appear inside a quoted triple.
-/// Handles: quoted triples (recursive), full URIs, variables, full literals,
-/// prefixed names, and bare identifiers.
-pub fn parse_qt_subject_or_object(input: &str) -> IResult<&str, &str> {
-    alt((
-        parse_quoted_triple,
-        parse_full_uri,
-        variable,
-        parse_full_literal,
-        recognize((char(':'), identifier)),
-        prefixed_identifier,
-        identifier,
-    ))
-    .parse(input)
 }
 
 /// Parse a quoted triple: `<< subject predicate object >>`
 /// Returns the entire `<< ... >>` as a single string slice.
-pub fn parse_quoted_triple(input: &str) -> IResult<&str, &str> {
+pub(crate) fn parse_quoted_triple_nom(input: &str) -> IResult<&str, &str> {
     sparql_quoted_triple(input)
 }
 
-/// Parse annotation syntax: `{| predicate object ; ... |}`
-/// Returns predicate-object pairs for the annotation.
-pub fn parse_annotation(input: &str) -> IResult<&str, Vec<(&str, &str)>> {
-    let (input, _) = (tag("{|"), multispace0).parse(input)?;
-    let (input, first) = parse_predicate_object(input)?;
-    let (input, rest) = many0(preceded(
-        (multispace0, char(';'), multispace0),
-        parse_predicate_object,
-    ))
-    .parse(input)?;
-    let (input, _) = (multispace0, tag("|}")).parse(input)?;
-    let mut pairs = vec![first];
-    pairs.extend(rest);
-    Ok((input, pairs))
-}
-
-// Helper parser to parse a single predicate-object pair.
-pub fn parse_predicate_object(input: &str) -> IResult<&str, (&str, &str)> {
+/// One `predicate object` pair inside a triple block.
+pub(crate) fn parse_predicate_object(input: &str) -> IResult<&str, (&str, &str)> {
     let (input, p) = predicate(input)?;
     let (input, _) = multispace1.parse(input)?;
     let (input, o) = alt((
-        parse_quoted_triple,                // << s p o >> (RDF-star)
+        parse_quoted_triple_nom,            // << s p o >> (RDF-star)
         parse_uri,                          // <http://...>
         variable,                           // ?variable
         parse_literal,                      // "literal"
@@ -158,9 +144,11 @@ pub fn parse_predicate_object(input: &str) -> IResult<&str, (&str, &str)> {
     Ok((input, (p, o)))
 }
 
-pub fn parse_triple_block(input: &str) -> IResult<&str, Vec<(&str, &str, &str)>> {
+/// A `{ ... }` block of triple patterns, expanding the `;` and `,`
+/// abbreviations into separate patterns.
+pub(crate) fn parse_triple_block_nom(input: &str) -> IResult<&str, Vec<(&str, &str, &str)>> {
     let (input, subject) = alt((
-        parse_quoted_triple,                // << s p o >> (RDF-star)
+        parse_quoted_triple_nom,            // << s p o >> (RDF-star)
         parse_uri,                          // <http://...>
         variable,                           // ?variable
         recognize((char(':'), identifier)), // :localname
@@ -200,21 +188,14 @@ pub fn parse_triple_block(input: &str) -> IResult<&str, Vec<(&str, &str, &str)>>
     Ok((input, triples))
 }
 
-// Parser for values in the VALUES clause
-pub fn parse_value_term(input: &str) -> IResult<&str, Value> {
-    sparql_value(input)
-}
-
-// Parser for the VALUES clause
-pub fn parse_values(input: &str) -> IResult<&str, ValuesClause<'_>> {
+/// A `VALUES` block: the variable list and its rows.
+pub(crate) fn parse_values(input: &str) -> IResult<&str, ValuesClause<'_>> {
     sparql_values_clause(input)
 }
 
-pub fn parse_aggregate(input: &str) -> IResult<&str, (&str, &str, Option<&str>)> {
-    sparql_aggregate(input)
-}
-
-pub fn parse_select(input: &str) -> IResult<&str, Vec<(&str, &str, Option<&str>)>> {
+/// A `SELECT` projection, as `(kind, variable, alias)` triples where `kind`
+/// is `"VAR"` or an aggregate's uppercase name.
+pub(crate) fn parse_select(input: &str) -> IResult<&str, Vec<(&str, &str, Option<&str>)>> {
     let (mut input, _) = sparql_keyword(input, "SELECT")?;
     if let Ok((remaining, _)) = sparql_keyword(input, "DISTINCT") {
         input = remaining;
@@ -222,31 +203,35 @@ pub fn parse_select(input: &str) -> IResult<&str, Vec<(&str, &str, Option<&str>)
     sparql_projection_items(input)
 }
 
-pub fn parse_arithmetic_expression(input: &str) -> IResult<&str, ArithmeticExpression<'_>> {
+/// An arithmetic expression over variables and numeric literals.
+pub(crate) fn parse_arithmetic_expression(input: &str) -> IResult<&str, ArithmeticExpression<'_>> {
     sparql_filter_arithmetic(input)
 }
 
-// Parse a single comparison expression like ?var > 10
-pub fn parse_comparison(input: &str) -> IResult<&str, FilterExpression<'_>> {
+/// A single comparison, such as `?x > 5`.
+pub(crate) fn parse_comparison_nom(input: &str) -> IResult<&str, FilterExpression<'_>> {
     sparql_filter_comparison(input)
 }
 
-// Parse a complete FILTER clause
-pub fn parse_filter(input: &str) -> IResult<&str, FilterExpression<'_>> {
+/// A `FILTER` expression, including the boolean connectives.
+pub(crate) fn parse_filter_nom(input: &str) -> IResult<&str, FilterExpression<'_>> {
     sparql_filter_clause(input)
 }
 
-// Parser for BIND clauses: BIND(funcName(?var, "literal") AS ?newVar)
-pub fn parse_bind(input: &str) -> IResult<&str, (&str, Vec<&str>, &str)> {
+/// A `BIND` clause, as `(expression, arguments, target variable)`.
+///
+/// For example `BIND(funcName(?var, "literal") AS ?newVar)`.
+pub(crate) fn parse_bind(input: &str) -> IResult<&str, (&str, Vec<&str>, &str)> {
     sparql_bind_clause(input)
 }
 
-pub fn parse_subquery<'a>(input: &'a str) -> IResult<&'a str, SubQuery<'a>> {
+/// A `{ SELECT ... }` subquery nested in a graph pattern.
+pub(crate) fn parse_subquery<'a>(input: &'a str) -> IResult<&'a str, SubQuery<'a>> {
     sparql_subquery(input)
 }
 
-// Parser for WINDOW block inside WHERE clause
-pub fn parse_window_block(input: &str) -> IResult<&str, WindowBlock<'_>> {
+/// A `WINDOW ?w { ... }` block scoping patterns to one named window.
+pub(crate) fn parse_window_block(input: &str) -> IResult<&str, WindowBlock<'_>> {
     let (input, _) = multispace0.parse(input)?;
     let (input, _) = tag("WINDOW").parse(input)?;
     let (input, _) = multispace1.parse(input)?;
@@ -261,7 +246,7 @@ pub fn parse_window_block(input: &str) -> IResult<&str, WindowBlock<'_>> {
 
     // Parse triple patterns inside the window block
     let (input, pattern_blocks) = many0(terminated(
-        parse_triple_block,
+        parse_triple_block_nom,
         (multispace0, opt(char('.')), multispace0),
     ))
     .parse(input)?;
@@ -287,23 +272,12 @@ fn parse_not_triple_block(input: &str) -> IResult<&str, Vec<(&str, &str, &str)>>
     let (input, _) = multispace0.parse(input)?;
     let (input, _) = tag("NOT").parse(input)?;
     let (input, _) = multispace1.parse(input)?;
-    parse_triple_block(input)
+    parse_triple_block_nom(input)
 }
 
-pub fn parse_where(
-    input: &str,
-) -> IResult<
-    &str,
-    (
-        Vec<(&str, &str, &str)>,
-        Vec<FilterExpression<'_>>,
-        Option<ValuesClause<'_>>,
-        Vec<(&str, Vec<&str>, &str)>,
-        Vec<SubQuery<'_>>,
-        Vec<WindowBlock<'_>>,
-        Vec<(&str, &str, &str)>, // negated triple patterns (NOT X)
-    ),
-> {
+/// A `WHERE` clause, returning the five-tuple of triple patterns, filters,
+/// `VALUES`, `BIND` clauses and subqueries that `shared::query` uses.
+pub(crate) fn parse_where_nom(input: &str) -> IResult<&str, WhereClause<'_>> {
     let (input, _) = multispace0.parse(input)?;
     let (input, _) = tag("WHERE").parse(input)?;
     let (input, _) = multispace0.parse(input)?;
@@ -337,10 +311,10 @@ pub fn parse_where(
         } else if let Ok((new_input, not_triples)) = parse_not_triple_block(current_input) {
             neg_patterns.extend(not_triples);
             new_input
-        } else if let Ok((new_input, triple_block)) = parse_triple_block(current_input) {
+        } else if let Ok((new_input, triple_block)) = parse_triple_block_nom(current_input) {
             patterns.extend(triple_block);
             new_input
-        } else if let Ok((new_input, filter)) = parse_filter(current_input) {
+        } else if let Ok((new_input, filter)) = parse_filter_nom(current_input) {
             filters.push(filter);
             new_input
         } else if let Ok((new_input, bind)) = parse_bind(current_input) {
@@ -373,26 +347,26 @@ pub fn parse_where(
 
     Ok((
         current_input,
-        (
+        WhereClause {
             patterns,
             filters,
-            values_clause,
+            values: values_clause,
             binds,
             subqueries,
             window_blocks,
-            neg_patterns,
-        ),
+            negated_patterns: neg_patterns,
+        },
     ))
 }
 
-// Parser for REGISTER clause
-pub fn parse_register_clause(input: &str) -> IResult<&str, RegisterClause<'_>> {
+/// A `REGISTER` clause declaring a standing query over streams.
+pub(crate) fn parse_register_clause(input: &str) -> IResult<&str, RegisterClause<'_>> {
     let (input, _) = multispace0.parse(input)?;
     let (input, _) = tag("REGISTER").parse(input)?;
     let (input, _) = multispace1.parse(input)?;
 
     // Parse stream type (RSTREAM, ISTREAM, DSTREAM)
-    let (input, stream_type) = parse_stream_type(input)?;
+    let (input, stream_type) = parse_stream_type_nom(input)?;
     let (input, _) = multispace1.parse(input)?;
 
     // Parse output stream IRI
@@ -409,12 +383,22 @@ pub fn parse_register_clause(input: &str) -> IResult<&str, RegisterClause<'_>> {
 
     // Parse optional FROM NAMED WINDOW clause (this comes BEFORE WHERE in your example)
     let (input, window_clause) =
-        many1(preceded(multispace0, parse_from_named_window)).parse(input)?;
+        many1(preceded(multispace0, parse_from_named_window_nom)).parse(input)?;
     let (input, _) = multispace0.parse(input)?;
 
     // Parse WHERE clause with window support
-    let (input, (patterns, filters, values_clause, binds, subqueries, window_blocks, _)) =
-        parse_where(input)?;
+    let (
+        input,
+        WhereClause {
+            patterns,
+            filters,
+            values: values_clause,
+            binds,
+            subqueries,
+            window_blocks,
+            ..
+        },
+    ) = parse_where_nom(input)?;
 
     Ok((
         input,
@@ -431,73 +415,26 @@ pub fn parse_register_clause(input: &str) -> IResult<&str, RegisterClause<'_>> {
     ))
 }
 
-pub fn parse_group_by(input: &str) -> IResult<&str, Vec<&str>> {
+/// A `GROUP BY` clause: the grouping variables.
+pub(crate) fn parse_group_by_nom(input: &str) -> IResult<&str, Vec<&str>> {
     sparql_group_by_clause(input)
 }
 
-// Parser for sort direction (ASC/DESC)
-pub fn parse_sort_direction(input: &str) -> IResult<&str, SortDirection> {
-    if let Ok((remaining, _)) = sparql_keyword(input, "ASC") {
-        Ok((remaining, SortDirection::Asc))
-    } else if let Ok((remaining, _)) = sparql_keyword(input, "DESC") {
-        Ok((remaining, SortDirection::Desc))
-    } else {
-        Ok((sparql_skip_ws(input), SortDirection::Asc))
-    }
-}
-
-// Parser for a single ORDER BY condition
-pub fn parse_order_condition(input: &str) -> IResult<&str, OrderCondition<'_>> {
-    sparql_order_condition(input)
-}
-
-// Alternative simpler parser for ORDER BY condition (variable with optional direction)
-pub fn parse_simple_order_condition(input: &str) -> IResult<&str, OrderCondition<'_>> {
-    sparql_order_condition(input)
-}
-
-// Main ORDER BY parser
-pub fn parse_order_by(input: &str) -> IResult<&str, Vec<OrderCondition<'_>>> {
+/// An `ORDER BY` clause, in precedence order.
+pub(crate) fn parse_order_by_nom(input: &str) -> IResult<&str, Vec<OrderCondition<'_>>> {
     sparql_order_by_clause(input)
 }
 
-// Public PREFIX primitive backed by the same token-aware parser as requests.
-pub fn parse_prefix(input: &str) -> IResult<&str, (&str, &str)> {
+/// A `PREFIX` declaration, as `(short name, expansion)`.
+///
+/// Backed by the same token-aware parser the request path uses, so a declaration
+/// accepted here is accepted in a full query.
+pub(crate) fn parse_prefix_nom(input: &str) -> IResult<&str, (&str, &str)> {
     sparql_prefix_declaration(input)
 }
 
-/// Compatibility parser for standalone `INSERT { ... }` data aliases.
-///
-/// It produces the same `InsertClause` used by the standard update AST; no
-/// legacy triple-only representation or executor is retained.
-pub fn parse_insert(input: &str) -> IResult<&str, InsertClause<'_>> {
-    let (input, _) = sparql_keyword(input, "INSERT")?;
-    let input = sparql_keyword(input, "DATA")
-        .map(|(remaining, _)| remaining)
-        .unwrap_or(input);
-    let (remaining, quads) = sparql_quad_block(input)?;
-    if let Some(offending) = sparql_quads_first_variable(&quads) {
-        return sparql_error(offending, nom::error::ErrorKind::Verify);
-    }
-    Ok((remaining, InsertClause { quads }))
-}
-
-/// Compatibility parser for standalone `DELETE { ... }` data aliases.
-pub fn parse_delete(input: &str) -> IResult<&str, DeleteClause<'_>> {
-    let (input, _) = sparql_keyword(input, "DELETE")?;
-    let input = sparql_keyword(input, "DATA")
-        .map(|(remaining, _)| remaining)
-        .unwrap_or(input);
-    let (remaining, quads) = sparql_quad_block(input)?;
-    if let Some(offending) =
-        sparql_quads_first_variable(&quads).or_else(|| sparql_quads_first_blank_node(&quads))
-    {
-        return sparql_error(offending, nom::error::ErrorKind::Verify);
-    }
-    Ok((remaining, DeleteClause { quads }))
-}
-
-pub fn parse_construct_clause(input: &str) -> IResult<&str, Vec<(&str, &str, &str)>> {
+/// A `CONSTRUCT { ... }` template, which becomes a rule's conclusion.
+pub(crate) fn parse_construct_clause(input: &str) -> IResult<&str, Vec<(&str, &str, &str)>> {
     let (input, _) = multispace0.parse(input)?;
     let (input, _) = tag("CONSTRUCT").parse(input)?;
     let (input, _) = multispace0.parse(input)?;
@@ -507,7 +444,7 @@ pub fn parse_construct_clause(input: &str) -> IResult<&str, Vec<(&str, &str, &st
         char('{'),
         preceded(
             multispace0,
-            terminated(parse_triple_block, opt((multispace0, char('.')))),
+            terminated(parse_triple_block_nom, opt((multispace0, char('.')))),
         ),
         preceded(multispace0, char('}')),
     )
@@ -516,8 +453,10 @@ pub fn parse_construct_clause(input: &str) -> IResult<&str, Vec<(&str, &str, &st
     Ok((input, conclusions))
 }
 
-// Public LIMIT primitive backed by the same parser as SELECT.
-pub fn parse_limit(input: &str) -> IResult<&str, usize> {
+/// A `LIMIT` clause.
+///
+/// Backed by the same parser `SELECT` uses.
+pub(crate) fn parse_limit_nom(input: &str) -> IResult<&str, usize> {
     sparql_limit_clause(input)
 }
 
@@ -1429,7 +1368,7 @@ fn sparql_group_primary(input: &str) -> IResult<&str, GroupGraphPattern<'_>> {
 }
 
 /// Parses a recursive group graph pattern containing BGP, GRAPH, and UNION.
-pub fn parse_group_graph_pattern(input: &str) -> IResult<&str, GroupGraphPattern<'_>> {
+pub(crate) fn parse_group_graph_pattern(input: &str) -> IResult<&str, GroupGraphPattern<'_>> {
     let (mut input, _) = sparql_char(input, '{')?;
     let mut joined = Vec::new();
     loop {
@@ -1971,7 +1910,7 @@ fn sparql_update_core(input: &str, allow_data_aliases: bool) -> IResult<&str, Up
 /// Parse a standalone SELECT with the same grammar used by `CombinedQuery`.
 /// Prefixes are accepted as a request prologue; callers that need the prefix
 /// map should use `parse_combined_query`.
-pub fn parse_sparql_query(input: &str) -> IResult<&str, SelectQuery<'_>> {
+pub(crate) fn parse_sparql_query_nom(input: &str) -> IResult<&str, SelectQuery<'_>> {
     let (input, _) = sparql_prefixes(input)?;
     let (remaining, query) = sparql_select_core(input, true)?;
     let remaining = sparql_skip_ws(remaining);
@@ -1981,7 +1920,11 @@ pub fn parse_sparql_query(input: &str) -> IResult<&str, SelectQuery<'_>> {
     Ok((remaining, query))
 }
 
-pub fn parse_standalone_rule<'a>(
+/// One `RULE` block together with the prefix map its prologue declared.
+///
+/// Fails unless the whole input is consumed, so trailing text is an error rather
+/// than silently ignored.
+pub(crate) fn parse_standalone_rule_nom<'a>(
     input: &'a str,
 ) -> IResult<&'a str, (CombinedRule<'a>, HashMap<String, String>)> {
     // Parse prefixes first
@@ -2010,32 +1953,8 @@ pub fn parse_standalone_rule<'a>(
     Ok((input, (rule, prefixes)))
 }
 
-pub fn parse_rule_call(input: &str) -> IResult<&str, RuleHead<'_>> {
-    let (input, _) = multispace0.parse(input)?;
-
-    // Parse the academic syntax: RULE(:Predicate, ?var1, ?var2, ...)
-    let (input, _) = tag("RULE").parse(input)?;
-    let (input, _) = preceded(char('('), multispace0).parse(input)?;
-    let (input, pred) = predicate(input)?;
-
-    // Parse the first variable
-    let (input, _) = (multispace0, char(','), multispace0).parse(input)?;
-    let (input, first_var) = variable(input)?;
-
-    // Parse additional variables if they exist
-    let (input, additional_vars) =
-        many0(preceded((multispace0, char(','), multispace0), variable)).parse(input)?;
-
-    // Combine all variables
-    let mut all_vars = vec![first_var];
-    all_vars.extend(additional_vars);
-
-    let (input, _) = preceded(multispace0, char(')')).parse(input)?;
-
-    Ok((input, RuleHead { predicate: pred }))
-}
-
-pub fn parse_rule_head(input: &str) -> IResult<&str, RuleHead<'_>> {
+/// A rule's name, as written after `RULE`.
+pub(crate) fn parse_rule_head(input: &str) -> IResult<&str, RuleHead<'_>> {
     let (input, pred) = predicate(input)?;
     Ok((input, RuleHead { predicate: pred }))
 }
@@ -2181,8 +2100,8 @@ fn into_owned_triple(triple: (&str, &str, &str)) -> (String, String, String) {
 
 fn parse_graph_pattern_block_owned(input: &str) -> Result<Vec<(String, String, String)>, String> {
     let wrapped = format!("WHERE {{ {} }}", input.trim());
-    let (_, (patterns, _, _, _, _, _, _)) =
-        parse_where(&wrapped).map_err(|err| format!("invalid graph-pattern block: {err:?}"))?;
+    let (_, WhereClause { patterns, .. }) =
+        parse_where_nom(&wrapped).map_err(|err| format!("invalid graph-pattern block: {err:?}"))?;
     Ok(patterns.into_iter().map(into_owned_triple).collect())
 }
 
@@ -2239,7 +2158,8 @@ fn infer_anchor_var(patterns: &[(String, String, String)]) -> Result<String, Str
     Err("NEURAL RELATION INPUT must contain at least one anchor variable".to_string())
 }
 
-pub fn parse_model_decl(input: &str) -> IResult<&str, ModelDecl> {
+/// A `MODEL` declaration: name, architecture and output interpretation.
+pub(crate) fn parse_model_decl(input: &str) -> IResult<&str, ModelDecl> {
     let (input, _) = multispace0.parse(input)?;
     let (input, _) = tag("MODEL").parse(input)?;
     let (input, _) = multispace1.parse(input)?;
@@ -2311,7 +2231,8 @@ pub fn parse_model_decl(input: &str) -> IResult<&str, ModelDecl> {
     ))
 }
 
-pub fn parse_neural_relation_decl(input: &str) -> IResult<&str, NeuralRelationDecl> {
+/// A declaration that a predicate's facts come from a model.
+pub(crate) fn parse_neural_relation_decl(input: &str) -> IResult<&str, NeuralRelationDecl> {
     let (input, _) = multispace0.parse(input)?;
     let (input, _) = tag("NEURAL").parse(input)?;
     let (input, _) = multispace1.parse(input)?;
@@ -2411,7 +2332,10 @@ fn parse_top_level_neural_decls(
     ))
 }
 
-pub fn parse_train_neural_relation_decl(input: &str) -> IResult<&str, TrainNeuralRelationDecl> {
+/// A `TRAIN` declaration: data source, loss, optimiser and hyperparameters.
+pub(crate) fn parse_train_neural_relation_decl(
+    input: &str,
+) -> IResult<&str, TrainNeuralRelationDecl> {
     let (input, _) = multispace0.parse(input)?;
     let (input, _) = tag("TRAIN").parse(input)?;
     let (input, _) = multispace1.parse(input)?;
@@ -2517,14 +2441,15 @@ pub fn parse_train_neural_relation_decl(input: &str) -> IResult<&str, TrainNeura
 
 fn parse_single_triple_template(input: &str) -> Result<(&str, &str, &str), String> {
     let (_, triples) =
-        parse_triple_block(input).map_err(|err| format!("invalid triple template: {err:?}"))?;
+        parse_triple_block_nom(input).map_err(|err| format!("invalid triple template: {err:?}"))?;
     if triples.len() != 1 {
         return Err("triple templates must contain exactly one triple".to_string());
     }
     Ok(triples[0])
 }
 
-pub fn parse_ml_predict(input: &str) -> IResult<&str, MLPredictClause<'_>> {
+/// An `ML.PREDICT` clause, keeping the input query both as text and parsed.
+pub(crate) fn parse_ml_predict(input: &str) -> IResult<&str, MLPredictClause<'_>> {
     let (input, _) = multispace0.parse(input)?;
     let (input, _) = tag("ML.PREDICT").parse(input)?;
     let (input, _) = multispace0.parse(input)?;
@@ -2564,13 +2489,13 @@ pub fn parse_ml_predict(input: &str) -> IResult<&str, MLPredictClause<'_>> {
             // Parse WHERE patterns and filters (simplified - use your actual WHERE parser)
             let where_clause = &input_query[where_idx + 5..].trim();
             // This is a placeholder - you should use your actual pattern and filter parser here
-            let (_rest, (patterns, filters, _values, _binds, _subqueries, _, _)) =
-                parse_where(where_clause).unwrap_or_else(|_| {
-                    (
-                        where_clause,
-                        (vec![], vec![], None, vec![], vec![], vec![], vec![]),
-                    )
-                });
+            let (
+                _rest,
+                WhereClause {
+                    patterns, filters, ..
+                },
+            ) = parse_where_nom(where_clause)
+                .unwrap_or_else(|_| (where_clause, WhereClause::default()));
 
             where_patterns = patterns;
             filter_conditions = filters;
@@ -2584,8 +2509,7 @@ pub fn parse_ml_predict(input: &str) -> IResult<&str, MLPredictClause<'_>> {
     let (input, _) = tag("OUTPUT").parse(input)?;
     let (input, _) = multispace1.parse(input)?;
     let (input, output_var) = variable(input)?;
-    let (input, distribution) =
-        opt(preceded(multispace1, tag("DISTRIBUTION"))).parse(input)?;
+    let (input, distribution) = opt(preceded(multispace1, tag("DISTRIBUTION"))).parse(input)?;
     let (input, _) = multispace0.parse(input)?;
     let (input, _) = char(')').parse(input)?;
 
@@ -2603,8 +2527,8 @@ pub fn parse_ml_predict(input: &str) -> IResult<&str, MLPredictClause<'_>> {
     ))
 }
 
-// Parser for stream type
-pub fn parse_stream_type(input: &str) -> IResult<&str, StreamType<'_>> {
+/// An output stream operator: `RSTREAM`, `ISTREAM`, `DSTREAM` or a custom name.
+pub(crate) fn parse_stream_type_nom(input: &str) -> IResult<&str, StreamType<'_>> {
     let (input, _) = multispace0.parse(input)?;
     let (input, stream_type) = alt((
         tag("RSTREAM").map(|_| StreamType::RStream),
@@ -2616,8 +2540,10 @@ pub fn parse_stream_type(input: &str) -> IResult<&str, StreamType<'_>> {
     Ok((input, stream_type))
 }
 
-// Parser for window specification
-pub fn parse_window_spec(input: &str) -> IResult<&str, WindowSpec<'_>> {
+/// A window's width, slide and reporting behaviour.
+///
+/// Bounds are half-open: `RANGE n` holds `n` timestamps.
+pub(crate) fn parse_window_spec_nom(input: &str) -> IResult<&str, WindowSpec<'_>> {
     let (input, _) = multispace0.parse(input)?;
     let (input, _) = char('[').parse(input)?;
     let (input, _) = multispace0.parse(input)?;
@@ -2702,11 +2628,11 @@ pub fn parse_window_spec(input: &str) -> IResult<&str, WindowSpec<'_>> {
 
 /// Parse a duration string used in WITH POLICY clauses.
 /// Accepts: `5s`, `5000ms`, `PT5S` / `PT5M` / `PT5H`, bare integer (seconds).
-fn parse_policy_duration(input: &str) -> IResult<&str, std::time::Duration> {
+fn parse_policy_duration(input: &str) -> IResult<&str, Duration> {
     alt((parse_policy_duration_iso, parse_policy_duration_numeric)).parse(input)
 }
 
-fn parse_policy_duration_iso(input: &str) -> IResult<&str, std::time::Duration> {
+fn parse_policy_duration_iso(input: &str) -> IResult<&str, Duration> {
     let (input, dur_str) = recognize((
         tag("PT"),
         take_while1(|c: char| c.is_ascii_digit()),
@@ -2714,16 +2640,16 @@ fn parse_policy_duration_iso(input: &str) -> IResult<&str, std::time::Duration> 
     ))
     .parse(input)?;
     let secs = parse_duration_to_seconds(dur_str) as u64;
-    Ok((input, std::time::Duration::from_secs(secs)))
+    Ok((input, Duration::from_secs(secs)))
 }
 
-fn parse_policy_duration_numeric(input: &str) -> IResult<&str, std::time::Duration> {
+fn parse_policy_duration_numeric(input: &str) -> IResult<&str, Duration> {
     let (input, num_str) = take_while1(|c: char| c.is_ascii_digit()).parse(input)?;
     let (input, suffix) = opt(alt((tag("ms"), tag("s")))).parse(input)?;
     let num: u64 = num_str.parse().unwrap_or(0);
     let dur = match suffix {
-        Some("ms") => std::time::Duration::from_millis(num),
-        _ => std::time::Duration::from_secs(num),
+        Some("ms") => Duration::from_millis(num),
+        _ => Duration::from_secs(num),
     };
     Ok((input, dur))
 }
@@ -2732,7 +2658,7 @@ fn parse_policy_duration_numeric(input: &str) -> IResult<&str, std::time::Durati
 /// - `steal`  -> SyncPolicy::Steal
 /// - `wait`   -> SyncPolicy::Wait
 /// - `(timeout=<dur>, fallback=steal|drop)` -> SyncPolicy::Timeout{...}
-fn parse_sync_policy(input: &str) -> IResult<&str, shared::query::SyncPolicy> {
+fn parse_sync_policy(input: &str) -> IResult<&str, SyncPolicy> {
     alt((
         parse_sync_policy_steal,
         parse_sync_policy_wait,
@@ -2741,7 +2667,7 @@ fn parse_sync_policy(input: &str) -> IResult<&str, shared::query::SyncPolicy> {
     .parse(input)
 }
 
-fn parse_from_named_window_policy(input: &str) -> IResult<&str, shared::query::SyncPolicy> {
+fn parse_from_named_window_policy(input: &str) -> IResult<&str, SyncPolicy> {
     let (input, _) = multispace0.parse(input)?;
     let (input, _) = tag("WITH").parse(input)?;
     let (input, _) = multispace1.parse(input)?;
@@ -2750,17 +2676,17 @@ fn parse_from_named_window_policy(input: &str) -> IResult<&str, shared::query::S
     parse_sync_policy(input)
 }
 
-fn parse_sync_policy_steal(input: &str) -> IResult<&str, shared::query::SyncPolicy> {
+fn parse_sync_policy_steal(input: &str) -> IResult<&str, SyncPolicy> {
     let (input, _) = tag("steal").parse(input)?;
-    Ok((input, shared::query::SyncPolicy::Steal))
+    Ok((input, SyncPolicy::Steal))
 }
 
-fn parse_sync_policy_wait(input: &str) -> IResult<&str, shared::query::SyncPolicy> {
+fn parse_sync_policy_wait(input: &str) -> IResult<&str, SyncPolicy> {
     let (input, _) = tag("wait").parse(input)?;
-    Ok((input, shared::query::SyncPolicy::Wait))
+    Ok((input, SyncPolicy::Wait))
 }
 
-fn parse_sync_policy_timeout(input: &str) -> IResult<&str, shared::query::SyncPolicy> {
+fn parse_sync_policy_timeout(input: &str) -> IResult<&str, SyncPolicy> {
     let (input, _) = char('(').parse(input)?;
     let (input, _) = multispace0.parse(input)?;
     let (input, _) = tag("timeout").parse(input)?;
@@ -2778,20 +2704,17 @@ fn parse_sync_policy_timeout(input: &str) -> IResult<&str, shared::query::SyncPo
     let (input, fallback) = alt((parse_fallback_steal, parse_fallback_drop)).parse(input)?;
     let (input, _) = multispace0.parse(input)?;
     let (input, _) = char(')').parse(input)?;
-    Ok((
-        input,
-        shared::query::SyncPolicy::Timeout { duration, fallback },
-    ))
+    Ok((input, SyncPolicy::Timeout { duration, fallback }))
 }
 
-fn parse_fallback_steal(input: &str) -> IResult<&str, shared::query::Fallback> {
+fn parse_fallback_steal(input: &str) -> IResult<&str, Fallback> {
     let (input, _) = tag("steal").parse(input)?;
-    Ok((input, shared::query::Fallback::Steal))
+    Ok((input, Fallback::Steal))
 }
 
-fn parse_fallback_drop(input: &str) -> IResult<&str, shared::query::Fallback> {
+fn parse_fallback_drop(input: &str) -> IResult<&str, Fallback> {
     let (input, _) = tag("drop").parse(input)?;
-    Ok((input, shared::query::Fallback::Drop))
+    Ok((input, Fallback::Drop))
 }
 
 // Helper function to convert duration strings to seconds
@@ -2817,8 +2740,8 @@ fn parse_duration_to_seconds(duration: &str) -> usize {
     }
 }
 
-// Parser for FROM NAMED WINDOW clause
-pub fn parse_from_named_window(input: &str) -> IResult<&str, WindowClause<'_>> {
+/// A `FROM NAMED WINDOW` clause binding one window over one stream.
+pub(crate) fn parse_from_named_window_nom(input: &str) -> IResult<&str, WindowClause<'_>> {
     let (input, _) = multispace0.parse(input)?;
     let (input, _) = tag("FROM").parse(input)?;
     let (input, _) = multispace1.parse(input)?;
@@ -2852,7 +2775,7 @@ pub fn parse_from_named_window(input: &str) -> IResult<&str, WindowClause<'_>> {
     let (input, _) = multispace1.parse(input)?;
 
     // Parse window specification with ISO 8601 duration support
-    let (input, window_spec) = parse_window_spec(input)?;
+    let (input, window_spec) = parse_window_spec_nom(input)?;
 
     // Optional: WITH POLICY <policy>
     let (input, policy) = opt(parse_from_named_window_policy).parse(input)?;
@@ -3121,10 +3044,15 @@ fn parse_prob_annotation(input: &str) -> IResult<&str, ProbAnnotation<'_>> {
 }
 
 /// Parse a complete rule:
-///   RULE :OverheatingAlert(?room) :- WHERE { ... } => { ... } .
+///   RULE :Name :- CONSTRUCT { ... } WHERE { ... }
 ///   RULE :Name PROB(combination=independent, threshold=0.3) :- CONSTRUCT { ... } WHERE { ... } .
 ///   RULE :Name PROB(provenance=minmax, threshold=0.3) :- CONSTRUCT { ... } WHERE { ... } .
-pub fn parse_rule(input: &str) -> IResult<&str, CombinedRule<'_>> {
+///
+/// The body is always a `CONSTRUCT` block followed by `WHERE`; see
+/// [`parse_construct_clause`], which requires that keyword. A `WHERE { ... } => { ... }`
+/// form was advertised here until the real_scenario example was found to panic on it,
+/// and no parser has ever accepted it.
+pub(crate) fn parse_rule(input: &str) -> IResult<&str, CombinedRule<'_>> {
     let (input, _) = tag("RULE").parse(input)?;
     let (input, _) = space1.parse(input)?;
     let (input, head) = parse_rule_head(input)?;
@@ -3155,10 +3083,10 @@ pub fn parse_rule(input: &str) -> IResult<&str, CombinedRule<'_>> {
 
     let (input, stream_type, window_clause) = if has_rsp_elements {
         // RSP parsing path
-        let (input, stream_type) = opt(parse_stream_type).parse(input)?;
+        let (input, stream_type) = opt(parse_stream_type_nom).parse(input)?;
         let (input, _) = multispace0.parse(input)?;
         let (input, window_clause) =
-            many0(preceded(multispace0, parse_from_named_window)).parse(input)?;
+            many0(preceded(multispace0, parse_from_named_window_nom)).parse(input)?;
         let (input, _) = multispace0.parse(input)?;
         (input, stream_type, window_clause)
     } else {
@@ -3172,8 +3100,18 @@ pub fn parse_rule(input: &str) -> IResult<&str, CombinedRule<'_>> {
     let (input, _) = multispace0.parse(input)?;
 
     // Parse WHERE clause
-    let (input, (patterns, filters, values_clause, binds, subqueries, window_blocks, neg_patterns)) =
-        parse_where(input)?;
+    let (
+        input,
+        WhereClause {
+            patterns,
+            filters,
+            values: values_clause,
+            binds,
+            subqueries,
+            window_blocks,
+            negated_patterns: neg_patterns,
+        },
+    ) = parse_where_nom(input)?;
     let body = (patterns, filters, values_clause, binds, subqueries);
 
     // Optional dot at the end of rule
@@ -3202,8 +3140,8 @@ pub fn parse_rule(input: &str) -> IResult<&str, CombinedRule<'_>> {
     ))
 }
 
-// Parser for RetrieveMode
-pub fn parse_retrieve_mode(input: &str) -> IResult<&str, RetrieveMode> {
+/// `SOME` or `EVERY` in a `RETRIEVE` clause.
+pub(crate) fn parse_retrieve_mode(input: &str) -> IResult<&str, RetrieveMode> {
     let (input, _) = multispace0.parse(input)?;
     let (input, mode) = alt((
         tag("SOME").map(|_| RetrieveMode::Some),
@@ -3213,8 +3151,8 @@ pub fn parse_retrieve_mode(input: &str) -> IResult<&str, RetrieveMode> {
     Ok((input, mode))
 }
 
-// Parser for StreamState
-pub fn parse_stream_state(input: &str) -> IResult<&str, StreamState> {
+/// `LATENT` or `ACTIVE` in a `RETRIEVE` clause.
+pub(crate) fn parse_stream_state(input: &str) -> IResult<&str, StreamState> {
     let (input, _) = multispace0.parse(input)?;
     let (input, state) = alt((
         tag("LATENT").map(|_| StreamState::Latent),
@@ -3224,8 +3162,8 @@ pub fn parse_stream_state(input: &str) -> IResult<&str, StreamState> {
     Ok((input, state))
 }
 
-// Parser for the complete RETRIEVE clause
-pub fn parse_retrieve_clause(input: &str) -> IResult<&str, RetrieveClause<'_>> {
+/// A `RETRIEVE` clause discovering streams from a catalogue.
+pub(crate) fn parse_retrieve_clause(input: &str) -> IResult<&str, RetrieveClause<'_>> {
     let (input, _) = multispace0.parse(input)?;
     let (input, _) = tag("RETRIEVE").parse(input)?;
     let (input, _) = multispace1.parse(input)?;
@@ -3264,7 +3202,7 @@ pub fn parse_retrieve_clause(input: &str) -> IResult<&str, RetrieveClause<'_>> {
 
     // Parse graph patterns (can be multiple triple blocks)
     let (input, pattern_blocks) = many0(terminated(
-        parse_triple_block,
+        parse_triple_block_nom,
         (multispace0, opt(char('.')), multispace0),
     ))
     .parse(input)?;
@@ -3288,14 +3226,14 @@ pub fn parse_retrieve_clause(input: &str) -> IResult<&str, RetrieveClause<'_>> {
 }
 
 /// The combined query parser parses SPARQL + explicit Kolibrie extensions.
-pub fn parse_combined_query(input: &str) -> IResult<&str, CombinedQuery<'_>> {
-    parse_combined_query_with_options(input, false)
+pub(crate) fn parse_combined_query_nom(input: &str) -> IResult<&str, CombinedQuery<'_>> {
+    parse_combined_query_with_options_nom(input, false)
 }
 
 /// Parse through the single combined AST, optionally enabling the historical
 /// standalone INSERT/DELETE DATA aliases. Standard APIs pass `false`;
 /// compatibility adapters pass `true`.
-pub fn parse_combined_query_with_options(
+pub(crate) fn parse_combined_query_with_options_nom(
     input: &str,
     allow_data_aliases: bool,
 ) -> IResult<&str, CombinedQuery<'_>> {
@@ -3438,7 +3376,7 @@ fn convert_term(term: &str, dict: &mut Dictionary, prefixes: &HashMap<String, St
 }
 
 /// Convert a triple (subject, predicate, object) from &str into a TriplePattern
-pub fn convert_triple_pattern(
+pub(crate) fn convert_triple_pattern(
     triple: (&str, &str, &str),
     dict: &mut Dictionary,
     prefixes: &HashMap<String, String>,
@@ -3450,6 +3388,13 @@ pub fn convert_triple_pattern(
     )
 }
 
+/// Lowers a parsed rule into a [`Rule`] bound to `dict`.
+///
+/// This is the prepare step: lexical terms are prefix-expanded using `prefixes` and
+/// then interned, so the result is only meaningful against that dictionary. A rule
+/// lowered against the wrong one parses and validates but matches nothing.
+///
+/// Takes `&mut Dictionary` because interning allocates new ids.
 pub fn convert_combined_rule<'a>(
     cr: CombinedRule<'a>,
     dict: &mut Dictionary,
@@ -3560,23 +3505,19 @@ pub fn convert_combined_rule<'a>(
 
     // Handle ML.PREDICT: wire output variable into conclusion triples
     if let Some(ml_predict) = &cr.ml_predict {
-
         let ml_output_var = ml_predict.output.trim_start_matches(['?', '$']);
 
         // Check if the conclusion triples contain the ML output variable
         for conclusion in &mut conclusion_triples {
-
             // Check if the conclusion contains variables that need ML output
             match &mut conclusion.2 {
-                Term::Variable(var) if var == ml_output_var => {
-                }
+                Term::Variable(var) if var == ml_output_var => {}
                 Term::Variable(var) if var == "level" => {
                     // Replace generic 'level' variable with ML output variable
                     *var = ml_output_var.to_string();
                 }
                 _ => {}
             }
-
         }
     }
 
@@ -3588,499 +3529,90 @@ pub fn convert_combined_rule<'a>(
     }
 }
 
-pub fn process_rule_definition(
-    rule_input: &str,
-    database: &mut SparqlDatabase,
-) -> Result<(Rule, Vec<Triple>), String> {
-    crate::execute_query::validate_query_policy(rule_input, database)?;
-    // First, register any prefixes from the rule with the database
-    database.register_prefixes_from_query(rule_input);
-
-    let parse_result = parse_combined_query(rule_input);
-
-    if let Ok((_rest, combined)) = parse_result {
-        let single = combined.single_rule()?;
-        if combined.ml_predict.is_some() {
-            return Err("process_rule_definition does not execute a top-level ML.PREDICT; use kolibrie::program".to_string());
-        }
-        if single.and_then(|rule| rule.ml_predict.as_ref()).is_some_and(|predict| predict.distribution) {
-            return Err("in-rule ML.PREDICT ... DISTRIBUTION is not supported; write a top-level ML.PREDICT in a program".to_string());
-        }
-        for (prefix, uri) in &combined.prefixes {
-            database.prefixes.insert(prefix.clone(), uri.clone());
-        }
-
-        let mut rule_prefixes = combined.prefixes.clone();
-        database.share_prefixes_with(&mut rule_prefixes);
-        crate::neural_relations::register_neural_declarations_checked(
-            database,
-            &rule_prefixes,
-            &combined.model_decls,
-            &combined.neural_relation_decls,
-            &combined.train_neural_relation_decls,
-        )?;
-
-        let normalized_trains: Vec<TrainNeuralRelationDecl> = combined
-            .train_neural_relation_decls
-            .iter()
-            .filter_map(|decl| {
-                let normalized_pred = database.resolve_query_term(&decl.predicate, &rule_prefixes);
-                database
-                    .train_neural_relation_decls
-                    .get(&normalized_pred)
-                    .cloned()
-            })
-            .collect();
-        for train_decl in &normalized_trains {
-            execute_train_decl(database, train_decl).map_err(|err| err.to_string())?;
-        }
-
-        #[allow(unused_mut)] // ML-enabled execution can rewrite this rule.
-        let mut rule = combined
-            .single_rule()?
-            .cloned()
-            .ok_or_else(|| "Failed to parse rule definition".to_string())?;
-
-        materialize_neural_relations_for_patterns(database, &rule.body.0, &rule_prefixes)?;
-
-        // Execute ML.PREDICT before converting the rule for Datalog
-        if let Some(ml_predict) = rule.ml_predict.clone() {
-            #[cfg(not(feature = "ml"))]
-            { let _ = ml_predict; return Err("ML_FEATURE_DISABLED".into()); }
-            #[cfg(feature = "ml")]
-            crate::ml_predict_runtime::execute_ml_predict_clause(
-                &ml_predict,
-                &mut rule,
-                database,
-                &rule_prefixes,
-            )
-            .map_err(|err| err.to_string())?;
-        }
-
-        let mut kg = Reasoner::new();
-        kg.dictionary = database.dictionary.clone();
-        for triple in database.query_default_triples(None, None, None) {
-            kg.dataset_index.insert(&triple);
-        }
-        kg.probability_seeds = database.probability_seeds.clone();
-
-        let mut dict = kg.dictionary.write().unwrap();
-        let dynamic_rule = convert_combined_rule(rule.clone(), &mut dict, &rule_prefixes);
-        drop(dict);
-        database.dictionary = kg.dictionary.clone();
-
-        // Check if this rule has windowing - if so, set up RSP processing
-        if !rule.window_clause.is_empty() {
-
-            let mut all_stream_results: Vec<Triple> = Vec::new();
-            let mut rsp_windows: Vec<CSPARQLWindow<WindowTriple>> = Vec::new();
-
-            // Set up stream operator based on parsed stream type
-            let stream_operator = match &rule.stream_type {
-                Some(StreamType::RStream) => StreamOperator::RSTREAM,
-                Some(StreamType::IStream) => StreamOperator::ISTREAM,
-                Some(StreamType::DStream) => StreamOperator::DSTREAM,
-                _ => StreamOperator::RSTREAM, // Default
-            };
-
-            // Create a window for each window clause
-            for window_clause in &rule.window_clause {
-                let mut rsp_window = create_rsp_window(&window_clause.window_spec)?;
-
-                // Process existing triples through the window
-                let mut current_time = 1;
-                let default_triples = database.query_default_triples(None, None, None);
-                for triple in default_triples.iter() {
-                    let dict = database.dictionary.read().unwrap();
-                    let window_triple = WindowTriple {
-                        s: dict.decode(triple.subject).unwrap_or("").to_string(),
-                        p: dict.decode(triple.predicate).unwrap_or("").to_string(),
-                        o: dict.decode(triple.object).unwrap_or("").to_string(),
-                    };
-                    drop(dict);
-
-                    // Add to window
-                    rsp_window.add_to_window(window_triple, current_time);
-                    current_time += 1;
-                }
-
-                // Register a callback to process windowed results
-                let kg_clone = kg.clone();
-                let rule_clone = dynamic_rule.clone();
-                let _stream_op_clone = stream_operator.clone();
-
-                rsp_window.register_callback(Box::new(
-                    move |content: ContentContainer<WindowTriple>| {
-
-                        // Convert window content back to Knowledge Graph format
-                        let mut window_kg = kg_clone.clone();
-                        for window_triple in content.iter() {
-                            window_kg.add_abox_triple(
-                                &window_triple.s,
-                                &window_triple.p,
-                                &window_triple.o,
-                            );
-                        }
-
-                        // Apply the rule to windowed data
-                        window_kg.add_rule(rule_clone.clone());
-                        window_kg.infer_new_facts_semi_naive();
-
-                    },
-                ));
-
-                rsp_windows.push(rsp_window);
-            }
-
-            // Add the rule to the main knowledge graph
-            kg.add_rule(dynamic_rule.clone());
-
-            // For immediate processing, also infer from current data
-            let inferred_facts = kg.infer_new_facts_semi_naive();
-
-            // Apply stream operator to results
-            let eval_time = database
-                .query_default_triples(None, None, None)
-                .len()
-                .saturating_add(1);
-
-            for _window_clause in &rsp_windows {
-                let mut r2s_operator = Relation2StreamOperator::new(stream_operator.clone(), 0);
-                let stream_results = r2s_operator.eval(inferred_facts.clone(), eval_time);
-
-
-                // Add inferred facts to the database
-                for triple in stream_results.iter() {
-                    database.add_triple(triple.clone());
-                    all_stream_results.push(triple.clone());
-                }
-            }
-
-            // Register rule predicates
-            register_rule_predicates(&dynamic_rule, database);
-
-            return Ok((dynamic_rule, all_stream_results));
-        }
-
-        // Non-windowed rule processing
-        // Check if this is a provenance-annotated rule
-        if rule.prob_annotation.is_some() {
-            let ann = rule.prob_annotation.as_ref().unwrap();
-
-            kg.add_rule(dynamic_rule.clone());
-            register_rule_predicates(&dynamic_rule, database);
-
-            // Choose provenance based on annotation, then materialize tags as RDF-star
-            let provenance_type = ann.combination;
-            let inferred_facts = match provenance_type {
-                "minmax" | "min" => {
-                    let (facts, tag_store) =
-                        kg.infer_new_facts_with_provenance(shared::provenance::MinMaxProbability);
-                    let mut dict = kg.dictionary.write().unwrap();
-                    let mut qt_store = database.quoted_triple_store.write().unwrap();
-                    let rdf_star = tag_store.encode_as_rdf_star(&mut dict, &mut qt_store);
-                    drop(qt_store);
-                    drop(dict);
-                    for triple in rdf_star {
-                        database.add_triple(triple);
-                    }
-                    facts
-                }
-                "addmult" | "independent" => {
-                    let (facts, tag_store) =
-                        kg.infer_new_facts_with_provenance(shared::provenance::AddMultProbability);
-                    let mut dict = kg.dictionary.write().unwrap();
-                    let mut qt_store = database.quoted_triple_store.write().unwrap();
-                    let rdf_star = tag_store.encode_as_rdf_star(&mut dict, &mut qt_store);
-                    drop(qt_store);
-                    drop(dict);
-                    for triple in rdf_star {
-                        database.add_triple(triple);
-                    }
-                    facts
-                }
-                "boolean" => {
-                    let (facts, tag_store) =
-                        kg.infer_new_facts_with_provenance(shared::provenance::BooleanProvenance);
-                    let mut dict = kg.dictionary.write().unwrap();
-                    let mut qt_store = database.quoted_triple_store.write().unwrap();
-                    let rdf_star = tag_store.encode_as_rdf_star(&mut dict, &mut qt_store);
-                    drop(qt_store);
-                    drop(dict);
-                    for triple in rdf_star {
-                        database.add_triple(triple);
-                    }
-                    facts
-                }
-                // Full derivation lineage with certified top-k lower bounds and
-                // selective exact SDD escalation.
-                "hybrid" => {
-                    let config = ann.hybrid_config.as_ref().ok_or_else(|| {
-                        "PROB(provenance=hybrid) requires a valid threshold and hybrid configuration"
-                            .to_string()
-                    })?;
-                    let snapshot = SeedSnapshot::from_probability_seeds(&kg.probability_seeds)
-                        .map_err(|error| error.to_string())?;
-                    let (facts, results, _lineage) = kg
-                        .infer_new_facts_with_hybrid(snapshot, config)
-                        .map_err(|error| error.to_string())?;
-                    let mut dict = kg.dictionary.write().unwrap();
-                    let mut qt_store = database.quoted_triple_store.write().unwrap();
-                    let rdf_star =
-                        encode_hybrid_results_as_rdf_star(&results, &mut dict, &mut qt_store);
-                    drop(qt_store);
-                    drop(dict);
-                    for triple in rdf_star {
-                        database.add_triple(triple);
-                    }
-                    facts
-                }
-                // Exact proof-formula provenance (WMC via Shannon expansion)
-                "wmc" => {
-                    let (facts, tag_store) = kg
-                        .infer_new_facts_with_provenance(shared::provenance::WmcProvenance::new());
-                    let mut dict = kg.dictionary.write().unwrap();
-                    let mut qt_store = database.quoted_triple_store.write().unwrap();
-                    let rdf_star =
-                        tag_store.encode_as_rdf_star_with_explanation(&mut dict, &mut qt_store);
-                    drop(qt_store);
-                    drop(dict);
-                    for triple in rdf_star {
-                        database.add_triple(triple);
-                    }
-                    facts
-                }
-                // SDD-based exact proof-formula provenance (WMC via SDD)
-                "sdd" => {
-                    let (facts, tag_store) =
-                        kg.infer_new_facts_with_provenance(shared::sdd::SddProvenance::new());
-                    let mut dict = kg.dictionary.write().unwrap();
-                    let mut qt_store = database.quoted_triple_store.write().unwrap();
-                    let rdf_star =
-                        tag_store.encode_as_rdf_star_with_explanation(&mut dict, &mut qt_store);
-                    drop(qt_store);
-                    drop(dict);
-                    for triple in rdf_star {
-                        database.add_triple(triple);
-                    }
-                    facts
-                }
-                // Top-K proof-tracking provenance.
-                // k is read from the threshold field (default 5).
-                // Syntax: PROB(combination=topk) or PROB(combination=topk, threshold=10)
-                "topk" => {
-                    let k = ann.threshold.map(|t| t as usize).unwrap_or(5);
-                    let (facts, tag_store) =
-                        kg.infer_new_facts_with_provenance(shared::provenance::TopKProofs::new(k));
-                    let diagnostics: HashMap<Triple, HybridProbabilityResult> = facts
-                        .iter()
-                        .map(|triple| {
-                            let estimate = tag_store
-                                .provenance()
-                                .recover_probability(&tag_store.get_tag(triple));
-                            (
-                                triple.clone(),
-                                HybridProbabilityResult::UnsafeApproximation {
-                                    estimate,
-                                    reason: HybridReason::DiagnosticOnly,
-                                    metrics: HybridMetrics {
-                                        k_used: k,
-                                        ..HybridMetrics::default()
-                                    },
-                                },
-                            )
-                        })
-                        .collect();
-                    let mut dict = kg.dictionary.write().unwrap();
-                    let mut qt_store = database.quoted_triple_store.write().unwrap();
-                    let rdf_star =
-                        encode_hybrid_results_as_rdf_star(&diagnostics, &mut dict, &mut qt_store);
-                    drop(qt_store);
-                    drop(dict);
-                    for triple in rdf_star {
-                        database.add_triple(triple);
-                    }
-                    facts
-                }
-                _ => {
-                    let (facts, tag_store) =
-                        kg.infer_new_facts_with_provenance(shared::provenance::MinMaxProbability);
-                    let mut dict = kg.dictionary.write().unwrap();
-                    let mut qt_store = database.quoted_triple_store.write().unwrap();
-                    let rdf_star = tag_store.encode_as_rdf_star(&mut dict, &mut qt_store);
-                    drop(qt_store);
-                    drop(dict);
-                    for triple in rdf_star {
-                        database.add_triple(triple);
-                    }
-                    facts
-                }
-            };
-
-            for triple in inferred_facts.iter() {
-                database.add_triple(triple.clone());
-            }
-
-            Ok((dynamic_rule, inferred_facts))
-        } else {
-            kg.add_rule(dynamic_rule.clone());
-
-            // Register rule predicates
-            register_rule_predicates(&dynamic_rule, database);
-
-            // Infer new facts based on the rule
-            let inferred_facts = kg.infer_new_facts_semi_naive();
-
-            // Add inferred facts to the database
-            for triple in inferred_facts.iter() {
-                database.add_triple(triple.clone());
-            }
-
-            Ok((dynamic_rule, inferred_facts))
-        }
-    } else {
-        Err("Failed to parse rule definition".to_string())
-    }
+/// Parses a whole SPARQL `SELECT`, reporting failure without naming the parser
+/// library. See [`ParseError`](crate::parse_error::ParseError).
+pub fn parse_sparql_query(input: &str) -> ParseResult<'_, SelectQuery<'_>> {
+    parse_sparql_query_nom(input).map_err(ParseError::from_nom)
 }
 
-// Add this function to handle RETRIEVE clause processing
-pub fn process_retrieve_clause(
-    retrieve_clause: &RetrieveClause,
-    database: &mut SparqlDatabase,
-) -> Result<Vec<Triple>, String> {
-
-    // Convert graph patterns to triple patterns for matching
-    let mut retrieved_triples = Vec::new();
-
-    for pattern in &retrieve_clause.graph_pattern {
-
-        // Create a temporary knowledge graph to match patterns
-        let mut kg = Reasoner::new();
-        let default_triples = database.query_default_triples(None, None, None);
-        for triple in default_triples.iter() {
-            let dict = database.dictionary.read().unwrap();
-            let subject = dict.decode(triple.subject).map(|s| s.to_string());
-            let predicate = dict.decode(triple.predicate).map(|p| p.to_string());
-            let object = dict.decode(triple.object).map(|o| o.to_string());
-            drop(dict);
-
-            if let (Some(s), Some(p), Some(o)) = (subject, predicate, object) {
-                kg.add_abox_triple(&s, &p, &o);
-            }
-        }
-
-        // Match the pattern against the knowledge graph
-        let mut dict = database.dictionary.write().unwrap();
-        let pattern_converted = convert_triple_pattern(*pattern, &mut dict, &database.prefixes);
-        drop(dict);
-
-        // Find matching triples based on the pattern
-        for triple in default_triples.iter() {
-            if matches_pattern(&pattern_converted, triple) {
-                retrieved_triples.push(triple.clone());
-            }
-        }
-    }
-
-    Ok(retrieved_triples)
+/// Parses one rule together with the prefixes it was declared with.
+pub fn parse_standalone_rule<'a>(
+    input: &'a str,
+) -> ParseResult<'a, (CombinedRule<'a>, HashMap<String, String>)> {
+    parse_standalone_rule_nom(input).map_err(ParseError::from_nom)
 }
 
-// Helper function to check if a triple matches a pattern
-fn matches_pattern(pattern: &TriplePattern, triple: &Triple) -> bool {
-    // Check subject match
-    let subject_match = match &pattern.0 {
-        Term::Variable(_) | Term::QuotedTriple(_) => true,
-        Term::Constant(code) => *code == triple.subject,
-    };
-
-    // Check predicate match
-    let predicate_match = match &pattern.1 {
-        Term::Variable(_) | Term::QuotedTriple(_) => true,
-        Term::Constant(code) => *code == triple.predicate,
-    };
-
-    // Check object match
-    let object_match = match &pattern.2 {
-        Term::Variable(_) | Term::QuotedTriple(_) => true,
-        Term::Constant(code) => *code == triple.object,
-    };
-
-    subject_match && predicate_match && object_match
+/// Parses any supported request into the single combined AST.
+///
+/// The entry point to prefer: SPARQL, RSP-QL, Update, rules and the ML extensions all
+/// come back as one [`CombinedQuery`].
+pub fn parse_combined_query(input: &str) -> ParseResult<'_, CombinedQuery<'_>> {
+    parse_combined_query_nom(input).map_err(ParseError::from_nom)
 }
 
-// Helper function to create RSP window from parsed specification
-fn create_rsp_window(window_spec: &WindowSpec) -> Result<CSPARQLWindow<WindowTriple>, String> {
-    // Create report strategy
-    let mut report = Report::new();
-
-    let report_strategy = match window_spec.report_strategy {
-        Some("NON_EMPTY_CONTENT") => ReportStrategy::NonEmptyContent,
-        Some("ON_CONTENT_CHANGE") => ReportStrategy::OnContentChange,
-        Some("ON_WINDOW_CLOSE") => ReportStrategy::OnWindowClose,
-        Some("PERIODIC") => ReportStrategy::Periodic(5), // Default period
-        _ => ReportStrategy::OnWindowClose,              // Default
-    };
-    report.add(report_strategy);
-
-    // Create tick strategy
-    let tick = match window_spec.tick {
-        Some("TIME_DRIVEN") => Tick::TimeDriven,
-        Some("TUPLE_DRIVEN") => Tick::TupleDriven,
-        Some("BATCH_DRIVEN") => Tick::BatchDriven,
-        _ => Tick::TimeDriven, // Default
-    };
-
-    // Handle different window types
-    match window_spec.window_type {
-        WindowType::Sliding => {
-            let slide = window_spec.slide.unwrap_or(1);
-            Ok(CSPARQLWindow::new(
-                window_spec.width,
-                slide,
-                report,
-                tick,
-                String::default(),
-            ))
-        }
-        WindowType::Tumbling => {
-            // Tumbling window: slide = width
-            Ok(CSPARQLWindow::new(
-                window_spec.width,
-                window_spec.width,
-                report,
-                tick,
-                String::default(),
-            ))
-        }
-        WindowType::Range => {
-            // Range window: slide = 1 (continuous)
-            Ok(CSPARQLWindow::new(
-                window_spec.width,
-                1,
-                report,
-                tick,
-                String::default(),
-            ))
-        }
-    }
+/// As [`parse_combined_query`], optionally accepting the historical data aliases.
+pub fn parse_combined_query_with_options(
+    input: &str,
+    allow_data_aliases: bool,
+) -> ParseResult<'_, CombinedQuery<'_>> {
+    parse_combined_query_with_options_nom(input, allow_data_aliases).map_err(ParseError::from_nom)
 }
 
-// Helper function to register rule predicates
-fn register_rule_predicates(rule: &Rule, database: &mut SparqlDatabase) {
-    for conclusion in &rule.conclusion {
-        if let Term::Constant(code) = conclusion.1 {
-            let dict = database.dictionary.read().unwrap();
-            let expanded = dict.decode(code).unwrap_or_else(|| "").to_string();
-            drop(dict);
-            let local = if let Some(idx) = expanded.rfind('#') {
-                &expanded[idx + 1..]
-            } else if let Some(idx) = expanded.rfind(':') {
-                &expanded[idx + 1..]
-            } else {
-                &expanded
-            };
-            let rule_key = local.to_lowercase();
-            database.rule_map.insert(rule_key, expanded.to_string());
-        }
-    }
+/// Parses an RDF-star quoted triple, `<< s p o >>`, as written.
+pub fn parse_quoted_triple(input: &str) -> ParseResult<'_, &str> {
+    parse_quoted_triple_nom(input).map_err(ParseError::from_nom)
+}
+
+/// Parses a block of triple patterns sharing a subject.
+pub fn parse_triple_block(input: &str) -> ParseResult<'_, Vec<(&str, &str, &str)>> {
+    parse_triple_block_nom(input).map_err(ParseError::from_nom)
+}
+
+/// Parses a `FILTER` clause into its expression tree.
+pub fn parse_filter(input: &str) -> ParseResult<'_, FilterExpression<'_>> {
+    parse_filter_nom(input).map_err(ParseError::from_nom)
+}
+/// Parses a `WHERE` clause into everything it declares.
+pub fn parse_where(input: &str) -> ParseResult<'_, WhereClause<'_>> {
+    parse_where_nom(input).map_err(ParseError::from_nom)
+}
+
+/// Parses one `PREFIX` declaration.
+pub fn parse_prefix(input: &str) -> ParseResult<'_, (&str, &str)> {
+    parse_prefix_nom(input).map_err(ParseError::from_nom)
+}
+
+/// Parses a comparison expression, as a `FILTER` body contains.
+pub fn parse_comparison(input: &str) -> ParseResult<'_, FilterExpression<'_>> {
+    parse_comparison_nom(input).map_err(ParseError::from_nom)
+}
+
+/// Parses a `GROUP BY` clause into its variables.
+pub fn parse_group_by(input: &str) -> ParseResult<'_, Vec<&str>> {
+    parse_group_by_nom(input).map_err(ParseError::from_nom)
+}
+
+/// Parses an `ORDER BY` clause into its conditions.
+pub fn parse_order_by(input: &str) -> ParseResult<'_, Vec<OrderCondition<'_>>> {
+    parse_order_by_nom(input).map_err(ParseError::from_nom)
+}
+
+/// Parses a `LIMIT` clause.
+pub fn parse_limit(input: &str) -> ParseResult<'_, usize> {
+    parse_limit_nom(input).map_err(ParseError::from_nom)
+}
+
+/// Parses a `FROM NAMED WINDOW` clause.
+pub fn parse_from_named_window(input: &str) -> ParseResult<'_, WindowClause<'_>> {
+    parse_from_named_window_nom(input).map_err(ParseError::from_nom)
+}
+
+/// Parses an RSP-QL stream type.
+pub fn parse_stream_type(input: &str) -> ParseResult<'_, StreamType<'_>> {
+    parse_stream_type_nom(input).map_err(ParseError::from_nom)
+}
+
+/// Parses a window specification, the `[...]` after a window name.
+pub fn parse_window_spec(input: &str) -> ParseResult<'_, WindowSpec<'_>> {
+    parse_window_spec_nom(input).map_err(ParseError::from_nom)
 }

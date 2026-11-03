@@ -10,7 +10,7 @@
 
 // Usage: cargo run --release --example replay_profile -- [members] [evals]
 
-use kolibrie::execute_query::execute_query_rayon_parallel2_volcano;
+use kolibrie::execute_query::execute;
 use kolibrie::sparql_database::{PlanningStatsPolicy, SparqlDatabase};
 use std::time::{Duration, Instant};
 
@@ -85,7 +85,7 @@ struct Replay {
 /// Inserts every member, evaluating the query once every `every` members
 fn replay(members: usize, every: usize, policy: PlanningStatsPolicy, query: &str) -> Replay {
     let mut database = SparqlDatabase::new();
-    database.planning_stats_policy = policy;
+    database.set_planning_stats_policy(policy);
 
     let started = Instant::now();
     let mut query_time = Duration::ZERO;
@@ -94,7 +94,10 @@ fn replay(members: usize, every: usize, policy: PlanningStatsPolicy, query: &str
         insert_member(&mut database, member);
         if member % every == 0 {
             let at = Instant::now();
-            rows = execute_query_rayon_parallel2_volcano(query, &mut database).len();
+            rows = execute(query, &mut database)
+                .expect("query should run")
+                .into_rows()
+                .len();
             query_time += at.elapsed();
         }
     }
@@ -134,10 +137,13 @@ fn main() {
         insert_member(&mut database, member);
     }
     let ingest = started.elapsed();
-    let quads = database.dataset_index.count_quads();
+    let quads = database.quad_count();
     println!("store: {quads} quads from {members} members");
     println!("ingest total            : {ingest:?}");
-    println!("ingest per quad         : {:?}", ingest / quads.max(1) as u32);
+    println!(
+        "ingest per quad         : {:?}",
+        ingest / quads.max(1) as u32
+    );
 
     // Cost of one statistics rebuild
     database.invalidate_stats_cache();
@@ -157,13 +163,16 @@ fn main() {
     println!("stats rebuild (10x mean): {:?}", started.elapsed() / 10);
 
     // Query cost with warm statistics
-    let _ = execute_query_rayon_parallel2_volcano(JOIN_OF_TWO, &mut database);
+    let _ = execute(JOIN_OF_TWO, &mut database)
+        .expect("query should run")
+        .into_rows();
     let started = Instant::now();
     for _ in 0..evals {
-        std::hint::black_box(execute_query_rayon_parallel2_volcano(
-            JOIN_OF_TWO,
-            &mut database,
-        ));
+        std::hint::black_box(
+            execute(JOIN_OF_TWO, &mut database)
+                .expect("query should run")
+                .into_rows(),
+        );
     }
     let warm = started.elapsed();
     println!(
@@ -171,13 +180,17 @@ fn main() {
         warm / evals.max(1) as u32
     );
 
-    let rows = execute_query_rayon_parallel2_volcano(SEVEN_PATTERN_JOIN, &mut database).len();
+    let rows = execute(SEVEN_PATTERN_JOIN, &mut database)
+        .expect("query should run")
+        .into_rows()
+        .len();
     let started = Instant::now();
     for _ in 0..5 {
-        std::hint::black_box(execute_query_rayon_parallel2_volcano(
-            SEVEN_PATTERN_JOIN,
-            &mut database,
-        ));
+        std::hint::black_box(
+            execute(SEVEN_PATTERN_JOIN, &mut database)
+                .expect("query should run")
+                .into_rows(),
+        );
     }
     println!(
         "7-pattern join, warm    : {:?} each, {rows} rows",
@@ -189,7 +202,12 @@ fn main() {
     let count = members / every;
     println!("\nreplay shape: {count} evals interleaved with {members} member inserts");
 
-    let fresh = replay(members, every, PlanningStatsPolicy::AlwaysFresh, JOIN_OF_TWO);
+    let fresh = replay(
+        members,
+        every,
+        PlanningStatsPolicy::AlwaysFresh,
+        JOIN_OF_TWO,
+    );
     report("AlwaysFresh", count, &fresh);
 
     for (minimum_batch, refresh_fraction) in [(100u64, 0.50f64), (250, 0.25), (500, 0.10)] {
@@ -210,7 +228,11 @@ fn main() {
             minimum_batch,
             refresh_fraction,
         };
-        let suffix = if policy == PlanningStatsPolicy::DEFAULT_BOUNDED { " (default)" } else { "" };
+        let suffix = if policy == PlanningStatsPolicy::DEFAULT_BOUNDED {
+            " (default)"
+        } else {
+            ""
+        };
         report(
             &format!("Bounded {{{minimum_batch}, {refresh_fraction}}}{suffix}"),
             count,

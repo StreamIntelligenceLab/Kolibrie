@@ -8,8 +8,7 @@
  * you can obtain one at https://mozilla.org/MPL/2.0/.
  */
 
-use kolibrie::execute_query::*;
-use kolibrie::sparql_database::*;
+use kolibrie::prelude::*;
 
 fn n3_simple_query() {
     let mut db = SparqlDatabase::new();
@@ -50,7 +49,9 @@ fn n3_simple_query() {
         ?person ex:annualSalary ?salary
     }"#;
 
-    let results = execute_query_rayon_parallel2_volcano(sparql_query, &mut db);
+    let results = execute(sparql_query, &mut db)
+        .expect("query should run")
+        .into_rows();
     println!("Results:");
     for result in results {
         if let [name, salary] = &result[..] {
@@ -62,4 +63,3 @@ fn n3_simple_query() {
 fn main() {
     n3_simple_query();
 }
-

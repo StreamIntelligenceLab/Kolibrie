@@ -1,0 +1,25 @@
+[package]
+name = "kolibrie-api"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+repository.workspace = true
+description = "The supported surface of Kolibrie: one crate for a consumer to depend on."
+
+[features]
+default = []
+# Forwarded, not redefined. A facade has to pass features through or a consumer
+# cannot reach them without depending on the crate underneath, which is the thing
+# this exists to avoid.
+ml = ["kolibrie/ml"]
+
+[lints]
+workspace = true
+
+[dependencies]
+kolibrie = { path = "../kolibrie" }
+shared = { path = "../shared" }
+datalog = { path = "../datalog" }
+datalogmtl = { path = "../datalogmtl" }

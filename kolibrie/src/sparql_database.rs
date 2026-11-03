@@ -8,13 +8,11 @@
  * you can obtain one at https://mozilla.org/MPL/2.0/.
  */
 
-use crate::query_builder::QueryBuilder;
-use crate::streamertail_optimizer::DatabaseStats;
+use crate::stats::DatabaseStats;
 use crate::utils;
 use crate::utils::ClonableFn;
 use crossbeam::channel::unbounded;
 use crossbeam::scope;
-use percent_encoding::percent_decode;
 use quick_xml::events::Event;
 use quick_xml::name::QName;
 use quick_xml::Reader;
@@ -23,98 +21,13 @@ use shared::dataset_index::{DatasetIndex, GraphId, Quad};
 use shared::dictionary::Dictionary;
 use shared::query::{ModelDecl, NeuralRelationDecl, TrainNeuralRelationDecl};
 use shared::quoted_triple_store::{is_quoted_triple_id, QuotedTripleStore};
+use shared::rdf_term;
+use shared::rdf_term::TermTriple;
+use shared::term_encoder::SharedTerms;
 use shared::triple::Triple;
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::sync::Arc;
-use std::sync::{Mutex, RwLock};
-use url::Url;
-
-fn looks_like_absolute_iri(value: &str) -> bool {
-    let Some((scheme, _)) = value.split_once(':') else {
-        return false;
-    };
-    let mut characters = scheme.chars();
-    characters
-        .next()
-        .is_some_and(|first| first.is_ascii_alphabetic())
-        && characters.all(|character| {
-            character.is_ascii_alphanumeric() || matches!(character, '+' | '-' | '.')
-        })
-}
-
-fn escape_ntriples_literal(value: &str) -> String {
-    value
-        .chars()
-        .flat_map(|character| match character {
-            '\\' => "\\\\".chars().collect::<Vec<_>>(),
-            '"' => "\\\"".chars().collect(),
-            '\n' => "\\n".chars().collect(),
-            '\r' => "\\r".chars().collect(),
-            '\t' => "\\t".chars().collect(),
-            other => vec![other],
-        })
-        .collect()
-}
-
-/// Decodes the lexical value of an N-Triples/N-Quads double-quoted literal
-fn decode_ntriples_literal(term: &str) -> Option<(String, &str)> {
-    let body = term.strip_prefix('"')?;
-    let mut characters = body.char_indices();
-    let mut value = String::new();
-
-    while let Some((offset, character)) = characters.next() {
-        match character {
-            '"' => return Some((value, &body[offset + character.len_utf8()..])),
-            '\\' => {
-                let (_, escaped) = characters.next()?;
-                match escaped {
-                    't' => value.push('\t'),
-                    'b' => value.push('\u{0008}'),
-                    'n' => value.push('\n'),
-                    'r' => value.push('\r'),
-                    'f' => value.push('\u{000c}'),
-                    '"' => value.push('"'),
-                    '\'' => value.push('\''),
-                    '\\' => value.push('\\'),
-                    'u' | 'U' => {
-                        let digits = if escaped == 'u' { 4 } else { 8 };
-                        let mut scalar = String::with_capacity(digits);
-                        for _ in 0..digits {
-                            let (_, digit) = characters.next()?;
-                            if !digit.is_ascii_hexdigit() {
-                                return None;
-                            }
-                            scalar.push(digit);
-                        }
-                        let scalar = u32::from_str_radix(&scalar, 16).ok()?;
-                        value.push(char::from_u32(scalar)?);
-                    }
-                    _ => return None,
-                }
-            }
-            character => value.push(character),
-        }
-    }
-
-    None
-}
-
-fn decode_form_component(component: &str) -> String {
-    let normalized = component
-        .bytes()
-        .map(|byte| if byte == b'+' { b' ' } else { byte })
-        .collect::<Vec<_>>();
-    percent_decode(&normalized).decode_utf8_lossy().into_owned()
-}
-
-fn parse_form_urlencoded(body: &str) -> HashMap<String, String> {
-    body.split('&')
-        .map(|pair| {
-            let (name, value) = pair.split_once('=').unwrap_or((pair, ""));
-            (decode_form_component(name), decode_form_component(value))
-        })
-        .collect()
-}
+use std::sync::{Mutex, RwLock, RwLockReadGuard, RwLockWriteGuard};
 
 pub(crate) fn reencode_term_id(
     id: u32,
@@ -171,9 +84,15 @@ pub(crate) fn reencode_term_id(
 /// Staleness policy for planning statistics
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum PlanningStatsPolicy {
+    /// Rebuild on every mutation. Exact, and the planner never sees stale
+    /// cardinalities, but it pays a full statistics pass per write.
     AlwaysFresh,
+    /// Reuse a snapshot until the store has changed enough to matter.
     Bounded {
+        /// Mutations to tolerate before rebuilding, however small the store.
         minimum_batch: u64,
+        /// Fraction of the store that must change to force a rebuild, so the
+        /// tolerance grows with size instead of being a fixed count.
         refresh_fraction: f64,
     },
 }
@@ -195,6 +114,7 @@ impl Default for PlanningStatsPolicy {
 /// A planning statistics snapshot
 #[derive(Debug, Clone)]
 pub struct PlanningStatsSnapshot {
+    /// The cardinalities themselves, shared so reusing a snapshot is free.
     pub stats: Arc<DatabaseStats>,
     /// `DatasetIndex::generation` at build time
     pub generation: u64,
@@ -206,34 +126,102 @@ pub struct PlanningStatsSnapshot {
     pub resets: u64,
 }
 
+/// Read borrow of the term dictionary, from [`SparqlDatabase::dictionary`].
+///
+/// Derefs to [`Dictionary`], so `db.dictionary().decode(id)` reads the term space
+/// without the caller naming how it is shared. Holding the binding holds the borrow,
+/// so callers doing several lookups under one acquisition keep working unchanged.
+///
+/// An alias rather than its own type: the store's term space *is* a
+/// [`SharedTerms`], and two guard types over the one lock would only have to be kept
+/// in step with each other.
+pub type DictionaryRef<'a> = shared::term_encoder::TermsRef<'a>;
+
+/// Write borrow of the term dictionary, from [`SparqlDatabase::dictionary_mut`].
+/// See [`DictionaryRef`].
+pub type DictionaryMut<'a> = shared::term_encoder::TermsMut<'a>;
+
+/// Read guard over the quoted-triple store, from [`SparqlDatabase::quoted_triples`].
+///
+/// Exists so the public API never names `Arc<RwLock<_>>` (P5). It derefs to
+/// [`QuotedTripleStore`], so call sites read `db.quoted_triples().len()` where they
+/// previously read `db.quoted_triple_store.read().unwrap().len()`. Holding the
+/// binding holds the lock, exactly as before — callers that need several operations
+/// under one lock keep working unchanged.
+#[derive(Debug)]
+pub struct QuotedTriplesRef<'a>(RwLockReadGuard<'a, QuotedTripleStore>);
+
+impl std::ops::Deref for QuotedTriplesRef<'_> {
+    type Target = QuotedTripleStore;
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
+/// Write guard over the quoted-triple store, from
+/// [`SparqlDatabase::quoted_triples_mut`]. See [`QuotedTriplesRef`].
+#[derive(Debug)]
+pub struct QuotedTriplesMut<'a>(RwLockWriteGuard<'a, QuotedTripleStore>);
+
+impl std::ops::Deref for QuotedTriplesMut<'_> {
+    type Target = QuotedTripleStore;
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
+impl std::ops::DerefMut for QuotedTriplesMut<'_> {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.0
+    }
+}
+
+/// The RDF store: encoded triples, the dictionary that encodes them, indexes over
+/// several orderings, and the statistics the planner costs with.
+///
+/// # No public fields
+///
+/// Every field is private, reached through accessors. Terms are interned, indexes
+/// are maintained in step with writes, and statistics are cached against the
+/// index's generation — invariants a caller writing to a field directly would
+/// break. Lock-held state is reached through guards rather than handles, and
+/// `Arc<RwLock<_>>` does not appear in the public API at all: sharing a term
+/// encoding, which was the one case that needed it, goes through
+/// [`Self::terms`] instead.
+///
+/// # Encoding
+///
+/// Triples are stored as `u32` ids, not strings, and those ids mean nothing without
+/// this store's dictionary. Two databases cannot exchange encoded data unless they
+/// share one — see [`Self::shares_dictionary_with`] and [`Self::union`].
 #[derive(Debug, Clone)]
 pub struct SparqlDatabase {
     /// Host-selected ML authority
-    pub ml_context: crate::ml_policy::MlExecutionContext,
-    pub dataset_index: DatasetIndex,
-    pub dictionary: Arc<RwLock<Dictionary>>,
-    pub prefixes: HashMap<String, String>,
-    pub udfs: HashMap<String, ClonableFn>,
-    pub rule_map: HashMap<String, String>,
-    pub model_decls: HashMap<String, ModelDecl>,
-    pub neural_relation_decls: HashMap<String, NeuralRelationDecl>,
-    pub train_neural_relation_decls: HashMap<String, TrainNeuralRelationDecl>,
-    pub neural_model_artifacts: HashMap<String, String>,
-    pub neural_materialized_triples: HashMap<String, Vec<Triple>>,
-    pub ml_predict_materialized_triples: HashMap<String, Vec<Triple>>,
-    pub probability_seeds: HashMap<Triple, f64>,
-    pub cached_stats: Option<Arc<DatabaseStats>>,
-    pub exact_stats_generation: u64,
-    pub planning_stats: Option<PlanningStatsSnapshot>,
-    pub planning_stats_policy: PlanningStatsPolicy,
-    pub stats_epoch: u64,
-    pub stats_rebuild_count: u64,
-    pub stats_rebuild_nanos: u64,
-    pub quoted_triple_store: Arc<RwLock<QuotedTripleStore>>,
-    pub implicit_neural_materialization: bool,
+    pub(crate) ml_context: crate::ml_policy::MlExecutionContext,
+    pub(crate) dataset_index: DatasetIndex,
+    pub(crate) dictionary: SharedTerms,
+    pub(crate) prefixes: HashMap<String, String>,
+    udfs: HashMap<String, ClonableFn>,
+    pub(crate) rule_map: HashMap<String, String>,
+    pub(crate) model_decls: HashMap<String, ModelDecl>,
+    pub(crate) neural_relation_decls: HashMap<String, NeuralRelationDecl>,
+    pub(crate) train_neural_relation_decls: HashMap<String, TrainNeuralRelationDecl>,
+    pub(crate) neural_model_artifacts: HashMap<String, String>,
+    pub(crate) neural_materialized_triples: HashMap<String, Vec<Triple>>,
+    ml_predict_materialized_triples: HashMap<String, Vec<Triple>>,
+    pub(crate) probability_seeds: HashMap<Triple, f64>,
+    cached_stats: Option<Arc<DatabaseStats>>,
+    exact_stats_generation: u64,
+    planning_stats: Option<PlanningStatsSnapshot>,
+    pub(crate) planning_stats_policy: PlanningStatsPolicy,
+    stats_epoch: u64,
+    pub(crate) stats_rebuild_count: u64,
+    stats_rebuild_nanos: u64,
+    pub(crate) quoted_triple_store: Arc<RwLock<QuotedTripleStore>>,
+    implicit_neural_materialization: bool,
+    training_seed: Option<u64>,
 }
 
-#[allow(dead_code)]
 impl SparqlDatabase {
     /// Initialize with host-selected ML authority
     pub fn with_ml_context(context: crate::ml_policy::MlExecutionContext) -> Self {
@@ -241,11 +229,12 @@ impl SparqlDatabase {
         database.ml_context = context;
         database
     }
+    /// An empty store with ML disabled and the default statistics policy.
     pub fn new() -> Self {
         Self {
             ml_context: crate::ml_policy::MlExecutionContext::disabled(),
             dataset_index: DatasetIndex::new(),
-            dictionary: Arc::new(RwLock::new(Dictionary::new())),
+            dictionary: SharedTerms::new(),
             prefixes: HashMap::new(),
             udfs: HashMap::new(),
             rule_map: HashMap::new(),
@@ -265,6 +254,7 @@ impl SparqlDatabase {
             stats_rebuild_nanos: 0,
             quoted_triple_store: Arc::new(RwLock::new(QuotedTripleStore::new())),
             implicit_neural_materialization: true,
+            training_seed: None,
         }
     }
 
@@ -283,25 +273,58 @@ impl SparqlDatabase {
             let cleaned = if trimmed.starts_with('<') && trimmed.ends_with('>') {
                 trimmed[1..trimmed.len() - 1].to_string()
             } else if trimmed.starts_with('"') {
-                decode_ntriples_literal(trimmed)
-                    .map(|(value, _)| value)
+                // Through the same canonicaliser the reader uses. This used to keep
+                // only the lexical form, so a literal that arrived here already
+                // spelled canonically had its datatype stripped back off -- the same
+                // loss as the reader's, in a second place, undoing the first fix.
+                // Canonicalising is idempotent, so it is correct on either path.
+                rdf_term::canonicalise_literal(trimmed)
                     .unwrap_or_else(|| trimmed.trim_matches('"').to_string())
             } else {
                 trimmed.to_string()
             };
-            let mut dict = self.dictionary.write().unwrap();
+            let mut dict = self.dictionary.write();
             dict.encode(&cleaned)
         }
+    }
+
+    /// Rewrites every blank node label in `term` into `document`'s scope.
+    ///
+    /// Recurses through a quoted triple, so a label nested inside one is scoped with
+    /// the rest of its document rather than left as the bare label the file wrote.
+    ///
+    /// Guarded on the term containing `_:` at all, since a term without it cannot
+    /// hold a blank node at any depth and most documents hold none; a literal that
+    /// happens to contain those two characters falls through unchanged.
+    fn scope_blank_nodes(&self, term: String, document: u64) -> String {
+        if !term.contains("_:") {
+            return term;
+        }
+        let trimmed = term.trim();
+        if trimmed.starts_with("<<") && trimmed.ends_with(">>") {
+            let inner = trimmed[2..trimmed.len() - 2].trim();
+            let (subject, predicate, object) = Self::split_quoted_triple_content(inner);
+            return format!(
+                "<< {} {} {} >>",
+                self.scope_blank_nodes(subject, document),
+                self.scope_blank_nodes(predicate, document),
+                self.scope_blank_nodes(object, document)
+            );
+        }
+        if trimmed.starts_with("_:") {
+            return rdf_term::scope_blank_node(trimmed, document).into_owned();
+        }
+        term
     }
 
     /// Decode a u32 ID that may be a regular dictionary ID or a quoted triple ID
     pub fn decode_any(&self, id: u32) -> Option<String> {
         if is_quoted_triple_id(id) {
             let qt = self.quoted_triple_store.read().unwrap();
-            let dict = self.dictionary.read().unwrap();
+            let dict = self.dictionary.read();
             dict.decode_term(id, &qt)
         } else {
-            let dict = self.dictionary.read().unwrap();
+            let dict = self.dictionary.read();
             dict.decode(id).map(|s| s.to_string())
         }
     }
@@ -375,6 +398,7 @@ impl SparqlDatabase {
         }
     }
 
+    /// Replaces every prefix binding. See [`Self::add_prefix`] to add one.
     pub fn set_prefixes(&mut self, prefixes: HashMap<String, String>) {
         self.prefixes = prefixes;
     }
@@ -452,10 +476,21 @@ impl SparqlDatabase {
         mutations < minimum_batch.max(proportional)
     }
 
+    /// Gathers fresh statistics over this store's dataset, without caching them.
+    ///
+    /// [`Self::get_or_build_stats`] is the cached form and the one query execution
+    /// uses; this is for a caller that wants a snapshot of the data as it stands.
+    pub fn gather_stats(&self) -> DatabaseStats {
+        DatabaseStats::gather_stats_fast(
+            &self.dataset_index,
+            self.quoted_triple_store.read().unwrap().len() as u64,
+        )
+    }
+
     /// Builds statistics and records rebuild count and duration
     fn rebuild_stats(&mut self) -> Arc<DatabaseStats> {
         let started = std::time::Instant::now();
-        let stats = Arc::new(DatabaseStats::gather_stats_fast(self));
+        let stats = Arc::new(self.gather_stats());
         self.stats_rebuild_count += 1;
         self.stats_rebuild_nanos = self
             .stats_rebuild_nanos
@@ -484,26 +519,31 @@ impl SparqlDatabase {
         )
     }
 
-    pub fn query(&self) -> QueryBuilder<'_> {
-        QueryBuilder::new(self)
-    }
-
+    /// Adds an already-encoded triple to the default graph.
+    ///
+    /// Ids must come from this store's dictionary. Use
+    /// [`Self::add_triple_parts`] to add one from text.
     pub fn add_triple(&mut self, triple: Triple) {
         self.dataset_index.insert_triple(&triple);
     }
 
+    /// Removes a triple from the default graph. Returns whether it was present.
     pub fn delete_triple(&mut self, triple: &Triple) -> bool {
         self.dataset_index.delete_triple(triple)
     }
 
+    /// Adds an encoded quad, creating its graph if needed. Returns whether it was
+    /// new.
     pub fn add_quad(&mut self, quad: Quad) -> bool {
         self.dataset_index.insert_quad(&quad)
     }
 
+    /// Removes a quad. Returns whether it was present.
     pub fn delete_quad(&mut self, quad: &Quad) -> bool {
         self.dataset_index.delete_quad(quad)
     }
 
+    /// Interns the given terms and adds the resulting quad.
     pub fn add_quad_parts(
         &mut self,
         subject: &str,
@@ -515,7 +555,7 @@ impl SparqlDatabase {
         let predicate_id = self.encode_term_star(predicate);
         let object_id = self.encode_term_star(object);
         let graph_id = {
-            let mut dict = self.dictionary.write().unwrap();
+            let mut dict = self.dictionary.write();
             dict.encode(graph)
         };
 
@@ -527,6 +567,7 @@ impl SparqlDatabase {
         })
     }
 
+    /// Default-graph triples matching the bound positions; `None` is a wildcard.
     pub fn query_default_triples(
         &self,
         s: Option<u32>,
@@ -536,6 +577,7 @@ impl SparqlDatabase {
         self.dataset_index.query_default(s, p, o)
     }
 
+    /// Quads in one graph matching the bound positions; `None` is a wildcard.
     pub fn query_graph_quads(
         &self,
         graph: GraphId,
@@ -548,7 +590,7 @@ impl SparqlDatabase {
 
     /// Encodes three lexical terms and adds the resulting triple
     pub fn add_triple_parts(&mut self, subject: &str, predicate: &str, object: &str) {
-        let mut dict = self.dictionary.write().unwrap();
+        let mut dict = self.dictionary.write();
         let subject_id = dict.encode(subject);
         let predicate_id = dict.encode(predicate);
         let object_id = dict.encode(object);
@@ -562,6 +604,8 @@ impl SparqlDatabase {
         self.add_triple(triple);
     }
 
+    /// Adds a triple carrying a provenance annotation, for probabilistic
+    /// reasoning.
     pub fn add_tagged_triple(
         &mut self,
         subject: &str,
@@ -569,7 +613,7 @@ impl SparqlDatabase {
         object: &str,
         probability: f64,
     ) {
-        let mut dict = self.dictionary.write().unwrap();
+        let mut dict = self.dictionary.write();
         let s = dict.encode(subject);
         let p = dict.encode(predicate);
         let o = dict.encode(object);
@@ -586,7 +630,7 @@ impl SparqlDatabase {
 
     /// Encodes three lexical terms and deletes the resulting triple
     pub fn delete_triple_parts(&mut self, subject: &str, predicate: &str, object: &str) -> bool {
-        let mut dict = self.dictionary.write().unwrap();
+        let mut dict = self.dictionary.write();
         let subject_id = dict.encode(subject);
         let predicate_id = dict.encode(predicate);
         let object_id = dict.encode(object);
@@ -600,6 +644,7 @@ impl SparqlDatabase {
         self.delete_triple(&triple)
     }
 
+    /// Serialises the default graph as RDF/XML.
     pub fn generate_rdf_xml(&mut self) -> String {
         let mut xml = String::new();
         xml.push_str("<?xml version=\"1.0\"?>\n");
@@ -618,7 +663,7 @@ impl SparqlDatabase {
         xml.push_str(">\n");
 
         // Group triples by subject
-        let dict = self.dictionary.read().unwrap();
+        let dict = self.dictionary.read();
         let mut subjects: BTreeMap<String, Vec<(String, String)>> = BTreeMap::new();
         let default_triples = self.query_default_triples(None, None, None);
         for triple in &default_triples {
@@ -646,63 +691,105 @@ impl SparqlDatabase {
     }
 
     /// Serializes all triples as N-Triples-star format
+    /// Blank nodes are written with their document-local labels, which is sound
+    /// within one store and unsound across two: see
+    /// [`generate_ntriples_skolemised`](Self::generate_ntriples_skolemised) for the
+    /// form to exchange.
     pub fn generate_ntriples(&self) -> String {
+        self.write_ntriples(None)
+    }
+
+    fn write_ntriples(&self, skolem_base: Option<&str>) -> String {
         let mut output = String::new();
         for triple in self.query_default_triples(None, None, None) {
             let s = self.decode_any(triple.subject).unwrap_or_default();
             let p = self.decode_any(triple.predicate).unwrap_or_default();
             let o = self.decode_any(triple.object).unwrap_or_default();
 
-            let s_str = if s.starts_with("<<") {
-                s
-            } else {
-                format!("<{}>", s)
-            };
-            let p_str = format!("<{}>", p);
-            let o_str = if o.starts_with("<<") {
-                o
-            } else if o.starts_with("http://") || o.starts_with("https://") {
-                format!("<{}>", o)
-            } else {
-                format!("\"{}\"", o)
-            };
-
-            output.push_str(&format!("{} {} {} .\n", s_str, p_str, o_str));
+            // Every position through the one writer. Written by hand, this emitted
+            // `<_:b>` for a blank node, which is an IRI and not a blank node;
+            // `"urn:a"` for any IRI whose scheme was not http, which is a literal;
+            // an unescaped literal, which breaks on a quote; and a typed literal
+            // quoted a second time, which demotes it to a plain one.
+            output.push_str(&format!(
+                "{} {} {} .\n",
+                Self::write_term(&s, skolem_base),
+                Self::write_term(&p, skolem_base),
+                Self::write_term(&o, skolem_base)
+            ));
         }
         output
     }
 
+    /// Serialises every graph as N-Quads, replacing blank nodes with Skolem IRIs
+    /// under `base`.
+    ///
+    /// See [`generate_ntriples_skolemised`](Self::generate_ntriples_skolemised).
+    pub fn generate_nquads_skolemised(&self, base: &str) -> String {
+        self.write_nquads(Some(base))
+    }
+
+    /// Serialises the default graph as N-Triples, replacing blank nodes with Skolem
+    /// IRIs under `base`.
+    ///
+    /// The form to publish or exchange. A blank node label means nothing outside the
+    /// document it came from, so two systems merging each other's output would fuse
+    /// unrelated nodes -- the plain serialisers emit document-local labels and are
+    /// sound only within one store. RDF 1.1 §3.5 answers that by replacing blank
+    /// nodes with IRIs, which are global; a receiver may keep them as IRIs, which is
+    /// what makes the merge safe, or recover the nodes with
+    /// [`deskolemise`](shared::rdf_term::deskolemise).
+    ///
+    /// `base` must be an authority the caller controls, and is not defaulted: a
+    /// Skolem IRI is unique because its authority is, and defaulting it would mint
+    /// the same IRI on two machines and put the collision back.
+    pub fn generate_ntriples_skolemised(&self, base: &str) -> String {
+        self.write_ntriples(Some(base))
+    }
+
+    /// Writes one term, replacing a blank node with a Skolem IRI when asked.
+    ///
+    /// Applied per term rather than to the serialised text. Rewriting the text would
+    /// have to find blank node labels in it, and a literal reading `"see _:b here"`
+    /// contains one that is not a term at all.
+    fn write_term(spelling: &str, skolem_base: Option<&str>) -> String {
+        match skolem_base {
+            Some(base) => rdf_term::to_ntriples_term(&rdf_term::skolemise(spelling, base)),
+            None => rdf_term::to_ntriples_term(spelling),
+        }
+    }
+
+    /// Serialises every graph as N-Quads, which unlike N-Triples preserves named
+    /// graphs.
+    ///
+    /// Blank nodes are written with their document-local labels, which is sound
+    /// within one store and unsound across two: see
+    /// [`generate_nquads_skolemised`](Self::generate_nquads_skolemised) for the form
+    /// to exchange.
     pub fn generate_nquads(&self) -> String {
+        self.write_nquads(None)
+    }
+
+    fn write_nquads(&self, skolem_base: Option<&str>) -> String {
         let mut output = String::new();
         for quad in self.dataset_index.all_quads() {
             let s = self.decode_any(quad.subject).unwrap_or_default();
             let p = self.decode_any(quad.predicate).unwrap_or_default();
             let o = self.decode_any(quad.object).unwrap_or_default();
 
-            let s_str = if s.starts_with("<<") || s.starts_with("_:") {
-                s
-            } else {
-                format!("<{}>", s)
-            };
-            let p_str = format!("<{}>", p);
-            let o_str = if o.starts_with("<<") || o.starts_with("_:") {
-                o
-            } else if looks_like_absolute_iri(&o) {
-                format!("<{}>", o)
-            } else {
-                format!("\"{}\"", escape_ntriples_literal(&o))
-            };
+            // See `generate_ntriples`: this handled blank nodes and non-http IRIs
+            // correctly but still quoted a typed or language-tagged literal a second
+            // time, turning it into a plain literal whose text looks typed.
+            let s_str = Self::write_term(&s, skolem_base);
+            let p_str = Self::write_term(&p, skolem_base);
+            let o_str = Self::write_term(&o, skolem_base);
             match quad.graph {
                 GraphId::Default => {
                     output.push_str(&format!("{} {} {} .\n", s_str, p_str, o_str));
                 }
                 GraphId::Named(graph_id) => {
                     let graph = self.decode_any(graph_id).unwrap_or_default();
-                    let graph = if graph.starts_with("_:") {
-                        graph
-                    } else {
-                        format!("<{}>", graph)
-                    };
+                    let graph = Self::write_term(&graph, skolem_base);
                     output.push_str(&format!("{} {} {} {} .\n", s_str, p_str, o_str, graph));
                 }
             }
@@ -723,10 +810,7 @@ impl SparqlDatabase {
         }
 
         // Group triples by subject, then by predicate
-        let mut subjects: std::collections::BTreeMap<
-            String,
-            std::collections::BTreeMap<String, Vec<String>>,
-        > = std::collections::BTreeMap::new();
+        let mut subjects: BTreeMap<String, BTreeMap<String, Vec<String>>> = BTreeMap::new();
         for triple in self.query_default_triples(None, None, None) {
             let s = self.decode_any(triple.subject).unwrap_or_default();
             let p = self.decode_any(triple.predicate).unwrap_or_default();
@@ -735,12 +819,7 @@ impl SparqlDatabase {
         }
 
         for (subject, predicates) in &subjects {
-            let s_str = if subject.starts_with("<<") {
-                subject.clone()
-            } else {
-                format!("<{}>", subject)
-            };
-            output.push_str(&s_str);
+            output.push_str(&rdf_term::to_ntriples_term(subject));
 
             let pred_count = predicates.len();
             for (i, (predicate, objects)) in predicates.iter().enumerate() {
@@ -749,20 +828,14 @@ impl SparqlDatabase {
                 } else {
                     output.push_str(" ;\n    ");
                 }
-                output.push_str(&format!("<{}>", predicate));
+                output.push_str(&rdf_term::to_ntriples_term(predicate));
 
                 for (j, obj) in objects.iter().enumerate() {
                     if j > 0 {
                         output.push_str(" ,");
                     }
                     output.push(' ');
-                    if obj.starts_with("<<") {
-                        output.push_str(obj);
-                    } else if obj.starts_with("http://") || obj.starts_with("https://") {
-                        output.push_str(&format!("<{}>", obj));
-                    } else {
-                        output.push_str(&format!("\"{}\"", obj));
-                    }
+                    output.push_str(&rdf_term::to_ntriples_term(obj));
                 }
 
                 if i == pred_count - 1 {
@@ -773,14 +846,28 @@ impl SparqlDatabase {
         output
     }
 
+    /// Parses RDF/XML and adds the triples.
+    ///
+    /// Malformed input is skipped rather than reported, so a partial parse looks
+    /// like a successful one with fewer triples.
     pub fn parse_rdf(&mut self, rdf_xml: &str) {
         let mut reader = Reader::from_str(rdf_xml);
 
         let mut current_subject = Vec::with_capacity(128);
         let mut current_predicate = Vec::with_capacity(128);
+        // A property element carries its literal's datatype, but the literal itself
+        // arrives later as a text event, so it is remembered here and spent there.
+        // Not inherited: `rdf:datatype` describes the one literal it sits on.
+        let mut current_datatype = Vec::with_capacity(64);
+        // `xml:lang` *is* inherited -- it scopes to an element and its descendants
+        // (XML 1.0 section 2.12) -- so the tag in force is a stack rather than a
+        // field: each start element pushes its own tag or the one it inherits, and
+        // each end element pops. A single field would miss the common case of a
+        // document declaring its language once, on the root.
+        let mut language_scope: Vec<Vec<u8>> = Vec::new();
 
         let (sender, receiver) = unbounded::<Vec<Triple>>();
-        let dictionary = Arc::clone(&self.dictionary);
+        let dictionary = self.dictionary.clone();
         let triples_set = Arc::new(Mutex::new(Vec::new()));
         let num_threads = utils::get_num_cpus();
 
@@ -812,51 +899,75 @@ impl SparqlDatabase {
             let mut triples = Vec::with_capacity(8192);
             loop {
                 match reader.read_event() {
-                    Ok(Event::Start(ref e)) => match e.name() {
-                        QName(b"rdf:RDF") => {
-                            for attr in e.attributes().filter_map(Result::ok) {
-                                let key = attr.key;
-                                let value = attr.value;
-                                if key.as_ref().starts_with(b"xmlns:") {
-                                    let prefix = std::str::from_utf8(&key.as_ref()[6..])
-                                        .unwrap_or("")
-                                        .to_string();
-                                    let uri = std::str::from_utf8(&value).unwrap_or("").to_string();
-                                    self.prefixes.insert(prefix, uri);
-                                } else if key.as_ref() == b"xmlns" {
-                                    // Default namespace
-                                    let uri = std::str::from_utf8(&value).unwrap_or("").to_string();
-                                    self.prefixes.insert("".to_string(), uri);
+                    Ok(Event::Start(ref e)) => {
+                        // The datatype resets, so one property's cannot reach the
+                        // next property's literal; the language starts from whatever
+                        // encloses this element and is overridden only if this
+                        // element says so. `rdf:datatype` is an absolute IRI by
+                        // definition and needs no prefix expansion.
+                        current_datatype.truncate(0);
+                        let mut language = language_scope.last().cloned().unwrap_or_default();
+                        for attr in e.attributes().filter_map(Result::ok) {
+                            match attr.key {
+                                QName(b"rdf:datatype") => {
+                                    current_datatype.extend_from_slice(&attr.value)
                                 }
+                                QName(b"xml:lang") => {
+                                    language.clear();
+                                    language.extend_from_slice(&attr.value);
+                                }
+                                _ => {}
                             }
                         }
-                        QName(b"rdf:Description") => {
-                            for attr in e.attributes().filter_map(Result::ok) {
-                                if attr.key == QName(b"rdf:about") {
-                                    current_subject.truncate(0);
-                                    current_subject.extend_from_slice(&attr.value);
+                        language_scope.push(language);
+                        match e.name() {
+                            QName(b"rdf:RDF") => {
+                                for attr in e.attributes().filter_map(Result::ok) {
+                                    let key = attr.key;
+                                    let value = attr.value;
+                                    if key.as_ref().starts_with(b"xmlns:") {
+                                        let prefix = std::str::from_utf8(&key.as_ref()[6..])
+                                            .unwrap_or("")
+                                            .to_string();
+                                        let uri =
+                                            std::str::from_utf8(&value).unwrap_or("").to_string();
+                                        self.prefixes.insert(prefix, uri);
+                                    } else if key.as_ref() == b"xmlns" {
+                                        // Default namespace
+                                        let uri =
+                                            std::str::from_utf8(&value).unwrap_or("").to_string();
+                                        self.prefixes.insert("".to_string(), uri);
+                                    }
                                 }
                             }
+                            QName(b"rdf:Description") => {
+                                for attr in e.attributes().filter_map(Result::ok) {
+                                    if attr.key == QName(b"rdf:about") {
+                                        current_subject.truncate(0);
+                                        current_subject.extend_from_slice(&attr.value);
+                                    }
+                                }
+                            }
+                            QName(b"rdfs:Class") | QName(b"rdf:type") => {
+                                current_predicate.truncate(0);
+                                current_predicate.extend_from_slice(b"rdf:type");
+                            }
+                            QName(b"rdfs:subClassOf") => {
+                                current_predicate.truncate(0);
+                                current_predicate.extend_from_slice(b"rdfs:subClassOf");
+                            }
+                            QName(b"rdfs:label") => {
+                                current_predicate.truncate(0);
+                                current_predicate.extend_from_slice(b"rdfs:label");
+                            }
+                            name => {
+                                let name_str =
+                                    std::str::from_utf8(name.as_ref()).unwrap_or("").to_string();
+                                let resolved_predicate = self.resolve_term(&name_str);
+                                current_predicate = resolved_predicate.clone().into_bytes();
+                            }
                         }
-                        QName(b"rdfs:Class") | QName(b"rdf:type") => {
-                            current_predicate.truncate(0);
-                            current_predicate.extend_from_slice(b"rdf:type");
-                        }
-                        QName(b"rdfs:subClassOf") => {
-                            current_predicate.truncate(0);
-                            current_predicate.extend_from_slice(b"rdfs:subClassOf");
-                        }
-                        QName(b"rdfs:label") => {
-                            current_predicate.truncate(0);
-                            current_predicate.extend_from_slice(b"rdfs:label");
-                        }
-                        name => {
-                            let name_str =
-                                std::str::from_utf8(name.as_ref()).unwrap_or("").to_string();
-                            let resolved_predicate = self.resolve_term(&name_str);
-                            current_predicate = resolved_predicate.clone().into_bytes();
-                        }
-                    },
+                    }
                     Ok(Event::Empty(ref e)) => {
                         if let Ok(predicate) = std::str::from_utf8(e.name().as_ref()) {
                             let resolved_predicate = self.resolve_term(predicate);
@@ -872,7 +983,7 @@ impl SparqlDatabase {
                                     std::str::from_utf8(&object),
                                 ) {
                                     // Lock the dictionary for encoding
-                                    let mut dict = dictionary.write().unwrap();
+                                    let mut dict = dictionary.write();
                                     let triple = Triple {
                                         subject: dict.encode(subject_str),
                                         predicate: dict.encode(&resolved_predicate),
@@ -895,12 +1006,26 @@ impl SparqlDatabase {
                                         std::str::from_utf8(&current_predicate)
                                     {
                                         let resolved_predicate = self.resolve_term(predicate_str);
+                                        // Spelled the way every other reader spells
+                                        // it. This used to encode the text alone, so
+                                        // a document saying xsd:integer or @en
+                                        // produced a plain literal regardless.
+                                        let object = rdf_term::spell_literal(
+                                            trimmed_object,
+                                            std::str::from_utf8(&current_datatype)
+                                                .ok()
+                                                .filter(|iri| !iri.is_empty()),
+                                            language_scope
+                                                .last()
+                                                .and_then(|tag| std::str::from_utf8(tag).ok())
+                                                .filter(|tag| !tag.is_empty()),
+                                        );
                                         // Lock the dictionary for encoding
-                                        let mut dict = dictionary.write().unwrap();
+                                        let mut dict = dictionary.write();
                                         let triple = Triple {
                                             subject: dict.encode(subject_str),
                                             predicate: dict.encode(&resolved_predicate),
-                                            object: dict.encode(trimmed_object),
+                                            object: dict.encode(&object),
                                         };
                                         drop(dict); // Release the lock
                                         triples.push(triple);
@@ -910,6 +1035,10 @@ impl SparqlDatabase {
                         }
                     }
                     Ok(Event::End(ref e)) => {
+                        // Leaving the element the tag was scoped to. A pop on an
+                        // empty stack is a no-op, so malformed nesting cannot panic
+                        // here; `Event::Empty` never pushed, so it must not pop.
+                        language_scope.pop();
                         if e.name() == QName(b"rdf:Description") {
                             current_subject.truncate(0);
                             current_predicate.truncate(0);
@@ -949,6 +1078,11 @@ impl SparqlDatabase {
         }
     }
 
+    /// Reads RDF/XML from a file and adds the triples.
+    ///
+    /// # Panics
+    ///
+    /// If the file cannot be read.
     pub fn parse_rdf_from_file(&mut self, filename: &str) {
         let file = std::fs::File::open(filename).expect("Cannot open file");
         let reader = std::io::BufReader::new(file);
@@ -956,6 +1090,13 @@ impl SparqlDatabase {
 
         let mut current_subject = Vec::with_capacity(128);
         let mut current_predicate = Vec::with_capacity(128);
+        // The same two as in `parse_rdf`, which this duplicates: a property element
+        // declares its literal's datatype and language, and the literal arrives
+        // later as a text event. Fixing one reader left this one still discarding
+        // both, so an RDF/XML file read from disk and the same document read from a
+        // string produced different terms.
+        let mut current_datatype = Vec::with_capacity(64);
+        let mut language_scope: Vec<Vec<u8>> = Vec::new();
 
         // First, read prefixes before spawning worker threads
         let mut buf = Vec::new();
@@ -999,33 +1140,51 @@ impl SparqlDatabase {
         let mut triples = Vec::with_capacity(8192);
         loop {
             match xml_reader.read_event_into(&mut buf) {
-                Ok(Event::Start(ref e)) => match e.name() {
-                    QName(b"rdf:Description") => {
-                        for attr in e.attributes().filter_map(Result::ok) {
-                            if attr.key == QName(b"rdf:about") {
-                                current_subject.clear();
-                                current_subject.extend_from_slice(&attr.value);
+                Ok(Event::Start(ref e)) => {
+                    current_datatype.truncate(0);
+                    let mut language = language_scope.last().cloned().unwrap_or_default();
+                    for attr in e.attributes().filter_map(Result::ok) {
+                        match attr.key {
+                            QName(b"rdf:datatype") => {
+                                current_datatype.extend_from_slice(&attr.value)
                             }
+                            QName(b"xml:lang") => {
+                                language.clear();
+                                language.extend_from_slice(&attr.value);
+                            }
+                            _ => {}
                         }
                     }
-                    QName(b"rdfs:Class") | QName(b"rdf:type") => {
-                        current_predicate.clear();
-                        current_predicate.extend_from_slice(b"rdf:type");
+                    language_scope.push(language);
+                    match e.name() {
+                        QName(b"rdf:Description") => {
+                            for attr in e.attributes().filter_map(Result::ok) {
+                                if attr.key == QName(b"rdf:about") {
+                                    current_subject.clear();
+                                    current_subject.extend_from_slice(&attr.value);
+                                }
+                            }
+                        }
+                        QName(b"rdfs:Class") | QName(b"rdf:type") => {
+                            current_predicate.clear();
+                            current_predicate.extend_from_slice(b"rdf:type");
+                        }
+                        QName(b"rdfs:subClassOf") => {
+                            current_predicate.clear();
+                            current_predicate.extend_from_slice(b"rdfs:subClassOf");
+                        }
+                        QName(b"rdfs:label") => {
+                            current_predicate.clear();
+                            current_predicate.extend_from_slice(b"rdfs:label");
+                        }
+                        name => {
+                            let name_str =
+                                std::str::from_utf8(name.as_ref()).unwrap_or("").to_string();
+                            let resolved_predicate = self.resolve_term(&name_str);
+                            current_predicate = resolved_predicate.clone().into_bytes();
+                        }
                     }
-                    QName(b"rdfs:subClassOf") => {
-                        current_predicate.clear();
-                        current_predicate.extend_from_slice(b"rdfs:subClassOf");
-                    }
-                    QName(b"rdfs:label") => {
-                        current_predicate.clear();
-                        current_predicate.extend_from_slice(b"rdfs:label");
-                    }
-                    name => {
-                        let name_str = std::str::from_utf8(name.as_ref()).unwrap_or("").to_string();
-                        let resolved_predicate = self.resolve_term(&name_str);
-                        current_predicate = resolved_predicate.clone().into_bytes();
-                    }
-                },
+                }
                 Ok(Event::Empty(ref e)) => {
                     if let Ok(predicate) = std::str::from_utf8(e.name().as_ref()) {
                         let resolved_predicate = self.resolve_term(predicate);
@@ -1040,7 +1199,7 @@ impl SparqlDatabase {
                                 std::str::from_utf8(&current_subject),
                                 std::str::from_utf8(&object),
                             ) {
-                                let mut dict = self.dictionary.write().unwrap();
+                                let mut dict = self.dictionary.write();
                                 let triple = Triple {
                                     subject: dict.encode(subject_str),
                                     predicate: dict.encode(&resolved_predicate),
@@ -1061,11 +1220,21 @@ impl SparqlDatabase {
                             if let Ok(subject_str) = std::str::from_utf8(&current_subject) {
                                 if let Ok(predicate_str) = std::str::from_utf8(&current_predicate) {
                                     let resolved_predicate = self.resolve_term(predicate_str);
-                                    let mut dict = self.dictionary.write().unwrap();
+                                    let object = rdf_term::spell_literal(
+                                        trimmed_object,
+                                        std::str::from_utf8(&current_datatype)
+                                            .ok()
+                                            .filter(|iri| !iri.is_empty()),
+                                        language_scope
+                                            .last()
+                                            .and_then(|tag| std::str::from_utf8(tag).ok())
+                                            .filter(|tag| !tag.is_empty()),
+                                    );
+                                    let mut dict = self.dictionary.write();
                                     let triple = Triple {
                                         subject: dict.encode(subject_str),
                                         predicate: dict.encode(&resolved_predicate),
-                                        object: dict.encode(trimmed_object),
+                                        object: dict.encode(&object),
                                     };
                                     drop(dict);
                                     triples.push(triple);
@@ -1075,6 +1244,7 @@ impl SparqlDatabase {
                     }
                 }
                 Ok(Event::End(ref e)) => {
+                    language_scope.pop();
                     if e.name() == QName(b"rdf:Description") {
                         current_subject.clear();
                         current_predicate.clear();
@@ -1108,7 +1278,11 @@ impl SparqlDatabase {
         }
     }
 
+    /// Parses Turtle and adds the triples, honouring `@prefix` declarations and
+    /// the `;` and `,` abbreviations.
     pub fn parse_turtle(&mut self, turtle_data: &str) {
+        // One scope for this document; see `parse_ntriples`.
+        let document = rdf_term::next_document_scope();
         for raw_line in turtle_data.lines() {
             let line = raw_line.trim();
 
@@ -1188,10 +1362,13 @@ impl SparqlDatabase {
 
                     let subject =
                         this.resolve_query_term(&Self::clean_turtle_term(s_raw), &this.prefixes);
+                    let subject = this.scope_blank_nodes(subject, document);
                     let predicate =
                         this.resolve_query_term(&Self::clean_turtle_term(p_raw), &this.prefixes);
+                    let predicate = this.scope_blank_nodes(predicate, document);
                     let object = this
                         .resolve_query_term(&Self::clean_turtle_term(&object_part), &this.prefixes);
+                    let object = this.scope_blank_nodes(object, document);
 
                     // Emit the main triple
                     if subject.starts_with("<<") || object.starts_with("<<") {
@@ -1205,7 +1382,7 @@ impl SparqlDatabase {
                         };
                         this.add_triple(triple);
                     } else {
-                        let mut dict = this.dictionary.write().unwrap();
+                        let mut dict = this.dictionary.write();
                         let triple = Triple {
                             subject: dict.encode(&subject),
                             predicate: dict.encode(&predicate),
@@ -1398,25 +1575,45 @@ impl SparqlDatabase {
             // Keep quoted triples as-is
             term.to_string()
         } else if term.starts_with('<') && term.ends_with('>') {
-            term[1..term.len() - 1].to_string()
-        } else if term.starts_with('"') && term.ends_with('"') {
-            term[1..term.len() - 1].to_string()
+            // Brackets kept, not stripped. They are the only thing distinguishing an
+            // absolute IRI from a prefixed name once the text is bare, and
+            // `resolve_query_term` is the one that needs to tell them apart: it
+            // strips them itself, while a bare `urn:a` reaching it is read as the
+            // prefix `urn` and reported as a failed resolution. Every non-http IRI
+            // in a Turtle document logged one -- two per triple, for subject and
+            // predicate -- while parsing correctly regardless.
+            term.to_string()
+        } else if term.starts_with('"') {
+            // Handed on whole, suffix included. Trimming the quotes here turned
+            // `"30"^^xsd:integer` into `30"^^xsd:integer`, because the term neither
+            // ends in a quote nor is a bare word: a stray quote, and a prefix that
+            // was never expanded. The quotes belong to the literal's syntax and come
+            // off when it is spelled canonically, which needs the prefix table.
+            term.to_string()
         } else {
             term.trim_matches('"').to_string()
         }
     }
 
     // New parse_n3 function
+    /// Parses the N3 subset this engine supports and adds the triples.
+    ///
+    /// Only the Datalog-expressible fragment; a full N3 reasoner is future work.
     pub fn parse_n3(&mut self, n3_data: &str) {
+        // One scope for this document, taken before the chunks fan out; see
+        // `parse_ntriples`.
+        let document = rdf_term::next_document_scope();
         let lines: Vec<String> = n3_data.lines().map(|l| l.trim().to_string()).collect();
         let chunk_size = 1000;
         let chunks: Vec<Vec<String>> = lines.chunks(chunk_size).map(|c| c.to_vec()).collect();
 
-        let partial_results: Vec<(
+        type ChunkResult = (
             Vec<Triple>,
-            Arc<RwLock<Dictionary>>,
+            SharedTerms,
+            Arc<RwLock<QuotedTripleStore>>,
             HashMap<String, String>,
-        )> = chunks
+        );
+        let partial_results: Vec<ChunkResult> = chunks
             .par_iter()
             .map(|chunk| {
                 let mut local_db = SparqlDatabase::new();
@@ -1448,7 +1645,7 @@ impl SparqlDatabase {
                         statement.push_str(line);
                         statement.push(' ');
                         if line.ends_with('.') {
-                            local_db.parse_statement(statement.trim());
+                            local_db.parse_statement(statement.trim(), document);
                             statement.clear();
                         }
                     }
@@ -1457,20 +1654,69 @@ impl SparqlDatabase {
                 (
                     local_db.query_default_triples(None, None, None),
                     local_db.dictionary,
+                    local_db.quoted_triple_store,
                     local_db.prefixes,
                 )
             })
             .collect();
 
-        for (triples, dict_arc, pref) in partial_results {
-            for t in triples {
-                self.add_triple(t);
+        for (triples, dict_arc, quoted_arc, pref) in partial_results {
+            // A chunk's ids belong to the chunk's own dictionary, so they are
+            // translated rather than inserted: id 3 there and id 3 here name
+            // different terms. Merging the dictionaries and keeping the ids was
+            // sound only while this store was empty and both assigned ids in the
+            // same order, so the first read of a document worked and every later one
+            // reinterpreted the new document's ids as the earlier one's terms --
+            // silently storing a copy of the first document instead of the second.
+            let translated: Vec<Triple> = {
+                let source_dictionary = dict_arc.read();
+                let source_quoted = quoted_arc.read().unwrap_or_else(|p| p.into_inner());
+                let mut target_dictionary = self.dictionary.write();
+                let mut target_quoted = self
+                    .quoted_triple_store
+                    .write()
+                    .unwrap_or_else(|p| p.into_inner());
+                let mut seen = HashMap::new();
+                let reencode = |id: u32,
+                                target_dictionary: &mut Dictionary,
+                                target_quoted: &mut QuotedTripleStore,
+                                seen: &mut HashMap<u32, u32>| {
+                    reencode_term_id(
+                        id,
+                        &source_dictionary,
+                        &source_quoted,
+                        target_dictionary,
+                        target_quoted,
+                        seen,
+                    )
+                };
+                triples
+                    .iter()
+                    .map(|triple| Triple {
+                        subject: reencode(
+                            triple.subject,
+                            &mut target_dictionary,
+                            &mut target_quoted,
+                            &mut seen,
+                        ),
+                        predicate: reencode(
+                            triple.predicate,
+                            &mut target_dictionary,
+                            &mut target_quoted,
+                            &mut seen,
+                        ),
+                        object: reencode(
+                            triple.object,
+                            &mut target_dictionary,
+                            &mut target_quoted,
+                            &mut seen,
+                        ),
+                    })
+                    .collect()
+            };
+            for triple in translated {
+                self.add_triple(triple);
             }
-            let mut self_dict = self.dictionary.write().unwrap();
-            let other_dict = dict_arc.read().unwrap();
-            self_dict.merge(&other_dict);
-            drop(other_dict);
-            drop(self_dict);
             for (k, v) in pref {
                 self.prefixes.insert(k, v);
             }
@@ -1478,6 +1724,10 @@ impl SparqlDatabase {
     }
 
     // Parse_ntriples and add to DB function
+    /// Parses N-Triples and adds them. This is the usual entry point.
+    ///
+    /// [`Self::parse_ntriples`] parses without adding, which is only useful when
+    /// the caller wants to inspect or filter first.
     pub fn parse_ntriples_and_add(&mut self, ntriples_data: &str) {
         let partial_results = self.parse_ntriples(ntriples_data);
 
@@ -1487,13 +1737,39 @@ impl SparqlDatabase {
         }
     }
 
-    // Parses ntriples
-    pub fn parse_ntriples(&mut self, ntriples_data: &str) -> Vec<Vec<(String, String, String)>> {
+    /// Parses N-Triples into lexical triples **without** adding them, in parallel
+    /// chunks of 1000 lines.
+    ///
+    /// Returns one group per chunk. The `a` shorthand is expanded to the full RDF
+    /// type IRI in predicate position.
+    pub fn parse_ntriples(&mut self, ntriples_data: &str) -> Vec<Vec<TermTriple>> {
+        // One scope for this document, taken before the chunks fan out so that every
+        // chunk relabels `_:b` the same way and the node stays one node.
+        self.parse_ntriples_in_scope(ntriples_data, rdf_term::next_document_scope())
+    }
+
+    /// Parses N-Triples, relabelling blank nodes into a scope the caller chooses.
+    ///
+    /// For callers whose document boundary is not one call. A stream is the case this
+    /// exists for: each arriving element is its own document in RDF's terms, but the
+    /// dictionary never forgets a term, so minting a node per element grows it
+    /// without bound and eventually trips the assertion guarding the id space. A
+    /// long-running stream therefore shares one scope across its elements, which is
+    /// bounded, and keeps its labels separate from every file and every other stream.
+    ///
+    /// Obtain a scope from
+    /// [`next_document_scope`](shared::rdf_term::next_document_scope); reusing one is
+    /// exactly how two reads are declared to be the same document.
+    pub fn parse_ntriples_in_scope(
+        &mut self,
+        ntriples_data: &str,
+        document: u64,
+    ) -> Vec<Vec<TermTriple>> {
         let lines: Vec<&str> = ntriples_data.lines().collect();
         let chunk_size = 1000;
         let chunks: Vec<&[&str]> = lines.chunks(chunk_size).collect();
 
-        let partial_results: Vec<Vec<(String, String, String)>> = chunks
+        let partial_results: Vec<Vec<TermTriple>> = chunks
             .par_iter()
             .map(|chunk| {
                 let mut local_triples = Vec::new();
@@ -1519,7 +1795,11 @@ impl SparqlDatabase {
                     if let Some((subject, predicate, object)) =
                         self.parse_ntriples_line(line_without_dot)
                     {
-                        local_triples.push((subject, predicate, object));
+                        local_triples.push(TermTriple {
+                            subject: self.scope_blank_nodes(subject, document),
+                            predicate: self.scope_blank_nodes(predicate, document),
+                            object: self.scope_blank_nodes(object, document),
+                        });
                     }
                 }
 
@@ -1530,13 +1810,16 @@ impl SparqlDatabase {
     }
 
     // Encode triples
-    pub fn encode_triples(
-        &mut self,
-        non_encoded_triples: Vec<Vec<(String, String, String)>>,
-    ) -> Vec<Triple> {
+    /// Interns lexical triples into encoded ones.
+    pub fn encode_triples(&mut self, non_encoded_triples: Vec<Vec<TermTriple>>) -> Vec<Triple> {
         let mut encoded_triples = Vec::new();
         for triple_strings in non_encoded_triples {
-            for (subject, predicate, object) in triple_strings {
+            for TermTriple {
+                subject,
+                predicate,
+                object,
+            } in triple_strings
+            {
                 let main_triple = Triple {
                     subject: self.encode_term_star(&subject),
                     predicate: self.encode_term_star(&predicate),
@@ -1548,13 +1831,32 @@ impl SparqlDatabase {
         encoded_triples
     }
 
+    /// Parses and encodes N-Triples without adding them to the store.
     pub fn parse_and_encode_ntriples(&mut self, ntriples_data: &str) -> Vec<Triple> {
         let partial_results = self.parse_ntriples(ntriples_data);
 
         self.encode_triples(partial_results)
     }
 
+    /// Parses and encodes N-Triples in a scope the caller chooses.
+    ///
+    /// See [`parse_ntriples_in_scope`](Self::parse_ntriples_in_scope) for when a
+    /// caller should hold its own scope rather than take a fresh one per call.
+    pub fn parse_and_encode_ntriples_in_scope(
+        &mut self,
+        ntriples_data: &str,
+        document: u64,
+    ) -> Vec<Triple> {
+        let partial_results = self.parse_ntriples_in_scope(ntriples_data, document);
+
+        self.encode_triples(partial_results)
+    }
+
+    /// Parses N-Quads and adds them, preserving named graphs.
     pub fn parse_nquads_and_add(&mut self, nquads_data: &str) {
+        // One scope for this document; see `parse_ntriples`. A graph name may be a
+        // blank node too, and is scoped with the rest of the document.
+        let document = rdf_term::next_document_scope();
         for raw_line in nquads_data.lines() {
             let line = raw_line.trim();
             if line.is_empty() || line.starts_with('#') {
@@ -1571,6 +1873,10 @@ impl SparqlDatabase {
             if let Some((subject, predicate, object, graph)) =
                 self.parse_nquads_line(line_without_dot)
             {
+                let subject = self.scope_blank_nodes(subject, document);
+                let predicate = self.scope_blank_nodes(predicate, document);
+                let object = self.scope_blank_nodes(object, document);
+                let graph = graph.map(|name| self.scope_blank_nodes(name, document));
                 match graph {
                     Some(graph) => {
                         self.add_quad_parts(&subject, &predicate, &object, &graph);
@@ -1776,16 +2082,14 @@ impl SparqlDatabase {
             return term[1..term.len() - 1].to_string();
         }
 
-        // Handle literals (keep quotes and datatype/language info)
+        // Literals are spelled canonically, so that two literals share a spelling
+        // exactly when RDF says they are one term. This used to return the lexical
+        // form alone for a typed literal, which discarded the datatype: `"25"`,
+        // `"25"^^xsd:integer` and `"25"^^xsd:string` all became `25`, and nothing
+        // downstream could tell them apart or write them back out.
         if term.starts_with('"') {
-            if let Some((literal_value, rest)) = decode_ntriples_literal(term) {
-                if rest.is_empty() {
-                    return literal_value;
-                } else if rest.starts_with("^^") {
-                    return literal_value;
-                } else if rest.starts_with('@') {
-                    return format!("{literal_value}{rest}");
-                }
+            if let Some(canonical) = rdf_term::canonicalise_literal(term) {
+                return canonical;
             }
         }
 
@@ -1793,7 +2097,7 @@ impl SparqlDatabase {
         term.to_string()
     }
 
-    fn parse_statement(&mut self, statement: &str) {
+    fn parse_statement(&mut self, statement: &str, document: u64) {
         let mut tokens = statement.split_whitespace().peekable();
         let mut subject = String::new();
         let mut predicate = String::new();
@@ -1834,10 +2138,14 @@ impl SparqlDatabase {
 
                         // Resolve terms and store the triple
                         let resolved_subject = self.resolve_term(&subject);
+                        let resolved_subject = self.scope_blank_nodes(resolved_subject, document);
                         let resolved_predicate = self.resolve_term(&predicate);
+                        let resolved_predicate =
+                            self.scope_blank_nodes(resolved_predicate, document);
                         let resolved_object = self.resolve_term(&object);
+                        let resolved_object = self.scope_blank_nodes(resolved_object, document);
 
-                        let mut dict = self.dictionary.write().unwrap();
+                        let mut dict = self.dictionary.write();
                         let triple = Triple {
                             subject: dict.encode(&resolved_subject),
                             predicate: dict.encode(&resolved_predicate),
@@ -1860,22 +2168,22 @@ impl SparqlDatabase {
                 .trim_end_matches('>')
                 .to_string()
         } else if term.starts_with('"') {
-            // It's a literal, possibly with a datatype or language tag
+            // A literal, possibly with a datatype or language tag. The datatype may
+            // be written prefixed (`xsd:integer`), so it is resolved against the
+            // prefix table before the whole literal is spelled canonically -- the
+            // same spelling the N-Triples reader produces, so that Turtle and
+            // N-Triples mint one id for one term. They did not: this path emitted
+            // `"25"^^http://...` with no angle brackets, which is a third spelling
+            // of a term the reader and `tag_store` already spelled two ways.
             if let Some(pos) = term.rfind('"') {
                 let literal = &term[..=pos]; // Include the closing quote
                 let rest = &term[pos + 1..]; // After the closing quote
-                let mut result = literal.to_string();
-                if rest.starts_with("^^") {
-                    // It's a typed literal
-                    let datatype = rest[2..].trim();
-                    let resolved_datatype = self.resolve_term(datatype);
-                    result.push_str("^^");
-                    result.push_str(&resolved_datatype);
-                } else if rest.starts_with('@') {
-                    // It's a language-tagged literal
-                    result.push_str(rest);
-                }
-                result
+                let resolved = if let Some(datatype) = rest.strip_prefix("^^") {
+                    format!("{}^^<{}>", literal, self.resolve_term(datatype.trim()))
+                } else {
+                    format!("{}{}", literal, rest)
+                };
+                rdf_term::canonicalise_literal(&resolved).unwrap_or(resolved)
             } else {
                 // Malformed literal
                 term.to_string()
@@ -1899,6 +2207,8 @@ impl SparqlDatabase {
     }
 
     // Method to automatically extract and register prefixes from a query string
+    /// Adopts the `PREFIX` declarations from a query, so later queries and rules
+    /// can use them without repeating them.
     pub fn register_prefixes_from_query(&mut self, query: &str) {
         // Simple regex to extract PREFIX declarations
         let prefix_pattern = regex::Regex::new(r"PREFIX\s+([a-zA-Z0-9_]+):\s*<([^>]+)>").unwrap();
@@ -1913,12 +2223,16 @@ impl SparqlDatabase {
     }
 
     // Method to ensure prefixes are properly shared between components
+    /// Copies this store's prefixes into `prefixes`, leaving existing entries
+    /// alone.
     pub fn share_prefixes_with(&self, prefixes: &mut HashMap<String, String>) {
         for (prefix, uri) in &self.prefixes {
             prefixes.insert(prefix.clone(), uri.clone());
         }
     }
 
+    /// Expands a lexical term to its full IRI using `prefixes`, then this store's
+    /// own. Returns the term unchanged when no prefix applies.
     pub fn resolve_query_term(&self, term: &str, prefixes: &HashMap<String, String>) -> String {
         if term.starts_with("<<") && term.ends_with(">>") {
             // Keep quoted triple patterns as-is (they'll be handled downstream)
@@ -1928,8 +2242,31 @@ impl SparqlDatabase {
             term.trim_start_matches('<')
                 .trim_end_matches('>')
                 .to_string()
-        } else if term.starts_with('"') && term.ends_with('"') {
-            term.trim_matches('"').to_string()
+        } else if term.starts_with('"') {
+            // A literal, with or without a datatype or language suffix. Its datatype
+            // may be a prefixed name, and this is the only place holding the prefix
+            // table, so the canonical spelling is produced here rather than earlier.
+            //
+            // A suffixed literal used to fall through to the prefixed-name branch
+            // below, where `"30"^^xsd:integer` was split on its first colon into the
+            // prefix `"30"^^xsd` -- never found, so it reported a failure and
+            // returned the term unchanged.
+            if let Some(position) = term.rfind('"') {
+                let literal = &term[..=position];
+                let rest = term[position + 1..].trim();
+                let resolved = if let Some(datatype) = rest.strip_prefix("^^") {
+                    format!(
+                        "{}^^<{}>",
+                        literal,
+                        self.resolve_query_term(datatype.trim(), prefixes)
+                    )
+                } else {
+                    format!("{}{}", literal, rest)
+                };
+                rdf_term::canonicalise_literal(&resolved).unwrap_or(resolved)
+            } else {
+                term.to_string()
+            }
         } else if term.contains(':')
             && !term.starts_with("http://")
             && !term.starts_with("https://")
@@ -1954,9 +2291,14 @@ impl SparqlDatabase {
         }
     }
 
+    /// A new store containing both stores' data.
+    ///
+    /// The two dictionaries assigned ids independently, so `other`'s ids are
+    /// translated into the merged dictionary rather than assumed compatible —
+    /// which is why this returns a third store instead of mutating either.
     pub fn union(&mut self, other: &SparqlDatabase) -> Self {
-        let self_dict = self.dictionary.read().unwrap();
-        let other_dict = other.dictionary.read().unwrap();
+        let self_dict = self.dictionary.read();
+        let other_dict = other.dictionary.read();
         let mut merged_dictionary = self_dict.clone();
         let self_quoted_triples = self.quoted_triple_store.read().unwrap();
         let other_quoted_triples = other.quoted_triple_store.read().unwrap();
@@ -2100,7 +2442,7 @@ impl SparqlDatabase {
 
         Self {
             dataset_index,
-            dictionary: Arc::new(RwLock::new(merged_dictionary)),
+            dictionary: SharedTerms::from_dictionary(merged_dictionary),
             prefixes: self.prefixes.clone(),
             udfs: HashMap::new(),
             rule_map: HashMap::new(),
@@ -2122,9 +2464,11 @@ impl SparqlDatabase {
             stats_rebuild_nanos: 0,
             quoted_triple_store: Arc::new(RwLock::new(merged_quoted_triples)),
             implicit_neural_materialization: self.implicit_neural_materialization,
+            training_seed: self.training_seed,
         }
     }
 
+    /// Runs a query and renders the result as text, for the demo server.
     pub fn handle_query(&mut self, query: &str) -> String {
         // Assume the query string is in a basic format like "subject predicate object"
         let parts: Vec<&str> = query.split_whitespace().collect();
@@ -2137,7 +2481,7 @@ impl SparqlDatabase {
         let predicate = parts[1];
         let object = parts[2];
 
-        let mut dict = self.dictionary.write().unwrap();
+        let mut dict = self.dictionary.write();
         let subject_id = dict.encode(subject);
         let predicate_id = dict.encode(predicate);
         let object_id = dict.encode(object);
@@ -2167,117 +2511,314 @@ impl SparqlDatabase {
         result
     }
 
-    fn handle_http_sparql_query(&mut self, query: &str) -> String {
-        match crate::execute_query::execute_sparql_query(query, self) {
-            Ok(rows) => rows
-                .into_iter()
-                .map(|row| row.join("\t"))
-                .collect::<Vec<_>>()
-                .join("\n"),
-            Err(error) => {
-                let (status, code) = match error.as_str() {
-                    "ML_FEATURE_DISABLED" => ("503 Service Unavailable", "ML_FEATURE_DISABLED"),
-                    "ML_FORBIDDEN" => ("403 Forbidden", "ML_FORBIDDEN"),
-                    "ML_INVALID_ARTIFACT" => ("403 Forbidden", "ML_INVALID_ARTIFACT"),
-                    _ => return "Query Failed: QUERY_EXECUTION_FAILED".to_string(),
-                };
-                format!("HTTP/1.1 {status}\r\nContent-Type: text/plain\r\nContent-Length: {}\r\n\r\n{code}", code.len())
-            }
-        }
-    }
-
-    /// Executes one supported standard SPARQL Update form and reports what changed
-    pub fn execute_update(
-        &mut self,
-        update: &str,
-    ) -> Result<crate::execute_query::UpdateSummary, String> {
-        crate::execute_query::execute_sparql_update(update, self)
-    }
-
-    pub fn handle_update(&mut self, update: &str) -> String {
-        if let Ok(summary) = self.execute_update(update) {
-            return format!(
-                "Update Successful (inserted {}, deleted {})",
-                summary.inserted_quads, summary.deleted_quads
-            );
-        }
-
-        // Historical standalone INSERT/DELETE aliases parse into the same update operation
-        if crate::execute_query::execute_sparql_update_compat(update, self).is_ok() {
-            return "Update Successful".to_string();
-        }
-        "Update Failed".to_string()
-    }
-
-    pub fn handle_http_request(&mut self, request: &str) -> String {
-        let context = self.ml_context.for_http();
-        crate::execute_query::with_ml_context(self, &context, |db| {
-            db.handle_http_request_inner(request)
-        })
-    }
-
-    fn handle_http_request_inner(&mut self, request: &str) -> String {
-        let mut headers = [httparse::EMPTY_HEADER; 16];
-        let mut req = httparse::Request::new(&mut headers);
-        req.parse(request.as_bytes()).unwrap();
-
-        match req.method.unwrap() {
-            "GET" => {
-                let url = Url::parse(&("http://localhost".to_owned() + req.path.unwrap())).unwrap();
-                let query_pairs: HashMap<_, _> = url.query_pairs().into_owned().collect();
-                if let Some(query) = query_pairs.get("query") {
-                    return self.handle_http_sparql_query(query);
-                }
-            }
-            "POST" => {
-                let content_type = req
-                    .headers
-                    .iter()
-                    .find(|header| header.name.eq_ignore_ascii_case("Content-Type"))
-                    .map(|header| header.value);
-
-                if let Some(content_type) = content_type {
-                    if content_type == b"application/sparql-query" {
-                        // Direct POST query
-                        if let Some(body) = request.split("\r\n\r\n").nth(1) {
-                            return self.handle_http_sparql_query(body);
-                        }
-                    } else if content_type == b"application/x-www-form-urlencoded" {
-                        // URL-encoded POST query or update
-                        if let Some(body) = request.split("\r\n\r\n").nth(1) {
-                            let params = parse_form_urlencoded(body);
-
-                            if let Some(query) = params.get("query") {
-                                return self.handle_http_sparql_query(query);
-                            } else if let Some(update) = params.get("update") {
-                                return self.handle_update(update);
-                            }
-                        }
-                    } else if content_type == b"application/sparql-update" {
-                        // Direct POST update
-                        if let Some(body) = request.split("\r\n\r\n").nth(1) {
-                            return self.handle_update(body);
-                        }
-                    }
-                }
-            }
-            _ => {}
-        }
-
-        "Bad Request".to_string()
-    }
-
     /// Return the decoded graph size for diagnostics
     pub fn debug_print_triples(&self) {
-        println!("TRIPLE_COUNT {}", self.query_default_triples(None, None, None).len());
+        println!(
+            "TRIPLE_COUNT {}",
+            self.query_default_triples(None, None, None).len()
+        );
     }
 
     // Create user defined function
+    /// Registers a user-defined function callable from `FILTER` expressions.
+    ///
+    /// Receives arguments as decoded text and returns text. Re-registering a name
+    /// replaces the previous function.
     pub fn register_udf<F>(&mut self, name: &str, f: F)
     where
         F: Fn(Vec<&str>) -> String + Send + Sync + 'static,
     {
         self.udfs.insert(name.to_string(), ClonableFn::new(f));
+    }
+
+    // ── Dataset index ───────────────────────────────────────────────────────────
+    //
+    // The last field to leave the public API. These are deliberately named
+    // operations rather than a `dataset_index()` getter: §4 has this surface becoming
+    // `QuadSource` (scan / insert / graphs / len), so the shape callers depend on
+    // should already be that rather than a borrow of `DatasetIndex`, which would
+    // freeze the representation the storage trait is supposed to abstract.
+    //
+    // Most of them are thin, and that is the point — 33 of the 46 external call sites
+    // only wanted a triple count.
+    //
+    // The mutating ones deliberately do NOT call `invalidate_stats_cache`, matching
+    // `add_triple`/`add_quad`/`delete_*` above. Statistics detect a changed index
+    // through `DatasetIndex::generation`, not through being told — the two tests at
+    // the bottom of this file exist to prove exactly that. Invalidating here would
+    // force a rebuild the generation check avoids, and would change the behaviour the
+    // rewritten call sites had when they wrote to the field directly.
+
+    /// Number of triples in the default graph.
+    pub fn default_triple_count(&self) -> usize {
+        self.dataset_index.len_default()
+    }
+
+    /// Number of quads across every graph, including named ones.
+    pub fn quad_count(&self) -> usize {
+        self.dataset_index.count_quads()
+    }
+
+    /// Every quad in the store, across all graphs.
+    pub fn all_quads(&self) -> Vec<Quad> {
+        self.dataset_index.all_quads()
+    }
+
+    /// Every graph in the store, including the default graph.
+    pub fn graphs(&self) -> Vec<GraphId> {
+        self.dataset_index.graphs()
+    }
+
+    /// The named graphs, excluding the default graph.
+    pub fn named_graphs(&self) -> Vec<GraphId> {
+        self.dataset_index.named_graphs()
+    }
+
+    /// Creates `graph` if it does not exist. Returns whether it was created.
+    pub fn create_graph(&mut self, graph: GraphId) -> bool {
+        self.dataset_index.create_graph(graph)
+    }
+
+    /// Inserts a triple into the default graph, reporting whether it was new.
+    ///
+    /// [`Self::add_triple`] does the same without the answer; this exists because a
+    /// caller deduplicating derived facts needs to know.
+    pub fn insert_triple(&mut self, triple: &Triple) -> bool {
+        self.dataset_index.insert_triple(triple)
+    }
+
+    /// Removes every quad and graph, leaving the dictionary intact.
+    pub fn clear_dataset(&mut self) {
+        self.dataset_index.clear();
+    }
+
+    // ── Term dictionary ─────────────────────────────────────────────────────────
+
+    /// Read access to the term dictionary.
+    pub fn dictionary(&self) -> DictionaryRef<'_> {
+        self.dictionary.read()
+    }
+
+    /// Write access to the term dictionary, for interning new terms.
+    pub fn dictionary_mut(&self) -> DictionaryMut<'_> {
+        self.dictionary.write()
+    }
+
+    /// Whether `self` and `other` encode terms through the same dictionary, as
+    /// opposed to holding separate ones.
+    ///
+    /// Replaces `Arc::ptr_eq` on the raw field: it states the property callers
+    /// actually test — whether two databases are isolated — without the handle
+    /// having to be public.
+    pub fn shares_dictionary_with(&self, other: &SparqlDatabase) -> bool {
+        self.dictionary.shares_space_with(&other.dictionary)
+    }
+
+    /// This store's term space, as an encoder another component can adopt.
+    ///
+    /// The way to share one encoding between a store and a reasoner, or between two
+    /// engines. It shares rather than copies — a term interned through it is
+    /// immediately visible here — and it hands back an opaque
+    /// [`SharedTerms`] rather than the
+    /// `Arc<RwLock<_>>` underneath, which is what P5 asks and what replaced the two
+    /// handle methods this used to sit beside.
+    pub fn terms(&self) -> SharedTerms {
+        self.dictionary.clone()
+    }
+
+    /// Adopts another component's term space, replacing this store's own.
+    ///
+    /// The counterpart to [`terms`](Self::terms), and the same operation a
+    /// [`Reasoner`](datalog::reasoning::Reasoner) offers, so two components agree on
+    /// one encoding the same way whichever of them is adopting. Several places used
+    /// to assign the dictionary field directly, which only worked from inside this
+    /// crate and said nothing about what it was for.
+    ///
+    /// Sharing, not copying: a term interned afterwards through either side is
+    /// visible to both. Code that assigns a handle and then assigns it back to
+    /// "sync" the result is doing nothing, which `shared_term_space_test` pins.
+    pub fn adopt_terms(&mut self, terms: SharedTerms) {
+        self.dictionary = terms;
+    }
+
+    // ── Accessors for fields sealed in stage 2a ─────────────────────────────────
+    //
+    // Twelve fields left the public API here. They stay `pub(crate)` rather than
+    // becoming fully private: the goal is that no *consumer* depends on the layout,
+    // and changing the representation later is then a within-crate refactor. Making
+    // them private as well would mean accessors for ~250 internal sites, which buys
+    // nothing a consumer can observe.
+    //
+    // Each accessor below matches what the 79 external call sites actually did —
+    // measured by sealing the fields and reading the compiler's E0616 list, not by
+    // grepping for field names. Grep over-counted by up to 2x, because `model_decls`,
+    // `probability_seeds` and friends are also fields on CombinedQuery, Rule,
+    // CompiledProgram and Reasoner.
+
+    /// The ML execution policy: which models are approved, and where artifacts live.
+    pub fn ml_context(&self) -> &crate::ml_policy::MlExecutionContext {
+        &self.ml_context
+    }
+
+    /// Replaces the ML execution policy.
+    pub fn set_ml_context(&mut self, context: crate::ml_policy::MlExecutionContext) {
+        self.ml_context = context;
+    }
+
+    /// When planning statistics are rebuilt rather than reused.
+    pub fn planning_stats_policy(&self) -> PlanningStatsPolicy {
+        self.planning_stats_policy
+    }
+
+    /// Sets when planning statistics are rebuilt.
+    pub fn set_planning_stats_policy(&mut self, policy: PlanningStatsPolicy) {
+        self.planning_stats_policy = policy;
+    }
+
+    /// How many times planning statistics have been rebuilt. Used by tests to assert
+    /// that a policy actually avoided work.
+    pub fn stats_rebuild_count(&self) -> u64 {
+        self.stats_rebuild_count
+    }
+
+    /// Prefix bindings, for resolving abbreviated terms.
+    pub fn prefixes(&self) -> &HashMap<String, String> {
+        &self.prefixes
+    }
+
+    /// Binds `prefix` to `uri`, replacing any existing binding.
+    pub fn add_prefix(&mut self, prefix: impl Into<String>, uri: impl Into<String>) {
+        self.prefixes.insert(prefix.into(), uri.into());
+    }
+
+    /// Merges a set of prefix bindings in, replacing any that collide.
+    ///
+    /// The parsers produce prefixes as a map, so callers had been reaching for
+    /// `prefixes.extend(..)` on the field directly.
+    pub fn extend_prefixes(&mut self, bindings: impl IntoIterator<Item = (String, String)>) {
+        self.prefixes.extend(bindings);
+    }
+
+    /// Declared ML models, by name.
+    pub fn model_decls(&self) -> &HashMap<String, ModelDecl> {
+        &self.model_decls
+    }
+
+    /// Declared neural relations, by predicate.
+    pub fn neural_relation_decls(&self) -> &HashMap<String, NeuralRelationDecl> {
+        &self.neural_relation_decls
+    }
+
+    /// Resolved artifact paths for trained models, by model name.
+    pub fn neural_model_artifacts(&self) -> &HashMap<String, String> {
+        &self.neural_model_artifacts
+    }
+
+    /// Triples materialised by neural relations, by predicate.
+    pub fn neural_materialized_triples(&self) -> &HashMap<String, Vec<Triple>> {
+        &self.neural_materialized_triples
+    }
+
+    /// Takes the triples materialised for `predicate`, so they can be retracted.
+    pub fn take_neural_materialized(&mut self, predicate: &str) -> Option<Vec<Triple>> {
+        self.neural_materialized_triples.remove(predicate)
+    }
+
+    /// Per-triple prior probabilities seeded into probabilistic reasoning.
+    pub fn probability_seeds(&self) -> &HashMap<Triple, f64> {
+        &self.probability_seeds
+    }
+
+    /// Maps a short rule name to its expanded IRI.
+    pub fn add_rule_mapping(&mut self, name: impl Into<String>, expanded: impl Into<String>) {
+        self.rule_map.insert(name.into(), expanded.into());
+    }
+
+    /// Read access to the quoted-triple store.
+    ///
+    /// Returns a guard rather than the `Arc<RwLock<_>>` itself. P5 forbids
+    /// `Arc<RwLock<_>>` in public signatures, and a getter handing back the `Arc`
+    /// would seal the field while freezing both the representation and the locking
+    /// strategy — the same encapsulation-in-name-only that stage 1 avoided.
+    pub fn quoted_triples(&self) -> QuotedTriplesRef<'_> {
+        QuotedTriplesRef(self.quoted_triple_store.read().unwrap())
+    }
+
+    /// Write access to the quoted-triple store. See [`Self::quoted_triples`].
+    pub fn quoted_triples_mut(&self) -> QuotedTriplesMut<'_> {
+        QuotedTriplesMut(self.quoted_triple_store.write().unwrap())
+    }
+
+    /// Whether `self` and `other` share one quoted-triple store, as opposed to
+    /// holding separate ones.
+    ///
+    /// Replaces `Arc::ptr_eq` on the raw field: it states the property a caller
+    /// actually cares about — whether two databases are isolated — without the
+    /// handle having to be public.
+    pub fn shares_quoted_triples_with(&self, other: &SparqlDatabase) -> bool {
+        Arc::ptr_eq(&self.quoted_triple_store, &other.quoted_triple_store)
+    }
+
+    // ── Accessors for fields sealed in stage 1 ──────────────────────────────────
+    //
+    // These three fields had no consumer outside this crate, so they are private and
+    // reached through the operations below. The operations are deliberately specific
+    // rather than `&mut` getters: handing out `&mut HashMap` would seal the field in
+    // name only and still freeze the representation, which is the thing P4 exists to
+    // avoid. Five further fields were used only inside this file and needed no
+    // accessor at all.
+
+    /// Looks up a registered user-defined function.
+    pub(crate) fn udf(&self, name: &str) -> Option<&ClonableFn> {
+        self.udfs.get(name)
+    }
+
+    /// Records the triples materialised for `cache_key`, so a rerun can undo them.
+    //
+    // Gated to match its only caller, `ml_predict_runtime`. Without this the default
+    // build reports both methods dead — the same thing the step-4a demotions surfaced
+    // for `ml_feature_loader`.
+    #[cfg(feature = "ml")]
+    pub(crate) fn set_ml_materialized(&mut self, cache_key: String, triples: Vec<Triple>) {
+        self.ml_predict_materialized_triples
+            .insert(cache_key, triples);
+    }
+
+    /// Takes the triples previously materialised for `cache_key`, if any.
+    #[cfg(feature = "ml")]
+    pub(crate) fn take_ml_materialized(&mut self, cache_key: &str) -> Option<Vec<Triple>> {
+        self.ml_predict_materialized_triples.remove(cache_key)
+    }
+
+    /// Whether neural relations are materialised implicitly during query execution.
+    pub(crate) fn implicit_neural_materialization(&self) -> bool {
+        self.implicit_neural_materialization
+    }
+
+    /// Sets the flag and returns its previous value, so a caller can restore it.
+    pub(crate) fn set_implicit_neural_materialization(&mut self, enabled: bool) -> bool {
+        std::mem::replace(&mut self.implicit_neural_materialization, enabled)
+    }
+
+    /// The seed a `TRAIN NEURAL RELATION` declaration initialises weights from.
+    ///
+    /// `None`, the default, draws them unseeded, so two runs of the same declaration
+    /// train different models.
+    pub fn training_seed(&self) -> Option<u64> {
+        self.training_seed
+    }
+
+    /// Makes declarative training reproducible by fixing its seed.
+    ///
+    /// Weight initialisation and batch shuffling both derive from it, so the same
+    /// declaration over the same data trains the same model every time. A host that
+    /// has to reproduce or compare a training run sets this; one that wants an
+    /// independent initialisation each time leaves it `None`.
+    ///
+    /// [`program`](crate::program) already took a seed through its own options; this
+    /// is the same control for the declarative path, which had none.
+    pub fn set_training_seed(&mut self, seed: Option<u64>) {
+        self.training_seed = seed;
     }
 
     /// Rebuilds every graph-scoped index, keeping named graphs distinct from the default
@@ -2305,5 +2846,96 @@ impl SparqlDatabase {
             predicate.unwrap(),
             object.unwrap()
         )
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // These two tests live inside the crate because they deliberately write to
+    // `dataset_index` without going through the public helpers, and the field is now
+    // private. Both assert that statistics detect a change they were never told
+    // about — which is a property of the generation check in
+    // `planning_snapshot_is_usable`, not of the invalidation call.
+    //
+    // Rewriting them to use `replace_dataset_index` would have kept them compiling
+    // and silently stopped testing that: it calls `invalidate_stats_cache` itself, so
+    // the generation path would never be exercised. They were moved here instead.
+
+    fn insert(database: &mut SparqlDatabase, index: u32) {
+        database.add_triple_parts(&format!("urn:s{index}"), "urn:p", &format!("{index}"));
+    }
+
+    #[test]
+    fn exact_statistics_notice_a_write_that_bypassed_the_helpers() {
+        let mut database = SparqlDatabase::new();
+        for index in 0..3 {
+            insert(&mut database, index);
+        }
+        assert_eq!(database.get_or_build_stats().total_triples, 3);
+
+        // Insert straight into the index; one lock guard avoids a self-deadlock.
+        let quad = {
+            let mut dictionary = database.dictionary_mut();
+            Quad {
+                subject: dictionary.encode("urn:d"),
+                predicate: dictionary.encode("urn:p"),
+                object: dictionary.encode("4"),
+                graph: GraphId::Default,
+            }
+        };
+        assert!(database.dataset_index.insert_quad(&quad));
+
+        assert_eq!(database.get_or_build_stats().total_triples, 4);
+    }
+
+    #[test]
+    fn a_replacement_index_with_a_lower_generation_is_not_mistaken_for_fresh() {
+        let mut database = SparqlDatabase::new();
+        for index in 0..200 {
+            insert(&mut database, index);
+        }
+        database.set_planning_stats_policy(PlanningStatsPolicy::Bounded {
+            minimum_batch: 1_000,
+            refresh_fraction: 0.90,
+        });
+        let first = database.get_or_build_planning_stats();
+        assert_eq!(first.total_triples, 200);
+
+        let mut replacement = DatasetIndex::new();
+        replacement.insert_quad(&Quad {
+            subject: 1,
+            predicate: 2,
+            object: 3,
+            graph: GraphId::Default,
+        });
+        // Generation 1, lower than the original 200: direct assignment, bypassing
+        // replace_dataset_index so no invalidation is signalled.
+        database.dataset_index = replacement;
+
+        let refreshed = database.get_or_build_planning_stats();
+        assert!(!Arc::ptr_eq(&first, &refreshed));
+        assert_eq!(refreshed.total_triples, 1);
+        assert_eq!(database.get_or_build_stats().total_triples, 1);
+    }
+}
+
+impl shared::quad_source::QuadSource for SparqlDatabase {
+    fn query_default(&self, s: Option<u32>, p: Option<u32>, o: Option<u32>) -> Vec<Triple> {
+        self.dataset_index.query_default(s, p, o)
+    }
+
+    fn for_each_quad(&self, visit: &mut dyn FnMut(GraphId, u32, u32, u32)) {
+        self.dataset_index
+            .for_each_quad(|g, s, p, o| visit(g, s, p, o));
+    }
+
+    fn named_graphs(&self) -> Vec<GraphId> {
+        self.dataset_index.named_graphs()
+    }
+
+    fn count_graph(&self, graph: GraphId) -> usize {
+        self.dataset_index.count_graph(graph)
     }
 }

@@ -1,16 +1,25 @@
-use shared::dictionary::Dictionary;
+//! Rendering a reasoner as a DOT graph, for looking at rather than querying.
+//!
+//! Facts become edges between subject and object nodes labelled by predicate, and
+//! each rule becomes a premise node pointing at a conclusion node, so a rule that
+//! has not fired is still visible. Everything is decoded back to strings, which
+//! makes this the one place where a dictionary id missing from the dictionary
+//! panics rather than degrading.
+
+use crate::reasoning::Reasoner;
+use shared::term_encoder::TermView;
 use shared::terms::{Term, TriplePattern};
 use shared::triple::Triple;
 use std::collections::HashSet;
-use crate::reasoning::Reasoner;
 
 /// Contains a method to convert a specific data structure into a representation in the DOT language
 /// For better visualisation
 pub trait ToDot {
+    /// Renders as a complete DOT `digraph`, ready to hand to Graphviz.
     fn to_dot(&self) -> String;
 }
 
-fn resolve_term_to_string(term: &Term, dictionary: &Dictionary) -> String {
+fn resolve_term_to_string(term: &Term, dictionary: &TermView) -> String {
     match term {
         Term::Variable(s) => s.clone(),
         Term::Constant(c) => String::from(dictionary.decode(*c).unwrap()),
@@ -24,8 +33,7 @@ fn resolve_term_to_string(term: &Term, dictionary: &Dictionary) -> String {
 }
 
 fn triple_patterns_to_dot(triple_patterns: &Vec<TriplePattern>, kg: &Reasoner) -> String {
-
-    let dict = kg.dictionary.read().unwrap();
+    let dict = kg.term_view();
 
     triple_patterns
         .iter()
@@ -44,8 +52,7 @@ fn get_subject_object_iterator(triple: &Triple) -> impl Iterator<Item = u32> {
 }
 
 fn create_nodes(kg: &Reasoner, out: &mut String) {
-
-    let dict = kg.dictionary.read().unwrap();
+    let dict = kg.term_view();
 
     // These ids represent nodes in the knowledge graph (one id for each subject or object)
     let mut all_subject_object_ids: Vec<u32> = kg
@@ -59,7 +66,7 @@ fn create_nodes(kg: &Reasoner, out: &mut String) {
     all_subject_object_ids.sort(); // Sorted ids (in order of creation)
 
     for id in all_subject_object_ids {
-        let name = dict.id_to_string.get(&id).unwrap();
+        let name = dict.decode(id).unwrap();
         out.push_str(&format!("{} [label=\"{}\"]\n", id, name));
     }
 
@@ -78,12 +85,11 @@ fn create_nodes(kg: &Reasoner, out: &mut String) {
 }
 
 fn create_edges(kg: &Reasoner, out: &mut String) {
-
-    let dict = kg.dictionary.read().unwrap();
+    let dict = kg.term_view();
 
     let all_facts = kg.dataset_index.query(None, None, None);
     for triple in all_facts {
-        let label = dict.id_to_string.get(&triple.predicate).unwrap();
+        let label = dict.decode(triple.predicate).unwrap();
         out.push_str(&format!(
             "{} -> {} [label=\"{}\"]\n",
             triple.subject, triple.object, label
@@ -112,4 +118,3 @@ impl ToDot for Reasoner {
         out
     }
 }
-

@@ -55,7 +55,7 @@ fn custom_order_precedes_slicing_and_decoding() {
         ascending[1..2]
     );
     let decoded = make().get_ordered_decoded_triples();
-    let dict = db.dictionary.read().unwrap();
+    let dict = db.dictionary();
     for (encoded, decoded) in ascending.iter().zip(decoded) {
         assert_eq!(dict.decode(encoded.object).unwrap(), decoded.2);
     }

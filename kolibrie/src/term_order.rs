@@ -17,7 +17,7 @@ const CLASS_OTHER: u8 = 2;
 
 /// A comparable view of one solution value
 #[derive(Debug, Clone, Copy)]
-pub struct OrderKey<'a> {
+pub(crate) struct OrderKey<'a> {
     class: u8,
     number: f64,
     lexical: &'a str,
@@ -25,20 +25,23 @@ pub struct OrderKey<'a> {
 
 impl<'a> OrderKey<'a> {
     /// Classifies a value; `None` is an unbound variable
-    pub fn new(value: Option<&'a str>) -> Self {
+    pub(crate) fn new(value: Option<&'a str>) -> Self {
         match value {
             None => OrderKey {
                 class: CLASS_UNBOUND,
                 number: 0.0,
                 lexical: "",
             },
-            Some(value) => match value.parse::<f64>() {
-                Ok(number) => OrderKey {
+            // A term sorts by the number it denotes, which lives in its lexical
+            // form rather than its spelling. Comparing spellings put
+            // `"7"^^<...>` after `"21"^^<...>`.
+            Some(value) => match shared::rdf_term::numeric_value(value) {
+                Some(number) => OrderKey {
                     class: CLASS_NUMBER,
                     number,
                     lexical: value,
                 },
-                Err(_) => OrderKey {
+                None => OrderKey {
                     class: CLASS_OTHER,
                     number: 0.0,
                     lexical: value,
@@ -74,19 +77,19 @@ impl Ord for OrderKey<'_> {
 }
 
 /// Compares two solution values, either of which may be unbound
-pub fn compare(left: Option<&str>, right: Option<&str>) -> Ordering {
+pub(crate) fn compare(left: Option<&str>, right: Option<&str>) -> Ordering {
     OrderKey::new(left).cmp(&OrderKey::new(right))
 }
 
 /// Returns the smallest of the given values, or `None` if there are none
-pub fn minimum<'a, I: IntoIterator<Item = &'a str>>(values: I) -> Option<&'a str> {
+pub(crate) fn minimum<'a, I: IntoIterator<Item = &'a str>>(values: I) -> Option<&'a str> {
     values
         .into_iter()
         .min_by(|left, right| compare(Some(left), Some(right)))
 }
 
 /// Returns the largest of the given values, or `None` if there are none
-pub fn maximum<'a, I: IntoIterator<Item = &'a str>>(values: I) -> Option<&'a str> {
+pub(crate) fn maximum<'a, I: IntoIterator<Item = &'a str>>(values: I) -> Option<&'a str> {
     values
         .into_iter()
         .max_by(|left, right| compare(Some(left), Some(right)))
@@ -101,12 +104,15 @@ mod tests {
 
     /// A spread covering both classes, both zeroes, NaN, and empty strings
     const SPREAD: [&str; 16] = [
-        "9", "100", "50x", "1", "20", "3.5", "abc", "007", "-4", "1e3", "z", "0", "-0",
-        "NaN", "", "  ",
+        "9", "100", "50x", "1", "20", "3.5", "abc", "007", "-4", "1e3", "z", "0", "-0", "NaN", "",
+        "  ",
     ];
 
     fn keys(values: &[&'static str]) -> Vec<OrderKey<'static>> {
-        values.iter().map(|value| OrderKey::new(Some(value))).collect()
+        values
+            .iter()
+            .map(|value| OrderKey::new(Some(value)))
+            .collect()
     }
 
     #[test]

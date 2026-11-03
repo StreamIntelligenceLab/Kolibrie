@@ -12,8 +12,6 @@
 [![Chat Server](https://img.shields.io/badge/chat-discord-7289da.svg)](https://discord.gg/KcFXrUUyYm)
 <!--![Crates.io](https://img.shields.io/crates/v/sparql_database.svg)-->
 
-[ [English](README.md) | [Nederlands](docs/README.nl.md) | [Deutsch](docs/README.de.md) | [Español](docs/README.es.md) | [Français](docs/README.fr.md) | [日本語](docs/README.ja.md) ]
-
 **Kolibrie** is a high-performance, concurrent, and feature-rich SPARQL query engine implemented in Rust. Designed for scalability and efficiency, it leverages Rust's robust concurrency model and advanced optimizations, including SIMD (Single Instruction, Multiple Data) and parallel processing with Rayon, to handle large-scale RDF (Resource Description Framework) datasets seamlessly.
 
 With a comprehensive API, **Kolibrie** facilitates parsing, storing, and querying RDF data using SPARQL, Turtle, and N3 formats. Its advanced filtering, aggregation, join operations, and sophisticated optimization strategies make it a suitable choice for applications requiring complex semantic data processing. Additionally, the integration of the Volcano Optimizer and Knowledge Graph capabilities empowers users to perform cost-effective query planning and leverage rule-based inference for enhanced data insights.
@@ -34,9 +32,11 @@ For more information about our research and ongoing projects, please visit the [
 - **Reasoner**: Provides robust support for building and querying knowledge graphs, including ABox (instance-level) and TBox (schema-level) assertions, dynamic rule-based inference, and backward chaining.
 - **Streaming and Sliding Windows**: Handles timestamped triples and sliding window operations for time-based data analysis.
 - **Machine Learning Integration**: Seamlessly integrates with Python ML frameworks through PyO3 bindings.
-- **Extensible Dictionary Encoding**: Efficiently encodes and decodes RDF terms using a customizable dictionary.
-- **Comprehensive API**: Offers a rich set of methods for data manipulation, querying, and result processing.
-- **Support Python**
+- **Typed RDF terms**: Literals keep their datatype and language tag, blank node labels are scoped to the document they came from, and every reader spells a term the same way, so data loaded as Turtle joins against data loaded as N-Triples.
+- **Data exchange**: Skolemisation replaces blank nodes with globally unique IRIs, so two systems can merge each other's graphs without fusing unrelated nodes.
+- **Dictionary encoding**: Terms are interned as `u32` ids, which is what makes a join a comparison of integers rather than of strings.
+- **One dependency**: [`kolibrie-api`](kolibrie-api) re-exports the workspace, so a consumer names one crate instead of four.
+- **Python bindings**: The query API, the RSP engine, Datalog reasoning and the term helpers, all from Python.
 
 ## Installation
 
@@ -60,7 +60,7 @@ cargo build --release
 Then, include it in your project:
 
 ```rust
-use kolibrie::SparqlDatabase;
+use kolibrie::sparql_database::SparqlDatabase;
 ```
 
 ### WebUI
@@ -155,13 +155,23 @@ docker run -it \
 Create a new instance of the `SparqlDatabase`:
 
 ```rust
-use kolibrie::SparqlDatabase;
+use kolibrie::sparql_database::SparqlDatabase;
 
 fn main() {
     let mut db = SparqlDatabase::new();
     // Your code here
 }
 ```
+
+<!-- readme-examples: preamble
+use kolibrie::prelude::*;
+use kolibrie::sparql_database::SparqlDatabase;
+use kolibrie::execute_query::{execute, execute_sparql_update};
+let mut db = SparqlDatabase::new();
+let mut other_db = SparqlDatabase::new();
+-->
+
+The snippets that follow assume that `db`, and the imports above, are in scope.
 
 ### Parsing RDF Data
 
@@ -255,8 +265,6 @@ Execute SPARQL queries to retrieve and manipulate data.
 #### Basic SELECT Query
 
 ```rust
-use kolibrie::execute_query::execute_query;
-
 let sparql_query = r#"
 PREFIX ex: <http://example.org/>
 SELECT ?s ?o
@@ -265,7 +273,9 @@ WHERE {
 }
 "#;
 
-let results = execute_query(sparql_query, &mut db);
+let results = execute(sparql_query, &mut db)
+    .expect("the query should run")
+    .into_rows();
 
 for row in results {
     println!("Subject: {}, Object: {}", row[0], row[1]);
@@ -282,7 +292,7 @@ The unified path supports recursive `GRAPH` patterns with fixed or variable
 graph names, nested groups, and multiset `UNION`:
 
 ```rust
-let rows = execute_query_rayon_parallel2_volcano(
+let rows = execute(
     r#"
     PREFIX ex: <http://example.org/>
     SELECT DISTINCT ?g ?item WHERE {
@@ -292,7 +302,7 @@ let rows = execute_query_rayon_parallel2_volcano(
     }
     "#,
     &mut db,
-);
+).expect("the query should run").into_rows();
 ```
 
 `GRAPH <name>` reads only that named graph. `GRAPH ?g` iterates named graph
@@ -314,12 +324,16 @@ and each `WHERE` uses the same parser, logical planner, optimizer, and executor
 as SELECT.
 
 ```rust
-db.execute_update(r#"
+execute_sparql_update(
+    r#"
     PREFIX ex: <http://example.org/>
     DELETE { ?s ex:oldValue ?value }
     INSERT { GRAPH ex:archive { ?s ex:value ?value } }
     WHERE  { ?s ex:oldValue ?value }
-"#)?;
+    "#,
+    &mut db,
+)
+.expect("the update should run");
 ```
 
 Supported forms are `INSERT DATA`, `DELETE DATA`, `INSERT ... WHERE`,
@@ -343,7 +357,7 @@ WHERE {
 }
 "#;
 
-let results = execute_query(sparql, &mut db);
+let results = execute(sparql, &mut db).expect("the query should run").into_rows();
 
 for row in results {
     println! ("Event: {}, Attendees: {}", row[0], row[1]);
@@ -365,7 +379,7 @@ WHERE {
 }
 "#;
 
-let results = execute_query(sparql, &mut db);
+let results = execute(sparql, &mut db).expect("the query should run").into_rows();
 
 for row in results {
     if let [name, type_, attendees] = &row[.. ] {
@@ -389,7 +403,7 @@ WHERE {
 LIMIT 2
 "#;
 
-let results = execute_query(sparql, &mut db);
+let results = execute(sparql, &mut db).expect("the query should run").into_rows();
 
 for row in results {
     println!("Name: {}, Type: {}", row[0], row[1]);
@@ -409,7 +423,7 @@ WHERE {
 GROUPBY ?average_salary
 "#;
 
-let results = execute_query(sparql, &mut db);
+let results = execute(sparql, &mut db).expect("the query should run").into_rows();
 
 for row in results {
     if let [avg_salary] = &row[.. ] {
@@ -439,7 +453,7 @@ WHERE {
 }
 "#;
 
-let results = execute_query(sparql, &mut db);
+let results = execute(sparql, &mut db).expect("the query should run").into_rows();
 
 for row in results {
     println!("Full Name: {}", row[0]);
@@ -464,7 +478,7 @@ WHERE {
     }
 }"#;
 
-let results = execute_query(sparql, &mut db);
+let results = execute(sparql, &mut db).expect("the query should run").into_rows();
 
 for row in results {
     println!("Alice's Friend: {}", row[0]);
@@ -495,7 +509,7 @@ let results = db.query()
     .with_predicate("http://xmlns.com/foaf/0.1/age")
     .filter(|triple| {
         // Custom filter logic
-        db.dictionary.decode(triple.object)
+        db.dictionary().decode(triple.object)
             .and_then(|age| age.parse::<i32>().ok())
             .map(|age| age > 25)
             .unwrap_or(false)
@@ -525,7 +539,7 @@ let results = db.query()
 let results = db.query()
     .with_predicate("http://xmlns.com/foaf/0.1/name")
     .order_by(|triple| {
-        db.dictionary.decode(triple.object).unwrap().to_string()
+        db.dictionary().decode(triple.object).unwrap().to_string()
     })
     .distinct()
     .limit(10)
@@ -575,13 +589,97 @@ fn main() {
     "#;
 
     // Execute the query with optimized plan
-    let results = execute_query(sparql_query, &mut db);
+    let results = execute(sparql_query, &mut db).expect("the query should run").into_rows();
 
     for row in results {
         println!("Person: {}, Friend: {}, Friend's Name: {}", row[0], row[1], row[2]);
     }
 }
 ```
+
+### Working with RDF terms
+
+A term is stored as the text that identifies it, and that text is its identity: two
+terms spelled alike share one dictionary id and cannot be told apart again. So a
+literal carries its datatype, and reading a *value* out of one is an operation rather
+than a cast.
+
+<!-- readme-examples: preamble none -->
+
+```rust
+use kolibrie::sparql_database::SparqlDatabase;
+use shared::rdf_term::{kind_of, numeric_value, spell_literal, TermKind};
+
+fn main() {
+    const XSD_INTEGER: &str = "http://www.w3.org/2001/XMLSchema#integer";
+
+    // A literal is spelled bare where it can be and quoted where it must be, so a
+    // plain literal and an IRI keep the text they always had.
+    assert_eq!(spell_literal("25", None, None), "25");
+    assert_eq!(
+        spell_literal("25", Some(XSD_INTEGER), None),
+        "\"25\"^^<http://www.w3.org/2001/XMLSchema#integer>"
+    );
+
+    // RDF 1.1 §3.3: a plain literal *is* an xsd:string literal, so they are one term.
+    assert_eq!(
+        spell_literal("25", Some("http://www.w3.org/2001/XMLSchema#string"), None),
+        spell_literal("25", None, None)
+    );
+
+    // The number lives in the lexical form, not the spelling.
+    let typed = spell_literal("30", Some(XSD_INTEGER), None);
+    assert_eq!(numeric_value(&typed), Some(30.0));
+    assert_eq!(kind_of(&typed), TermKind::Literal);
+    assert_eq!(kind_of("http://example.org/alice"), TermKind::Iri);
+
+    // Which is what lets the engine aggregate typed data.
+    let mut db = SparqlDatabase::new();
+    db.parse_ntriples_and_add(&format!(
+        "<urn:a> <urn:age> \"30\"^^<{XSD_INTEGER}> .\n<urn:b> <urn:age> \"12\"^^<{XSD_INTEGER}> .\n"
+    ));
+    let rows = kolibrie::execute_query::execute(
+        "SELECT SUM(?age) WHERE { ?s <urn:age> ?age }",
+        &mut db,
+    )
+    .expect("the query should run")
+    .into_rows();
+    assert_eq!(rows, vec![vec!["42".to_string()]]);
+}
+```
+
+#### Blank nodes and exchanging data
+
+A blank node label identifies a node only within the document it came from, so the
+readers scope it. Publishing a graph for another system to merge means replacing
+blank nodes with IRIs, which RDF 1.1 §3.5 calls skolemisation:
+
+```rust
+use kolibrie::sparql_database::SparqlDatabase;
+
+fn main() {
+    let mut db = SparqlDatabase::new();
+    db.parse_ntriples_and_add("_:b <urn:reading> \"1\" .\n");
+
+    // Document-local, and sound only inside this store: a second instance counts
+    // its own scopes from one and would mint the same label.
+    assert!(db.generate_ntriples().contains("_:kolibrie-doc-"));
+
+    // Under an authority you control, the IRI is global, so a merge is safe. The
+    // base is required for exactly that reason.
+    let published = db.generate_ntriples_skolemised("http://alice.example");
+    assert!(published.contains("<http://alice.example/.well-known/genid/"));
+    assert!(!published.contains("_:"));
+}
+```
+
+<!-- readme-examples: preamble
+use kolibrie::prelude::*;
+use kolibrie::sparql_database::SparqlDatabase;
+use kolibrie::execute_query::{execute, execute_sparql_update};
+let mut db = SparqlDatabase::new();
+let mut other_db = SparqlDatabase::new();
+-->
 
 ### Working with the Reasoner
 
@@ -590,7 +688,7 @@ The **Reasoner** component allows you to build and manage semantic networks with
 #### Example: Building and Querying a Reasoner
 
 ```rust
-use datalog::knowledge_graph::Reasoner;
+use datalog::reasoning::Reasoner;
 use shared::terms::Term;
 use shared::rule::Rule;
 
@@ -604,22 +702,23 @@ fn main() {
     // Define a transitivity rule for ancestorOf relationship
     // Rule: parentOf(X, Y) ∧ parentOf(Y, Z) → ancestorOf(X, Z)
     let ancestor_rule = Rule {
+        negative_premise: vec![],
         premise: vec![
             (
                 Term::Variable("X".to_string()),
-                Term::Constant(kg.dictionary.encode("parentOf")),
+                Term::Constant(kg.encode_term("parentOf")),
                 Term::Variable("Y".to_string()),
             ),
             (
                 Term::Variable("Y". to_string()),
-                Term::Constant(kg.dictionary.encode("parentOf")),
+                Term::Constant(kg.encode_term("parentOf")),
                 Term::Variable("Z".to_string()),
             ),
         ],
         conclusion: vec![
             (
                 Term::Variable("X".to_string()),
-                Term::Constant(kg.dictionary.encode("ancestorOf")),
+                Term::Constant(kg.encode_term("ancestorOf")),
                 Term::Variable("Z".to_string()),
             )
         ],
@@ -643,8 +742,8 @@ fn main() {
     for triple in results {
         println!(
             "{} is ancestor of {}",
-            kg.dictionary.decode(triple.subject).unwrap(),
-            kg. dictionary.decode(triple.object). unwrap()
+            kg.decode_term(triple.subject).unwrap(),
+            kg.decode_term(triple.object).unwrap()
         );
     }
 }
@@ -660,413 +759,30 @@ Alice is ancestor of Charlie
 
 **All machine learning examples can be found [here](https://github.com/StreamIntelligenceLab/Kolibrie/tree/main/kolibrie/examples/sparql_syntax/combination)**.
 
-## API Documentation
-
-### `SparqlDatabase` Struct
-
-The `SparqlDatabase` struct is the core component representing the RDF store and providing methods for data manipulation and querying.
-
-```rust
-pub struct SparqlDatabase {
-    pub triples: BTreeSet<Triple>,
-    pub streams: Vec<TimestampedTriple>,
-    pub sliding_window: Option<SlidingWindow>,
-    pub dictionary: Dictionary,
-    pub prefixes: HashMap<String, String>,
-    pub udfs: HashMap<String, ClonableFn>,
-    pub index_manager: UnifiedIndex,
-    pub rule_map: HashMap<String, String>,
-    pub cached_stats: Option<Arc<DatabaseStats>>,
-}
-```
-
-#### Fields
-
-- **triples**: Stores RDF triples in a sorted set for efficient querying. 
-- **streams**: Holds timestamped triples for streaming and temporal queries.
-- **sliding_window**: Optional sliding window for time-based data analysis.
-- **dictionary**: Encodes and decodes RDF terms for storage efficiency.
-- **prefixes**: Manages namespace prefixes for resolving prefixed terms.
-- **udfs**: User-defined functions registry for custom operations.
-- **index_manager**: Unified indexing system for optimized query performance.
-- **rule_map**: Maps rule names to their definitions.
-- **cached_stats**: Cached database statistics for query optimization.
-
-### `Streamertail` Struct
-
-The `Streamertail` implements a cost-based query optimizer based on the Volcano model.  It transforms logical query plans into efficient physical plans by evaluating different physical operators and selecting the one with the lowest estimated cost.
-
-```rust
-pub struct Streamertail<'a> {
-    pub stats: Arc<DatabaseStats>,
-    pub memo: HashMap<String, (PhysicalOperator, f64)>,
-    pub selected_variables: Vec<String>,
-    database: &'a SparqlDatabase,
-}
-```
-
-#### Fields
-
-- **stats**: Shared statistical information about the database to aid in cost estimation.
-- **memo**: Caches optimized physical operators with their costs to avoid redundant computations.
-- **selected_variables**: Keeps track of variables selected in the query. 
-- **database**: Reference to the SPARQL database for query execution.
-
-### `Reasoner` Struct
-
-The `Reasoner` struct manages instance-level (ABox) assertions, supports dynamic rule-based inference, and provides querying capabilities with forward chaining, backward chaining, and semi-naive evaluation.
-
-```rust
-pub struct Reasoner {
-    pub dictionary: Dictionary,
-    pub rules: Vec<Rule>,
-    pub index_manager: UnifiedIndex,
-    pub rule_index: RuleIndex,
-    pub constraints: Vec<Rule>,
-}
-```
-
-#### Fields
-
-- **dictionary**: Encodes and decodes RDF terms for storage efficiency. 
-- **rules**: Contains dynamic rules for inferencing new knowledge.
-- **index_manager**: Unified indexing system for storing and querying triples.
-- **rule_index**: Specialized index for efficient rule matching.
-- **constraints**: Integrity constraints for inconsistency detection and repair.
-
-### Core Methods
-
-#### `SparqlDatabase::new() -> Self`
-
-Creates a new, empty `SparqlDatabase`.
-
-```rust
-let mut db = SparqlDatabase::new();
-```
-
-#### `parse_rdf_from_file(&mut self, filename: &str)`
-
-Parses RDF/XML data from a specified file and populates the database.
-
-```rust
-db.parse_rdf_from_file("data. rdf");
-```
-
-#### `parse_rdf(&mut self, rdf_xml: &str)`
-
-Parses RDF/XML data from a string. 
-
-```rust
-let rdf_xml = r#"<rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#">... </rdf:RDF>"#;
-db.parse_rdf(rdf_xml);
-```
-
-#### `parse_turtle(&mut self, turtle_data: &str)`
-
-Parses Turtle-formatted RDF data from a string.
-
-```rust
-let turtle_data = r#"
-@prefix ex: <http://example.org/> . 
-
-ex:Alice ex:knows ex:Bob .
-"#;
-db.parse_turtle(turtle_data);
-```
-
-#### `parse_n3(&mut self, n3_data: &str)`
-
-Parses N3-formatted RDF data from a string.
-
-```rust
-let n3_data = r#"
-@prefix ex: <http://example.org/> . 
-
-ex:Alice ex:knows ex:Bob .
-"#;
-db.parse_n3(n3_data);
-```
-
-#### `parse_ntriples_and_add(&mut self, ntriples_data: &str)`
-
-Parses N-Triples data and adds it to the database.
-
-```rust
-let ntriples_data = r#"
-<http://example.org/john> <http://example.org/hasFriend> <http://example.org/jane> . 
-<http://example.org/jane> <http://example.org/name> "Jane Doe" .
-"#;
-db.parse_ntriples_and_add(ntriples_data);
-```
-
-#### `add_triple_parts(&mut self, subject: &str, predicate: &str, object: &str)`
-
-Adds a triple to the database by encoding its parts.
-
-```rust
-db.add_triple_parts(
-    "http://example.org/alice",
-    "http://xmlns.com/foaf/0. 1/name",
-    "Alice"
-);
-```
-
-#### `delete_triple_parts(&mut self, subject: &str, predicate: &str, object: &str) -> bool`
-
-Deletes a triple from the database and returns whether it was successfully removed.
-
-```rust
-let deleted = db.delete_triple_parts(
-    "http://example.org/alice",
-    "http://xmlns.com/foaf/0.1/age",
-    "30"
-);
-```
-
-#### `build_all_indexes(&mut self)`
-
-Builds all indexes from the current triples for optimized query performance.
-
-```rust
-db.build_all_indexes();
-```
-
-#### `get_or_build_stats(&mut self) -> Arc<DatabaseStats>`
-
-Gets cached statistics or builds new statistics for query optimization.
-
-```rust
-let stats = db.get_or_build_stats();
-```
-
-#### `invalidate_stats_cache(&mut self)`
-
-Invalidates the statistics cache after data modifications.
-
-```rust
-db.invalidate_stats_cache();
-```
-
-#### `query(&self) -> QueryBuilder`
-
-Returns a QueryBuilder instance for programmatic query construction.
-
-```rust
-let results = db.query()
-    .with_predicate("http://xmlns.com/foaf/0. 1/name")
-    .get_objects();
-```
-
-#### `register_udf<F>(&mut self, name: &str, f: F)`
-
-Registers a user-defined function for use in queries. 
-
-```rust
-db.register_udf("toUpperCase", |args: Vec<&str>| {
-    args[0].to_uppercase()
-});
-```
-
-#### `generate_rdf_xml(&mut self) -> String`
-
-Generates RDF/XML representation of the database. 
-
-```rust
-let rdf_xml = db.generate_rdf_xml();
-```
-
-#### `decode_triple(&self, triple: &Triple) -> Option<(&str, &str, &str)>`
-
-Decodes a triple to its string representation.
-
-```rust
-if let Some((s, p, o)) = db. decode_triple(&triple) {
-    println!("{} - {} - {}", s, p, o);
-}
-```
-
-### `Streamertail` Methods
-
-#### `new(database: &SparqlDatabase) -> Self`
-
-Creates a new instance of the `Streamertail` with statistical data gathered from the provided database.
-
-```rust
-let optimizer = Streamertail::new(&db);
-```
-
-#### `with_cached_stats(stats: Arc<DatabaseStats>) -> Self`
-
-Creates a new optimizer with pre-computed statistics for better performance.
-
-```rust
-let stats = db.get_or_build_stats();
-let optimizer = Streamertail::with_cached_stats(stats);
-```
-
-#### `find_best_plan(&mut self, logical_plan: &LogicalOperator) -> PhysicalOperator`
-
-Determines the most efficient physical execution plan for a given logical query plan.
-
-```rust
-let best_plan = optimizer.find_best_plan(&logical_plan);
-```
-
-#### `execute_plan(&mut self, plan: &PhysicalOperator, database: &mut SparqlDatabase) -> Vec<BTreeMap<String, String>>`
-
-Executes an optimized physical plan and returns the query results.
-
-```rust
-let results = optimizer.execute_plan(&physical_plan, &mut db);
-```
-
-### `Reasoner` Methods
-
-#### `new() -> Self`
-
-Creates a new, empty `Reasoner`. 
-
-```rust
-let mut kg = Reasoner::new();
-```
-
-#### `add_abox_triple(&mut self, subject: &str, predicate: &str, object: &str)`
-
-Adds an ABox triple (instance-level information) to the knowledge graph.
-
-```rust
-kg.add_abox_triple("Alice", "knows", "Bob");
-```
-
-#### `query_abox(&mut self, subject: Option<&str>, predicate: Option<&str>, object: Option<&str>) -> Vec<Triple>`
-
-Queries the ABox for instance-level assertions based on optional subject, predicate, and object filters.
-
-```rust
-let results = kg.query_abox(Some("Alice"), Some("knows"), None);
-```
-
-#### `add_rule(&mut self, rule: Rule)`
-
-Adds a dynamic rule to the knowledge graph for inferencing.
-
-```rust
-let rule = Rule {
-    premise: vec![... ],
-    conclusion: vec![... ],
-    filters: vec![],
-};
-kg.add_rule(rule);
-```
-
-#### `infer_new_facts(&mut self) -> Vec<Triple>`
-
-Performs naive forward chaining to derive new triples. 
-
-```rust
-let inferred = kg.infer_new_facts();
-println!("Inferred {} new facts", inferred.len());
-```
-
-#### `infer_new_facts_semi_naive(&mut self) -> Vec<Triple>`
-
-Performs semi-naive evaluation for more efficient forward chaining.
-
-```rust
-let inferred = kg.infer_new_facts_semi_naive();
-```
-
-#### `infer_new_facts_semi_naive_parallel(&mut self) -> Vec<Triple>`
-
-Performs parallel semi-naive evaluation for large-scale inference.
-
-```rust
-let inferred = kg.infer_new_facts_semi_naive_parallel();
-```
-
-#### `backward_chaining(&self, query: &TriplePattern) -> Vec<HashMap<String, Term>>`
-
-Performs backward chaining to answer queries by deriving solutions from rules.
-
-```rust
-let query_pattern = (
-    Term::Variable("X".to_string()),
-    Term::Constant(kg.dictionary.encode("knows")),
-    Term::Variable("Y".to_string())
-);
-
-let results = kg.backward_chaining(&query_pattern);
-```
-
-#### `add_constraint(&mut self, constraint: Rule)`
-
-Adds an integrity constraint to the knowledge graph. 
-
-```rust
-kg.add_constraint(constraint);
-```
-
-#### `infer_new_facts_semi_naive_with_repairs(&mut self) -> Vec<Triple>`
-
-Performs inference while handling inconsistencies through automatic repair.
-
-```rust
-let inferred = kg.infer_new_facts_semi_naive_with_repairs();
-```
-
-#### `query_with_repairs(&self, query: &TriplePattern) -> Vec<HashMap<String, u32>>`
-
-Queries the knowledge graph using inconsistency-tolerant semantics (IAR).
-
-```rust
-let results = kg.query_with_repairs(&query_pattern);
-```
-
-## Performance
-
-**Kolibrie** is optimized for high performance through:
-
-- **Parallel Parsing and Processing**: Utilizes Rayon and Crossbeam for multi-threaded data parsing and query execution.
-- **SIMD Instructions**: Implements SIMD operations to accelerate filtering and aggregation tasks.
-- **Volcano Optimizer**: Employs a cost-based query optimizer to generate efficient physical execution plans, minimizing query execution time.
-- **Knowledge Graph Inference**: Leverages rule-based inference and backward chaining to derive new knowledge without significant performance overhead. 
-- **Efficient Data Structures**: Employs `BTreeSet` for sorted storage and `HashMap` for prefix management, ensuring quick data retrieval and manipulation. 
-- **Memory Optimization**: Uses dictionary encoding to minimize memory footprint by reusing repeated terms.
-
-### Benchmarking Results
-
-Our benchmarks demonstrate Kolibrie's superior performance compared to other popular RDF engines.  The following tests were conducted using:
-- **Dataset**: [WatDiv](https://dsg.uwaterloo.ca/watdiv/) 10M triples benchmark
-- **Oxigraph Configuration**: RocksDB backend for optimal performance
-- **Deep Taxonomy Reasoning**: Hierarchy depth testing up to 10K levels
-
-#### WatDiv 10M - Query Performance Comparison (20 runs each)
-
-![WatDiv 10M Query Performance](docs/img/image1.png)
-
-*Figure 1: Query execution times across different SPARQL engines using the WatDiv 10M dataset*
-
-**Key Findings:**
-- Kolibrie consistently outperforms competitors across all query types (L1-L5, S1-S7, F1-F3, C1-C3)
-- Average query execution time: **sub-millisecond to low millisecond range**
-- Blazegraph and QLever show competitive performance on specific query patterns
-- Oxigraph (with RocksDB) demonstrates stable performance across all queries
-
-The running example can be found [here](https://github.com/StreamIntelligenceLab/Kolibrie/blob/main/kolibrie/examples/sparql_syntax/n_triples_data/n_triple_10M.rs)
-
-#### Deep Taxonomy - Reasoning over Hierarchy Depth
-
-![Deep Taxonomy Reasoning Performance](docs/img/image2.png)
-
-*Figure 2: Reasoning performance across different hierarchy depths (10, 100, 1K, 10K levels)*
-
-**Key Findings:**
-- Kolibrie shows **logarithmic scaling** with hierarchy depth
-- At 10K hierarchy levels, Kolibrie maintains sub-second response times
-- Superior performance compared to Apache Jena and EYE reasoner
-- Efficient handling of complex taxonomic structures
-
-The running example can be found [here](https://github.com/StreamIntelligenceLab/Kolibrie/blob/main/kolibrie/examples/sparql_syntax/knowledge_graph/deep_taxonomy.rs)
+## API documentation
+
+Two generated references, neither written by hand:
+
+- **[`cargo doc --workspace --open`]** is the authority. It carries the types, the
+  bounds, the panics and the prose, and it cannot disagree with the code because it
+  *is* the code.
+- **[`docs/api.md`](docs/api.md)** is the index: every public item, by crate and
+  file, generated by `scripts/api_surface.py`. It exists so a change to the public
+  surface shows up in a diff.
+
+How the workspace fits together — the crate graph, the modules of `kolibrie`
+arranged into layers, and what depends on what — is in
+[`docs/architecture.md`](docs/architecture.md), generated by
+`scripts/module_graph.py`.
+
+There used to be 371 lines here restating method signatures by hand, and they
+drifted: three methods that no longer existed were documented for a while after they
+were removed, here and in five translations that are gone for the same reason --
+nothing checked any of them. `scripts/verify.sh` now checks that `docs/api.md`
+matches the source and that every example in this README still compiles, so neither
+can go stale quietly again.
+
+[`cargo doc --workspace --open`]: https://doc.rust-lang.org/cargo/commands/cargo-doc.html
 
 ## How to Contribute
 

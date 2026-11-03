@@ -8,8 +8,7 @@
  * you can obtain one at https://mozilla.org/MPL/2.0/.
  */
 
-use kolibrie::execute_query::*;
-use kolibrie::sparql_database::*;
+use kolibrie::prelude::*;
 
 // Adding udf
 fn udf() {
@@ -28,8 +27,8 @@ fn udf() {
     database.parse_rdf(rdf_data);
 
     database.register_udf("concatValues", |args: Vec<&str>| {
-		args.join("_") // Concatenates arguments with an underscore
-	});
+        args.join("_") // Concatenates arguments with an underscore
+    });
 
     let sparql = r#"
     PREFIX ex: <http://example.com/>
@@ -39,12 +38,14 @@ fn udf() {
       BIND(concatValues(?object, "suffix") AS ?result)
     }"#;
 
-    let results = execute_query_rayon_parallel2_volcano(sparql, &mut database);
+    let results = execute(sparql, &mut database)
+        .expect("query should run")
+        .into_rows();
 
     // Now the main function is responsible for printing the results
     println!("Results:{:?}", results);
 }
 
 fn main() {
-	udf();
+    udf();
 }

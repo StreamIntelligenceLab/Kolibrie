@@ -27,7 +27,7 @@ fn ranked_database() -> SparqlDatabase {
 
 /// Decodes every object once so the sort key needs no dictionary lock
 fn object_labels(database: &SparqlDatabase) -> HashMap<u32, String> {
-    let dictionary = database.dictionary.read().unwrap();
+    let dictionary = database.dictionary();
     database
         .query_default_triples(None, None, None)
         .iter()

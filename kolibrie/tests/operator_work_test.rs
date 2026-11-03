@@ -27,7 +27,7 @@ fn var(name: &str) -> Term {
 }
 
 fn constant(database: &SparqlDatabase, value: &str) -> Term {
-    Term::Constant(database.dictionary.write().unwrap().encode(value))
+    Term::Constant(database.encode_term(value))
 }
 
 fn quad(pattern: TriplePattern) -> QuadPattern {

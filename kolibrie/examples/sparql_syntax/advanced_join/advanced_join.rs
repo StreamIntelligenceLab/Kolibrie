@@ -8,8 +8,7 @@
  * you can obtain one at https://mozilla.org/MPL/2.0/.
  */
 
-use kolibrie::execute_query::*;
-use kolibrie::sparql_database::*;
+use kolibrie::prelude::*;
 
 // A little bit advanced join
 fn advanced_join() {
@@ -38,7 +37,9 @@ fn advanced_join() {
 
     let sparql = r#"PREFIX ex: <http://example.org/> SELECT ?person ?location ?city ?zipcode WHERE {?person ex:worksAt ?location . ?location ex:located ?city . ?location ex:zipcode ?zipcode}"#;
 
-    let results = execute_query_rayon_parallel2_volcano(sparql, &mut database);
+    let results = execute(sparql, &mut database)
+        .expect("query should run")
+        .into_rows();
 
     // Now the main function is responsible for printing the results
     println!("Results:");
@@ -53,5 +54,5 @@ fn advanced_join() {
 }
 
 fn main() {
-  advanced_join();
+    advanced_join();
 }

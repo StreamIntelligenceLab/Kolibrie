@@ -1,0 +1,169 @@
+"""RDF Stream Processing: windows over streams, and joins across them.
+
+This is the real engine. The query builder's `as_stream` builds something else -- a
+list that accumulates triples and applies limit, offset and distinct to them, with no
+windows and no RSP-QL. `RspEngine` takes an RSP-QL query, opens a stream per window,
+and joins results across the windows as they fire.
+
+Two things to know:
+
+* `timestamp` is the stream's own clock, not wall time. A window of `[RANGE 4 STEP 2]`
+  counts in whatever unit you stamp with, so a test can drive a stream in a loop
+  without waiting for anything.
+* `stop()` flushes every window and waits for the coordinator, so the results are
+  complete when it returns. There is no sleep in this file, and that is the point:
+  the engine used to return from `stop()` while its threads were still working, and
+  callers slept and hoped.
+
+Run with `scripts/smoke_python.py`. Every claim below is asserted.
+"""
+
+import kolibrie
+
+READING = "http://example/Reading"
+HOT_ROOM = "http://example/HotRoom"
+HIGH_CO2 = "http://example/HighCO2"
+
+
+def heading(text):
+    print(f"\n-- {text} " + "-" * max(0, 68 - len(text)))
+
+
+def one_window():
+    heading("One window over one stream")
+    # RANGE is the window's width and STEP how far it moves, both in the stream's
+    # own time unit.
+    engine = kolibrie.RspEngine(
+        f"""
+        REGISTER RSTREAM <http://out/readings> AS
+        SELECT *
+        FROM NAMED WINDOW :recent ON :sensors [RANGE 4 STEP 2]
+        WHERE {{ WINDOW :recent {{ ?s a <{READING}> . }} }}
+        """
+    )
+    assert engine.is_running()
+
+    for tick in range(8):
+        added = engine.add("sensors", f"<http://example/r{tick}> a <{READING}> .", tick)
+        assert added == 1, f"one triple per call, got {added}"
+
+    engine.stop()
+    assert not engine.is_running()
+
+    solutions = engine.results()
+    print(f"  streamed 8 readings, got {len(solutions)} solutions")
+    assert solutions, "a window that fires should produce solutions"
+
+    # Every solution binds the one variable the query selects, to one of the
+    # subjects that was streamed.
+    streamed = {f"http://example/r{tick}" for tick in range(8)}
+    for solution in solutions:
+        bound = dict(solution)
+        assert set(bound) == {"s"}, bound
+        assert bound["s"] in streamed, bound
+    print(f"  distinct subjects seen: {len({dict(s)['s'] for s in solutions})}")
+
+
+def two_windows_joined():
+    heading("Two windows, joined across streams")
+    # One window per stream, and a pattern per window. The two patterns bind
+    # different variables, so a solution pairs a room with a zone.
+    engine = kolibrie.RspEngine(
+        f"""
+        REGISTER RSTREAM <http://out/alerts> AS
+        SELECT *
+        FROM NAMED WINDOW :warm ON :temperature [RANGE 4 STEP 2]
+        FROM NAMED WINDOW :stale ON :co2 [RANGE 4 STEP 2]
+        WHERE {{
+            WINDOW :warm {{ ?room a <{HOT_ROOM}> . }}
+            WINDOW :stale {{ ?zone a <{HIGH_CO2}> . }}
+        }}
+        """
+    )
+
+    for tick in range(6):
+        engine.add("temperature", f"<http://example/room{tick}> a <{HOT_ROOM}> .", tick)
+        engine.add("co2", f"<http://example/zone{tick}> a <{HIGH_CO2}> .", tick)
+
+    engine.stop()
+    solutions = engine.results()
+    print(f"  streamed 6 + 6, got {len(solutions)} joined solutions")
+    for solution in solutions[:3]:
+        bound = dict(solution)
+        print(f"    room={bound['room'].rsplit('/', 1)[-1]:8} zone={bound['zone'].rsplit('/', 1)[-1]}")
+
+    assert solutions, "both windows fired, so the join should produce solutions"
+    # Each solution carries a variable from each window: that is the join.
+    for solution in solutions:
+        bound = dict(solution)
+        assert set(bound) == {"room", "zone"}, bound
+        assert kolibrie.term_kind(bound["room"]) == "iri"
+        assert kolibrie.term_kind(bound["zone"]) == "iri"
+
+
+def results_are_complete_when_stop_returns():
+    heading("stop() waits, so you do not have to")
+    engine = kolibrie.RspEngine(
+        f"""
+        REGISTER RSTREAM <http://out/readings> AS
+        SELECT *
+        FROM NAMED WINDOW :recent ON :sensors [RANGE 2 STEP 1]
+        WHERE {{ WINDOW :recent {{ ?s a <{READING}> . }} }}
+        """
+    )
+    for tick in range(5):
+        engine.add("sensors", f"<http://example/r{tick}> a <{READING}> .", tick)
+
+    engine.stop()
+    settled = engine.result_count()
+    # Read again: nothing arrives late, because stop() joined the window threads and
+    # the coordinator before returning.
+    assert engine.result_count() == settled, "a result arrived after stop() returned"
+    print(f"  {settled} solutions, and the count does not move after stop()")
+
+    # Stopping twice is harmless; using a stopped engine is an error rather than a
+    # silent no-op.
+    engine.stop()
+    try:
+        engine.add("sensors", f"<http://example/late> a <{READING}> .", 99)
+        raise AssertionError("adding to a stopped engine should raise")
+    except RuntimeError as error:
+        print(f"  adding after stop raises: {error}")
+
+
+def reading_values_from_a_stream():
+    heading("Terms in a solution are terms")
+    # Streamed literals keep their datatype, so a solution's values need reading
+    # rather than using directly -- the same as any other query result.
+    xsd_integer = "http://www.w3.org/2001/XMLSchema#integer"
+    engine = kolibrie.RspEngine(
+        """
+        REGISTER RSTREAM <http://out/temps> AS
+        SELECT *
+        FROM NAMED WINDOW :recent ON :sensors [RANGE 2 STEP 1]
+        WHERE { WINDOW :recent { ?s <http://example/celsius> ?c . } }
+        """
+    )
+    for tick, celsius in enumerate([19, 23, 27]):
+        engine.add(
+            "sensors",
+            f'<http://example/s{tick}> <http://example/celsius> "{celsius}"^^<{xsd_integer}> .',
+            tick,
+        )
+    engine.stop()
+
+    readings = {dict(s)["c"] for s in engine.results()}
+    for term in sorted(readings):
+        print(f"  {term!r:52} -> {kolibrie.numeric_value(term)}")
+    assert readings, "the window should have fired"
+    for term in readings:
+        assert kolibrie.literal_datatype(term) == xsd_integer, term
+        assert kolibrie.numeric_value(term) in (19.0, 23.0, 27.0), term
+
+
+if __name__ == "__main__":
+    one_window()
+    two_windows_joined()
+    results_are_complete_when_stop_returns()
+    reading_values_from_a_stream()
+    print("\nall assertions held")

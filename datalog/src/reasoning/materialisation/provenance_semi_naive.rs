@@ -8,19 +8,38 @@
  * you can obtain one at https://mozilla.org/MPL/2.0/.
  */
 
-use shared::dictionary::Dictionary;
-use shared::provenance::Provenance;
-use shared::rule::Rule;
-use shared::tag_store::TagStore;
-use shared::triple::Triple;
-use std::collections::{BTreeMap, BTreeSet, HashSet};
+//! Semi-naive materialisation that tags every derived fact with its provenance.
+//!
+//! # Stratification
+//!
+//! Rules with a negative premise are evaluated in a second stratum, after the
+//! positive rules have reached their fixpoint, and that stratum is a *single pass*
+//! rather than a fixpoint. Negation is therefore not recursive here: a fact derived
+//! by a negative rule cannot feed another negative rule.
+//!
+//! # Seed identity
+//!
+//! Seed probabilities are assigned ids by position in the triple-sorted order of
+//! [`Reasoner::probability_seeds`](crate::reasoning::Reasoner), and
+//! [`TagStore::seed_triples`](shared::tag_store::TagStore) records that order so an
+//! explanation can map an id back to the triple it came from. The ordering is part
+//! of the contract between the two: a tag is only interpretable alongside the
+//! `seed_triples` it was built with.
+
 use crate::reasoning::convert_string_binding_to_u32;
-use crate::reasoning::Reasoner;
 use crate::reasoning::materialisation::provenance_infer_generic::{
     ProvenanceInferResult, ProvenanceInferenceStrategy,
 };
 use crate::reasoning::materialisation::replace_variables_with_bound_values;
 use crate::reasoning::rules::{evaluate_filters, join_premise_with_hash_join};
+use crate::reasoning::Reasoner;
+use shared::dictionary::Dictionary;
+use shared::provenance::Provenance;
+use shared::quad_source::QuadSource;
+use shared::rule::Rule;
+use shared::tag_store::TagStore;
+use shared::triple::Triple;
+use std::collections::{BTreeMap, BTreeSet, HashSet};
 
 /// Semi-naive materialisation strategy parameterized by a provenance semiring.
 struct ProvenanceSemiNaiveStrategy {
@@ -51,12 +70,8 @@ impl ProvenanceSemiNaiveStrategy {
             let mut current_bindings = vec![BTreeMap::new()];
 
             // At least one premise matched by delta facts
-            current_bindings = join_premise_with_hash_join(
-                &rule.premise[i],
-                delta_facts,
-                current_bindings,
-                dict,
-            );
+            current_bindings =
+                join_premise_with_hash_join(&rule.premise[i], delta_facts, current_bindings, dict);
 
             // Join remaining premises with all facts
             for j in 0..nr_premises {
@@ -99,7 +114,11 @@ fn resolve_premise_triples(
             let s = resolve_term(&pat.0, bindings)?;
             let p = resolve_term(&pat.1, bindings)?;
             let o = resolve_term(&pat.2, bindings)?;
-            Some(Triple { subject: s, predicate: p, object: o })
+            Some(Triple {
+                subject: s,
+                predicate: p,
+                object: o,
+            })
         })
         .collect()
 }
@@ -156,7 +175,10 @@ impl<P: Provenance> ProvenanceInferenceStrategy<P> for ProvenanceSemiNaiveStrate
 
         for rule in rules {
             let binding_sets = self.find_premise_solutions_with_triples(
-                dictionary, rule, all_facts, &effective_delta,
+                dictionary,
+                rule,
+                all_facts,
+                &effective_delta,
             );
 
             for (binding, matched_triples) in &binding_sets {
@@ -220,14 +242,35 @@ impl Reasoner {
         &mut self,
         provenance: P,
     ) -> (Vec<Triple>, TagStore<P>) {
+        self.infer_new_facts_with_provenance_over(None, provenance)
+    }
+
+    /// As [`infer_new_facts_with_provenance`](Self::infer_new_facts_with_provenance),
+    /// reading the base facts from `base` as well as from this reasoner's own index.
+    ///
+    /// For a caller reasoning over a store it does not own. Nothing is copied in but
+    /// the facts derived, as with
+    /// [`infer_new_facts_semi_naive_over`](Self::infer_new_facts_semi_naive_over).
+    ///
+    /// The seeded tags come from `probability_seeds` either way: a source supplies
+    /// facts, not probabilities, so a caller wanting seeded base facts still sets
+    /// them on the reasoner.
+    pub fn infer_new_facts_with_provenance_over<P: Provenance>(
+        &mut self,
+        base: Option<&dyn QuadSource>,
+        provenance: P,
+    ) -> (Vec<Triple>, TagStore<P>) {
         let mut tag_store = TagStore::new(provenance.clone());
 
         // Seed tag store from probability seeds.
         // Sort by triple for deterministic ID assignment (needed by TopKProofs which
         // uses the ID as a variable index in the probability table).
         // Zero cost for other provenances — their tag_from_probability_with_id ignores id.
-        let mut seeds: Vec<(&Triple, f64)> =
-            self.probability_seeds.iter().map(|(t, &p)| (t, p)).collect();
+        let mut seeds: Vec<(&Triple, f64)> = self
+            .probability_seeds
+            .iter()
+            .map(|(t, &p)| (t, p))
+            .collect();
         seeds.sort_by_key(|(t, _)| *t);
         for (id, (triple, prob)) in seeds.iter().enumerate() {
             let tag = provenance.tag_from_probability_with_id(*prob, id);
@@ -236,28 +279,42 @@ impl Reasoner {
         // Record sorted seed triples so encode_as_rdf_star_with_explanation can map IDs -> triples.
         tag_store.seed_triples = seeds.iter().map(|(t, _)| (*t).clone()).collect();
 
-        let new_facts = semi_naive_with_initial_tags(self, provenance, tag_store.clone());
+        let new_facts = semi_naive_with_initial_tags(self, base, provenance, tag_store.clone());
         (new_facts.0, new_facts.1)
     }
 }
 
+/// Runs the two strata to a fixpoint, starting from tags the caller has already set.
+///
+/// Positive rules first, to a fixpoint, then one pass of the rules with a negative
+/// premise. The negative stratum is a single pass and not a fixpoint, so a fact
+/// derived through negation cannot feed another negated premise.
+///
+/// Returns the derived facts and the tag store, which the caller needs to keep: a
+/// tag is a handle into that store and is meaningless without it.
 pub fn semi_naive_with_initial_tags<P: Provenance>(
     reasoner: &mut Reasoner,
+    base: Option<&dyn QuadSource>,
     provenance: P,
     mut initial_tags: TagStore<P>,
 ) -> (Vec<Triple>, TagStore<P>) {
     // Split rules into positive (stratum 0) and negated (stratum 1).
-    let positive_rules: Vec<Rule> = reasoner.rules.iter()
+    let positive_rules: Vec<Rule> = reasoner
+        .rules
+        .iter()
         .filter(|r| r.negative_premise.is_empty())
         .cloned()
         .collect();
-    let negative_rules: Vec<Rule> = reasoner.rules.iter()
+    let negative_rules: Vec<Rule> = reasoner
+        .rules
+        .iter()
         .filter(|r| !r.negative_premise.is_empty())
         .cloned()
         .collect();
 
     // Stratum 0: run positive fixpoint.
     let mut new_facts = reasoner.infer_with_provenance_strategy_and_rules(
+        base,
         ProvenanceSemiNaiveStrategy {
             start_idx_for_delta: 0,
             delta_improved: Vec::new(),
@@ -270,25 +327,44 @@ pub fn semi_naive_with_initial_tags<P: Provenance>(
 
     // Stratum 1: single negative pass (if any NAF rules exist).
     if !negative_rules.is_empty() {
-        let neg_new = run_negative_stratum_pass(reasoner, &negative_rules, &mut initial_tags, &provenance);
+        let neg_new = run_negative_stratum_pass(
+            reasoner,
+            base,
+            &negative_rules,
+            &mut initial_tags,
+            &provenance,
+        );
         new_facts.extend(neg_new);
     }
 
     (new_facts, initial_tags)
 }
 
+/// As [`semi_naive_with_initial_tags`], seeded with an explicit delta for the first
+/// round, so a run can continue from a previous one instead of rediscovering it.
+///
+/// Two differences from that function, both of which matter to a caller:
+/// **negative rules are ignored entirely** rather than run as a second stratum, and
+/// `_provenance` is unused — the tags come from `initial_tags`, which carries its
+/// own provenance. This is the entry point
+/// [`cross_window_incremental`](super::cross_window_incremental) uses, where rules
+/// are positive and the delta is the facts that arrived this tick.
 pub fn semi_naive_with_initial_tags_and_delta<P: Provenance>(
     reasoner: &mut Reasoner,
+    base: Option<&dyn QuadSource>,
     _provenance: P,
     mut initial_tags: TagStore<P>,
     initial_delta: Vec<Triple>,
 ) -> (Vec<Triple>, TagStore<P>) {
-    let positive_rules: Vec<Rule> = reasoner.rules.iter()
+    let positive_rules: Vec<Rule> = reasoner
+        .rules
+        .iter()
         .filter(|r| r.negative_premise.is_empty())
         .cloned()
         .collect();
 
     let new_facts = reasoner.infer_with_provenance_strategy_and_rules(
+        base,
         ProvenanceSemiNaiveStrategy {
             start_idx_for_delta: 0,
             delta_improved: Vec::new(),
@@ -305,95 +381,106 @@ pub fn semi_naive_with_initial_tags_and_delta<P: Provenance>(
 /// Single forward pass for NAF rules (stratum 1) over the stratum-0 closure.
 fn run_negative_stratum_pass<P: Provenance>(
     reasoner: &mut Reasoner,
+    base: Option<&dyn QuadSource>,
     rules: &[Rule],
     tag_store: &mut TagStore<P>,
     provenance: &P,
 ) -> Vec<Triple> {
-    let all_facts: Vec<Triple> = reasoner.dataset_index.query(None, None, None);
+    let mut all_facts: Vec<Triple> = reasoner.dataset_index.query(None, None, None);
+    if let Some(base) = base {
+        all_facts.extend(base.query_default(None, None, None));
+    }
     let all_facts_set: HashSet<Triple> = all_facts.iter().cloned().collect();
     let mut new_derived: Vec<Triple> = Vec::new();
 
-    let mut dict = reasoner.dictionary.write().unwrap();
-
-    for rule in rules {
-        // Join all positive premises to get candidate bindings.
-        let mut bindings: Vec<BTreeMap<String, String>> = vec![BTreeMap::new()];
-        for prem in &rule.premise {
-            bindings = join_premise_with_hash_join(prem, &all_facts, bindings, &dict);
-            if bindings.is_empty() {
-                break;
-            }
-        }
-
-        for binding in &bindings {
-            let u32_binding = convert_string_binding_to_u32(binding, &dict);
-
-            if !evaluate_filters(&u32_binding, &rule.filters, &dict) {
-                continue;
-            }
-
-            // Conjunction of positive premise tags (⊗).
-            let pos_triples = resolve_premise_triples(&rule.premise, &u32_binding);
-            let pos_tag = pos_triples
-                .iter()
-                .map(|t| tag_store.get_tag(t))
-                .fold(provenance.one(), |acc, tag| provenance.conjunction(&acc, &tag));
-
-            if pos_tag == provenance.zero() {
-                continue;
-            }
-
-            // Conjunction of NAF contributions for each negated atom (⊗).
-            let mut neg_tag = provenance.one();
-            for neg_pat in &rule.negative_premise {
-                let s = resolve_term(&neg_pat.0, &u32_binding);
-                let p = resolve_term(&neg_pat.1, &u32_binding);
-                let o = resolve_term(&neg_pat.2, &u32_binding);
-
-                let contrib = match (s, p, o) {
-                    (Some(s), Some(p), Some(o)) => {
-                        let neg_triple = Triple { subject: s, predicate: p, object: o };
-                        if all_facts_set.contains(&neg_triple) {
-                            // Fact present -> negate its provenance tag.
-                            provenance.negate(&tag_store.get_tag(&neg_triple))
-                        } else {
-                            // Fact absent -> NOT absent = certainly true = one().
-                            provenance.one()
-                        }
-                    }
-                    // Unbound variable in negated atom — safety check should have
-                    // caught this; treat as zero (cannot fire).
-                    _ => provenance.zero(),
-                };
-
-                neg_tag = provenance.conjunction(&neg_tag, &contrib);
-                if neg_tag == provenance.zero() {
+    // Scoped around the whole pass, because `replace_variables_with_bound_values`
+    // interns new terms and a copy would throw them away. Taken out of `reasoner`
+    // first so the closure can still insert into its fact base.
+    let terms = reasoner.terms();
+    shared::term_encoder::TermEncoder::with_terms(&terms, &mut |dict| {
+        for rule in rules {
+            // Join all positive premises to get candidate bindings.
+            let mut bindings: Vec<BTreeMap<String, String>> = vec![BTreeMap::new()];
+            for prem in &rule.premise {
+                bindings = join_premise_with_hash_join(prem, &all_facts, bindings, &dict);
+                if bindings.is_empty() {
                     break;
                 }
             }
 
-            let conclusion_tag = provenance.conjunction(&pos_tag, &neg_tag);
-            if conclusion_tag == provenance.zero() {
-                continue;
-            }
+            for binding in &bindings {
+                let u32_binding = convert_string_binding_to_u32(binding, &dict);
 
-            // Derive conclusions.
-            for conclusion in &rule.conclusion {
-                let inferred =
-                    replace_variables_with_bound_values(conclusion, &u32_binding, &mut dict);
+                if !evaluate_filters(&u32_binding, &rule.filters, &dict) {
+                    continue;
+                }
 
-                if !all_facts_set.contains(&inferred) && !new_derived.contains(&inferred) {
-                    tag_store.set_tag(&inferred, conclusion_tag.clone());
-                    reasoner.dataset_index.insert(&inferred);
-                    new_derived.push(inferred);
-                } else {
-                    tag_store.update_disjunction(&inferred, &conclusion_tag);
+                // Conjunction of positive premise tags (⊗).
+                let pos_triples = resolve_premise_triples(&rule.premise, &u32_binding);
+                let pos_tag = pos_triples
+                    .iter()
+                    .map(|t| tag_store.get_tag(t))
+                    .fold(provenance.one(), |acc, tag| {
+                        provenance.conjunction(&acc, &tag)
+                    });
+
+                if pos_tag == provenance.zero() {
+                    continue;
+                }
+
+                // Conjunction of NAF contributions for each negated atom (⊗).
+                let mut neg_tag = provenance.one();
+                for neg_pat in &rule.negative_premise {
+                    let s = resolve_term(&neg_pat.0, &u32_binding);
+                    let p = resolve_term(&neg_pat.1, &u32_binding);
+                    let o = resolve_term(&neg_pat.2, &u32_binding);
+
+                    let contrib = match (s, p, o) {
+                        (Some(s), Some(p), Some(o)) => {
+                            let neg_triple = Triple {
+                                subject: s,
+                                predicate: p,
+                                object: o,
+                            };
+                            if all_facts_set.contains(&neg_triple) {
+                                // Fact present -> negate its provenance tag.
+                                provenance.negate(&tag_store.get_tag(&neg_triple))
+                            } else {
+                                // Fact absent -> NOT absent = certainly true = one().
+                                provenance.one()
+                            }
+                        }
+                        // Unbound variable in negated atom — safety check should have
+                        // caught this; treat as zero (cannot fire).
+                        _ => provenance.zero(),
+                    };
+
+                    neg_tag = provenance.conjunction(&neg_tag, &contrib);
+                    if neg_tag == provenance.zero() {
+                        break;
+                    }
+                }
+
+                let conclusion_tag = provenance.conjunction(&pos_tag, &neg_tag);
+                if conclusion_tag == provenance.zero() {
+                    continue;
+                }
+
+                // Derive conclusions.
+                for conclusion in &rule.conclusion {
+                    let inferred =
+                        replace_variables_with_bound_values(conclusion, &u32_binding, dict);
+
+                    if !all_facts_set.contains(&inferred) && !new_derived.contains(&inferred) {
+                        tag_store.set_tag(&inferred, conclusion_tag.clone());
+                        reasoner.dataset_index.insert(&inferred);
+                        new_derived.push(inferred);
+                    } else {
+                        tag_store.update_disjunction(&inferred, &conclusion_tag);
+                    }
                 }
             }
         }
-    }
-
-    drop(dict);
+    });
     new_derived
 }
-

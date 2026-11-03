@@ -294,7 +294,6 @@ fn rsp_ql_integration() {
     }
 
     engine.stop();
-    thread::sleep(Duration::from_secs(2));
 
     // Should have results from window processing
     assert!(!result_container.lock().unwrap().is_empty());
@@ -347,7 +346,6 @@ fn rsp_ql_integration_with_join() {
     }
 
     engine.stop();
-    thread::sleep(Duration::from_secs(2));
 
     // Should have results from window processing
     assert!(!result_container.lock().unwrap().is_empty());
@@ -411,7 +409,6 @@ fn rsp_ql_multi_window_integration() {
     }
 
     engine.stop();
-    thread::sleep(Duration::from_secs(2));
 
     // Should have results from both windows
     assert!(!result_container.lock().unwrap().is_empty());
@@ -475,7 +472,6 @@ fn rsp_ql_joining_multi_window_integration() {
     }
 
     engine.stop();
-    thread::sleep(Duration::from_secs(2));
 
     // Should have no results if windows are correctly joined together
     assert!(result_container.lock().unwrap().is_empty());
@@ -1067,7 +1063,6 @@ fn test_static_data_not_visible_in_window_query() {
     }
 
     engine.stop();
-    thread::sleep(Duration::from_secs(2));
 
     let all = result_container.lock().unwrap();
     // With fix: 1 result (stream1 only).
@@ -1241,7 +1236,6 @@ fn test_window_evicts_old_data() {
     }
 
     engine.stop();
-    thread::sleep(Duration::from_secs(2));
 
     let all = result_container.lock().unwrap();
     // Each of the 3 windows must return exactly 1 result row.

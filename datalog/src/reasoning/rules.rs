@@ -1,84 +1,29 @@
+//! Matching rule premises against facts, and joining the bindings that result.
+//!
+//! This is the inner loop every forward-chaining strategy shares. Premises are
+//! joined one at a time, left to right, through
+//! [`shared::join_algorithm::perform_hash_join_for_rules`]; an empty intermediate
+//! result ends the rule early.
+//!
+//! Rule filters are not SPARQL filters: see [`evaluate_filters`] for where the two
+//! semantics part company.
+
 use crate::reasoning::Reasoner;
 use shared::dictionary::Dictionary;
 use shared::join_algorithm::perform_hash_join_for_rules;
+// Moved to `shared` in step 6: these are vocabulary operations, and they were the
+// only thing `datalogmtl` needed from this crate. Re-exported below so
+// `datalog::reasoning::{matches_rule_pattern, construct_triple}` keeps working.
+pub use shared::pattern::{construct_triple, matches_rule_pattern};
 use shared::rule::{FilterCondition, Rule};
-use shared::terms::{Term, TriplePattern};
+use shared::terms::{Bindings, TriplePattern};
 use shared::triple::Triple;
 use std::collections::{BTreeMap, HashMap, HashSet};
 
-pub fn matches_rule_pattern(
-    pattern: &TriplePattern,
-    fact: &Triple,
-    variable_bindings: &mut HashMap<String, u32>,
-) -> bool {
-    // Create a copy of bindings to test against (rollback on failure)
-    let mut temp_bindings = variable_bindings.clone();
-
-    // Subject
-    let s_ok = match &pattern.0 {
-        Term::Variable(v) => {
-            if let Some(&bound) = temp_bindings.get(v) {
-                bound == fact.subject
-            } else {
-                temp_bindings.insert(v.clone(), fact.subject);
-                true
-            }
-        }
-        Term::Constant(c) => *c == fact.subject,
-        Term::QuotedTriple(_) => false,
-    };
-    if !s_ok {
-        return false;
-    }
-
-    // Predicate
-    let p_ok = match &pattern.1 {
-        Term::Variable(v) => {
-            if let Some(&bound) = temp_bindings.get(v) {
-                bound == fact.predicate
-            } else {
-                temp_bindings.insert(v.clone(), fact.predicate);
-                true
-            }
-        }
-        Term::Constant(c) => *c == fact.predicate,
-        Term::QuotedTriple(_) => false,
-    };
-    if !p_ok {
-        return false;
-    }
-
-    // Object
-    let o_ok = match &pattern.2 {
-        Term::Variable(v) => {
-            if let Some(&bound) = temp_bindings.get(v) {
-                bound == fact.object
-            } else {
-                temp_bindings.insert(v.clone(), fact.object);
-                true
-            }
-        }
-        Term::Constant(c) => *c == fact.object,
-        Term::QuotedTriple(_) => false,
-    };
-
-    // Only if ALL parts match, commit the bindings
-    if s_ok && p_ok && o_ok {
-        *variable_bindings = temp_bindings;
-        true
-    } else {
-        false
-    }
-}
-
 /// Given a rule, a set of all facts, and a set of "changed" facts (delta)
-pub fn join_rule(
-    rule: &Rule,
-    all_facts: &HashSet<Triple>,
-    delta: &HashSet<Triple>,
-) -> Vec<HashMap<String, u32>> {
+pub fn join_rule(rule: &Rule, all_facts: &HashSet<Triple>, delta: &HashSet<Triple>) -> Bindings {
     let n = rule.premise.len();
-    let mut results = Vec::new();
+    let mut results = Bindings::empty();
 
     // For each premise position i
     for i in 0..n {
@@ -96,34 +41,14 @@ pub fn join_rule(
     results
 }
 
-/// Construct a new Triple from a conclusion pattern and bound variables.
-pub fn construct_triple(
-    conclusion: &TriplePattern,
-    vars: &HashMap<String, u32>,
-    _dict: &mut Dictionary,
-) -> Triple {
-    fn resolve(term: &Term, vars: &HashMap<String, u32>) -> u32 {
-        match term {
-            Term::Variable(v) => vars.get(v).copied().unwrap_or(0),
-            Term::Constant(c) => *c,
-            Term::QuotedTriple(_) => 0,
-        }
-    }
-    Triple {
-        subject:   resolve(&conclusion.0, vars),
-        predicate: resolve(&conclusion.1, vars),
-        object:    resolve(&conclusion.2, vars),
-    }
-}
-
 /// Given a rule, a set of all facts, and a binding that matches some premise
 pub fn join_remaining(
     rule: &Rule,
     changed_idx: usize,
     all_facts: &HashSet<Triple>,
     binding: HashMap<String, u32>,
-) -> Vec<HashMap<String, u32>> {
-    let mut results = vec![binding];
+) -> Bindings {
+    let mut results = Bindings::from(vec![binding]);
     let n = rule.premise.len();
 
     // For each other premise j (order can be arbitrary)
@@ -131,7 +56,7 @@ pub fn join_remaining(
         if j == changed_idx {
             continue;
         }
-        let mut new_results = Vec::new();
+        let mut new_results = Bindings::empty();
         // For every binding so far
         for partial_binding in results.into_iter() {
             // And for every fact in all_facts
@@ -150,6 +75,21 @@ pub fn join_remaining(
     results
 }
 
+/// Tests a candidate binding against a rule's filters.
+///
+/// # Not SPARQL FILTER semantics
+///
+/// Two deliberate differences from the SPARQL evaluation in `kolibrie`, both of
+/// which make a filter here more permissive:
+///
+/// - A filter on a variable the binding does not contain is **skipped**, not
+///   failed. In SPARQL an unbound variable makes the filter error and the row is
+///   dropped.
+/// - A comparison against a non-numeric value parses as `0.0` rather than
+///   erroring, so `?x > 5` on the value `"abc"` is false while `?x < 5` is true.
+///
+/// A rule relying on either behaviour will not translate to a SPARQL FILTER
+/// unchanged.
 pub fn evaluate_filters(
     bindings: &HashMap<String, u32>,
     filters: &Vec<FilterCondition>,
@@ -184,18 +124,18 @@ pub fn evaluate_filters(
     true
 }
 
+/// Extends each binding with the ways one premise can match the facts.
+///
+/// Returns the empty vector when the premise matches nothing, which the callers
+/// treat as the rule having failed and stop early rather than continuing with
+/// nothing to join against.
 pub fn join_premise_with_hash_join(
     premise: &TriplePattern,
     all_facts: &[Triple],
     current_bindings: Vec<BTreeMap<String, String>>,
-    dict: &Dictionary
+    dict: &Dictionary,
 ) -> Vec<BTreeMap<String, String>> {
-    perform_hash_join_for_rules(
-        premise,
-        all_facts,
-        &dict,
-        current_bindings,
-    )
+    perform_hash_join_for_rules(premise, all_facts, &dict, current_bindings)
 }
 
 impl Reasoner {

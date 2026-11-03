@@ -8,11 +8,10 @@ use datalog::reasoning::materialisation::cross_window_incremental::{
 };
 use datalog::reasoning::materialisation::cross_window_naive::naive_sds_plus;
 use datalog::reasoning::Reasoner;
-use shared::dictionary::Dictionary;
 use shared::rule::Rule;
+use shared::term_encoder::SharedTerms;
 use shared::triple::Triple;
 use std::collections::{BTreeSet, HashMap};
-use std::sync::{Arc, RwLock};
 
 const TRAFFIC_IRI: &str = "http://traffic/";
 const PARKING_IRI: &str = "http://parking/";
@@ -26,9 +25,9 @@ const RULE_N3: &str = r#"
 { ?road wt:avgSpeed ?s . ?lot wp:nearRoad ?road . ?lot wp:occupancy ?occ } => { ?road wr:congested <true> }
 "#;
 
-fn parse_rules(dict: &Arc<RwLock<Dictionary>>) -> Vec<Rule> {
+fn parse_rules(dict: &SharedTerms) -> Vec<Rule> {
     let mut reasoner = Reasoner::new();
-    reasoner.dictionary = Arc::clone(dict);
+    reasoner.adopt_terms(dict.clone());
     let window_widths: HashMap<String, u64> = [
         (TRAFFIC_IRI.to_string(), 60),
         (PARKING_IRI.to_string(), 120),
@@ -100,11 +99,10 @@ fn make_sds(n: usize, update_ratio_percent: usize) -> Sds {
     sds
 }
 
-fn signature(
-    result: &HashMap<String, Vec<Triple>>,
-    dict: &Arc<RwLock<Dictionary>>,
-) -> BTreeSet<String> {
-    let d = dict.read().unwrap();
+fn signature(result: &HashMap<String, Vec<Triple>>, dict: &SharedTerms) -> BTreeSet<String> {
+    // A copy: this decodes every triple it prints, and a scoped encoder will not
+    // hold its lock across the walk.
+    let d = dict.view();
     let mut out = BTreeSet::new();
     for (component, triples) in result {
         for triple in triples {
@@ -118,20 +116,21 @@ fn signature(
 }
 
 fn assert_correctness(n: usize, update_ratio: usize) {
-    let dict = Arc::new(RwLock::new(Dictionary::new()));
+    let dict = SharedTerms::new();
     let rules = parse_rules(&dict);
     let sds_initial = make_sds(n, 0);
     let sds_next = make_sds(n, update_ratio);
 
-    let old: SdsWithExpiry =
-        incremental_sds_plus(&rules, &sds_initial, &HashMap::new(), &dict, 0);
+    let old: SdsWithExpiry = incremental_sds_plus(&rules, &sds_initial, &HashMap::new(), &dict, 0);
     let incremental = incremental_sds_plus(&rules, &sds_next, &old, &dict, CURRENT_TIME);
     let component_iris = all_component_iris(&sds_next);
-    let incremental_external =
-        sds_with_expiry_to_external(&incremental, &dict, &component_iris);
+    let incremental_external = sds_with_expiry_to_external(&incremental, &dict, &component_iris);
     let naive = naive_sds_plus(&rules, &sds_next, &dict, CURRENT_TIME);
 
-    assert_eq!(signature(&naive, &dict), signature(&incremental_external, &dict));
+    assert_eq!(
+        signature(&naive, &dict),
+        signature(&incremental_external, &dict)
+    );
 }
 
 fn bench_naive(c: &mut Criterion) {
@@ -146,7 +145,7 @@ fn bench_naive(c: &mut Criterion) {
                 |b, &(n, ratio)| {
                     b.iter_batched(
                         || {
-                            let dict = Arc::new(RwLock::new(Dictionary::new()));
+                            let dict = SharedTerms::new();
                             let rules = parse_rules(&dict);
                             let sds = make_sds(n, ratio);
                             (dict, rules, sds)
@@ -181,7 +180,7 @@ fn bench_incremental(c: &mut Criterion) {
                 |b, &(n, ratio)| {
                     b.iter_batched(
                         || {
-                            let dict = Arc::new(RwLock::new(Dictionary::new()));
+                            let dict = SharedTerms::new();
                             let rules = parse_rules(&dict);
                             let sds_initial = make_sds(n, 0);
                             let sds_next = make_sds(n, ratio);

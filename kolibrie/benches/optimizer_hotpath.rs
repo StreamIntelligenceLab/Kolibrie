@@ -12,7 +12,7 @@ extern crate criterion;
 extern crate kolibrie;
 
 use criterion::*;
-use kolibrie::execute_query::{execute_query_rayon_parallel2_volcano, execute_sparql_update};
+use kolibrie::execute_query::{execute, execute_sparql_update};
 use kolibrie::sparql_database::SparqlDatabase;
 
 const SUBJECTS: usize = 20_000;
@@ -34,8 +34,11 @@ fn setup_database() -> SparqlDatabase {
             i % DEPARTMENTS
         ));
     }
-    execute_sparql_update(&format!("INSERT DATA {{\n{default_graph}\n}}"), &mut database)
-        .expect("default graph fixture must load");
+    execute_sparql_update(
+        &format!("INSERT DATA {{\n{default_graph}\n}}"),
+        &mut database,
+    )
+    .expect("default graph fixture must load");
 
     for graph in 0..NAMED_GRAPHS {
         let mut named = String::with_capacity((SUBJECTS / NAMED_GRAPHS) * 90);
@@ -92,6 +95,17 @@ WHERE {
     ?s <http://example.org/dept> ?d
 }"#;
 
+/// A projection whose values repeat: 20,000 solutions over 50 distinct departments.
+///
+/// The counterpart to `join_two_patterns`, whose columns are a distinct IRI and a
+/// near-distinct literal per row. Grouping columns, rdf:type and graph names all have
+/// this shape, and it is the case where storing each value once can pay.
+const LOW_CARDINALITY_PROJECTION: &str = r#"
+SELECT ?d
+WHERE {
+    ?s <http://example.org/dept> ?d
+}"#;
+
 fn hot_paths(c: &mut Criterion) {
     let mut database = setup_database();
 
@@ -104,11 +118,43 @@ fn hot_paths(c: &mut Criterion) {
         ("union_branches", UNION_BRANCHES),
         ("filter_numeric", FILTER_NUMERIC),
         ("join_two_patterns", JOIN_TWO_PATTERNS),
+        ("low_cardinality_projection", LOW_CARDINALITY_PROJECTION),
     ] {
         group.bench_function(name, |b| {
             b.iter(|| {
-                let results = execute_query_rayon_parallel2_volcano(sparql, &mut database);
+                let results = execute(sparql, &mut database)
+                    .expect("query should run")
+                    .into_rows();
                 black_box(results.len())
+            })
+        });
+    }
+
+    // The same queries read through the borrowing API instead of `into_rows`.
+    //
+    // `into_rows` materialises an owned String per cell whatever the result holds
+    // internally, so it cannot show a difference between owning the values and
+    // referring to them. `iter` and `get` return `&str`, so these arms are the ones
+    // a representation change can move.
+    for (name, sparql) in [
+        ("borrowed_read/join_two_patterns", JOIN_TWO_PATTERNS),
+        (
+            "borrowed_read/low_cardinality_projection",
+            LOW_CARDINALITY_PROJECTION,
+        ),
+    ] {
+        group.bench_function(name, |b| {
+            b.iter(|| {
+                let solutions = execute(sparql, &mut database).expect("query should run");
+                let mut bytes = 0usize;
+                for solution in solutions.iter() {
+                    for variable in solutions.variables() {
+                        if let Some(value) = solution.get(variable) {
+                            bytes += value.len();
+                        }
+                    }
+                }
+                black_box(bytes)
             })
         });
     }

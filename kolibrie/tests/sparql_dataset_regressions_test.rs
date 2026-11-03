@@ -1,10 +1,12 @@
-use kolibrie::execute_query::{execute_query_rayon_parallel2_volcano, execute_sparql_update};
+use kolibrie::execute_query::{execute, execute_sparql_update};
 use kolibrie::sparql_database::SparqlDatabase;
-use kolibrie::streamertail_optimizer::DatabaseStats;
+use kolibrie::sparql_protocol::answer;
 use shared::dataset_index::GraphId;
 
 fn query(database: &mut SparqlDatabase, sparql: &str) -> Vec<Vec<String>> {
-    execute_query_rayon_parallel2_volcano(sparql, database)
+    execute(sparql, database)
+        .expect("query should run")
+        .into_rows()
 }
 
 #[test]
@@ -124,7 +126,43 @@ fn nquads_round_trip_keeps_default_and_named_quads() {
         r#"SELECT ?s WHERE { ?s <http://example.com/p> "quoted \"value\"" }"#,
     );
     assert_eq!(escaped_literal_rows.len(), 1);
-    assert!(escaped_literal_rows[0][0].starts_with("_:kolibrie-update-"));
+    // Still a blank node, and still carrying the label it was written with.
+    //
+    // This used to assert the `_:kolibrie-update-` prefix specifically, which pinned
+    // a blank node label's lexical form across a serialise-and-re-read. RDF 1.1
+    // section 3.4 makes that form insignificant, and reading a serialisation is
+    // reading a new document, so its blank nodes are a fresh set and are scoped
+    // again -- by the reader now, which is what stops two documents sharing a node.
+    // What this round trip has to show is what its sibling assertion above shows for
+    // the serialised form: that the node survives as a node rather than becoming an
+    // IRI or losing its shape.
+    let restored_label = &escaped_literal_rows[0][0];
+    assert!(
+        restored_label.starts_with("_:"),
+        "a blank node must come back as a blank node, got {restored_label:?}"
+    );
+    assert!(
+        restored_label.ends_with("blank"),
+        "the label it was written with should still be legible, got {restored_label:?}"
+    );
+}
+
+/// Splits an HTTP response from `answer` into its status and body.
+///
+/// The status is checked as well as the body: the response used to be a bare body
+/// that the caller wrapped in `200 OK`, so a failure was indistinguishable from a
+/// success here.
+fn split_response(response: &str) -> (String, String) {
+    let (head, body) = response
+        .split_once("\r\n\r\n")
+        .expect("a response has a header section and a body");
+    let status = head
+        .lines()
+        .next()
+        .expect("a response starts with a status line")
+        .trim_start_matches("HTTP/1.1 ")
+        .to_string();
+    (status, body.to_string())
 }
 
 #[test]
@@ -142,7 +180,10 @@ fn http_sparql_query_encodings_use_the_unified_query_executor() {
         "\r\n",
         "SELECT ?s WHERE { ?s <urn:p> <urn:o> }"
     );
-    assert_eq!(database.handle_http_request(direct), "urn:http-subject");
+    assert_eq!(
+        split_response(&answer(&mut database, direct)),
+        ("200 OK".to_string(), "urn:http-subject".to_string())
+    );
 
     let form = concat!(
         "POST /sparql HTTP/1.1\r\n",
@@ -151,13 +192,19 @@ fn http_sparql_query_encodings_use_the_unified_query_executor() {
         "query=SELECT%20%3Fs%20WHERE%20%7B%20%3Fs%20%3Curn%3Ap%3E%20",
         "%3Curn%3Ao%3E%20%7D"
     );
-    assert_eq!(database.handle_http_request(form), "urn:http-subject");
+    assert_eq!(
+        split_response(&answer(&mut database, form)),
+        ("200 OK".to_string(), "urn:http-subject".to_string())
+    );
 
     let get = concat!(
         "GET /sparql?query=SELECT%20%3Fs%20WHERE%20%7B%20%3Fs%20",
         "%3Curn%3Ap%3E%20%3Curn%3Ao%3E%20%7D HTTP/1.1\r\n\r\n"
     );
-    assert_eq!(database.handle_http_request(get), "urn:http-subject");
+    assert_eq!(
+        split_response(&answer(&mut database, get)),
+        ("200 OK".to_string(), "urn:http-subject".to_string())
+    );
 
     let update_on_query_endpoint = concat!(
         "POST /sparql HTTP/1.1\r\n",
@@ -165,9 +212,14 @@ fn http_sparql_query_encodings_use_the_unified_query_executor() {
         "\r\n",
         "INSERT DATA { <urn:must-not-exist> <urn:p> <urn:o> }"
     );
-    assert!(database
-        .handle_http_request(update_on_query_endpoint)
-        .starts_with("Query Failed:"));
+    // An Update on the query endpoint is refused, and now says so in the status.
+    assert_eq!(
+        split_response(&answer(&mut database, update_on_query_endpoint)),
+        (
+            "400 Bad Request".to_string(),
+            "QUERY_EXECUTION_FAILED".to_string()
+        )
+    );
     assert!(query(
         &mut database,
         "SELECT ?s WHERE { <urn:must-not-exist> <urn:p> ?s }"
@@ -182,9 +234,9 @@ fn http_sparql_query_encodings_use_the_unified_query_executor() {
         "WHERE+%7B+%3Curn%3Ahttp-subject%3E+%3Curn%3Ap%3E+%3Fo+",
         "FILTER%28%3Fo+%3D+%3Curn%3Ao%3E%29+%7D"
     );
-    assert!(database
-        .handle_http_request(form_update)
-        .starts_with("Update Successful"));
+    let (status, body) = split_response(&answer(&mut database, form_update));
+    assert_eq!(status, "200 OK");
+    assert!(body.starts_with("Update Successful"), "{body}");
     assert_eq!(
         query(&mut database, "SELECT ?s WHERE { ?s <urn:copied> <urn:o> }"),
         vec![vec!["urn:form&subject".to_string()]]
@@ -243,9 +295,9 @@ fn statistics_include_terms_that_exist_only_in_named_graphs() {
     )
     .unwrap();
 
-    let predicate = database.dictionary.write().unwrap().encode("urn:p");
-    let graph = database.dictionary.write().unwrap().encode("urn:g");
-    let stats = DatabaseStats::gather_stats_fast(&database);
+    let predicate = database.dictionary_mut().encode("urn:p");
+    let graph = database.dictionary_mut().encode("urn:g");
+    let stats = database.gather_stats();
 
     assert_eq!(stats.total_triples, 1);
     assert_eq!(stats.get_predicate_cardinality(predicate), 1);

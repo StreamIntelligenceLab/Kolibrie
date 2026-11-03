@@ -11,7 +11,7 @@
 use std::alloc::{GlobalAlloc, Layout, System};
 use std::sync::atomic::{AtomicUsize, Ordering};
 
-use kolibrie::execute_query::{execute_query_rayon_parallel2_volcano, execute_sparql_update};
+use kolibrie::execute_query::{execute, execute_sparql_update};
 use kolibrie::sparql_database::SparqlDatabase;
 
 static ALLOCATIONS: AtomicUsize = AtomicUsize::new(0);
@@ -19,6 +19,20 @@ static BYTES: AtomicUsize = AtomicUsize::new(0);
 
 struct CountingAllocator;
 
+// `unsafe` is unavoidable here: `GlobalAlloc` is an unsafe trait and every method on
+// it is unsafe, because the allocator is what the rest of the program's memory safety
+// rests on. The allow is scoped to this impl so that new unsafe elsewhere still fails
+// the lint gate.
+//
+// SAFETY: every method forwards to `System`, the allocator these obligations are
+// already discharged by, and adds only relaxed counter arithmetic. That means:
+// pointers returned by `alloc` come from `System` and so are valid for `layout`;
+// `dealloc` and `realloc` receive pointers this allocator produced, since it is the
+// single `#[global_allocator]` for the test binary, and pass them back to the
+// allocator that produced them with the same layout. The counters are atomics, so
+// they add no synchronisation requirement, and nothing here allocates, which would
+// re-enter the allocator.
+#[allow(unsafe_code)]
 unsafe impl GlobalAlloc for CountingAllocator {
     unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
         ALLOCATIONS.fetch_add(1, Ordering::Relaxed);
@@ -115,17 +129,25 @@ fn allocation_profile() {
 
     // Warm up so thread-pool and dictionary growth are not attributed to a query
     for (_, sparql) in QUERIES {
-        execute_query_rayon_parallel2_volcano(sparql, &mut database);
+        execute(sparql, &mut database)
+            .expect("query should run")
+            .into_rows();
     }
 
-    println!("\n{:<22} {:>14} {:>16} {:>10}", "query", "allocations", "bytes", "rows");
+    println!(
+        "\n{:<22} {:>14} {:>16} {:>10}",
+        "query", "allocations", "bytes", "rows"
+    );
     println!("{}", "-".repeat(66));
 
     for (name, sparql) in QUERIES {
         let before_allocations = ALLOCATIONS.load(Ordering::Relaxed);
         let before_bytes = BYTES.load(Ordering::Relaxed);
 
-        let rows = execute_query_rayon_parallel2_volcano(sparql, &mut database).len();
+        let rows = execute(sparql, &mut database)
+            .expect("query should run")
+            .into_rows()
+            .len();
 
         let allocations = ALLOCATIONS.load(Ordering::Relaxed) - before_allocations;
         let bytes = BYTES.load(Ordering::Relaxed) - before_bytes;

@@ -8,8 +8,8 @@
  * you can obtain one at https://mozilla.org/MPL/2.0/.
  */
 
-use kolibrie::parser::*;
-use kolibrie::execute_query::*;
+use kolibrie::prelude::*;
+use kolibrie::rule_execution::process_rule_definition;
 use kolibrie::sparql_database::SparqlDatabase;
 
 fn main() {
@@ -49,9 +49,11 @@ fn main() {
         "142",
     );
 
-    let size_after_rdf = database.dataset_index.len_default();
+    let size_after_rdf = database.default_triple_count();
     println!("  Loaded {} RDF triples.", size_after_rdf);
-    println!("  Sensors: S1 (temp=92, press=135), S2 (temp=71, press=118), S3 (temp=88, press=142)");
+    println!(
+        "  Sensors: S1 (temp=92, press=135), S2 (temp=71, press=118), S3 (temp=88, press=142)"
+    );
 
     println!("\n[Stage 2] Loading RDF-star annotations (quoted triples)...");
     let rdf_star_data = r#"<< <http://example.org/sensor/S1> <http://example.org/temperature> "92" >> <http://example.org/reliability> "0.95" .
@@ -60,9 +62,12 @@ fn main() {
 
     database.parse_turtle(rdf_star_data);
 
-    let size_after_rdf_star = database.dataset_index.len_default();
+    let size_after_rdf_star = database.default_triple_count();
     let rdf_star_count = size_after_rdf_star - size_after_rdf;
-    println!("  Loaded {} RDF-star triples (reliability annotations).", rdf_star_count);
+    println!(
+        "  Loaded {} RDF-star triples (reliability annotations).",
+        rdf_star_count
+    );
     println!("  Initial database size: {} triples.", size_after_rdf_star);
 
     println!("\n[Stage 3] SPARQL-star query — sensor calibration reliability...");
@@ -76,7 +81,9 @@ fn main() {
     << ?sensor <http://example.org/temperature> ?temp >> <http://example.org/reliability> ?reliability .
 }"#;
 
-    let star_results = execute_query_rayon_parallel2_volcano(sparql_star_query, &mut database);
+    let star_results = execute(sparql_star_query, &mut database)
+        .expect("query should run")
+        .into_rows();
 
     println!("  Results ({} rows):", star_results.len());
     for row in &star_results {
@@ -106,11 +113,11 @@ WHERE {
     FILTER(?t > 80)
 }"#;
 
-    let size_before_classical = database.dataset_index.len_default();
+    let size_before_classical = database.default_triple_count();
 
     match process_rule_definition(classical_rule, &mut database) {
         Ok((_, inferred)) => {
-            let size_after_classical = database.dataset_index.len_default();
+            let size_after_classical = database.default_triple_count();
             println!(
                 "  Inferred {} new overheat-alert facts  (+{} triples).  Database: {} triples.",
                 inferred.len(),
@@ -129,7 +136,9 @@ SELECT ?sensor WHERE {
     ?sensor ex:overheatAlert true .
 }"#;
 
-    let alert_results = execute_query_rayon_parallel2_volcano(sparql_alert, &mut database);
+    let alert_results = execute(sparql_alert, &mut database)
+        .expect("query should run")
+        .into_rows();
     println!("  Overheating sensors ({} found):", alert_results.len());
     for row in &alert_results {
         for val in row {
@@ -141,7 +150,9 @@ SELECT ?sensor WHERE {
     println!("  (Uses Stage 4 output — overheatAlert — as a premise!)");
     println!("  RULE :CriticalRisk PROB(combination=minmax) :-");
     println!("    CONSTRUCT {{ ?sensor ex:criticalRisk true . }}");
-    println!("    WHERE     {{ ?sensor ex:overheatAlert true ; ex:pressure ?p . FILTER(?p > 130) }}");
+    println!(
+        "    WHERE     {{ ?sensor ex:overheatAlert true ; ex:pressure ?p . FILTER(?p > 130) }}"
+    );
 
     let prob_rule = r#"PREFIX ex: <http://example.org/>
 
@@ -155,11 +166,11 @@ WHERE {
     FILTER(?p > 130)
 }"#;
 
-    let size_before_prob = database.dataset_index.len_default();
+    let size_before_prob = database.default_triple_count();
 
     match process_rule_definition(prob_rule, &mut database) {
         Ok((_, inferred)) => {
-            let size_after_prob = database.dataset_index.len_default();
+            let size_after_prob = database.default_triple_count();
             println!(
                 "  Inferred {} new critical-risk facts  (+{} triples).  Database: {} triples.",
                 inferred.len(),
@@ -178,8 +189,13 @@ SELECT ?sensor WHERE {
     ?sensor ex:criticalRisk true .
 }"#;
 
-    let critical_results = execute_query_rayon_parallel2_volcano(sparql_critical, &mut database);
-    println!("  Critical-risk sensors ({} found):", critical_results.len());
+    let critical_results = execute(sparql_critical, &mut database)
+        .expect("query should run")
+        .into_rows();
+    println!(
+        "  Critical-risk sensors ({} found):",
+        critical_results.len()
+    );
     for row in &critical_results {
         for val in row {
             println!("    {}", shorten(val));
@@ -189,7 +205,9 @@ SELECT ?sensor WHERE {
     println!("\n[Stage 8] SPARQL-star re-query — reliability annotations still accessible...");
 
     database.get_or_build_stats();
-    let star_results2 = execute_query_rayon_parallel2_volcano(sparql_star_query, &mut database);
+    let star_results2 = execute(sparql_star_query, &mut database)
+        .expect("query should run")
+        .into_rows();
     println!("  Reliability annotations ({} rows):", star_results2.len());
     for row in &star_results2 {
         if row.len() >= 3 {
@@ -202,9 +220,9 @@ SELECT ?sensor WHERE {
         }
     }
 
-    let final_size  = database.dataset_index.len_default();
-    let growth      = final_size as isize - size_after_rdf_star as isize;
-    let growth_pct  = growth as f64 / size_after_rdf_star as f64 * 100.0;
+    let final_size = database.default_triple_count();
+    let growth = final_size as isize - size_after_rdf_star as isize;
+    let growth_pct = growth as f64 / size_after_rdf_star as f64 * 100.0;
 
     println!("\n=== Database Growth Summary ===");
     println!(
@@ -219,10 +237,7 @@ SELECT ?sensor WHERE {
         "  After provenance RULE:             {:>2} triples  (+2 criticalRisk for S1, S3)",
         final_size
     );
-    println!(
-        "  Total growth: +{} triples  ({:.0}%)",
-        growth, growth_pct
-    );
+    println!("  Total growth: +{} triples  ({:.0}%)", growth, growth_pct);
     println!();
     println!("  Syntax elements demonstrated:");
     println!("    * SPARQL SELECT            — Stages 5, 7");

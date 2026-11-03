@@ -8,14 +8,15 @@
  * you can obtain one at https://mozilla.org/MPL/2.0/.
  */
 
+use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
-use serde::{Serialize, Deserialize};
 
 /// Bit mask for identifying quoted triple IDs.
 /// Regular dictionary IDs use bits 0–30 (up to 2,147,483,647).
 /// Quoted triple IDs have bit 31 set (0x8000_0000 and above).
 pub const QUOTED_TRIPLE_ID_BIT: u32 = 0x8000_0000;
 
+/// Whether `id` denotes a quoted triple rather than an ordinary interned term.
 #[inline]
 pub fn is_quoted_triple_id(id: u32) -> bool {
     id & QUOTED_TRIPLE_ID_BIT != 0
@@ -25,13 +26,23 @@ pub fn is_quoted_triple_id(id: u32) -> bool {
 /// Each quoted triple `<< s p o >>` gets a unique ID with the high bit set.
 /// Component IDs (s, p, o) may themselves be quoted triple IDs for nesting.
 #[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
+/// Interns RDF-star quoted triples, in an id range disjoint from the dictionary's.
+///
+/// Components are themselves encoded ids, and may be quoted triples in turn, so
+/// nesting is representable. Ids start at [`QUOTED_TRIPLE_ID_BIT`] and climb, which
+/// is what keeps them distinguishable from ordinary terms by a single bit test.
+/// `u32::MAX` is never minted; see [`encode`](Self::encode).
 pub struct QuotedTripleStore {
+    /// Id to its three component ids.
     pub id_to_components: HashMap<u32, (u32, u32, u32)>,
+    /// Components back to their id, so re-encoding is idempotent.
     pub components_to_id: HashMap<(u32, u32, u32), u32>,
+    /// Next id to hand out. Starts at [`QUOTED_TRIPLE_ID_BIT`].
     pub next_qt_id: u32,
 }
 
 impl QuotedTripleStore {
+    /// An empty store, assigning ids from [`QUOTED_TRIPLE_ID_BIT`].
     pub fn new() -> Self {
         Self {
             id_to_components: HashMap::new(),
@@ -47,6 +58,16 @@ impl QuotedTripleStore {
         if let Some(&id) = self.components_to_id.get(&key) {
             return id;
         }
+        // Mirrors the assert on the ordinary-term half of the id space, which
+        // refuses to mint an id that would collide with this range. The top value
+        // is reserved: `relation::UNBOUND` is `u32::MAX`, and a row that held it as
+        // a real id would read as unbound. Nothing else here caps `next_qt_id`, so
+        // this also stops the increment below overflowing silently in release.
+        assert!(
+            self.next_qt_id < u32::MAX,
+            "quoted triple ID space exhausted: next_qt_id {} is reserved",
+            self.next_qt_id
+        );
         let id = self.next_qt_id;
         self.next_qt_id += 1;
         self.id_to_components.insert(id, key);
@@ -60,11 +81,13 @@ impl QuotedTripleStore {
     }
 
     /// Returns the number of quoted triples stored.
+    /// Number of distinct quoted triples interned.
     pub fn len(&self) -> usize {
         self.id_to_components.len()
     }
 
     /// Returns true if the store is empty.
+    /// Whether no quoted triple has been interned.
     pub fn is_empty(&self) -> bool {
         self.id_to_components.is_empty()
     }

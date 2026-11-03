@@ -8,6 +8,22 @@
  * you can obtain one at https://mozilla.org/MPL/2.0/.
  */
 
+//! What a program must satisfy before it can be evaluated.
+//!
+//! Two checks, both of which reject a rule rather than let it quietly derive
+//! nothing: every interval must have `start <= end`, and every head variable must
+//! be bound somewhere in the body that can actually witness a value.
+//!
+//! # Why `Box` does not bind
+//!
+//! Only [`Base`](crate::syntax::TemporalAtom::Base) and
+//! [`Diamond`](crate::syntax::TemporalAtom::Diamond) atoms make a variable safe.
+//! The universal operators have no witness to take a value from — `Box` asserts
+//! something about every point in a window rather than finding a point — and the
+//! `phi` side of `Since` is universal for the same reason. A rule whose head
+//! variable occurs only there could never bind it, so it is an error at
+//! construction instead of an empty result at every tick.
+
 use crate::syntax::{DatalogMTLRule, TemporalAtom};
 use shared::terms::Term;
 use std::collections::HashSet;
@@ -34,7 +50,8 @@ fn validate_variable_safety(rule: &DatalogMTLRule) -> Result<(), String> {
             if !safe.contains(v) {
                 return Err(format!(
                     "Rule '{}': head variable '{}' is not safely bound \
-                     (must appear in a Base or Diamond atom)", rule.id, v
+                     (must appear in a Base or Diamond atom)",
+                    rule.id, v
                 ));
             }
         }
@@ -46,25 +63,29 @@ fn collect_safe_vars(atom: &TemporalAtom, safe: &mut HashSet<String>) {
     match atom {
         TemporalAtom::Base(p) => {
             for term in [&p.0, &p.1, &p.2] {
-                if let Term::Variable(v) = term { safe.insert(v.clone()); }
+                if let Term::Variable(v) = term {
+                    safe.insert(v.clone());
+                }
             }
         }
         TemporalAtom::Diamond { inner, .. } => collect_safe_vars(inner, safe),
-        TemporalAtom::Prev    { inner, .. } => collect_safe_vars(inner, safe),
+        TemporalAtom::Prev { inner, .. } => collect_safe_vars(inner, safe),
         // psi is existential in Since, so its variables are safe.
-        TemporalAtom::Since   { psi, .. }   => collect_safe_vars(psi, safe),
+        TemporalAtom::Since { psi, .. } => collect_safe_vars(psi, safe),
         // Box: variables in the inner pattern are safe because the evaluator
         // collects consistent bindings that hold at every timestamp.
         TemporalAtom::Box_ { inner, .. } => collect_safe_vars(inner, safe),
         // Every conjunct must hold, so each one binds.
         TemporalAtom::Conj(atoms) => {
-            for a in atoms { collect_safe_vars(a, safe); }
+            for a in atoms {
+                collect_safe_vars(a, safe);
+            }
         }
         // Future operators mirror their past duals: Diamond/Box inner vars are
         // safe; Until's psi (existential trigger) is safe like Since's.
         TemporalAtom::DiamondPlus { inner, .. } => collect_safe_vars(inner, safe),
-        TemporalAtom::BoxPlus     { inner, .. } => collect_safe_vars(inner, safe),
-        TemporalAtom::Until       { psi, .. }   => collect_safe_vars(psi, safe),
+        TemporalAtom::BoxPlus { inner, .. } => collect_safe_vars(inner, safe),
+        TemporalAtom::Until { psi, .. } => collect_safe_vars(psi, safe),
     }
 }
 
@@ -79,14 +100,16 @@ fn validate_atom_interval(atom: &TemporalAtom, rule_id: &str) -> Result<(), Stri
     match atom {
         TemporalAtom::Base(_) => Ok(()),
         TemporalAtom::Conj(atoms) => {
-            for a in atoms { validate_atom_interval(a, rule_id)?; }
+            for a in atoms {
+                validate_atom_interval(a, rule_id)?;
+            }
             Ok(())
         }
-        TemporalAtom::Diamond     { interval, inner }
-        | TemporalAtom::Box_      { interval, inner }
-        | TemporalAtom::Prev      { interval, inner }
+        TemporalAtom::Diamond { interval, inner }
+        | TemporalAtom::Box_ { interval, inner }
+        | TemporalAtom::Prev { interval, inner }
         | TemporalAtom::DiamondPlus { interval, inner }
-        | TemporalAtom::BoxPlus   { interval, inner } => {
+        | TemporalAtom::BoxPlus { interval, inner } => {
             if interval.start > interval.end {
                 return Err(format!(
                     "Rule '{}': interval [{}, {}] has start > end",
@@ -95,8 +118,7 @@ fn validate_atom_interval(atom: &TemporalAtom, rule_id: &str) -> Result<(), Stri
             }
             validate_atom_interval(inner, rule_id)
         }
-        TemporalAtom::Since { interval, phi, psi }
-        | TemporalAtom::Until { interval, phi, psi } => {
+        TemporalAtom::Since { interval, phi, psi } | TemporalAtom::Until { interval, phi, psi } => {
             if interval.start > interval.end {
                 return Err(format!(
                     "Rule '{}': binary-operator interval [{}, {}] has start > end",

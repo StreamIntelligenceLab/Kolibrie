@@ -1,6 +1,4 @@
-use criterion::{
-    black_box, criterion_group, criterion_main, BenchmarkId, Criterion, Throughput,
-};
+use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criterion, Throughput};
 use datalog::cross_window_sds::{
     all_component_iris, sds_with_expiry_to_external, Sds, WindowData, WindowedTriple,
 };
@@ -10,11 +8,10 @@ use datalog::reasoning::materialisation::cross_window_incremental::{
 };
 use datalog::reasoning::materialisation::cross_window_naive::naive_sds_plus;
 use datalog::reasoning::Reasoner;
-use shared::dictionary::Dictionary;
 use shared::rule::Rule;
+use shared::term_encoder::SharedTerms;
 use shared::triple::Triple;
 use std::collections::{BTreeSet, HashMap};
-use std::sync::{Arc, RwLock};
 use std::time::Duration;
 
 const PARENT_OF_SDS_STREAM_IRI: &str = "http://family.example/sds/stream1/parent-facts/";
@@ -50,9 +47,9 @@ struct TwoStreamFamilyFacts {
     other: Vec<WindowedTriple>,
 }
 
-fn parse_rules(dict: &Arc<RwLock<Dictionary>>) -> Vec<Rule> {
+fn parse_rules(dict: &SharedTerms) -> Vec<Rule> {
     let mut reasoner = Reasoner::new();
-    reasoner.dictionary = Arc::clone(dict);
+    reasoner.adopt_terms(dict.clone());
     let window_widths = HashMap::from([
         (PARENT_OF_SDS_STREAM_IRI.to_string(), WINDOW_ALPHA),
         (FAMILY_SDS_STREAM_IRI.to_string(), WINDOW_ALPHA),
@@ -151,11 +148,10 @@ fn build_next_sds(facts: &TwoStreamFamilyFacts) -> Sds {
     build_two_stream_sds(facts.parent_of.clone(), facts.other.clone())
 }
 
-fn signature(
-    result: &HashMap<String, Vec<Triple>>,
-    dict: &Arc<RwLock<Dictionary>>,
-) -> BTreeSet<String> {
-    let d = dict.read().unwrap();
+fn signature(result: &HashMap<String, Vec<Triple>>, dict: &SharedTerms) -> BTreeSet<String> {
+    // A copy: this decodes every triple it prints, and a scoped encoder will not
+    // hold its lock across the walk.
+    let d = dict.view();
     let mut out = BTreeSet::new();
 
     for (component, triples) in result {
@@ -170,16 +166,12 @@ fn signature(
     out
 }
 
-fn prepare_old_materialization(
-    rules: &[Rule],
-    old_sds: &Sds,
-    dict: &Arc<RwLock<Dictionary>>,
-) -> SdsWithExpiry {
+fn prepare_old_materialization(rules: &[Rule], old_sds: &Sds, dict: &SharedTerms) -> SdsWithExpiry {
     incremental_sds_plus(rules, old_sds, &HashMap::new(), dict, INITIAL_TIME)
 }
 
 fn assert_same_results(person_count: usize, new_ratio_percent: usize) {
-    let dict = Arc::new(RwLock::new(Dictionary::new()));
+    let dict = SharedTerms::new();
     let rules = parse_rules(&dict);
     let facts = generate_two_stream_family_facts(person_count, new_ratio_percent);
     let old_sds = build_old_sds(&facts);
@@ -187,18 +179,15 @@ fn assert_same_results(person_count: usize, new_ratio_percent: usize) {
     let old_materialization = prepare_old_materialization(&rules, &old_sds, &dict);
 
     let naive = naive_sds_plus(&rules, &next_sds, &dict, CURRENT_TIME);
-    let incremental = incremental_sds_plus(
-        &rules,
-        &next_sds,
-        &old_materialization,
-        &dict,
-        CURRENT_TIME,
-    );
+    let incremental =
+        incremental_sds_plus(&rules, &next_sds, &old_materialization, &dict, CURRENT_TIME);
     let component_iris = all_component_iris(&next_sds);
-    let incremental_external =
-        sds_with_expiry_to_external(&incremental, &dict, &component_iris);
+    let incremental_external = sds_with_expiry_to_external(&incremental, &dict, &component_iris);
 
-    assert_eq!(signature(&naive, &dict), signature(&incremental_external, &dict));
+    assert_eq!(
+        signature(&naive, &dict),
+        signature(&incremental_external, &dict)
+    );
 }
 
 fn bench_family_tree_cross_window(c: &mut Criterion) {
@@ -218,7 +207,7 @@ fn bench_family_tree_cross_window(c: &mut Criterion) {
                 BenchmarkId::new("naive_from_scratch_update", &label),
                 &(person_count, new_ratio),
                 |b, &(person_count, new_ratio)| {
-                    let dict = Arc::new(RwLock::new(Dictionary::new()));
+                    let dict = SharedTerms::new();
                     let rules = parse_rules(&dict);
                     let facts = generate_two_stream_family_facts(person_count, new_ratio);
                     let next_sds = build_next_sds(&facts);
@@ -240,14 +229,13 @@ fn bench_family_tree_cross_window(c: &mut Criterion) {
                 BenchmarkId::new("incremental_update", &label),
                 &(person_count, new_ratio),
                 |b, &(person_count, new_ratio)| {
-                    let dict = Arc::new(RwLock::new(Dictionary::new()));
+                    let dict = SharedTerms::new();
                     let rules = parse_rules(&dict);
                     let facts = generate_two_stream_family_facts(person_count, new_ratio);
                     let old_sds = build_old_sds(&facts);
                     let next_sds = build_next_sds(&facts);
 
-                    let old_materialization =
-                        prepare_old_materialization(&rules, &old_sds, &dict);
+                    let old_materialization = prepare_old_materialization(&rules, &old_sds, &dict);
                     black_box(incremental_sds_plus(
                         &rules,
                         &next_sds,

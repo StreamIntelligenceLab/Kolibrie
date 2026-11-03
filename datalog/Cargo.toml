@@ -1,8 +1,9 @@
 [package]
 name = "datalog"
-version = "0.1.1"
-edition = "2021"
-license = "MPL-2.0"
+version.workspace      = true
+edition.workspace      = true
+license.workspace      = true
+rust-version.workspace = true
 description = "Datalog Engine"
 
 [dependencies]
@@ -10,5 +11,5 @@ nom = { workspace = true }
 shared = { path = "../shared" }
 rayon = { workspace = true }
 
-[dev-dependencies]
-shared = { path = "../shared" }
+[lints]
+workspace = true

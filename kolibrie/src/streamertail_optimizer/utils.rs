@@ -8,6 +8,12 @@
  * you can obtain one at https://mozilla.org/MPL/2.0/.
  */
 
+//! Building a logical plan from a parsed query.
+//!
+//! The bridge from the lexical syntax tree in [`shared::query`] to
+//! [`LogicalOperator`]: terms are resolved against a
+//! dictionary and graph patterns become plan nodes.
+
 use super::operators::{LogicalOperator, PhysicalOperator};
 use super::types::{Condition, SubqueryProjection, SubquerySpec};
 use crate::sparql_database::SparqlDatabase;
@@ -37,7 +43,7 @@ pub fn pattern_contains_variable(pattern: &TriplePattern, var: &str) -> bool {
 
 /// Estimates the selectivity of an operator for optimization purposes
 #[deprecated(
-    since = "0.1.1",
+    since = "0.3.0",
     note = "use CostEstimator::estimate_cost; this returns fictional constants"
 )]
 pub fn estimate_operator_selectivity(op: &LogicalOperator, _database: &SparqlDatabase) -> u64 {
@@ -224,7 +230,7 @@ pub fn compile_term(
         Term::Variable(trimmed.to_string())
     } else {
         let resolved = resolve_sparql_lexical_value(trimmed, prefixes, database);
-        let mut dict = database.dictionary.write().unwrap();
+        let mut dict = database.dictionary.write();
         Term::Constant(dict.encode(&resolved))
     }
 }

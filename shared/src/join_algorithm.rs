@@ -67,7 +67,6 @@ pub fn perform_hash_join_for_rules(
     dict: &Dictionary,
     final_results: Vec<BTreeMap<String, String>>,
 ) -> Vec<BTreeMap<String, String>> {
-
     // Extract variable names from the premise
     let (subject, object) = extract_join_parameters(premise);
 
@@ -114,12 +113,7 @@ pub fn perform_hash_join_for_rules(
     }
 
     // Build simple hash table - this is the key optimization
-    let hash_table = build_simple_hash_table(
-        &final_results,
-        &subject,
-        &object,
-        dict,
-    );
+    let hash_table = build_simple_hash_table(&final_results, &subject, &object, dict);
 
     // Parallel processing with minimal overhead
     let chunk_size = (filtered_triples.len() / rayon::current_num_threads().max(1)).max(1000);
@@ -168,14 +162,19 @@ fn build_simple_hash_table(
     let mut neither_bound = Vec::new();
 
     for (idx, result) in final_results.iter().enumerate() {
-        let subject_id = result.get(subject_var)
+        let subject_id = result
+            .get(subject_var)
             .and_then(|s| dictionary.string_to_id.get(s).copied());
-        let object_id = result.get(object_var)
+        let object_id = result
+            .get(object_var)
             .and_then(|o| dictionary.string_to_id.get(o).copied());
 
         match (subject_id, object_id) {
             (Some(s_id), Some(o_id)) => {
-                both_bound.entry((s_id, o_id)).or_insert_with(Vec::new).push(idx);
+                both_bound
+                    .entry((s_id, o_id))
+                    .or_insert_with(Vec::new)
+                    .push(idx);
             }
             (Some(s_id), None) => {
                 subject_bound.entry(s_id).or_insert_with(Vec::new).push(idx);
@@ -254,7 +253,8 @@ fn process_triple_fast(
         let mut result = hash_table.results[idx].clone();
 
         if let (Some(subject_str), Some(object_str)) =
-            (dictionary.decode(subject_id), dictionary.decode(object_id)) {
+            (dictionary.decode(subject_id), dictionary.decode(object_id))
+        {
             result.insert(subject_var.to_string(), subject_str.to_string());
             result.insert(object_var.to_string(), object_str.to_string());
             if bind_predicate(&mut result, predicate_var, predicate_id, dictionary) {
@@ -263,4 +263,3 @@ fn process_triple_fast(
         }
     }
 }
-

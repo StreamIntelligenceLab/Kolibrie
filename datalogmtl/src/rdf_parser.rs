@@ -72,7 +72,6 @@
 //! mistaken for a comment and `.` in a host name does not terminate a block.
 
 use std::collections::HashMap;
-use std::sync::{Arc, RwLock};
 
 use shared::dictionary::Dictionary;
 use shared::terms::{Term, TriplePattern};
@@ -80,6 +79,7 @@ use shared::triple::Triple;
 
 use crate::stream::{StalenessPolicy, StreamShape};
 use crate::syntax::{DatalogMTLRule, Interval, Mode, TemporalAtom};
+use shared::term_encoder::SharedTerms;
 
 /// Prefix label (without the trailing `:`) → IRI namespace.
 type PrefixMap = HashMap<String, String>;
@@ -132,10 +132,7 @@ pub fn parse_rules(
 }
 
 /// Parse `STREAM`/`PATTERN`/`KEY`/`STALENESS` blocks into stream shapes.
-pub fn parse_stream_shapes(
-    text: &str,
-    dict: &mut Dictionary,
-) -> Result<Vec<StreamShape>, String> {
+pub fn parse_stream_shapes(text: &str, dict: &mut Dictionary) -> Result<Vec<StreamShape>, String> {
     let (prefixes, cleaned) = extract_prefixes(text)?;
 
     let blocks = split_at_depth0(&cleaned, '.');
@@ -313,7 +310,7 @@ fn split_ntriples_terms(stmt: &str) -> Vec<String> {
                     }
                 }
                 i = (i + 1).min(chars.len()); // include closing quote
-                // Keep a language tag or datatype suffix with the literal.
+                                              // Keep a language tag or datatype suffix with the literal.
                 while i < chars.len() && !chars[i].is_whitespace() {
                     if chars[i] == '<' {
                         while i < chars.len() && chars[i] != '>' {
@@ -341,7 +338,10 @@ fn ground_term(term: &Term, index: usize, position: &str) -> Result<u32, String>
             "Fact {}: variable '?{}' in {} position — facts must be ground",
             index, v, position
         )),
-        other => Err(format!("Fact {}: unsupported {} term {:?}", index, position, other)),
+        other => Err(format!(
+            "Fact {}: unsupported {} term {:?}",
+            index, position, other
+        )),
     }
 }
 
@@ -349,14 +349,9 @@ fn ground_term(term: &Term, index: usize, position: &str) -> Result<u32, String>
 ///
 /// Takes the write lock for the whole parse — never call it while already
 /// holding a lock on the same dictionary.
-pub fn parse_facts_shared(
-    text: &str,
-    dict: &Arc<RwLock<Dictionary>>,
-) -> Result<Vec<Triple>, String> {
-    let mut guard = dict
-        .write()
-        .map_err(|_| "dictionary lock poisoned".to_string())?;
-    parse_facts(text, &mut guard)
+pub fn parse_facts_shared(text: &str, dict: &SharedTerms) -> Result<Vec<Triple>, String> {
+    dict.try_with_terms(|guard| parse_facts(text, guard))
+        .map_err(|_| "dictionary lock poisoned".to_string())?
 }
 
 /// Parse a bare `start,end` interval body (the text between `[` and `]`).
@@ -382,13 +377,11 @@ pub fn parse_interval(s: &str) -> Result<Interval, String> {
 /// holding a lock on the same dictionary.
 pub fn parse_rules_shared(
     text: &str,
-    dict: &Arc<RwLock<Dictionary>>,
+    dict: &SharedTerms,
     mode: Mode,
 ) -> Result<Vec<DatalogMTLRule>, String> {
-    let mut guard = dict
-        .write()
-        .map_err(|_| "dictionary lock poisoned".to_string())?;
-    parse_rules(text, &mut guard, mode)
+    dict.try_with_terms(|guard| parse_rules(text, guard, mode))
+        .map_err(|_| "dictionary lock poisoned".to_string())?
 }
 
 /// [`parse_stream_shapes`] for callers holding a shared dictionary.
@@ -397,12 +390,10 @@ pub fn parse_rules_shared(
 /// holding a lock on the same dictionary.
 pub fn parse_stream_shapes_shared(
     text: &str,
-    dict: &Arc<RwLock<Dictionary>>,
+    dict: &SharedTerms,
 ) -> Result<Vec<StreamShape>, String> {
-    let mut guard = dict
-        .write()
-        .map_err(|_| "dictionary lock poisoned".to_string())?;
-    parse_stream_shapes(text, &mut guard)
+    dict.try_with_terms(|guard| parse_stream_shapes(text, guard))
+        .map_err(|_| "dictionary lock poisoned".to_string())?
 }
 
 // ── Comment stripping and PREFIX extraction ───────────────────────────────────
@@ -675,9 +666,11 @@ fn parse_term(s: &str, dict: &mut Dictionary, prefixes: &PrefixMap) -> Result<Te
     } else if let Some(colon) = s.find(':') {
         let prefix = &s[..colon];
         match prefixes.get(prefix) {
-            Some(base) => Ok(Term::Constant(
-                dict.encode(&format!("{}{}", base, &s[colon + 1..])),
-            )),
+            Some(base) => Ok(Term::Constant(dict.encode(&format!(
+                "{}{}",
+                base,
+                &s[colon + 1..]
+            )))),
             // ":name" with no empty prefix declared is interned verbatim.
             None if prefix.is_empty() => Ok(Term::Constant(dict.encode(s))),
             None => Err(format!(
@@ -692,8 +685,15 @@ fn parse_term(s: &str, dict: &mut Dictionary, prefixes: &PrefixMap) -> Result<Te
 
 /// Every operator keyword that can introduce an atom.
 const OP_KEYWORDS: [&str; 9] = [
-    "Diamondminus", "Diamond", "Boxminus", "Box", "Prev",
-    "Since", "Diamondplus", "Boxplus", "Until",
+    "Diamondminus",
+    "Diamond",
+    "Boxminus",
+    "Box",
+    "Prev",
+    "Since",
+    "Diamondplus",
+    "Boxplus",
+    "Until",
 ];
 
 /// Does this depth-0 fragment look like a nested ATOM rather than a bare term?
@@ -810,10 +810,7 @@ fn parse_temporal_atom(
         return parse_binary_atom(rest, dict, prefixes, mode, "Since");
     }
     // Future operators — static data only.
-    for (kw, kind) in [
-        ("Diamondplus[", "Diamondplus"),
-        ("Boxplus[", "Boxplus"),
-    ] {
+    for (kw, kind) in [("Diamondplus[", "Diamondplus"), ("Boxplus[", "Boxplus")] {
         if let Some(rest) = s.strip_prefix(kw) {
             require_static(mode, kind)?;
             return parse_interval_atom(rest, dict, prefixes, kind, mode);

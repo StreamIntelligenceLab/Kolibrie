@@ -8,19 +8,30 @@
  * you can obtain one at https://mozilla.org/MPL/2.0/.
  */
 
+//! Parser for N3 logic rules, including the window annotations RSP-QL needs.
+//!
+//! Reads `{ premise } => { conclusion }` under `@prefix` declarations and produces
+//! [`shared::rule::Rule`] values whose terms are already interned, which is why
+//! parsing needs a dictionary rather than only a string.
+//!
+//! [`parse_n3_rules_for_sds`] additionally returns a [`WindowContext`]. A rule
+//! mentioning two windows is indistinguishable from one mentioning two predicates
+//! unless the window each predicate came from is recorded, and the cross-window
+//! materialisation needs exactly that to decide when a derived fact expires.
+
 use crate::reasoning::*;
-use shared::terms::{Term, TriplePattern, UnresolvedTerm, UnresolvedTriple};
-use shared::rule::Rule;
+use nom::combinator::{map, opt};
+use nom::error::{Error, ErrorKind};
 use nom::{
     branch::alt,
     bytes::complete::{tag, take_until},
     character::complete::{alphanumeric1, multispace0, multispace1},
+    multi::{many0, separated_list1},
     sequence::{delimited, preceded, separated_pair, terminated},
-    multi::{separated_list1, many0},
     IResult, Parser,
 };
-use nom::combinator::{map, opt};
-use nom::error::{Error, ErrorKind};
+use shared::rule::Rule;
+use shared::terms::{Term, TriplePattern, UnresolvedTerm, UnresolvedTriple};
 use std::collections::HashMap;
 
 /// Metadata linking parsed rule predicates to their owning SDS windows
@@ -31,7 +42,7 @@ pub struct WindowContext {
     /// Maps window IRI → window width α (in the same time unit as event timestamps)
     pub window_widths: HashMap<String, u64>,
     /// All component IRIs found in the rules (windows + output-only components),
-    /// sorted longest-first for [`strip_window_prefix`]
+    /// sorted longest-first for [`crate::cross_window_sds::strip_window_prefix`]
     pub all_component_iris: Vec<String>,
 }
 
@@ -53,14 +64,16 @@ fn parse_unresolved_term(input: &str) -> IResult<&str, UnresolvedTerm> {
         map(preceded(tag("?"), alphanumeric1), |var: &str| {
             UnresolvedTerm::Var(var.to_string())
         }),
-        map(delimited(tag("<"), take_until(">"), tag(">")), |iri: &str| {
-            UnresolvedTerm::Iri(iri.to_string())
-        }),
+        map(
+            delimited(tag("<"), take_until(">"), tag(">")),
+            |iri: &str| UnresolvedTerm::Iri(iri.to_string()),
+        ),
         map(
             separated_pair(alphanumeric1, tag(":"), alphanumeric1),
             |(prefix, term)| UnresolvedTerm::Prefixed(format!("{}:{}", prefix, term)),
         ),
-    )).parse(input)
+    ))
+    .parse(input)
 }
 
 fn parse_unresolved_triple(input: &str) -> IResult<&str, UnresolvedTriple> {
@@ -80,54 +93,59 @@ fn parse_nested_unresolved_rule(input: &str) -> IResult<&str, UnresolvedTriple> 
     let (input, _) = multispace0.parse(input)?;
     let (input, _) = tag("{").parse(input)?;
 
-    let (input, _) = take_until("}").parse(input)?; 
+    let (input, _) = take_until("}").parse(input)?;
     let (input, _) = tag("}").parse(input)?;
-    
+
     let (input, _) = multispace0.parse(input)?;
     let (input, _) = tag("=>").parse(input)?;
     let (input, _) = multispace0.parse(input)?;
-    
+
     let (input, _) = tag("{").parse(input)?;
     let (input, triple) = parse_unresolved_triple(input)?;
     let (input, _) = multispace0.parse(input)?;
     let (input, _) = tag("}").parse(input)?;
-    
+
     Ok((input, triple))
 }
 
 /// Parse a block that can contain either triple(s) or a nested rule
 fn parse_unresolved_clause_block(input: &str) -> IResult<&str, Vec<UnresolvedTriple>> {
     separated_list1(
-        multispace0, 
+        multispace0,
         alt((
             parse_nested_unresolved_rule, // if it's a nested rule
             parse_unresolved_triple,      // if it's just a triple
-        ))
-    ).parse(input)
+        )),
+    )
+    .parse(input)
 }
 
 // Updated to parse multiple conclusion triples
-fn parse_unresolved_rule(input: &str) -> IResult<&str, (Vec<UnresolvedTriple>, Vec<UnresolvedTriple>)> {
+fn parse_unresolved_rule(
+    input: &str,
+) -> IResult<&str, (Vec<UnresolvedTriple>, Vec<UnresolvedTriple>)> {
     let (input, _) = multispace0.parse(input)?;
-    
+
     // Parse premise
     let (input, premise_triples) = delimited(
         tag("{"),
         parse_unresolved_clause_block,
         preceded(multispace0, tag("}")),
-    ).parse(input)?;
-    
+    )
+    .parse(input)?;
+
     let (input, _) = multispace0.parse(input)?;
     let (input, _) = tag("=>").parse(input)?;
     let (input, _) = multispace0.parse(input)?;
-    
+
     // Parse multiple conclusions
     let (input, conclusion_triples) = delimited(
         tag("{"),
-        parse_unresolved_clause_block,  // Using the same parser for multiple triples
+        parse_unresolved_clause_block, // Using the same parser for multiple triples
         preceded(multispace0, tag("}")),
-    ).parse(input)?;
-    
+    )
+    .parse(input)?;
+
     Ok((input, (premise_triples, conclusion_triples)))
 }
 
@@ -146,7 +164,7 @@ pub fn parse_n3_rule<'a>(
 
     // Parse to an intermediate unresolved form with multiple conclusions
     let (input, (premise_triples, conclusion_triples)) = parse_unresolved_rule(input)?;
-    
+
     // Convert from unresolved string-based data to final `Term` with dictionary encoding
     let premise_parsed: Vec<TriplePattern> = premise_triples
         .into_iter()
@@ -188,17 +206,9 @@ fn to_term(ut: UnresolvedTerm, graph: &mut Reasoner, prefix_map: &HashMap<String
         UnresolvedTerm::Prefixed(s) => {
             // Expand the prefix!
             let expanded = expand_prefix(&s, prefix_map);
-            let mut dict = graph.dictionary.write().unwrap();
-            let id = dict.encode(&expanded);
-            drop(dict);
-            Term::Constant(id)
+            Term::Constant(graph.encode_term(&expanded))
         }
-        UnresolvedTerm::Iri(iri) => {
-            let mut dict = graph.dictionary.write().unwrap();
-            let id = dict.encode(&iri);
-            drop(dict);
-            Term::Constant(id)
-        }
+        UnresolvedTerm::Iri(iri) => Term::Constant(graph.encode_term(&iri)),
     }
 }
 
@@ -207,7 +217,7 @@ fn expand_prefix(prefixed: &str, prefix_map: &HashMap<String, String>) -> String
     if let Some(colon_pos) = prefixed.find(':') {
         let prefix = &prefixed[..colon_pos];
         let local = &prefixed[colon_pos + 1..];
-        
+
         if let Some(base_uri) = prefix_map.get(prefix) {
             // Expand: prefix + local part
             format!("{}{}", base_uri, local)
@@ -228,17 +238,27 @@ pub fn parse_n3_document<'a>(
     input: &'a str,
     graph: &mut Reasoner,
 ) -> IResult<&'a str, (HashMap<String, String>, Vec<Rule>)> {
-    let (input, raw_prefixes) =
-        many0(preceded(multispace0, parse_prefix)).parse(input)?;
+    let (input, raw_prefixes) = many0(preceded(multispace0, parse_prefix)).parse(input)?;
 
     let prefix_map: HashMap<String, String> = raw_prefixes
         .iter()
         .map(|(k, v)| (k.to_string(), v.to_string()))
         .collect();
 
-    let (input, first_rule) = preceded(multispace0, parse_unresolved_rule).parse(input)?;
-    let (input, rest_rules) =
-        many0(preceded(multispace0, parse_unresolved_rule)).parse(input)?;
+    // A rule may be terminated by `.`, as every N3 statement is, and
+    // `parse_unresolved_rule` stops at the conclusion's closing brace. Accepting the
+    // terminator here is what lets a document be written the conventional way: this
+    // function requires the whole input to be consumed, so a trailing dot used to
+    // make it fail with `Eof` while the single-rule parser silently left the dot
+    // behind and looked fine.
+    let terminated = |input| {
+        let (input, rule) = preceded(multispace0, parse_unresolved_rule).parse(input)?;
+        let (input, _) =
+            opt(preceded(multispace0, nom::character::complete::char('.'))).parse(input)?;
+        Ok((input, rule))
+    };
+    let (input, first_rule) = terminated(input)?;
+    let (input, rest_rules) = many0(terminated).parse(input)?;
 
     let (input, _) = multispace0.parse(input)?;
     if !input.is_empty() {
@@ -288,8 +308,8 @@ pub fn parse_n3_rules_for_sds(
     graph: &mut Reasoner,
     window_widths: HashMap<String, u64>,
 ) -> Result<(Vec<Rule>, WindowContext), String> {
-    let (_, (prefix_map, rules)) = parse_n3_document(input, graph)
-        .map_err(|e| format!("N3 parse error: {:?}", e))?;
+    let (_, (prefix_map, rules)) =
+        parse_n3_document(input, graph).map_err(|e| format!("N3 parse error: {:?}", e))?;
 
     // Sort window IRIs longest-first for correct prefix matching.
     let mut sorted_window_iris: Vec<&String> = window_widths.keys().collect();
@@ -299,9 +319,10 @@ pub fn parse_n3_rules_for_sds(
     let mut output_iris: Vec<String> = Vec::new();
 
     {
-        let dict = graph.dictionary.read().unwrap();
-
-        // Walk predicate positions only.
+        // Walk predicate positions only. Each decode takes the lock for its own
+        // call, which is what a scoped encoder gives up in exchange for not handing
+        // the lock out; the walk is over rule predicates, not facts.
+        //
         for rule in &rules {
             let preds = rule
                 .premise
@@ -311,7 +332,7 @@ pub fn parse_n3_rules_for_sds(
 
             for term in preds {
                 if let Term::Constant(id) = term {
-                    if let Some(iri) = dict.decode(*id) {
+                    if let Some(iri) = graph.decode_term(*id) {
                         // Check against known window IRIs (longest-first)
                         let matched = sorted_window_iris
                             .iter()

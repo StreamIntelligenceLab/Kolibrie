@@ -1,6 +1,7 @@
-use kolibrie::execute_ml::execute_ml_prediction_from_clause;
-use kolibrie::execute_query::execute_query_rayon_parallel2_volcano;
-use kolibrie::parser::*;
+use kolibrie::execute_query::execute;
+use kolibrie::ml::execute::execute_ml_prediction_from_clause;
+use kolibrie::parser::parse_standalone_rule;
+use kolibrie::rule_execution::process_rule_definition;
 use kolibrie::sparql_database::SparqlDatabase;
 use ml::MLHandler;
 use pyo3::prepare_freethreaded_python;
@@ -33,7 +34,7 @@ struct CongestionPrediction {
 fn extract_traffic_data_from_database(
     database: &SparqlDatabase,
 ) -> Result<Vec<TrafficData>, Box<dyn Error>> {
-    let dict = database.dictionary.read().unwrap();
+    let dict = database.dictionary();
     let default_triples = database.query_default_triples(None, None, None);
 
     let traffic_data: Vec<TrafficData> = default_triples
@@ -63,7 +64,8 @@ fn extract_traffic_data_from_database(
                 .iter()
                 .find(|t| {
                     t.subject == triple.subject
-                        && dict.decode(t.predicate)
+                        && dict
+                            .decode(t.predicate)
                             .map_or(false, |p| p.ends_with("vehicleCount"))
                 })
                 .and_then(|t| dict.decode(t.object))
@@ -103,10 +105,16 @@ fn predict_congestion(
     best_model: &str,
     traffic_data: &[TrafficData],
     feature_names: &[String],
-) -> Result<(Vec<CongestionPrediction>, kolibrie::execute_ml::MLPredictTiming), Box<dyn Error>> {
+) -> Result<
+    (
+        Vec<CongestionPrediction>,
+        kolibrie::ml::execute::MLPredictTiming,
+    ),
+    Box<dyn Error>,
+> {
     println!("\n[Rust] Building feature vectors...");
     let feature_build_start = std::time::Instant::now();
-    
+
     // Build feature vectors based on selected variables
     let features: Vec<Vec<f64>> = traffic_data
         .iter()
@@ -128,15 +136,18 @@ fn predict_congestion(
     }
 
     let feature_build_time = feature_build_start.elapsed().as_secs_f64();
-    println!("[Rust] Feature vector building: {:.6} seconds", feature_build_time);
+    println!(
+        "[Rust] Feature vector building: {:.6} seconds",
+        feature_build_time
+    );
     println!("Using features for congestion prediction: {:?}", features);
 
     // Call ML prediction (this now includes detailed timing)
     let prediction_results = ml_handler.predict(best_model, features)?;
 
     // Extract timing information from the ML prediction result
-    let timing = kolibrie::execute_ml::MLPredictTiming {
-        total_time: 0.0, // Will be updated by execute_ml_prediction_from_clause
+    let timing = kolibrie::ml::execute::MLPredictTiming {
+        total_time: 0.0,          // Will be updated by execute_ml_prediction_from_clause
         rust_to_python_time: 0.0, // Will be updated by execute_ml_prediction_from_clause
         python_preprocessing_time: prediction_results.timing.preprocessing_time,
         actual_prediction_time: prediction_results.timing.actual_prediction_time,
@@ -145,12 +156,18 @@ fn predict_congestion(
     };
 
     println!("\nML Model Performance:");
-    println!("  Prediction Time: {:.4} seconds", 
-        prediction_results.performance_metrics.prediction_time);
-    println!("  Memory Usage: {:.2} MB", 
-        prediction_results.performance_metrics.memory_usage_mb);
-    println!("  CPU Usage: {:.2}%", 
-        prediction_results.performance_metrics.cpu_usage_percent);
+    println!(
+        "  Prediction Time: {:.4} seconds",
+        prediction_results.performance_metrics.prediction_time
+    );
+    println!(
+        "  Memory Usage: {:.2} MB",
+        prediction_results.performance_metrics.memory_usage_mb
+    );
+    println!(
+        "  CPU Usage: {:.2}%",
+        prediction_results.performance_metrics.cpu_usage_percent
+    );
 
     // Create congestion predictions with severity levels
     let predictions: Vec<CongestionPrediction> = traffic_data
@@ -254,7 +271,7 @@ impl DynamicRuleManager {
 
                             println!("   Enhanced {} fact(s) with ML predictions", ml_facts.len());
                             for triple in ml_facts.iter() {
-                                let dict = self.database.dictionary.read().unwrap();
+                                let dict = self.database.dictionary();
                                 println!("   {}", self.database.triple_to_string(triple, &*dict));
                                 drop(dict);
                             }
@@ -272,7 +289,7 @@ impl DynamicRuleManager {
                     println!("   Conclusion patterns: {:?}", rule.conclusion);
                     println!("   Inferred {} new fact(s)", inferred_facts.len());
 
-                    let dict = self.database.dictionary.read().unwrap();
+                    let dict = self.database.dictionary();
                     for triple in inferred_facts.iter() {
                         println!("   {}", self.database.triple_to_string(triple, &*dict));
                     }
@@ -370,15 +387,14 @@ impl DynamicRuleManager {
     // Helper functions for manual rule application
     fn find_roads_with_emergency_vehicles(&self) -> Vec<(String, i32)> {
         let mut results = Vec::new();
-        let dict = self.database.dictionary.read().unwrap();
-        
+        let dict = self.database.dictionary();
+
         for triple in self.database.query_default_triples(None, None, None) {
             if let Some(pred) = dict.decode(triple.predicate) {
                 if pred.contains("emergencyVehicles") {
-                    if let (Some(subject_str), Some(object_str)) = (
-                        dict.decode(triple.subject),
-                        dict.decode(triple.object),
-                    ) {
+                    if let (Some(subject_str), Some(object_str)) =
+                        (dict.decode(triple.subject), dict.decode(triple.object))
+                    {
                         if let Ok(count) = object_str.parse::<i32>() {
                             results.push((subject_str.to_string(), count));
                         }
@@ -386,21 +402,20 @@ impl DynamicRuleManager {
                 }
             }
         }
-        
+
         results
     }
 
     fn find_roads_with_bad_weather(&self) -> Vec<String> {
         let mut results = Vec::new();
-        let dict = self.database.dictionary.read().unwrap();
-        
+        let dict = self.database.dictionary();
+
         for triple in self.database.query_default_triples(None, None, None) {
             if let Some(pred) = dict.decode(triple.predicate) {
                 if pred.contains("weatherCondition") {
-                    if let (Some(subject_str), Some(object_str)) = (
-                        dict.decode(triple.subject),
-                        dict.decode(triple.object),
-                    ) {
+                    if let (Some(subject_str), Some(object_str)) =
+                        (dict.decode(triple.subject), dict.decode(triple.object))
+                    {
                         if object_str == "rain" || object_str == "fog" {
                             results.push(subject_str.to_string());
                         }
@@ -408,21 +423,20 @@ impl DynamicRuleManager {
                 }
             }
         }
-        
+
         results
     }
 
     fn find_roads_with_congestion(&self) -> HashMap<String, String> {
         let mut results = HashMap::new();
-        let dict = self.database.dictionary.read().unwrap();
-        
+        let dict = self.database.dictionary();
+
         for triple in self.database.query_default_triples(None, None, None) {
             if let Some(pred) = dict.decode(triple.predicate) {
                 if pred.contains("congestionLevel") && !pred.starts_with("ex:") {
-                    if let (Some(subject_str), Some(object_str)) = (
-                        dict.decode(triple.subject),
-                        dict.decode(triple.object),
-                    ) {
+                    if let (Some(subject_str), Some(object_str)) =
+                        (dict.decode(triple.subject), dict.decode(triple.object))
+                    {
                         if object_str.parse::<f64>().is_ok() {
                             results
                                 .entry(subject_str.to_string())
@@ -432,7 +446,7 @@ impl DynamicRuleManager {
                 }
             }
         }
-        
+
         results
     }
 
@@ -443,15 +457,18 @@ impl DynamicRuleManager {
         rule: &CombinedRule,
     ) {
         let road_subject = format!("http://example.org/traffic#{}", prediction.road_id);
-        
+
         // Encode with write lock
         let road_subject_id = {
-            let mut dict = self.database.dictionary.write().unwrap();
+            let mut dict = self.database.dictionary_mut();
             dict.encode(&road_subject)
         };
 
         if !self.prediction_matches_where_clause(prediction, rule) {
-            println!("  Skipping {} - doesn't match WHERE clause filters", prediction.road_id);
+            println!(
+                "  Skipping {} - doesn't match WHERE clause filters",
+                prediction.road_id
+            );
             return;
         }
 
@@ -461,10 +478,10 @@ impl DynamicRuleManager {
             if *subject_str == "?road" {
                 let expanded_predicate = self
                     .database
-                    .resolve_query_term(predicate_str, &self.database.prefixes.clone());
-                
+                    .resolve_query_term(predicate_str, &self.database.prefixes().clone());
+
                 // Acquire write lock for encoding
-                let mut dict = self.database.dictionary.write().unwrap();
+                let mut dict = self.database.dictionary_mut();
                 let predicate_id = dict.encode(&expanded_predicate);
 
                 let object_id = if *object_str == "?level" || *object_str == "?delay" {
@@ -477,7 +494,7 @@ impl DynamicRuleManager {
                 } else {
                     dict.encode(object_str)
                 };
-                
+
                 drop(dict); // Release write lock
 
                 let enhanced_triple = Triple {
@@ -486,11 +503,11 @@ impl DynamicRuleManager {
                     object: object_id,
                 };
 
-                if self.database.dataset_index.insert_triple(&enhanced_triple) {
+                if self.database.insert_triple(&enhanced_triple) {
                     facts.push(enhanced_triple.clone());
 
                     // Acquire read lock for printing
-                    let dict = self.database.dictionary.read().unwrap();
+                    let dict = self.database.dictionary();
                     println!(
                         "  Created triple: {} {} {}",
                         dict.decode(road_subject_id).unwrap_or("?"),
@@ -511,7 +528,7 @@ impl DynamicRuleManager {
         // Get the road's data from the database
         let road_subject = format!("http://example.org/traffic#{}", prediction.road_id);
         let road_subject_id = {
-            let mut dict = self.database.dictionary.write().unwrap();
+            let mut dict = self.database.dictionary_mut();
             dict.encode(&road_subject)
         };
 
@@ -606,8 +623,8 @@ impl DynamicRuleManager {
 
     // Helper method to get road data
     fn get_road_data(&self, road_subject_id: u32, data_type: &str) -> Option<f64> {
-        let dict = self.database.dictionary.read().unwrap();
-        
+        let dict = self.database.dictionary();
+
         self.database
             .query_default_triples(Some(road_subject_id), None, None)
             .into_iter()
@@ -646,7 +663,7 @@ impl DynamicRuleManager {
     }
 
     fn add_triple(&mut self, subject: &str, predicate: &str, object: &str) {
-        let mut dict = self.database.dictionary.write().unwrap();
+        let mut dict = self.database.dictionary_mut();
         let subject_id = dict.encode(subject);
         let predicate_id = dict.encode(predicate);
         let object_id = dict.encode(object);
@@ -661,7 +678,9 @@ impl DynamicRuleManager {
 
     fn query(&mut self, query: &str, description: &str) -> Result<(), Box<dyn Error>> {
         println!("\nQuery: {}", description);
-        let results = execute_query_rayon_parallel2_volcano(query, &mut self.database);
+        let results = execute(query, &mut self.database)
+            .expect("query should run")
+            .into_rows();
         println!("Results: {:?}", results);
         Ok(())
     }
@@ -958,4 +977,9 @@ RULE :IncidentResponse :-
     Ok(())
 }
 
-mod local_ml { include!(concat!(env!("CARGO_MANIFEST_DIR"), "/examples/support/ml_context.rs")); }
+mod local_ml {
+    include!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/examples/support/ml_context.rs"
+    ));
+}

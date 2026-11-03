@@ -8,10 +8,10 @@
  * you can obtain one at https://mozilla.org/MPL/2.0/.
  */
 
-use crate::syntax::{DatalogMTLRule, TemporalAtom};
-use crate::store::{TemporalSnapshotStore, TemporalStore};
+use super::{c, enc, make_dict, triple, v};
 use crate::evaluator::DatalogMTLEvaluator;
-use super::{make_dict, enc, triple, c, v};
+use crate::store::{TemporalSnapshotStore, TemporalStore};
+use crate::syntax::{DatalogMTLRule, TemporalAtom};
 
 /// Test 6: Recursive rules — transitive ancestor.
 /// Rules:
@@ -23,21 +23,21 @@ use super::{make_dict, enc, triple, c, v};
 #[test]
 fn test_recursive_ancestor() {
     let dict = make_dict();
-    let a        = enc(&dict, ":a");
-    let b        = enc(&dict, ":b");
-    let cc       = enc(&dict, ":c");
-    let d        = enc(&dict, ":d");
-    let parent   = enc(&dict, ":parent");
+    let a = enc(&dict, ":a");
+    let b = enc(&dict, ":b");
+    let cc = enc(&dict, ":c");
+    let d = enc(&dict, ":d");
+    let parent = enc(&dict, ":parent");
     let ancestor = enc(&dict, ":ancestor");
 
     let rule1 = DatalogMTLRule {
-        id:   "ancestor_base".into(),
+        id: "ancestor_base".into(),
         head: (v("x"), c(ancestor), v("z")),
         body: vec![TemporalAtom::Base((v("x"), c(parent), v("z")))],
     };
 
     let rule2 = DatalogMTLRule {
-        id:   "ancestor_recursive".into(),
+        id: "ancestor_recursive".into(),
         head: (v("x"), c(ancestor), v("z")),
         body: vec![
             TemporalAtom::Base((v("x"), c(parent), v("y"))),
@@ -46,15 +46,16 @@ fn test_recursive_ancestor() {
     };
 
     let store = TemporalSnapshotStore::new(10_000);
-    let mut eval = DatalogMTLEvaluator::new(
-        vec![rule1, rule2], store, dict.clone()
-    ).unwrap();
+    let mut eval = DatalogMTLEvaluator::new(vec![rule1, rule2], store, dict.clone()).unwrap();
 
-    let (_, metrics) = eval.advance(0, vec![
-        triple(a, parent, b),
-        triple(b, parent, cc),
-        triple(cc, parent, d),
-    ]);
+    let (_, metrics) = eval.advance(
+        0,
+        vec![
+            triple(a, parent, b),
+            triple(b, parent, cc),
+            triple(cc, parent, d),
+        ],
+    );
 
     // Expected 6 ancestor triples
     let expected = vec![
@@ -66,23 +67,32 @@ fn test_recursive_ancestor() {
         triple(cc, ancestor, d),
     ];
 
-    let store_triples: Vec<_> = eval.store
+    let store_triples: Vec<_> = eval
+        .store
         .query_at(&(v("x"), c(ancestor), v("z")), 0)
         .into_iter()
-        .map(|b| triple(
-            *b.get("x").unwrap(),
-            ancestor,
-            *b.get("z").unwrap(),
-        ))
+        .map(|b| triple(*b.get("x").unwrap(), ancestor, *b.get("z").unwrap()))
         .collect();
 
     for t in &expected {
-        assert!(store_triples.contains(t),
-            "Expected ancestor triple {:?} missing. Store has: {:?}", t, store_triples);
+        assert!(
+            store_triples.contains(t),
+            "Expected ancestor triple {:?} missing. Store has: {:?}",
+            t,
+            store_triples
+        );
     }
-    assert_eq!(store_triples.len(), 6,
-        "Expected exactly 6 ancestor triples, got {}: {:?}", store_triples.len(), store_triples);
+    assert_eq!(
+        store_triples.len(),
+        6,
+        "Expected exactly 6 ancestor triples, got {}: {:?}",
+        store_triples.len(),
+        store_triples
+    );
 
-    assert!(metrics.fixpoint_iterations >= 2,
-        "Expected >= 2 fixpoint iterations for recursive rules, got {}", metrics.fixpoint_iterations);
+    assert!(
+        metrics.fixpoint_iterations >= 2,
+        "Expected >= 2 fixpoint iterations for recursive rules, got {}",
+        metrics.fixpoint_iterations
+    );
 }

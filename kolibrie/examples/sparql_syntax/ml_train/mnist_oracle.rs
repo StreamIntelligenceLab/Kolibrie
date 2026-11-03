@@ -1,4 +1,6 @@
-#[allow(dead_code)]
+// See the note in mnist_program.rs: `unreachable_pub` cannot be satisfied inside an
+// example binary, where `pub` is needed for visibility but nothing can import it.
+#[allow(dead_code, unreachable_pub)]
 mod mnist_oracle {
     use datalog::reasoning::{
         materialisation::sdd_seed_materialise::infer_new_facts_with_sdd_seed_specs, Reasoner,
@@ -39,11 +41,10 @@ mod mnist_oracle {
     pub fn answers(left: &[f64], right: &[f64], same_image: bool) -> Vec<f64> {
         let mut reasoner = Reasoner::new();
         let ids: std::collections::HashMap<u32, u32> = {
-            let mut dict = reasoner.dictionary.write().unwrap();
             (0..19)
                 .chain([100, 101, 999])
                 .chain(200..208)
-                .map(|id| (id, dict.encode(&format!("http://mnist/term/{id}"))))
+                .map(|id| (id, reasoner.encode_term(&format!("http://mnist/term/{id}"))))
                 .collect()
         };
         let t = |s, p, o| triple(ids[&s], ids[&p], ids[&o]);

@@ -8,23 +8,22 @@
  * you can obtain one at https://mozilla.org/MPL/2.0/.
  */
 
-use std::sync::{Arc, RwLock};
-use shared::dictionary::Dictionary;
-use shared::terms::Term;
 use crate::parser::{parse_data, parse_program as parse_program_raw, RDF_TYPE};
 use crate::syntax::{DatalogMTLRule, Interval, Mode, TemporalAtom};
+use shared::term_encoder::SharedTerms;
+use shared::terms::Term;
 
-fn dict() -> Arc<RwLock<Dictionary>> {
-    Arc::new(RwLock::new(Dictionary::new()))
+fn dict() -> SharedTerms {
+    SharedTerms::new()
 }
 
 /// Parse in streaming mode (past-only) — the default for these tests.
-fn parse_program(text: &str, d: &Arc<RwLock<Dictionary>>) -> Result<Vec<DatalogMTLRule>, String> {
+fn parse_program(text: &str, d: &SharedTerms) -> Result<Vec<DatalogMTLRule>, String> {
     parse_program_raw(text, d, Mode::Streaming)
 }
 
-fn id(d: &Arc<RwLock<Dictionary>>, s: &str) -> u32 {
-    d.write().unwrap().encode(s)
+fn id(d: &SharedTerms, s: &str) -> u32 {
+    d.encode(s)
 }
 
 /// Unary body atom maps to (?x rdf:type A) and Diamondminus -> Diamond.
@@ -122,13 +121,34 @@ fn test_fact_parsing() {
 #[test]
 fn test_fragment_rejections() {
     let d = dict();
-    assert!(parse_program("P:-Q", &d).is_err(), "arity-0 should be rejected");
-    assert!(parse_program("R(X,Y,Z):-S(X,Y,Z)", &d).is_err(), "arity-3 should be rejected");
-    assert!(parse_program("B(X):-Boxplus[1,2]A(X)", &d).is_err(), "future op rejected in streaming");
-    assert!(parse_program("B(X):-A(X)Until[1,2]C(X)", &d).is_err(), "Until rejected in streaming");
-    assert!(parse_program("B(X):-Boxminus(1,2]A(X)", &d).is_err(), "open interval should be rejected");
-    assert!(parse_program("Boxminus[1,2]B(X):-A(X)", &d).is_err(), "head operator should be rejected");
-    assert!(parse_data("A(a)@1.5", &d).is_err(), "non-integer time should be rejected");
+    assert!(
+        parse_program("P:-Q", &d).is_err(),
+        "arity-0 should be rejected"
+    );
+    assert!(
+        parse_program("R(X,Y,Z):-S(X,Y,Z)", &d).is_err(),
+        "arity-3 should be rejected"
+    );
+    assert!(
+        parse_program("B(X):-Boxplus[1,2]A(X)", &d).is_err(),
+        "future op rejected in streaming"
+    );
+    assert!(
+        parse_program("B(X):-A(X)Until[1,2]C(X)", &d).is_err(),
+        "Until rejected in streaming"
+    );
+    assert!(
+        parse_program("B(X):-Boxminus(1,2]A(X)", &d).is_err(),
+        "open interval should be rejected"
+    );
+    assert!(
+        parse_program("Boxminus[1,2]B(X):-A(X)", &d).is_err(),
+        "head operator should be rejected"
+    );
+    assert!(
+        parse_data("A(a)@1.5", &d).is_err(),
+        "non-integer time should be rejected"
+    );
 }
 
 /// Future operators parse only in Static mode, into the right variants.
