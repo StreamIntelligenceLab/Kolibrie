@@ -80,8 +80,8 @@ pub fn evaluate_filters(
                     "<" if bound_num >= filter_num => return false,
                     ">=" if bound_num < filter_num => return false,
                     "<=" if bound_num > filter_num => return false,
-                    "=" if (bound_num - filter_num).abs() > std::f64::EPSILON => return false,
-                    "!=" if (bound_num - filter_num).abs() <= std::f64::EPSILON => return false,
+                    "=" if (bound_num - filter_num).abs() > f64::EPSILON => return false,
+                    "!=" if (bound_num - filter_num).abs() <= f64::EPSILON => return false,
                     _ => {}
                 }
             }

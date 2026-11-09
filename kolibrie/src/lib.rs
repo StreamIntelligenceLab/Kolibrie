@@ -12,7 +12,6 @@
 //! neural extensions built on them
 
 mod aggregate;
-/// The RDF store and everything hung off it
 pub mod database;
 pub(crate) mod error_handler;
 #[cfg(test)]
@@ -23,7 +22,6 @@ pub mod ml;
 pub(crate) mod ml_feature_loader;
 pub mod ml_policy;
 pub mod neural_registry;
-/// What a failed parse says, without naming the parser library
 pub mod parse_error;
 pub mod parser;
 pub mod prelude;

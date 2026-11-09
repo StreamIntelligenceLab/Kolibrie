@@ -45,7 +45,6 @@ use shared::hybrid::{
 };
 use shared::triple::Triple;
 
-/// Assembling an engine from a parsed query
 pub mod builder;
 
 pub use crate::rsp::simple_r2r::QueryExecutionMode;

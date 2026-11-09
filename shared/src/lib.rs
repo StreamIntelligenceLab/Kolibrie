@@ -26,7 +26,6 @@ pub mod quad_source;
 pub mod query;
 /// Storage for RDF-star quoted triples, which live in a tagged id range
 pub mod quoted_triple_store;
-/// RDF term identity: how a term is spelled so that one term is one string
 pub mod rdf_term;
 /// Rules: premises, conclusion, filters, and safety checking
 pub mod rule;

@@ -13,10 +13,8 @@
 pub mod runtime;
 pub(crate) mod syntax;
 
-/// Running an `ML.PREDICT` clause through the Python backend
 #[cfg(feature = "ml")]
 pub mod execute;
-/// Training a model declared by a `TRAIN` clause
 #[cfg(feature = "ml")]
 pub mod execute_train;
 #[cfg(feature = "ml")]
@@ -24,10 +22,8 @@ pub(crate) mod predict_candle;
 #[cfg(feature = "ml")]
 pub(crate) mod predict_runtime;
 
-/// Predicates whose facts come from a model rather than from data
 #[cfg(feature = "ml")]
 pub mod neural_relations;
-/// Stubs for [`neural_relations`] when the `ml` feature is off, returning `ML_FEATURE_DISABLED`
 #[cfg(not(feature = "ml"))]
 #[path = "neural_relations_disabled.rs"]
 pub mod neural_relations;

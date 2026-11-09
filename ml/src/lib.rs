@@ -34,7 +34,6 @@ fn validate_py_module_name(name: &str) -> PyResult<()> {
     Ok(())
 }
 
-/// A small feed-forward network, for gradients that arrive from outside it
 pub mod candle_model;
 pub use candle_model::{MlpNeuralPredicate, OutputType};
 
@@ -346,7 +345,7 @@ impl MLHandler {
         }
 
         let mut best_model = model_names[0];
-        let mut best_score = std::f64::MAX;
+        let mut best_score = f64::MAX;
 
         for &model_name in model_names {
             if let Some(metrics) = self.schema_cache.get(model_name) {
