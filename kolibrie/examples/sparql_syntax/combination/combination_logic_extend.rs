@@ -8,9 +8,9 @@
  * you can obtain one at https://mozilla.org/MPL/2.0/.
  */
 
+use kolibrie::database::KolibrieDB;
 use kolibrie::prelude::*;
 use kolibrie::rule_execution::process_rule_definition;
-use kolibrie::sparql_database::SparqlDatabase;
 
 fn main() {
     std::env::set_var("RUST_BACKTRACE", "1");
@@ -45,14 +45,13 @@ fn main() {
       </rdf:RDF>
   "#;
 
-    let mut database = SparqlDatabase::new();
+    let mut database = KolibrieDB::new();
     database.parse_rdf(rdf_xml_data);
     println!(
         "Database RDF triples: {:#?}",
         database.query_default_triples(None, None, None)
     );
 
-    // Define the rule separately
     let rule_definition = r#"PREFIX ex: <http://example.org#>
 RULE :OverheatingAlert :-
   CONSTRUCT { 
@@ -64,7 +63,6 @@ RULE :OverheatingAlert :-
       FILTER (?temp > 80)
   }"#;
 
-    // Process the rule definition
     let rule_result = process_rule_definition(rule_definition, &mut database);
 
     if let Ok((rule, inferred_facts)) = rule_result {
@@ -78,17 +76,15 @@ RULE :OverheatingAlert :-
         }
     } else {
         println!("Failed to process rule definition: {:?}", rule_result.err());
-        return; // Exit if rule processing failed
+        return;
     }
 
-    // Define the SELECT query separately
     let select_query = r#"PREFIX ex: <http://example.org#>
 SELECT ?room ?temp
 WHERE { 
   ?room ex:overheatingAlert true . 
 }"#;
 
-    // Execute the SELECT query that uses the rule
     let query_results = execute(select_query, &mut database)
         .expect("query should run")
         .into_rows();

@@ -1,48 +1,20 @@
-/*
- * Copyright © 2025 Volodymyr Kadzhaia
- * Copyright © 2025 Pieter Bonte
- * KU Leuven — Stream Intelligence Lab, Belgium
- *
- * This Source Code Form is subject to the terms of the Mozilla Public
- * License, v. 2.0. If a copy of the MPL was not distributed with this file,
- * you can obtain one at https://mozilla.org/MPL/2.0/.
- *
- *
- *
- * NOTE 1: We are using the benchmark dataset from:
- *  Waterloo SPARQL Diversity Test Suite (WatDiv) v0.6
- *  Source: https://dsg.uwaterloo.ca/watdiv/
- *
- * NOTE 2: Before running with the 10M-triple dataset, ensure you have:
- *   1) Downloaded `watdiv.10M.nt` into a `benchmark_dataset` directory
- *      at the project root.
- *   2) Created the `benchmark_dataset` directory next to `kolibrie/`.
- *      (e.g., `mkdir benchmark_dataset && mv watdiv.10M.nt benchmark_dataset/`)
- *
- * NOTE 3: The watdiv.10M.nt file is approximately 1.5 GB in size.
- *
- */
-
 use kolibrie::prelude::*;
 use std::fs::File;
 use std::io::{BufRead, BufReader};
 use std::time::Instant;
 
-fn parse_large_ntriples_file(
-    file_path: &str,
-) -> Result<SparqlDatabase, Box<dyn std::error::Error>> {
+fn parse_large_ntriples_file(file_path: &str) -> Result<KolibrieDB, Box<dyn std::error::Error>> {
     println!("Starting to parse N-Triples file: {}", file_path);
     let start_time = Instant::now();
 
-    let mut db = SparqlDatabase::new();
+    let mut db = KolibrieDB::new();
 
-    // Much smaller buffer and more aggressive memory management
     let file = File::open(file_path)?;
-    let reader = BufReader::with_capacity(64 * 1024, file); // Reduced buffer size
+    let reader = BufReader::with_capacity(64 * 1024, file);
 
     let mut line_count = 0;
     let mut batch_lines = Vec::new();
-    const BATCH_SIZE: usize = 10_000; // Much smaller batch size
+    const BATCH_SIZE: usize = 10_000;
 
     for line_result in reader.lines() {
         let line = line_result?;
@@ -55,26 +27,21 @@ fn parse_large_ntriples_file(
         line_count += 1;
 
         if batch_lines.len() >= BATCH_SIZE {
-            // Process batch immediately
             let batch_data = batch_lines.join("\n");
             db.parse_ntriples_and_add(&batch_data);
 
-            // Aggressive cleanup
             batch_lines.clear();
             batch_lines.shrink_to_fit();
 
-            // Progress info every 100k triples
             if line_count % 100_000 == 0 {
                 println!("Processed {} triples", line_count);
                 std::hint::black_box(());
 
-                // Optional: small delay to let the system breathe
                 std::thread::sleep(std::time::Duration::from_millis(10));
             }
         }
     }
 
-    // Process remaining batch
     if !batch_lines.is_empty() {
         let batch_data = batch_lines.join("\n");
         db.parse_ntriples_and_add(&batch_data);
@@ -87,7 +54,6 @@ fn parse_large_ntriples_file(
         start_time.elapsed().as_secs_f64()
     );
 
-    // Build indexes after parsing - this is where the magic happens
     println!("Building indexes...");
     let index_start = Instant::now();
     db.build_all_indexes();
@@ -99,12 +65,10 @@ fn parse_large_ntriples_file(
     Ok(db)
 }
 
-fn run_all_queries(db: &mut SparqlDatabase) {
+fn run_all_queries(db: &mut KolibrieDB) {
     const ITERATIONS: usize = 20;
 
-    // (name, query)
     let queries: &[(&str, &str)] = &[
-        // C1
         (
             "C1",
             r#"PREFIX wsdbm: <http://db.uwaterloo.ca/~galuc/wsdbm/>
@@ -131,7 +95,6 @@ fn run_all_queries(db: &mut SparqlDatabase) {
 }
 "#,
         ),
-        // C2
         (
             "C2",
             r#"PREFIX wsdbm: <http://db.uwaterloo.ca/~galuc/wsdbm/>
@@ -159,7 +122,6 @@ fn run_all_queries(db: &mut SparqlDatabase) {
 }
 "#,
         ),
-        // C3
         (
             "C3",
             r#"PREFIX wsdbm: <http://db.uwaterloo.ca/~galuc/wsdbm/>
@@ -184,7 +146,6 @@ fn run_all_queries(db: &mut SparqlDatabase) {
 }
 "#,
         ),
-        // F1
         (
             "F1",
             r#"PREFIX wsdbm: <http://db.uwaterloo.ca/~galuc/wsdbm/>
@@ -208,7 +169,6 @@ fn run_all_queries(db: &mut SparqlDatabase) {
 }
 "#,
         ),
-        // F2
         (
             "F2",
             r#"PREFIX wsdbm: <http://db.uwaterloo.ca/~galuc/wsdbm/>
@@ -234,7 +194,6 @@ fn run_all_queries(db: &mut SparqlDatabase) {
 }
 "#,
         ),
-        // F3
         (
             "F3",
             r#"PREFIX wsdbm: <http://db.uwaterloo.ca/~galuc/wsdbm/>
@@ -258,7 +217,6 @@ fn run_all_queries(db: &mut SparqlDatabase) {
 }
 "#,
         ),
-        // F4
         (
             "F4",
             r#"PREFIX wsdbm: <http://db.uwaterloo.ca/~galuc/wsdbm/>
@@ -285,7 +243,6 @@ fn run_all_queries(db: &mut SparqlDatabase) {
 }
 "#,
         ),
-        // F5
         (
             "F5",
             r#"PREFIX wsdbm: <http://db.uwaterloo.ca/~galuc/wsdbm/>
@@ -309,7 +266,6 @@ fn run_all_queries(db: &mut SparqlDatabase) {
 }
 "#,
         ),
-        // L1
         (
             "L1",
             r#"PREFIX wsdbm: <http://db.uwaterloo.ca/~galuc/wsdbm/>
@@ -330,7 +286,6 @@ fn run_all_queries(db: &mut SparqlDatabase) {
 }
 "#,
         ),
-        // L2
         (
             "L2",
             r#"PREFIX wsdbm: <http://db.uwaterloo.ca/~galuc/wsdbm/>
@@ -351,7 +306,6 @@ fn run_all_queries(db: &mut SparqlDatabase) {
 }
 "#,
         ),
-        // L3
         (
             "L3",
             r#"PREFIX wsdbm: <http://db.uwaterloo.ca/~galuc/wsdbm/>
@@ -371,7 +325,6 @@ fn run_all_queries(db: &mut SparqlDatabase) {
 }
 "#,
         ),
-        // L4
         (
             "L4",
             r#"PREFIX wsdbm: <http://db.uwaterloo.ca/~galuc/wsdbm/>
@@ -391,7 +344,6 @@ fn run_all_queries(db: &mut SparqlDatabase) {
 }
 "#,
         ),
-        // L5
         (
             "L5",
             r#"PREFIX wsdbm: <http://db.uwaterloo.ca/~galuc/wsdbm/>
@@ -412,7 +364,6 @@ fn run_all_queries(db: &mut SparqlDatabase) {
 }
 "#,
         ),
-        // S1
         (
             "S1",
             r#"PREFIX wsdbm: <http://db.uwaterloo.ca/~galuc/wsdbm/>
@@ -439,7 +390,6 @@ fn run_all_queries(db: &mut SparqlDatabase) {
 }
 "#,
         ),
-        // S2
         (
             "S2",
             r#"PREFIX wsdbm: <http://db.uwaterloo.ca/~galuc/wsdbm/>
@@ -461,7 +411,6 @@ fn run_all_queries(db: &mut SparqlDatabase) {
 }
 "#,
         ),
-        // S3
         (
             "S3",
             r#"PREFIX wsdbm: <http://db.uwaterloo.ca/~galuc/wsdbm/>
@@ -483,7 +432,6 @@ fn run_all_queries(db: &mut SparqlDatabase) {
 }
 "#,
         ),
-        // S4
         (
             "S4",
             r#"PREFIX wsdbm: <http://db.uwaterloo.ca/~galuc/wsdbm/>
@@ -505,7 +453,6 @@ fn run_all_queries(db: &mut SparqlDatabase) {
 }
 "#,
         ),
-        // S5
         (
             "S5",
             r#"PREFIX wsdbm: <http://db.uwaterloo.ca/~galuc/wsdbm/>
@@ -527,7 +474,6 @@ fn run_all_queries(db: &mut SparqlDatabase) {
 }
 "#,
         ),
-        // S6
         (
             "S6",
             r#"PREFIX wsdbm: <http://db.uwaterloo.ca/~galuc/wsdbm/>
@@ -548,7 +494,6 @@ fn run_all_queries(db: &mut SparqlDatabase) {
 }
 "#,
         ),
-        // S7
         (
             "S7",
             r#"PREFIX wsdbm: <http://db.uwaterloo.ca/~galuc/wsdbm/>
@@ -576,7 +521,6 @@ fn run_all_queries(db: &mut SparqlDatabase) {
         println!("Running query {} ({} iterations)...", name, ITERATIONS);
 
         let mut total_time = 0.0;
-        // let mut last_result:Vec<Vec<String>> = Vec::new();
 
         for _ in 0..ITERATIONS {
             let start = Instant::now();
@@ -591,7 +535,6 @@ fn run_all_queries(db: &mut SparqlDatabase) {
 }
 
 fn main() {
-    // Set current directory to the root of the project
     std::env::set_current_dir(std::path::Path::new(env!("CARGO_MANIFEST_DIR")))
         .expect("Failed to set project root as current directory");
 

@@ -36,7 +36,6 @@ WHERE {
             println!("Remaining input: '{}'", remaining.trim());
             println!();
 
-            // Print RETRIEVE clause details
             if let Some(retrieve) = &parsed_query.retrieve_clause {
                 println!("RETRIEVE Clause:");
                 println!("  Mode: {:?}", retrieve.mode);

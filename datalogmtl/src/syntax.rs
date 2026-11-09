@@ -8,42 +8,26 @@
  * you can obtain one at https://mozilla.org/MPL/2.0/.
  */
 
-//! The rule and operator vocabulary: what a DatalogMTL program can say.
-//!
-//! Every [`Interval`] here is a *relative* offset and not an absolute time, and
-//! which direction it runs in is the operator's business, not the interval's. The
-//! past operators ([`TemporalAtom::Box_`], [`Diamond`](TemporalAtom::Diamond),
-//! [`Prev`](TemporalAtom::Prev), [`Since`](TemporalAtom::Since)) read it
-//! backwards from the point being evaluated; the future operators read it forwards
-//! and are only legal in [`Mode::Static`], because looking forward on a stream
-//! means looking at data that has not arrived.
-//!
-//! The unit is whatever the data uses. That sounds free and is not: see
-//! [`evaluator`](crate::evaluator) for what the tick engine does with it.
+//! The rule and operator vocabulary: what a DatalogMTL program can say
 
 use shared::terms::TriplePattern;
 
-/// Interval [start, end] in milliseconds, representing a range into the past.
-/// start=0, end=0 means exactly now.
-/// start=1000, end=5000 means "between 1 and 5 seconds ago."
+/// Interval [start, end] in milliseconds, representing a range into the past
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct Interval {
-    /// Inclusive bound nearer the evaluation point.
-    pub start: u64, // inclusive lower bound, ms into past
-    /// Inclusive bound further from it. Must be `>= start`; [`validate`] rejects
-    /// a rule where it is not, rather than silently matching nothing.
-    ///
-    /// [`validate`]: crate::validate
-    pub end: u64, // inclusive upper bound, ms into past
+    /// Inclusive bound nearer the evaluation point
+    pub start: u64,
+    /// Inclusive bound further from it
+    pub end: u64,
 }
 
 impl Interval {
-    /// Returns true if offset_ms falls within [start, end].
+    /// Returns true if offset_ms falls within [start, end]
     pub fn contains_offset(&self, offset_ms: u64) -> bool {
         offset_ms >= self.start && offset_ms <= self.end
     }
 
-    /// Given current time t, return the absolute time range [t-end, t-start].
+    /// Given current time t, return the absolute time range [t-end, t-start]
     pub fn absolute_range(&self, t: u64) -> (u64, u64) {
         let lo = t.saturating_sub(self.end);
         let hi = t.saturating_sub(self.start);
@@ -51,101 +35,85 @@ impl Interval {
     }
 }
 
-/// A temporal atom: a triple pattern optionally wrapped in a past metric operator.
-/// All operators are past-only (forward-propagating fragment, suitable for streaming).
+/// A temporal atom: a triple pattern optionally wrapped in a past metric operator
 #[derive(Debug, Clone)]
 pub enum TemporalAtom {
-    /// Base(?s, ?p, ?o): plain triple pattern at current time t.
+    /// Base(?s, ?p, ?o): plain triple pattern at current time t
     Base(TriplePattern),
 
-    /// `Diamond[a,b]` phi: phi holds at SOME t' in [t-b, t-a].
+    /// `Diamond[a,b]` phi: phi holds at SOME t' in [t-b, t-a]
     Diamond {
-        /// How far back to look.
+        /// How far back to look
         interval: Interval,
-        /// What to look for.
+        /// What to look for
         inner: Box<TemporalAtom>,
     },
 
-    /// `Box[a,b]` phi: phi holds at EVERY integer point t' in [t-b, t-a]
-    /// (dense semantics — an integer point with no supporting fact fails Box).
+    /// `Box[a,b]` phi: phi holds at EVERY integer point t' in [t-b, t-a] (dense semantics — an
+    /// integer point with no supporting fact fails Box)
     Box_ {
-        /// Window that must be satisfied throughout.
+        /// Window that must be satisfied throughout
         interval: Interval,
-        /// What must hold at every point of it.
+        /// What must hold at every point of it
         inner: Box<TemporalAtom>,
     },
 
-    /// `Prev[a,b]` phi: phi holds at the MOST RECENT t' in [t-b, t-a].
+    /// `Prev[a,b]` phi: phi holds at the MOST RECENT t' in [t-b, t-a]
     Prev {
-        /// Window to search backwards through.
+        /// Window to search backwards through
         interval: Interval,
-        /// What to find the most recent occurrence of.
+        /// What to find the most recent occurrence of
         inner: Box<TemporalAtom>,
     },
 
-    /// phi `Since[a,b]` psi:
-    ///   EXISTS t' in [t-b, t-a]: psi holds at t'
-    ///   AND FORALL t'' in (t', t]: phi holds at t''
+    /// phi `Since[a,b]` psi: EXISTS t' in [t-b, t-a]: psi holds at t' AND FORALL t'' in (t', t]:
+    /// phi holds at t''
     Since {
-        /// Window in which the trigger must have occurred.
+        /// Window in which the trigger must have occurred
         interval: Interval,
-        /// Continuation condition, required at every point since the trigger.
-        /// Universal, so it binds no variables — see [`validate`](crate::validate).
-        phi: Box<TemporalAtom>, // continuation condition (holds after reset)
-        /// Trigger condition, whose occurrence starts the interval.
-        psi: Box<TemporalAtom>, // reset/trigger condition
+        /// Continuation condition, required at every point since the trigger
+        phi: Box<TemporalAtom>,
+        /// Trigger condition, whose occurrence starts the interval
+        psi: Box<TemporalAtom>,
     },
 
-    // ── Future operators (static data only — see `Mode`) ──
-    /// `DiamondPlus[a,b]` phi: phi holds at SOME t' in [t+a, t+b].
+    /// `DiamondPlus[a,b]` phi: phi holds at SOME t' in [t+a, t+b]
     DiamondPlus {
-        /// How far forward to look.
+        /// How far forward to look
         interval: Interval,
-        /// What to look for.
+        /// What to look for
         inner: Box<TemporalAtom>,
     },
 
-    /// `BoxPlus[a,b]` phi: phi holds at EVERY integer point t' in [t+a, t+b].
+    /// `BoxPlus[a,b]` phi: phi holds at EVERY integer point t' in [t+a, t+b]
     BoxPlus {
-        /// Forward window that must be satisfied throughout.
+        /// Forward window that must be satisfied throughout
         interval: Interval,
-        /// What must hold at every point of it.
+        /// What must hold at every point of it
         inner: Box<TemporalAtom>,
     },
 
-    /// phi `Until[a,b]` psi:
-    ///   EXISTS t' in [t+a, t+b]: psi holds at t'
-    ///   AND FORALL t'' in [t, t'): phi holds at t''
+    /// phi `Until[a,b]` psi: EXISTS t' in [t+a, t+b]: psi holds at t' AND FORALL t'' in [t, t'):
+    /// phi holds at t''
     Until {
-        /// Window in which the trigger must occur.
+        /// Window in which the trigger must occur
         interval: Interval,
-        /// Continuation condition, required at every point until the trigger.
-        phi: Box<TemporalAtom>, // continuation condition (holds until reset)
-        /// Trigger condition, whose occurrence ends the interval.
-        psi: Box<TemporalAtom>, // reset/trigger condition
+        /// Continuation condition, required at every point until the trigger
+        phi: Box<TemporalAtom>,
+        /// Trigger condition, whose occurrence ends the interval
+        psi: Box<TemporalAtom>,
     },
 
-    /// Conjunction of atoms, all evaluated at the SAME time point.
-    ///
-    /// This is what lets an operator scope more than one triple pattern, e.g.
-    /// `Box[0,10]((?d, :inZone, ?z), (?d, :altitude, ?a))` — "?d was in ?z at
-    /// altitude ?a throughout the window". That is strictly more expressive than
-    /// hoisting the second atom out: `Box[0,10]A, B` only requires `B` at the
-    /// current time, whereas `Box[0,10](A, B)` requires it at every point of the
-    /// window. (The two coincide when `B` is time-invariant.)
-    ///
-    /// Variables are shared across the conjuncts, so later atoms can be
-    /// constrained by bindings from earlier ones.
+    /// Conjunction of atoms, all evaluated at the SAME time point
     Conj(Vec<TemporalAtom>),
 }
 
-/// Evaluation mode. Future operators look into not-yet-arrived time, so they are
-/// only valid on complete (static) data, never on a stream.
+/// Evaluation mode
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Mode {
-    /// Incremental data; only past/present operators allowed.
+    /// Incremental data; only past/present operators allowed
     Streaming,
-    /// Whole timeline known; past and future operators allowed.
+    /// Whole timeline known; past and future operators allowed
     Static,
 }
 
@@ -155,17 +123,14 @@ impl Default for Mode {
     }
 }
 
-/// A DatalogMTL^RDF rule. Head is always a plain triple pattern.
-/// Body is a conjunction of TemporalAtoms evaluated left to right.
+/// A DatalogMTL^RDF rule
 #[derive(Debug, Clone)]
 pub struct DatalogMTLRule {
-    /// Identifier used in validation errors and metrics. Not checked for
-    /// uniqueness, so two rules may share one.
+    /// Identifier used in validation errors and metrics
     pub id: String,
-    /// Conclusion, derived at the time point being evaluated. Always plain: a
-    /// temporal operator in head position is not part of this fragment.
+    /// Conclusion, derived at the time point being evaluated
     pub head: TriplePattern,
-    /// Premises, evaluated left to right with bindings threaded through, so a
-    /// later atom sees what the earlier ones bound.
+    /// Premises, evaluated left to right with bindings threaded through, so a later atom sees what
+    /// the earlier ones bound
     pub body: Vec<TemporalAtom>,
 }

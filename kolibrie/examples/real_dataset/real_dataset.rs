@@ -24,18 +24,15 @@ fn filter_example() {
     file.read_to_string(&mut rdf_data)
         .expect("Unable to read file");
 
-    let mut database = SparqlDatabase::new();
+    let mut database = KolibrieDB::new();
     database.parse_rdf(&rdf_data);
 
-    // Use the full predicate ending to be more flexible with namespaces
     let high_salary_triples = database
         .query()
         .filter(|triple| {
             let dict = database.dictionary();
-            // First check if this is a salary predicate
             if let Some(predicate) = dict.decode(triple.predicate) {
                 if predicate.ends_with("annual_salary") {
-                    // Then check if salary > 80000
                     if let Some(object) = dict.decode(triple.object) {
                         if let Ok(salary) = object.parse::<f64>() {
                             return salary > 80000.0;
@@ -47,7 +44,6 @@ fn filter_example() {
         })
         .get_triples();
 
-    // Create a set of subject IDs with high salaries for lookup
     let mut high_salary_subjects = HashSet::new();
     let mut subject_to_salary = HashMap::new();
 
@@ -60,12 +56,10 @@ fn filter_example() {
     }
     drop(dict);
 
-    // Find the names associated with the high-salary subjects
     let name_triples = database
         .query()
         .filter(|triple| {
             let dict = database.dictionary();
-            // Check if this is a name predicate for a high-salary subject
             if let Some(predicate) = dict.decode(triple.predicate) {
                 if predicate.ends_with("name") && high_salary_subjects.contains(&triple.subject) {
                     return true;
@@ -75,7 +69,6 @@ fn filter_example() {
         })
         .get_triples();
 
-    // Print name and salary
     println!("Employees with salary > 80000:");
     let dict = database.dictionary();
     for triple in name_triples.clone() {

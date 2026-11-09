@@ -11,17 +11,12 @@
 use crate::parse_error::{Expected, ParseError};
 use annotate_snippets::{Annotation, AnnotationKind, Group, Level, Renderer, Snippet};
 
-/// Renders a parse failure against the input it came from.
-///
-/// Takes the crate's own [`ParseError`] rather than the parser library's, which is
-/// what keeps `nom` out of this module -- it was the last place outside the parser
-/// that named it.
+/// Renders a parse failure against the input it came from
 pub(crate) fn format_parse_error(input: &str, err: ParseError<'_>) -> String {
     match err.is_incomplete() {
         false => {
             let offset = err.offset_in(input);
 
-            // Calculate line and column numbers
             let mut line_no = 1;
             let mut col_no = 1;
 
@@ -37,7 +32,6 @@ pub(crate) fn format_parse_error(input: &str, err: ParseError<'_>) -> String {
                 }
             }
 
-            // Get the error line
             let lines: Vec<&str> = input.lines().collect();
             let error_line = if line_no <= lines.len() {
                 lines[line_no - 1]
@@ -45,7 +39,6 @@ pub(crate) fn format_parse_error(input: &str, err: ParseError<'_>) -> String {
                 "[end of input]"
             };
 
-            // Determine error message and label from what the parser wanted
             let (error_title, error_label) = match err.expected() {
                 Expected::Token => (
                     format!(
@@ -95,7 +88,6 @@ pub(crate) fn format_parse_error(input: &str, err: ParseError<'_>) -> String {
                 ),
             };
 
-            // Check for common SPARQL-specific errors
             let specific_error = detect_specific_sparql_error(input, offset, error_line);
             let (final_title, final_label, footer) =
                 if let Some((title, label, foot)) = specific_error {
@@ -104,11 +96,6 @@ pub(crate) fn format_parse_error(input: &str, err: ParseError<'_>) -> String {
                     (error_title, error_label.to_string(), None)
                 };
 
-            // Create the annotated snippet
-            // Plain, not styled: every caller puts this string into an error value
-            // rather than printing it, so ANSI escapes would travel into logs, JSON
-            // responses and test comparisons. `styled()` put 26 control characters
-            // into a one-token parse failure.
             let renderer = Renderer::plain();
 
             let mut report = vec![Level::ERROR.primary_title(&final_title).element(
@@ -123,7 +110,6 @@ pub(crate) fn format_parse_error(input: &str, err: ParseError<'_>) -> String {
                     ),
             )];
 
-            // Add footer if present
             if let Some(ref footer_text) = footer {
                 report.push(Group::with_title(Level::HELP.secondary_title(footer_text)));
             }
@@ -132,10 +118,6 @@ pub(crate) fn format_parse_error(input: &str, err: ParseError<'_>) -> String {
             message
         }
         true => {
-            // Plain, not styled: every caller puts this string into an error value
-            // rather than printing it, so ANSI escapes would travel into logs, JSON
-            // responses and test comparisons. `styled()` put 26 control characters
-            // into a one-token parse failure.
             let renderer = Renderer::plain();
             let report = &[
                 Level::ERROR
@@ -164,7 +146,6 @@ fn detect_specific_sparql_error(
 ) -> Option<(String, String, String)> {
     let lower = input.to_lowercase();
 
-    // Check for SELECT without WHERE
     if lower.contains("select") && !lower.contains("where") && !lower.contains("insert") {
         return Some((
             "SELECT query missing WHERE clause".to_string(),
@@ -173,7 +154,6 @@ fn detect_specific_sparql_error(
         ));
     }
 
-    // Check for missing closing brace
     let open_braces = input.matches('{').count();
     let close_braces = input.matches('}').count();
     if open_braces != close_braces {
@@ -187,7 +167,6 @@ fn detect_specific_sparql_error(
         ));
     }
 
-    // Check for unclosed string literal
     let before_error = &input[..offset];
     let quote_count = before_error.matches('"').count();
     if quote_count % 2 != 0 {
@@ -199,12 +178,10 @@ fn detect_specific_sparql_error(
         ));
     }
 
-    // Check for missing prefix declaration
     if let Some(prefix_error) = check_missing_prefix(input, offset) {
         return Some(prefix_error);
     }
 
-    // Check for missing separator between triple patterns
     if let Some(separator_error) = check_missing_triple_separator(input, offset) {
         return Some(separator_error);
     }
@@ -217,7 +194,6 @@ fn check_missing_prefix(input: &str, offset: usize) -> Option<(String, String, S
     let before_error = &input[..offset];
     let lines: Vec<&str> = input.lines().collect();
 
-    // Extract declared prefixes
     let mut declared_prefixes = vec!["rdf", "rdfs", "owl", "xsd", "foaf", "dc"];
     for line in &lines {
         if line.trim().to_uppercase().starts_with("PREFIX ") {
@@ -227,7 +203,6 @@ fn check_missing_prefix(input: &str, offset: usize) -> Option<(String, String, S
         }
     }
 
-    // Check if there's a prefix usage near the error
     let words: Vec<&str> = before_error.split_whitespace().collect();
     if let Some(last_word) = words.last() {
         if last_word.contains(':') && !last_word.starts_with('<') {
@@ -255,13 +230,11 @@ fn check_missing_prefix(input: &str, offset: usize) -> Option<(String, String, S
 fn check_missing_triple_separator(input: &str, offset: usize) -> Option<(String, String, String)> {
     let before_error = &input[..offset];
 
-    // Look for pattern: variable followed by non-separator followed by variable
     let trimmed = before_error.trim_end();
     if trimmed.contains('?') {
         let chars: Vec<char> = trimmed.chars().collect();
         if let Some(last_char) = chars.last() {
             if last_char.is_alphanumeric() || *last_char == '_' {
-                // Check if we're potentially between triple patterns
                 let last_10_chars: String = chars
                     .iter()
                     .rev()

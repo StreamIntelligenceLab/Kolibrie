@@ -8,40 +8,7 @@
  * you can obtain one at https://mozilla.org/MPL/2.0/.
  */
 
-//! Parsing SPARQL, RSP-QL, and the rule and ML extensions.
-//!
-//! Produces the lexical syntax tree defined in [`shared::query`]: terms keep their
-//! source spelling and nothing is prefix-expanded or interned here. See that module
-//! for why the two stages are separate.
-//!
-//! # What to call
-//!
-//! | entry point | for |
-//! |---|---|
-//! | [`parse_combined_query`] | anything — standard SPARQL plus every extension, with the prefix map |
-//! | [`parse_sparql_query`] | a standalone SELECT, when the prefix map is not needed |
-//! | [`parse_standalone_rule`] | one `RULE` block |
-//! | [`convert_combined_rule`] | lower a parsed rule to a [`Rule`] bound to a dictionary |
-//!
-//! Running a parsed rule against a store is
-//! [`rule_execution`](crate::rule_execution), not this module. Parsing text and
-//! executing against a database are separate jobs, and this one does only the first:
-//! nothing here depends on anything else in the crate.
-//!
-//! Everything else here is a grammar fragment. They are public because
-//! `tests/parser_test.rs` is an integration test and therefore outside the crate, so
-//! exercising a combinator directly requires exporting it — not because callers are
-//! expected to assemble their own grammar. Moving those cases to unit tests inside
-//! this module would let the fragments become `pub(crate)`.
-//!
-//! # `nom` is in the signatures
-//!
-//! Every function here returns `nom::IResult`, so a `nom` major-version bump is a
-//! breaking change for anyone who names one of these types. That violates P5 of the
-//! architecture proposal ("nothing leaks"), and §4 resolves it by giving the parser
-//! crate its own error type and keeping the combinators internal. Until then, prefer
-//! the entry points above, which at least confine the exposure to a return type you
-//! can discard.
+//! Parsing SPARQL, RSP-QL, and the rule and ML extensions
 
 use crate::parse_error::{ParseError, ParseResult};
 use nom::{
@@ -64,21 +31,20 @@ use shared::query::*;
 use shared::rule::FilterCondition;
 use shared::rule::Rule;
 use shared::terms::*;
-// Add RSP imports
 use std::collections::HashMap;
 use std::time::Duration;
 
-/// One or more alphanumerics, `_` or `-`. The bare name part of a prefixed term.
+/// One or more alphanumerics, `_` or `-`
 pub(crate) fn identifier(input: &str) -> IResult<&str, &str> {
     take_while1(|c: char| c.is_alphanumeric() || c == '_' || c == '-').parse(input)
 }
 
-/// A prefixed name such as `ex:worksAt`, returned unexpanded.
+/// A prefixed name such as `ex:worksAt`, returned unexpanded
 pub(crate) fn prefixed_identifier(input: &str) -> IResult<&str, &str> {
     sparql_prefixed_name(input)
 }
 
-/// A predicate position: a full IRI, a variable, or a prefixed name.
+/// A predicate position: a full IRI, a variable, or a prefixed name
 pub(crate) fn predicate(input: &str) -> IResult<&str, &str> {
     alt((
         parse_uri,
@@ -90,14 +56,12 @@ pub(crate) fn predicate(input: &str) -> IResult<&str, &str> {
     .parse(input)
 }
 
-/// A variable, with its `?` or `$` sigil retained.
+/// A variable, with its `?` or `$` sigil retained
 pub(crate) fn variable(input: &str) -> IResult<&str, &str> {
     sparql_variable(input)
 }
 
-/// A double-quoted literal, rejecting the triple-quoted form.
-///
-/// The quotes and any datatype or language suffix stay in the returned slice.
+/// A double-quoted literal, rejecting the triple-quoted form
 pub(crate) fn parse_literal(input: &str) -> IResult<&str, &str> {
     let (remaining, literal) = sparql_quoted_literal(input)?;
     if !literal.starts_with('"') || literal.starts_with("\"\"\"") {
@@ -116,63 +80,58 @@ pub(crate) fn parse_literal(input: &str) -> IResult<&str, &str> {
     sparql_error(literal, nom::error::ErrorKind::Escaped)
 }
 
-/// An IRI in angle brackets, or a prefixed name. Brackets are retained.
+/// An IRI in angle brackets, or a prefixed name
 pub(crate) fn parse_uri(input: &str) -> IResult<&str, &str> {
     sparql_iri(input).map(|(remaining, iri)| (remaining, &iri[1..iri.len() - 1]))
 }
 
 /// Parse a quoted triple: `<< subject predicate object >>`
-/// Returns the entire `<< ... >>` as a single string slice.
 pub(crate) fn parse_quoted_triple_nom(input: &str) -> IResult<&str, &str> {
     sparql_quoted_triple(input)
 }
 
-/// One `predicate object` pair inside a triple block.
+/// One `predicate object` pair inside a triple block
 pub(crate) fn parse_predicate_object(input: &str) -> IResult<&str, (&str, &str)> {
     let (input, p) = predicate(input)?;
     let (input, _) = multispace1.parse(input)?;
     let (input, o) = alt((
-        parse_quoted_triple_nom,            // << s p o >> (RDF-star)
-        parse_uri,                          // <http://...>
-        variable,                           // ?variable
-        parse_literal,                      // "literal"
-        recognize((char(':'), identifier)), // :localname (like :Stream)
-        prefixed_identifier,                // prefix:localname
-        identifier,                         // simple identifier
+        parse_quoted_triple_nom,
+        parse_uri,
+        variable,
+        parse_literal,
+        recognize((char(':'), identifier)),
+        prefixed_identifier,
+        identifier,
     ))
     .parse(input)?;
     Ok((input, (p, o)))
 }
 
-/// A `{ ... }` block of triple patterns, expanding the `;` and `,`
-/// abbreviations into separate patterns.
+/// A `{ ... }` block of triple patterns, expanding the `;` and `,` abbreviations into separate
+/// patterns
 pub(crate) fn parse_triple_block_nom(input: &str) -> IResult<&str, Vec<(&str, &str, &str)>> {
     let (input, subject) = alt((
-        parse_quoted_triple_nom,            // << s p o >> (RDF-star)
-        parse_uri,                          // <http://...>
-        variable,                           // ?variable
-        recognize((char(':'), identifier)), // :localname
-        prefixed_identifier,                // prefix:localname
-        identifier,                         // simple identifier
+        parse_quoted_triple_nom,
+        parse_uri,
+        variable,
+        recognize((char(':'), identifier)),
+        prefixed_identifier,
+        identifier,
     ))
     .parse(input)?;
     let (input, _) = multispace1.parse(input)?;
 
-    // First predicate-object pair
     let (input, first_po) = parse_predicate_object(input)?;
 
-    // Zero or more additional predicate-object pairs separated by semicolon
     let (input, rest_po) = many0(preceded(
         (multispace0, char(';'), multispace0),
         parse_predicate_object,
     ))
     .parse(input)?;
 
-    // Gather all (predicate, object) pairs
     let mut pairs = vec![first_po];
     pairs.extend(rest_po);
 
-    // Convert each pair into a triple by reusing the same subject
     let triples = pairs
         .into_iter()
         .map(|(p, o)| {
@@ -188,13 +147,13 @@ pub(crate) fn parse_triple_block_nom(input: &str) -> IResult<&str, Vec<(&str, &s
     Ok((input, triples))
 }
 
-/// A `VALUES` block: the variable list and its rows.
+/// A `VALUES` block: the variable list and its rows
 pub(crate) fn parse_values(input: &str) -> IResult<&str, ValuesClause<'_>> {
     sparql_values_clause(input)
 }
 
-/// A `SELECT` projection, as `(kind, variable, alias)` triples where `kind`
-/// is `"VAR"` or an aggregate's uppercase name.
+/// A `SELECT` projection, as `(kind, variable, alias)` triples where `kind` is `"VAR"` or an
+/// aggregate's uppercase name
 pub(crate) fn parse_select(input: &str) -> IResult<&str, Vec<(&str, &str, Option<&str>)>> {
     let (mut input, _) = sparql_keyword(input, "SELECT")?;
     if let Ok((remaining, _)) = sparql_keyword(input, "DISTINCT") {
@@ -203,40 +162,37 @@ pub(crate) fn parse_select(input: &str) -> IResult<&str, Vec<(&str, &str, Option
     sparql_projection_items(input)
 }
 
-/// An arithmetic expression over variables and numeric literals.
+/// An arithmetic expression over variables and numeric literals
 pub(crate) fn parse_arithmetic_expression(input: &str) -> IResult<&str, ArithmeticExpression<'_>> {
     sparql_filter_arithmetic(input)
 }
 
-/// A single comparison, such as `?x > 5`.
+/// A single comparison, such as `?x > 5`
 pub(crate) fn parse_comparison_nom(input: &str) -> IResult<&str, FilterExpression<'_>> {
     sparql_filter_comparison(input)
 }
 
-/// A `FILTER` expression, including the boolean connectives.
+/// A `FILTER` expression, including the boolean connectives
 pub(crate) fn parse_filter_nom(input: &str) -> IResult<&str, FilterExpression<'_>> {
     sparql_filter_clause(input)
 }
 
-/// A `BIND` clause, as `(expression, arguments, target variable)`.
-///
-/// For example `BIND(funcName(?var, "literal") AS ?newVar)`.
+/// A `BIND` clause, as `(expression, arguments, target variable)`
 pub(crate) fn parse_bind(input: &str) -> IResult<&str, (&str, Vec<&str>, &str)> {
     sparql_bind_clause(input)
 }
 
-/// A `{ SELECT ... }` subquery nested in a graph pattern.
+/// A `{ SELECT ... }` subquery nested in a graph pattern
 pub(crate) fn parse_subquery<'a>(input: &'a str) -> IResult<&'a str, SubQuery<'a>> {
     sparql_subquery(input)
 }
 
-/// A `WINDOW ?w { ... }` block scoping patterns to one named window.
+/// A `WINDOW ?w { ... }` block scoping patterns to one named window
 pub(crate) fn parse_window_block(input: &str) -> IResult<&str, WindowBlock<'_>> {
     let (input, _) = multispace0.parse(input)?;
     let (input, _) = tag("WINDOW").parse(input)?;
     let (input, _) = multispace1.parse(input)?;
 
-    // Parse window name (like :wind)
     let (input, window_name) =
         alt((recognize((char(':'), identifier)), identifier)).parse(input)?;
 
@@ -244,7 +200,6 @@ pub(crate) fn parse_window_block(input: &str) -> IResult<&str, WindowBlock<'_>> 
     let (input, _) = char('{').parse(input)?;
     let (input, _) = multispace0.parse(input)?;
 
-    // Parse triple patterns inside the window block
     let (input, pattern_blocks) = many0(terminated(
         parse_triple_block_nom,
         (multispace0, opt(char('.')), multispace0),
@@ -254,7 +209,6 @@ pub(crate) fn parse_window_block(input: &str) -> IResult<&str, WindowBlock<'_>> 
     let (input, _) = multispace0.parse(input)?;
     let (input, _) = char('}').parse(input)?;
 
-    // Flatten all pattern blocks
     let patterns = pattern_blocks.into_iter().flatten().collect();
 
     Ok((
@@ -266,8 +220,7 @@ pub(crate) fn parse_window_block(input: &str) -> IResult<&str, WindowBlock<'_>> 
     ))
 }
 
-/// Parse `NOT triple_block` — negation-as-failure body atom.
-/// Returns the list of negated triple patterns.
+/// Parse `NOT triple_block` — negation-as-failure body atom
 fn parse_not_triple_block(input: &str) -> IResult<&str, Vec<(&str, &str, &str)>> {
     let (input, _) = multispace0.parse(input)?;
     let (input, _) = tag("NOT").parse(input)?;
@@ -275,8 +228,8 @@ fn parse_not_triple_block(input: &str) -> IResult<&str, Vec<(&str, &str, &str)>>
     parse_triple_block_nom(input)
 }
 
-/// A `WHERE` clause, returning the five-tuple of triple patterns, filters,
-/// `VALUES`, `BIND` clauses and subqueries that `shared::query` uses.
+/// A `WHERE` clause, returning the five-tuple of triple patterns, filters, `VALUES`, `BIND` clauses
+/// and subqueries that `shared::query` uses
 pub(crate) fn parse_where_nom(input: &str) -> IResult<&str, WhereClause<'_>> {
     let (input, _) = multispace0.parse(input)?;
     let (input, _) = tag("WHERE").parse(input)?;
@@ -293,18 +246,15 @@ pub(crate) fn parse_where_nom(input: &str) -> IResult<&str, WhereClause<'_>> {
     let mut window_blocks = Vec::new();
     let mut current_input = input;
 
-    // Parse components until we reach the closing brace
     loop {
         let (new_input, _) = multispace0.parse(current_input)?;
         current_input = new_input;
 
-        // Try to match a closing brace
         if let Ok((new_input, _)) = char::<_, nom::error::Error<&str>>('}').parse(current_input) {
             current_input = new_input;
             break;
         }
 
-        // Try to parse each possible component
         current_input = if let Ok((new_input, window_block)) = parse_window_block(current_input) {
             window_blocks.push(window_block);
             new_input
@@ -333,7 +283,6 @@ pub(crate) fn parse_where_nom(input: &str) -> IResult<&str, WhereClause<'_>> {
             )));
         };
 
-        // Consume any trailing dot
         if let Ok((new_input, _)) = (
             space0::<_, nom::error::Error<&str>>,
             char::<_, nom::error::Error<&str>>('.'),
@@ -359,34 +308,28 @@ pub(crate) fn parse_where_nom(input: &str) -> IResult<&str, WhereClause<'_>> {
     ))
 }
 
-/// A `REGISTER` clause declaring a standing query over streams.
+/// A `REGISTER` clause declaring a standing query over streams
 pub(crate) fn parse_register_clause(input: &str) -> IResult<&str, RegisterClause<'_>> {
     let (input, _) = multispace0.parse(input)?;
     let (input, _) = tag("REGISTER").parse(input)?;
     let (input, _) = multispace1.parse(input)?;
 
-    // Parse stream type (RSTREAM, ISTREAM, DSTREAM)
     let (input, stream_type) = parse_stream_type_nom(input)?;
     let (input, _) = multispace1.parse(input)?;
 
-    // Parse output stream IRI
     let (input, output_iri) = parse_uri(input)?;
     let (input, _) = multispace1.parse(input)?;
 
-    // Parse AS keyword
     let (input, _) = tag("AS").parse(input)?;
     let (input, _) = multispace0.parse(input)?;
 
-    // Parse SELECT clause
     let (input, variables) = parse_select(input)?;
     let (input, _) = multispace0.parse(input)?;
 
-    // Parse optional FROM NAMED WINDOW clause (this comes BEFORE WHERE in your example)
     let (input, window_clause) =
         many1(preceded(multispace0, parse_from_named_window_nom)).parse(input)?;
     let (input, _) = multispace0.parse(input)?;
 
-    // Parse WHERE clause with window support
     let (
         input,
         WhereClause {
@@ -415,31 +358,27 @@ pub(crate) fn parse_register_clause(input: &str) -> IResult<&str, RegisterClause
     ))
 }
 
-/// A `GROUP BY` clause: the grouping variables.
+/// A `GROUP BY` clause: the grouping variables
 pub(crate) fn parse_group_by_nom(input: &str) -> IResult<&str, Vec<&str>> {
     sparql_group_by_clause(input)
 }
 
-/// An `ORDER BY` clause, in precedence order.
+/// An `ORDER BY` clause, in precedence order
 pub(crate) fn parse_order_by_nom(input: &str) -> IResult<&str, Vec<OrderCondition<'_>>> {
     sparql_order_by_clause(input)
 }
 
-/// A `PREFIX` declaration, as `(short name, expansion)`.
-///
-/// Backed by the same token-aware parser the request path uses, so a declaration
-/// accepted here is accepted in a full query.
+/// A `PREFIX` declaration, as `(short name, expansion)`
 pub(crate) fn parse_prefix_nom(input: &str) -> IResult<&str, (&str, &str)> {
     sparql_prefix_declaration(input)
 }
 
-/// A `CONSTRUCT { ... }` template, which becomes a rule's conclusion.
+/// A `CONSTRUCT { ... }` template, which becomes a rule's conclusion
 pub(crate) fn parse_construct_clause(input: &str) -> IResult<&str, Vec<(&str, &str, &str)>> {
     let (input, _) = multispace0.parse(input)?;
     let (input, _) = tag("CONSTRUCT").parse(input)?;
     let (input, _) = multispace0.parse(input)?;
 
-    // Parse multiple conclusion triples in CONSTRUCT block
     let (input, conclusions) = delimited(
         char('{'),
         preceded(
@@ -453,20 +392,12 @@ pub(crate) fn parse_construct_clause(input: &str) -> IResult<&str, Vec<(&str, &s
     Ok((input, conclusions))
 }
 
-/// A `LIMIT` clause.
-///
-/// Backed by the same parser `SELECT` uses.
+/// A `LIMIT` clause
 pub(crate) fn parse_limit_nom(input: &str) -> IResult<&str, usize> {
     sparql_limit_clause(input)
 }
 
-// ---------------------------------------------------------------------------
-// Unified recursive SPARQL parser
-// ---------------------------------------------------------------------------
-
-/// Removes SPARQL whitespace and `#` comments. This is intentionally separate
-/// from `multispace0`: comments are whitespace in SPARQL and must not leak into
-/// keyword or punctuation parsing.
+/// Removes SPARQL whitespace and `#` comments
 fn sparql_skip_ws(mut input: &str) -> &str {
     loop {
         let before = input.len();
@@ -491,7 +422,7 @@ fn sparql_name_character(character: char) -> bool {
     character.is_alphanumeric() || matches!(character, '_' | '-' | ':')
 }
 
-/// A case-insensitive keyword parser with a SPARQL token boundary.
+/// A case-insensitive keyword parser with a SPARQL token boundary
 fn sparql_keyword<'a>(input: &'a str, keyword: &str) -> IResult<&'a str, &'a str> {
     let input = sparql_skip_ws(input);
     let (remaining, matched) = nom::bytes::complete::tag_no_case(keyword).parse(input)?;
@@ -749,10 +680,6 @@ fn sparql_prefixed_name(input: &str) -> IResult<&str, &str> {
     Ok((&input[token_end..], &input[..token_end]))
 }
 
-// Kolibrie's established SELECT/ML fragment also accepts bare symbolic RDF
-// values (for example a neural class label such as `A`). Keep that lexical
-// compatibility in the unified parser without treating reserved keywords as
-// part of a longer token.
 fn sparql_bare_identifier(input: &str) -> IResult<&str, &str> {
     identifier(sparql_skip_ws(input))
 }
@@ -923,8 +850,7 @@ fn sparql_quoted_triple_parts(input: &str) -> IResult<&str, LexicalTriplePattern
     Ok((remaining, (subject, predicate, object)))
 }
 
-/// Parses an RDF-star quoted triple recursively and returns its complete raw
-/// source slice. Each nested triple is validated with the same term parsers.
+/// Parses an RDF-star quoted triple recursively and returns its complete raw source slice
 fn sparql_quoted_triple(input: &str) -> IResult<&str, &str> {
     let input = sparql_skip_ws(input);
     let (remaining, _) = sparql_quoted_triple_parts(input)?;
@@ -980,8 +906,8 @@ fn sparql_graph_name(input: &str) -> IResult<&str, &str> {
     alt((sparql_variable, sparql_iri, sparql_prefixed_name)).parse(input)
 }
 
-/// Parses one triples-same-subject statement and expands `;` and `,`
-/// abbreviations into ordinary triple patterns.
+/// Parses one triples-same-subject statement and expands `;` and `,` abbreviations into ordinary
+/// triple patterns
 fn sparql_triples_statement(input: &str) -> IResult<&str, Vec<LexicalTriplePattern<'_>>> {
     let (mut input, subject) = sparql_subject_term(input)?;
     let mut triples = Vec::new();
@@ -1219,8 +1145,6 @@ fn sparql_bind_argument(input: &str) -> IResult<&str, &str> {
         return Ok(parsed);
     }
     if let Ok((remaining, literal)) = sparql_quoted_literal(input) {
-        // Preserve the historical BIND representation: simple quoted
-        // arguments omit their surrounding quotes.
         if (literal.starts_with('"') && literal.ends_with('"'))
             || (literal.starts_with('\'') && literal.ends_with('\''))
         {
@@ -1367,7 +1291,7 @@ fn sparql_group_primary(input: &str) -> IResult<&str, GroupGraphPattern<'_>> {
         .map(|(remaining, triples)| (remaining, GroupGraphPattern::Bgp(triples)))
 }
 
-/// Parses a recursive group graph pattern containing BGP, GRAPH, and UNION.
+/// Parses a recursive group graph pattern containing BGP, GRAPH, and UNION
 pub(crate) fn parse_group_graph_pattern(input: &str) -> IResult<&str, GroupGraphPattern<'_>> {
     let (mut input, _) = sparql_char(input, '{')?;
     let mut joined = Vec::new();
@@ -1595,7 +1519,6 @@ fn sparql_aggregate(input: &str) -> IResult<&str, (&str, &str, Option<&str>)> {
     } else {
         sparql_variable(input)?
     };
-    // Keep the public tuple shape source-compatible
     let aggregate = if distinct {
         match aggregate {
             "COUNT" => "COUNT_DISTINCT",
@@ -1907,9 +1830,7 @@ fn sparql_update_core(input: &str, allow_data_aliases: bool) -> IResult<&str, Up
     })
 }
 
-/// Parse a standalone SELECT with the same grammar used by `CombinedQuery`.
-/// Prefixes are accepted as a request prologue; callers that need the prefix
-/// map should use `parse_combined_query`.
+/// Parse a standalone SELECT with the same grammar used by `CombinedQuery`
 pub(crate) fn parse_sparql_query_nom(input: &str) -> IResult<&str, SelectQuery<'_>> {
     let (input, _) = sparql_prefixes(input)?;
     let (remaining, query) = sparql_select_core(input, true)?;
@@ -1920,14 +1841,10 @@ pub(crate) fn parse_sparql_query_nom(input: &str) -> IResult<&str, SelectQuery<'
     Ok((remaining, query))
 }
 
-/// One `RULE` block together with the prefix map its prologue declared.
-///
-/// Fails unless the whole input is consumed, so trailing text is an error rather
-/// than silently ignored.
+/// One `RULE` block together with the prefix map its prologue declared
 pub(crate) fn parse_standalone_rule_nom<'a>(
     input: &'a str,
 ) -> IResult<&'a str, (CombinedRule<'a>, HashMap<String, String>)> {
-    // Parse prefixes first
     let (input, prefix_list) = many0(|i| {
         let (i, _) = multispace0.parse(i)?;
         let (i, _) = tag("PREFIX").parse(i)?;
@@ -1947,13 +1864,12 @@ pub(crate) fn parse_standalone_rule_nom<'a>(
 
     let (input, _) = multispace0.parse(input)?;
 
-    // Parse the rule
     let (input, rule) = parse_rule(input)?;
 
     Ok((input, (rule, prefixes)))
 }
 
-/// A rule's name, as written after `RULE`.
+/// A rule's name, as written after `RULE`
 pub(crate) fn parse_rule_head(input: &str) -> IResult<&str, RuleHead<'_>> {
     let (input, pred) = predicate(input)?;
     Ok((input, RuleHead { predicate: pred }))
@@ -1967,7 +1883,6 @@ fn parse_balanced(input: &str) -> IResult<&str, &str> {
             '}' => {
                 depth -= 1;
                 if depth == 0 {
-                    // Return the content inside the balanced block
                     return Ok((&input[i + 1..], &input[..i]));
                 }
             }
@@ -2158,7 +2073,7 @@ fn infer_anchor_var(patterns: &[(String, String, String)]) -> Result<String, Str
     Err("NEURAL RELATION INPUT must contain at least one anchor variable".to_string())
 }
 
-/// A `MODEL` declaration: name, architecture and output interpretation.
+/// A `MODEL` declaration: name, architecture and output interpretation
 pub(crate) fn parse_model_decl(input: &str) -> IResult<&str, ModelDecl> {
     let (input, _) = multispace0.parse(input)?;
     let (input, _) = tag("MODEL").parse(input)?;
@@ -2231,7 +2146,7 @@ pub(crate) fn parse_model_decl(input: &str) -> IResult<&str, ModelDecl> {
     ))
 }
 
-/// A declaration that a predicate's facts come from a model.
+/// A declaration that a predicate's facts come from a model
 pub(crate) fn parse_neural_relation_decl(input: &str) -> IResult<&str, NeuralRelationDecl> {
     let (input, _) = multispace0.parse(input)?;
     let (input, _) = tag("NEURAL").parse(input)?;
@@ -2332,7 +2247,7 @@ fn parse_top_level_neural_decls(
     ))
 }
 
-/// A `TRAIN` declaration: data source, loss, optimiser and hyperparameters.
+/// A `TRAIN` declaration: data source, loss, optimiser and hyperparameters
 pub(crate) fn parse_train_neural_relation_decl(
     input: &str,
 ) -> IResult<&str, TrainNeuralRelationDecl> {
@@ -2448,47 +2363,40 @@ fn parse_single_triple_template(input: &str) -> Result<(&str, &str, &str), Strin
     Ok(triples[0])
 }
 
-/// An `ML.PREDICT` clause, keeping the input query both as text and parsed.
+/// An `ML.PREDICT` clause, keeping the input query both as text and parsed
 pub(crate) fn parse_ml_predict(input: &str) -> IResult<&str, MLPredictClause<'_>> {
     let (input, _) = multispace0.parse(input)?;
     let (input, _) = tag("ML.PREDICT").parse(input)?;
     let (input, _) = multispace0.parse(input)?;
     let (input, _) = char('(').parse(input)?;
     let (input, _) = multispace0.parse(input)?;
-    // Parse MODEL clause with quoted name
     let (input, _) = tag("MODEL").parse(input)?;
     let (input, _) = multispace1.parse(input)?;
-    let (input, _) = char('"').parse(input)?; // Expect opening quote
-    let (input, model) = take_until("\"").parse(input)?; // Take everything until closing quote
-    let (input, _) = char('"').parse(input)?; // Expect closing quote
+    let (input, _) = char('"').parse(input)?;
+    let (input, model) = take_until("\"").parse(input)?;
+    let (input, _) = char('"').parse(input)?;
     let (input, _) = multispace0.parse(input)?;
     let (input, _) = char(',').parse(input)?;
     let (input, _) = multispace0.parse(input)?;
-    // Parse INPUT clause using the inclusive balanced parser
     let (input, _) = tag("INPUT").parse(input)?;
     let (input, _) = multispace0.parse(input)?;
     let (input, input_query) = preceded(char('{'), parse_balanced).parse(input)?;
 
-    // Parse the SELECT statement inside the input query
     let mut select_vars = Vec::new();
     let mut where_patterns = Vec::new();
     let mut filter_conditions = Vec::new();
 
-    // Extract SELECT variables
     if let Some(select_idx) = input_query.find("SELECT") {
         if let Some(where_idx) = input_query.find("WHERE") {
             let select_clause = &input_query[select_idx + 6..where_idx].trim();
-            // Parse SELECT variables (simplified version - in real code you would use your actual SELECT parser)
             let vars: Vec<&str> = select_clause.split_whitespace().collect();
             for var in vars {
                 if var.starts_with(['?', '$']) {
-                    select_vars.push((var, "", None)); // Add proper variable type extraction if needed
+                    select_vars.push((var, "", None));
                 }
             }
 
-            // Parse WHERE patterns and filters (simplified - use your actual WHERE parser)
             let where_clause = &input_query[where_idx + 5..].trim();
-            // This is a placeholder - you should use your actual pattern and filter parser here
             let (
                 _rest,
                 WhereClause {
@@ -2505,7 +2413,6 @@ pub(crate) fn parse_ml_predict(input: &str) -> IResult<&str, MLPredictClause<'_>
     let (input, _) = multispace0.parse(input)?;
     let (input, _) = char(',').parse(input)?;
     let (input, _) = multispace0.parse(input)?;
-    // Parse OUTPUT clause
     let (input, _) = tag("OUTPUT").parse(input)?;
     let (input, _) = multispace1.parse(input)?;
     let (input, output_var) = variable(input)?;
@@ -2527,7 +2434,7 @@ pub(crate) fn parse_ml_predict(input: &str) -> IResult<&str, MLPredictClause<'_>
     ))
 }
 
-/// An output stream operator: `RSTREAM`, `ISTREAM`, `DSTREAM` or a custom name.
+/// An output stream operator: `RSTREAM`, `ISTREAM`, `DSTREAM` or a custom name
 pub(crate) fn parse_stream_type_nom(input: &str) -> IResult<&str, StreamType<'_>> {
     let (input, _) = multispace0.parse(input)?;
     let (input, stream_type) = alt((
@@ -2540,15 +2447,12 @@ pub(crate) fn parse_stream_type_nom(input: &str) -> IResult<&str, StreamType<'_>
     Ok((input, stream_type))
 }
 
-/// A window's width, slide and reporting behaviour.
-///
-/// Bounds are half-open: `RANGE n` holds `n` timestamps.
+/// A window's width, slide and reporting behaviour
 pub(crate) fn parse_window_spec_nom(input: &str) -> IResult<&str, WindowSpec<'_>> {
     let (input, _) = multispace0.parse(input)?;
     let (input, _) = char('[').parse(input)?;
     let (input, _) = multispace0.parse(input)?;
 
-    // Parse window type and parameters
     let (input, window_type) = alt((
         tag("RANGE").map(|_| WindowType::Range),
         tag("TUMBLING").map(|_| WindowType::Tumbling),
@@ -2558,33 +2462,26 @@ pub(crate) fn parse_window_spec_nom(input: &str) -> IResult<&str, WindowSpec<'_>
 
     let (input, _) = multispace1.parse(input)?;
 
-    // Parse duration (like PT10M) or numeric value
     let (input, width_str) = alt((
-        // ISO 8601 duration format (PT10M, PT5S, etc.)
         recognize((
             tag("PT"),
             take_while1(|c: char| c.is_digit(10)),
             alt((char('S'), char('M'), char('H'))),
         )),
-        // Simple numeric value
         take_while1(|c: char| c.is_digit(10)),
     ))
     .parse(input)?;
 
-    // Convert duration to numeric value (simplified conversion)
     let width = parse_duration_to_seconds(width_str);
 
-    // Optional STEP parameter for sliding windows
     let (input, slide) = opt(preceded(
         (multispace1, tag("STEP"), multispace1),
         alt((
-            // ISO 8601 duration format
             recognize((
                 tag("PT"),
                 take_while1(|c: char| c.is_digit(10)),
                 alt((char('S'), char('M'), char('H'))),
             )),
-            // Simple numeric value
             take_while1(|c: char| c.is_digit(10)),
         )),
     ))
@@ -2592,7 +2489,6 @@ pub(crate) fn parse_window_spec_nom(input: &str) -> IResult<&str, WindowSpec<'_>
 
     let slide = slide.map(parse_duration_to_seconds);
 
-    // Optional report strategy
     let (input, report_strategy) = opt(preceded(
         (multispace1, tag("REPORT"), multispace1),
         alt((
@@ -2604,7 +2500,6 @@ pub(crate) fn parse_window_spec_nom(input: &str) -> IResult<&str, WindowSpec<'_>
     ))
     .parse(input)?;
 
-    // Optional tick strategy
     let (input, tick) = opt(preceded(
         (multispace1, tag("TICK"), multispace1),
         alt((tag("TIME_DRIVEN"), tag("TUPLE_DRIVEN"), tag("BATCH_DRIVEN"))),
@@ -2626,8 +2521,7 @@ pub(crate) fn parse_window_spec_nom(input: &str) -> IResult<&str, WindowSpec<'_>
     ))
 }
 
-/// Parse a duration string used in WITH POLICY clauses.
-/// Accepts: `5s`, `5000ms`, `PT5S` / `PT5M` / `PT5H`, bare integer (seconds).
+/// Parse a duration string used in WITH POLICY clauses
 fn parse_policy_duration(input: &str) -> IResult<&str, Duration> {
     alt((parse_policy_duration_iso, parse_policy_duration_numeric)).parse(input)
 }
@@ -2654,10 +2548,7 @@ fn parse_policy_duration_numeric(input: &str) -> IResult<&str, Duration> {
     Ok((input, dur))
 }
 
-/// Parse the policy name / spec after `WITH POLICY`.
-/// - `steal`  -> SyncPolicy::Steal
-/// - `wait`   -> SyncPolicy::Wait
-/// - `(timeout=<dur>, fallback=steal|drop)` -> SyncPolicy::Timeout{...}
+/// Parse the policy name / spec after `WITH POLICY`
 fn parse_sync_policy(input: &str) -> IResult<&str, SyncPolicy> {
     alt((
         parse_sync_policy_steal,
@@ -2717,30 +2608,29 @@ fn parse_fallback_drop(input: &str) -> IResult<&str, Fallback> {
     Ok((input, Fallback::Drop))
 }
 
-// Helper function to convert duration strings to seconds
 fn parse_duration_to_seconds(duration: &str) -> usize {
     if duration.starts_with("PT") && duration.len() > 2 {
         let time_part = &duration[2..];
         if let Some(num_end) = time_part.chars().position(|c| !c.is_digit(10)) {
             if let Ok(num) = time_part[..num_end].parse::<usize>() {
                 match time_part.chars().nth(num_end) {
-                    Some('S') => num,        // seconds
-                    Some('M') => num * 60,   // minutes to seconds
-                    Some('H') => num * 3600, // hours to seconds
+                    Some('S') => num,
+                    Some('M') => num * 60,
+                    Some('H') => num * 3600,
                     _ => num,
                 }
             } else {
-                1 // default
+                1
             }
         } else {
-            1 // default
+            1
         }
     } else {
         duration.parse::<usize>().unwrap_or(1)
     }
 }
 
-/// A `FROM NAMED WINDOW` clause binding one window over one stream.
+/// A `FROM NAMED WINDOW` clause binding one window over one stream
 pub(crate) fn parse_from_named_window_nom(input: &str) -> IResult<&str, WindowClause<'_>> {
     let (input, _) = multispace0.parse(input)?;
     let (input, _) = tag("FROM").parse(input)?;
@@ -2750,12 +2640,11 @@ pub(crate) fn parse_from_named_window_nom(input: &str) -> IResult<&str, WindowCl
     let (input, _) = tag("WINDOW").parse(input)?;
     let (input, _) = multispace1.parse(input)?;
 
-    // Parse window identifier (can be :wind, <uri>, or variable)
     let (input, window_iri) = alt((
-        delimited(char('<'), take_while1(|c| c != '>'), char('>')), // <uri>
-        recognize((char(':'), identifier)),                         // :wind
-        variable,                                                   // ?var
-        identifier,                                                 // simple name
+        delimited(char('<'), take_while1(|c| c != '>'), char('>')),
+        recognize((char(':'), identifier)),
+        variable,
+        identifier,
     ))
     .parse(input)?;
 
@@ -2763,21 +2652,18 @@ pub(crate) fn parse_from_named_window_nom(input: &str) -> IResult<&str, WindowCl
     let (input, _) = tag("ON").parse(input)?;
     let (input, _) = multispace1.parse(input)?;
 
-    // Parse stream identifier (can be variable, URI, or namespace reference)
     let (input, stream_iri) = alt((
-        delimited(char('<'), take_while1(|c| c != '>'), char('>')), // <uri>
-        variable,                                                   // ?s
-        recognize((char(':'), identifier)),                         // :stream
-        identifier,                                                 // simple name
+        delimited(char('<'), take_while1(|c| c != '>'), char('>')),
+        variable,
+        recognize((char(':'), identifier)),
+        identifier,
     ))
     .parse(input)?;
 
     let (input, _) = multispace1.parse(input)?;
 
-    // Parse window specification with ISO 8601 duration support
     let (input, window_spec) = parse_window_spec_nom(input)?;
 
-    // Optional: WITH POLICY <policy>
     let (input, policy) = opt(parse_from_named_window_policy).parse(input)?;
 
     Ok((
@@ -2791,9 +2677,7 @@ pub(crate) fn parse_from_named_window_nom(input: &str) -> IResult<&str, WindowCl
     ))
 }
 
-/// Parse a PROB(...) annotation for provenance rules.
-/// Format: PROB(provenance=minmax, threshold=0.3, confidence=0.9)
-/// Legacy alias: PROB(combination=independent, threshold=0.3, confidence=0.9)
+/// Parse a PROB(...) annotation for provenance rules
 fn take_prob_body(input: &str) -> IResult<&str, &str> {
     let mut depth = 0usize;
     for (index, character) in input.char_indices() {
@@ -2891,7 +2775,6 @@ fn parse_prob_annotation(input: &str) -> IResult<&str, ProbAnnotation<'_>> {
     let mut unknown_keys = Vec::new();
     let mut duplicate_key = false;
 
-    // Parse key=value pairs separated by commas
     let (input, kv_str) = take_prob_body(input)?;
 
     let pairs = split_top_level_commas(kv_str).map_err(|_| {
@@ -3043,33 +2926,22 @@ fn parse_prob_annotation(input: &str) -> IResult<&str, ProbAnnotation<'_>> {
     ))
 }
 
-/// Parse a complete rule:
-///   RULE :Name :- CONSTRUCT { ... } WHERE { ... }
-///   RULE :Name PROB(combination=independent, threshold=0.3) :- CONSTRUCT { ... } WHERE { ... } .
-///   RULE :Name PROB(provenance=minmax, threshold=0.3) :- CONSTRUCT { ... } WHERE { ... } .
-///
-/// The body is always a `CONSTRUCT` block followed by `WHERE`; see
-/// [`parse_construct_clause`], which requires that keyword. A `WHERE { ... } => { ... }`
-/// form was advertised here until the real_scenario example was found to panic on it,
-/// and no parser has ever accepted it.
+/// Parse a complete rule: RULE :Name :- CONSTRUCT { ...
 pub(crate) fn parse_rule(input: &str) -> IResult<&str, CombinedRule<'_>> {
     let (input, _) = tag("RULE").parse(input)?;
     let (input, _) = space1.parse(input)?;
     let (input, head) = parse_rule_head(input)?;
     let (input, _) = multispace0.parse(input)?;
 
-    // Optionally parse PROB(...) annotation before :-
     let (input, prob_annotation) =
         opt(terminated(parse_prob_annotation, multispace0)).parse(input)?;
 
     let (input, _) = tag(":-").parse(input)?;
     let (input, _) = multispace0.parse(input)?;
 
-    // Look ahead to determine parsing path
     let lookahead_input = input;
     let (lookahead_input, _) = multispace0.parse(lookahead_input)?;
 
-    // Check if we have RSP elements or direct CONSTRUCT - with explicit error types
     let has_rsp_elements = matches!(
         alt((
             tag::<_, _, nom::error::Error<&str>>("RSTREAM"),
@@ -3082,7 +2954,6 @@ pub(crate) fn parse_rule(input: &str) -> IResult<&str, CombinedRule<'_>> {
     );
 
     let (input, stream_type, window_clause) = if has_rsp_elements {
-        // RSP parsing path
         let (input, stream_type) = opt(parse_stream_type_nom).parse(input)?;
         let (input, _) = multispace0.parse(input)?;
         let (input, window_clause) =
@@ -3090,16 +2961,13 @@ pub(crate) fn parse_rule(input: &str) -> IResult<&str, CombinedRule<'_>> {
         let (input, _) = multispace0.parse(input)?;
         (input, stream_type, window_clause)
     } else {
-        // Basic parsing path - no RSP elements
         (input, None, vec![])
     };
 
-    // Parse CONSTRUCT clause
     let (input, conclusions) = parse_construct_clause(input)?;
 
     let (input, _) = multispace0.parse(input)?;
 
-    // Parse WHERE clause
     let (
         input,
         WhereClause {
@@ -3114,11 +2982,9 @@ pub(crate) fn parse_rule(input: &str) -> IResult<&str, CombinedRule<'_>> {
     ) = parse_where_nom(input)?;
     let body = (patterns, filters, values_clause, binds, subqueries);
 
-    // Optional dot at the end of rule
     let (input, _) = opt(preceded(multispace0, char('.'))).parse(input)?;
     let (input, _) = multispace0.parse(input)?;
 
-    // Optionally parse ML.PREDICT block if it exists
     let (input, ml_predict) = opt(parse_ml_predict).parse(input)?;
 
     Ok((
@@ -3140,7 +3006,7 @@ pub(crate) fn parse_rule(input: &str) -> IResult<&str, CombinedRule<'_>> {
     ))
 }
 
-/// `SOME` or `EVERY` in a `RETRIEVE` clause.
+/// `SOME` or `EVERY` in a `RETRIEVE` clause
 pub(crate) fn parse_retrieve_mode(input: &str) -> IResult<&str, RetrieveMode> {
     let (input, _) = multispace0.parse(input)?;
     let (input, mode) = alt((
@@ -3151,7 +3017,7 @@ pub(crate) fn parse_retrieve_mode(input: &str) -> IResult<&str, RetrieveMode> {
     Ok((input, mode))
 }
 
-/// `LATENT` or `ACTIVE` in a `RETRIEVE` clause.
+/// `LATENT` or `ACTIVE` in a `RETRIEVE` clause
 pub(crate) fn parse_stream_state(input: &str) -> IResult<&str, StreamState> {
     let (input, _) = multispace0.parse(input)?;
     let (input, state) = alt((
@@ -3162,45 +3028,36 @@ pub(crate) fn parse_stream_state(input: &str) -> IResult<&str, StreamState> {
     Ok((input, state))
 }
 
-/// A `RETRIEVE` clause discovering streams from a catalogue.
+/// A `RETRIEVE` clause discovering streams from a catalogue
 pub(crate) fn parse_retrieve_clause(input: &str) -> IResult<&str, RetrieveClause<'_>> {
     let (input, _) = multispace0.parse(input)?;
     let (input, _) = tag("RETRIEVE").parse(input)?;
     let (input, _) = multispace1.parse(input)?;
 
-    // Parse retrieve mode (SOME | EVERY)
     let (input, mode) = parse_retrieve_mode(input)?;
     let (input, _) = multispace1.parse(input)?;
 
-    // Parse stream state (LATENT | ACTIVE)
     let (input, state) = parse_stream_state(input)?;
     let (input, _) = multispace1.parse(input)?;
 
-    // Parse STREAM keyword
     let (input, _) = tag("STREAM").parse(input)?;
     let (input, _) = multispace1.parse(input)?;
 
-    // Parse variable
     let (input, var) = variable(input)?;
     let (input, _) = multispace1.parse(input)?;
 
-    // Parse FROM keyword
     let (input, _) = tag("FROM").parse(input)?;
     let (input, _) = multispace1.parse(input)?;
 
-    // Parse IRI reference
     let (input, iri) = parse_uri(input)?;
     let (input, _) = multispace1.parse(input)?;
 
-    // Parse WITH keyword
     let (input, _) = tag("WITH").parse(input)?;
     let (input, _) = multispace0.parse(input)?;
 
-    // Parse graph pattern block
     let (input, _) = char('{').parse(input)?;
     let (input, _) = multispace0.parse(input)?;
 
-    // Parse graph patterns (can be multiple triple blocks)
     let (input, pattern_blocks) = many0(terminated(
         parse_triple_block_nom,
         (multispace0, opt(char('.')), multispace0),
@@ -3210,7 +3067,6 @@ pub(crate) fn parse_retrieve_clause(input: &str) -> IResult<&str, RetrieveClause
     let (input, _) = multispace0.parse(input)?;
     let (input, _) = char('}').parse(input)?;
 
-    // Flatten all pattern blocks into a single vector
     let graph_pattern = pattern_blocks.into_iter().flatten().collect();
 
     Ok((
@@ -3225,14 +3081,13 @@ pub(crate) fn parse_retrieve_clause(input: &str) -> IResult<&str, RetrieveClause
     ))
 }
 
-/// The combined query parser parses SPARQL + explicit Kolibrie extensions.
+/// The combined query parser parses SPARQL + explicit Kolibrie extensions
 pub(crate) fn parse_combined_query_nom(input: &str) -> IResult<&str, CombinedQuery<'_>> {
     parse_combined_query_with_options_nom(input, false)
 }
 
-/// Parse through the single combined AST, optionally enabling the historical
-/// standalone INSERT/DELETE DATA aliases. Standard APIs pass `false`;
-/// compatibility adapters pass `true`.
+/// Parse through the single combined AST, optionally enabling the historical standalone
+/// INSERT/DELETE DATA aliases
 pub(crate) fn parse_combined_query_with_options_nom(
     input: &str,
     allow_data_aliases: bool,
@@ -3288,8 +3143,6 @@ pub(crate) fn parse_combined_query_with_options_nom(
         ));
     }
 
-    // Explicit extension path. A recognized standard keyword above never
-    // falls through to these restricted grammars after a syntax error.
     let (extension_input, retrieve_clause) = opt(parse_retrieve_clause).parse(after_prologue)?;
     let (extension_input, _) = multispace0.parse(extension_input)?;
     let (extension_input, register_clause) = opt(parse_register_clause).parse(extension_input)?;
@@ -3297,7 +3150,6 @@ pub(crate) fn parse_combined_query_with_options_nom(
     let (extension_input, (model_decls, neural_relation_decls, train_neural_relation_decls)) =
         parse_top_level_neural_decls(extension_input)?;
     let (extension_input, _) = multispace0.parse(extension_input)?;
-    // A top-level ML.PREDICT may precede the rules
     let (extension_input, leading_ml_predict) = opt(parse_ml_predict).parse(extension_input)?;
     let mut extension_input = sparql_skip_ws(extension_input);
     let mut rules = Vec::new();
@@ -3388,13 +3240,7 @@ pub(crate) fn convert_triple_pattern(
     )
 }
 
-/// Lowers a parsed rule into a [`Rule`] bound to `dict`.
-///
-/// This is the prepare step: lexical terms are prefix-expanded using `prefixes` and
-/// then interned, so the result is only meaningful against that dictionary. A rule
-/// lowered against the wrong one parses and validates but matches nothing.
-///
-/// Takes `&mut Dictionary` because interning allocates new ids.
+/// Lowers a parsed rule into a [`Rule`] bound to `dict`
 pub fn convert_combined_rule<'a>(
     cr: CombinedRule<'a>,
     dict: &mut Dictionary,
@@ -3413,107 +3259,95 @@ pub fn convert_combined_rule<'a>(
         .map(|triple| convert_triple_pattern(triple, dict, prefixes))
         .collect::<Vec<TriplePattern>>();
 
-    // Convert filter expressions to filter conditions
     let filter_conditions = cr
         .body
         .1
         .into_iter()
-        .flat_map(|filter_expr| {
-            match filter_expr {
-                FilterExpression::Comparison(var, op, value) => {
-                    vec![FilterCondition {
+        .flat_map(|filter_expr| match filter_expr {
+            FilterExpression::Comparison(var, op, value) => {
+                vec![FilterCondition {
+                    variable: var.trim_start_matches(['?', '$']).to_string(),
+                    operator: op.to_string(),
+                    value: value.to_string(),
+                }]
+            }
+            FilterExpression::Or(left, right) => {
+                let mut conditions = Vec::new();
+
+                if let FilterExpression::Comparison(var, op, value) = *left {
+                    conditions.push(FilterCondition {
+                        variable: var.trim_start_matches(['?', '$']).to_string(),
+                        operator: format!("OR:{}", op.to_string()),
+                        value: value.to_string(),
+                    });
+                }
+
+                if let FilterExpression::Comparison(var, op, value) = *right {
+                    conditions.push(FilterCondition {
+                        variable: var.trim_start_matches(['?', '$']).to_string(),
+                        operator: format!("OR:{}", op.to_string()),
+                        value: value.to_string(),
+                    });
+                } else if let FilterExpression::Or(nested_left, nested_right) = *right {
+                    if let FilterExpression::Comparison(var, op, value) = *nested_left {
+                        conditions.push(FilterCondition {
+                            variable: var.trim_start_matches(['?', '$']).to_string(),
+                            operator: format!("OR:{}", op.to_string()),
+                            value: value.to_string(),
+                        });
+                    }
+
+                    if let FilterExpression::Comparison(var, op, value) = *nested_right {
+                        conditions.push(FilterCondition {
+                            variable: var.trim_start_matches(['?', '$']).to_string(),
+                            operator: format!("OR:{}", op.to_string()),
+                            value: value.to_string(),
+                        });
+                    }
+                }
+
+                conditions
+            }
+            FilterExpression::And(left, right) => {
+                let mut conditions = Vec::new();
+
+                if let FilterExpression::Comparison(var, op, value) = *left {
+                    conditions.push(FilterCondition {
                         variable: var.trim_start_matches(['?', '$']).to_string(),
                         operator: op.to_string(),
                         value: value.to_string(),
-                    }]
+                    });
                 }
-                FilterExpression::Or(left, right) => {
-                    // Handle OR expressions
-                    let mut conditions = Vec::new();
 
-                    if let FilterExpression::Comparison(var, op, value) = *left {
-                        conditions.push(FilterCondition {
-                            variable: var.trim_start_matches(['?', '$']).to_string(),
-                            operator: format!("OR:{}", op.to_string()),
-                            value: value.to_string(),
-                        });
-                    }
-
-                    if let FilterExpression::Comparison(var, op, value) = *right {
-                        conditions.push(FilterCondition {
-                            variable: var.trim_start_matches(['?', '$']).to_string(),
-                            operator: format!("OR:{}", op.to_string()),
-                            value: value.to_string(),
-                        });
-                    } else if let FilterExpression::Or(nested_left, nested_right) = *right {
-                        // Handle nested OR expressions (common with multiple OR conditions)
-                        if let FilterExpression::Comparison(var, op, value) = *nested_left {
-                            conditions.push(FilterCondition {
-                                variable: var.trim_start_matches(['?', '$']).to_string(),
-                                operator: format!("OR:{}", op.to_string()),
-                                value: value.to_string(),
-                            });
-                        }
-
-                        if let FilterExpression::Comparison(var, op, value) = *nested_right {
-                            conditions.push(FilterCondition {
-                                variable: var.trim_start_matches(['?', '$']).to_string(),
-                                operator: format!("OR:{}", op.to_string()),
-                                value: value.to_string(),
-                            });
-                        }
-                    }
-
-                    conditions
+                if let FilterExpression::Comparison(var, op, value) = *right {
+                    conditions.push(FilterCondition {
+                        variable: var.trim_start_matches(['?', '$']).to_string(),
+                        operator: op.to_string(),
+                        value: value.to_string(),
+                    });
                 }
-                FilterExpression::And(left, right) => {
-                    // Handle AND expressions
-                    let mut conditions = Vec::new();
 
-                    if let FilterExpression::Comparison(var, op, value) = *left {
-                        conditions.push(FilterCondition {
-                            variable: var.trim_start_matches(['?', '$']).to_string(),
-                            operator: op.to_string(),
-                            value: value.to_string(),
-                        });
-                    }
-
-                    if let FilterExpression::Comparison(var, op, value) = *right {
-                        conditions.push(FilterCondition {
-                            variable: var.trim_start_matches(['?', '$']).to_string(),
-                            operator: op.to_string(),
-                            value: value.to_string(),
-                        });
-                    }
-
-                    conditions
-                }
-                _ => {
-                    // Return an empty vector instead of panicking
-                    vec![]
-                }
+                conditions
+            }
+            _ => {
+                vec![]
             }
         })
         .collect();
 
-    // Convert all conclusion triples, preserving their structure
     let mut conclusion_triples: Vec<TriplePattern> = cr
         .conclusion
         .into_iter()
         .map(|triple| convert_triple_pattern(triple, dict, prefixes))
         .collect();
 
-    // Handle ML.PREDICT: wire output variable into conclusion triples
     if let Some(ml_predict) = &cr.ml_predict {
         let ml_output_var = ml_predict.output.trim_start_matches(['?', '$']);
 
-        // Check if the conclusion triples contain the ML output variable
         for conclusion in &mut conclusion_triples {
-            // Check if the conclusion contains variables that need ML output
             match &mut conclusion.2 {
                 Term::Variable(var) if var == ml_output_var => {}
                 Term::Variable(var) if var == "level" => {
-                    // Replace generic 'level' variable with ML output variable
                     *var = ml_output_var.to_string();
                 }
                 _ => {}
@@ -3529,28 +3363,24 @@ pub fn convert_combined_rule<'a>(
     }
 }
 
-/// Parses a whole SPARQL `SELECT`, reporting failure without naming the parser
-/// library. See [`ParseError`](crate::parse_error::ParseError).
+/// Parses a whole SPARQL `SELECT`, reporting failure without naming the parser library
 pub fn parse_sparql_query(input: &str) -> ParseResult<'_, SelectQuery<'_>> {
     parse_sparql_query_nom(input).map_err(ParseError::from_nom)
 }
 
-/// Parses one rule together with the prefixes it was declared with.
+/// Parses one rule together with the prefixes it was declared with
 pub fn parse_standalone_rule<'a>(
     input: &'a str,
 ) -> ParseResult<'a, (CombinedRule<'a>, HashMap<String, String>)> {
     parse_standalone_rule_nom(input).map_err(ParseError::from_nom)
 }
 
-/// Parses any supported request into the single combined AST.
-///
-/// The entry point to prefer: SPARQL, RSP-QL, Update, rules and the ML extensions all
-/// come back as one [`CombinedQuery`].
+/// Parses any supported request into the single combined AST
 pub fn parse_combined_query(input: &str) -> ParseResult<'_, CombinedQuery<'_>> {
     parse_combined_query_nom(input).map_err(ParseError::from_nom)
 }
 
-/// As [`parse_combined_query`], optionally accepting the historical data aliases.
+/// As [`parse_combined_query`], optionally accepting the historical data aliases
 pub fn parse_combined_query_with_options(
     input: &str,
     allow_data_aliases: bool,
@@ -3558,61 +3388,61 @@ pub fn parse_combined_query_with_options(
     parse_combined_query_with_options_nom(input, allow_data_aliases).map_err(ParseError::from_nom)
 }
 
-/// Parses an RDF-star quoted triple, `<< s p o >>`, as written.
+/// Parses an RDF-star quoted triple, `<< s p o >>`, as written
 pub fn parse_quoted_triple(input: &str) -> ParseResult<'_, &str> {
     parse_quoted_triple_nom(input).map_err(ParseError::from_nom)
 }
 
-/// Parses a block of triple patterns sharing a subject.
+/// Parses a block of triple patterns sharing a subject
 pub fn parse_triple_block(input: &str) -> ParseResult<'_, Vec<(&str, &str, &str)>> {
     parse_triple_block_nom(input).map_err(ParseError::from_nom)
 }
 
-/// Parses a `FILTER` clause into its expression tree.
+/// Parses a `FILTER` clause into its expression tree
 pub fn parse_filter(input: &str) -> ParseResult<'_, FilterExpression<'_>> {
     parse_filter_nom(input).map_err(ParseError::from_nom)
 }
-/// Parses a `WHERE` clause into everything it declares.
+/// Parses a `WHERE` clause into everything it declares
 pub fn parse_where(input: &str) -> ParseResult<'_, WhereClause<'_>> {
     parse_where_nom(input).map_err(ParseError::from_nom)
 }
 
-/// Parses one `PREFIX` declaration.
+/// Parses one `PREFIX` declaration
 pub fn parse_prefix(input: &str) -> ParseResult<'_, (&str, &str)> {
     parse_prefix_nom(input).map_err(ParseError::from_nom)
 }
 
-/// Parses a comparison expression, as a `FILTER` body contains.
+/// Parses a comparison expression, as a `FILTER` body contains
 pub fn parse_comparison(input: &str) -> ParseResult<'_, FilterExpression<'_>> {
     parse_comparison_nom(input).map_err(ParseError::from_nom)
 }
 
-/// Parses a `GROUP BY` clause into its variables.
+/// Parses a `GROUP BY` clause into its variables
 pub fn parse_group_by(input: &str) -> ParseResult<'_, Vec<&str>> {
     parse_group_by_nom(input).map_err(ParseError::from_nom)
 }
 
-/// Parses an `ORDER BY` clause into its conditions.
+/// Parses an `ORDER BY` clause into its conditions
 pub fn parse_order_by(input: &str) -> ParseResult<'_, Vec<OrderCondition<'_>>> {
     parse_order_by_nom(input).map_err(ParseError::from_nom)
 }
 
-/// Parses a `LIMIT` clause.
+/// Parses a `LIMIT` clause
 pub fn parse_limit(input: &str) -> ParseResult<'_, usize> {
     parse_limit_nom(input).map_err(ParseError::from_nom)
 }
 
-/// Parses a `FROM NAMED WINDOW` clause.
+/// Parses a `FROM NAMED WINDOW` clause
 pub fn parse_from_named_window(input: &str) -> ParseResult<'_, WindowClause<'_>> {
     parse_from_named_window_nom(input).map_err(ParseError::from_nom)
 }
 
-/// Parses an RSP-QL stream type.
+/// Parses an RSP-QL stream type
 pub fn parse_stream_type(input: &str) -> ParseResult<'_, StreamType<'_>> {
     parse_stream_type_nom(input).map_err(ParseError::from_nom)
 }
 
-/// Parses a window specification, the `[...]` after a window name.
+/// Parses a window specification, the `[...]` after a window name
 pub fn parse_window_spec(input: &str) -> ParseResult<'_, WindowSpec<'_>> {
     parse_window_spec_nom(input).map_err(ParseError::from_nom)
 }

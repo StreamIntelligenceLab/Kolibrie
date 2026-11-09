@@ -43,9 +43,6 @@ impl PyFilterCondition {
 #[pyclass(name = "Term")]
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 enum Term {
-    // Named rather than positional, so Python reads `term.name` and `term.id`
-    // instead of `term._0`, which is what pyo3 calls an unnamed field and is not
-    // something an example should have to show.
     #[pyo3(name = "Variable")]
     Variable { name: String },
 
@@ -150,7 +147,6 @@ impl PyKnowledgeGraph {
     ) -> Vec<(String, String, String)> {
         let results = self.inner.query_abox(subject, predicate, object);
 
-        // Acquire read lock once for all decoding operations
         let decoded_results: Vec<(String, String, String)> = results
             .into_iter()
             .map(|triple| {
@@ -207,7 +203,6 @@ impl PyKnowledgeGraph {
     fn infer_new_facts(&mut self) -> Vec<(String, String, String)> {
         let inferred = self.inner.infer_new_facts();
 
-        // Acquire read lock once for all decoding operations
         let decoded_results: Vec<(String, String, String)> = inferred
             .into_iter()
             .map(|triple| {
@@ -224,7 +219,6 @@ impl PyKnowledgeGraph {
     fn infer_new_facts_semi_naive(&mut self) -> Vec<(String, String, String)> {
         let inferred = self.inner.infer_new_facts_semi_naive();
 
-        // Acquire read lock once for all decoding operations
         let decoded_results: Vec<(String, String, String)> = inferred
             .into_iter()
             .map(|triple| {
@@ -259,27 +253,11 @@ impl PyKnowledgeGraph {
     }
 
     fn encode_term(&mut self, term: &str) -> u32 {
-        // Acquire write lock for encoding
         let id = self.inner.encode_term(term);
         id
     }
 
-    /// Adds every rule in an N3 document, and returns how many were added.
-    ///
-    /// `{ premise } => { conclusion } .` under `@prefix` declarations, which is how
-    /// a rule is usually written down rather than assembled:
-    ///
-    /// ```text
-    /// @prefix ex: <http://example.org/> .
-    /// { ?x ex:hasParent ?y . ?y ex:hasParent ?z . } => { ?x ex:hasGrandparent ?z . }
-    /// ```
-    ///
-    /// Building the same rule through `Rule`, `TriplePattern` and `Term` means
-    /// naming every constant by the id `encode_term` gave it; this interns them for
-    /// you, against this graph's own dictionary, so the rule matches its facts.
-    ///
-    /// One prefix block covers every rule in the document, so rules written
-    /// together keep their context.
+    /// Adds every rule in an N3 document, and returns how many were added
     fn add_n3_rules(&mut self, n3: &str) -> PyResult<usize> {
         let (_, (_prefixes, rules)) =
             datalog::parser_n3_logic::parse_n3_document(n3, &mut self.inner).map_err(|error| {
@@ -292,12 +270,7 @@ impl PyKnowledgeGraph {
         Ok(added)
     }
 
-    /// The text an id stands for, or `None` if this graph never assigned it.
-    ///
-    /// The inverse of `encode_term`, and needed to read anything the graph answers
-    /// in terms of ids rather than strings. `backward_chaining` is the case that
-    /// forced it: its bindings carry `Term.Constant(0)`, which says nothing without
-    /// this.
+    /// The text an id stands for, or `None` if this graph never assigned it
     fn decode_term(&self, id: u32) -> Option<String> {
         self.inner.decode_term(id)
     }

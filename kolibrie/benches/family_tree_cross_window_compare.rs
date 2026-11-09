@@ -41,9 +41,7 @@ const FAMILY_RULES: &str = r#"
 
 #[derive(Clone)]
 struct TwoStreamFamilyFacts {
-    // SDS stream 1: parentOf only
     parent_of: Vec<WindowedTriple>,
-    // SDS stream 2: all non-parentOf asserted family facts
     other: Vec<WindowedTriple>,
 }
 
@@ -149,8 +147,6 @@ fn build_next_sds(facts: &TwoStreamFamilyFacts) -> Sds {
 }
 
 fn signature(result: &HashMap<String, Vec<Triple>>, dict: &SharedTerms) -> BTreeSet<String> {
-    // A copy: this decodes every triple it prints, and a scoped encoder will not
-    // hold its lock across the walk.
     let d = dict.view();
     let mut out = BTreeSet::new();
 

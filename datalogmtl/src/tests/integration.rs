@@ -32,7 +32,7 @@ fn make_diamond_rules(location: u32, was_near: u32) -> Vec<DatalogMTLRule> {
     }]
 }
 
-/// Test 7: Phase 2 parity — derived triples must match Phase 1 at every tick.
+/// Test 7: Phase 2 parity — derived triples must match Phase 1 at every tick
 #[test]
 fn test_phase2_parity() {
     let dict1 = make_dict();
@@ -43,7 +43,6 @@ fn test_phase2_parity() {
     let location = dict1.encode(":location");
     let was_near = dict1.encode(":wasNear");
     let room1 = dict1.encode(":room1");
-    // Mirror in dict2
     let _ = dict2.encode(":a");
     let _ = dict2.encode(":b");
     let _ = dict2.encode(":location");
@@ -79,14 +78,13 @@ fn test_phase2_parity() {
         );
     }
 
-    // Phase 2 total_triple_count <= Phase 1 total_triple_count
     assert!(
         eval2.store.total_triple_count() <= eval1.store.total_triple_count(),
         "Phase 2 should use <= triples vs Phase 1"
     );
 }
 
-/// Test 10: Eviction — after t=10000, no snapshot for t=0 (w_max=5000).
+/// Test 10: Eviction — after t=10000, no snapshot for t=0 (w_max=5000)
 #[test]
 fn test_eviction() {
     let dict = make_dict();
@@ -95,7 +93,6 @@ fn test_eviction() {
     let val42 = enc(&dict, ":v42");
     let stable = enc(&dict, ":stableReading");
 
-    // Rule with max interval 5000ms.
     let rule = DatalogMTLRule {
         id: "stable".into(),
         head: (v("x"), c(stable), v("v")),
@@ -115,8 +112,6 @@ fn test_eviction() {
         eval.advance(t, vec![triple(sensor_s, sensor_p, val42)]);
     }
 
-    // After t=10000, cutoff = 10000 - 5000 = 5000.
-    // Phase 1: no snapshot at t=0 (evicted).
     let ts_at_0 = eval.store.timestamps_in(0, 0);
     assert!(
         ts_at_0.is_empty(),
@@ -124,7 +119,7 @@ fn test_eviction() {
     );
 }
 
-/// Test 10b: Phase 2 eviction.
+/// Test 10b: Phase 2 eviction
 #[test]
 fn test_eviction_phase2() {
     let dict = make_dict();
@@ -152,7 +147,6 @@ fn test_eviction_phase2() {
         eval.advance(t, vec![triple(sensor_s, sensor_p, val42)]);
     }
 
-    // After t=10000, cutoff = 5000. No interval should start before t=5000.
     let ts_before_cutoff = eval.store.timestamps_in(0, 4999);
     assert!(
         ts_before_cutoff.is_empty(),

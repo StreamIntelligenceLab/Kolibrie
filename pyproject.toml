@@ -1,0 +1,44 @@
+# Python tooling for the repository; Cargo still builds the Rust workspace
+[project]
+name = "kolibrie-workspace"
+version = "0.3.0"
+description = "Python environment for developing Kolibrie: ML runtime, linting and tests"
+license = "MPL-2.0"
+requires-python = ">=3.10"
+dependencies = []
+
+[dependency-groups]
+ml = [
+    "mlschema",
+    "numpy>=1.26",
+    "packaging>=23.0",
+    "psutil>=5.9",
+    "rdflib>=7.0",
+    "scikit-learn>=1.3",
+]
+dev = [
+    "pytest>=8.0",
+    "ruff>=0.12",
+]
+
+[tool.uv]
+package = false
+default-groups = ["dev", "ml"]
+# The ml crate embeds the interpreter, so it must link a libpython the system provides
+python-preference = "system"
+
+[tool.uv.sources]
+mlschema = { path = "ml/src", editable = true }
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+
+[tool.ruff.lint]
+select = ["E", "W", "F", "I", "B", "UP", "C4", "SIM"]
+
+[tool.ruff.lint.isort]
+known-first-party = ["kolibrie", "mlschema"]
+
+[tool.pytest.ini_options]
+testpaths = ["ml/tests"]

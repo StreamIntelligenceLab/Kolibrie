@@ -15,29 +15,29 @@ use crate::terms::{Term, TriplePattern};
 use crate::triple::Triple;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
-/// Which graph a quad belongs to.
+/// Which graph a quad belongs to
 pub enum GraphId {
-    /// The unnamed default graph.
+    /// The unnamed default graph
     Default,
-    /// A named graph, identified by its encoded IRI.
+    /// A named graph, identified by its encoded IRI
     Named(u32),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
-/// An encoded triple together with the graph it belongs to.
+/// An encoded triple together with the graph it belongs to
 pub struct Quad {
-    /// Encoded subject.
+    /// Encoded subject
     pub subject: u32,
-    /// Encoded predicate.
+    /// Encoded predicate
     pub predicate: u32,
-    /// Encoded object.
+    /// Encoded object
     pub object: u32,
-    /// The graph this quad is in.
+    /// The graph this quad is in
     pub graph: GraphId,
 }
 
 impl Quad {
-    /// The quad's triple, discarding the graph.
+    /// The quad's triple, discarding the graph
     pub fn triple(&self) -> Triple {
         Triple {
             subject: self.subject,
@@ -48,29 +48,26 @@ impl Quad {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
-/// The graph position of a pattern: fixed, or left open to bind.
-///
-/// This is [`GraphId`] plus a variable case, in the same way [`Term`] is an
-/// encoded id plus a variable case.
+/// The graph position of a pattern: fixed, or left open to bind
 pub enum GraphTerm {
-    /// Match only the default graph.
+    /// Match only the default graph
     Default,
-    /// Match one named graph.
+    /// Match one named graph
     Named(u32),
-    /// Match any graph, binding its name to this variable.
+    /// Match any graph, binding its name to this variable
     Variable(String),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
-/// A triple pattern extended with a graph position.
+/// A triple pattern extended with a graph position
 pub struct QuadPattern {
-    /// Subject position.
+    /// Subject position
     pub subject: Term,
-    /// Predicate position.
+    /// Predicate position
     pub predicate: Term,
-    /// Object position.
+    /// Object position
     pub object: Term,
-    /// Graph position.
+    /// Graph position
     pub graph: GraphTerm,
 }
 
@@ -78,20 +75,7 @@ type NestedIndex = HashMap<u32, HashMap<u32, HashSet<u32>>>;
 type GraphNestedIndex = HashMap<GraphId, NestedIndex>;
 type SpoGraphIndex = HashMap<u32, HashMap<u32, HashMap<u32, HashSet<GraphId>>>>;
 
-/// Quad storage with enough index orderings to answer any binding pattern without
-/// a full scan.
-///
-/// Three graph-scoped orderings (`gspo`, `gpos`, `gosp`) cover lookups within a
-/// known graph; `spog` inverts that, answering "which graphs contain this triple"
-/// without visiting every graph. A quad is therefore stored four times, which is
-/// the space traded for never scanning.
-///
-/// Insertion is set semantics: re-inserting an existing quad is a no-op and reports
-/// `false`, so callers can use the return value to detect genuinely new facts —
-/// which is what makes semi-naive derivation terminate.
-///
-/// [`Self::generation`] lets an observer notice mutations without being notified;
-/// the statistics cache relies on it rather than on explicit invalidation.
+/// Quad storage with enough index orderings to answer any binding pattern without a full scan
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct DatasetIndex {
     gspo: GraphNestedIndex,
@@ -107,7 +91,7 @@ pub struct DatasetIndex {
 }
 
 impl DatasetIndex {
-    /// An empty index with no graphs.
+    /// An empty index with no graphs
     pub fn new() -> Self {
         Self::default()
     }
@@ -126,7 +110,7 @@ impl DatasetIndex {
         self.generation = self.generation.wrapping_add(1);
     }
 
-    /// Inserts into the default graph. Returns whether the quad was new.
+    /// Inserts into the default graph
     pub fn insert_triple(&mut self, triple: &Triple) -> bool {
         self.insert_quad(&Quad {
             subject: triple.subject,
@@ -136,7 +120,7 @@ impl DatasetIndex {
         })
     }
 
-    /// Removes from the default graph. Returns whether it was present.
+    /// Removes from the default graph
     pub fn delete_triple(&mut self, triple: &Triple) -> bool {
         self.delete_quad(&Quad {
             subject: triple.subject,
@@ -146,24 +130,23 @@ impl DatasetIndex {
         })
     }
 
-    /// Alias for [`Self::insert_triple`].
+    /// Alias for [`Self::insert_triple`]
     pub fn insert(&mut self, triple: &Triple) -> bool {
         self.insert_triple(triple)
     }
 
-    /// Alias for [`Self::delete_triple`].
+    /// Alias for [`Self::delete_triple`]
     pub fn delete(&mut self, triple: &Triple) -> bool {
         self.delete_triple(triple)
     }
 
-    /// Alias for [`Self::query_default`]. `None` means "any" in that position.
+    /// Alias for [`Self::query_default`]
     pub fn query(&self, s: Option<u32>, p: Option<u32>, o: Option<u32>) -> Vec<Triple> {
         self.query_default(s, p, o)
     }
 
-    /// Inserts `quad`, creating its graph if needed. Returns whether it was new.
+    /// Inserts `quad`, creating its graph if needed
     pub fn insert_quad(&mut self, quad: &Quad) -> bool {
-        // Registering a new named graph counts as a mutation
         let named_a_graph = match quad.graph {
             GraphId::Named(graph) => self.named_graphs.insert(graph),
             GraphId::Default => false,
@@ -219,16 +202,13 @@ impl DatasetIndex {
         true
     }
 
-    /// Removes `quad`. Returns whether it was present. The graph survives even if
-    /// this empties it.
+    /// Removes `quad`
     pub fn delete_quad(&mut self, quad: &Quad) -> bool {
         if !self.contains_quad(quad) {
             return false;
         }
 
         if let GraphId::Named(graph) = quad.graph {
-            // Materialize graph identity before deleting the last quad from an
-            // index deserialized from the pre-catalog representation.
             self.named_graphs.insert(graph);
         }
 
@@ -247,7 +227,7 @@ impl DatasetIndex {
         true
     }
 
-    /// Whether `quad` is present.
+    /// Whether `quad` is present
     pub fn contains_quad(&self, quad: &Quad) -> bool {
         self.spog
             .get(&quad.subject)
@@ -256,8 +236,7 @@ impl DatasetIndex {
             .is_some_and(|graphs| graphs.contains(&quad.graph))
     }
 
-    /// Triples in the default graph matching the bound positions; `None` is a
-    /// wildcard.
+    /// Triples in the default graph matching the bound positions; `None` is a wildcard
     pub fn query_default(&self, s: Option<u32>, p: Option<u32>, o: Option<u32>) -> Vec<Triple> {
         self.query_graph(GraphId::Default, s, p, o)
             .into_iter()
@@ -282,11 +261,7 @@ impl DatasetIndex {
             .collect()
     }
 
-    /// Quads in one graph matching the bound positions; `None` is a wildcard.
-    ///
-    /// Results come back in the index's hash order, which varies between processes.
-    /// Callers must not depend on it — a test that asserted a positional property
-    /// of this result failed about one run in five.
+    /// Quads in one graph matching the bound positions; `None` is a wildcard
     pub fn query_graph(
         &self,
         graph: GraphId,
@@ -410,7 +385,7 @@ impl DatasetIndex {
         results
     }
 
-    /// Quads across every named graph, excluding the default graph.
+    /// Quads across every named graph, excluding the default graph
     pub fn query_named_graphs(
         &self,
         s: Option<u32>,
@@ -454,7 +429,7 @@ impl DatasetIndex {
         results
     }
 
-    /// Quads matching a [`QuadPattern`], including its graph position.
+    /// Quads matching a [`QuadPattern`], including its graph position
     pub fn query_quads(
         &self,
         s: Option<u32>,
@@ -472,10 +447,7 @@ impl DatasetIndex {
         }
     }
 
-    /// Default-graph triples matching `pattern`, treating variables as wildcards.
-    ///
-    /// Does not enforce repeated variables: a pattern using one name twice still
-    /// returns triples where those positions differ, so the caller must verify.
+    /// Default-graph triples matching `pattern`, treating variables as wildcards
     pub fn get_matching_triples(&self, pattern: &TriplePattern) -> Vec<Triple> {
         let (s, p, o) = pattern;
         let sub = constant_id(s);
@@ -484,20 +456,17 @@ impl DatasetIndex {
         self.query_default(sub, pre, obj)
     }
 
-    /// Whether `graph` exists, including when it is empty.
+    /// Whether `graph` exists, including when it is empty
     pub fn graph_exists(&self, graph: GraphId) -> bool {
         match graph {
             GraphId::Default => true,
             GraphId::Named(graph) => {
-                self.named_graphs.contains(&graph)
-                    // Non-empty graphs in indexes serialized before the graph
-                    // catalog was added remain discoverable.
-                    || self.gspo.contains_key(&GraphId::Named(graph))
+                self.named_graphs.contains(&graph) || self.gspo.contains_key(&GraphId::Named(graph))
             }
         }
     }
 
-    /// Every named graph, excluding the default graph. Includes empty ones.
+    /// Every named graph, excluding the default graph
     pub fn named_graphs(&self) -> Vec<GraphId> {
         let mut graphs: HashSet<u32> = self.named_graphs.clone();
         graphs.extend(self.gspo.keys().filter_map(|graph| match graph {
@@ -510,18 +479,15 @@ impl DatasetIndex {
         graphs
     }
 
-    /// Returns every graph identity, including the always-present default
-    /// graph and named graphs without any quads.
+    /// Returns every graph identity, including the always-present default graph and named graphs
+    /// without any quads
     pub fn graphs(&self) -> Vec<GraphId> {
         let mut graphs = vec![GraphId::Default];
         graphs.extend(self.named_graphs());
         graphs
     }
 
-    /// Creates a graph identity without requiring a quad to be inserted.
-    ///
-    /// Returns `true` only when a new named graph was created. The default
-    /// graph always exists and therefore returns `false`.
+    /// Creates a graph identity without requiring a quad to be inserted
     pub fn create_graph(&mut self, graph: GraphId) -> bool {
         match graph {
             GraphId::Default => false,
@@ -536,10 +502,7 @@ impl DatasetIndex {
         }
     }
 
-    /// Drops a graph identity and all of its quads.
-    ///
-    /// Dropping the default graph clears it but cannot remove its identity.
-    /// A missing named graph returns `false`.
+    /// Drops a graph identity and all of its quads
     pub fn drop_graph(&mut self, graph: GraphId) -> bool {
         match graph {
             GraphId::Default => {
@@ -551,7 +514,6 @@ impl DatasetIndex {
                 if !self.graph_exists(graph) {
                     return false;
                 }
-                // Removing the graph identity counts as one additional mutation
                 self.clear_graph(graph);
                 self.named_graphs.remove(&graph_id);
                 self.record_change();
@@ -560,8 +522,8 @@ impl DatasetIndex {
         }
     }
 
-    /// Returns a complete, deterministic quad snapshot suitable for rebuilding
-    /// all indexes without collapsing named graphs into the default graph.
+    /// Returns a complete, deterministic quad snapshot suitable for rebuilding all indexes without
+    /// collapsing named graphs into the default graph
     pub fn all_quads(&self) -> Vec<Quad> {
         let mut quads = Vec::new();
         for graph in self.graphs() {
@@ -571,8 +533,7 @@ impl DatasetIndex {
         quads
     }
 
-    /// Which graphs contain `triple`. Answered from `spog` without visiting every
-    /// graph.
+    /// Which graphs contain `triple`
     pub fn graphs_for_triple(&self, triple: &Triple) -> Vec<GraphId> {
         self.spog
             .get(&triple.subject)
@@ -582,28 +543,22 @@ impl DatasetIndex {
             .unwrap_or_default()
     }
 
-    /// Empties one graph, leaving the graph itself in existence.
+    /// Empties one graph, leaving the graph itself in existence
     pub fn clear_graph(&mut self, graph: GraphId) {
-        // Clearing a named graph retains its identity, including for an old
-        // deserialized index whose catalog is populated lazily.
         if let GraphId::Named(graph_id) = graph {
             if self.graph_exists(graph) && self.named_graphs.insert(graph_id) {
-                // Register a legacy (pre-catalog) graph
                 self.record_change();
             }
         }
 
-        // delete_quad records one mutation per removed quad
         let quads = self.query_graph(graph, None, None, None);
         for quad in quads {
             self.delete_quad(&quad);
         }
     }
 
-    /// Removes every quad and graph, and bumps [`Self::resets`] if anything was
-    /// present.
+    /// Removes every quad and graph, and bumps [`Self::resets`] if anything was present
     pub fn clear(&mut self) {
-        // No-op on an empty dataset
         if self.gspo.is_empty() && self.named_graphs.is_empty() {
             return;
         }
@@ -658,12 +613,12 @@ impl DatasetIndex {
         self.gspo.keys().map(|&graph| self.count_graph(graph)).sum()
     }
 
-    /// Number of quads in one graph.
+    /// Number of quads in one graph
     pub fn len_graph(&self, graph: GraphId) -> usize {
         self.count_graph(graph)
     }
 
-    /// Number of triples in the default graph.
+    /// Number of triples in the default graph
     pub fn len_default(&self) -> usize {
         self.len_graph(GraphId::Default)
     }
@@ -850,8 +805,6 @@ mod tests {
             graph: GraphId::Named(10),
         };
         index.insert_quad(&quad);
-        // Models deserialization of the representation from before the
-        // explicit catalog was added.
         index.named_graphs.clear();
 
         assert!(index.delete_quad(&quad));
@@ -1027,17 +980,14 @@ mod tests {
         index.insert_triple(&triple(1, 2, 3));
         index.create_graph(named(5));
 
-        // Duplicate insert
         assert_eq!(
             advance(&mut index, |i| assert!(!i.insert_triple(&triple(1, 2, 3)))),
             0
         );
-        // Delete of a missing quad
         assert_eq!(
             advance(&mut index, |i| assert!(!i.delete_triple(&triple(9, 9, 9)))),
             0
         );
-        // Existing graph created, missing graph dropped
         assert_eq!(
             advance(&mut index, |i| assert!(!i.create_graph(named(5)))),
             0
@@ -1046,7 +996,6 @@ mod tests {
             advance(&mut index, |i| assert!(!i.drop_graph(named(404)))),
             0
         );
-        // Default graph cannot be created
         assert_eq!(
             advance(&mut index, |i| assert!(!i.create_graph(GraphId::Default))),
             0
@@ -1085,7 +1034,6 @@ mod tests {
         index.insert_quad(&quad(4, 5, 6, named(7)));
 
         assert_eq!(advance(&mut index, |i| i.clear_graph(named(7))), 2);
-        // Second clear removes nothing
         assert_eq!(advance(&mut index, |i| i.clear_graph(named(7))), 0);
     }
 
@@ -1112,7 +1060,6 @@ mod tests {
     fn naming_a_graph_through_a_duplicate_quad_is_still_a_change() {
         let mut index = DatasetIndex::new();
         index.insert_quad(&quad(1, 2, 3, named(4)));
-        // Same quad, graph already named
         assert_eq!(
             advance(&mut index, |i| assert!(!i.insert_quad(&quad(
                 1,
@@ -1161,8 +1108,6 @@ impl crate::quad_source::QuadSource for DatasetIndex {
     }
 
     fn for_each_quad(&self, visit: &mut dyn FnMut(GraphId, u32, u32, u32)) {
-        // The inherent method takes `impl FnMut`, which is not object-safe; a
-        // `&mut dyn FnMut` is itself `FnMut`, so it forwards without an extra layer.
         self.for_each_quad(|g, s, p, o| visit(g, s, p, o));
     }
 

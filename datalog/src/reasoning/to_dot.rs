@@ -1,10 +1,4 @@
-//! Rendering a reasoner as a DOT graph, for looking at rather than querying.
-//!
-//! Facts become edges between subject and object nodes labelled by predicate, and
-//! each rule becomes a premise node pointing at a conclusion node, so a rule that
-//! has not fired is still visible. Everything is decoded back to strings, which
-//! makes this the one place where a dictionary id missing from the dictionary
-//! panics rather than degrading.
+//! Rendering a reasoner as a DOT graph, for looking at rather than querying
 
 use crate::reasoning::Reasoner;
 use shared::term_encoder::TermView;
@@ -13,9 +7,8 @@ use shared::triple::Triple;
 use std::collections::HashSet;
 
 /// Contains a method to convert a specific data structure into a representation in the DOT language
-/// For better visualisation
 pub trait ToDot {
-    /// Renders as a complete DOT `digraph`, ready to hand to Graphviz.
+    /// Renders as a complete DOT `digraph`, ready to hand to Graphviz
     fn to_dot(&self) -> String;
 }
 
@@ -54,16 +47,15 @@ fn get_subject_object_iterator(triple: &Triple) -> impl Iterator<Item = u32> {
 fn create_nodes(kg: &Reasoner, out: &mut String) {
     let dict = kg.term_view();
 
-    // These ids represent nodes in the knowledge graph (one id for each subject or object)
     let mut all_subject_object_ids: Vec<u32> = kg
         .dataset_index
         .query(None, None, None)
         .iter()
         .flat_map(|t| get_subject_object_iterator(&t))
-        .collect::<HashSet<u32>>() // Collect into HashSet to remove duplicates
+        .collect::<HashSet<u32>>()
         .into_iter()
         .collect();
-    all_subject_object_ids.sort(); // Sorted ids (in order of creation)
+    all_subject_object_ids.sort();
 
     for id in all_subject_object_ids {
         let name = dict.decode(id).unwrap();
@@ -101,7 +93,7 @@ fn create_edges(kg: &Reasoner, out: &mut String) {
     }
 }
 
-/// Outputs a graph for the reasoner, making it easy to see what it consists of.
+/// Outputs a graph for the reasoner, making it easy to see what it consists of
 impl ToDot for Reasoner {
     fn to_dot(&self) -> String {
         let mut out = String::new();
@@ -109,7 +101,7 @@ impl ToDot for Reasoner {
 
         create_nodes(self, &mut out);
 
-        out.push_str("\n"); // Whitespace between nodes and relations
+        out.push_str("\n");
 
         create_edges(self, &mut out);
 

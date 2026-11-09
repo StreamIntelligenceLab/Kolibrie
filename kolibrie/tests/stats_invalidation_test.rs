@@ -10,12 +10,12 @@
 
 mod common;
 
+use kolibrie::database::KolibrieDB;
 use kolibrie::execute_query::execute_sparql_update;
-use kolibrie::sparql_database::SparqlDatabase;
 use shared::dataset_index::GraphId;
 use shared::triple::Triple;
 
-fn seeded() -> SparqlDatabase {
+fn seeded() -> KolibrieDB {
     common::database_with(
         r#"<urn:a> <urn:p> "1" .
 <urn:b> <urn:p> "2" .
@@ -23,7 +23,7 @@ fn seeded() -> SparqlDatabase {
     )
 }
 
-fn encode(database: &SparqlDatabase, term: &str) -> u32 {
+fn encode(database: &KolibrieDB, term: &str) -> u32 {
     database.dictionary_mut().encode(term)
 }
 
@@ -130,7 +130,6 @@ fn statistics_below_the_sampling_threshold_are_exact() {
 
     let stats = database.get_or_build_stats();
     assert_eq!(stats.total_triples, 500);
-    // Every triple shares one predicate, so its cardinality is the whole set
     let predicate_total: u64 = stats.predicate_cardinalities.values().sum();
     assert_eq!(predicate_total, 500);
     assert_eq!(stats.distinct_subjects, 500);

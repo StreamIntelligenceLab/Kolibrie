@@ -10,12 +10,12 @@
 
 mod common;
 
+use kolibrie::database::KolibrieDB;
 use kolibrie::query_builder::QueryBuilder;
-use kolibrie::sparql_database::SparqlDatabase;
 use std::collections::HashMap;
 
 /// Five triples whose rank under `<urn:rank>` reverses their natural triple order
-fn ranked_database() -> SparqlDatabase {
+fn ranked_database() -> KolibrieDB {
     common::database_with(
         r#"<urn:a> <urn:rank> "5" .
 <urn:b> <urn:rank> "4" .
@@ -26,7 +26,7 @@ fn ranked_database() -> SparqlDatabase {
 }
 
 /// Decodes every object once so the sort key needs no dictionary lock
-fn object_labels(database: &SparqlDatabase) -> HashMap<u32, String> {
+fn object_labels(database: &KolibrieDB) -> HashMap<u32, String> {
     let dictionary = database.dictionary();
     database
         .query_default_triples(None, None, None)
@@ -42,7 +42,7 @@ fn object_labels(database: &SparqlDatabase) -> HashMap<u32, String> {
 
 /// Runs the builder with the given slice and returns the selected subjects
 fn selected_subjects(
-    database: &SparqlDatabase,
+    database: &KolibrieDB,
     descending: bool,
     offset: Option<usize>,
     limit: Option<usize>,
@@ -72,7 +72,6 @@ fn selected_subjects(
 #[test]
 fn ascending_limit_selects_the_lowest_ranked_triples() {
     let database = ranked_database();
-    // Ranks 1 and 2 sit on <urn:e> and <urn:d>, the last two in natural triple order
     assert_eq!(
         selected_subjects(&database, false, None, Some(2)),
         vec!["urn:d".to_string(), "urn:e".to_string()]
@@ -91,7 +90,6 @@ fn descending_limit_selects_the_highest_ranked_triples() {
 #[test]
 fn ascending_offset_and_limit_select_the_middle_of_the_sorted_run() {
     let database = ranked_database();
-    // Sorted ascending by rank: e(1) d(2) c(3) b(4) a(5); skip 1, take 2
     assert_eq!(
         selected_subjects(&database, false, Some(1), Some(2)),
         vec!["urn:c".to_string(), "urn:d".to_string()]
@@ -101,7 +99,6 @@ fn ascending_offset_and_limit_select_the_middle_of_the_sorted_run() {
 #[test]
 fn descending_offset_and_limit_select_the_middle_of_the_sorted_run() {
     let database = ranked_database();
-    // Sorted descending by rank: a(5) b(4) c(3) d(2) e(1); skip 1, take 2
     assert_eq!(
         selected_subjects(&database, true, Some(1), Some(2)),
         vec!["urn:b".to_string(), "urn:c".to_string()]

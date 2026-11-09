@@ -32,7 +32,6 @@ impl<'a> Aggregate<'a> {
 pub(crate) fn value(kind: &str, values: &[&str]) -> Option<String> {
     let normalized = kind.to_ascii_uppercase();
     let descriptor = Aggregate::parse(&normalized);
-    // Keep first-seen order for numeric accumulation
     let mut seen = BTreeSet::new();
     let values: Vec<&str> = values
         .iter()
@@ -42,9 +41,6 @@ pub(crate) fn value(kind: &str, values: &[&str]) -> Option<String> {
     match descriptor.kind {
         "COUNT" => Some(values.len().to_string()),
         "SUM" | "AVG" => {
-            // Through the term's value, not its spelling: a typed literal keeps its
-            // datatype now, and parsing the spelling would find no number at all,
-            // turning every SUM over typed data into no answer.
             let numbers = values
                 .iter()
                 .map(|v| shared::rdf_term::numeric_value(v))

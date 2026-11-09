@@ -70,7 +70,9 @@ def main() -> int:
     parser.add_argument("--timeout", type=int, default=120)
     arguments = parser.parse_args()
 
-    outdir = pathlib.Path(arguments.outdir) if arguments.outdir else ROOT / "target" / "smoke-python"
+    outdir = (
+        pathlib.Path(arguments.outdir) if arguments.outdir else ROOT / "target" / "smoke-python"
+    )
     outdir.mkdir(parents=True, exist_ok=True)
 
     staged = stage(build(arguments.release), outdir)

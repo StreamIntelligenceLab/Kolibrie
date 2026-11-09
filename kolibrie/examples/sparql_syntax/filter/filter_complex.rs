@@ -67,10 +67,9 @@ fn main() {
     </rdf:RDF>
     "#;
 
-    let mut database = SparqlDatabase::new();
+    let mut database = KolibrieDB::new();
     database.parse_rdf(rdf_data);
 
-    // Using OR (||) operator to filter by event type
     let sparql = r#"
     PREFIX ex: <http://example.org/vocab#>
     

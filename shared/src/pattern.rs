@@ -8,41 +8,21 @@
  * you can obtain one at https://mozilla.org/MPL/2.0/.
  */
 
-//! Matching a triple pattern against a fact, and building a fact from a pattern.
-//!
-//! These are vocabulary operations with no reasoning in them: they relate a
-//! `TriplePattern` to a `Triple` through a variable binding, and nothing more. They
-//! lived in `datalog::reasoning::rules` for historical reasons, which made them
-//! unreachable for any other engine without taking a dependency on the Datalog
-//! reasoner.
-//!
-//! That mattered because they were the *entire* coupling between `datalogmtl` and
-//! `datalog` — four imports. Moving them here lets the two reasoners be siblings over
-//! a shared vocabulary rather than one depending on the other, which is what the
-//! temporal, N3 and incremental work all need (architecture doc §4).
+//! Matching a triple pattern against a fact, and building a fact from a pattern
 
 use crate::dictionary::Dictionary;
 use crate::terms::{Term, TriplePattern};
 use crate::triple::Triple;
 use std::collections::HashMap;
 
-/// Matches `pattern` against `fact`, extending `variable_bindings` on success.
-///
-/// Bindings are all-or-nothing: a pattern that matches on subject and predicate but
-/// fails on object leaves `variable_bindings` untouched, so a caller can try
-/// candidates in a loop without having to undo partial work.
-///
-/// A variable already bound must match the fact's value; an unbound variable binds to
-/// it. Quoted triples never match — pattern matching over them is not defined here.
+/// Matches `pattern` against `fact`, extending `variable_bindings` on success
 pub fn matches_rule_pattern(
     pattern: &TriplePattern,
     fact: &Triple,
     variable_bindings: &mut HashMap<String, u32>,
 ) -> bool {
-    // Test against a copy so a late failure cannot leave half the bindings applied.
     let mut temp_bindings = variable_bindings.clone();
 
-    // Subject
     let s_ok = match &pattern.0 {
         Term::Variable(v) => {
             if let Some(&bound) = temp_bindings.get(v) {
@@ -59,7 +39,6 @@ pub fn matches_rule_pattern(
         return false;
     }
 
-    // Predicate
     let p_ok = match &pattern.1 {
         Term::Variable(v) => {
             if let Some(&bound) = temp_bindings.get(v) {
@@ -76,7 +55,6 @@ pub fn matches_rule_pattern(
         return false;
     }
 
-    // Object
     let o_ok = match &pattern.2 {
         Term::Variable(v) => {
             if let Some(&bound) = temp_bindings.get(v) {
@@ -90,7 +68,6 @@ pub fn matches_rule_pattern(
         Term::QuotedTriple(_) => false,
     };
 
-    // Only if ALL parts match, commit the bindings
     if s_ok && p_ok && o_ok {
         *variable_bindings = temp_bindings;
         true
@@ -99,18 +76,7 @@ pub fn matches_rule_pattern(
     }
 }
 
-/// Builds a `Triple` from a conclusion pattern and a set of bound variables.
-///
-/// An unbound variable, or a quoted triple, resolves to id `0`. That is a
-/// pre-existing convention carried over with the move rather than a chosen one: it
-/// silently produces a fact mentioning whatever term holds id 0 instead of reporting
-/// that the rule's conclusion was not fully bound.
-///
-/// `_dict` is currently unused. It is kept rather than dropped because §4 has this
-/// function taking a `&mut impl TermEncoder` once parsing is split into
-/// parse/prepare/execute: callers already thread a dictionary here, so that becomes a
-/// change of type rather than of signature. If that split does not happen, this
-/// parameter should go.
+/// Builds a `Triple` from a conclusion pattern and a set of bound variables
 pub fn construct_triple(
     conclusion: &TriplePattern,
     vars: &HashMap<String, u32>,

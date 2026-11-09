@@ -10,42 +10,34 @@
 
 use crate::triple::Triple;
 
-/// A declaration that certain facts carry a prior probability.
-///
-/// Seeds are the leaves of probabilistic inference: every derived probability is a
-/// function of these. Each seed owns a distinct variable in the underlying formula,
-/// which is why the ids here must be unique across a program.
+/// A declaration that certain facts carry a prior probability
 #[derive(Debug, Clone)]
 pub enum SeedSpec {
-    /// One fact, probabilistically independent of every other seed.
+    /// One fact, probabilistically independent of every other seed
     Independent {
-        /// The fact the probability attaches to.
+        /// The fact the probability attaches to
         triple: Triple,
-        /// Prior probability, in `[0, 1]`.
+        /// Prior probability, in `[0, 1]`
         prob: f64,
-        /// Identifies this seed's variable in the formula. Must be unique.
+        /// Identifies this seed's variable in the formula
         seed_id: u32,
     },
-    /// A set of mutually exclusive alternatives, at most one of which holds.
-    ///
-    /// Used where a prediction is a distribution over labels: the choices are not
-    /// independent, so treating them as separate `Independent` seeds would assign
-    /// non-zero probability to two labels holding at once.
+    /// A set of mutually exclusive alternatives, at most one of which holds
     ExclusiveGroup {
-        /// Identifies the group. Must be unique.
+        /// Identifies the group
         group_id: u32,
-        /// The alternatives. Their probabilities should sum to at most 1.
+        /// The alternatives
         choices: Vec<ExclusiveChoice>,
     },
 }
 
-/// One alternative within a [`SeedSpec::ExclusiveGroup`].
+/// One alternative within a [`SeedSpec::ExclusiveGroup`]
 #[derive(Debug, Clone)]
 pub struct ExclusiveChoice {
-    /// The fact that holds if this alternative is the one taken.
+    /// The fact that holds if this alternative is the one taken
     pub triple: Triple,
-    /// Probability of this alternative, in `[0, 1]`.
+    /// Probability of this alternative, in `[0, 1]`
     pub prob: f64,
-    /// Identifies this choice within its group.
+    /// Identifies this choice within its group
     pub choice_id: u32,
 }

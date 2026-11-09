@@ -8,9 +8,9 @@
  * you can obtain one at https://mozilla.org/MPL/2.0/.
  */
 
+use kolibrie::database::KolibrieDB;
 use kolibrie::prelude::*;
 use kolibrie::rule_execution::process_rule_definition;
-use kolibrie::sparql_database::SparqlDatabase;
 
 fn main() {
     let rdf_xml_data = r#"
@@ -44,14 +44,13 @@ fn main() {
       </rdf:RDF>
   "#;
 
-    let mut database = SparqlDatabase::new();
+    let mut database = KolibrieDB::new();
     database.parse_rdf(rdf_xml_data);
     println!(
         "Database RDF triples: {:#?}",
         database.query_default_triples(None, None, None)
     );
 
-    // Process the rule definition separately
     let rule_definition = r#"PREFIX ex: <http://example.org#>
 RULE :OverheatingAlert :-
 CONSTRUCT { 
@@ -84,7 +83,6 @@ WHERE {
         println!("Failed to process rule: {:?}", rule_result.err());
     }
 
-    // Execute the separate SELECT query
     let select_query = r#"PREFIX ex: <http://example.org#>
 SELECT ?room
 WHERE { 

@@ -1,14 +1,14 @@
+use kolibrie::database::KolibrieDB;
 use kolibrie::execute_query::{execute, execute_sparql_update};
-use kolibrie::sparql_database::SparqlDatabase;
 
-fn query(database: &mut SparqlDatabase, sparql: &str) -> Vec<Vec<String>> {
+fn query(database: &mut KolibrieDB, sparql: &str) -> Vec<Vec<String>> {
     execute(sparql, database)
         .expect("query should run")
         .into_rows()
 }
 
-fn database_with_scoped_data() -> SparqlDatabase {
-    let mut database = SparqlDatabase::new();
+fn database_with_scoped_data() -> KolibrieDB {
+    let mut database = KolibrieDB::new();
     execute_sparql_update(
         r#"
         INSERT DATA {
@@ -103,7 +103,7 @@ fn outer_filter_before_graph_sees_bindings_from_the_graph_child() {
 
 #[test]
 fn arithmetic_filter_before_triple_uses_the_complete_group_scope() {
-    let mut database = SparqlDatabase::new();
+    let mut database = KolibrieDB::new();
     execute_sparql_update(
         r#"
         INSERT DATA {

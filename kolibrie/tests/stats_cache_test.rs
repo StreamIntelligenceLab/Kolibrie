@@ -10,10 +10,10 @@
 
 mod common;
 
-use kolibrie::sparql_database::{PlanningStatsPolicy, SparqlDatabase};
+use kolibrie::database::{KolibrieDB, PlanningStatsPolicy};
 use shared::dataset_index::DatasetIndex;
 
-fn seeded() -> SparqlDatabase {
+fn seeded() -> KolibrieDB {
     common::database_with(
         r#"<urn:a> <urn:p> "1" .
 <urn:b> <urn:p> "2" .
@@ -28,20 +28,13 @@ fn bounded(minimum_batch: u64, refresh_fraction: f64) -> PlanningStatsPolicy {
     }
 }
 
-fn insert(database: &mut SparqlDatabase, index: u32) {
+fn insert(database: &mut KolibrieDB, index: u32) {
     database.add_triple_parts(&format!("urn:s{index}"), "urn:p", &format!("{index}"));
 }
 
-fn rebuilds(database: &SparqlDatabase) -> u64 {
+fn rebuilds(database: &KolibrieDB) -> u64 {
     database.stats_rebuild_count()
 }
-
-// Exact statistics
-//
-// `exact_statistics_notice_a_write_that_bypassed_the_helpers` and
-// `a_replacement_index_with_a_lower_generation_is_not_mistaken_for_fresh` moved
-// into sparql_database.rs: both write to `dataset_index` without going through the
-// public helpers, which is no longer possible from outside the crate.
 
 #[test]
 fn exact_statistics_are_fresh_after_every_successful_mutation() {
@@ -64,7 +57,6 @@ fn a_mutation_that_changed_nothing_does_not_force_a_rebuild() {
     database.get_or_build_stats();
     let before = rebuilds(&database);
 
-    // No-op mutations: duplicate insert, missing delete, empty update
     database.add_triple_parts("urn:a", "urn:p", "1");
     assert!(!database.delete_triple_parts("urn:zz", "urn:p", "nope"));
     kolibrie::execute_query::execute_sparql_update(
@@ -81,12 +73,10 @@ fn a_mutation_that_changed_nothing_does_not_force_a_rebuild() {
     );
 }
 
-// Planning statistics: AlwaysFresh
-
 #[test]
 fn the_default_policy_is_bounded() {
     assert_eq!(
-        SparqlDatabase::new().planning_stats_policy(),
+        KolibrieDB::new().planning_stats_policy(),
         PlanningStatsPolicy::DEFAULT_BOUNDED
     );
 }
@@ -105,8 +95,6 @@ fn always_fresh_planning_statistics_match_the_exact_ones() {
     }
 }
 
-// Planning statistics: Bounded
-
 #[test]
 fn bounded_planning_statistics_are_reused_below_the_boundary() {
     let mut database = seeded();
@@ -124,7 +112,6 @@ fn bounded_planning_statistics_are_reused_below_the_boundary() {
     }
     assert_eq!(rebuilds(&database), after_first, "no rebuild happened");
 
-    // Exact statistics are not affected by the policy
     assert_eq!(database.get_or_build_stats().total_triples, 8);
 }
 
@@ -151,7 +138,7 @@ fn bounded_planning_statistics_rebuild_at_the_boundary() {
 /// Above minimum_batch the threshold is proportional to dataset size
 #[test]
 fn the_boundary_is_proportional_once_it_exceeds_the_minimum_batch() {
-    let mut database = SparqlDatabase::new();
+    let mut database = KolibrieDB::new();
     for index in 0..1_000 {
         insert(&mut database, index);
     }
@@ -159,7 +146,6 @@ fn the_boundary_is_proportional_once_it_exceeds_the_minimum_batch() {
     let first = database.get_or_build_planning_stats();
     assert_eq!(first.total_triples, 1_000);
 
-    // Threshold: max(10, 0.1 * 1000) = 100
     for index in 1_000..1_090 {
         insert(&mut database, index);
     }
@@ -180,7 +166,7 @@ fn the_boundary_is_proportional_once_it_exceeds_the_minimum_batch() {
 /// Delete/insert pairs count as mutations even when the size is unchanged
 #[test]
 fn a_constant_size_replacement_still_reaches_the_boundary() {
-    let mut database = SparqlDatabase::new();
+    let mut database = KolibrieDB::new();
     for index in 0..100 {
         insert(&mut database, index);
     }
@@ -207,11 +193,9 @@ fn a_constant_size_replacement_still_reaches_the_boundary() {
     );
 }
 
-// Forced refresh
-
 #[test]
 fn an_empty_dataset_that_gains_data_refreshes_immediately() {
-    let mut database = SparqlDatabase::new();
+    let mut database = KolibrieDB::new();
     database.set_planning_stats_policy(bounded(1_000, 0.90));
     let first = database.get_or_build_planning_stats();
     assert_eq!(first.total_triples, 0);
@@ -245,7 +229,7 @@ fn a_hard_invalidation_retires_every_snapshot_under_any_policy() {
 
 #[test]
 fn replacing_the_dataset_index_retires_every_snapshot() {
-    let mut database = SparqlDatabase::new();
+    let mut database = KolibrieDB::new();
     for index in 0..200 {
         insert(&mut database, index);
     }
@@ -264,7 +248,7 @@ fn replacing_the_dataset_index_retires_every_snapshot() {
 
 #[test]
 fn clearing_the_dataset_refreshes_planning_statistics() {
-    let mut database = SparqlDatabase::new();
+    let mut database = KolibrieDB::new();
     for index in 0..200 {
         insert(&mut database, index);
     }
@@ -278,8 +262,6 @@ fn clearing_the_dataset_refreshes_planning_statistics() {
     assert!(!std::sync::Arc::ptr_eq(&first, &refreshed));
     assert_eq!(refreshed.total_triples, 0);
 }
-
-// Instrumentation
 
 #[test]
 fn rebuilds_are_counted_and_timed() {
@@ -301,7 +283,7 @@ fn rebuilds_are_counted_and_timed() {
 /// Under Bounded, rebuilds are not proportional to query count
 #[test]
 fn interleaved_writes_and_queries_do_not_rebuild_per_query() {
-    let mut database = SparqlDatabase::new();
+    let mut database = KolibrieDB::new();
     for index in 0..500 {
         insert(&mut database, index);
     }

@@ -8,7 +8,7 @@
  * you can obtain one at https://mozilla.org/MPL/2.0/.
  */
 
-//! Conjunction scoped under a temporal operator (`TemporalAtom::Conj`).
+//! Conjunction scoped under a temporal operator (`TemporalAtom::Conj`)
 
 use crate::evaluator::DatalogMTLEvaluator;
 use crate::rdf_parser::parse_rules;
@@ -19,8 +19,8 @@ use shared::dictionary::Dictionary;
 use super::{enc, make_dict, triple};
 use shared::term_encoder::SharedTerms;
 
-/// The zone-transition rule: in one restricted zone for 10 consecutive ticks,
-/// having been in a *differently* classified zone 10–20 ticks before that.
+/// The zone-transition rule: 10 ticks in a restricted zone after 10–20 in a differently classified
+/// one
 const TRANSITION_RULE: &str = r#"
 PREFIX d: <http://x/>
 
@@ -57,9 +57,8 @@ fn fixture() -> Fixture {
     }
 }
 
-/// Drive the rule over a tick timeline: zoneA (Restricted1) for ticks 0..=12,
-/// then zoneB (Restricted2) for ticks 13..=25. Returns the ticks at which the
-/// head was derived.
+/// Drive the rule over a tick timeline: zoneA (Restricted1) for ticks 0..=12, then zoneB
+/// (Restricted2) for ticks 13..=25
 fn run(rule_text: &str, f: &Fixture) -> Vec<u64> {
     let rules = f
         .dict
@@ -71,7 +70,6 @@ fn run(rule_text: &str, f: &Fixture) -> Vec<u64> {
 
     let mut fired = Vec::new();
     for t in 0..=25u64 {
-        // Zone classification is background data, asserted at every tick.
         let mut facts = vec![
             triple(f.zone_a, f.status, f.r1),
             triple(f.zone_b, f.status, f.r2),
@@ -93,8 +91,8 @@ fn run(rule_text: &str, f: &Fixture) -> Vec<u64> {
     fired
 }
 
-/// The rule fires only once both halves are satisfied: 10 full ticks in zoneB
-/// (so t >= 23) with zoneA seen 10–20 ticks earlier.
+/// The rule fires only once both halves are satisfied: 10 full ticks in zoneB (so t >= 23) with
+/// zoneA seen 10–20 ticks earlier
 #[test]
 fn test_zone_transition_rule() {
     let f = fixture();
@@ -106,18 +104,12 @@ fn test_zone_transition_rule() {
         23,
         "needs ticks 13..=23 in zoneB, and zoneA within [t-20, t-10]"
     );
-    // By t=33 zoneA would fall out of the Diamond window, but the run stops at 25.
     assert!(fired.iter().all(|t| *t >= 23));
 }
 
-/// The point of scoping a conjunction under the operator: `Box[0,10](A, B)`
-/// requires B at every point of the window, whereas hoisting B out only requires
-/// it at the current time. Here B is `(?z, status, Restricted2)` — a fact that
-/// only starts holding at tick 13 — so the two forms disagree.
+/// `Box[0,10](A, B)` requires B at every point of the window, not only at the current time
 #[test]
 fn test_conjunction_under_box_is_stronger_than_hoisting() {
-    // Classification for zoneB is withheld until tick 20, well after the drone
-    // enters it at tick 13.
     let f = fixture();
     let rules = f
         .dict
@@ -155,13 +147,11 @@ fn test_conjunction_under_box_is_stronger_than_hoisting() {
         }
     }
 
-    // Hoisted: needs inZone over [t-5,t] and the class at t only -> fires at 20.
     assert_eq!(
         hoisted_first,
         Some(20),
         "hoisted form only needs the class now"
     );
-    // Scoped: needs the class at every point of [t-5,t] too -> fires 5 ticks later.
     assert_eq!(
         scoped_first,
         Some(25),
@@ -169,8 +159,7 @@ fn test_conjunction_under_box_is_stronger_than_hoisting() {
     );
 }
 
-/// Nested operators read additively, and `compute_w_max` must say so — it drives
-/// store eviction, and under-reporting it silently starves the rule of history.
+/// Nested operators read additively in `compute_w_max`
 #[test]
 fn test_w_max_is_additive_for_nested_operators() {
     use crate::evaluator::compute_w_max;

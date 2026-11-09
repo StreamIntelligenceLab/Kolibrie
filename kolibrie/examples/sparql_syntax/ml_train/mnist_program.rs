@@ -1,11 +1,8 @@
-// `unreachable_pub` is a false positive for an example binary: nothing can import
-// from this crate root, so every `pub` here is "unreachable" by construction, while
-// still being required for visibility between this module and the example's `main`.
 #[allow(dead_code, unreachable_pub)]
 mod mnist_program {
     use std::collections::BTreeMap;
 
-    use kolibrie::sparql_database::SparqlDatabase;
+    use kolibrie::database::KolibrieDB;
 
     pub const MNIST: &str = "http://mnist/";
     pub const DIGIT: &str = "http://mnist/digit";
@@ -154,8 +151,11 @@ WHERE {
         let digit = |value: &str| labels.iter().position(|label| label == value);
         let mut totals: BTreeMap<(usize, usize), Vec<&str>> = BTreeMap::new();
         for (fact, (left, right, total)) in &facts {
-            let ([left], [right], [total]) = (left.as_slice(), right.as_slice(), total.as_slice()) else {
-                return Err(format!("{fact} needs exactly one addend1, addend2 and total"));
+            let ([left], [right], [total]) = (left.as_slice(), right.as_slice(), total.as_slice())
+            else {
+                return Err(format!(
+                    "{fact} needs exactly one addend1, addend2 and total"
+                ));
             };
             let (Some(a), Some(b)) = (digit(left), digit(right)) else {
                 return Err(format!("{fact} has an addend outside the digit domain"));
@@ -173,7 +173,10 @@ WHERE {
             }
         }
         if totals.len() != 100 {
-            return Err(format!("expected 100 ordered pairs, found {}", totals.len()));
+            return Err(format!(
+                "expected 100 ordered pairs, found {}",
+                totals.len()
+            ));
         }
         Ok(())
     }
@@ -190,7 +193,7 @@ WHERE {
         rows
     }
 
-    pub fn load_knowledge(db: &mut SparqlDatabase) -> Result<(), String> {
+    pub fn load_knowledge(db: &mut KolibrieDB) -> Result<(), String> {
         let rows = knowledge_triples();
         validate_addition_table(&rows[..300])?;
         for (subject, predicate, object) in &rows {
@@ -199,7 +202,7 @@ WHERE {
         Ok(())
     }
 
-    pub fn load_pair(db: &mut SparqlDatabase, query: &str, left: &str, right: &str) {
+    pub fn load_pair(db: &mut KolibrieDB, query: &str, left: &str, right: &str) {
         db.add_triple_parts(query, LEFT, left);
         db.add_triple_parts(query, RIGHT, right);
     }
@@ -216,7 +219,7 @@ WHERE {
     }
 
     pub fn load_image(
-        db: &mut SparqlDatabase,
+        db: &mut KolibrieDB,
         image: &str,
         pixels: &[f64],
         split: &str,
@@ -275,7 +278,10 @@ WHERE {
             .collect::<Vec<_>>()
             .join("\n        ");
         let features = (0..784).map(|j| format!("?p{j}")).collect::<Vec<_>>();
-        let labels = (0..10).map(|d| format!("mnist:d{d}")).collect::<Vec<_>>().join(", ");
+        let labels = (0..10)
+            .map(|d| format!("mnist:d{d}"))
+            .collect::<Vec<_>>()
+            .join(", ");
         format!(
             r#"MODEL "digit_net" {{
     ARCH MLP {{ HIDDEN [64, 32] }}

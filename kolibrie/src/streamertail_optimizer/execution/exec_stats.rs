@@ -8,12 +8,7 @@
  * you can obtain one at https://mozilla.org/MPL/2.0/.
  */
 
-//! Execution work counters behind the `exec-stats` feature.
-//!
-//! Counters are process-global because scans run across rayon threads. Totals
-//! are reproducible for a given plan and dataset, but concurrent queries share
-//! them, so a reader must call `reset` first and run one query at a time.
-//! (`reset` and `snapshot` exist only under the `exec-stats` feature.)
+//! Execution work counters behind the `exec-stats` feature
 
 #[cfg(feature = "exec-stats")]
 mod counters {
@@ -23,7 +18,7 @@ mod counters {
     pub static QUADS_EXAMINED: AtomicU64 = AtomicU64::new(0);
     pub static ROWS_EMITTED: AtomicU64 = AtomicU64::new(0);
 
-    /// Work performed by one execution.
+    /// Work performed by one execution
     #[derive(Debug, Clone, Copy, PartialEq, Eq)]
     pub struct Snapshot {
         pub scan_probes: u64,

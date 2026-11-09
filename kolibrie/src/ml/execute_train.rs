@@ -8,15 +8,7 @@
  * you can obtain one at https://mozilla.org/MPL/2.0/.
  */
 
-//! Training a model declared by a `TRAIN` clause.
-//!
-//! The `Owned*` types here mirror the borrowed declarations in
-//! [`shared::query`] with their terms resolved and owned, because training outlives
-//! the query text it was requested by.
-//!
-//! Writing an artifact requires trusted-local authority from the
-//! [`MlExecutionContext`](crate::ml_policy::MlExecutionContext); a `save_path` in a
-//! declaration is a request, not permission.
+//! Training a model declared by a `TRAIN` clause
 
 use std::collections::HashMap;
 use std::error::Error;
@@ -34,125 +26,118 @@ use shared::seed_spec::{ExclusiveChoice, SeedSpec};
 use shared::triple::Triple;
 use std::time::{Duration, Instant};
 
+use crate::database::KolibrieDB;
 use crate::execute_query::query_training_rows;
 use crate::ml_feature_loader::{build_feature_vec, rdf_term_to_f64, RdfTerm};
-use crate::sparql_database::SparqlDatabase;
 
 type TrainResult<T> = Result<T, Box<dyn Error>>;
 
 #[derive(Debug, Clone)]
-/// One alternative a model can predict, as an owned fact template.
+/// One alternative a model can predict, as an owned fact template
 pub struct OwnedNeuralChoice {
-    /// Fact asserted when this alternative is chosen; variables are filled from
-    /// the prediction's row.
+    /// Fact asserted when this alternative is chosen; variables are filled from the prediction's
+    /// row
     pub triple_template: (String, String, String),
-    /// Variable carrying this alternative's probability.
+    /// Variable carrying this alternative's probability
     pub prob_var: String,
 }
 
 #[derive(Debug, Clone)]
-/// Whether a model's outputs compete or stand alone.
+/// Whether a model's outputs compete or stand alone
 pub enum OwnedNeuralGroupType {
-    /// At most one alternative holds. Represented downstream as a mutually
-    /// exclusive seed group, so two labels can never both be true.
+    /// At most one alternative holds
     Exclusive {
-        /// The competing alternatives.
+        /// The competing alternatives
         choices: Vec<OwnedNeuralChoice>,
     },
-    /// A single fact with its own probability, independent of everything else.
+    /// A single fact with its own probability, independent of everything else
     Independent {
-        /// Fact asserted, with variables filled from the row.
+        /// Fact asserted, with variables filled from the row
         fact_template: (String, String, String),
-        /// Variable carrying its probability.
+        /// Variable carrying its probability
         prob_var: String,
     },
 }
 
 #[derive(Debug, Clone)]
-/// One invocation of a model within a training clause.
+/// One invocation of a model within a training clause
 pub struct OwnedNeuralCallSpec {
-    /// Variables forming the feature vector, in model input order.
+    /// Variables forming the feature vector, in model input order
     pub feature_vars: Vec<String>,
-    /// How to interpret the outputs.
+    /// How to interpret the outputs
     pub group_type: OwnedNeuralGroupType,
 }
 
 #[derive(Debug, Clone)]
-/// A resolved `TRAIN` declaration, owning everything training needs.
+/// A resolved `TRAIN` declaration, owning everything training needs
 pub struct OwnedNeuralTrainingClause {
-    /// Model to fit.
+    /// Model to fit
     pub model_name: String,
-    /// Invocations whose outputs the loss is computed against.
+    /// Invocations whose outputs the loss is computed against
     pub neural_calls: Vec<OwnedNeuralCallSpec>,
-    /// Query selecting the training examples, as text.
+    /// Query selecting the training examples, as text
     pub training_data_raw: String,
-    /// Variable holding each example's ground-truth label.
+    /// Variable holding each example's ground-truth label
     pub label_var: String,
-    /// Pattern identifying what is predicted about each example.
+    /// Pattern identifying what is predicted about each example
     pub target_triple: (String, String, String),
-    /// Objective to minimise.
+    /// Objective to minimise
     pub loss: LossFn,
-    /// Optimiser to use.
+    /// Optimiser to use
     pub optimizer: shared::query::OptimizerKind,
-    /// Step size.
+    /// Step size
     pub learning_rate: f64,
-    /// Passes over the training data.
+    /// Passes over the training data
     pub epochs: usize,
-    /// Examples per gradient step.
+    /// Examples per gradient step
     pub batch_size: usize,
-    /// Where the weights should be written. Resolved through the ML context, so a
-    /// path here is a request rather than permission to write it.
+    /// Where the weights should be written
     pub save_path: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-/// Where a training run spent its time.
+/// Where a training run spent its time
 pub struct NeuralTrainingTimings {
-    /// Running the query that selects the examples.
+    /// Running the query that selects the examples
     pub data_fetch: Duration,
-    /// Fitting the model.
+    /// Fitting the model
     pub learning: Duration,
 }
 
-/// Trains a model from a resolved clause.
-///
-/// Randomness is unseeded, so two runs differ; use
-/// [`execute_ml_training_owned_seeded`] where reproducibility matters.
+/// Trains a model from a resolved clause
 pub fn execute_ml_training_owned(
     clause: &OwnedNeuralTrainingClause,
     base_reasoner: &Reasoner,
-    db: &mut SparqlDatabase,
+    db: &mut KolibrieDB,
 ) -> TrainResult<MlpNeuralPredicate> {
     execute_ml_training_impl(clause, base_reasoner, db, None, None).map(|(model, _)| model)
 }
 
-/// As [`execute_ml_training_owned`], with training randomness seeded so the run
-/// is reproducible.
+/// As [`execute_ml_training_owned`], with training randomness seeded so the run is reproducible
 pub fn execute_ml_training_owned_seeded(
     clause: &OwnedNeuralTrainingClause,
     base_reasoner: &Reasoner,
-    db: &mut SparqlDatabase,
+    db: &mut KolibrieDB,
     seed: u64,
 ) -> TrainResult<MlpNeuralPredicate> {
     execute_ml_training_impl(clause, base_reasoner, db, Some(seed), None).map(|(model, _)| model)
 }
 
-/// As [`execute_ml_training_owned_seeded`], also returning where the time went.
+/// As [`execute_ml_training_owned_seeded`], also returning where the time went
 pub fn execute_ml_training_owned_seeded_timed(
     clause: &OwnedNeuralTrainingClause,
     base_reasoner: &Reasoner,
-    db: &mut SparqlDatabase,
+    db: &mut KolibrieDB,
     seed: u64,
 ) -> TrainResult<(MlpNeuralPredicate, NeuralTrainingTimings)> {
     execute_ml_training_impl(clause, base_reasoner, db, Some(seed), None)
 }
 
-/// Trains with an explicit hidden-layer shape rather than the model
-/// declaration's.
+/// Trains with an explicit hidden-layer shape rather than the model declaration's
 pub fn execute_supervised_training(
     clause: &OwnedNeuralTrainingClause,
     hidden: &[usize],
-    db: &mut SparqlDatabase,
+    db: &mut KolibrieDB,
     seed: Option<u64>,
 ) -> TrainResult<(MlpNeuralPredicate, NeuralTrainingTimings)> {
     if clause.neural_calls.len() != 1 {
@@ -169,7 +154,7 @@ pub fn execute_supervised_training(
 fn execute_ml_training_impl(
     clause: &OwnedNeuralTrainingClause,
     base_reasoner: &Reasoner,
-    db: &mut SparqlDatabase,
+    db: &mut KolibrieDB,
     seed: Option<u64>,
     hidden_override: Option<&[usize]>,
 ) -> TrainResult<(MlpNeuralPredicate, NeuralTrainingTimings)> {
@@ -278,8 +263,6 @@ fn execute_ml_training_impl(
                     output_dim,
                 )?;
                 let snapshot = SeedSnapshot::from_seed_specs(&seeds)?;
-                // `None`: this reasoner carries the store's facts already, copied in by
-                // `build_ground_reasoner_from_db`. See the note on that function.
                 let lineage = materialize_lineage(&mut local_reasoner, None, snapshot)?;
 
                 let target = instantiate_triple(
@@ -382,7 +365,7 @@ fn build_seed_specs_for_row(
     detached_probs: &[Vec<Vec<f64>>],
     sample_idx: usize,
     row: &HashMap<String, RdfTerm>,
-    db: &SparqlDatabase,
+    db: &KolibrieDB,
     output_dim: usize,
 ) -> TrainResult<Vec<SeedSpec>> {
     clause
@@ -440,7 +423,7 @@ fn build_seed_specs_for_row(
 fn instantiate_triple(
     template: (&str, &str, &str),
     row: &HashMap<String, RdfTerm>,
-    db: &SparqlDatabase,
+    db: &KolibrieDB,
 ) -> TrainResult<Triple> {
     let subject = instantiate_term(template.0, row, db)?;
     let predicate = instantiate_term(template.1, row, db)?;
@@ -455,7 +438,7 @@ fn instantiate_triple(
 fn instantiate_term(
     term: &str,
     row: &HashMap<String, RdfTerm>,
-    db: &SparqlDatabase,
+    db: &KolibrieDB,
 ) -> TrainResult<String> {
     if term.starts_with('?') {
         let key = term.trim_start_matches('?');
@@ -511,9 +494,9 @@ fn loss_gradient(
     }
 }
 
-/// A reasoner seeded with the store's current facts, for deriving the context a
-/// training example sits in.
-pub fn build_ground_reasoner_from_db(db: &SparqlDatabase, extra_rule: Option<Rule>) -> Reasoner {
+/// A reasoner seeded with the store's current facts, for deriving the context a training example
+/// sits in
+pub fn build_ground_reasoner_from_db(db: &KolibrieDB, extra_rule: Option<Rule>) -> Reasoner {
     let mut reasoner = Reasoner::new();
     reasoner.adopt_terms(db.terms());
     for triple in db.query_default_triples(None, None, None) {
@@ -651,9 +634,6 @@ mod tests {
 
     #[test]
     fn malformed_training_query_is_an_error_not_a_panic() {
-        // A TRAIN declaration's `QUERY { ... }` block is captured by the parser as
-        // raw text and never parsed, so a malformed one reaches here from user
-        // input. This used to `expect`, which aborted the process.
         let mut db = ml_local::database();
         for query in ["this is not a query at all", "SELECT ?x WHERE { ?s ?p", ""] {
             let result = query_training_rows(&mut db, query);

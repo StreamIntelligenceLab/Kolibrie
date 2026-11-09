@@ -43,7 +43,6 @@ WHERE {
             println!("Remaining input: '{}'", remaining.trim());
             println!();
 
-            // Print RETRIEVE clause details
             if let Some(retrieve) = &parsed_query.retrieve_clause {
                 println!("RETRIEVE Clause:");
                 println!("  Mode: {:?}", retrieve.mode);
@@ -60,7 +59,6 @@ WHERE {
                 println!();
             }
 
-            // Print REGISTER clause details
             if let Some(register) = &parsed_query.register_clause {
                 println!("REGISTER Clause:");
                 println!("  Stream Type: {:?}", register.stream_type);
@@ -87,7 +85,6 @@ WHERE {
                 }
                 println!();
 
-                // Print window-specific queries
                 println!(
                     "  Window Queries ({} blocks):",
                     register.query.window_blocks.len()

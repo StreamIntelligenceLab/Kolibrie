@@ -8,12 +8,12 @@
  * you can obtain one at https://mozilla.org/MPL/2.0/.
  */
 
+use kolibrie::database::KolibrieDB;
 use kolibrie::execute_query::execute;
-use kolibrie::sparql_database::SparqlDatabase;
 
 #[test]
 fn plain_select_reads_default_graph_only() {
-    let mut db = SparqlDatabase::new();
+    let mut db = KolibrieDB::new();
     db.add_triple_parts(
         "http://example.org/default-s",
         "http://example.org/p",
@@ -57,7 +57,7 @@ fn plain_select_reads_default_graph_only() {
 
 #[test]
 fn graph_iri_select_reads_only_that_named_graph() {
-    let mut db = SparqlDatabase::new();
+    let mut db = KolibrieDB::new();
 
     execute(
         r#"
@@ -98,7 +98,7 @@ fn graph_iri_select_reads_only_that_named_graph() {
 
 #[test]
 fn graph_variable_binds_named_graphs_only() {
-    let mut db = SparqlDatabase::new();
+    let mut db = KolibrieDB::new();
     db.add_triple_parts(
         "http://example.org/default-s",
         "http://example.org/p",
@@ -148,7 +148,7 @@ fn graph_variable_binds_named_graphs_only() {
 
 #[test]
 fn from_named_restricts_graph_variable_visibility() {
-    let mut db = SparqlDatabase::new();
+    let mut db = KolibrieDB::new();
 
     execute(
         r#"
@@ -190,7 +190,7 @@ fn from_named_restricts_graph_variable_visibility() {
 
 #[test]
 fn nquads_roundtrip_preserves_named_graph() {
-    let mut db = SparqlDatabase::new();
+    let mut db = KolibrieDB::new();
     db.parse_nquads_and_add(
         r#"<http://example.org/s> <http://example.org/p> "value" <http://example.org/g> ."#,
     );

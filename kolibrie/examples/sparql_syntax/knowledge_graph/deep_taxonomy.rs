@@ -1,23 +1,15 @@
 use datalog::reasoning::Reasoner;
-use kolibrie::sparql_database::SparqlDatabase;
+use kolibrie::database::KolibrieDB;
 use shared::rule::Rule;
 use shared::terms::Term;
 use std::env;
 use std::fs;
 use std::time::Instant;
 
-/// Depth of the generated chain, when no corpus directory is supplied.
-///
-/// Each level is one `rdfs:subClassOf` step, so the closure derives this many
-/// `rdf:type` facts per instance. Kept modest because the benchmark below reasons 20
-/// times over it.
+/// Depth of the generated chain, when no corpus directory is supplied
 const GENERATED_DEPTH: usize = 1_000;
 
-/// `A1 subClassOf A2 … A(n-1) subClassOf An`, plus one instance of `A1`.
-///
-/// The same shape as the EYE deep-taxonomy corpus this benchmark was written
-/// against: a single chain whose transitive closure is the whole thing, which is what
-/// makes it a reasoning benchmark rather than a data-volume one.
+/// `A1 subClassOf A2 … A(n-1) subClassOf An`, plus one instance of `A1`
 fn generated_corpus(depth: usize) -> (String, String) {
     let mut taxonomy = String::from("@prefix : <http://example.org/deep#> .\n");
     taxonomy.push_str("@prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .\n");
@@ -32,12 +24,7 @@ fn generated_corpus(depth: usize) -> (String, String) {
     (taxonomy, facts)
 }
 
-/// Where to read `test-dl.ttl` and `test-facts.ttl` from, if anywhere.
-///
-/// First argument, then `KOLIBRIE_DEEP_TAXONOMY_DIR`, then the EYE checkout this was
-/// originally written against. Returns `None` when none of them holds both files, in
-/// which case the corpus is generated instead — the example used to panic here, which
-/// made it unrunnable for anyone without that checkout.
+/// Where to read `test-dl.ttl` and `test-facts.ttl` from, if anywhere
 fn corpus_dir() -> Option<String> {
     let mut candidates = env::args()
         .nth(1)
@@ -56,7 +43,7 @@ fn corpus_dir() -> Option<String> {
 
 fn main() {
     println!("=== Loading Data (One-time) ===");
-    let mut database = SparqlDatabase::new();
+    let mut database = KolibrieDB::new();
 
     let load_start = Instant::now();
     let (taxonomy_data, facts_data) = match corpus_dir() {
@@ -82,7 +69,6 @@ fn main() {
         }
     };
 
-    // Step 1: the taxonomy (subClassOf relationships)
     database.parse_turtle(&taxonomy_data);
     let load_time = load_start.elapsed();
     println!(
@@ -91,14 +77,12 @@ fn main() {
         load_time
     );
 
-    // Step 2: the facts (initial instances)
     database.parse_turtle(&facts_data);
     println!(
         "Total triples after facts: {}",
         database.default_triple_count()
     );
 
-    // Step 3: Create KnowledgeGraph and populate it (One-time)
     println!("\n=== Populating KnowledgeGraph (One-time) ===");
     let mut kg = Reasoner::new();
     kg.adopt_terms(database.terms());
@@ -111,7 +95,6 @@ fn main() {
     let populate_time = populate_start.elapsed();
     println!("Populated KnowledgeGraph in {:?}", populate_time);
 
-    // Step 4: Find predicate IDs
     let mut rdf_type_id = None;
     let mut rdfs_subclass_id = None;
 
@@ -133,7 +116,6 @@ fn main() {
     let rdf_type = rdf_type_id.expect("rdf:type not found in data!");
     let rdfs_subclass = rdfs_subclass_id.expect("rdfs:subClassOf not found in data!");
 
-    // Step 5: Add reasoning rule
     let type_inference_rule = Rule {
         premise: vec![
             (
@@ -158,14 +140,12 @@ fn main() {
 
     kg.add_rule(type_inference_rule);
 
-    // Step 6: Run reasoning 20 times
     println!("\n=== Running Reasoning 20 Times ===");
     const ITERATIONS: usize = 20;
     let mut reasoning_times = Vec::new();
     let mut inferred_counts = Vec::new();
 
     for i in 1..=ITERATIONS {
-        // Clone the KG to reset for each iteration
         let mut kg_clone = kg.clone();
 
         let reasoning_start = Instant::now();
@@ -183,7 +163,6 @@ fn main() {
         );
     }
 
-    // Calculate statistics
     let avg_time: f64 = reasoning_times.iter().sum::<f64>() / ITERATIONS as f64;
     let min_time = reasoning_times
         .iter()
@@ -196,7 +175,6 @@ fn main() {
 
     let avg_inferred = inferred_counts.iter().sum::<usize>() / ITERATIONS;
 
-    // Calculate standard deviation
     let variance: f64 = reasoning_times
         .iter()
         .map(|&t| (t - avg_time).powi(2))

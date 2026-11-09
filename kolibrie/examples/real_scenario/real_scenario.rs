@@ -10,27 +10,23 @@
 
 use chrono::Utc;
 use datalog::reasoning::Reasoner;
+use kolibrie::database::KolibrieDB;
 use kolibrie::execute_query::execute;
 use kolibrie::parser::convert_combined_rule;
 use kolibrie::prelude::*;
-use kolibrie::sparql_database::SparqlDatabase;
 use rand::Rng;
 use shared::terms::Term;
 
 /// Generates RDF/XML data with random sensor values but fixed grid positions
 fn generate_rdf_xml() -> String {
-    // Create random number generator
     let mut rng = rand::rng();
 
-    // Get current timestamp
     let now = Utc::now();
     let current_datetime = now.format("%Y-%m-%d %H:%M:%S").to_string();
 
-    // Random light and noise levels for room
     let room_light_level = rng.random_range(60..95);
     let room_noise_level = rng.random_range(20..35);
 
-    // Generate random motion detection status and other sensor attributes
     let camera1_motion = rng.random_bool(0.7);
     let camera2_motion = rng.random_bool(0.4);
     let motion1_detection = rng.random_bool(0.8);
@@ -39,11 +35,9 @@ fn generate_rdf_xml() -> String {
     let noise1_detection = rng.random_bool(0.3);
     let noise2_detection = rng.random_bool(0.4);
 
-    // Random noise levels for noise sensors
     let noise1_level = rng.random_range(5..20);
     let noise2_level = rng.random_range(8..25);
 
-    // Random camera attributes
     let camera1_coverage = match rng.random_range(0..3) {
         0 => "Narrow",
         1 => "Medium",
@@ -53,15 +47,12 @@ fn generate_rdf_xml() -> String {
 
     let camera2_angle = rng.random_range(0..360);
 
-    // Generate random time for an event
     let random_hour = rng.random_range(0..24);
     let random_minute = rng.random_range(0..60);
     let random_event_time = format!("{:02}:{:02}", random_hour, random_minute);
 
-    // System user identifier (anonymous)
     let system_user = "system";
 
-    // Generate random time slots for allowed access
     let cat_a_slot1_start = format!("{:02}:00", rng.random_range(7..10));
     let cat_a_slot1_end = format!("{:02}:00", rng.random_range(11..14));
     let cat_a_slot2_start = format!("{:02}:00", rng.random_range(13..16));
@@ -72,11 +63,9 @@ fn generate_rdf_xml() -> String {
     let cat_b_slot2_start = format!("{:02}:00", rng.random_range(14..17));
     let cat_b_slot2_end = format!("{:02}:00", rng.random_range(18..21));
 
-    // Shared time slot
     let shared_slot_start = "10:00";
     let shared_slot_end = "10:30";
 
-    // Build the RDF/XML content
     format!(
         r#"
         <?xml version="1.0"?>
@@ -230,20 +219,16 @@ fn generate_rdf_xml() -> String {
 
         </rdf:RDF>
     "#,
-        // Room attributes
         room_light_level,
         room_noise_level,
         current_datetime,
         system_user,
-        // Camera1 attributes
         camera1_motion,
         camera1_coverage,
         current_datetime,
-        // Camera2 attributes
         camera2_motion,
         camera2_angle,
         current_datetime,
-        // MotionSensor1 attributes
         motion1_detection,
         if rng.random_bool(0.5) {
             "High"
@@ -251,7 +236,6 @@ fn generate_rdf_xml() -> String {
             "Medium"
         },
         current_datetime,
-        // MotionSensor2 attributes
         motion2_detection,
         if rng.random_bool(0.5) {
             "High"
@@ -259,7 +243,6 @@ fn generate_rdf_xml() -> String {
             "Medium"
         },
         current_datetime,
-        // MotionSensor3 attributes
         motion3_detection,
         if rng.random_bool(0.5) {
             "High"
@@ -267,59 +250,49 @@ fn generate_rdf_xml() -> String {
             "Medium"
         },
         current_datetime,
-        // NoiseSensor1 attributes
         noise1_detection,
         noise1_level,
         current_datetime,
-        // NoiseSensor2 attributes
         noise2_detection,
         noise2_level,
         current_datetime,
-        // CategoryA time slots
         cat_a_slot1_start,
         cat_a_slot1_end,
         cat_a_slot2_start,
         cat_a_slot2_end,
         shared_slot_start,
         shared_slot_end,
-        // CategoryB time slots
         cat_b_slot1_start,
         cat_b_slot1_end,
         cat_b_slot2_start,
         cat_b_slot2_end,
         shared_slot_start,
         shared_slot_end,
-        // Detection event time and timestamp
         random_event_time,
         current_datetime
     )
 }
 
 fn main() {
-    // Generate RDF/XML data
     let rdf_xml_data = generate_rdf_xml();
 
-    // Create and populate the database
-    let mut database = SparqlDatabase::new();
+    let mut database = KolibrieDB::new();
     database.parse_rdf(&rdf_xml_data);
     println!(
         "Database RDF triples: {:#?}",
         database.query_default_triples(None, None, None)
     );
 
-    // FIXED: Load data into knowledge graph with proper lock handling
     let mut kg = Reasoner::new();
 
-    // Collect triples first to avoid holding lock during iteration
     let triples_to_add = database.query_default_triples(None, None, None);
 
     for triple in triples_to_add {
-        // Acquire read lock, decode to owned strings, release lock
         let dict = database.dictionary();
         let subject = dict.decode(triple.subject).map(|s| s.to_string());
         let predicate = dict.decode(triple.predicate).map(|p| p.to_string());
         let object = dict.decode(triple.object).map(|o| o.to_string());
-        drop(dict); // Release lock before calling add_abox_triple
+        drop(dict);
 
         if let (Some(s), Some(p), Some(o)) = (subject, predicate, object) {
             kg.add_abox_triple(&s, &p, &o);
@@ -327,7 +300,6 @@ fn main() {
     }
     println!("KnowledgeGraph ABox loaded.");
 
-    // Rule 1: If it's quiet (noise level < 30), use noise for detection
     let rule1 = r#"PREFIX ex: <http://example.org#>
 RULE :UseNoiseSensor :-
 CONSTRUCT {
@@ -338,7 +310,6 @@ WHERE {
     FILTER (?level < 30)
 }"#;
 
-    // Rule 2: Universally define motion sensor for all rooms (will be superseded by noise-based if quiet)
     let rule2 = r#"PREFIX ex: <http://example.org#>
 RULE :DefaultMotionSensor :-
 CONSTRUCT {
@@ -348,7 +319,6 @@ WHERE {
     ?room ex:noiseLevel ?level .
 }"#;
 
-    // Rule 3a: If it's not dark (light level > 50), use cameras for detection
     let rule3a = r#"PREFIX ex: <http://example.org#>
 RULE :UseCameraDetection :-
 CONSTRUCT {
@@ -359,7 +329,6 @@ WHERE {
     FILTER (?level > 50)
 }"#;
 
-    // Rule 3b: If it's not dark (light level > 50), use cameras for identification
     let rule3b = r#"PREFIX ex: <http://example.org#>
 RULE :UseCameraIdentification :-
 CONSTRUCT {
@@ -370,7 +339,6 @@ WHERE {
     FILTER (?level > 50)
 }"#;
 
-    // Mark all detection events as unauthorized:
     let rule_mark_all_unauthorized = r#"PREFIX ex: <http://example.org#>
 RULE :MarkAllEventsUnauthorized :-
 CONSTRUCT {
@@ -380,7 +348,6 @@ WHERE {
     ?event ex:detectedCategory ?person .
 }"#;
 
-    // Override to authorized if event is within the allowed time slot:
     let rule_mark_authorized_if_within_schedule = r#"PREFIX ex: <http://example.org#>
 RULE :MarkAllEventsUnauthorized :-
 CONSTRUCT {
@@ -390,7 +357,6 @@ WHERE {
     ?event ex:detectedCategory ?person .
 }"#;
 
-    // Execute rules
     let rules = [
         rule1,
         rule2,
@@ -409,21 +375,19 @@ WHERE {
             .expect("expected at most one RULE block")
             .cloned()
         {
-            // FIXED: Acquire write lock for conversion
             let mut dict = database.dictionary_mut();
             let dynamic_rule = convert_combined_rule(rule_def, &mut dict, &combined_query.prefixes);
-            drop(dict); // Release lock
+            drop(dict);
 
             println!("Dynamic rule: {:#?}", dynamic_rule);
             kg.add_rule(dynamic_rule.clone());
 
-            // FIXED: Handle mapping the rule name with proper lock
             if let Some(first_conclusion) = &dynamic_rule.conclusion.first() {
                 if let Term::Constant(code) = first_conclusion.1 {
                     let dict = database.dictionary();
                     if let Some(expanded) = dict.decode(code) {
                         let expanded = expanded.to_string();
-                        drop(dict); // Release lock before inserting
+                        drop(dict);
 
                         if let Some(idx) = expanded.rfind('#') {
                             let local = &expanded[idx + 1..];
@@ -435,11 +399,9 @@ WHERE {
         }
     }
 
-    // Execute inference
     let inferred_facts = kg.infer_new_facts_semi_naive();
     println!("Inferred {} new fact(s):", inferred_facts.len());
 
-    // FIXED: Print inferred facts with proper lock handling
     {
         let dict = database.dictionary();
         for triple in inferred_facts.iter() {
@@ -448,14 +410,12 @@ WHERE {
             let o = dict.decode(triple.object).unwrap_or_default();
             println!("{} {} {}", s, p, o);
         }
-    } // Lock released here
+    }
 
-    // Add inferred facts to database
     for triple in inferred_facts.iter() {
         database.add_triple(triple.clone());
     }
 
-    // Query for sensors by grid position
     let query_grid_sensors = r#"PREFIX ex: <http://example.org#>
     SELECT ?sensor ?type ?x ?y
     WHERE {
@@ -472,7 +432,6 @@ WHERE {
         println!("{:?}", row);
     }
 
-    // Original unauthorized query
     let query_unauthorized = r#"PREFIX ex: <http://example.org#>
     SELECT ?event ?time
     WHERE {

@@ -29,7 +29,7 @@ fn simple_select() {
         </rdf:RDF>
     "#;
 
-    let mut database = SparqlDatabase::new();
+    let mut database = KolibrieDB::new();
     database.parse_rdf(rdf_data);
 
     let sparql = r#"
@@ -50,7 +50,6 @@ fn simple_select() {
         .expect("query should run")
         .into_rows();
 
-    // Now the main function is responsible for printing the results
     println!("Results: {:?}", results);
 }
 

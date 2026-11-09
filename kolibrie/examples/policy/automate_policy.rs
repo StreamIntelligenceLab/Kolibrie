@@ -20,9 +20,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         })),
     };
 
-    // Replaces the old `set_sliding_window(10, 5)` + imperative `auto_policy_evaluation`
-    // with an RSP-QL query that declares a 10-tick window sliding every 5 ticks, firing
-    // on window close and streaming out via RSTREAM.
     let rsp_query = r#"
         PREFIX ex: <http://example.org/>
 
@@ -50,18 +47,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             counter, counter, counter
         );
         for triple in engine.parse_data(&ntriples) {
-            // `counter` is the stream's clock. The window is `[RANGE 10 STEP 5]`
-            // with no `TICK` clause, so it fires on these timestamps and not on
-            // elapsed wall time -- which is why this loop does not sleep. It used
-            // to sleep a second per iteration, twenty-one seconds in all, for no
-            // effect on the result beyond making the example the slowest thing in
-            // `scripts/verify.sh` after one other.
             engine.add_to_stream("policyStream", triple, counter);
         }
     }
 
-    // No sleep after stopping either: `stop` flushes every window and waits for the
-    // coordinator, so every result has been delivered by the time it returns.
     engine.stop();
     Ok(())
 }

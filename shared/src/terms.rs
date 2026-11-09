@@ -10,89 +10,34 @@
 
 use std::collections::HashMap;
 
-/// One position of a triple pattern: either bound to a term or left open.
-///
-/// This is the pattern-side counterpart to a [`Triple`](crate::triple::Triple)'s
-/// plain `u32`: where a fact has an id in every position, a pattern may have a
-/// variable instead.
+/// One position of a triple pattern: either bound to a term or left open
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Term {
-    /// A variable, held by name. Two positions carrying the same name must bind to
-    /// the same value — that constraint is what makes a pattern a join.
+    /// A variable, held by name
     Variable(String),
-    /// A fixed term, as a dictionary id. Comparable only against ids from the same
-    /// [`Dictionary`](crate::dictionary::Dictionary).
+    /// A fixed term, as a dictionary id
     Constant(u32),
-    /// RDF-star: a quoted triple pattern with potentially variable components.
-    /// Used in SPARQL-star WHERE clauses like `<< ?s :p ?o >>`.
+    /// RDF-star: a quoted triple pattern with potentially variable components
     QuotedTriple(Box<(Term, Term, Term)>),
 }
 
-/// A triple pattern: subject, predicate and object, each bound or variable.
+/// A triple pattern: subject, predicate and object, each bound or variable
 pub type TriplePattern = (Term, Term, Term);
 
-/// One solution mapping, as a caller builds one.
-///
-/// Kept as a map because that is how a row is *constructed* — a scan binds variables
-/// as it finds them, and the names are not known until it does. [`Bindings`] stores
-/// something narrower; this is the shape at its door.
+/// One solution mapping, as a caller builds one
 pub type Binding = HashMap<String, u32>;
 
-/// The value a cell holds where a row binds nothing.
-///
-/// A solution mapping in SPARQL is *partial*: `OPTIONAL` and `VALUES ... UNDEF` both
-/// produce sequences whose rows bind different variable sets. The map shape said so
-/// by leaving a key out; a fixed-width row has to say it in the cell.
-///
-/// `u32::MAX` is safe to reserve because *both* halves of the id space refuse it.
-/// [`Dictionary::encode`](crate::dictionary::Dictionary::encode) asserts
-/// `next_id < QUOTED_TRIPLE_ID_BIT` (`0x8000_0000`), so an ordinary term id stays in
-/// the lower half. Quoted triple ids climb from that bit upwards and so *could* have
-/// reached the top, which is why
-/// [`QuotedTripleStore::encode`](crate::quoted_triple_store::QuotedTripleStore::encode)
-/// asserts `next_qt_id < u32::MAX`. A variable can be bound to a quoted triple, so
-/// without that second guard this sentinel would have been sound only by accident.
-/// Both guards are pinned by a test below.
-///
-/// Note that `0` would **not** have been safe: `next_id` starts at zero, so the first
-/// term interned has id `0`. Conflating that with "unbound" was a real bug once.
+/// The value a cell holds where a row binds nothing
 pub const UNBOUND: u32 = u32::MAX;
 
-/// A solution sequence: the rows a pattern matched.
-///
-/// # Schema and tuples
-///
-/// One schema for the sequence, and a row of `u32` per solution, rather than a
-/// `HashMap<String, u32>` per row. A variable name is resolved to a column once for
-/// the whole sequence instead of being hashed once per row per column, and a row
-/// costs one allocation of `4 × columns` bytes instead of a map with owned `String`
-/// keys. Measured on a 20,000 by 20,000 hash join over 2,000 keys, the tuple shape
-/// joins the same data about 4.3x faster.
-///
-/// # Solution mappings are partial
-///
-/// `OPTIONAL` and `VALUES ... UNDEF` produce rows binding different variable sets.
-/// The map shape said so by leaving a key out; a fixed-width row says it with
-/// [`UNBOUND`], which no dictionary can mint. `0` would not have worked: the first
-/// term ever interned has id `0`.
-///
-/// # Built from maps, read as rows
-///
-/// A row is still *constructed* as a [`Binding`], because a scan does not know which
-/// variables it will bind until it binds them. [`push`](Self::push) and
-/// [`FromIterator`] take that shape and widen the schema as new variables appear, so
-/// the sequence stays rectangular without the caller tracking it. Reading goes the
-/// other way: [`iter`](Self::iter) yields a [`BindingRef`], which answers by name
-/// without rebuilding a map.
+/// A solution sequence: the rows a pattern matched
 #[derive(Debug, Clone, Default)]
 pub struct Bindings {
-    /// Variable names, in column order. Grows as rows introduce variables.
     schema: Vec<String>,
-    /// One row per solution, each `schema.len()` wide.
     cells: Vec<Vec<u32>>,
 }
 
-/// One solution of a [`Bindings`], answered by name without a map.
+/// One solution of a [`Bindings`], answered by name without a map
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct BindingRef<'a> {
     schema: &'a [String],
@@ -100,7 +45,7 @@ pub struct BindingRef<'a> {
 }
 
 impl<'a> BindingRef<'a> {
-    /// The value bound to `variable`, or `None` where this solution binds nothing.
+    /// The value bound to `variable`, or `None` where this solution binds nothing
     pub fn get(&self, variable: &str) -> Option<u32> {
         let column = self.schema.iter().position(|name| name == variable)?;
         match self.cells.get(column).copied()? {
@@ -109,12 +54,12 @@ impl<'a> BindingRef<'a> {
         }
     }
 
-    /// Whether this solution binds `variable`.
+    /// Whether this solution binds `variable`
     pub fn contains_key(&self, variable: &str) -> bool {
         self.get(variable).is_some()
     }
 
-    /// The variables this solution binds, in column order.
+    /// The variables this solution binds, in column order
     pub fn keys(&self) -> impl Iterator<Item = &'a str> + 'a {
         let schema = self.schema;
         self.cells
@@ -124,12 +69,12 @@ impl<'a> BindingRef<'a> {
             .map(move |(column, _)| schema[column].as_str())
     }
 
-    /// The values this solution binds, in column order.
+    /// The values this solution binds, in column order
     pub fn values(&self) -> impl Iterator<Item = u32> + 'a {
         self.cells.iter().copied().filter(|id| *id != UNBOUND)
     }
 
-    /// The variables and their values, in column order.
+    /// The variables and their values, in column order
     pub fn iter(&self) -> impl Iterator<Item = (&'a str, u32)> + 'a {
         let schema = self.schema;
         self.cells
@@ -139,42 +84,36 @@ impl<'a> BindingRef<'a> {
             .map(move |(column, id)| (schema[column].as_str(), *id))
     }
 
-    /// How many variables this solution binds.
+    /// How many variables this solution binds
     pub fn len(&self) -> usize {
         self.cells.iter().filter(|id| **id != UNBOUND).count()
     }
 
-    /// Whether this solution binds nothing: the unit solution mapping.
+    /// Whether this solution binds nothing: the unit solution mapping
     pub fn is_empty(&self) -> bool {
         self.cells.iter().all(|id| *id == UNBOUND)
     }
 
-    /// This solution as a map, for a caller that needs to own and mutate one.
+    /// This solution as a map, for a caller that needs to own and mutate one
     pub fn to_binding(&self) -> Binding {
         self.iter()
             .map(|(name, id)| (name.to_string(), id))
             .collect()
     }
 
-    /// The raw cells, in the sequence's column order.
+    /// The raw cells, in the sequence's column order
     pub fn cells(&self) -> &'a [u32] {
         self.cells
     }
 }
 
 impl Bindings {
-    /// No solutions: a pattern that matched nothing.
-    ///
-    /// Distinct from [`unit`](Self::unit), and the difference is load-bearing: this
-    /// is failure, that is success binding nothing.
+    /// No solutions: a pattern that matched nothing
     pub fn empty() -> Self {
         Self::default()
     }
 
-    /// The unit solution sequence: one row, binding no variables.
-    ///
-    /// What the engine starts every plan from, and what a request with no pattern
-    /// returns. It is not the empty sequence, and a join against it is the identity.
+    /// The unit solution sequence: one row, binding no variables
     pub fn unit() -> Self {
         Self {
             schema: Vec::new(),
@@ -182,14 +121,14 @@ impl Bindings {
         }
     }
 
-    /// A sequence of exactly one solution.
+    /// A sequence of exactly one solution
     pub fn single(binding: Binding) -> Self {
         let mut bindings = Self::empty();
         bindings.push(binding);
         bindings
     }
 
-    /// An empty sequence over a known schema.
+    /// An empty sequence over a known schema
     pub fn with_schema(schema: Vec<String>) -> Self {
         Self {
             schema,
@@ -197,7 +136,7 @@ impl Bindings {
         }
     }
 
-    /// Room for `rows` solutions, allocated up front.
+    /// Room for `rows` solutions, allocated up front
     pub fn with_capacity(rows: usize) -> Self {
         Self {
             schema: Vec::new(),
@@ -205,35 +144,32 @@ impl Bindings {
         }
     }
 
-    /// The variables any solution binds, in column order.
+    /// The variables any solution binds, in column order
     pub fn schema(&self) -> &[String] {
         &self.schema
     }
 
-    /// The column `variable` occupies, resolved once for the whole sequence.
-    ///
-    /// Resolve here and index rows with the result. Looking a name up per row is what
-    /// the map shape did and what this type exists to stop.
+    /// The column `variable` occupies, resolved once for the whole sequence
     pub fn column(&self, variable: &str) -> Option<usize> {
         self.schema.iter().position(|name| name == variable)
     }
 
-    /// How many solutions.
+    /// How many solutions
     pub fn len(&self) -> usize {
         self.cells.len()
     }
 
-    /// Whether the pattern matched nothing.
+    /// Whether the pattern matched nothing
     pub fn is_empty(&self) -> bool {
         self.cells.is_empty()
     }
 
-    /// The first solution, if any.
+    /// The first solution, if any
     pub fn first(&self) -> Option<BindingRef<'_>> {
         self.row(0)
     }
 
-    /// One solution, by position.
+    /// One solution, by position
     pub fn row(&self, index: usize) -> Option<BindingRef<'_>> {
         Some(BindingRef {
             schema: &self.schema,
@@ -241,7 +177,7 @@ impl Bindings {
         })
     }
 
-    /// The solutions, in result order.
+    /// The solutions, in result order
     pub fn iter(&self) -> impl Iterator<Item = BindingRef<'_>> + '_ {
         self.cells.iter().map(|cells| BindingRef {
             schema: &self.schema,
@@ -249,10 +185,7 @@ impl Bindings {
         })
     }
 
-    /// Adds `variable` as a column if the schema lacks it, padding existing rows.
-    ///
-    /// Growing is bounded by the number of distinct variables, not by the number of
-    /// rows, so a sequence widens a handful of times however long it is.
+    /// Adds `variable` as a column if the schema lacks it, padding existing rows
     fn column_for(&mut self, variable: &str) -> usize {
         if let Some(column) = self.column(variable) {
             return column;
@@ -264,10 +197,9 @@ impl Bindings {
         self.schema.len() - 1
     }
 
-    /// Appends a solution, widening the schema for any variable it introduces.
+    /// Appends a solution, widening the schema for any variable it introduces
     pub fn push(&mut self, binding: Binding) {
         let mut names: Vec<&String> = binding.keys().collect();
-        // Sorted so a new column's position does not depend on map iteration order.
         names.sort();
         let mut row = vec![UNBOUND; self.schema.len()];
         for name in names {
@@ -281,11 +213,7 @@ impl Bindings {
         self.cells.push(row);
     }
 
-    /// Appends a row already laid out against this sequence's schema.
-    ///
-    /// # Panics
-    ///
-    /// In debug builds, if the row's width is not the schema's.
+    /// Appends a row already laid out against this sequence's schema
     pub fn push_cells(&mut self, row: Vec<u32>) {
         debug_assert_eq!(
             row.len(),
@@ -295,16 +223,7 @@ impl Bindings {
         self.cells.push(row);
     }
 
-    /// Appends another sequence's solutions, unifying the two schemas.
-    ///
-    /// A column only one side has is unbound in the other side's rows, which is what
-    /// a union of branches binding different variables produces.
-    ///
-    /// This is what [`extend`](Self::extend) should be reached for instead of: that
-    /// takes maps, so concatenating two sequences through it rebuilds a
-    /// `HashMap<String, u32>` for every row and then takes it apart again. Measured
-    /// on `optimizer_hotpath`, going through maps cost `union_branches` about twice
-    /// its runtime.
+    /// Appends another sequence's solutions, unifying the two schemas
     pub fn append(&mut self, other: Self) {
         if self.schema.is_empty() && self.cells.is_empty() {
             *self = other;
@@ -314,16 +233,9 @@ impl Bindings {
             return;
         }
         if self.schema == other.schema {
-            // The common case by far: branches of a union, or chunks of one plan's
-            // output, agree on their columns, so the rows move as they are. Mapping
-            // them cell by cell would allocate a row and index it per solution for
-            // no reason.
             self.cells.extend(other.cells);
             return;
         }
-        // Every missing column added in one pass, then the rows padded once.
-        // Calling `column_for` per column pads all the rows already present each
-        // time, so a branch introducing three variables walked them three times.
         let added: Vec<&String> = other
             .schema
             .iter()
@@ -359,36 +271,36 @@ impl Bindings {
         }
     }
 
-    /// Appends every solution of `other`.
+    /// Appends every solution of `other`
     pub fn extend(&mut self, other: impl IntoIterator<Item = Binding>) {
         for binding in other {
             self.push(binding);
         }
     }
 
-    /// Keeps only the solutions satisfying `keep`.
+    /// Keeps only the solutions satisfying `keep`
     pub fn retain(&mut self, mut keep: impl FnMut(BindingRef<'_>) -> bool) {
         let schema = &self.schema;
         self.cells
             .retain(|cells| keep(BindingRef { schema, cells }));
     }
 
-    /// Discards all but the first `rows` solutions.
+    /// Discards all but the first `rows` solutions
     pub fn truncate(&mut self, rows: usize) {
         self.cells.truncate(rows);
     }
 
-    /// Removes every solution, keeping the schema.
+    /// Removes every solution, keeping the schema
     pub fn clear(&mut self) {
         self.cells.clear();
     }
 
-    /// Removes consecutive duplicate solutions.
+    /// Removes consecutive duplicate solutions
     pub fn dedup(&mut self) {
         self.cells.dedup();
     }
 
-    /// Orders the solutions by `compare`.
+    /// Orders the solutions by `compare`
     pub fn sort_by(
         &mut self,
         mut compare: impl FnMut(BindingRef<'_>, BindingRef<'_>) -> std::cmp::Ordering,
@@ -408,19 +320,7 @@ impl Bindings {
         });
     }
 
-    /// Binds `variable` in every solution, to one value per row in order.
-    ///
-    /// What `BIND`, `ML.PREDICT` and the function-call operators all do: compute a
-    /// value per solution and attach it under a new name. In the map shape each of
-    /// them inserted into every row's map, hashing the same name once per row; here
-    /// the name is resolved once and the column is filled.
-    ///
-    /// A solution with no corresponding value is left unbound, and an existing
-    /// column of that name is overwritten, which is what inserting into a map did.
-    ///
-    /// # Panics
-    ///
-    /// In debug builds, if `values` is longer than the sequence.
+    /// Binds `variable` in every solution, to one value per row in order
     pub fn bind_column(&mut self, variable: &str, values: impl IntoIterator<Item = u32>) {
         debug_assert!(
             self.schema.iter().all(|name| name != variable) || self.column(variable).is_some()
@@ -434,29 +334,22 @@ impl Bindings {
         debug_assert!(filled <= self.cells.len(), "more values than solutions");
     }
 
-    /// The raw cells, one row per solution, each `schema().len()` wide.
-    ///
-    /// For code that has resolved its columns and wants to index them. The schema is
-    /// [`schema`](Self::schema); the two together are the whole sequence.
+    /// The raw cells, one row per solution, each `schema().len()` wide
     pub fn cells(&self) -> &[Vec<u32>] {
         &self.cells
     }
 
-    /// The cells, mutably. The schema is fixed, so rows keep their width.
+    /// The cells, mutably
     pub fn cells_mut(&mut self) -> &mut [Vec<u32>] {
         &mut self.cells
     }
 
-    /// Takes the sequence apart into its schema and its rows.
+    /// Takes the sequence apart into its schema and its rows
     pub fn into_parts(self) -> (Vec<String>, Vec<Vec<u32>>) {
         (self.schema, self.cells)
     }
 
-    /// Builds a sequence from a schema and rows already laid out against it.
-    ///
-    /// # Panics
-    ///
-    /// In debug builds, if any row's width is not the schema's.
+    /// Builds a sequence from a schema and rows already laid out against it
     pub fn from_parts(schema: Vec<String>, cells: Vec<Vec<u32>>) -> Self {
         debug_assert!(
             cells.iter().all(|row| row.len() == schema.len()),
@@ -465,11 +358,7 @@ impl Bindings {
         Self { schema, cells }
     }
 
-    /// The solutions in parallel, which is how the engine's filters and joins read
-    /// a sequence.
-    ///
-    /// Yields views rather than maps, so a parallel pass over a long sequence
-    /// allocates nothing per row.
+    /// The solutions in parallel, which is how the engine's filters and joins read a sequence
     pub fn par_iter(&self) -> impl rayon::iter::IndexedParallelIterator<Item = BindingRef<'_>> {
         use rayon::iter::{IntoParallelRefIterator, ParallelIterator};
         let schema = &self.schema;
@@ -478,16 +367,13 @@ impl Bindings {
             .map(move |cells| BindingRef { schema, cells })
     }
 
-    /// The solutions as maps, for code not yet converted.
-    ///
-    /// Allocates a map per row, so this is a boundary with code that still wants the
-    /// old shape, not something to reach for in a loop.
+    /// The solutions as maps, for code not yet converted
     pub fn to_maps(&self) -> Vec<Binding> {
         self.iter().map(|row| row.to_binding()).collect()
     }
 }
 
-/// Compared by what the solutions bind, not by how the schema happens to be ordered.
+/// Compared by what the solutions bind, not by how the schema happens to be ordered
 impl PartialEq for Bindings {
     fn eq(&self, other: &Self) -> bool {
         self.len() == other.len()
@@ -540,8 +426,8 @@ impl<'a> IntoIterator for &'a Bindings {
     }
 }
 
-/// Collected from a parallel iterator, which is how the engine's filters and joins
-/// produce a sequence.
+/// Collected from a parallel iterator, which is how the engine's filters and joins produce a
+/// sequence
 impl rayon::iter::FromParallelIterator<Binding> for Bindings {
     fn from_par_iter<I>(rows: I) -> Self
     where
@@ -562,32 +448,27 @@ impl rayon::iter::IntoParallelIterator for Bindings {
     }
 }
 
-/// A term as it appears in source text, before prefixes are resolved and before it is
-/// interned.
-///
-/// Parsing produces these; binding them to a dictionary turns them into [`Term`]s.
-/// Keeping the two apart is what stops a rule parsed against one vocabulary from
-/// silently matching nothing against another — a failure this codebase has hit.
+/// A term as it appears in source text, before prefixes are resolved and before it is interned
 #[derive(Debug)]
 pub enum UnresolvedTerm {
-    /// A variable, by name.
+    /// A variable, by name
     Var(String),
-    /// A prefixed name such as `ex:thing`, still needing its prefix expanded.
+    /// A prefixed name such as `ex:thing`, still needing its prefix expanded
     Prefixed(String),
-    /// A full IRI, needing only interning.
+    /// A full IRI, needing only interning
     Iri(String),
 }
 
-/// A triple of [`UnresolvedTerm`]s, as parsed.
+/// A triple of [`UnresolvedTerm`]s, as parsed
 pub type UnresolvedTriple = (UnresolvedTerm, UnresolvedTerm, UnresolvedTerm);
 
 impl Term {
-    /// Whether this position is a variable.
+    /// Whether this position is a variable
     pub fn is_var(&self) -> bool {
         matches!(self, Term::Variable(_))
     }
 
-    /// Whether this position is a quoted triple.
+    /// Whether this position is a quoted triple
     pub fn is_quoted_triple(&self) -> bool {
         matches!(self, Term::QuotedTriple(_))
     }
@@ -610,8 +491,6 @@ mod bindings_tests {
 
     #[test]
     fn an_empty_sequence_is_not_the_unit_sequence() {
-        // The difference is load-bearing: one is a pattern that matched nothing, the
-        // other is success binding nothing, and a join against it is the identity.
         assert!(Bindings::empty().is_empty());
         assert_eq!(Bindings::empty().len(), 0);
         assert!(!Bindings::unit().is_empty());
@@ -631,8 +510,6 @@ mod bindings_tests {
 
     #[test]
     fn pushing_a_row_widens_the_schema_for_a_new_variable() {
-        // A scan does not know what it will bind until it binds it, so the schema
-        // grows as rows arrive and the rows already present are padded.
         let mut bindings = Bindings::empty();
         bindings.push(binding(&[("x", 1)]));
         bindings.push(binding(&[("x", 2), ("y", 3)]));
@@ -646,8 +523,6 @@ mod bindings_tests {
 
     #[test]
     fn a_row_that_does_not_bind_a_variable_reads_as_absent() {
-        // What OPTIONAL produces. The cell holds UNBOUND, and nothing reports it as
-        // a term: not `get`, not `keys`, not `iter`, not `len`.
         let bindings = sequence(&[&[("x", 1), ("y", 2)], &[("x", 3)]]);
         let second = bindings.row(1).expect("second row");
 
@@ -661,8 +536,6 @@ mod bindings_tests {
 
     #[test]
     fn term_id_zero_is_a_term_and_not_unbound() {
-        // Dictionary::next_id starts at 0, so the first term ever interned has id 0.
-        // A sentinel of 0 would have made these two cases indistinguishable.
         let bindings = sequence(&[&[("x", 0)], &[("y", 0)]]);
         let x = bindings.column("x").expect("x is a column");
         assert_eq!(bindings.row(0).expect("first").get("x"), Some(0));
@@ -682,8 +555,6 @@ mod bindings_tests {
 
     #[test]
     fn appending_sequences_with_different_schemas_unifies_them() {
-        // A union of branches binding different variables: a column only one side
-        // has is unbound in the other side's rows, never silently dropped.
         let mut left = sequence(&[&[("s", 1), ("v", 2)]]);
         left.append(sequence(&[&[("s", 3), ("d", 4)]]));
 
@@ -711,8 +582,6 @@ mod bindings_tests {
 
     #[test]
     fn binding_a_column_gives_every_solution_its_own_value() {
-        // What BIND and ML.PREDICT do: one computed value per solution, attached
-        // under a new name.
         let mut bindings = sequence(&[&[("x", 1)], &[("x", 2)]]);
         bindings.bind_column("doubled", vec![10, 20]);
         assert_eq!(bindings.row(0).expect("first").get("doubled"), Some(10));
@@ -744,10 +613,6 @@ mod bindings_tests {
 
     #[test]
     fn equality_compares_what_the_solutions_bind() {
-        // Not the schema's order, and not the padding. Building both through `push`
-        // would not test this: it sorts a row's keys, so both sides come out with the
-        // same representation and comparing the fields directly would agree anyway.
-        // These are laid out deliberately differently.
         let left = sequence(&[&[("x", 1), ("y", 2)]]);
         assert_eq!(left.schema(), ["x".to_string(), "y".to_string()]);
 
@@ -783,9 +648,6 @@ mod bindings_tests {
 
     #[test]
     fn neither_half_of_the_id_space_can_mint_the_unbound_sentinel() {
-        // UNBOUND is only sound because no id can equal it. Each guard is identified
-        // by its message, because these tests run in debug, where the increment past
-        // the end panics on its own and would make this pass with the guard deleted.
         use crate::dictionary::Dictionary;
         use crate::quoted_triple_store::{QuotedTripleStore, QUOTED_TRIPLE_ID_BIT};
 
@@ -834,44 +696,20 @@ mod bindings_tests {
     }
 }
 
-/// Solution rows whose cells are terms as text, not dictionary ids.
-///
-/// The unencoded sibling of [`Bindings`], and for the same reason
-/// [`TermTriple`](crate::rdf_term::TermTriple) exists: an id means nothing outside
-/// the dictionary that minted it, so a solution crossing out of one store carries
-/// text. The RSP coordinator is where this bites — it joins results from windows
-/// that need not share a dictionary.
-///
-/// # Why not a map per row
-///
-/// It was `Vec<HashMap<String, String>>`, which is the shape
-/// [`Bindings`] replaced on the encoded side after measuring a 4.7x difference on
-/// the join. The same two costs apply here and one is worse: a variable is hashed
-/// once per row per column rather than resolved to a column once for the whole
-/// sequence, and here the keys are strings rather than `u32`.
-///
-/// # Partial rows
-///
-/// A cell is `Option<String>` because a solution mapping is a partial function:
-/// `OPTIONAL` and `VALUES … UNDEF` produce rows that bind different variables. The
-/// map shape said so by leaving a key out, and [`Bindings`] says so with a sentinel
-/// id; neither trick is available for a `String`, since the empty string is a
-/// perfectly good literal.
+/// Solution rows whose cells are terms as text, not dictionary ids
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct TextBindings {
-    /// Variable names, in column order.
     schema: Vec<String>,
-    /// One row per solution, each `schema.len()` wide.
     rows: Vec<Vec<Option<String>>>,
 }
 
 impl TextBindings {
-    /// No rows and no variables.
+    /// No rows and no variables
     pub fn new() -> Self {
         Self::default()
     }
 
-    /// An empty sequence over a known schema.
+    /// An empty sequence over a known schema
     pub fn with_schema(schema: Vec<String>) -> Self {
         Self {
             schema,
@@ -879,41 +717,38 @@ impl TextBindings {
         }
     }
 
-    /// The variables, in column order.
+    /// The variables, in column order
     pub fn schema(&self) -> &[String] {
         &self.schema
     }
 
-    /// How many solutions.
+    /// How many solutions
     pub fn len(&self) -> usize {
         self.rows.len()
     }
 
-    /// Whether there are no solutions.
+    /// Whether there are no solutions
     pub fn is_empty(&self) -> bool {
         self.rows.is_empty()
     }
 
-    /// The column `variable` occupies, if it is in the schema.
+    /// The column `variable` occupies, if it is in the schema
     pub fn column(&self, variable: &str) -> Option<usize> {
         self.schema.iter().position(|name| name == variable)
     }
 
-    /// The value of `variable` in row `row`, or `None` when unbound or absent.
+    /// The value of `variable` in row `row`, or `None` when unbound or absent
     pub fn get(&self, row: usize, variable: &str) -> Option<&str> {
         let column = self.column(variable)?;
         self.rows.get(row)?.get(column)?.as_deref()
     }
 
-    /// The rows, each as a slice aligned with [`schema`](Self::schema).
+    /// The rows, each as a slice aligned with [`schema`](Self::schema)
     pub fn rows(&self) -> &[Vec<Option<String>>] {
         &self.rows
     }
 
-    /// The bound cells of row `row`, as variable and value.
-    ///
-    /// Skips unbound cells, so a partial row yields fewer pairs than the schema is
-    /// wide — which is what a consumer building a solution wants.
+    /// The bound cells of row `row`, as variable and value
     pub fn pairs(&self, row: usize) -> impl Iterator<Item = (&str, &str)> + '_ {
         self.schema
             .iter()
@@ -921,7 +756,7 @@ impl TextBindings {
             .filter_map(|(name, cell)| cell.as_deref().map(|value| (name.as_str(), value)))
     }
 
-    /// Adds a row from variable and value pairs, widening the schema as needed.
+    /// Adds a row from variable and value pairs, widening the schema as needed
     pub fn push_pairs<I, K, V>(&mut self, pairs: I)
     where
         I: IntoIterator<Item = (K, V)>,
@@ -935,8 +770,6 @@ impl TextBindings {
                 Some(column) => column,
                 None => {
                     self.schema.push(variable.to_string());
-                    // Widen the rows already stored, so every row stays as wide as
-                    // the schema.
                     for existing in &mut self.rows {
                         existing.push(None);
                     }
@@ -949,25 +782,12 @@ impl TextBindings {
         self.rows.push(row);
     }
 
-    /// Natural join: rows that agree on every shared variable, merged.
-    ///
-    /// Produces the Cartesian product when the two sides share no variable, which is
-    /// what the cross-window case usually is — two windows binding different
-    /// variables.
-    ///
-    /// An unbound cell is compatible with any value, because a solution mapping is a
-    /// partial function and two mappings are compatible where both are defined
-    /// (SPARQL 1.1 §18.5). That is why this compares rather than hashes: a hash join
-    /// on the shared columns cannot express "unbound matches anything", and getting
-    /// it wrong would silently drop or invent solutions. Shared columns are resolved
-    /// once from the two schemas instead of being looked up per row, which is the
-    /// cost the map shape paid.
+    /// Natural join: rows that agree on every shared variable, merged
     pub fn join(&self, other: &TextBindings) -> TextBindings {
         if self.is_empty() || other.is_empty() {
             return TextBindings::new();
         }
 
-        // Column pairs the two sides share, resolved once.
         let shared: Vec<(usize, usize)> = self
             .schema
             .iter()
@@ -975,7 +795,6 @@ impl TextBindings {
             .filter_map(|(left, name)| other.column(name).map(|right| (left, right)))
             .collect();
 
-        // Output schema: this side's variables, then the ones only `other` has.
         let mut schema = self.schema.clone();
         let carried: Vec<(usize, usize)> = other
             .schema
@@ -994,8 +813,6 @@ impl TextBindings {
                 let compatible = shared.iter().all(|&(left, right)| {
                     match (&left_row[left], &right_row[right]) {
                         (Some(left), Some(right)) => left == right,
-                        // Unbound on either side: compatible, and the bound value
-                        // wins in the merged row.
                         _ => true,
                     }
                 });
@@ -1007,7 +824,6 @@ impl TextBindings {
                 for &(right, target) in &carried {
                     row[target] = right_row[right].clone();
                 }
-                // A variable both sides share takes whichever side bound it.
                 for &(left, right) in &shared {
                     if row[left].is_none() {
                         row[left] = right_row[right].clone();
@@ -1019,13 +835,8 @@ impl TextBindings {
         TextBindings { schema, rows }
     }
 
-    /// Appends another sequence's rows, widening the schema to cover both.
-    ///
-    /// Concatenation, not a join: the rows stand alongside each other rather than
-    /// being combined. A variable only the other side has is unbound in the rows
-    /// already here, which is what a partial row is for.
+    /// Appends another sequence's rows, widening the schema to cover both
     pub fn extend(&mut self, other: TextBindings) {
-        // Where the schemas already agree, the rows can move across untouched.
         if self.schema == other.schema {
             self.rows.extend(other.rows);
             return;
@@ -1053,7 +864,7 @@ impl TextBindings {
         }
     }
 
-    /// Builds from the map-per-row shape, for a boundary that still produces it.
+    /// Builds from the map-per-row shape, for a boundary that still produces it
     pub fn from_maps(maps: &[HashMap<String, String>]) -> Self {
         let mut bindings = TextBindings::new();
         for map in maps {
@@ -1099,8 +910,6 @@ mod text_bindings_tests {
 
     #[test]
     fn an_unbound_cell_is_not_an_empty_string() {
-        // The empty string is a perfectly good literal, which is why a cell is an
-        // Option rather than using "" as a sentinel.
         let mut bindings = TextBindings::new();
         bindings.push_pairs([("s", ""), ("t", "x")]);
         assert_eq!(bindings.get(0, "s"), Some(""));
@@ -1126,7 +935,6 @@ mod text_bindings_tests {
 
     #[test]
     fn joining_on_no_shared_variable_is_the_cartesian_product() {
-        // The cross-window case: two windows binding different variables.
         let mut left = TextBindings::new();
         left.push_pairs([("s", "a")]);
         left.push_pairs([("s", "b")]);
@@ -1159,19 +967,14 @@ mod text_bindings_tests {
 
     #[test]
     fn an_unbound_shared_variable_is_compatible_with_any_value() {
-        // SPARQL 1.1 section 18.5: two solution mappings are compatible where both
-        // are defined. This is the case a hash join on the shared columns cannot
-        // express, and the reason this one compares.
         let mut left = TextBindings::new();
         left.push_pairs([("s", "a"), ("x", "1")]);
-        left.push_pairs([("x", "2")]); // `s` unbound
+        left.push_pairs([("x", "2")]);
         let mut right = TextBindings::new();
         right.push_pairs([("s", "a")]);
         right.push_pairs([("s", "b")]);
         let joined = left.join(&right);
-        // Row one joins only `s=a`; row two is unbound on `s` so it joins both.
         assert_eq!(joined.len(), 3, "got {joined:?}");
-        // And the merged row takes the bound side's value.
         let values: Vec<Option<&str>> = (0..joined.len()).map(|i| joined.get(i, "s")).collect();
         assert_eq!(values, vec![Some("a"), Some("a"), Some("b")]);
     }
@@ -1210,7 +1013,6 @@ mod text_bindings_tests {
 
     #[test]
     fn extending_realigns_a_schema_given_in_another_order() {
-        // The cells have to follow their names, not their positions.
         let mut left = TextBindings::with_schema(vec!["s".into(), "t".into()]);
         left.push_pairs([("s", "a"), ("t", "x")]);
         let mut right = TextBindings::with_schema(vec!["t".into(), "s".into()]);
@@ -1230,8 +1032,6 @@ mod text_bindings_tests {
         let from_maps = TextBindings::from_maps(&maps);
         let mut from_pairs = TextBindings::new();
         from_pairs.push_pairs([("s", "urn:a"), ("o", "25")]);
-        // Schema order follows insertion, which a HashMap does not fix, so the rows
-        // are compared by content.
         assert_eq!(row(&from_maps, 0), row(&from_pairs, 0));
     }
 }

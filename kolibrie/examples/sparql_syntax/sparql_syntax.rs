@@ -15,10 +15,8 @@ use shared::query::SparqlOperation;
 use std::time::Instant;
 
 fn streamertail_optimizer_sparql() {
-    // Step 1: Initialize the database
-    let mut database = SparqlDatabase::new();
+    let mut database = KolibrieDB::new();
 
-    // Step 2: Generate RDF data with 1_000_000 triples
     let mut rdf_data = String::from(
         r#"<rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#" xmlns:ex="http://example.org/">"#,
     );
@@ -42,7 +40,6 @@ fn streamertail_optimizer_sparql() {
     database.parse_rdf(&rdf_data);
     database.build_all_indexes();
 
-    // Step 3: Define the SPARQL query
     let sparql_query = r#"
     PREFIX ex: <http://example.org/>
     SELECT ?loved_person
@@ -51,7 +48,6 @@ fn streamertail_optimizer_sparql() {
         ?loved_person ex:loves <http://example.org/person7>
     }"#;
 
-    // Step 4: Parse the SPARQL query
     if let Ok((_, parsed)) = parse_combined_query(sparql_query) {
         let Some(SparqlOperation::Select(select)) = parsed.sparql else {
             eprintln!("Expected a SELECT query.");
@@ -59,26 +55,21 @@ fn streamertail_optimizer_sparql() {
         };
         let prefixes = parsed.prefixes;
 
-        // Merge prefixes into the database
         database.extend_prefixes(prefixes.clone());
 
-        // Build the logical plan
         let logical_plan =
             build_logical_plan_from_group(&select.pattern, &prefixes, &mut database).unwrap();
 
-        // Step 5: Initialize the optimizer and find the best physical plan
         let mut optimizer = Streamertail::new(&database);
         let physical_plan = optimizer.find_best_plan(&logical_plan);
 
         println!("Logical Plan: {:?}", logical_plan);
         println!("Optimized Physical Plan: {:?}", physical_plan);
 
-        // Step 6: Execute the physical plan
         let start = Instant::now();
         let results = physical_plan.execute(&mut database);
         let duration = start.elapsed();
 
-        // Step 7: Extract and print the selected variables
         let selected_vars: Vec<String> = select
             .variables
             .iter()

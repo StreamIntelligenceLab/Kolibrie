@@ -8,43 +8,33 @@
  * you can obtain one at https://mozilla.org/MPL/2.0/.
  */
 
-//! Running an `ML.PREDICT` clause through the Python backend.
-//!
-//! Crosses into Python via the `ml` crate, so the interesting cost is the boundary
-//! itself rather than the model: [`MLPredictTiming`] breaks it down because the
-//! marshalling usually dominates inference on small batches.
+//! Running an `ML.PREDICT` clause through the Python backend
 
-use crate::sparql_database::SparqlDatabase;
+use crate::database::KolibrieDB;
 use ml::MLHandler;
 use shared::query::MLPredictClause;
 use std::error::Error;
 use std::time::Instant;
 
 #[derive(Debug)]
-/// Where the time went in one `ML.PREDICT`, in seconds.
-///
-/// Split around the language boundary on purpose: the crossing and marshalling are
-/// often larger than the inference, and only a breakdown shows that.
+/// Where the time went in one `ML.PREDICT`, in seconds
 pub struct MLPredictTiming {
-    /// Wall-clock time for the whole clause.
+    /// Wall-clock time for the whole clause
     pub total_time: f64,
-    /// Handing the input across to Python.
+    /// Handing the input across to Python
     pub rust_to_python_time: f64,
-    /// Python-side preparation before inference.
+    /// Python-side preparation before inference
     pub python_preprocessing_time: f64,
-    /// The model call itself.
+    /// The model call itself
     pub actual_prediction_time: f64,
-    /// Python-side work on the results.
+    /// Python-side work on the results
     pub python_postprocessing_time: f64,
-    /// Bringing the results back.
+    /// Bringing the results back
     pub python_to_rust_time: f64,
 }
 
 impl MLPredictTiming {
-    /// Prints the timing to stdout.
-    ///
-    /// Deliberately omits the model name and the input: a breakdown may be logged
-    /// where the data it was computed from should not be.
+    /// Prints the timing to stdout
     pub fn print_breakdown(&self) {
         println!(
             "ML_TIMING total_seconds={:.6} prediction_seconds={:.6}",
@@ -53,19 +43,16 @@ impl MLPredictTiming {
     }
 }
 
-/// Runs an `ML.PREDICT` clause and returns its predictions with timing.
-///
-/// Binds the argmax label. A distribution over labels requires
-/// [`program`](crate::program).
+/// Runs an `ML.PREDICT` clause and returns its predictions with timing
 pub fn execute_ml_prediction_from_clause<F, G, T, U>(
     ml_predict: &MLPredictClause,
-    database: &SparqlDatabase,
+    database: &KolibrieDB,
     model: &str,
     extract_data: F,
     predict: G,
 ) -> Result<(Vec<U>, MLPredictTiming), Box<dyn Error>>
 where
-    F: FnOnce(&SparqlDatabase) -> Result<Vec<T>, Box<dyn Error>>,
+    F: FnOnce(&KolibrieDB) -> Result<Vec<T>, Box<dyn Error>>,
     G: FnOnce(
         &MLHandler,
         &str,
@@ -79,10 +66,8 @@ where
     crate::ml_policy::validate_model_name(model)?;
     let ml_predict_start = Instant::now();
 
-    // Rust setup and model discovery
     let rust_setup_start = Instant::now();
 
-    // Define model paths
     let model_dir = {
         let mut path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
 
@@ -101,7 +86,6 @@ where
 
     let mut ml_handler = MLHandler::new()?;
 
-    // Check if models need to be generated
     let models_exist = std::fs::read_dir(&model_dir)?
         .filter_map(Result::ok)
         .filter(|entry| {
@@ -126,17 +110,14 @@ where
         return Err("No valid models found with TTL schemas".into());
     }
 
-    // Extract variable names
     let variable_names: Vec<String> = ml_predict
         .input_select
         .iter()
         .map(|(var, _, _)| var.trim_start_matches('?').to_string())
         .collect();
 
-    // Extract data
     let data = extract_data(database)?;
 
-    // Filter feature names
     let feature_names: Vec<String> = variable_names
         .iter()
         .filter(|&name| *name != "room" && *name != "road")
@@ -147,15 +128,12 @@ where
 
     let rust_setup_time = rust_setup_start.elapsed().as_secs_f64();
 
-    // Call Python prediction (this measures internal Python timing)
     let python_call_start = Instant::now();
     let (predictions, mut timing) = predict(&ml_handler, best_model_name, &data, &feature_names)?;
     let _python_call_time = python_call_start.elapsed().as_secs_f64();
 
-    // Calculate total time
     let total_time = ml_predict_start.elapsed().as_secs_f64();
 
-    // Update timing with Rust-side measurements
     timing.rust_to_python_time = rust_setup_time;
     timing.python_to_rust_time = total_time
         - rust_setup_time
@@ -172,14 +150,14 @@ where
 /// Execute with an already initialized ML handler
 pub fn execute_ml_prediction_with_handler<F, G, T, U>(
     ml_predict: &MLPredictClause,
-    database: &SparqlDatabase,
+    database: &KolibrieDB,
     ml_handler: &MLHandler,
     best_model_name: &str,
     extract_data: F,
     predict: G,
 ) -> Result<(Vec<U>, MLPredictTiming), Box<dyn Error>>
 where
-    F: FnOnce(&SparqlDatabase) -> Result<Vec<T>, Box<dyn Error>>,
+    F: FnOnce(&KolibrieDB) -> Result<Vec<T>, Box<dyn Error>>,
     G: FnOnce(
         &MLHandler,
         &str,

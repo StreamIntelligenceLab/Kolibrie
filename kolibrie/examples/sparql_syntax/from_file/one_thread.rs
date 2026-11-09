@@ -8,12 +8,12 @@
  * you can obtain one at https://mozilla.org/MPL/2.0/.
  */
 
+use kolibrie::database::KolibrieDB;
 use kolibrie::prelude::*;
-use kolibrie::sparql_database::SparqlDatabase;
 
 fn simple_select_synth_data(file_path: &str) {
     let file = std::fs::read_to_string(file_path).expect("Error of finding file");
-    let mut database = SparqlDatabase::new();
+    let mut database = KolibrieDB::new();
 
     database.parse_rdf(&file);
 
@@ -33,7 +33,6 @@ fn simple_select_synth_data(file_path: &str) {
     println!("Results:");
     for result in results {
         if let [employee, workplace_homepage, salary] = &result[..] {
-            // Process your results here
             println!(
                 "?employee = {} ?workplaceHomepage = {} ?salary = {}",
                 employee, workplace_homepage, salary
@@ -43,7 +42,6 @@ fn simple_select_synth_data(file_path: &str) {
 }
 
 fn main() {
-    // Set current directory to the root of the project
     std::env::set_current_dir(std::path::Path::new(env!("CARGO_MANIFEST_DIR")))
         .expect("Failed to set project root as current directory");
     let file_path = "../datasets/synthetic_data_employee_100K.rdf";

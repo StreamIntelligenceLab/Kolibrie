@@ -8,16 +8,13 @@
  * you can obtain one at https://mozilla.org/MPL/2.0/.
  */
 
-//! [`ExecutionEngine`]: running a physical plan against a store.
-//!
-//! Walks the chosen plan and produces solutions. Every algorithmic decision was
-//! already made during optimisation, so this makes none.
+//! [`ExecutionEngine`]: running a physical plan against a store
 
 use super::super::operators::PhysicalOperator;
 use super::super::types::{SubqueryProjection, SubquerySpec};
 use super::exec_stats::exec_count;
 
-use crate::sparql_database::SparqlDatabase;
+use crate::database::KolibrieDB;
 use crate::term_order;
 use rayon::prelude::*;
 
@@ -29,7 +26,8 @@ use shared::terms::{Bindings, Term, UNBOUND};
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::sync::Arc;
 
-/// Below this many rows a bind join runs on one thread, since splitting costs more in plan re-entry than it saves
+/// Below this many rows a bind join runs on one thread, since splitting costs more in plan re-entry
+/// than it saves
 const BIND_JOIN_MIN_CHUNK: usize = 64;
 
 /// Rows a FILTER evaluates under a single dictionary read guard
@@ -38,11 +36,9 @@ const FILTER_LOCK_CHUNK: usize = 1024;
 /// The RDF dataset visible to one query execution
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DatasetView {
-    /// Graphs forming the default graph. `FROM` replaces it, so this is not always
-    /// just [`GraphId::Default`].
+    /// Graphs forming the default graph
     pub default_graphs: Vec<GraphId>,
-    /// Graphs `GRAPH` can address. A graph in the store but absent here is
-    /// invisible to this query.
+    /// Graphs `GRAPH` can address
     pub named_graphs: HashSet<GraphId>,
 }
 
@@ -52,7 +48,7 @@ mod tests {
     use crate::streamertail_optimizer::Condition;
     use shared::dataset_index::Quad;
 
-    fn encode(database: &SparqlDatabase, value: &str) -> u32 {
+    fn encode(database: &KolibrieDB, value: &str) -> u32 {
         database.dictionary.write().encode(value)
     }
 
@@ -79,7 +75,6 @@ mod tests {
     #[test]
     fn hash_join_agrees_with_the_nested_loop_on_every_row_shape() {
         let cases: Vec<(Bindings, Bindings)> = vec![
-            // Shared variable, several matches and one dangling value
             (
                 vec![row(&[("x", 1), ("a", 10)]), row(&[("x", 2), ("a", 20)])].into(),
                 vec![
@@ -89,19 +84,15 @@ mod tests {
                 ]
                 .into(),
             ),
-            // Right side leaves the key variable unbound
             (
                 vec![row(&[("x", 1), ("a", 10)])].into(),
                 vec![row(&[("b", 11)]), row(&[("x", 1), ("b", 12)])].into(),
             ),
-            // Left side leaves the key variable unbound
             (
                 vec![row(&[("a", 10)]), row(&[("x", 1), ("a", 11)])].into(),
                 vec![row(&[("x", 1), ("b", 12)]), row(&[("x", 2), ("b", 13)])].into(),
             ),
-            // Conflicting values on the shared variable
             (vec![row(&[("x", 1)])].into(), vec![row(&[("x", 2)])].into()),
-            // No shared variable at all: a Cartesian product
             (
                 vec![row(&[("a", 1)]), row(&[("a", 2)])].into(),
                 vec![row(&[("b", 3)]), row(&[("b", 4)])].into(),
@@ -124,7 +115,7 @@ mod tests {
 
     #[test]
     fn unit_and_union_preserve_solution_multiplicity() {
-        let mut database = SparqlDatabase::new();
+        let mut database = KolibrieDB::new();
         let plan =
             PhysicalOperator::union(vec![PhysicalOperator::unit(), PhysicalOperator::unit()]);
 
@@ -134,7 +125,7 @@ mod tests {
 
     #[test]
     fn graph_variable_binds_before_filter_and_includes_empty_graphs() {
-        let mut database = SparqlDatabase::new();
+        let mut database = KolibrieDB::new();
         let first = encode(&database, "http://example.com/first");
         let second = encode(&database, "http://example.com/second");
         database.dataset_index.create_graph(GraphId::Named(first));
@@ -164,7 +155,7 @@ mod tests {
 
     #[test]
     fn graph_scan_checks_repeated_variables_against_incoming_bindings() {
-        let mut database = SparqlDatabase::new();
+        let mut database = KolibrieDB::new();
         let graph = encode(&database, "http://example.com/graph");
         let subject = encode(&database, "http://example.com/subject");
         let predicate = encode(&database, "http://example.com/predicate");
@@ -197,7 +188,7 @@ mod tests {
 
     #[test]
     fn scan_matches_a_variable_repeated_within_one_pattern() {
-        let mut database = SparqlDatabase::new();
+        let mut database = KolibrieDB::new();
         let predicate = encode(&database, "http://example.com/self");
         let looping = encode(&database, "http://example.com/looping");
         let other = encode(&database, "http://example.com/other");
@@ -228,7 +219,7 @@ mod tests {
 
     #[test]
     fn merged_default_suppresses_duplicate_triples() {
-        let mut database = SparqlDatabase::new();
+        let mut database = KolibrieDB::new();
         let graph = encode(&database, "http://example.com/graph");
         let subject = encode(&database, "http://example.com/subject");
         let predicate = encode(&database, "http://example.com/predicate");
@@ -261,7 +252,7 @@ mod tests {
     }
 
     fn scan(
-        database: &SparqlDatabase,
+        database: &KolibrieDB,
         pattern: &QuadPattern,
         dataset: DatasetView,
         incoming: Bindings,
@@ -271,7 +262,7 @@ mod tests {
     }
 
     fn candidates(
-        database: &SparqlDatabase,
+        database: &KolibrieDB,
         graph: GraphId,
         subject: Option<u32>,
         predicate: Option<u32>,
@@ -285,13 +276,7 @@ mod tests {
             .collect()
     }
 
-    fn add(
-        database: &mut SparqlDatabase,
-        subject: u32,
-        predicate: u32,
-        object: u32,
-        graph: GraphId,
-    ) {
+    fn add(database: &mut KolibrieDB, subject: u32, predicate: u32, object: u32, graph: GraphId) {
         database.add_quad(Quad {
             subject,
             predicate,
@@ -306,7 +291,7 @@ mod tests {
 
     #[test]
     fn scan_emits_zero_one_and_many_matches_in_candidate_order() {
-        let mut database = SparqlDatabase::new();
+        let mut database = KolibrieDB::new();
         let predicate = encode(&database, "http://example.com/p");
         let many = encode(&database, "http://example.com/many");
         let one = encode(&database, "http://example.com/one");
@@ -358,7 +343,7 @@ mod tests {
 
     #[test]
     fn scan_rejects_repeated_variable_conflicts_before_extending_rows() {
-        let mut database = SparqlDatabase::new();
+        let mut database = KolibrieDB::new();
         let predicate = encode(&database, "http://example.com/p");
         let b = encode(&database, "http://example.com/b");
         let a = encode(&database, "http://example.com/a");
@@ -369,10 +354,6 @@ mod tests {
         add(&mut database, c, predicate, c, GraphId::Default);
         add(&mut database, c, predicate, d, GraphId::Default);
 
-        // `candidates` yields the index's hash order, which varies per process, so
-        // this fixture can only be asserted on by content and never by position.
-        // It must contain both self-referential and non-self-referential quads for
-        // the conflict rejection below to be exercised at all.
         let all = candidates(&database, GraphId::Default, None, Some(predicate), None);
         assert!(all.iter().any(|(subject, _, object)| subject == object));
         assert!(all.iter().any(|(subject, _, object)| subject != object));
@@ -395,9 +376,6 @@ mod tests {
             .into(),
         );
 
-        // Unbound `row(&[])` matches both self-referential quads; `x = a` extends and
-        // keeps its other bindings; `x = d` is rejected because the only quad with
-        // object `d` has subject `c`, and `?x`/`$x` are the same variable.
         let mut expected: Bindings = all
             .iter()
             .filter(|(subject, _, object)| subject == object)
@@ -405,14 +383,12 @@ mod tests {
             .collect();
         assert_eq!(expected.len(), 2);
         expected.push(row(&[("x", a), ("keep", 7)]));
-        // Compared as a multiset: scan makes no ordering guarantee (bag semantics,
-        // no ORDER BY) and its row order follows the hash order above.
         assert_eq!(sorted(results), sorted(expected));
     }
 
     #[test]
     fn scan_binds_visible_named_graphs_once_per_match() {
-        let mut database = SparqlDatabase::new();
+        let mut database = KolibrieDB::new();
         let predicate = encode(&database, "http://example.com/p");
         let subject = encode(&database, "http://example.com/s");
         let first = encode(&database, "http://example.com/g1");
@@ -535,7 +511,7 @@ mod tests {
 
     #[test]
     fn scan_suppresses_merged_default_duplicates_for_each_input_row() {
-        let mut database = SparqlDatabase::new();
+        let mut database = KolibrieDB::new();
         let graph = encode(&database, "http://example.com/graph");
         let subject = encode(&database, "http://example.com/subject");
         let predicate = encode(&database, "http://example.com/predicate");
@@ -587,7 +563,7 @@ mod tests {
 
     #[test]
     fn scan_matches_quoted_triples_through_the_general_path() {
-        let mut database = SparqlDatabase::new();
+        let mut database = KolibrieDB::new();
         let predicate = encode(&database, "http://example.com/p");
         let source = encode(&database, "http://example.com/source");
         let first = encode(&database, "http://example.com/first");
@@ -651,7 +627,7 @@ mod tests {
 
     #[test]
     fn values_keeps_all_undef_and_heterogeneous_union_rows() {
-        let mut database = SparqlDatabase::new();
+        let mut database = KolibrieDB::new();
         let value = encode(&database, "value");
         let plan = PhysicalOperator::union(vec![
             PhysicalOperator::values(vec!["?x".to_string()], vec![vec![Some(value)]]),
@@ -667,7 +643,7 @@ mod tests {
 
 impl DatasetView {
     /// The normal database dataset: the physical default graph plus every
-    pub fn from_database(database: &SparqlDatabase) -> Self {
+    pub fn from_database(database: &KolibrieDB) -> Self {
         Self {
             default_graphs: vec![GraphId::Default],
             named_graphs: database.dataset_index.named_graphs().into_iter().collect(),
@@ -699,24 +675,24 @@ impl DatasetView {
         Self::new(std::iter::empty(), named_graphs)
     }
 
-    /// Whether `GRAPH` may address this graph in the current dataset.
+    /// Whether `GRAPH` may address this graph in the current dataset
     pub fn is_named_visible(&self, graph: GraphId) -> bool {
         matches!(graph, GraphId::Named(_)) && self.named_graphs.contains(&graph)
     }
 }
 
-/// Recursive execution state. An active graph is established by a `GRAPH`
+/// Recursive execution state
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ExecutionContext {
     /// Shared, so deriving a child context per `GRAPH` scope does not rebuild the graph sets
     pub dataset: Arc<DatasetView>,
-    /// Graph established by an enclosing `GRAPH` clause, or `None` at the top
-    /// level, where patterns match the default graph.
+    /// Graph established by an enclosing `GRAPH` clause, or `None` at the top level, where patterns
+    /// match the default graph
     pub active_graph: Option<GraphId>,
 }
 
 impl ExecutionContext {
-    /// A top-level context over `dataset`, with no active graph.
+    /// A top-level context over `dataset`, with no active graph
     pub fn new(dataset: DatasetView) -> Self {
         Self {
             dataset: Arc::new(dataset),
@@ -732,33 +708,25 @@ impl ExecutionContext {
     }
 }
 
-/// Where one of a pattern's positions sends its value.
+/// Where one of a pattern's positions sends its value
 #[derive(Debug, Clone, Copy)]
 enum ScanSlot {
-    /// A fixed term: the candidate must equal it.
+    /// A fixed term: the candidate must equal it
     Constant(u32),
-    /// A variable: the candidate goes in this column, or must agree with it.
+    /// A variable: the candidate goes in this column, or must agree with it
     Column(usize),
-    /// A quoted triple pattern, which binds a variable number of nested variables
-    /// and so takes the general path.
+    /// A quoted triple pattern, which binds a variable number of nested variables and so takes the
+    /// general path
     Quoted,
 }
 
-/// How a scan writes a pattern's matches into rows of its output schema.
-///
-/// Built once per scan rather than per row. The map form resolved `?s`, `?p` and `?o`
-/// by hashing their names again for every candidate quad, which is what a scan does
-/// most of; here each position knows its column before the loop starts.
-///
-/// The output schema is the incoming schema followed by whatever the pattern adds, so
-/// a base row is the incoming row padded with [`UNBOUND`] and needs no remapping.
+/// How a scan writes a pattern's matches into rows of its output schema
 #[derive(Debug)]
 struct ScanLayout {
     schema: Vec<String>,
     subject: ScanSlot,
     predicate: ScanSlot,
     object: ScanSlot,
-    /// Where a variable graph name is written, if the pattern has one.
     graph: Option<usize>,
 }
 
@@ -768,8 +736,6 @@ impl ScanLayout {
         let slot = |term: &Term, schema: &mut Vec<String>| match term {
             Term::Constant(value) => ScanSlot::Constant(*value),
             Term::QuotedTriple(triple) => {
-                // The nested components bind variables too, and they need columns
-                // even though the general path fills them by name.
                 fn add_nested(term: &Term, schema: &mut Vec<String>) {
                     match term {
                         Term::Variable(variable) => {
@@ -831,7 +797,7 @@ impl ScanLayout {
         self.schema.len()
     }
 
-    /// An incoming row widened to the output schema.
+    /// An incoming row widened to the output schema
     fn base_row(&self, incoming: &[u32]) -> Vec<u32> {
         let mut row = Vec::with_capacity(self.width());
         row.extend_from_slice(incoming);
@@ -839,14 +805,14 @@ impl ScanLayout {
         row
     }
 
-    /// Whether any position is a quoted triple pattern.
+    /// Whether any position is a quoted triple pattern
     fn has_quoted(&self) -> bool {
         matches!(self.subject, ScanSlot::Quoted)
             || matches!(self.predicate, ScanSlot::Quoted)
             || matches!(self.object, ScanSlot::Quoted)
     }
 
-    /// The value a slot already has in `row`, which is what an index probe keys on.
+    /// The value a slot already has in `row`, which is what an index probe keys on
     fn probe(&self, slot: ScanSlot, row: &[u32]) -> Option<u32> {
         match slot {
             ScanSlot::Constant(value) => Some(value),
@@ -858,7 +824,7 @@ impl ScanLayout {
         }
     }
 
-    /// The three index-probe keys for a row.
+    /// The three index-probe keys for a row
     fn probe_keys(&self, row: &[u32]) -> (Option<u32>, Option<u32>, Option<u32>) {
         (
             self.probe(self.subject, row),
@@ -867,10 +833,7 @@ impl ScanLayout {
         )
     }
 
-    /// Writes one position's value into `row`, or rejects the candidate.
-    ///
-    /// A variable already bound -- by the incoming row, or by an earlier position of
-    /// this same pattern -- must agree, which is what makes `?x p ?x` a self-join.
+    /// Writes one position's value into `row`, or rejects the candidate
     fn place(&self, slot: ScanSlot, value: u32, row: &mut [u32]) -> bool {
         match slot {
             ScanSlot::Constant(constant) => constant == value,
@@ -887,19 +850,11 @@ impl ScanLayout {
     }
 }
 
-/// How two sequences' columns line up in the sequence their join produces.
-///
-/// Built once per join rather than per row, which is the point of the shape: the
-/// map form resolved every variable name again for every pair of rows it
-/// considered, and a join considers a lot of pairs.
+/// How two sequences' columns line up in the sequence their join produces
 struct JoinLayout {
-    /// The joined schema: the left's columns, then the right's new ones.
     schema: Vec<String>,
-    /// Where each joined column comes from on the left, if anywhere.
     from_left: Vec<Option<usize>>,
-    /// Where each joined column comes from on the right, if anywhere.
     from_right: Vec<Option<usize>>,
-    /// Joined columns both sides carry: the variables a pair must agree on.
     shared: Vec<usize>,
 }
 
@@ -930,11 +885,7 @@ impl JoinLayout {
         }
     }
 
-    /// Merges a pair if they agree on every shared variable.
-    ///
-    /// SPARQL compatibility: the two must agree only where they *both* bind, so a
-    /// variable one side leaves unbound takes the other side's value. That is what
-    /// makes `OPTIONAL` and `VALUES ... UNDEF` join correctly.
+    /// Merges a pair if they agree on every shared variable
     fn merge(&self, left: &[u32], right: &[u32]) -> Option<Vec<u32>> {
         let mut merged = Vec::with_capacity(self.schema.len());
         for column in 0..self.schema.len() {
@@ -950,9 +901,7 @@ impl JoinLayout {
         Some(merged)
     }
 
-    /// A row's key over the shared variables, or `None` if it leaves one unbound.
-    ///
-    /// An unkeyed row cannot be hashed, because it is compatible with anything.
+    /// A row's key over the shared variables, or `None` if it leaves one unbound
     fn key(&self, row: &[u32], side: &[Option<usize>]) -> Option<Vec<u32>> {
         self.shared
             .iter()
@@ -972,7 +921,7 @@ impl ExecutionEngine {
     /// Executes a physical operator and returns string results
     pub fn execute(
         operator: &PhysicalOperator,
-        database: &mut SparqlDatabase,
+        database: &mut KolibrieDB,
     ) -> Vec<HashMap<String, String>> {
         let dataset = DatasetView::from_database(database);
         Self::execute_with_dataset(operator, database, &dataset)
@@ -981,12 +930,11 @@ impl ExecutionEngine {
     /// Executes a plan against an explicit SPARQL dataset and decodes the results
     pub fn execute_with_dataset(
         operator: &PhysicalOperator,
-        database: &mut SparqlDatabase,
+        database: &mut KolibrieDB,
         dataset: &DatasetView,
     ) -> Vec<HashMap<String, String>> {
         let id_results = Self::execute_with_ids_and_dataset(operator, database, dataset);
 
-        // Convert ID results to string results only at the final step
         id_results
             .into_par_iter()
             .chunks(FILTER_LOCK_CHUNK)
@@ -1013,10 +961,7 @@ impl ExecutionEngine {
     }
 
     /// Executes a physical operator and returns ID-based results for performance
-    pub fn execute_with_ids(
-        operator: &PhysicalOperator,
-        database: &mut SparqlDatabase,
-    ) -> Bindings {
+    pub fn execute_with_ids(operator: &PhysicalOperator, database: &mut KolibrieDB) -> Bindings {
         let dataset = DatasetView::from_database(database);
         Self::execute_with_ids_and_dataset(operator, database, &dataset)
     }
@@ -1024,7 +969,7 @@ impl ExecutionEngine {
     /// Executes a plan against an explicit SPARQL dataset
     pub fn execute_with_ids_and_dataset(
         operator: &PhysicalOperator,
-        database: &mut SparqlDatabase,
+        database: &mut KolibrieDB,
         dataset: &DatasetView,
     ) -> Bindings {
         let context = ExecutionContext::new(dataset.clone());
@@ -1034,7 +979,7 @@ impl ExecutionEngine {
     /// Executes a plan with an explicit recursive execution context
     pub fn execute_with_ids_and_context(
         operator: &PhysicalOperator,
-        database: &SparqlDatabase,
+        database: &KolibrieDB,
         context: &ExecutionContext,
     ) -> Bindings {
         Self::execute_with_ids_and_input(operator, database, context, Bindings::unit())
@@ -1043,14 +988,10 @@ impl ExecutionEngine {
     /// Executes a plan using the supplied solution sequence as input
     pub fn execute_with_ids_and_input(
         operator: &PhysicalOperator,
-        database: &SparqlDatabase,
+        database: &KolibrieDB,
         context: &ExecutionContext,
         incoming: Bindings,
     ) -> Bindings {
-        // `PhysicalOperator::output_variables` has to name every variable the plan can
-        // bind, because a schema-and-tuples result has nowhere to put one it missed.
-        // Checking it here, in debug only, puts every test and example in the
-        // workspace behind that function rather than behind a handful of unit tests.
         #[cfg(debug_assertions)]
         let declared = operator.output_variables(incoming.schema());
 
@@ -1073,7 +1014,7 @@ impl ExecutionEngine {
 
     fn execute_with_ids_and_input_inner(
         operator: &PhysicalOperator,
-        database: &SparqlDatabase,
+        database: &KolibrieDB,
         context: &ExecutionContext,
         mut incoming: Bindings,
     ) -> Bindings {
@@ -1093,7 +1034,6 @@ impl ExecutionEngine {
                 let mut results = Bindings::empty();
                 let last = branches.len().saturating_sub(1);
                 for (index, branch) in branches.iter().enumerate() {
-                    // Every branch evaluates against the same input, so only the last one may consume it
                     let branch_input = if index == last {
                         std::mem::take(&mut incoming)
                     } else {
@@ -1114,9 +1054,6 @@ impl ExecutionEngine {
             PhysicalOperator::Filter { input, condition } => {
                 let input_results =
                     Self::execute_with_ids_and_input(input, database, context, incoming);
-                // The guard is taken per chunk rather than per row: one atomic.
-                // Rows stay as cells throughout; rebuilding a map to ask the
-                // condition about one was most of what this used to cost.
                 let (schema, cells) = input_results.into_parts();
                 let kept: Vec<Vec<u32>> = cells
                     .into_par_iter()
@@ -1137,14 +1074,11 @@ impl ExecutionEngine {
                 let input_results =
                     Self::execute_with_ids_and_input(input, database, context, incoming);
 
-                // Strip '?' prefix from projection variables for matching
                 let stripped_vars: Vec<String> = variables
                     .iter()
                     .map(|v| Self::normalize_variable(v).to_string())
                     .collect();
 
-                // Projection is a column selection: the columns are resolved once
-                // and every row is copied straight across them.
                 let columns: Vec<usize> = stripped_vars
                     .iter()
                     .filter_map(|variable| input_results.column(variable))
@@ -1204,7 +1138,6 @@ impl ExecutionEngine {
                 Self::join_solution_sequences(incoming, content.clone())
             }
             PhysicalOperator::Subquery { inner, spec } => {
-                // A subquery has its own variable scope and is evaluated once
                 let inner_results =
                     Self::execute_with_ids_and_input(inner, database, context, Bindings::unit());
                 let finalized = Self::finalize_subquery(inner_results, spec, database);
@@ -1221,7 +1154,6 @@ impl ExecutionEngine {
                 let output_var = Self::normalize_variable(output_variable);
 
                 if function_name == "CONCAT" {
-                    // Decode all needed values first
                     let dict = database.dictionary.read();
                     let decoded_values: Vec<Vec<String>> = input_results
                         .iter()
@@ -1245,7 +1177,6 @@ impl ExecutionEngine {
                         .collect();
                     drop(dict);
 
-                    // Now encode the concatenated results
                     let mut dict_write = database.dictionary.write();
                     let encoded: Vec<u32> = decoded_values
                         .iter()
@@ -1256,7 +1187,6 @@ impl ExecutionEngine {
 
                     input_results
                 } else if let Some(func) = database.udf(function_name.as_str()) {
-                    // Similar fix for UDF
                     let dict = database.dictionary.read();
                     let decoded_args: Vec<Vec<String>> = input_results
                         .iter()
@@ -1298,9 +1228,6 @@ impl ExecutionEngine {
                     || function_name == "OBJECT"
                 {
                     let qt_store = database.quoted_triple_store.read().unwrap();
-                    // One component per solution, then one column. A solution whose
-                    // argument is not a quoted triple contributes UNBOUND, which is
-                    // what not inserting into its map used to mean.
                     let components: Vec<u32> = input_results
                         .iter()
                         .map(|row| {
@@ -1329,9 +1256,6 @@ impl ExecutionEngine {
                     input_results
                 } else if function_name == "TRIPLE" {
                     if arguments.len() == 3 {
-                        // One quoted triple per solution, then one column. A solution
-                        // missing any component contributes UNBOUND, which is what
-                        // not inserting into its map used to mean.
                         let quoted: Vec<u32> = input_results
                             .iter()
                             .map(|row| {
@@ -1392,7 +1316,6 @@ impl ExecutionEngine {
                     .map(|v| Self::normalize_variable(v).to_string())
                     .collect();
 
-                // Convert VALUES data to result rows
                 let mut results = Bindings::empty();
 
                 for value_row in values {
@@ -1404,7 +1327,6 @@ impl ExecutionEngine {
                         }
                     }
 
-                    // An all-UNDEF row is still the unit solution mapping
                     results.push(row);
                 }
 
@@ -1464,11 +1386,7 @@ impl ExecutionEngine {
         value.starts_with('?') || value.starts_with('$')
     }
 
-    fn finalize_subquery(
-        rows: Bindings,
-        spec: &SubquerySpec,
-        database: &SparqlDatabase,
-    ) -> Bindings {
+    fn finalize_subquery(rows: Bindings, spec: &SubquerySpec, database: &KolibrieDB) -> Bindings {
         let mut rows = Self::aggregate_subquery_rows(rows, spec, database);
         Self::apply_subquery_order(&mut rows, &spec.order_conditions, database);
 
@@ -1477,7 +1395,6 @@ impl ExecutionEngine {
                 .iter()
                 .map(Self::subquery_output_variable)
                 .collect();
-            // Projection selects columns rather than rewriting every row's map.
             let kept: Vec<String> = rows
                 .schema()
                 .iter()
@@ -1517,7 +1434,7 @@ impl ExecutionEngine {
     fn aggregate_subquery_rows(
         rows: Bindings,
         spec: &SubquerySpec,
-        database: &SparqlDatabase,
+        database: &KolibrieDB,
     ) -> Bindings {
         let aggregates: Vec<&SubqueryProjection> = spec
             .projection
@@ -1545,7 +1462,6 @@ impl ExecutionEngine {
         groups
             .into_iter()
             .map(|(key, group)| {
-                // Only the grouping key and the aggregates describe the group
                 let mut result = HashMap::new();
                 for (variable, id) in spec.group_vars.iter().zip(key) {
                     if let Some(id) = id {
@@ -1594,17 +1510,12 @@ impl ExecutionEngine {
     fn apply_subquery_order(
         rows: &mut Bindings,
         conditions: &[(String, SortDirection)],
-        database: &SparqlDatabase,
+        database: &KolibrieDB,
     ) {
         if conditions.is_empty() {
             return;
         }
 
-        // Decode each ordering value once. Decoding inside the comparator
-        //
-        // Taken, not copied: the sorted rows are pushed back below, so leaving the
-        // originals in place would append the sorted sequence to the unsorted one and
-        // a following LIMIT would keep the wrong rows.
         let taken = std::mem::take(rows);
         let mut keyed: Vec<(Vec<Option<String>>, HashMap<String, u32>)> = taken
             .into_iter()
@@ -1644,7 +1555,7 @@ impl ExecutionEngine {
     }
 
     fn execute_graph_with_ids(
-        database: &SparqlDatabase,
+        database: &KolibrieDB,
         input: &PhysicalOperator,
         graph: &GraphTerm,
         context: &ExecutionContext,
@@ -1716,16 +1627,14 @@ impl ExecutionEngine {
     }
 
     fn execute_quad_scan_with_ids(
-        database: &SparqlDatabase,
+        database: &KolibrieDB,
         pattern: &QuadPattern,
         context: &ExecutionContext,
         incoming: Bindings,
     ) -> Bindings {
-        // Columns resolved once for the whole scan, not once per candidate quad.
         let layout = ScanLayout::new(pattern, incoming.schema());
         let mut rows: Vec<Vec<u32>> = Vec::new();
 
-        // The visible graph set is the same for every incoming row, so it is built once
         let visible_graphs: Vec<GraphId> = if matches!(pattern.graph, GraphTerm::Variable(_)) {
             let mut graphs: Vec<GraphId> = context.dataset.named_graphs.iter().copied().collect();
             graphs.sort_unstable();
@@ -1767,7 +1676,6 @@ impl ExecutionEngine {
                 GraphTerm::Variable(_) => {
                     let column = layout.graph.expect("a variable graph has a column");
                     if base[column] != UNBOUND {
-                        // The incoming row already fixed the graph name.
                         let graph = GraphId::Named(base[column]);
                         if context.dataset.is_named_visible(graph)
                             && database.dataset_index.graph_exists(graph)
@@ -1803,7 +1711,7 @@ impl ExecutionEngine {
     }
 
     fn scan_query_default(
-        database: &SparqlDatabase,
+        database: &KolibrieDB,
         pattern: &QuadPattern,
         layout: &ScanLayout,
         context: &ExecutionContext,
@@ -1811,7 +1719,6 @@ impl ExecutionEngine {
         rows: &mut Vec<Vec<u32>>,
     ) {
         let (subject, predicate, object) = layout.probe_keys(base);
-        // Merging several graphs into one query default can surface the same triple twice
         let merges_graphs = context.dataset.default_graphs.len() > 1;
         let mut seen = HashSet::new();
 
@@ -1841,7 +1748,7 @@ impl ExecutionEngine {
     }
 
     fn scan_one_graph(
-        database: &SparqlDatabase,
+        database: &KolibrieDB,
         pattern: &QuadPattern,
         layout: &ScanLayout,
         graph: GraphId,
@@ -1849,10 +1756,6 @@ impl ExecutionEngine {
         base: &[u32],
         rows: &mut Vec<Vec<u32>>,
     ) {
-        // The graph binding does not depend on the candidate quad, so it is placed
-        // once per row rather than per quad -- and only copied when there is one to
-        // place. A variable graph calls this once per visible graph per row, so an
-        // unconditional copy here was an allocation per pair.
         let mut placed: Option<Vec<u32>> = None;
         if let (Some(graph_id), Some(column)) = (fresh_graph, layout.graph) {
             if base[column] != UNBOUND && base[column] != graph_id {
@@ -1887,7 +1790,7 @@ impl ExecutionEngine {
 
     #[allow(clippy::too_many_arguments)]
     fn match_quad(
-        database: &SparqlDatabase,
+        database: &KolibrieDB,
         pattern: &QuadPattern,
         layout: &ScanLayout,
         subject: u32,
@@ -1899,8 +1802,6 @@ impl ExecutionEngine {
     ) {
         let _ = fresh_graph;
 
-        // Quoted triples bind a variable number of nested variables, so they keep the
-        // general map-based path. Every other pattern writes at most four cells.
         if layout.has_quoted() {
             let mut bindings: HashMap<String, u32> = layout
                 .schema
@@ -1942,7 +1843,7 @@ impl ExecutionEngine {
     }
 
     fn match_term_with_store(
-        database: &SparqlDatabase,
+        database: &KolibrieDB,
         term: &Term,
         value: u32,
         bindings: &mut HashMap<String, u32>,
@@ -1976,10 +1877,11 @@ impl ExecutionEngine {
         }
     }
 
-    /// Feeds a solution sequence into a dependent plan in parallel chunks, concatenated in chunk order to match a sequential pass
+    /// Feeds a solution sequence into a dependent plan in parallel chunks, concatenated in chunk
+    /// order to match a sequential pass
     fn execute_bind_join(
         right: &PhysicalOperator,
-        database: &SparqlDatabase,
+        database: &KolibrieDB,
         context: &ExecutionContext,
         left_results: Bindings,
     ) -> Bindings {
@@ -2032,7 +1934,8 @@ impl ExecutionEngine {
         Bindings::from_parts(layout.schema.clone(), rows)
     }
 
-    /// Build/probe join that builds on the right side and probes in parallel with the left, so emitted order matches the nested loop
+    /// Build/probe join that builds on the right side and probes in parallel with the left, so
+    /// emitted order matches the nested loop
     fn hash_join_solution_sequences(left: Bindings, right: Bindings) -> Bindings {
         if left.is_empty() || right.is_empty() {
             return Bindings::empty();
@@ -2052,7 +1955,6 @@ impl ExecutionEngine {
             }
         }
 
-        // Only a left row that leaves a key variable unbound has to consider
         let any_left_row_unkeyed = left
             .cells()
             .iter()
@@ -2067,7 +1969,6 @@ impl ExecutionEngine {
             .cells()
             .par_iter()
             .flat_map_iter(|left_row| {
-                // A fully bound left row probes the table plus the unhashable rows; a partially bound one can match anything
                 let (probed, residual) = match layout.key(left_row, &layout.from_left) {
                     Some(key) => (
                         table.get(&key).map(Vec::as_slice).unwrap_or(&[]),
@@ -2089,7 +1990,7 @@ impl ExecutionEngine {
         mut input_results: Bindings,
         predictions: Vec<String>,
         output_variable: &str,
-        database: &SparqlDatabase,
+        database: &KolibrieDB,
     ) -> Bindings {
         let output_var = output_variable.strip_prefix('?').unwrap_or(output_variable);
 

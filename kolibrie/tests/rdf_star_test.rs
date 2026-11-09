@@ -8,23 +8,22 @@
  * you can obtain one at https://mozilla.org/MPL/2.0/.
  */
 
+use kolibrie::database::KolibrieDB;
 use kolibrie::execute_query::execute;
-use kolibrie::sparql_database::SparqlDatabase;
 use shared::quoted_triple_store::{is_quoted_triple_id, QuotedTripleStore};
 
-fn default_triples(db: &SparqlDatabase) -> Vec<shared::triple::Triple> {
+fn default_triples(db: &KolibrieDB) -> Vec<shared::triple::Triple> {
     db.query_default_triples(None, None, None)
 }
 
-fn default_len(db: &SparqlDatabase) -> usize {
+fn default_len(db: &KolibrieDB) -> usize {
     default_triples(db).len()
 }
 
-fn default_is_empty(db: &SparqlDatabase) -> bool {
+fn default_is_empty(db: &KolibrieDB) -> bool {
     default_triples(db).is_empty()
 }
 
-// QuotedTripleStore unit tests
 #[test]
 fn test_quoted_triple_store_encode_decode() {
     let mut store = QuotedTripleStore::new();
@@ -54,28 +53,25 @@ fn test_quoted_triple_store_nested() {
     assert_eq!(o, 5);
 }
 
-// N-Triples-star parsing tests
 #[test]
 fn test_ntriples_star_basic_quoted_triple() {
-    let mut db = SparqlDatabase::new();
+    let mut db = KolibrieDB::new();
     let ntriples = r#"<< <http://example.org/emp38> <http://example.org/jobTitle> <http://example.org/AssistantDesigner> >> <http://example.org/statedBy> <http://example.org/emp22> .
 "#;
     db.parse_ntriples_and_add(ntriples);
 
-    // The outer triple should exist: qt_id :statedBy :emp22
     assert!(
         !default_is_empty(&db),
         "Should have parsed the outer triple"
     );
 
-    // The quoted triple store should have one entry
     let qt = db.quoted_triples();
     assert_eq!(qt.len(), 1, "Should have one quoted triple");
 }
 
 #[test]
 fn test_ntriples_star_multiple_quoted_triples() {
-    let mut db = SparqlDatabase::new();
+    let mut db = KolibrieDB::new();
     let ntriples = r#"<< <http://example.org/a> <http://example.org/b> <http://example.org/c> >> <http://example.org/source> <http://example.org/x> .
 << <http://example.org/d> <http://example.org/e> <http://example.org/f> >> <http://example.org/source> <http://example.org/y> .
 "#;
@@ -87,9 +83,7 @@ fn test_ntriples_star_multiple_quoted_triples() {
 
 #[test]
 fn test_ntriples_star_literal_in_quoted_triple() {
-    // Regression: literals inside << >> used to trigger premature parts.push,
-    // producing 4 parts instead of 3 and silently discarding the triple.
-    let mut db = SparqlDatabase::new();
+    let mut db = KolibrieDB::new();
     let ntriples = r#"<< <http://example.org/sensor/S1> <http://example.org/temperature> "92" >> <http://example.org/reliability> "0.95" .
 << <http://example.org/sensor/S2> <http://example.org/temperature> "71" >> <http://example.org/reliability> "0.80" .
 "#;
@@ -104,10 +98,9 @@ fn test_ntriples_star_literal_in_quoted_triple() {
     assert_eq!(qt.len(), 2, "Should have two quoted triples");
 }
 
-// Turtle-star parsing tests
 #[test]
 fn test_turtle_star_basic() {
-    let mut db = SparqlDatabase::new();
+    let mut db = KolibrieDB::new();
     let turtle = r#"<< <http://example.org/emp38> <http://example.org/jobTitle> <http://example.org/AssistantDesigner> >> <http://example.org/statedBy> <http://example.org/emp22> ."#;
     db.parse_turtle(turtle);
 
@@ -119,15 +112,13 @@ fn test_turtle_star_basic() {
     assert_eq!(qt.len(), 1, "Should have one quoted triple");
 }
 
-// Dictionary decode_term tests
 #[test]
 fn test_dictionary_decode_term_with_quoted_triple() {
-    let mut db = SparqlDatabase::new();
+    let mut db = KolibrieDB::new();
     let ntriples = r#"<< <http://example.org/a> <http://example.org/b> <http://example.org/c> >> <http://example.org/p> <http://example.org/x> .
 "#;
     db.parse_ntriples_and_add(ntriples);
 
-    // Get the quoted triple ID
     let qt = db.quoted_triples();
     let qt_id = *qt.components_to_id.values().next().unwrap();
     let dict = db.dictionary();
@@ -159,10 +150,9 @@ fn test_dictionary_decode_term_with_quoted_triple() {
     );
 }
 
-// SPARQL-star query tests (via Streamertail optimizer)
 #[test]
 fn test_sparql_star_query_constant_quoted_triple() {
-    let mut db = SparqlDatabase::new();
+    let mut db = KolibrieDB::new();
     let ntriples = r#"<< <http://example.org/emp38> <http://example.org/jobTitle> <http://example.org/AssistantDesigner> >> <http://example.org/statedBy> <http://example.org/emp22> .
 "#;
     db.parse_ntriples_and_add(ntriples);
@@ -187,14 +177,13 @@ fn test_sparql_star_query_constant_quoted_triple() {
 
 #[test]
 fn test_sparql_star_query_variable_in_quoted_triple() {
-    let mut db = SparqlDatabase::new();
+    let mut db = KolibrieDB::new();
     let ntriples = r#"<< <http://example.org/emp38> <http://example.org/jobTitle> <http://example.org/AssistantDesigner> >> <http://example.org/statedBy> <http://example.org/emp22> .
 << <http://example.org/emp39> <http://example.org/jobTitle> <http://example.org/Designer> >> <http://example.org/statedBy> <http://example.org/emp23> .
 "#;
     db.parse_ntriples_and_add(ntriples);
     db.get_or_build_stats();
 
-    // Query with variable inside quoted triple
     let query = r#"
         SELECT ?emp ?title ?who WHERE {
             << ?emp <http://example.org/jobTitle> ?title >> <http://example.org/statedBy> ?who .
@@ -212,7 +201,6 @@ fn test_sparql_star_query_variable_in_quoted_triple() {
     );
 }
 
-// Debug: verify parser output for quoted triples in WHERE
 #[test]
 fn test_sparql_parser_quoted_triple_pattern() {
     use kolibrie::parser::parse_where;
@@ -234,7 +222,6 @@ fn test_sparql_parser_quoted_triple_pattern() {
     assert!(s.ends_with(">>"), "Subject should end with >>: '{}'", s);
 }
 
-// Parser combinator tests for parse_quoted_triple
 #[test]
 fn test_parse_quoted_triple_simple() {
     use kolibrie::parser::parse_quoted_triple;
@@ -289,11 +276,10 @@ fn test_parse_triple_block_with_quoted_subject() {
     );
 }
 
-// SparqlDatabase helper tests
 #[test]
 fn test_split_quoted_triple_content() {
     let content = "<http://example.org/a> <http://example.org/b> <http://example.org/c>";
-    let (s, p, o) = SparqlDatabase::split_quoted_triple_content(content);
+    let (s, p, o) = KolibrieDB::split_quoted_triple_content(content);
     assert_eq!(s, "<http://example.org/a>");
     assert_eq!(p, "<http://example.org/b>");
     assert_eq!(o, "<http://example.org/c>");
@@ -302,7 +288,7 @@ fn test_split_quoted_triple_content() {
 #[test]
 fn test_split_quoted_triple_content_nested() {
     let content = "<< <http://a> <http://b> <http://c> >> <http://d> <http://e>";
-    let (s, p, o) = SparqlDatabase::split_quoted_triple_content(content);
+    let (s, p, o) = KolibrieDB::split_quoted_triple_content(content);
     assert_eq!(s, "<< <http://a> <http://b> <http://c> >>");
     assert_eq!(p, "<http://d>");
     assert_eq!(o, "<http://e>");
@@ -310,14 +296,14 @@ fn test_split_quoted_triple_content_nested() {
 
 #[test]
 fn test_encode_term_star_basic() {
-    let db = SparqlDatabase::new();
+    let db = KolibrieDB::new();
     let id = db.encode_term_star("http://example.org/foo");
     assert!(!is_quoted_triple_id(id));
 }
 
 #[test]
 fn test_encode_term_star_quoted_triple() {
-    let db = SparqlDatabase::new();
+    let db = KolibrieDB::new();
     let id = db.encode_term_star("<< http://a http://b http://c >>");
     assert!(is_quoted_triple_id(id));
 
@@ -331,7 +317,7 @@ fn test_encode_term_star_quoted_triple() {
 
 #[test]
 fn test_decode_any_regular() {
-    let db = SparqlDatabase::new();
+    let db = KolibrieDB::new();
     let id = db.encode_term_star("http://example.org/test");
     let decoded = db.decode_any(id).unwrap();
     assert_eq!(decoded, "http://example.org/test");
@@ -339,7 +325,7 @@ fn test_decode_any_regular() {
 
 #[test]
 fn test_decode_any_quoted_triple() {
-    let db = SparqlDatabase::new();
+    let db = KolibrieDB::new();
     let id = db.encode_term_star("<< http://a http://b http://c >>");
     let decoded = db.decode_any(id).unwrap();
     assert!(decoded.contains("http://a"));
@@ -349,7 +335,6 @@ fn test_decode_any_quoted_triple() {
     assert!(decoded.ends_with(">>"));
 }
 
-// Built-in SPARQL-star function tests
 #[test]
 fn test_parse_function_call_istriple() {
     use kolibrie::parser::parse_filter;
@@ -363,20 +348,18 @@ fn test_parse_function_call_subject() {
     use kolibrie::parser::parse_filter;
     let input = "FILTER(SUBJECT(?t))";
     let result = parse_filter(input);
-    // SUBJECT returns a value, not a boolean, but it should still parse
     assert!(result.is_ok(), "Should parse FILTER(SUBJECT(?t))");
 }
 
 #[test]
 fn test_bind_subject_predicate_object() {
-    let mut db = SparqlDatabase::new();
+    let mut db = KolibrieDB::new();
     let ntriples = r#"<< <http://example.org/alice> <http://example.org/knows> <http://example.org/bob> >> <http://example.org/source> <http://example.org/doc1> .
 "#;
     db.parse_ntriples_and_add(ntriples);
     db.build_all_indexes();
     db.get_or_build_stats();
 
-    // Query using BIND(SUBJECT(?t) AS ?s)
     let query = r#"
         SELECT ?t ?s WHERE {
             ?t <http://example.org/source> <http://example.org/doc1> .
@@ -387,7 +370,6 @@ fn test_bind_subject_predicate_object() {
         .expect("query should run")
         .into_rows();
     assert_eq!(results.len(), 1, "Should return one result");
-    // The subject of the quoted triple should be alice
     let row = &results[0];
     let has_alice = row.iter().any(|v| v.contains("alice"));
     assert!(has_alice, "SUBJECT should extract alice, got: {:?}", row);
@@ -395,14 +377,13 @@ fn test_bind_subject_predicate_object() {
 
 #[test]
 fn test_bind_triple_constructor() {
-    let mut db = SparqlDatabase::new();
+    let mut db = KolibrieDB::new();
     let ntriples = r#"<http://example.org/alice> <http://example.org/knows> <http://example.org/bob> .
 "#;
     db.parse_ntriples_and_add(ntriples);
     db.build_all_indexes();
     db.get_or_build_stats();
 
-    // Use BIND(TRIPLE(...) AS ?t) to construct a quoted triple
     let query = r#"
         SELECT ?s ?p ?o ?t WHERE {
             ?s ?p ?o .
@@ -413,7 +394,6 @@ fn test_bind_triple_constructor() {
         .expect("query should run")
         .into_rows();
     assert_eq!(results.len(), 1, "Should return one result");
-    // The constructed triple should contain <<
     let row = &results[0];
     let has_qt = row.iter().any(|v| v.contains("<<"));
     assert!(
@@ -423,22 +403,18 @@ fn test_bind_triple_constructor() {
     );
 }
 
-// INSERT/DELETE tests
 #[test]
 fn test_insert_quoted_triple() {
-    let mut db = SparqlDatabase::new();
+    let mut db = KolibrieDB::new();
 
-    // Use handle_update for INSERT
     let result = update_body(
         &mut db,
         r#"INSERT { << <http://example.org/alice> <http://example.org/knows> <http://example.org/bob> >> <http://example.org/source> <http://example.org/doc1> . }"#,
     );
     assert_eq!(result, "Update Successful");
 
-    // Verify the triple was inserted
     assert!(!default_is_empty(&db), "Triple should have been inserted");
 
-    // Verify the quoted triple store has an entry
     let qt_store = db.quoted_triples();
     assert!(
         !qt_store.is_empty(),
@@ -448,7 +424,7 @@ fn test_insert_quoted_triple() {
 
 #[test]
 fn test_insert_normal_triple() {
-    let mut db = SparqlDatabase::new();
+    let mut db = KolibrieDB::new();
 
     let result = update_body(
         &mut db,
@@ -460,14 +436,13 @@ fn test_insert_normal_triple() {
 
 #[test]
 fn test_delete_basic() {
-    let mut db = SparqlDatabase::new();
+    let mut db = KolibrieDB::new();
     let ntriples = r#"<http://example.org/alice> <http://example.org/knows> <http://example.org/bob> .
 <http://example.org/alice> <http://example.org/name> "Alice" .
 "#;
     db.parse_ntriples_and_add(ntriples);
     assert_eq!(default_len(&db), 2, "Should start with 2 triples");
 
-    // Use handle_update for simple DELETE
     let result = update_body(
         &mut db,
         r#"DELETE { <http://example.org/alice> <http://example.org/knows> <http://example.org/bob> . }"#,
@@ -478,7 +453,7 @@ fn test_delete_basic() {
 
 #[test]
 fn test_delete_quoted_triple() {
-    let mut db = SparqlDatabase::new();
+    let mut db = KolibrieDB::new();
     let ntriples = r#"<< <http://example.org/alice> <http://example.org/knows> <http://example.org/bob> >> <http://example.org/source> <http://example.org/doc1> .
 "#;
     db.parse_ntriples_and_add(ntriples);
@@ -494,7 +469,7 @@ fn test_delete_quoted_triple() {
 
 #[test]
 fn test_delete_where() {
-    let mut db = SparqlDatabase::new();
+    let mut db = KolibrieDB::new();
     let ntriples = r#"<http://example.org/alice> <http://example.org/knows> <http://example.org/bob> .
 <http://example.org/alice> <http://example.org/knows> <http://example.org/carol> .
 <http://example.org/alice> <http://example.org/name> "Alice" .
@@ -504,7 +479,6 @@ fn test_delete_where() {
     db.get_or_build_stats();
     assert_eq!(default_len(&db), 3, "Should start with 3 triples");
 
-    // DELETE WHERE — delete all "knows" triples
     let delete_query = r#"
         DELETE { ?s <http://example.org/knows> ?o . }
         WHERE { ?s <http://example.org/knows> ?o . }
@@ -520,10 +494,9 @@ fn test_delete_where() {
     );
 }
 
-// Serialization tests
 #[test]
 fn test_generate_ntriples_basic() {
-    let mut db = SparqlDatabase::new();
+    let mut db = KolibrieDB::new();
     let ntriples = r#"<http://example.org/alice> <http://example.org/knows> <http://example.org/bob> .
 "#;
     db.parse_ntriples_and_add(ntriples);
@@ -546,7 +519,7 @@ fn test_generate_ntriples_basic() {
 
 #[test]
 fn test_generate_ntriples_star() {
-    let mut db = SparqlDatabase::new();
+    let mut db = KolibrieDB::new();
     let ntriples = r#"<< <http://example.org/alice> <http://example.org/knows> <http://example.org/bob> >> <http://example.org/source> <http://example.org/doc1> .
 "#;
     db.parse_ntriples_and_add(ntriples);
@@ -572,14 +545,13 @@ fn test_generate_ntriples_star() {
 
 #[test]
 fn test_generate_turtle_basic() {
-    let mut db = SparqlDatabase::new();
+    let mut db = KolibrieDB::new();
     let ntriples = r#"<http://example.org/alice> <http://example.org/knows> <http://example.org/bob> .
 <http://example.org/alice> <http://example.org/name> "Alice" .
 "#;
     db.parse_ntriples_and_add(ntriples);
 
     let output = db.generate_turtle();
-    // Should group by subject — alice appears once as subject, with ; separating predicates
     let alice_count = output.matches("<http://example.org/alice>").count();
     assert_eq!(
         alice_count, 1,
@@ -592,7 +564,7 @@ fn test_generate_turtle_basic() {
 
 #[test]
 fn test_generate_turtle_star() {
-    let mut db = SparqlDatabase::new();
+    let mut db = KolibrieDB::new();
     let ntriples = r#"<< <http://example.org/alice> <http://example.org/knows> <http://example.org/bob> >> <http://example.org/source> <http://example.org/doc1> .
 "#;
     db.parse_ntriples_and_add(ntriples);
@@ -602,10 +574,9 @@ fn test_generate_turtle_star() {
     assert!(output.contains(">>"), "Should render quoted triple closing");
 }
 
-// handle_update with proper parsers
 #[test]
 fn test_handle_update_insert() {
-    let mut db = SparqlDatabase::new();
+    let mut db = KolibrieDB::new();
     let result = update_body(
         &mut db,
         r#"INSERT { <http://example.org/a> <http://example.org/b> <http://example.org/c> . }"#,
@@ -616,7 +587,7 @@ fn test_handle_update_insert() {
 
 #[test]
 fn test_handle_update_delete() {
-    let mut db = SparqlDatabase::new();
+    let mut db = KolibrieDB::new();
     update_body(
         &mut db,
         r#"INSERT { <http://example.org/a> <http://example.org/b> <http://example.org/c> . }"#,
@@ -633,7 +604,7 @@ fn test_handle_update_delete() {
 
 #[test]
 fn test_handle_update_insert_quoted_triple() {
-    let mut db = SparqlDatabase::new();
+    let mut db = KolibrieDB::new();
     let result = update_body(
         &mut db,
         r#"INSERT { << <http://example.org/a> <http://example.org/b> <http://example.org/c> >> <http://example.org/src> <http://example.org/d> . }"#,
@@ -644,7 +615,7 @@ fn test_handle_update_insert_quoted_triple() {
     assert!(!qt_store.is_empty(), "QuotedTripleStore should have entry");
 }
 
-/// The body of the protocol's update outcome, which `db.handle_update` used to return.
-fn update_body(db: &mut SparqlDatabase, update: &str) -> String {
+/// The body of the protocol's update outcome, which `db.handle_update` used to return
+fn update_body(db: &mut KolibrieDB, update: &str) -> String {
     kolibrie::sparql_protocol::update_result(db, update).1
 }

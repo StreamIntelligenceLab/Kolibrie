@@ -9,50 +9,27 @@
  */
 
 //! Parser for the **past-only, integer, arity-≤2** fragment of MeTeoR's textual
-//! DatalogMTL syntax. Used to drive the datalogmtl engine from the same corpus
-//! files that feed the MeTeoR reference reasoner, so results can be diffed.
-//!
-//! Supported fragment:
-//!   - Operators (past): `Boxminus[a,b]`, `Diamondminus[a,b]`, `L Since[a,b] R`.
-//!     Operators may stack (`Boxminus[1,2]Diamondminus[0,1]A(X)`).
-//!   - Plain (operator-free) rule heads only.
-//!   - Closed integer intervals `[a,b]` (and single point `[a]`); open bounds rejected.
-//!   - Predicate arity 1 or 2. Arity 0 (propositional) and arity ≥3 rejected.
-//!
-//! RDF mapping (arity ≤2):
-//!   - unary `A(x)`   ↔ triple `(x, rdf:type, A)`
-//!   - binary `C(x,y)` ↔ triple `(x, C, y)`
-//!
-//! Future operators (`Boxplus`/`Diamondplus`/`Until`) and openness are outside the
-//! fragment and produce a descriptive error.
 
 use crate::syntax::{DatalogMTLRule, Interval, Mode, TemporalAtom};
 use shared::term_encoder::SharedTerms;
 use shared::terms::{Term, TriplePattern};
 use shared::triple::Triple;
 
-/// Full IRI for the `rdf:type` predicate used to encode unary atoms.
+/// Full IRI for the `rdf:type` predicate used to encode unary atoms
 pub const RDF_TYPE: &str = "http://www.w3.org/1999/02/22-rdf-syntax-ns#type";
 
-/// A grounded temporal fact with a closed integer validity interval `[start, end]`.
+/// A grounded temporal fact with a closed integer validity interval `[start, end]`
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TemporalFact {
-    /// The fact, with terms already interned.
+    /// The fact, with terms already interned
     pub triple: Triple,
-    /// First time it holds, inclusive.
+    /// First time it holds, inclusive
     pub start: u64,
-    /// Last time it holds, inclusive. Equal to `start` for a single-point fact,
-    /// which is how the surface syntax's `[a]` form parses.
+    /// Last time it holds, inclusive
     pub end: u64,
 }
 
-// ────────────────────────────────────────────────────────────────
-// Public entry points
-// ────────────────────────────────────────────────────────────────
-
-/// Parse a whole program (one rule per non-empty, non-comment line). In `Static`
-/// mode future operators (`Boxplus`/`Diamondplus`/`Until`) are accepted; in
-/// `Streaming` mode they are rejected (they require the whole timeline).
+/// Parse a whole program (one rule per non-empty, non-comment line)
 pub fn parse_program(
     text: &str,
     dict: &SharedTerms,
@@ -71,7 +48,7 @@ pub fn parse_program(
     Ok(rules)
 }
 
-/// Parse a data file (one fact per non-empty, non-comment line).
+/// Parse a data file (one fact per non-empty, non-comment line)
 pub fn parse_data(text: &str, dict: &SharedTerms) -> Result<Vec<TemporalFact>, String> {
     let mut facts = Vec::new();
     for (i, raw) in text.lines().enumerate() {
@@ -86,10 +63,6 @@ pub fn parse_data(text: &str, dict: &SharedTerms) -> Result<Vec<TemporalFact>, S
     Ok(facts)
 }
 
-// ────────────────────────────────────────────────────────────────
-// Rule parsing
-// ────────────────────────────────────────────────────────────────
-
 fn parse_rule(
     line: &str,
     _lineno: usize,
@@ -103,7 +76,6 @@ fn parse_rule(
         return Err("negation ('||') is outside the supported fragment".into());
     }
 
-    // Head must be a plain atom (no temporal operator), in either mode.
     if any_operator_prefix(head_str)
         || find_kw_depth0(head_str, "Since").is_some()
         || find_kw_depth0(head_str, "Until").is_some()
@@ -130,14 +102,12 @@ fn parse_rule(
     })
 }
 
-/// Parse a single body literal into a (possibly nested) `TemporalAtom`.
+/// Parse a single body literal into a (possibly nested) `TemporalAtom`
 fn parse_literal(s: &str, dict: &SharedTerms, mode: Mode) -> Result<TemporalAtom, String> {
-    // Binary Since (past): `L Since[a,b] R` (whitespace already stripped).
     if let Some(idx) = find_kw_depth0(s, "Since") {
         let (interval, phi, psi) = parse_binary(s, idx, "Since", dict, mode)?;
         return Ok(TemporalAtom::Since { interval, phi, psi });
     }
-    // Binary Until (future, static only).
     if let Some(idx) = find_kw_depth0(s, "Until") {
         if mode != Mode::Static {
             return Err("Until (future operator) requires static mode".into());
@@ -146,7 +116,6 @@ fn parse_literal(s: &str, dict: &SharedTerms, mode: Mode) -> Result<TemporalAtom
         return Ok(TemporalAtom::Until { interval, phi, psi });
     }
 
-    // Peel stacked unary operators (outermost first).
     let mut ops: Vec<(OpKind, Interval)> = Vec::new();
     let mut rest = s;
     loop {
@@ -178,7 +147,7 @@ fn parse_literal(s: &str, dict: &SharedTerms, mode: Mode) -> Result<TemporalAtom
     Ok(atom)
 }
 
-/// Split `L <kw>[a,b] R` at `idx` (start of `kw`) into (interval, phi, psi).
+/// Split `L <kw>[a,b] R` at `idx` (start of `kw`) into (interval, phi, psi)
 fn parse_binary(
     s: &str,
     idx: usize,
@@ -215,7 +184,7 @@ impl OpKind {
     }
 }
 
-/// A supported leading operator keyword (past always; future only in `Static`).
+/// A supported leading operator keyword (past always; future only in `Static`)
 fn leading_operator(s: &str, mode: Mode) -> Option<OpKind> {
     if s.starts_with("Boxminus") {
         Some(OpKind::Box)
@@ -230,8 +199,8 @@ fn leading_operator(s: &str, mode: Mode) -> Option<OpKind> {
     }
 }
 
-/// A leading operator that is NOT allowed here: the `SOMETIME`/`ALWAYS` aliases
-/// (unsupported), and future operators when in `Streaming` mode.
+/// A leading operator not allowed here: the `SOMETIME`/`ALWAYS` aliases, and future operators in
+/// `Streaming` mode
 fn disallowed_operator(s: &str, mode: Mode) -> Option<&'static str> {
     for kw in ["SOMETIME", "ALWAYS"] {
         if s.starts_with(kw) {
@@ -248,7 +217,7 @@ fn disallowed_operator(s: &str, mode: Mode) -> Option<&'static str> {
     None
 }
 
-/// Whether `s` starts with any temporal operator keyword (mode-agnostic; for head check).
+/// Whether `s` starts with any temporal operator keyword (mode-agnostic; for head check)
 fn any_operator_prefix(s: &str) -> bool {
     [
         "Boxminus",
@@ -262,10 +231,6 @@ fn any_operator_prefix(s: &str) -> bool {
     .any(|kw| s.starts_with(kw))
 }
 
-// ────────────────────────────────────────────────────────────────
-// Fact parsing
-// ────────────────────────────────────────────────────────────────
-
 fn parse_fact(line: &str, dict: &SharedTerms) -> Result<TemporalFact, String> {
     let Some((atom_str, span)) = line.rsplit_once('@') else {
         return Err("fact missing '@<interval>'".into());
@@ -275,7 +240,7 @@ fn parse_fact(line: &str, dict: &SharedTerms) -> Result<TemporalFact, String> {
     Ok(TemporalFact { triple, start, end })
 }
 
-/// Parse a fact interval: `t`, `[t]`, or `[l,r]`. Closed integers only.
+/// Parse a fact interval: `t`, `[t]`, or `[l,r]`
 fn parse_span(span: &str) -> Result<(u64, u64), String> {
     let span = span.trim();
     if span.starts_with('[') || span.starts_with('(') {
@@ -307,15 +272,11 @@ fn parse_span(span: &str) -> Result<(u64, u64), String> {
     }
 }
 
-// ────────────────────────────────────────────────────────────────
-// Atom ↔ RDF triple mapping
-// ────────────────────────────────────────────────────────────────
-
-/// Split an atom string `Pred(a,b)` into (functor, args). Nullary => empty args.
+/// Split an atom string `Pred(a,b)` into (functor, args)
 fn split_atom(s: &str) -> Result<(&str, Vec<&str>), String> {
     let s = s.trim();
     let Some(open) = s.find('(') else {
-        return Ok((s, Vec::new())); // no parens: propositional (arity 0)
+        return Ok((s, Vec::new()));
     };
     if !s.ends_with(')') {
         return Err(format!("malformed atom '{}'", s));
@@ -326,7 +287,7 @@ fn split_atom(s: &str) -> Result<(&str, Vec<&str>), String> {
     Ok((functor, args))
 }
 
-/// Map an atom to a triple *pattern* (rule context: uppercase args are variables).
+/// Map an atom to a triple *pattern* (rule context: uppercase args are variables)
 fn atom_to_pattern(s: &str, dict: &SharedTerms, _rule_ctx: bool) -> Result<TriplePattern, String> {
     let (functor, args) = split_atom(s)?;
     if functor.is_empty() {
@@ -356,7 +317,7 @@ fn atom_to_pattern(s: &str, dict: &SharedTerms, _rule_ctx: bool) -> Result<Tripl
     }
 }
 
-/// Map an atom to a *ground* triple (data context: all args are constants).
+/// Map an atom to a *ground* triple (data context: all args are constants)
 fn atom_to_ground_triple(s: &str, dict: &SharedTerms) -> Result<Triple, String> {
     let (functor, args) = split_atom(s)?;
     if functor.is_empty() {
@@ -393,7 +354,7 @@ fn atom_to_ground_triple(s: &str, dict: &SharedTerms) -> Result<Triple, String> 
     })
 }
 
-/// A rule-context term: uppercase first letter => variable, else constant.
+/// A rule-context term: uppercase first letter => variable, else constant
 fn term_of(tok: &str, dict: &SharedTerms) -> Result<Term, String> {
     let tok = tok.trim();
     let Some(first) = tok.chars().next() else {
@@ -410,11 +371,7 @@ fn encode(dict: &SharedTerms, s: &str) -> u32 {
     dict.encode(s)
 }
 
-// ────────────────────────────────────────────────────────────────
-// Low-level string helpers
-// ────────────────────────────────────────────────────────────────
-
-/// Strip comments (`#`/`//`) and all whitespace, mirroring MeTeoR's `replace(" ","")`.
+/// Strip comments (`#`/`//`) and all whitespace, mirroring MeTeoR's `replace(" ","")`
 fn strip_line(raw: &str) -> String {
     let mut s = raw;
     if let Some(i) = s.find('#') {
@@ -437,8 +394,7 @@ fn parse_int(s: &str) -> Result<u64, String> {
     })
 }
 
-/// Read a bracketed group at the start of `s`. Returns
-/// (open_char, inner, close_char, tail_after_close).
+/// Read a bracketed group at the start of `s`
 fn read_bracket(s: &str) -> Result<(char, &str, char, &str), String> {
     let bytes = s.as_bytes();
     let open = bytes[0] as char;
@@ -464,8 +420,7 @@ fn read_bracket(s: &str) -> Result<(char, &str, char, &str), String> {
     Err(format!("unbalanced brackets in '{}'", s))
 }
 
-/// Read a *closed integer* operator interval `[a,b]` (or `[a]`) at the start of `s`.
-/// Returns the parsed `Interval` and the remaining tail.
+/// Read a *closed integer* operator interval `[a,b]` (or `[a]`) at the start of `s`
 fn read_operator_interval(s: &str) -> Result<(Interval, &str), String> {
     let (open, inner, close, tail) = read_bracket(s)?;
     if open != '[' || close != ']' {
@@ -486,7 +441,7 @@ fn read_operator_interval(s: &str) -> Result<(Interval, &str), String> {
     Ok((Interval { start, end }, tail))
 }
 
-/// Find keyword `kw` in `s` at bracket-depth 0. Returns byte index of match start.
+/// Find keyword `kw` in `s` at bracket-depth 0
 fn find_kw_depth0(s: &str, kw: &str) -> Option<usize> {
     let mut depth = 0i32;
     let bytes = s.as_bytes();
@@ -505,7 +460,7 @@ fn find_kw_depth0(s: &str, kw: &str) -> Option<usize> {
     None
 }
 
-/// Split `s` on commas at bracket-depth 0 (MeTeoR `parse_body`).
+/// Split `s` on commas at bracket-depth 0 (MeTeoR `parse_body`)
 fn split_top_commas(s: &str) -> Vec<String> {
     let mut out = Vec::new();
     let mut depth = 0i32;

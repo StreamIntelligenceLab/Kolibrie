@@ -41,8 +41,8 @@ import argparse
 import json
 import pathlib
 import subprocess
-import time
 import sys
+import time
 
 # These cannot finish unattended, and that is what they are for rather than a
 # defect. Each needs something this script will not start:
@@ -62,7 +62,10 @@ def examples(root: pathlib.Path) -> list[str]:
     meta = json.loads(
         subprocess.run(
             ["cargo", "metadata", "--format-version", "1", "--no-deps"],
-            cwd=root, capture_output=True, text=True, check=True,
+            cwd=root,
+            capture_output=True,
+            text=True,
+            check=True,
         ).stdout
     )
     package = next(p for p in meta["packages"] if p["name"] == "kolibrie")
@@ -76,12 +79,15 @@ def examples(root: pathlib.Path) -> list[str]:
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("outdir", nargs="?", default="/tmp/kolibrie-verify")
-    parser.add_argument("--timeout", type=int, default=120,
-                        help="seconds per example (default: 120)")
-    parser.add_argument("--dump-timings", metavar="PATH",
-                        help="write every example's wall time to PATH, slowest first")
-    parser.add_argument("--list", action="store_true",
-                        help="print what would run, and exit")
+    parser.add_argument(
+        "--timeout", type=int, default=120, help="seconds per example (default: 120)"
+    )
+    parser.add_argument(
+        "--dump-timings",
+        metavar="PATH",
+        help="write every example's wall time to PATH, slowest first",
+    )
+    parser.add_argument("--list", action="store_true", help="print what would run, and exit")
     args = parser.parse_args()
 
     root = pathlib.Path(__file__).resolve().parent.parent
@@ -90,8 +96,10 @@ def main() -> int:
 
     if args.list:
         for n in names:
-            print(f"  {'skip' if n in SKIP else 'run ':4}  {n}"
-                  + (f"   ({SKIP[n]})" if n in SKIP else ""))
+            print(
+                f"  {'skip' if n in SKIP else 'run ':4}  {n}"
+                + (f"   ({SKIP[n]})" if n in SKIP else "")
+            )
         return 0
 
     out = pathlib.Path(args.outdir) / "examples"
@@ -102,13 +110,9 @@ def main() -> int:
     # a single total.
     durations: dict[str, float] = {}
 
-    # Serial on purpose. Running these concurrently was measured and rejected: 16 jobs
-    # took 170s against 185s serially, because the floor below is charged by a daemon
-    # that serialises, so concurrency only moves the queue. The 8% was not worth what
-    # it did to the streaming examples -- `continious_stream` went from 7.4s to 42s and
-    # `replay_profile` from 6.4s to 56s under contention. They passed, but their RSP
-    # windows are wall-clock, so passing once at 6x the duration is not evidence they
-    # stay correct there.
+    # Serial on purpose: the streaming examples use wall-clock RSP windows, and
+    # running them concurrently slows them enough that a pass would not show they
+    # stay correct.
     begun = time.monotonic()
     for name in runnable:
         exe = root / "target" / "debug" / "examples" / name
@@ -118,7 +122,10 @@ def main() -> int:
         started = time.monotonic()
         try:
             result = subprocess.run(
-                [str(exe)], cwd=root, capture_output=True, text=True,
+                [str(exe)],
+                cwd=root,
+                capture_output=True,
+                text=True,
                 timeout=args.timeout,
             )
         except subprocess.TimeoutExpired:
@@ -133,10 +140,12 @@ def main() -> int:
             (out / f"{name}.log").write_text(result.stdout + result.stderr)
     wall = time.monotonic() - begun
 
-    print(f"   ran: {len(passed) + len(failed) + len(timed_out)}"
-          f"  passed: {len(passed)}"
-          f"  failed: {len(failed) + len(timed_out)}"
-          f"  skipped: {len(SKIP)}")
+    print(
+        f"   ran: {len(passed) + len(failed) + len(timed_out)}"
+        f"  passed: {len(passed)}"
+        f"  failed: {len(failed) + len(timed_out)}"
+        f"  skipped: {len(SKIP)}"
+    )
 
     total = sum(durations.values())
     ranked = sorted(durations.items(), key=lambda pair: -pair[1])
@@ -150,8 +159,7 @@ def main() -> int:
             print(f"     {seconds:6.1f}s  {share:4.1f}%  {name}")
     if ranked:
         mid = ranked[len(ranked) // 2]
-        print(f"   median {mid[1]:.1f}s ({mid[0]}); "
-              f"floor {ranked[-1][1]:.1f}s ({ranked[-1][0]})")
+        print(f"   median {mid[1]:.1f}s ({mid[0]}); floor {ranked[-1][1]:.1f}s ({ranked[-1][0]})")
     if args.dump_timings:
         path = pathlib.Path(args.dump_timings)
         path.write_text("".join(f"{s:.3f}\t{n}\n" for n, s in ranked))

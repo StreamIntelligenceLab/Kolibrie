@@ -12,7 +12,6 @@ cycle is easier to fix the day it lands than a year later.
 
 Usage:
     scripts/module_graph.py              # layers, per-module dependencies, cycle check
-    scripts/module_graph.py --mermaid    # the diagram in docs/architecture.md
     scripts/module_graph.py --check      # exit non-zero if a cycle exists
 
 Exits non-zero under --check when any strongly-connected component holds more than
@@ -56,7 +55,7 @@ def graph(src: pathlib.Path):
     for name, files in mods.items():
         text = "\n".join(f.read_text() for f in files)
         code[name] = "\n".join(
-            l for l in text.splitlines() if not l.lstrip().startswith(("///", "//!"))
+            line for line in text.splitlines() if not line.lstrip().startswith(("///", "//!"))
         )
         lines[name] = len(text.splitlines())
     edges = {
@@ -143,14 +142,11 @@ def reduction(nodes, edges):
 
     for m in nodes:
         reach(m)
-    return {
-        (a, b) for a, b in edges if not any(b in reach(c) for c in succ[a] if c != b)
-    }
+    return {(a, b) for a, b in edges if not any(b in reach(c) for c in succ[a] if c != b)}
 
 
 def main() -> int:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--mermaid", action="store_true", help="print the diagram")
     parser.add_argument("--check", action="store_true", help="exit 1 on a cycle")
     parser.add_argument("--src", default=None, help="crate src (default: kolibrie/src)")
     args = parser.parse_args()
@@ -176,25 +172,6 @@ def main() -> int:
     by_layer = collections.defaultdict(list)
     for m, lv in depth.items():
         by_layer[lv].append(m)
-
-    if args.mermaid:
-        short = {
-            m: m.replace("streamertail_optimizer", "streamertail").replace(
-                "neural_relations_disabled", "neural_disabled"
-            )
-            for m in lines
-        }
-        print("```mermaid")
-        print("graph TD")
-        for lv in sorted(by_layer):
-            print('    subgraph L%d["layer %d"]' % (lv, lv))
-            for m in sorted(by_layer[lv], key=lambda m: -lines[m]):
-                print('        %s["%s<br/>%d lines"]' % (m, short[m], lines[m]))
-            print("    end")
-        for a, b in sorted(reduced):
-            print(f"    {a} --> {b}")
-        print("```")
-        return 0
 
     out = collections.defaultdict(list)
     for a, b in edges:

@@ -8,28 +8,26 @@
  * you can obtain one at https://mozilla.org/MPL/2.0/.
  */
 
-//! Join planning must not change which solutions a basic graph pattern
-//! produces. Every test here fixes a dataset, then asserts that writing the
-//! same patterns in different source orders yields the same solution bag.
+//! Join planning must not change which solutions a basic graph pattern produces
 
+use kolibrie::database::KolibrieDB;
 use kolibrie::execute_query::{execute, execute_sparql_update};
-use kolibrie::sparql_database::SparqlDatabase;
 
 fn bag(mut rows: Vec<Vec<String>>) -> Vec<Vec<String>> {
     rows.sort();
     rows
 }
 
-fn query(database: &mut SparqlDatabase, sparql: &str) -> Vec<Vec<String>> {
+fn query(database: &mut KolibrieDB, sparql: &str) -> Vec<Vec<String>> {
     bag(execute(sparql, database)
         .expect("query should run")
         .into_rows())
 }
 
-/// A path `n0 -> n1 -> ... -> n8` where only `n0` carries the anchor type,
-/// plus decoy edges that make an unanchored scan far less selective.
-fn chain_database() -> SparqlDatabase {
-    let mut database = SparqlDatabase::new();
+/// A path `n0 -> n1 -> ... -> n8` where only `n0` carries the anchor type, plus decoy edges that
+/// make an unanchored scan far less selective
+fn chain_database() -> KolibrieDB {
+    let mut database = KolibrieDB::new();
     let mut triples = String::new();
     for i in 0..8 {
         triples.push_str(&format!("<urn:n{}> <urn:next> <urn:n{}> .\n", i, i + 1));
@@ -50,8 +48,8 @@ fn chain_patterns(links: usize) -> Vec<String> {
         .collect()
 }
 
-/// Builds a SELECT over the chain with the anchor pattern spliced in at
-/// `anchor_at`, so the same query reaches the planner in different orders.
+/// Builds a SELECT over the chain with the anchor pattern spliced in at `anchor_at`, so the same
+/// query reaches the planner in different orders
 fn chain_query(links: usize, anchor_at: usize) -> String {
     let mut patterns = chain_patterns(links);
     patterns.insert(anchor_at, "?x0 <urn:type> <urn:Anchor> .".to_string());
@@ -85,7 +83,7 @@ fn chain_results_are_independent_of_anchor_position() {
 
 #[test]
 fn star_results_are_independent_of_pattern_order() {
-    let mut database = SparqlDatabase::new();
+    let mut database = KolibrieDB::new();
     execute_sparql_update(
         r#"
         INSERT DATA {
@@ -121,7 +119,7 @@ fn star_results_are_independent_of_pattern_order() {
 
 #[test]
 fn cyclic_pattern_closes_the_loop() {
-    let mut database = SparqlDatabase::new();
+    let mut database = KolibrieDB::new();
     execute_sparql_update(
         r#"
         INSERT DATA {
@@ -155,7 +153,7 @@ fn cyclic_pattern_closes_the_loop() {
 
 #[test]
 fn disconnected_patterns_produce_the_cross_product() {
-    let mut database = SparqlDatabase::new();
+    let mut database = KolibrieDB::new();
     execute_sparql_update(
         r#"
         INSERT DATA {
@@ -185,7 +183,7 @@ fn disconnected_patterns_produce_the_cross_product() {
 
 #[test]
 fn repeated_variable_within_one_pattern_matches_only_self_loops() {
-    let mut database = SparqlDatabase::new();
+    let mut database = KolibrieDB::new();
     execute_sparql_update(
         r#"
         INSERT DATA {
@@ -206,7 +204,7 @@ fn repeated_variable_within_one_pattern_matches_only_self_loops() {
 
 #[test]
 fn join_preserves_solution_multiplicity() {
-    let mut database = SparqlDatabase::new();
+    let mut database = KolibrieDB::new();
     execute_sparql_update(
         r#"
         INSERT DATA {

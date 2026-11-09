@@ -13,8 +13,7 @@ use crate::evaluator::DatalogMTLEvaluator;
 use crate::store::{TemporalSnapshotStore, TemporalStore};
 use crate::syntax::{DatalogMTLRule, TemporalAtom};
 
-/// Test 1: Base atom join — identity rule with variable predicate.
-/// Rule: (?s ?p ?o) :- (?s ?p ?o)
+/// Test 1: Base atom join — identity rule with variable predicate
 #[test]
 fn test_base_identity_variable_predicate() {
     let dict = make_dict();
@@ -39,9 +38,6 @@ fn test_base_identity_variable_predicate() {
     let triples = vec![triple(a, p1, v1), triple(a, p2, v2), triple(b, p3, v3)];
     let (derived, _) = eval.advance(0, triples);
 
-    // All 3 triples must be present (identity rule re-derives them).
-    // Derived may be empty since input triples already in store and identity.
-    // What matters: all triples queryable in the store.
     let store_triples: Vec<_> = eval
         .store
         .query_at(&(v("s"), v("p"), v("o")), 0)
@@ -61,9 +57,6 @@ fn test_base_identity_variable_predicate() {
         "All 3 input triples should be in the store"
     );
 
-    // Identity rule: derived set should contain the same 3 facts
-    // (or 0 if we treat input==derived as not new — depends on implementation).
-    // Assert at least the store contains all 3.
     let expected = [triple(a, p1, v1), triple(a, p2, v2), triple(b, p3, v3)];
     for t in &expected {
         assert!(
@@ -75,8 +68,7 @@ fn test_base_identity_variable_predicate() {
     let _ = derived;
 }
 
-/// Test 2: Multi-atom Base join — transitive step.
-/// Rule: (?x :connected ?z) :- (?x :knows ?y), (?y :knows ?z)
+/// Test 2: Multi-atom Base join — transitive step
 #[test]
 fn test_base_multi_atom_join() {
     let dict = make_dict();
@@ -107,7 +99,6 @@ fn test_base_multi_atom_join() {
         derived
     );
 
-    // (b :connected a) should NOT be derived
     let not_expected = triple(b, connected, a);
     assert!(
         !derived.contains(&not_expected),

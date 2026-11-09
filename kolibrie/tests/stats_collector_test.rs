@@ -10,12 +10,12 @@
 
 mod common;
 
-use kolibrie::sparql_database::SparqlDatabase;
+use kolibrie::database::KolibrieDB;
 use kolibrie::streamertail_optimizer::{DatabaseStats, GraphMap, TermMap, TermSet};
 use shared::dataset_index::GraphId;
 
 /// Reference implementation over a materialized snapshot; exact only below the sampling threshold
-fn reference_stats(database: &SparqlDatabase) -> DatabaseStats {
+fn reference_stats(database: &KolibrieDB) -> DatabaseStats {
     let quads = database.all_quads();
 
     let mut predicate_cardinalities = TermMap::<u64>::default();
@@ -78,7 +78,7 @@ fn reference_stats(database: &SparqlDatabase) -> DatabaseStats {
     }
 }
 
-fn assert_matches_reference(database: &SparqlDatabase, case: &str) {
+fn assert_matches_reference(database: &KolibrieDB, case: &str) {
     let actual = database.gather_stats();
     let expected = reference_stats(database);
 
@@ -130,7 +130,7 @@ fn assert_matches_reference(database: &SparqlDatabase, case: &str) {
 
 #[test]
 fn an_empty_dataset_collects_the_same_statistics() {
-    assert_matches_reference(&SparqlDatabase::new(), "empty");
+    assert_matches_reference(&KolibrieDB::new(), "empty");
 }
 
 #[test]
@@ -167,7 +167,6 @@ fn named_graphs_including_empty_ones_collect_the_same_statistics() {
     )
     .unwrap();
 
-    // Empty named graph
     let empty = database.dictionary_mut().encode("urn:g3");
     database.create_graph(GraphId::Named(empty));
 
@@ -214,7 +213,7 @@ fn a_skewed_predicate_distribution_collects_the_same_statistics() {
 
 #[test]
 fn many_small_graphs_collect_the_same_statistics() {
-    let mut database = SparqlDatabase::new();
+    let mut database = KolibrieDB::new();
     for graph in 0..60 {
         kolibrie::execute_query::execute_sparql_update(
             &format!(

@@ -1,6 +1,7 @@
 use std::time::Duration;
 
 use datalog::reasoning::materialisation::hybrid_materialisation::validate_hybrid_rules;
+use kolibrie::database::KolibrieDB;
 use kolibrie::ml_policy::MlExecutionContext;
 use kolibrie::parser::parse_combined_query;
 use kolibrie::program::{
@@ -9,7 +10,6 @@ use kolibrie::program::{
     PublishedProgramResult, ResourceError, RuleMode,
 };
 use kolibrie::rule_execution::process_rule_definition;
-use kolibrie::sparql_database::SparqlDatabase;
 use shared::dictionary::Dictionary;
 
 include!(concat!(
@@ -92,8 +92,8 @@ fn pair_options(left: &[f64], right: Option<&[f64]>) -> ProgramOptions {
     }
 }
 
-fn pair_input(same_image: bool) -> SparqlDatabase {
-    let mut db = SparqlDatabase::new();
+fn pair_input(same_image: bool) -> KolibrieDB {
+    let mut db = KolibrieDB::new();
     load_knowledge(&mut db).unwrap();
     let right = if same_image {
         image_term(0)
@@ -196,7 +196,7 @@ fn unsupported_trailing_statements_fail_before_side_effects() {
         Err(ProgramError::Parse(_))
     ));
 
-    let mut db = SparqlDatabase::new();
+    let mut db = KolibrieDB::new();
     db.add_triple_parts(&ex("s"), &ex("a"), &ex("o"));
     let two_rules = r#"PREFIX ex: <http://example.org/>
 RULE :A :- CONSTRUCT { ?x ex:b ?y . } WHERE { ?x ex:a ?y . }
@@ -247,7 +247,7 @@ fn checked_lowering_rejects_constructs_it_cannot_represent() {
 
     let numeric = rule("?x ex:score ?v . FILTER(?v >= 2)", "?x ex:high ex:yes .");
     let program = compile(&numeric).unwrap();
-    let mut db = SparqlDatabase::new();
+    let mut db = KolibrieDB::new();
     db.add_tagged_triple(&ex("a"), &ex("score"), "3", 0.5);
     db.add_tagged_triple(&ex("b"), &ex("score"), "1", 0.5);
     let result = execute_program(&mut db, &program, &ProgramOptions::default()).unwrap();
@@ -267,7 +267,7 @@ fn plain_rules_reject_uncertain_inputs() {
         "PREFIX ex: <http://example.org/>\nRULE :A :- CONSTRUCT { ?x ex:b ?y . } WHERE { ?x ex:a ?y . }",
     )
     .unwrap();
-    let mut db = SparqlDatabase::new();
+    let mut db = KolibrieDB::new();
     db.add_tagged_triple(&ex("s"), &ex("a"), &ex("o"), 0.4);
     assert!(matches!(
         execute_program(&mut db, &program, &ProgramOptions::default()),
@@ -290,7 +290,7 @@ fn deterministic_chains_reach_one_fixpoint_in_any_rule_order() {
         );
         let program = compile(&text).unwrap();
         assert_eq!(program.mode(), Some(RuleMode::Deterministic));
-        let mut db = SparqlDatabase::new();
+        let mut db = KolibrieDB::new();
         db.add_triple_parts(&ex("s"), &ex("a"), &ex("m"));
         db.add_triple_parts(&ex("m"), &ex("next"), &ex("t"));
         let mut result = execute_program(&mut db, &program, &ProgramOptions::default()).unwrap();
@@ -324,7 +324,7 @@ fn probabilistic_rules_combine_every_proof_in_any_order() {
             order.map(|i| rules[i]).join("\n")
         );
         let program = compile(&text).unwrap();
-        let mut db = SparqlDatabase::new();
+        let mut db = KolibrieDB::new();
         db.add_tagged_triple(&ex("room"), &ex("smoke"), &ex("yes"), 0.6);
         db.add_tagged_triple(&ex("room"), &ex("heat"), &ex("yes"), 0.5);
         db.add_triple_parts(&ex("room"), &ex("staffed"), &ex("yes"));
@@ -543,7 +543,7 @@ fn answer_sets_include_certain_asserted_facts() {
         "PREFIX ex: <http://example.org/>\nRULE :R PROB(combination=sdd) :- CONSTRUCT { ?x ex:flag ex:on . } WHERE { ?x ex:risk ex:yes . }",
     )
     .unwrap();
-    let mut db = SparqlDatabase::new();
+    let mut db = KolibrieDB::new();
     db.add_tagged_triple(&ex("a"), &ex("risk"), &ex("yes"), 0.25);
     db.add_triple_parts(&ex("b"), &ex("risk"), &ex("yes"));
     let result = execute_program(&mut db, &program, &ProgramOptions::default()).unwrap();
@@ -787,7 +787,7 @@ fn distinct_anchors_with_equal_distributions_stay_independent() {
 #[test]
 fn result_dictionary_remaps_input_ids_and_literals_round_trip() {
     let program = reference();
-    let mut db = SparqlDatabase::new();
+    let mut db = KolibrieDB::new();
     for index in 0..50 {
         db.add_triple_parts(&ex(&format!("noise{index}")), &ex("p"), &ex("o"));
     }

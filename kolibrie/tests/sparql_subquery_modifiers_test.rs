@@ -1,7 +1,7 @@
+use kolibrie::database::KolibrieDB;
 use kolibrie::execute_query::{execute, execute_sparql_update};
-use kolibrie::sparql_database::SparqlDatabase;
 
-fn query(database: &mut SparqlDatabase, sparql: &str) -> Vec<Vec<String>> {
+fn query(database: &mut KolibrieDB, sparql: &str) -> Vec<Vec<String>> {
     execute(sparql, database)
         .expect("query should run")
         .into_rows()
@@ -9,7 +9,7 @@ fn query(database: &mut SparqlDatabase, sparql: &str) -> Vec<Vec<String>> {
 
 #[test]
 fn equal_sized_values_union_branches_keep_their_own_rows() {
-    let mut database = SparqlDatabase::new();
+    let mut database = KolibrieDB::new();
     let rows = query(
         &mut database,
         r#"
@@ -30,7 +30,7 @@ fn equal_sized_values_union_branches_keep_their_own_rows() {
 
 #[test]
 fn select_star_subquery_exports_all_inner_bindings() {
-    let mut database = SparqlDatabase::new();
+    let mut database = KolibrieDB::new();
     execute_sparql_update(
         r#"
         INSERT DATA {
@@ -63,7 +63,7 @@ fn select_star_subquery_exports_all_inner_bindings() {
 
 #[test]
 fn subquery_applies_distinct_order_and_limit_before_outer_join() {
-    let mut database = SparqlDatabase::new();
+    let mut database = KolibrieDB::new();
     execute_sparql_update(
         r#"
         INSERT DATA {
@@ -97,7 +97,7 @@ fn subquery_applies_distinct_order_and_limit_before_outer_join() {
 
 #[test]
 fn subquery_groups_and_materializes_aggregate_aliases() {
-    let mut database = SparqlDatabase::new();
+    let mut database = KolibrieDB::new();
     execute_sparql_update(
         r#"
         INSERT DATA {

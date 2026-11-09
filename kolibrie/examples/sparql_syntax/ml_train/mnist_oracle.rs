@@ -1,5 +1,3 @@
-// See the note in mnist_program.rs: `unreachable_pub` cannot be satisfied inside an
-// example binary, where `pub` is needed for visibility but nothing can import it.
 #[allow(dead_code, unreachable_pub)]
 mod mnist_oracle {
     use datalog::reasoning::{

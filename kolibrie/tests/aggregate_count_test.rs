@@ -1,13 +1,13 @@
 mod common;
 use common::query;
-use kolibrie::sparql_database::SparqlDatabase;
+use kolibrie::database::KolibrieDB;
 
 fn parity(input: &str, expected: Vec<Vec<&str>>) {
     for text in [
         input.to_string(),
         format!("SELECT * WHERE {{ {{ {input} }} }}"),
     ] {
-        let mut db = SparqlDatabase::new();
+        let mut db = KolibrieDB::new();
         let expected: Vec<Vec<String>> = expected
             .iter()
             .map(|row| row.iter().map(|v| v.to_string()).collect())
@@ -18,7 +18,6 @@ fn parity(input: &str, expected: Vec<Vec<&str>>) {
 
 #[test]
 fn count_aliases_preserve_multiplicity_and_exclude_unbound_values() {
-    // Keep wrapping SELECT aliases in alphabetical order
     parity(
         "SELECT (COUNT(?x) AS ?a) (COUNT(*) AS ?b) WHERE { VALUES ?x { 1 1 UNDEF } }",
         vec![vec!["2", "3"]],

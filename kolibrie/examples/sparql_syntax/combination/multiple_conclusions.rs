@@ -8,9 +8,9 @@
  * you can obtain one at https://mozilla.org/MPL/2.0/.
  */
 
+use kolibrie::database::KolibrieDB;
 use kolibrie::prelude::*;
 use kolibrie::rule_execution::process_rule_definition;
-use kolibrie::sparql_database::SparqlDatabase;
 
 fn main() {
     std::env::set_var("RUST_BACKTRACE", "1");
@@ -46,11 +46,10 @@ fn main() {
       </rdf:RDF>
   "#;
 
-    let mut database = SparqlDatabase::new();
+    let mut database = KolibrieDB::new();
     database.parse_rdf(rdf_xml_data);
     println!("Database RDF triples loaded.");
 
-    // Define the rule separately
     let rule_definition = r#"PREFIX ex: <http://example.org#>
 PREFIX alert: <http://example.org/alerts#>
 RULE :OverheatingAlert :-
@@ -66,12 +65,10 @@ RULE :OverheatingAlert :-
       FILTER (?temp > 80)
   }"#;
 
-    // Process the rule definition
     match process_rule_definition(rule_definition, &mut database) {
         Ok((rule, inferred_facts)) => {
             println!("Rule processed successfully.");
 
-            // Print rule details
             println!("Rule details:");
             println!("  Premise patterns: {:?}", rule.premise);
             println!("  Filters: {:?}", rule.filters);
@@ -79,21 +76,17 @@ RULE :OverheatingAlert :-
 
             println!("Inferred {} new fact(s):", inferred_facts.len());
 
-            // Acquire read lock on dictionary
             let dict = database.dictionary();
             for triple in inferred_facts.iter() {
-                // Dereference the RwLockReadGuard to get &Dictionary
                 println!("  {}", database.triple_to_string(triple, &*dict));
             }
-            // Lock is automatically released when dict goes out of scope
         }
         Err(error) => {
             eprintln!("Error processing rule definition: {}", error);
-            return; // Exit if rule processing failed
+            return;
         }
     }
 
-    // Define the SELECT query separately
     let select_query = r#"PREFIX ex: <http://example.org#>
 PREFIX alert: <http://example.org/alerts#>
 SELECT ?room ?temp ?status ?timestamp ?action
@@ -106,11 +99,9 @@ WHERE {
   ?reading ex:temperature ?temp .
 }"#;
 
-    // Execute the SELECT query
     let query_results = execute(select_query, &mut database)
         .expect("query should run")
         .into_rows();
 
-    // Format and display the results nicely
     println!("\nQuery results: {:?}", query_results);
 }

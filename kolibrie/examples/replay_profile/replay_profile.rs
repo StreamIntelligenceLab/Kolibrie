@@ -8,10 +8,8 @@
  * you can obtain one at https://mozilla.org/MPL/2.0/.
  */
 
-// Usage: cargo run --release --example replay_profile -- [members] [evals]
-
+use kolibrie::database::{KolibrieDB, PlanningStatsPolicy};
 use kolibrie::execute_query::execute;
-use kolibrie::sparql_database::{PlanningStatsPolicy, SparqlDatabase};
 use std::time::{Duration, Instant};
 
 const BASE: &str = "http://www.semanticweb.org/ontologies/2015/trainbenchmark#";
@@ -35,7 +33,7 @@ SELECT ?switch ?segment WHERE {
 }
 "#;
 
-/// The trainbenchmark RouteSensor shape, without its unsupported NOT EXISTS
+/// The trainbenchmark RouteSensor shape without its NOT EXISTS clause
 const SEVEN_PATTERN_JOIN: &str = r#"
 PREFIX base: <http://www.semanticweb.org/ontologies/2015/trainbenchmark#>
 PREFIX rdf: <http://www.w3.org/1999/02/22-rdf-syntax-ns#>
@@ -51,7 +49,7 @@ SELECT ?route ?sensor ?swP ?sw WHERE {
 "#;
 
 /// Inserts one stream member
-fn insert_member(database: &mut SparqlDatabase, member: usize) {
+fn insert_member(database: &mut KolibrieDB, member: usize) {
     let switch = format!("{BASE}sw_{member}");
     let segment = format!("{BASE}seg_{member}");
     let sensor = format!("{BASE}sensor_{member}");
@@ -84,7 +82,7 @@ struct Replay {
 
 /// Inserts every member, evaluating the query once every `every` members
 fn replay(members: usize, every: usize, policy: PlanningStatsPolicy, query: &str) -> Replay {
-    let mut database = SparqlDatabase::new();
+    let mut database = KolibrieDB::new();
     database.set_planning_stats_policy(policy);
 
     let started = Instant::now();
@@ -130,8 +128,7 @@ fn main() {
     let members = argument(1, 10_000);
     let evals = argument(2, 20);
 
-    // Ingest alone
-    let mut database = SparqlDatabase::new();
+    let mut database = KolibrieDB::new();
     let started = Instant::now();
     for member in 0..members {
         insert_member(&mut database, member);
@@ -145,7 +142,6 @@ fn main() {
         ingest / quads.max(1) as u32
     );
 
-    // Cost of one statistics rebuild
     database.invalidate_stats_cache();
     let started = Instant::now();
     let _ = database.get_or_build_stats();
@@ -162,7 +158,6 @@ fn main() {
     }
     println!("stats rebuild (10x mean): {:?}", started.elapsed() / 10);
 
-    // Query cost with warm statistics
     let _ = execute(JOIN_OF_TWO, &mut database)
         .expect("query should run")
         .into_rows();
@@ -197,7 +192,6 @@ fn main() {
         started.elapsed() / 5
     );
 
-    // Writes and queries interleaved
     let every = 100;
     let count = members / every;
     println!("\nreplay shape: {count} evals interleaved with {members} member inserts");

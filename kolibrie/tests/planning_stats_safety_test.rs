@@ -10,7 +10,7 @@
 
 mod common;
 
-use kolibrie::sparql_database::{PlanningStatsPolicy, SparqlDatabase};
+use kolibrie::database::{KolibrieDB, PlanningStatsPolicy};
 
 /// Bounded policy with an effectively infinite threshold
 fn frozen() -> PlanningStatsPolicy {
@@ -21,7 +21,7 @@ fn frozen() -> PlanningStatsPolicy {
 }
 
 /// Builds a store with a frozen planning snapshot
-fn with_frozen_statistics(triples: &str) -> SparqlDatabase {
+fn with_frozen_statistics(triples: &str) -> KolibrieDB {
     let mut database = common::database_with(triples);
     database.set_planning_stats_policy(frozen());
     database.get_or_build_planning_stats();
@@ -139,7 +139,6 @@ fn stale_statistics_never_change_a_result() {
         let mut fresh = common::database_with(&triples);
         let mut stale = with_frozen_statistics(&triples);
 
-        // Apply identical mutations to both databases
         for database in [&mut fresh, &mut stale] {
             common::load(database, r#"<urn:s999> <urn:p> <urn:o3> ."#);
             database.delete_triple_parts("urn:s0", "urn:p", "urn:o0");
@@ -153,10 +152,8 @@ fn stale_statistics_never_change_a_result() {
     }
 }
 
-// Trivial-plan shortcut
-
 /// Returns the number of rebuilds triggered by one query
-fn rebuilds_for(database: &mut SparqlDatabase, query: &str) -> u64 {
+fn rebuilds_for(database: &mut KolibrieDB, query: &str) -> u64 {
     let before = database.stats_rebuild_count();
     common::query(database, query);
     database.stats_rebuild_count() - before
@@ -177,7 +174,6 @@ fn a_plan_with_no_join_order_to_choose_builds_no_statistics() {
             r#"<urn:a> <urn:p> "1" .
 <urn:b> <urn:p> "2" ."#,
         );
-        // Build exact statistics first so only the query's rebuilds are counted
         database.get_or_build_stats();
 
         assert_eq!(

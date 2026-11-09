@@ -10,6 +10,7 @@ Usage:
 Counts are per *target*, so a lint firing in a lib and again in that lib's tests
 counts twice. That is intentional: it is the number a developer actually sees.
 """
+
 from __future__ import annotations
 
 import argparse
@@ -19,7 +20,11 @@ import subprocess
 import sys
 
 CARGO_CMD = [
-    "cargo", "check", "--workspace", "--all-targets", "--message-format=json",
+    "cargo",
+    "check",
+    "--workspace",
+    "--all-targets",
+    "--message-format=json",
 ]
 
 

@@ -1,0 +1,28 @@
+[build-system]
+requires = ["setuptools>=77"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "mlschema"
+version = "0.3.0"
+description = "Converts machine learning models to RDF using the ML Schema ontology"
+license = "MPL-2.0"
+requires-python = ">=3.10"
+authors = [
+    { name = "Volodymyr Kadzhaia" },
+    { name = "Pieter Bonte" },
+]
+dependencies = [
+    "numpy>=1.20",
+    "packaging>=20.0",
+    "rdflib>=6.0",
+    "scikit-learn>=1.0",
+]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "Programming Language :: Python :: 3",
+]
+
+[tool.setuptools]
+py-modules = ["mlschema"]

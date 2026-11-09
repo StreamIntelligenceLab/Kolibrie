@@ -8,22 +8,7 @@
  * you can obtain one at https://mozilla.org/MPL/2.0/.
  */
 
-//! Where temporal facts live, and the trait the evaluator reads them through.
-//!
-//! Two implementations of [`TemporalStore`], differing in representation rather
-//! than in what they answer:
-//!
-//! - [`TemporalSnapshotStore`] keeps one index per timestamp, so memory grows with
-//!   the number of distinct timestamps held.
-//! - [`IntervalFactStore`] keeps a validity-interval list per distinct fact and
-//!   extends the last interval when the same fact arrives at the next millisecond,
-//!   so memory grows with the number of contiguous segments. On a sampled stream,
-//!   where a reading repeats until it changes, that is far fewer.
-//!
-//! Both are bounded: facts older than the `horizon` are dropped by
-//! [`evict`](TemporalStore::evict), which the evaluator calls each tick. A query
-//! about an evicted time does not fail, it simply finds nothing, so the horizon
-//! has to exceed the furthest any rule reaches back.
+//! Where temporal facts live, and the trait the evaluator reads them through
 
 use shared::dataset_index::DatasetIndex;
 use shared::pattern::matches_rule_pattern;
@@ -31,48 +16,29 @@ use shared::terms::{Bindings, TriplePattern};
 use shared::triple::Triple;
 use std::collections::{BTreeMap, HashMap, HashSet};
 
-/// The stable store interface. Both Phase 1 and Phase 2 implement this.
-/// Define as a trait so the evaluator is generic over the store.
+/// The stable store interface
 pub trait TemporalStore {
-    /// Records that `triple` holds at `t`. Inserting the same fact twice at the
-    /// same time is not an error.
+    /// Records that `triple` holds at `t`
     fn insert(&mut self, triple: &Triple, t: u64);
-    /// Bindings for `pattern` from the facts holding at exactly `t`.
-    ///
-    /// A time with no facts and a time already evicted are indistinguishable:
-    /// both answer with nothing.
+    /// Bindings for `pattern` from the facts holding at exactly `t`
     fn query_at(&self, pattern: &TriplePattern, t: u64) -> Bindings;
-    /// Timestamps in `lo..=hi` that hold at least one fact, ascending. The
-    /// bounds are inclusive, and the result skips times where nothing happened,
-    /// which is what lets an existential operator scan only occupied points.
+    /// Timestamps in `lo..=hi` that hold at least one fact, ascending
     fn timestamps_in(&self, lo: u64, hi: u64) -> Vec<u64>;
-    /// Discards everything strictly before `cutoff`. Irreversible: a later query
-    /// about a dropped time simply finds nothing.
+    /// Discards everything strictly before `cutoff`
     fn evict(&mut self, cutoff: u64);
-    /// Distinct timestamps currently held. Diagnostic only.
+    /// Distinct timestamps currently held
     fn snapshot_count(&self) -> usize;
-    /// Facts currently held, summed over all timestamps. Diagnostic only, and
-    /// not necessarily cheap.
+    /// Facts currently held, summed over all timestamps
     fn total_triple_count(&self) -> usize;
 }
 
-// ────────────────────────────────────────────────────────────────
-// Phase 1: TemporalSnapshotStore
-// ────────────────────────────────────────────────────────────────
-
-/// Phase 1: one DatasetIndex per timestamp. O(w * |facts|) memory.
+/// Phase 1: one DatasetIndex per timestamp
 pub struct TemporalSnapshotStore {
     snapshots: BTreeMap<u64, DatasetIndex>,
-    /// How far back to keep facts. Advisory: this store does not evict on its
-    /// own, so the evaluator decides the cutoff and calls
-    /// [`evict`](TemporalStore::evict).
+    /// How far back to keep facts
     pub horizon: u64,
 }
 
-// Summarised rather than derived: one index per timestamp, so the derived form would
-// print every fact at every time point. Counting snapshots is O(1); counting the
-// facts in them is not, and a `Debug` impl should not be the expensive call in a log
-// line.
 impl std::fmt::Debug for TemporalSnapshotStore {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("TemporalSnapshotStore")
@@ -83,7 +49,7 @@ impl std::fmt::Debug for TemporalSnapshotStore {
 }
 
 impl TemporalSnapshotStore {
-    /// An empty store keeping facts for `horizon` time units.
+    /// An empty store keeping facts for `horizon` time units
     pub fn new(horizon: u64) -> Self {
         Self {
             snapshots: BTreeMap::new(),
@@ -101,8 +67,6 @@ impl TemporalStore for TemporalSnapshotStore {
     }
 
     fn query_at(&self, pattern: &TriplePattern, t: u64) -> Bindings {
-        // Use the index to fetch only triples whose constant positions match the
-        // pattern, instead of scanning every fact at t.
         let facts = self
             .snapshots
             .get(&t)
@@ -138,48 +102,37 @@ impl TemporalStore for TemporalSnapshotStore {
     }
 }
 
-// ────────────────────────────────────────────────────────────────
-// Phase 2: IntervalFactStore
-// ────────────────────────────────────────────────────────────────
-
-/// A closed validity interval [start, end] in absolute milliseconds.
+/// A closed validity interval [start, end] in absolute milliseconds
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ValidityInterval {
-    /// First time the fact holds, inclusive.
+    /// First time the fact holds, inclusive
     pub start: u64,
-    /// Last time it holds, inclusive. A single-instant fact has `end == start`.
+    /// Last time it holds, inclusive
     pub end: u64,
 }
 
 impl ValidityInterval {
-    /// Whether the fact holds at `t`. Both bounds count.
+    /// Whether the fact holds at `t`
     pub fn contains(&self, t: u64) -> bool {
         t >= self.start && t <= self.end
     }
 
-    /// Whether the fact holds anywhere in the closed range `lo..=hi`. Touching
-    /// at a single endpoint counts as overlapping.
+    /// Whether the fact holds anywhere in the closed range `lo..=hi`
     pub fn overlaps(&self, lo: u64, hi: u64) -> bool {
         self.start <= hi && self.end >= lo
     }
 }
 
-/// Phase 2: interval-valued fact store. O(k * |distinct facts|) memory,
-/// where k = number of contiguous interval segments (k << w on persistent streams).
+/// Phase 2: interval-valued fact store
 pub struct IntervalFactStore {
-    /// For each distinct triple, a sorted list of non-overlapping validity intervals.
     facts: HashMap<Triple, Vec<ValidityInterval>>,
-    /// Current tick's index, rebuilt on each advance() for Base atom joins.
     current_index: DatasetIndex,
     current_tick: u64,
     /// How far back to keep facts, with the same advisory meaning as on
-    /// [`TemporalSnapshotStore::horizon`].
+    /// [`TemporalSnapshotStore::horizon`]
     pub horizon: u64,
 }
 
-// Summarised rather than derived, for the same reason as
-// [`TemporalSnapshotStore`]. The segment count is the interesting number here, since
-// it is what this representation exists to keep small.
 impl std::fmt::Debug for IntervalFactStore {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let segments: usize = self.facts.values().map(Vec::len).sum();
@@ -193,7 +146,7 @@ impl std::fmt::Debug for IntervalFactStore {
 }
 
 impl IntervalFactStore {
-    /// An empty store keeping facts for `horizon` time units.
+    /// An empty store keeping facts for `horizon` time units
     pub fn new(horizon: u64) -> Self {
         Self {
             facts: HashMap::new(),
@@ -203,8 +156,7 @@ impl IntervalFactStore {
         }
     }
 
-    /// Insert triple at time t. Extends the last interval by 1ms if contiguous
-    /// (common case for step function streams), otherwise appends a new interval.
+    /// Insert triple at time t
     fn insert_interval(&mut self, triple: Triple, t: u64) {
         let intervals = self.facts.entry(triple).or_insert_with(Vec::new);
         if let Some(last) = intervals.last_mut() {
@@ -225,7 +177,6 @@ impl TemporalStore for IntervalFactStore {
     }
 
     fn query_at(&self, pattern: &TriplePattern, t: u64) -> Bindings {
-        // Collect all triples valid at t, then match pattern against them.
         let candidates: Vec<Triple> = self
             .facts
             .iter()
@@ -243,14 +194,10 @@ impl TemporalStore for IntervalFactStore {
     }
 
     fn timestamps_in(&self, lo: u64, hi: u64) -> Vec<u64> {
-        // Collect all distinct timestamps in [lo, hi] that have at least one active fact.
-        // For Phase 2 this is derived from interval endpoints, not stored directly.
-        // Collect all interval boundaries within [lo, hi] and the endpoints themselves.
         let mut ts: HashSet<u64> = HashSet::new();
         for intervals in self.facts.values() {
             for iv in intervals {
                 if iv.overlaps(lo, hi) {
-                    // Add boundary points clamped to [lo, hi]
                     ts.insert(iv.start.max(lo));
                     ts.insert(iv.end.min(hi));
                 }
@@ -263,7 +210,6 @@ impl TemporalStore for IntervalFactStore {
 
     fn evict(&mut self, cutoff: u64) {
         for intervals in self.facts.values_mut() {
-            // Clip interval starts to cutoff, drop fully expired intervals.
             intervals.retain_mut(|iv| {
                 if iv.end < cutoff {
                     return false;
@@ -275,12 +221,9 @@ impl TemporalStore for IntervalFactStore {
             });
         }
         self.facts.retain(|_, ivs| !ivs.is_empty());
-        // Also clear current_index entries — we don't need to evict it separately
-        // since it's rebuilt on each tick.
     }
 
     fn snapshot_count(&self) -> usize {
-        // For Phase 2, "snapshot count" is the number of distinct interval segments.
         self.facts.values().map(|ivs| ivs.len()).sum()
     }
 

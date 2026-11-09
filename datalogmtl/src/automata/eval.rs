@@ -8,11 +8,7 @@
  * you can obtain one at https://mozilla.org/MPL/2.0/.
  */
 
-//! Interval-native materialization: a naive fixpoint over interval-valued facts.
-//! Each rule body is folded by conjunctive join; the head projection unions new
-//! intervals into the database; iterate until nothing changes (or `max_iters`).
-//! This is event-complexity — cost scales with interval endpoints, not the
-//! horizon or interval widths.
+//! Interval-native materialization: a naive fixpoint over interval-valued facts
 
 use super::interval::TInterval;
 use super::relation::{conjoin, eval_atom, Database};
@@ -21,9 +17,7 @@ use shared::terms::{Term, TriplePattern};
 use shared::triple::Triple;
 use std::collections::HashMap;
 
-/// Materialize `rules` over interval-valued `facts`. `max_iters` caps the
-/// fixpoint for programs that are not finitely materializable (their minimal
-/// model is infinite/periodic — handled by the ω-automaton layer, future work).
+/// Materialize `rules` over interval-valued `facts`
 pub fn materialize(
     rules: &[DatalogMTLRule],
     facts: Vec<(Triple, TInterval)>,
@@ -53,8 +47,8 @@ pub fn materialize(
     db
 }
 
-/// Evaluate one rule against the current database, returning head facts with
-/// the intervals over which the (conjunctive) body holds.
+/// Evaluate one rule against the current database, returning head facts with the intervals over
+/// which the (conjunctive) body holds
 pub fn eval_rule(rule: &DatalogMTLRule, db: &Database) -> Vec<(Triple, Vec<TInterval>)> {
     let Some((first, rest)) = rule.body.split_first() else {
         return Vec::new();

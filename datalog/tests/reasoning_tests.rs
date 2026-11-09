@@ -41,8 +41,6 @@ fn bc_has(results: &[HashMap<String, Term>], var: &str, val: u32) -> bool {
         .any(|b| b.get(var) == Some(&Term::Constant(val)))
 }
 
-// Forward chaining
-
 #[test]
 fn fc_1hop_base() {
     let mut r = Reasoner::new();
@@ -78,7 +76,6 @@ fn fc_2hop_transitive() {
     let parent = enc(&r, "parent");
     let ancestor = enc(&r, "ancestor");
 
-    // base: parent -> ancestor
     r.add_rule(rule(
         vec![(
             Term::Variable("X".into()),
@@ -91,7 +88,6 @@ fn fc_2hop_transitive() {
             Term::Variable("Y".into()),
         )],
     ));
-    // transitive: ancestor + ancestor -> ancestor
     r.add_rule(rule(
         vec![
             (
@@ -324,7 +320,6 @@ fn fc_no_spurious() {
 
 #[test]
 fn fc_sibling_three_children() {
-    // A, B, C all share parent P -> 6 directional pairs, no self-sibling
     let mut r = Reasoner::new();
     r.add_abox_triple("A", "parent", "P");
     r.add_abox_triple("B", "parent", "P");
@@ -384,7 +379,6 @@ fn fc_sibling_three_children() {
 
 #[test]
 fn fc_multi_conclusion() {
-    // One rule head produces two distinct conclusions
     let mut r = Reasoner::new();
     r.add_abox_triple("A", "marriedTo", "B");
 
@@ -420,7 +414,6 @@ fn fc_multi_conclusion() {
 
 #[test]
 fn fc_diamond_ancestor() {
-    // Diamond: A->B->D and A->C->D; A should be ancestor of D via both paths
     let mut r = Reasoner::new();
     r.add_abox_triple("A", "parent", "B");
     r.add_abox_triple("A", "parent", "C");
@@ -482,7 +475,6 @@ fn fc_diamond_ancestor() {
 
 #[test]
 fn fc_disconnected_graphs() {
-    // Two separate parent chains must not cross-contaminate
     let mut r = Reasoner::new();
     r.add_abox_triple("A", "parent", "B");
     r.add_abox_triple("X", "parent", "Y");
@@ -519,7 +511,6 @@ fn fc_disconnected_graphs() {
 
 #[test]
 fn fc_no_matching_facts() {
-    // Rules that match no facts should produce no inferred triples
     let mut r = Reasoner::new();
     r.add_abox_triple("A", "likes", "B");
 
@@ -549,7 +540,6 @@ fn fc_no_matching_facts() {
 
 #[test]
 fn fc_idempotent() {
-    // Running inference a second time must not add duplicate triples
     let mut r = Reasoner::new();
     r.add_abox_triple("A", "parent", "B");
 
@@ -586,8 +576,6 @@ fn fc_idempotent() {
 
 #[test]
 fn fc_uncle_derived() {
-    // Two-stage: sibling derived first, then uncle derived from sibling + parent
-    // Setup: A and B share parent P; C's parent is A -> B is uncle of C
     let mut r = Reasoner::new();
     r.add_abox_triple("A", "parent", "P");
     r.add_abox_triple("B", "parent", "P");
@@ -597,7 +585,6 @@ fn fc_uncle_derived() {
     let sibling = enc(&r, "sibling");
     let uncle = enc(&r, "uncle");
 
-    // sibling(X, Y) :- parent(X, Z), parent(Y, Z), X != Y
     r.add_rule(Rule {
         premise: vec![
             (
@@ -624,7 +611,6 @@ fn fc_uncle_derived() {
         }],
     });
 
-    // uncle(U, N) :- sibling(U, Par), parent(N, Par)
     r.add_rule(rule(
         vec![
             (
@@ -659,7 +645,6 @@ fn fc_uncle_derived() {
         inferred(&mut r, "B", "uncle", "C"),
         "B should be uncle of C"
     );
-    // A is the parent of C, not uncle
     assert!(
         !inferred(&mut r, "A", "uncle", "C"),
         "A (parent) should not also be uncle of C"
@@ -668,7 +653,6 @@ fn fc_uncle_derived() {
 
 #[test]
 fn fc_constant_object_premise_filters() {
-    // A constant-object premise must not match every triple with the predicate
     let mut r = Reasoner::new();
     r.add_abox_triple("v1", "inZone", "RestrictedZone");
     r.add_abox_triple("v2", "inZone", "SafeZone");
@@ -679,7 +663,6 @@ fn fc_constant_object_premise_filters() {
     let alert = enc(&r, "alert");
     let flagged = enc(&r, "Flagged");
 
-    // alert(V, Flagged) :- inZone(V, RestrictedZone)
     r.add_rule(rule(
         vec![(
             Term::Variable("V".into()),
@@ -711,7 +694,6 @@ fn fc_constant_object_premise_filters() {
 
 #[test]
 fn fc_constant_subject_premise_filters() {
-    // A constant-subject premise must only match that subject
     let mut r = Reasoner::new();
     r.add_abox_triple("v1", "inZone", "RestrictedZone");
     r.add_abox_triple("v2", "inZone", "SafeZone");
@@ -721,7 +703,6 @@ fn fc_constant_subject_premise_filters() {
     let observed = enc(&r, "observedZone");
     let sensor = enc(&r, "sensor");
 
-    // observedZone(sensor, Z) :- inZone(v1, Z)
     r.add_rule(rule(
         vec![(
             Term::Constant(v1),
@@ -749,7 +730,6 @@ fn fc_constant_subject_premise_filters() {
 
 #[test]
 fn fc_constant_object_premise_in_join() {
-    // Constant-object filtering must also hold when joining across premises
     let mut r = Reasoner::new();
     r.add_abox_triple("v1", "inZone", "RestrictedZone");
     r.add_abox_triple("v2", "inZone", "SafeZone");
@@ -763,7 +743,6 @@ fn fc_constant_object_premise_in_join() {
     let alert = enc(&r, "alert");
     let flagged = enc(&r, "Flagged");
 
-    // alert(V, Flagged) :- type(V, Vehicle), inZone(V, RestrictedZone)
     r.add_rule(rule(
         vec![
             (
@@ -798,14 +777,12 @@ fn fc_constant_object_premise_in_join() {
 
 #[test]
 fn fc_variable_predicate_premise() {
-    // A variable-predicate premise must match all triples and bind ?p
     let mut r = Reasoner::new();
     r.add_abox_triple("A", "likes", "B");
     r.add_abox_triple("A", "knows", "C");
 
     let linked_from = enc(&r, "linkedFrom");
 
-    // linkedFrom(O, S) :- any(S, P, O)
     r.add_rule(rule(
         vec![(
             Term::Variable("S".into()),
@@ -837,14 +814,12 @@ fn fc_variable_predicate_premise() {
 
 #[test]
 fn fc_variable_predicate_join() {
-    // RDFS-subproperty style: ?p bound in one premise, reused in join and conclusion
     let mut r = Reasoner::new();
     r.add_abox_triple("A", "worksFor", "B");
     r.add_abox_triple("worksFor", "subPropertyOf", "affiliatedWith");
 
     let sub_property_of = enc(&r, "subPropertyOf");
 
-    // Q(X, Y) :- P(X, Y), subPropertyOf(P, Q)
     r.add_rule(rule(
         vec![
             (
@@ -879,7 +854,6 @@ fn fc_variable_predicate_join() {
 
 #[test]
 fn fc_shared_predicate_variable() {
-    // A bound predicate variable must filter later premises, not rebind
     let mut r = Reasoner::new();
     r.add_abox_triple("A", "rel1", "X");
     r.add_abox_triple("C", "rel2", "Z");
@@ -890,7 +864,6 @@ fn fc_shared_predicate_variable() {
     let d = enc(&r, "D");
     let shares = enc(&r, "sharesRelWith");
 
-    // sharesRelWith(A, C) :- P(A, _), P(C, _)  -- A and C share no predicate
     r.add_rule(rule(
         vec![
             (
@@ -906,7 +879,6 @@ fn fc_shared_predicate_variable() {
         ],
         vec![(Term::Constant(a), Term::Constant(shares), Term::Constant(c))],
     ));
-    // sharesRelWith(A, D) :- P(A, _), P(D, _)  -- A and D both use rel1
     r.add_rule(rule(
         vec![
             (
@@ -937,7 +909,6 @@ fn fc_shared_predicate_variable() {
 
 #[test]
 fn fc_repeated_variable_premise() {
-    // rel(V, V) must only match triples with subject == object
     let mut r = Reasoner::new();
     r.add_abox_triple("a", "rel", "a");
     r.add_abox_triple("a", "rel", "b");
@@ -946,7 +917,6 @@ fn fc_repeated_variable_premise() {
     let self_linked = enc(&r, "selfLinked");
     let true_c = enc(&r, "True");
 
-    // selfLinked(V, True) :- rel(V, V)
     r.add_rule(rule(
         vec![(
             Term::Variable("V".into()),
@@ -971,8 +941,6 @@ fn fc_repeated_variable_premise() {
         "b does not link to itself"
     );
 }
-
-// Backward chaining
 
 #[test]
 fn bc_direct_fact() {
@@ -1274,7 +1242,6 @@ fn bc_multi_rule_chain() {
 
 #[test]
 fn bc_sibling_join() {
-    // BC should find a sibling via a 2-premise join rule
     let mut r = Reasoner::new();
     r.add_abox_triple("A", "parent", "P");
     r.add_abox_triple("B", "parent", "P");
@@ -1319,7 +1286,6 @@ fn bc_sibling_join() {
 
 #[test]
 fn bc_full_scan() {
-    // Fully variable query should return bindings for all matching base facts
     let mut r = Reasoner::new();
     r.add_abox_triple("A", "parent", "B");
     r.add_abox_triple("C", "parent", "D");
@@ -1345,7 +1311,6 @@ fn bc_full_scan() {
 
 #[test]
 fn bc_no_spurious_negative() {
-    // BC must not return results for a predicate with no facts or applicable rules
     let mut r = Reasoner::new();
     r.add_abox_triple("A", "parent", "B");
 
@@ -1366,9 +1331,6 @@ fn bc_no_spurious_negative() {
 
 #[test]
 fn prov_transitive_addmult_combination() {
-    // A related B (0.8), B related C (0.7)
-    // Rule: ?X related ?Y, ?Y related ?Z => ?X related ?Z
-    // AddMultProbability: ⊗ = multiply, so 0.8 * 0.7 = 0.56
     let mut r = Reasoner::new();
     r.add_tagged_triple("A", "related", "B", 0.8);
     r.add_tagged_triple("B", "related", "C", 0.7);
@@ -1419,11 +1381,6 @@ fn prov_transitive_addmult_combination() {
 
 #[test]
 fn prov_addmult_multiple_paths() {
-    // A related B (0.6), A related C (0.9), B related D (0.8), C related D (0.5)
-    // Rule: ?X related ?Y, ?Y related ?Z => ?X related ?Z
-    // Path 1: A->B->D = 0.6*0.8 = 0.48
-    // Path 2: A->C->D = 0.9*0.5 = 0.45
-    // AddMultProbability ⊕ = noisy-OR: 0.48 + 0.45 - 0.48*0.45 ≈ 0.714
     let mut r = Reasoner::new();
     r.add_tagged_triple("A", "related", "B", 0.6);
     r.add_tagged_triple("A", "related", "C", 0.9);
@@ -1462,7 +1419,6 @@ fn prov_addmult_multiple_paths() {
         object: d,
     };
     let prob = AddMultProbability.recover_probability(&tag_store.get_tag(&triple));
-    // noisy-OR: 0.48 + 0.45 - 0.48*0.45 = 0.93 - 0.216 = 0.714
     assert!(
         (prob - 0.714).abs() < 1e-6,
         "AddMult disjunction should be ~0.714, got {}",
@@ -1472,8 +1428,6 @@ fn prov_addmult_multiple_paths() {
 
 #[test]
 fn prov_minmax_conjunction() {
-    // A knows B (0.9), B trusts C (0.6)
-    // MinMaxProbability: ⊗ = min, so min(0.9, 0.6) = 0.6
     let mut r = Reasoner::new();
     r.add_tagged_triple("A", "knows", "B", 0.9);
     r.add_tagged_triple("B", "trusts", "C", 0.6);
@@ -1523,11 +1477,6 @@ fn prov_minmax_conjunction() {
 
 #[test]
 fn prov_minmax_multiple_paths() {
-    // A related B (0.6), A related C (0.9), B related D (0.8), C related D (0.5)
-    // MinMaxProbability: ⊗ = min, ⊕ = max
-    // Path 1: A->B->D = min(0.6, 0.8) = 0.6
-    // Path 2: A->C->D = min(0.9, 0.5) = 0.5
-    // Disjunction: max(0.6, 0.5) = 0.6
     let mut r = Reasoner::new();
     r.add_tagged_triple("A", "related", "B", 0.6);
     r.add_tagged_triple("A", "related", "C", 0.9);
@@ -1575,7 +1524,6 @@ fn prov_minmax_multiple_paths() {
 
 #[test]
 fn prov_boolean_matches_classical() {
-    // BooleanProvenance should produce the same facts as classical semi-naive
     let mut r = Reasoner::new();
     r.add_abox_triple("A", "parent", "B");
     r.add_abox_triple("B", "parent", "C");
@@ -1617,7 +1565,6 @@ fn prov_boolean_matches_classical() {
 
     let (inferred, tag_store) = r.infer_new_facts_with_provenance(BooleanProvenance);
 
-    // Should infer A ancestor B, B ancestor C, A ancestor C
     let a = enc(&r, "A");
     let b = enc(&r, "B");
     let c = enc(&r, "C");
@@ -1631,7 +1578,6 @@ fn prov_boolean_matches_classical() {
         .iter()
         .any(|t| t.subject == a && t.predicate == ancestor && t.object == c));
 
-    // All tags should be true (one())
     for t in &inferred {
         assert_eq!(tag_store.get_tag(t), true);
     }
@@ -1639,7 +1585,6 @@ fn prov_boolean_matches_classical() {
 
 #[test]
 fn prov_classical_rules_still_work() {
-    // Regression test: classical (non-provenance) rules should still work
     let mut r = Reasoner::new();
     r.add_abox_triple("A", "parent", "B");
 
@@ -1665,10 +1610,8 @@ fn prov_classical_rules_still_work() {
 
 #[test]
 fn prov_zero_tag_pruning() {
-    // If a fact has probability 0.0, its tag is zero() and derivations through it
-    // should be pruned (zero is annihilator for ⊗)
     let mut r = Reasoner::new();
-    r.add_tagged_triple("A", "related", "B", 0.0); // zero tag
+    r.add_tagged_triple("A", "related", "B", 0.0);
     r.add_tagged_triple("B", "related", "C", 0.9);
 
     let related = enc(&r, "related");
@@ -1695,7 +1638,6 @@ fn prov_zero_tag_pruning() {
 
     let (inferred, _tag_store) = r.infer_new_facts_with_provenance(AddMultProbability);
 
-    // A related C should NOT be inferred (zero ⊗ anything = zero, pruned)
     let a = enc(&r, "A");
     let c = enc(&r, "C");
     let a_related_c = inferred
@@ -1709,17 +1651,10 @@ fn prov_zero_tag_pruning() {
 
 #[test]
 fn topk_wmc_overlap_vs_noisy_or() {
-    // Canonical overlap test: directly build the tag and verify WMC.
-    // proof1 = {0, 1}: uses x (0.8) and y (0.6) -> score 0.48
-    // proof2 = {0, 2}: uses x (0.8) and z (0.5) -> score 0.40 (shares x!)
-    //
-    // Noisy-OR of 0.48 and 0.40 = 0.688 (overcounts x)
-    // Exact WMC via inclusion-exclusion:
-    //   P(x∧y) + P(x∧z) - P(x∧y∧z) = 0.48 + 0.40 - 0.24 = 0.64
     let p = TopKProofs::new(5);
-    p.tag_from_probability_with_id(0.8, 0); // x
-    p.tag_from_probability_with_id(0.6, 1); // y
-    p.tag_from_probability_with_id(0.5, 2); // z
+    p.tag_from_probability_with_id(0.8, 0);
+    p.tag_from_probability_with_id(0.6, 1);
+    p.tag_from_probability_with_id(0.5, 2);
 
     let mut proof1: std::collections::BTreeSet<u32> = Default::default();
     proof1.insert(0);
@@ -1739,12 +1674,6 @@ fn topk_wmc_overlap_vs_noisy_or() {
 
 #[test]
 fn topk_transitive_chain() {
-    // A related B (0.9), B related C (0.8)
-    // Rule: ?X related ?Y, ?Y related ?Z => ?X related ?Z
-    // TopKProofs ⊗ = Cartesian product of proof sets
-    // tag(A->B) = [{0}], tag(B->C) = [{1}]
-    // conjunction: [{0}] ⊗ [{1}] = [{0,1}]
-    // WMC of [{0,1}] = P(A->B) * P(B->C) = 0.9 * 0.8 = 0.72
     let mut r = Reasoner::new();
     r.add_tagged_triple("A", "related", "B", 0.9);
     r.add_tagged_triple("B", "related", "C", 0.8);
@@ -1788,7 +1717,6 @@ fn topk_transitive_chain() {
     let prob = tag_store
         .provenance()
         .recover_probability(&tag_store.get_tag(&triple));
-    // Both seeds are distinct variables, so WMC = 0.9 * 0.8 = 0.72
     assert!(
         (prob - 0.72).abs() < 1e-6,
         "TopK chain probability should be 0.72, got {}",
@@ -1798,24 +1726,6 @@ fn topk_transitive_chain() {
 
 #[test]
 fn topk_overlap_two_paths_share_base_fact() {
-    // TopKProofs as the overlap-aware replacement for noisy-OR.
-    //
-    // Two rule firings produce the same conclusion triple but share a base fact (seed x).
-    // Noisy-OR (AddMultProbability) would treat the paths as independent and overcount x,
-    // giving 0.688. TopKProofs tracks proof sets and applies exact WMC via
-    // inclusion-exclusion, giving the correct 0.64.
-    //
-    // Facts:
-    //   A is_active yes  (seed x, prob 0.8)  ← appears in both proofs
-    //   A knows B        (seed y, prob 0.6)
-    //   A knows C        (seed z, prob 0.5)
-    //
-    // Rule: ?X is_active ?_, ?X knows ?Y => ?X is_socially_active yes
-    //
-    // Firing 1: X=A, Y=B -> proof {x, y} = seeds {0, 1}, score 0.8 * 0.6 = 0.48
-    // Firing 2: X=A, Y=C -> proof {x, z} = seeds {0, 2}, score 0.8 * 0.5 = 0.40
-    //
-    // Exact WMC: P(x∧y) + P(x∧z) − P(x∧y∧z) = 0.48 + 0.40 − 0.24 = 0.64
     let mut r = Reasoner::new();
     r.add_tagged_triple("A", "is_active", "yes", 0.8);
     r.add_tagged_triple("A", "knows", "B", 0.6);
@@ -1874,16 +1784,6 @@ fn topk_overlap_two_paths_share_base_fact() {
 
 #[test]
 fn wmc_overlap_exact_inference() {
-    // Same overlap scenario as topk_overlap_two_paths_share_base_fact, but using
-    // WmcProvenance (exact symbolic, no truncation).
-    //
-    // Two proof paths to "A is_socially_active yes" share seed x (is_active):
-    //   Path 1: {x, y} = seeds {0, 1} -> P(x)*P(y) = 0.8*0.6 = 0.48
-    //   Path 2: {x, z} = seeds {0, 2} -> P(x)*P(z) = 0.8*0.5 = 0.40
-    //
-    // Shannon expansion (exact WMC):
-    //   Condition on x: P(x)*WMC({y}∨{z}) + P(¬x)*WMC(∅)
-    //   = 0.8*(0.6+0.5-0.30) + 0 = 0.8*0.80 = 0.64
     let mut r = Reasoner::new();
     r.add_tagged_triple("A", "is_active", "yes", 0.8);
     r.add_tagged_triple("A", "knows", "B", 0.6);
@@ -1942,17 +1842,6 @@ fn wmc_overlap_exact_inference() {
 
 #[test]
 fn wmc_no_truncation_three_paths() {
-    // WmcProvenance keeps all proof paths; TopKProofs(k=2) would truncate the lowest.
-    //
-    // Three proof paths to "A is_socially_active yes", all sharing seed x (is_active):
-    //   Path 1: {x, y} = seeds {0,1}, P = 0.9*0.8 = 0.72
-    //   Path 2: {x, z} = seeds {0,2}, P = 0.9*0.7 = 0.63
-    //   Path 3: {x, w} = seeds {0,3}, P = 0.9*0.6 = 0.54  ← dropped by TopKProofs(k=2)
-    //
-    // Exact WMC (all 3 paths via Shannon / inclusion-exclusion):
-    //   Condition on x: P(x)*WMC({y}∨{z}∨{w}) + P(¬x)*0
-    //   WMC({y}∨{z}∨{w}) = 1-(1-0.8)(1-0.7)(1-0.6) = 1-0.2*0.3*0.4 = 1-0.024 = 0.976
-    //   WMC = 0.9 * 0.976 = 0.8784
     let mut r = Reasoner::new();
     r.add_tagged_triple("A", "is_active", "yes", 0.9);
     r.add_tagged_triple("A", "knows", "B", 0.8);
@@ -2012,12 +1901,6 @@ fn wmc_no_truncation_three_paths() {
 
 #[test]
 fn wmc_explanation_encoding() {
-    // Same 3-seed overlap setup as wmc_overlap_exact_inference:
-    //   seed0 = A is_active yes  (P=0.8)
-    //   seed1 = A knows B        (P=0.6)
-    //   seed2 = A knows C        (P=0.5)
-    // Rule fires for Y=B -> proof {0,1} and Y=C -> proof {0,2},
-    // both deriving the same conclusion: A is_socially_active yes.
     let mut r = Reasoner::new();
     r.add_tagged_triple("A", "is_active", "yes", 0.8);
     r.add_tagged_triple("A", "knows", "B", 0.6);
@@ -2050,7 +1933,6 @@ fn wmc_explanation_encoding() {
 
     let (inferred, tag_store) = r.infer_new_facts_with_provenance(WmcProvenance::new());
 
-    // seed_triples should record the 3 seeds in sorted order
     assert_eq!(tag_store.seed_triples.len(), 3, "three probability seeds");
 
     let a = enc(&r, "A");
@@ -2061,7 +1943,6 @@ fn wmc_explanation_encoding() {
         "Should infer A is_socially_active yes"
     );
 
-    // formula for the derived triple should have 2 proof paths
     let derived = shared::triple::Triple {
         subject: a,
         predicate: is_socially_active,
@@ -2070,7 +1951,6 @@ fn wmc_explanation_encoding() {
     let formula = tag_store.get_tag(&derived);
     assert_eq!(formula.len(), 2, "two proof paths: {{0,1}} and {{0,2}}");
 
-    // encode_as_rdf_star_with_explanation should produce the explanation triples
     let mut dict = shared::dictionary::Dictionary::new();
     let mut qt = shared::quoted_triple_store::QuotedTripleStore::new();
     let triples = tag_store.encode_as_rdf_star_with_explanation(&mut dict, &mut qt);
@@ -2078,17 +1958,6 @@ fn wmc_explanation_encoding() {
     let proof_count_pred = dict.encode("http://www.w3.org/ns/prob#proofCount");
     let has_proof_pred = dict.encode("http://www.w3.org/ns/prob#hasProof");
     let has_seed_pred = dict.encode("http://www.w3.org/ns/prob#hasSeed");
-
-    // The tag store holds all 4 tagged triples (3 seeds + 1 derived fact),
-    // so annotation counts span all of them:
-    //
-    //   Triple                      | formula         | proofCount | hasProof | hasSeed
-    //   A is_active yes             | {{0}}           |     1      |    1     |    1
-    //   A knows B                   | {{1}}           |     1      |    1     |    1
-    //   A knows C                   | {{2}}           |     1      |    1     |    1
-    //   A is_socially_active yes    | {{0,1},{0,2}}   |     2      |    2     |    4
-    //   ────────────────────────────────────────────────────────────────────────────
-    //   Total                                         |     4      |    5     |    7
 
     let proof_count_triples: Vec<_> = triples
         .iter()
@@ -2104,7 +1973,6 @@ fn wmc_explanation_encoding() {
         .iter()
         .filter(|t| t.predicate == has_proof_pred)
         .collect();
-    // seeds have 1 proof each (3×1=3), derived has 2 proof paths -> total 5
     assert_eq!(
         has_proof_triples.len(),
         5,
@@ -2115,7 +1983,6 @@ fn wmc_explanation_encoding() {
         .iter()
         .filter(|t| t.predicate == has_seed_pred)
         .collect();
-    // seeds: 1+1+1=3; derived: proof {0,1}->2, proof {0,2}->2 = 4 -> total 7
     assert_eq!(
         has_seed_triples.len(),
         7,
@@ -2123,9 +1990,8 @@ fn wmc_explanation_encoding() {
     );
 }
 
-// ─── Phase 1 NAF tests ────────────────────────────────────────────────────────
-
-/// BooleanProvenance: exact NAF — blocked fact IS present -> NOT blocked = false -> effective not derived.
+/// BooleanProvenance: exact NAF — blocked fact IS present -> NOT blocked = false -> effective not
+/// derived
 #[test]
 fn boolean_naf_blocked_present() {
     let mut r = Reasoner::new();
@@ -2137,7 +2003,6 @@ fn boolean_naf_blocked_present() {
     let effective = enc(&r, "effective");
     let yes = enc(&r, "yes");
 
-    // RULE: active(?x, yes), NOT blocked(?x, yes) -> effective(?x, yes)
     r.add_rule(naf_rule(
         vec![(
             Term::Variable("x".into()),
@@ -2158,7 +2023,6 @@ fn boolean_naf_blocked_present() {
 
     let (new_facts, _tag_store) = r.infer_new_facts_with_provenance(BooleanProvenance);
 
-    // blocked IS present -> NOT true = false -> effective must NOT be derived
     assert!(
         !inferred(&mut r, "P", "effective", "yes"),
         "effective must not be derived when blocked is present"
@@ -2176,12 +2040,11 @@ fn boolean_naf_blocked_present() {
     );
 }
 
-/// BooleanProvenance: exact NAF — blocked fact is ABSENT -> NOT blocked = true -> effective derived.
+/// BooleanProvenance: exact NAF — blocked fact is ABSENT -> NOT blocked = true -> effective derived
 #[test]
 fn boolean_naf_absent_negated() {
     let mut r = Reasoner::new();
     r.add_abox_triple("P", "active", "yes");
-    // "blocked" triple intentionally NOT added
 
     let active = enc(&r, "active");
     let blocked = enc(&r, "blocked");
@@ -2230,9 +2093,7 @@ fn boolean_naf_absent_negated() {
     );
 }
 
-/// AddMultProbability (approximate): active(0.8) AND NOT blocked(0.3) -> P ≈ 0.8 * 0.7 = 0.56.
-///
-/// This is approximate — exact only if seeds are independent. Labelled as such.
+/// AddMultProbability (approximate): active(0.8) AND NOT blocked(0.3) -> P ≈ 0.8 * 0.7 = 0.56
 #[test]
 fn addmult_naf_approximate() {
     let mut r = Reasoner::new();
@@ -2272,8 +2133,6 @@ fn addmult_naf_approximate() {
     };
     let prob = tag_store.get_tag(&eff_t);
 
-    // P(effective) ≈ P(active) * (1 - P(blocked)) = 0.8 * 0.7 = 0.56
-    // (approximate: exact only for independent seeds)
     assert!(
         (prob - 0.56).abs() < 1e-9,
         "AddMultProbability NAF: expected ~0.56, got {}",
@@ -2281,12 +2140,11 @@ fn addmult_naf_approximate() {
     );
 }
 
-/// AddMultProbability: blocked absent -> NOT blocked = one() -> P(effective) = P(active) = 0.8.
+/// AddMultProbability: blocked absent -> NOT blocked = one() -> P(effective) = P(active) = 0.8
 #[test]
 fn addmult_naf_absent_negated() {
     let mut r = Reasoner::new();
     r.add_tagged_triple("P", "active", "yes", 0.8);
-    // blocked NOT added
 
     let active = enc(&r, "active");
     let blocked = enc(&r, "blocked");
@@ -2321,7 +2179,6 @@ fn addmult_naf_absent_negated() {
     };
     let prob = tag_store.get_tag(&eff_t);
 
-    // blocked absent -> NOT blocked = one() -> P = 0.8 * 1.0 = 0.8
     assert!(
         (prob - 0.8).abs() < 1e-9,
         "AddMultProbability NAF (absent): expected 0.8, got {}",
@@ -2329,7 +2186,7 @@ fn addmult_naf_absent_negated() {
     );
 }
 
-/// try_add_rule rejects rules where a negated variable is unbound by positive premises.
+/// try_add_rule rejects rules where a negated variable is unbound by positive premises
 #[test]
 fn unsafe_negation_rejected() {
     let mut r = Reasoner::new();
@@ -2339,21 +2196,17 @@ fn unsafe_negation_rejected() {
     let effective = enc(&r, "effective");
     let yes = enc(&r, "yes");
 
-    // UNSAFE: ?y appears in NOT-body but is NOT bound by premise (?x is bound, ?y is not)
     let bad_rule = Rule {
         premise: vec![(
             Term::Variable("x".into()),
             Term::Constant(active),
             Term::Constant(yes),
         )],
-        negative_premise: vec![
-            // ?y is unbound — not in any positive premise
-            (
-                Term::Variable("y".into()),
-                Term::Constant(blocked),
-                Term::Constant(yes),
-            ),
-        ],
+        negative_premise: vec![(
+            Term::Variable("y".into()),
+            Term::Constant(blocked),
+            Term::Constant(yes),
+        )],
         conclusion: vec![(
             Term::Variable("x".into()),
             Term::Constant(effective),
@@ -2373,12 +2226,7 @@ fn unsafe_negation_rejected() {
     );
 }
 
-// ─── Phase 2 WMC NAF integration tests ──────────────────────────────────────
-
-/// WmcProvenance: independent seeds, active(P=0.8) AND NOT blocked(P=0.3).
-///
-/// Exact result: P(active=T AND blocked=F) = 0.8 * 0.7 = 0.56
-/// (exact because seeds are independent — no shared variable)
+/// WmcProvenance: independent seeds, active(P=0.8) AND NOT blocked(P=0.3)
 #[test]
 fn wmc_naf_independent_seeds_integration() {
     let mut r = Reasoner::new();
@@ -2427,23 +2275,14 @@ fn wmc_naf_independent_seeds_integration() {
     );
 }
 
-/// WmcProvenance: same triple used for both active and blocked (shared seed).
-///
-/// active tag  = {{(0,T)}}, blocked tag = {{(0,T)}} (same seed 0)
-/// NOT blocked = {{(0,F)}}
-/// conjunction = {{(0,T),(0,F)}} = contradictory -> zero -> P = 0.0
+/// WmcProvenance: same triple used for both active and blocked (shared seed)
 #[test]
 fn wmc_naf_shared_seed_integration() {
     let mut r = Reasoner::new();
-    // Add the SAME triple for both active and blocked at the same probability.
-    // Since it's the same triple, both get the same seed ID in the tag store.
     r.add_tagged_triple("P", "status", "active", 0.8);
-    // Use a different triple to represent blocked so we can control the seed.
-    // To force shared-seed: use the same triple for both predicates is not possible
-    // in the normal API. So we test the algebraic property directly via provenance:
     let p = WmcProvenance::new();
     let active_tag = p.tag_from_probability_with_id(0.8, 0);
-    let blocked_tag = p.tag_from_probability_with_id(0.8, 0); // same ID = shared seed
+    let blocked_tag = p.tag_from_probability_with_id(0.8, 0);
 
     let not_blocked = p.negate(&blocked_tag);
     let effective_tag = p.conjunction(&active_tag, &not_blocked);

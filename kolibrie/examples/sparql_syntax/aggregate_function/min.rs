@@ -48,7 +48,7 @@ fn min_aggregate() {
     </rdf:Description>
 </rdf:RDF>
     "#;
-    let mut database = SparqlDatabase::new();
+    let mut database = KolibrieDB::new();
     database.parse_rdf(rdf_data);
 
     let sparql = r#"PREFIX ds: <https://data.cityofchicago.org/resource/xzkq-xp2w/> SELECT MIN(?salary) AS ?minimum_salary WHERE {?employee ds:annual_salary ?salary} GROUP BY ?minimum_salary"#;
@@ -57,7 +57,6 @@ fn min_aggregate() {
         .expect("query should run")
         .into_rows();
 
-    // Now the main function is responsible for printing the results
     println!("Results:");
     for result in results {
         if let [salary] = &result[..] {

@@ -100,8 +100,6 @@ fn make_sds(n: usize, update_ratio_percent: usize) -> Sds {
 }
 
 fn signature(result: &HashMap<String, Vec<Triple>>, dict: &SharedTerms) -> BTreeSet<String> {
-    // A copy: this decodes every triple it prints, and a scoped encoder will not
-    // hold its lock across the walk.
     let d = dict.view();
     let mut out = BTreeSet::new();
     for (component, triples) in result {

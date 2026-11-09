@@ -14,8 +14,8 @@ use std::error::Error;
 use ml::{MlpNeuralPredicate, OutputType};
 use shared::query::{MLPredictClause, NeuralOutputKind, NeuralRelationDecl};
 
+use crate::database::KolibrieDB;
 use crate::neural_registry::{model_hidden_layers, model_output_type};
-use crate::sparql_database::SparqlDatabase;
 use shared::terms::Bindings;
 
 type CandleResult<T> = Result<T, Box<dyn Error>>;
@@ -29,7 +29,7 @@ pub(crate) struct CandleDispatch {
 
 /// Try Candle for an `ML.PREDICT` clause and resolve the target predicate
 pub(crate) fn try_candle_predict(
-    database: &SparqlDatabase,
+    database: &KolibrieDB,
     ml_predict: &MLPredictClause<'_>,
     conclusion: &[(&str, &str, &str)],
     rule_prefixes: &HashMap<String, String>,
@@ -38,20 +38,17 @@ pub(crate) fn try_candle_predict(
     database.ml_context.require_local()?;
     let output_var = ml_predict.output.trim_start_matches('?');
 
-    // Find the ML output predicate from the conclusion template
     let predicate_raw = match find_object_position_predicate(conclusion, output_var) {
         Some(p) => p,
         None => return Ok(None),
     };
     let normalized_predicate = database.resolve_query_term(predicate_raw, rule_prefixes);
 
-    // Use Python fallback when the relation is not registered
     let relation = match database.neural_relation_decls.get(&normalized_predicate) {
         Some(r) => r.clone(),
         None => return Ok(None),
     };
 
-    // Require a MODEL declaration
     let model_decl = database
         .model_decls
         .get(&relation.model_name)
@@ -63,7 +60,6 @@ pub(crate) fn try_candle_predict(
             )
         })?;
 
-    // Check that ML.PREDICT names the registered model
     if relation.model_name != ml_predict.model {
         return Err(format!(
             "ML.PREDICT names model \"{}\" but NEURAL RELATION for <{}> uses model \"{}\"",
@@ -72,7 +68,6 @@ pub(crate) fn try_candle_predict(
         .into());
     }
 
-    // Require a trained artifact
     let artifact_path = database
         .neural_model_artifacts
         .get(&relation.model_name)
@@ -84,10 +79,8 @@ pub(crate) fn try_candle_predict(
             )
         })?;
 
-    // Build features from the registered feature vars
     let features = build_features_for_rows(database, &relation, input_rows)?;
 
-    // Load the model and run inference
     let output_type: OutputType = model_output_type(&model_decl);
     let hidden = model_hidden_layers(&model_decl);
     let model = MlpNeuralPredicate::load(
@@ -108,7 +101,6 @@ pub(crate) fn try_candle_predict(
         probs
     };
 
-    // Map probabilities to labels
     let (predictions, probabilities) = map_probs_to_labels(&probs, &model_decl.output_kind);
 
     Ok(Some(CandleDispatch {
@@ -119,15 +111,12 @@ pub(crate) fn try_candle_predict(
 }
 
 /// Resolve by model name for the physical operator runtime path
-///
-/// Requires exactly one relation for the model, otherwise callers fall back to Python
 pub(crate) fn try_candle_predict_by_model_name(
-    database: &SparqlDatabase,
+    database: &KolibrieDB,
     model_name: &str,
     input_rows: &Bindings,
 ) -> CandleResult<Option<CandleDispatch>> {
     database.ml_context.require_local()?;
-    // Find the relation bound to this model name
     let matching: Vec<&NeuralRelationDecl> = database
         .neural_relation_decls
         .values()
@@ -193,7 +182,7 @@ fn find_object_position_predicate<'a>(
 }
 
 fn build_features_for_rows(
-    database: &SparqlDatabase,
+    database: &KolibrieDB,
     relation: &NeuralRelationDecl,
     input_rows: &Bindings,
 ) -> CandleResult<Vec<Vec<f64>>> {

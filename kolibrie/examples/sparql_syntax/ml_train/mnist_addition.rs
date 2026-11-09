@@ -1,9 +1,9 @@
 use std::{error::Error, fs, path::PathBuf, time::Instant};
 
 use kolibrie::{
+    database::KolibrieDB,
     ml_policy::MlExecutionContext,
     program::{compile_program, execute_program, query_program_result, ProgramOptions},
-    sparql_database::SparqlDatabase,
 };
 
 include!("mnist_program.rs");
@@ -115,7 +115,7 @@ fn main() -> Result<(), Box<dyn Error>> {
             .duration_since(std::time::UNIX_EPOCH)?
             .as_nanos()
     ));
-    let mut db = SparqlDatabase::with_ml_context(MlExecutionContext::trusted_local(&output)?);
+    let mut db = KolibrieDB::with_ml_context(MlExecutionContext::trusted_local(&output)?);
     for (index, (image, label)) in train_images.iter().zip(&train_labels).enumerate() {
         load_image(
             &mut db,

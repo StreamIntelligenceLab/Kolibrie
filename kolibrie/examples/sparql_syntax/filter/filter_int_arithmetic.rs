@@ -10,7 +10,6 @@
 
 use kolibrie::prelude::*;
 
-// Adding FILTER
 fn filter_query() {
     let rdf_data = r#"
     <?xml version="1.0" encoding="UTF-8"?>
@@ -49,7 +48,7 @@ fn filter_query() {
     </rdf:Description>
 </rdf:RDF>
     "#;
-    let mut database = SparqlDatabase::new();
+    let mut database = KolibrieDB::new();
     database.parse_rdf(rdf_data);
 
     let sparql = r#"PREFIX ds: <https://data.cityofchicago.org/resource/xzkq-xp2w/> 
@@ -63,7 +62,6 @@ fn filter_query() {
         .expect("query should run")
         .into_rows();
 
-    // Now the main function is responsible for printing the results
     println!("Results:");
     for result in results {
         if let [employee, salary] = &result[..] {
@@ -84,7 +82,6 @@ fn filter_query() {
         .expect("query should run")
         .into_rows();
 
-    // Now the main function is responsible for printing the results
     println!("Results:");
     for result in results2 {
         if let [employee, salary] = &result[..] {

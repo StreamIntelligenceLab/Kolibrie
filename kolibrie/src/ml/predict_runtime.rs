@@ -15,8 +15,8 @@ use crate::execute_query::query_training_rows;
 use shared::query::{CombinedRule, MLPredictClause};
 use shared::triple::Triple;
 
+use crate::database::KolibrieDB;
 use crate::ml::predict_candle::try_candle_predict;
-use crate::sparql_database::SparqlDatabase;
 use shared::terms::Bindings;
 
 type MlResult<T> = Result<T, Box<dyn Error>>;
@@ -36,13 +36,11 @@ pub(crate) struct MlConclusionMeta {
 }
 
 /// Resolve metadata for `ML.PREDICT` conclusion handling
-///
-/// Checks output position, single-predicate use, and referenced output vars
 pub(crate) fn resolve_ml_conclusion_metadata(
     rule: &CombinedRule<'_>,
     ml_output_var: &str,
     rule_prefixes: &HashMap<String, String>,
-    database: &SparqlDatabase,
+    database: &KolibrieDB,
 ) -> MlResult<MlConclusionMeta> {
     let out_stripped = ml_output_var.trim_start_matches('?');
     let mut ml_indices: Vec<usize> = Vec::new();
@@ -110,7 +108,7 @@ pub(crate) fn resolve_ml_conclusion_metadata(
 pub(crate) fn execute_ml_predict_clause<'a>(
     ml_predict: &MLPredictClause<'_>,
     rule: &mut CombinedRule<'a>,
-    database: &mut SparqlDatabase,
+    database: &mut KolibrieDB,
     rule_prefixes: &HashMap<String, String>,
 ) -> MlResult<Vec<Triple>> {
     let trusted = database.ml_context.require_local().is_ok();
@@ -120,10 +118,8 @@ pub(crate) fn execute_ml_predict_clause<'a>(
     let out_var = ml_predict.output;
     let meta = resolve_ml_conclusion_metadata(rule, out_var, rule_prefixes, database)?;
 
-    // Run the INPUT query with native ids
     let input_rows = run_input_query(ml_predict.input_raw, database, rule_prefixes)?;
 
-    // Clean up and strip ML templates even with no input
     if input_rows.is_empty() {
         purge_previous_materialization(database, &meta.cache_key);
         strip_ml_conclusions(rule, out_var);
@@ -131,7 +127,6 @@ pub(crate) fn execute_ml_predict_clause<'a>(
         return Ok(Vec::new());
     }
 
-    // Local execution may use its registered native relation
     let candle = if trusted {
         try_candle_predict(
             database,
@@ -181,7 +176,6 @@ pub(crate) fn execute_ml_predict_clause<'a>(
             )
         }
         None => {
-            // Fall back to Python
             let preds = run_python_ml_dispatch(
                 database,
                 ml_predict.model,
@@ -221,7 +215,6 @@ pub(crate) fn execute_ml_predict_clause<'a>(
         None
     };
 
-    // Materialize shared ML conclusions
     let inserted = materialize_ml_conclusions(
         database,
         out_var,
@@ -240,7 +233,7 @@ pub(crate) fn execute_ml_predict_clause<'a>(
 /// Run the INPUT query through the optimizer and return id-encoded rows
 fn run_input_query(
     input_raw: &str,
-    database: &mut SparqlDatabase,
+    database: &mut KolibrieDB,
     rule_prefixes: &HashMap<String, String>,
 ) -> MlResult<Bindings> {
     let mut query_with_prefixes = String::new();
@@ -269,7 +262,7 @@ fn run_input_query(
 }
 
 /// Remove old materialized triples for this cache key
-fn purge_previous_materialization(database: &mut SparqlDatabase, cache_key: &str) {
+fn purge_previous_materialization(database: &mut KolibrieDB, cache_key: &str) {
     if let Some(old) = database.take_ml_materialized(cache_key) {
         for triple in old {
             database.delete_triple(&triple);
@@ -290,7 +283,7 @@ fn strip_ml_conclusions<'a>(rule: &mut CombinedRule<'a>, ml_output_var: &str) {
 /// Materialize predictions and strip consumed conclusion templates
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn materialize_ml_conclusions<'a>(
-    database: &mut SparqlDatabase,
+    database: &mut KolibrieDB,
     ml_output_var: &str,
     prob_var: Option<&str>,
     conclusion: &mut Vec<(&'a str, &'a str, &'a str)>,
@@ -302,7 +295,6 @@ pub(crate) fn materialize_ml_conclusions<'a>(
 ) -> MlResult<Vec<Triple>> {
     let out_stripped = ml_output_var.trim_start_matches('?');
 
-    // Check all non-ML variables in ML templates exist in row bindings
     if let Some(first_row) = predicted_rows.first() {
         let row_keys = &first_row.bindings;
         for &idx in ml_conclusion_indices {
@@ -326,10 +318,8 @@ pub(crate) fn materialize_ml_conclusions<'a>(
         }
     }
 
-    // Remove stale materialization for this cache key
     purge_previous_materialization(database, cache_key);
 
-    // Copy ML templates before mutating the database
     let ml_templates: Vec<(String, String, String)> = ml_conclusion_indices
         .iter()
         .map(|&idx| {
@@ -351,11 +341,9 @@ pub(crate) fn materialize_ml_conclusions<'a>(
             inserted.push(triple);
         }
 
-        // Add the companion probability triple when requested
         if let Some(prob_var_name) = prob_var {
             let prob_value = row.probability.unwrap_or(0.0);
             let companion_predicate = format!("{}_prob", normalized_predicate);
-            // Use the first ML conclusion subject as the probability anchor
             if let Some((s_tmpl, _, _)) = ml_templates.first() {
                 let subject = substitute_slot(s_tmpl, out_stripped, row, database, rule_prefixes)?;
                 let triple = encode_triple(
@@ -367,14 +355,12 @@ pub(crate) fn materialize_ml_conclusions<'a>(
                 database.add_triple(triple.clone());
                 inserted.push(triple);
             }
-            let _ = prob_var_name; // name is derived; kept arg for API clarity
+            let _ = prob_var_name;
         }
     }
 
-    // Track triples for rerun cleanup
     database.set_ml_materialized(cache_key.to_string(), inserted.clone());
 
-    // Strip ML templates from the rule
     conclusion.retain(|(s, p, o)| {
         let matches =
             |slot: &str| slot.starts_with('?') && slot.trim_start_matches('?') == out_stripped;
@@ -388,7 +374,7 @@ fn substitute_slot(
     slot: &str,
     ml_output_var_stripped: &str,
     row: &PredictedRow,
-    database: &SparqlDatabase,
+    database: &KolibrieDB,
     rule_prefixes: &HashMap<String, String>,
 ) -> MlResult<String> {
     if slot.starts_with('?') {
@@ -413,7 +399,7 @@ fn substitute_slot(
 }
 
 fn encode_triple(
-    database: &mut SparqlDatabase,
+    database: &mut KolibrieDB,
     subject: &str,
     predicate: &str,
     object: &str,
@@ -427,7 +413,7 @@ fn encode_triple(
 
 /// Run the existing Python MLHandler path and return decoded predictions
 pub(crate) fn run_python_ml_dispatch(
-    database: &SparqlDatabase,
+    database: &KolibrieDB,
     model: &str,
     input_rows: &Bindings,
     input_select: &[(&str, &str, Option<&str>)],
@@ -494,7 +480,7 @@ pub(crate) fn run_python_ml_dispatch(
 pub(crate) fn filter_numeric_features(
     input_rows: &Bindings,
     input_variables: &[String],
-    database: &SparqlDatabase,
+    database: &KolibrieDB,
 ) -> Vec<Vec<f64>> {
     let Some(first_row) = input_rows.first() else {
         return Vec::new();

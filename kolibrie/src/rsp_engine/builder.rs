@@ -7,12 +7,9 @@
 * you can obtain one at https://mozilla.org/MPL/2.0/.
 */
 
-//! Assembling an engine from a parsed RSP-QL query.
-//!
-//! Turns the windows, query and output-stream operator that a
-//! [`RegisterClause`](shared::query::RegisterClause) declares into a running
-//! [`RSPEngine`](crate::rsp_engine::RSPEngine).
+//! Assembling an engine from a parsed RSP-QL query
 
+use crate::database::KolibrieDB;
 use crate::parser::parse_combined_query;
 use crate::rsp::r2r::R2ROperator;
 use crate::rsp::r2s::StreamOperator;
@@ -22,7 +19,6 @@ use crate::rsp_engine::{
     CrossWindowReasoningMode, OperationMode, QueryExecutionMode, RSPEngine, RSPQueryPlan,
     RSPWindow, ResultConsumer,
 };
-use crate::sparql_database::SparqlDatabase;
 use crate::streamertail_optimizer::{
     build_logical_plan, LogicalOperator, PhysicalOperator, Streamertail,
 };
@@ -38,26 +34,21 @@ use std::sync::Arc;
 /// RSP Query configuration extracted from parsed RSP-QL
 #[derive(Debug)]
 pub struct RSPQueryConfig<'a> {
-    /// One entry per `FROM NAMED WINDOW` clause.
+    /// One entry per `FROM NAMED WINDOW` clause
     pub windows: Vec<RSPWindow>,
-    /// IRI the answers are published under.
+    /// IRI the answers are published under
     pub output_stream: String,
-    /// Which solutions reach that stream.
+    /// Which solutions reach that stream
     pub stream_type: StreamOperator,
-    /// Patterns outside any window, matched against background data rather than
-    /// the stream. Their presence is one of the two things that forces cross-window
-    /// coordination, the other being more than one window.
+    /// Patterns outside any window, matched against background data rather than the stream
     pub static_patterns: Vec<(&'a str, &'a str, &'a str)>,
-    /// Store supplying the prefix bindings the query was written against.
-    pub database: SparqlDatabase,
-    /// Effective synchronization policy for multi-window coordination.
+    /// Store supplying the prefix bindings the query was written against
+    pub database: KolibrieDB,
+    /// Effective synchronization policy for multi-window coordination
     pub sync_policy: SyncPolicy,
 }
 
-/// Assembles an [`RSPEngine`] step by step.
-///
-/// Each method returns the builder, so configuration chains; [`Self::build`]
-/// validates the result and fails rather than producing a half-configured engine.
+/// Assembles an [`RSPEngine`] step by step
 pub struct RSPBuilder<'a, I, O> {
     rsp_ql_query: Option<&'a str>,
     triples: Option<&'a str>,
@@ -67,7 +58,6 @@ pub struct RSPBuilder<'a, I, O> {
     operation_mode: OperationMode,
     query_execution_mode: QueryExecutionMode,
     syntax: String,
-    /// Engine-level default policy; overridden by per-window `WITH POLICY` clause.
     sync_policy: SyncPolicy,
     reasoning_rules: Vec<Rule>,
     sparql_rules: Vec<String>,
@@ -75,9 +65,6 @@ pub struct RSPBuilder<'a, I, O> {
     cross_window_reasoning_mode: CrossWindowReasoningMode,
 }
 
-// Cannot derive: `r2r` is a trait object. Summarised besides — the query, rules and
-// triples are source text whose length is more informative than its content at this
-// stage.
 impl<I, O> Debug for RSPBuilder<'_, I, O> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("RSPBuilder")
@@ -105,7 +92,7 @@ where
     O: Clone + Eq + Send + Debug + Hash + 'static + From<Vec<(String, String)>>,
     I: Eq + PartialEq + Clone + Debug + Hash + Send + 'static,
 {
-    /// A builder with nothing configured.
+    /// A builder with nothing configured
     pub fn new() -> RSPBuilder<'a, I, O> {
         RSPBuilder {
             rsp_ql_query: None,
@@ -124,21 +111,19 @@ where
         }
     }
 
-    /// Override the engine-level default synchronization policy.
-    /// A per-window `WITH POLICY` clause in the query string takes precedence.
+    /// Override the engine-level default synchronization policy
     pub fn set_sync_policy(mut self, policy: SyncPolicy) -> RSPBuilder<'a, I, O> {
         self.sync_policy = policy;
         self
     }
 
-    /// Supply pre-parsed reasoning rules (forward-chaining inference applied per window firing).
+    /// Supply pre-parsed reasoning rules (forward-chaining inference applied per window firing)
     pub fn add_reasoning_rules(mut self, rules: Vec<Rule>) -> RSPBuilder<'a, I, O> {
         self.reasoning_rules = rules;
         self
     }
 
-    /// Supply SPARQL RULE strings (`RULE :Name :- CONSTRUCT{} WHERE{}`) to be parsed after
-    /// dictionary merge in `RSPEngine::new()` so term IDs are consistent.
+    /// Supplies SPARQL RULE strings, parsed in `RSPEngine::new()` after the dictionary merge
     pub fn add_sparql_rules(mut self, rules: Vec<String>) -> RSPBuilder<'a, I, O> {
         self.sparql_rules = rules;
         self
@@ -165,25 +150,25 @@ where
         self
     }
 
-    /// Adds background data, available to patterns outside any window.
+    /// Adds background data, available to patterns outside any window
     pub fn add_triples(mut self, triples: &'a str) -> RSPBuilder<'a, I, O> {
         self.triples = Some(triples);
         self
     }
 
-    /// Adds reasoning rules applied to each window's content.
+    /// Adds reasoning rules applied to each window's content
     pub fn add_rules(mut self, rules: &'a str) -> RSPBuilder<'a, I, O> {
         self.rules = Some(rules);
         self
     }
 
-    /// Sets the callback receiving the output stream.
+    /// Sets the callback receiving the output stream
     pub fn add_consumer(mut self, consumer: ResultConsumer<O>) -> RSPBuilder<'a, I, O> {
         self.result_consumer = Some(consumer);
         self
     }
 
-    /// Supplies the operator that evaluates the query over each window.
+    /// Supplies the operator that evaluates the query over each window
     pub fn add_r2r(
         mut self,
         r2r: Box<dyn R2ROperator<I, Vec<PhysicalOperator>, O>>,
@@ -192,13 +177,13 @@ where
         self
     }
 
-    /// Chooses single- or multi-threaded operation. See [`OperationMode`].
+    /// Chooses single- or multi-threaded operation
     pub fn set_operation_mode(mut self, operation_mode: OperationMode) -> RSPBuilder<'a, I, O> {
         self.operation_mode = operation_mode;
         self
     }
 
-    /// Chooses whether queries run through the standard path or the optimizer.
+    /// Chooses whether queries run through the standard path or the optimizer
     pub fn set_query_execution_mode(mut self, mode: QueryExecutionMode) -> RSPBuilder<'a, I, O> {
         self.query_execution_mode = mode;
         self
@@ -210,9 +195,8 @@ where
             Ok((_, parsed_query)) => {
                 if let Some(register_clause) = &parsed_query.register_clause {
                     let mut windows = Vec::new();
-                    let mut database = SparqlDatabase::new();
+                    let mut database = KolibrieDB::new();
                     database.set_prefixes(parsed_query.prefixes.clone());
-                    // Extract windows from the register clause
                     for window_clause in &register_clause.query.window_clause {
                         let window = self.create_rsp_window(
                             window_clause,
@@ -222,18 +206,15 @@ where
                         windows.push(window);
                     }
 
-                    // Convert stream type
                     let stream_type = match &register_clause.stream_type {
                         StreamType::RStream => StreamOperator::RSTREAM,
                         StreamType::IStream => StreamOperator::ISTREAM,
                         StreamType::DStream => StreamOperator::DSTREAM,
-                        StreamType::Custom(_) => StreamOperator::RSTREAM, // Default fallback
+                        StreamType::Custom(_) => StreamOperator::RSTREAM,
                     };
 
-                    // Extract static patterns from WHERE clause (outside window blocks)
                     let static_patterns = register_clause.query.where_clause.0.clone();
 
-                    // Resolve policy: per-window WITH POLICY > builder default
                     let sync_policy = register_clause
                         .query
                         .window_clause
@@ -262,9 +243,8 @@ where
         &self,
         window_clause: &WindowClause,
         window_blocks: &[WindowBlock],
-        database: &mut SparqlDatabase,
+        database: &mut KolibrieDB,
     ) -> Result<RSPWindow, String> {
-        // Find the corresponding window block for this window
         let spo_query = LogicalOperator::scan((
             Term::Variable("s".to_string()),
             Term::Variable("p".to_string()),
@@ -274,7 +254,6 @@ where
             .iter()
             .find(|block| block.window_name == window_clause.window_iri)
             .map(|block| {
-                // Convert window block patterns to query plan
                 let op = build_logical_plan(
                     Vec::new(),
                     block.patterns.clone(),
@@ -288,7 +267,6 @@ where
             })
             .unwrap_or_else(|| spo_query);
 
-        // Convert window specification
         let slide = window_clause
             .window_spec
             .slide
@@ -298,15 +276,15 @@ where
             Some("TIME_DRIVEN") => Tick::TimeDriven,
             Some("TUPLE_DRIVEN") => Tick::TupleDriven,
             Some("BATCH_DRIVEN") => Tick::BatchDriven,
-            _ => Tick::TimeDriven, // Default
+            _ => Tick::TimeDriven,
         };
 
         let report_strategy = match window_clause.window_spec.report_strategy {
             Some("ON_WINDOW_CLOSE") => ReportStrategy::OnWindowClose,
             Some("ON_CONTENT_CHANGE") => ReportStrategy::OnContentChange,
             Some("NON_EMPTY_CONTENT") => ReportStrategy::NonEmptyContent,
-            Some("PERIODIC") => ReportStrategy::Periodic(1000), // Default 1 second
-            _ => ReportStrategy::OnWindowClose,                 // Default
+            Some("PERIODIC") => ReportStrategy::Periodic(1000),
+            _ => ReportStrategy::OnWindowClose,
         };
 
         Ok(RSPWindow {
@@ -324,13 +302,11 @@ where
     fn create_rsp_query_plan(query_config: &RSPQueryConfig) -> Result<RSPQueryPlan, String> {
         let mut window_plans = Vec::new();
 
-        // Create individual window plans
         for window in &query_config.windows {
             window_plans.push(window.query.clone());
         }
         let mut database = query_config.database.clone();
 
-        // Create static data plan if there are static patterns
         let static_data_plan = if !query_config.static_patterns.is_empty() {
             let logical_plan = build_logical_plan(
                 Vec::new(),
@@ -346,7 +322,6 @@ where
             None
         };
 
-        // Create physical plans from the logical ones
         let mut optimizer = Streamertail::new(&database);
 
         let static_data_plan = match static_data_plan {
@@ -365,10 +340,7 @@ where
         })
     }
 
-    /// Validates the configuration and constructs the engine.
-    ///
-    /// Fails if something required was never supplied, rather than returning an
-    /// engine that would misbehave at the first firing.
+    /// Validates the configuration and constructs the engine
     pub fn build(mut self) -> Result<RSPEngine<I, O>, String> {
         let rsp_ql_query = self
             .rsp_ql_query
@@ -398,12 +370,10 @@ where
             }
         }
 
-        // Parse the RSP-QL query
         let query_config = self.parse_rsp_ql_query(rsp_ql_query)?;
 
         let sync_policy = query_config.sync_policy.clone();
 
-        // Create RSP-QL query plan using Volcano optimizer
         let rsp_query_plan = Self::create_rsp_query_plan(&query_config)?;
 
         RSPEngine::new(

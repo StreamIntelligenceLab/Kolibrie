@@ -11,38 +11,29 @@
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
-/// Bit mask for identifying quoted triple IDs.
-/// Regular dictionary IDs use bits 0–30 (up to 2,147,483,647).
-/// Quoted triple IDs have bit 31 set (0x8000_0000 and above).
+/// Bit mask for identifying quoted triple IDs
 pub const QUOTED_TRIPLE_ID_BIT: u32 = 0x8000_0000;
 
-/// Whether `id` denotes a quoted triple rather than an ordinary interned term.
+/// Whether `id` denotes a quoted triple rather than an ordinary interned term
 #[inline]
 pub fn is_quoted_triple_id(id: u32) -> bool {
     id & QUOTED_TRIPLE_ID_BIT != 0
 }
 
-/// Stores quoted triples (RDF-star) as u32 IDs with bidirectional lookup.
-/// Each quoted triple `<< s p o >>` gets a unique ID with the high bit set.
-/// Component IDs (s, p, o) may themselves be quoted triple IDs for nesting.
+/// Stores quoted triples (RDF-star) as u32 IDs with bidirectional lookup
 #[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
-/// Interns RDF-star quoted triples, in an id range disjoint from the dictionary's.
-///
-/// Components are themselves encoded ids, and may be quoted triples in turn, so
-/// nesting is representable. Ids start at [`QUOTED_TRIPLE_ID_BIT`] and climb, which
-/// is what keeps them distinguishable from ordinary terms by a single bit test.
-/// `u32::MAX` is never minted; see [`encode`](Self::encode).
+/// Interns RDF-star quoted triples, in an id range disjoint from the dictionary's
 pub struct QuotedTripleStore {
-    /// Id to its three component ids.
+    /// Id to its three component ids
     pub id_to_components: HashMap<u32, (u32, u32, u32)>,
-    /// Components back to their id, so re-encoding is idempotent.
+    /// Components back to their id, so re-encoding is idempotent
     pub components_to_id: HashMap<(u32, u32, u32), u32>,
-    /// Next id to hand out. Starts at [`QUOTED_TRIPLE_ID_BIT`].
+    /// Next id to hand out
     pub next_qt_id: u32,
 }
 
 impl QuotedTripleStore {
-    /// An empty store, assigning ids from [`QUOTED_TRIPLE_ID_BIT`].
+    /// An empty store, assigning ids from [`QUOTED_TRIPLE_ID_BIT`]
     pub fn new() -> Self {
         Self {
             id_to_components: HashMap::new(),
@@ -51,18 +42,12 @@ impl QuotedTripleStore {
         }
     }
 
-    /// Encode a quoted triple (s, p, o) -> returns a quoted triple ID.
-    /// Reuses an existing ID if this triple was already encoded.
+    /// Encode a quoted triple (s, p, o) -> returns a quoted triple ID
     pub fn encode(&mut self, subject: u32, predicate: u32, object: u32) -> u32 {
         let key = (subject, predicate, object);
         if let Some(&id) = self.components_to_id.get(&key) {
             return id;
         }
-        // Mirrors the assert on the ordinary-term half of the id space, which
-        // refuses to mint an id that would collide with this range. The top value
-        // is reserved: `relation::UNBOUND` is `u32::MAX`, and a row that held it as
-        // a real id would read as unbound. Nothing else here caps `next_qt_id`, so
-        // this also stops the increment below overflowing silently in release.
         assert!(
             self.next_qt_id < u32::MAX,
             "quoted triple ID space exhausted: next_qt_id {} is reserved",
@@ -75,24 +60,22 @@ impl QuotedTripleStore {
         id
     }
 
-    /// Decode a quoted triple ID back to its (s, p, o) components.
+    /// Decode a quoted triple ID back to its (s, p, o) components
     pub fn decode(&self, id: u32) -> Option<(u32, u32, u32)> {
         self.id_to_components.get(&id).copied()
     }
 
-    /// Returns the number of quoted triples stored.
-    /// Number of distinct quoted triples interned.
+    /// Returns the number of quoted triples stored
     pub fn len(&self) -> usize {
         self.id_to_components.len()
     }
 
-    /// Returns true if the store is empty.
-    /// Whether no quoted triple has been interned.
+    /// Returns true if the store is empty
     pub fn is_empty(&self) -> bool {
         self.id_to_components.is_empty()
     }
 
-    /// Merge another store into this one (needed for parallel parsing).
+    /// Merge another store into this one (needed for parallel parsing)
     pub fn merge(&mut self, other: &QuotedTripleStore) {
         for (&id, &components) in &other.id_to_components {
             self.id_to_components.entry(id).or_insert(components);
@@ -135,9 +118,7 @@ mod tests {
     #[test]
     fn test_nested_quoted_triples() {
         let mut store = QuotedTripleStore::new();
-        // Inner: << 1 2 3 >>
         let inner_id = store.encode(1, 2, 3);
-        // Outer: << <<1 2 3>> 4 5 >>
         let outer_id = store.encode(inner_id, 4, 5);
         assert!(is_quoted_triple_id(inner_id));
         assert!(is_quoted_triple_id(outer_id));
@@ -164,7 +145,7 @@ mod tests {
         let id1 = store1.encode(1, 2, 3);
 
         let mut store2 = QuotedTripleStore::new();
-        store2.next_qt_id = store1.next_qt_id; // simulate separate counter
+        store2.next_qt_id = store1.next_qt_id;
         let id2 = store2.encode(4, 5, 6);
 
         store1.merge(&store2);

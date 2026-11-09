@@ -8,22 +8,8 @@
  * you can obtain one at https://mozilla.org/MPL/2.0/.
  */
 
-//! ω-materialization: unbounded-time reasoning via a finite **lasso** (prefix +
-//! repeating period), the automata-theoretic canonical model.
-//!
-//! DatalogMTL minimal models are ultimately periodic in **both** directions.
-//! Past operators propagate forward (a *right* period toward +∞); future
-//! operators propagate backward (a *left* period toward −∞). Beyond
-//! `R = max_data_end + reach` (right) and before `L = min_data_start − reach`
-//! (left) the model repeats with a period dividing `P = lcm` of the metric
-//! constants. We:
-//!   1. materialize a finite prefix clipping intervals to `[Lb, H]`
-//!      (`H = R+3P`, `Lb = L−3P`);
-//!   2. widen contiguous saturation to `[l, +∞)` (right) or `(−∞, e]` (left);
-//!   3. verify each side is `P`-periodic and keep it.
-//!
-//! Entailment for arbitrarily far times reduces the query modulo `P` into the
-//! materialized period window (right or left) and checks real-interval inclusion.
+//! ω-materialization: unbounded-time reasoning via a finite **lasso** (prefix + repeating period),
+//! the automata-theoretic canonical model
 
 use super::eval::eval_rule;
 use super::interval::{coalesce, TInterval, NEG_INF, POS_INF};
@@ -32,31 +18,27 @@ use crate::evaluator::compute_w_max;
 use crate::syntax::{DatalogMTLRule, TemporalAtom};
 use shared::triple::Triple;
 
-/// A finitely-represented (possibly infinite, ultimately periodic) model.
+/// A finitely-represented (possibly infinite, ultimately periodic) model
 pub struct PeriodicModel {
-    /// Facts materialized over the prefix `[Lb, H]`, plus `[l,+∞)` / `(−∞,e]`.
+    /// Facts materialized over the prefix `[Lb, H]`, plus `[l,+∞)` / `(−∞,e]`
     pub db: Database,
-    /// Period `P` — the pattern repeats every `P` beyond each tail.
+    /// Period `P` — the pattern repeats every `P` beyond each tail
     pub period: i64,
-    /// Right (future) regime start `R`: beyond this the model is `P`-periodic.
+    /// Right (future) regime start `R`: beyond this the model is `P`-periodic
     pub right_start: i64,
-    /// Materialization bound `H = R+3P`. Three periods, so periodicity can be
-    /// checked by comparing repetitions rather than assumed.
+    /// Materialization bound `H = R+3P`
     pub right_horizon: i64,
-    /// A genuinely gappy right period was observed.
+    /// A genuinely gappy right period was observed
     pub right_periodic: bool,
-    /// Left (past) regime start `L`: before this the model is `P`-periodic.
+    /// Left (past) regime start `L`: before this the model is `P`-periodic
     pub left_start: i64,
     /// Materialization bound `Lb = L−3P`, the past-facing counterpart of
-    /// [`right_horizon`](Self::right_horizon).
+    /// [`right_horizon`](Self::right_horizon)
     pub left_horizon: i64,
-    /// A genuinely gappy left period was observed.
+    /// A genuinely gappy left period was observed
     pub left_periodic: bool,
 }
 
-// Summarised rather than derived: the embedded `Database` is the whole materialised
-// prefix. The regime bounds are what a reader is usually checking, so those print in
-// full.
 impl std::fmt::Debug for PeriodicModel {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("PeriodicModel")
@@ -74,7 +56,7 @@ impl std::fmt::Debug for PeriodicModel {
     }
 }
 
-/// Build the ω-model of `rules` over `facts`.
+/// Build the ω-model of `rules` over `facts`
 pub fn materialize_omega(
     rules: &[DatalogMTLRule],
     facts: Vec<(Triple, TInterval)>,
@@ -99,11 +81,10 @@ pub fn materialize_omega(
         .unwrap_or(0);
 
     let r = max_x + reach;
-    let h = r + 3 * period; // right materialization bound
+    let h = r + 3 * period;
     let l = min_x - reach;
-    let lb = l - 3 * period; // left materialization bound
+    let lb = l - 3 * period;
 
-    // 1. Finite fixpoint, clipping interval ends/starts to `[lb, h]`.
     let mut db = Database::new();
     for (t, iv) in facts {
         db.add_raw(t, iv);
@@ -111,7 +92,6 @@ pub fn materialize_omega(
     db.coalesce_all();
     fixpoint(&mut db, rules, lb, h);
 
-    // 2. Widen contiguous saturation on each side.
     let right_win = TInterval::closed(r, r + period);
     let left_win = TInterval::closed(l - period, l);
     let mut widened = false;
@@ -136,10 +116,9 @@ pub fn materialize_omega(
         }
     }
     if widened {
-        fixpoint(&mut db, rules, lb, h); // propagate ±∞ (still clipped; ∞ is absorbing)
+        fixpoint(&mut db, rules, lb, h);
     }
 
-    // 3. Verify P-periodicity of each tail.
     let right_periodic = verify_side(&db, r + period, period, Dir::Right)?;
     let left_periodic = verify_side(&db, l - period, period, Dir::Left)?;
 
@@ -161,7 +140,6 @@ pub fn entails(model: &PeriodicModel, triple: &Triple, query: TInterval) -> bool
         return false;
     };
 
-    // Covered directly (prefix, or an unbounded `[l,+∞)` / `(−∞,e]` interval).
     if ivs.iter().any(|iv| TInterval::inclusion(query, *iv)) {
         return true;
     }
@@ -171,23 +149,21 @@ pub fn entails(model: &PeriodicModel, triple: &Triple, query: TInterval) -> bool
         i64::MAX
     };
 
-    // Far future: reduce modulo P into the materialized right period window.
     if model.right_periodic && query.is_finite() && query.start > model.right_horizon {
         if width >= model.period {
             return false;
         }
         let base = model.right_start + model.period;
-        let k = (query.start - base) / model.period; // >= 1
+        let k = (query.start - base) / model.period;
         let reduced = query.shifted(-k * model.period);
         return ivs.iter().any(|iv| TInterval::inclusion(reduced, *iv));
     }
-    // Far past: reduce modulo P into the materialized left period window.
     if model.left_periodic && query.is_finite() && query.end < model.left_horizon {
         if width >= model.period {
             return false;
         }
         let base = model.left_start - model.period;
-        let k = (base - query.end) / model.period; // >= 1
+        let k = (base - query.end) / model.period;
         let reduced = query.shifted(k * model.period);
         return ivs.iter().any(|iv| TInterval::inclusion(reduced, *iv));
     }
@@ -200,8 +176,8 @@ enum Dir {
     Right,
 }
 
-/// Confirm a tail is `P`-periodic (two consecutive period windows agree) and
-/// report whether a genuinely gappy (finite) tail exists on that side.
+/// Confirm a tail is `P`-periodic (two consecutive period windows agree) and report whether a
+/// genuinely gappy (finite) tail exists on that side
 fn verify_side(db: &Database, base: i64, p: i64, dir: Dir) -> Result<bool, String> {
     let mut has_tail = false;
     for ivs in db.facts.values() {
@@ -236,7 +212,7 @@ fn holds_at(ivs: &[TInterval], t: i64) -> bool {
     ivs.iter().any(|iv| iv.contains_point(t))
 }
 
-/// Naive interval fixpoint with derived interval endpoints clamped to `[lb, h]`.
+/// Naive interval fixpoint with derived interval endpoints clamped to `[lb, h]`
 fn fixpoint(db: &mut Database, rules: &[DatalogMTLRule], lb: i64, h: i64) {
     const MAX_ITERS: usize = 1_000_000;
     for _ in 0..MAX_ITERS {
@@ -260,7 +236,6 @@ fn fixpoint(db: &mut Database, rules: &[DatalogMTLRule], lb: i64, h: i64) {
 fn clip_intervals(ints: Vec<TInterval>, lb: i64, h: i64) -> Vec<TInterval> {
     ints.into_iter()
         .filter_map(|mut iv| {
-            // Drop intervals entirely outside the materialized window.
             if (iv.start != NEG_INF && iv.start > h) || (iv.end != POS_INF && iv.end < lb) {
                 return None;
             }
@@ -277,7 +252,7 @@ fn clip_intervals(ints: Vec<TInterval>, lb: i64, h: i64) -> Vec<TInterval> {
         .collect()
 }
 
-/// All operator interval end-values appearing in rule bodies.
+/// All operator interval end-values appearing in rule bodies
 fn op_ends(rules: &[DatalogMTLRule]) -> Vec<i64> {
     fn walk(atom: &TemporalAtom, out: &mut Vec<i64>) {
         match atom {

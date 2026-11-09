@@ -1,44 +1,11 @@
-/*
-  Pipeline (per transaction, per step):
-    RSP-QL window  ->  Datalog Pass 1 (Symbolic -> ML)
-                   ->  GradientBoosting ML
-                   ->  Datalog Pass 2 (ML -> Symbolic)
-                   ->  Fusion -> Verdict
-
-  RSP-QL: RANGE 300 STEP 60 (5-min sliding window, 1-min step).
-
-  Pass-1 Datalog rules (raw features -> symbolic flags):
-    R1   velocity1h > 5              -> highVelocity
-    R2   amount > 1000               -> largeAmount
-    R3   merchantRisk > 70           -> highMerchantRisk
-    R4   isForeign > 0 ∧ risk > 70   -> foreignHighRisk
-    R5   amount > 1000 ∧ vel > 5     -> riskLevel:high
-    R1b  windowVelocity > 3          -> highWindowActivity  (RSP-derived)
-
-  Pass-2 Datalog rules (ML score -> symbolic flags):
-    R6   mlFraudScore > 40 ∧ vel > 3 -> mlAssistedAlert
-    R7   recentFraudCount > 1        -> historicalPattern
-
-  Fusion thresholds:
-    P > 0.80                         -> FRAUD
-    P > 0.50 ∧ riskLevel = high      -> FRAUD
-    riskLevel = high                 -> SUSPICIOUS
-    P > 0.60 ∨ any flag              -> REVIEW
-    otherwise                        -> CLEAR
-
-  Parser constraints:
-    • SELECT variables must be on a single line (space1 does not match '\n').
-    • FILTER thresholds must be integers (parser stops at '.').
-*/
-
 use datalog::reasoning::Reasoner;
+use kolibrie::database::KolibrieDB;
 use kolibrie::ml::execute::{
     execute_ml_prediction_with_handler, setup_ml_handler, MLPredictTiming,
 };
 use kolibrie::parser::parse_standalone_rule;
 use kolibrie::rsp_engine::{QueryExecutionMode, RSPBuilder, ResultConsumer, SimpleR2R};
 use kolibrie::rule_execution::process_rule_definition;
-use kolibrie::sparql_database::SparqlDatabase;
 use ml::MLHandler;
 use pyo3::prepare_freethreaded_python;
 use shared::rule::Rule;
@@ -110,7 +77,6 @@ fn handle_sse_connection(
                 if batch.is_empty() {
                     idle_ms += 100;
                     if idle_ms >= 15_000 {
-                        // heartbeat every 15 s to keep connection alive
                         if stream.write_all(b": heartbeat\n\n").is_err() {
                             return;
                         }
@@ -130,13 +96,11 @@ fn handle_sse_connection(
         }
         "/" | "/index.html" => {
             let html_path = {
-                // 1. Co-located next to this source file
                 let sibling = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
                     .join("examples/real_scenario/fraud_detection_dashboard.html");
                 if sibling.exists() {
                     sibling
                 } else {
-                    // 2. Walk up for any other location
                     let mut p = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
                     loop {
                         let candidate = p.join("fraud_detection_dashboard.html");
@@ -251,21 +215,13 @@ fn start_sse_server(
 struct Transaction {
     tx_id: String,
     account_id: String,
-    /// USD
     amount: f64,
-    /// 0–23
     hour_of_day: u8,
-    /// 0 (Mon) – 6 (Sun)
     day_of_week: u8,
-    /// 0–100; stored as integer to keep SPARQL FILTER thresholds parse-safe
     merchant_risk: u32,
-    /// Transactions on this account in the last hour
     velocity_1h: u32,
-    /// km from account home location
     distance_km: f64,
-    /// 1 = cross-border
     is_foreign: u8,
-    /// 1 = physical card present
     card_present: u8,
 }
 
@@ -300,7 +256,7 @@ impl AccountHistory {
         }
     }
 
-    /// Increments on Fraud/Suspicious (cap 10), decrements otherwise (floor 0).
+    /// Increments on Fraud/Suspicious (cap 10), decrements otherwise (floor 0)
     fn update(&mut self, _score: f64, verdict: &Verdict) {
         match verdict {
             Verdict::Fraud | Verdict::Suspicious => {
@@ -363,14 +319,12 @@ fn main() -> Result<(), Box<dyn Error>> {
 
     let mut database = setup_knowledge_base();
 
-    // Symbolic rules over raw transaction features
     let (rule_velocity, _) = process_rule_definition(&rule_suspicious_velocity(), &mut database)?;
     let (rule_amount, _) = process_rule_definition(&rule_suspicious_amount(), &mut database)?;
     let (rule_merch_risk, _) = process_rule_definition(&rule_high_merchant_risk(), &mut database)?;
     let (rule_pattern, _) = process_rule_definition(&rule_foreign_high_risk(), &mut database)?;
     let (rule_high_risk, _) = process_rule_definition(&rule_high_risk_chained(), &mut database)?;
 
-    // R1b reads ex:windowVelocity, which is written from the RSP snapshot
     let (rule_win_vel, _) = process_rule_definition(&rule_high_window_activity(), &mut database)?;
 
     let pass1_rules = vec![
@@ -382,13 +336,11 @@ fn main() -> Result<(), Box<dyn Error>> {
         rule_win_vel,
     ];
 
-    // Rules that read the ML score written back to RDF
     let (rule_ml_alert, _) = process_rule_definition(&rule_ml_assisted_alert(), &mut database)?;
     let (rule_hist_pat, _) = process_rule_definition(&rule_historical_pattern(), &mut database)?;
 
     let pass2_rules = vec![rule_ml_alert, rule_hist_pat];
 
-    // Shared buffer: RSP window thread deposits bindings here
     let window_results: Arc<Mutex<Vec<HashMap<String, String>>>> = Arc::new(Mutex::new(Vec::new()));
     let window_results_clone = window_results.clone();
 
@@ -486,10 +438,9 @@ fn main() -> Result<(), Box<dyn Error>> {
     Ok(())
 }
 
-/// Writes Pass-1 symbolic flags and account history count as numeric (0/1) RDF triples
-/// so the ML.PREDICT INPUT query can SELECT them as features.
+/// Writes Pass-1 flags and account history counts as numeric triples for the ML.PREDICT input query
 fn write_numeric_flags_to_db(
-    database: &mut SparqlDatabase,
+    database: &mut KolibrieDB,
     tx_uri: &str,
     flags_p1: &[String],
     hist_fraud_count: u32,
@@ -522,10 +473,9 @@ fn write_numeric_flags_to_db(
     );
 }
 
-/// Extracts all 14 ML feature values for a single transaction from the RDF database.
-/// Returns a single-row Vec<HashMap<String, u32>> (dictionary-encoded values).
+/// Extracts all 14 ML feature values for a single transaction from the RDF database
 fn extract_data_for_ml_fraud(
-    database: &SparqlDatabase,
+    database: &KolibrieDB,
     tx_uri: &str,
 ) -> Result<Vec<HashMap<String, u32>>, Box<dyn Error>> {
     let feature_predicates = [
@@ -575,7 +525,6 @@ fn extract_data_for_ml_fraud(
         }
     }
 
-    // Only return the row if we have all 14 features + the tx subject (15 total)
     if row.len() == 15 {
         Ok(vec![row])
     } else {
@@ -584,11 +533,9 @@ fn extract_data_for_ml_fraud(
 }
 
 /// Runs ML prediction for one transaction driven by the ML.PREDICT clause in
-/// `rule_ml_fraud_predict()`. The rule is parsed to extract the model name and
-/// input/output contract; `execute_ml_prediction_from_clause` handles model
-/// discovery and loading automatically.
+/// `rule_ml_fraud_predict()`
 fn run_ml_predict_from_clause(
-    database: &SparqlDatabase,
+    database: &KolibrieDB,
     tx_uri: &str,
     rule_str: &str,
     ml_handler: &MLHandler,
@@ -602,9 +549,8 @@ fn run_ml_predict_from_clause(
         .as_ref()
         .ok_or("rule_ml_fraud_predict has no ML.PREDICT clause")?;
 
-    // extract closure: decode feature dict IDs → f64 values for this transaction
     let tx_uri_owned = tx_uri.to_string();
-    let extract_fn = move |db: &SparqlDatabase| {
+    let extract_fn = move |db: &KolibrieDB| {
         let rows = extract_data_for_ml_fraud(db, &tx_uri_owned)?;
         if rows.is_empty() {
             return Ok(vec![]);
@@ -625,8 +571,6 @@ fn run_ml_predict_from_clause(
         Ok(decoded)
     };
 
-    // predict closure: build ordered feature vector from clause-declared variable names,
-    // then call the ML model; returns score + timing
     let predict_fn = |handler: &MLHandler,
                       best_model: &str,
                       data: &[HashMap<String, f64>],
@@ -687,8 +631,8 @@ fn run_ml_predict_from_clause(
     Ok((score, t_r2p, t_p2r))
 }
 
-fn setup_knowledge_base() -> SparqlDatabase {
-    let mut db = SparqlDatabase::with_ml_context(local_ml::trusted_context());
+fn setup_knowledge_base() -> KolibrieDB {
+    let mut db = KolibrieDB::with_ml_context(local_ml::trusted_context());
 
     db.add_prefix("ex", "http://fraud.example.org/");
     db.add_prefix("rdf", "http://www.w3.org/1999/02/22-rdf-syntax-ns#");
@@ -827,10 +771,6 @@ WHERE {
     .into()
 }
 
-// R6: amplifies a weak ML signal (score > 40/100) when velocity is also
-//     elevated, catching cases the raw rules alone would miss
-// R7: flags any transaction from an account with a poor verdict history,
-//     injecting longitudinal account context into per-transaction decisions
 fn rule_ml_assisted_alert() -> String {
     r#"PREFIX ex: <http://fraud.example.org/>
 PREFIX rdf: <http://www.w3.org/1999/02/22-rdf-syntax-ns#>
@@ -920,9 +860,9 @@ ML.PREDICT(MODEL "fraud_predictor",
 
 fn run_simulation(
     engine: &mut kolibrie::rsp_engine::RSPEngine<Triple, Vec<(String, String)>>,
-    database: &mut SparqlDatabase,
-    pass1_rules: &[Rule], // R1–R5, R1b: symbolic rules on raw features
-    pass2_rules: &[Rule], // R6–R7: rules that read ML output from RDF
+    database: &mut KolibrieDB,
+    pass1_rules: &[Rule],
+    pass2_rules: &[Rule],
     window_results: Arc<Mutex<Vec<HashMap<String, String>>>>,
     events: EventLog,
     ml_handler: &MLHandler,
@@ -975,16 +915,11 @@ fn run_simulation(
             step_txs.push((tx, is_injected_fraud, tx_uri, acct_uri));
         }
 
-        // bindings into window_results (5 × 9 = 45 triples, ~200 ms)
         thread::sleep(Duration::from_millis(200));
 
-        // drain window snapshot, compute per-account
-        // windowVelocity, then run the full reasoning pipeline
         let current_window: Vec<HashMap<String, String>> =
             { window_results.lock().unwrap().drain(..).collect() };
 
-        // Count transactions per account visible in the current window
-        // Strip angle brackets from URIs that the RSP engine may include
         let mut rsp_vel_map: HashMap<String, u32> = HashMap::new();
         for binding in &current_window {
             if let Some(acct_uri) = binding.get("account") {
@@ -1032,13 +967,11 @@ fn run_simulation(
         }
 
         for (tx, is_injected_fraud, tx_uri, acct_uri) in &step_txs {
-            // windowVelocity: RSP-observed count, not the event-embedded velocity_1h
             let window_vel = rsp_vel_map
                 .get(tx.account_id.as_str())
                 .copied()
                 .unwrap_or(0);
 
-            // Write transaction features and RSP-derived window velocity to RDF
             database.add_triple_parts(
                 &tx_uri,
                 "http://www.w3.org/1999/02/22-rdf-syntax-ns#type",
@@ -1086,7 +1019,6 @@ fn run_simulation(
                 &tx.card_present.to_string(),
             );
 
-            // Bridge triple: connects RSP stream layer to Datalog (consumed by R1b)
             database.add_triple_parts(
                 &tx_uri,
                 "http://fraud.example.org/windowVelocity",
@@ -1098,14 +1030,10 @@ fn run_simulation(
                 .or_insert_with(AccountHistory::new);
             let hist_fraud_count = history.recent_fraud_count;
 
-            // Pass 1: symbolic rules on raw features
             let flags_p1 = run_reasoning(database, pass1_rules, &tx_uri);
 
-            // Write Pass-1 flags and account history as numeric RDF triples
-            // so ML.PREDICT INPUT can SELECT them as features
             write_numeric_flags_to_db(database, &tx_uri, &flags_p1, hist_fraud_count);
 
-            // ML.PREDICT — driven by rule_ml_fraud_predict() clause
             let (fraud_score, t_r2p, t_p2r) = run_ml_predict_from_clause(
                 database,
                 &tx_uri,
@@ -1116,7 +1044,6 @@ fn run_simulation(
             println!("  [Timing] Rust -> Python overhead: {:?}", t_r2p);
             println!("  [Timing] Python -> Rust overhead: {:?}", t_p2r);
 
-            // Write ML score back to RDF for Pass-2 Datalog rules (R6, R7)
             let ml_score_int = (fraud_score * 100.0).round() as u32;
             database.add_triple_parts(
                 &tx_uri,
@@ -1213,7 +1140,7 @@ fn run_simulation(
     }
 }
 
-fn run_reasoning(database: &mut SparqlDatabase, rules: &[Rule], tx_uri: &str) -> Vec<String> {
+fn run_reasoning(database: &mut KolibrieDB, rules: &[Rule], tx_uri: &str) -> Vec<String> {
     let decoded_triples: Vec<(String, String, String)> = {
         let dict = database.dictionary();
         database
@@ -1375,7 +1302,7 @@ fn try_open_firewall(port: u16) {
 }
 
 fn compile_fraud_rules(
-    database: &mut SparqlDatabase,
+    database: &mut KolibrieDB,
 ) -> Result<(Vec<Rule>, Vec<Rule>), Box<dyn Error>> {
     let (rule_velocity, _) = process_rule_definition(&rule_suspicious_velocity(), database)?;
     let (rule_amount, _) = process_rule_definition(&rule_suspicious_amount(), database)?;
@@ -1437,7 +1364,6 @@ fn process_demo_transaction(
                 "FRAUD scenario",
             ),
             DemoTransferScenario::Suspicious => {
-                // Generate a domestic high-amount/high-velocity profile; the verdict still comes from rules + ML.
                 let seed = count as u64 + 1;
                 (
                     Transaction {
@@ -1733,11 +1659,6 @@ a.back{{display:block;text-align:center;margin-top:22px;font-size:14px;color:#1a
     )
 }
 
-//
-// Pseudo-random number generator (splitmix64 finalisation mix)
-//
-// Produces a well-distributed f64 in [0.0, 1.0) from two u64 seeds.
-// Different seed constants per feature slot ensure independence.
 fn prng(a: u64, b: u64) -> f64 {
     let mut x = a
         .wrapping_mul(0x9e3779b97f4a7c15)
@@ -1750,20 +1671,6 @@ fn prng(a: u64, b: u64) -> f64 {
     (x >> 11) as f64 / (1u64 << 53) as f64
 }
 
-//
-// Stochastic transaction synthesis
-//
-// Scenario distribution (seed-determined, no hardcoded patterns):
-//   [0.00, 0.25) -> FRAUD      late-night, foreign, CNP, high-risk merchant,
-//                              large amount, velocity burst -> ML ≈ 1.0
-//   [0.25, 0.45) -> SUSPICIOUS large amount + high velocity (R5 -> risk:high),
-//                              but domestic / daytime / card-present -> ML ≈ 0.0
-//   [0.45, 0.65) -> REVIEW     one flag fires (highVelocity or highMerchantRisk),
-//                              amount < 1000 so R5 cannot chain -> no risk:high
-//   [0.65, 1.00) -> CLEAR      all features below every rule threshold -> ML ≈ 0.0
-//
-// is_injected_fraud is true only for the FRAUD scenario, keeping the console
-// marker "← injected fraud" unambiguous.
 fn synthesise_transaction(
     time_step: u64,
     account_idx: usize,
@@ -1774,13 +1681,12 @@ fn synthesise_transaction(
     let scenario = prng(time_step.wrapping_mul(31), account_idx as u64 + 1);
 
     let (tx, is_fraud) = if scenario < 0.25 {
-        // FRAUD: all signals active
         *vel_entry = (*vel_entry + 4).min(15);
         let vel = *vel_entry;
         let amount = 1_200.0 + prng(time_step, account_idx as u64 + 100) * 8_000.0;
-        let hour = (prng(time_step, account_idx as u64 + 101) * 4.0) as u8; // 0–3
+        let hour = (prng(time_step, account_idx as u64 + 101) * 4.0) as u8;
         let dow = (prng(time_step, account_idx as u64 + 102) * 7.0) as u8;
-        let merch_risk = 75 + (prng(time_step, account_idx as u64 + 103) * 20.0) as u32; // 75–95
+        let merch_risk = 75 + (prng(time_step, account_idx as u64 + 103) * 20.0) as u32;
         let distance_km = 1_000.0 + prng(time_step, account_idx as u64 + 104) * 9_000.0;
         let tx = Transaction {
             tx_id: format!("TX-{}-{}-FRAUD", account, time_step),
@@ -1796,14 +1702,12 @@ fn synthesise_transaction(
         };
         (tx, true)
     } else if scenario < 0.45 {
-        // SUSPICIOUS: R5 fires (amount > 1000 ∧ vel > 5 -> risk:high),
-        // but domestic context keeps ML ≈ 0.0 -> fuse: risk:high ∧ P ≤ 0.50.
-        let vel = 6 + (prng(time_step, account_idx as u64 + 200) * 5.0) as u32; // 6–10
+        let vel = 6 + (prng(time_step, account_idx as u64 + 200) * 5.0) as u32;
         *vel_entry = vel;
         let amount = 1_050.0 + prng(time_step, account_idx as u64 + 201) * 2_000.0;
-        let hour = 9 + (prng(time_step, account_idx as u64 + 202) * 9.0) as u8; // 9–17
-        let dow = (prng(time_step, account_idx as u64 + 203) * 5.0) as u8; // Mon–Fri
-        let merch_risk = 15 + (prng(time_step, account_idx as u64 + 204) * 45.0) as u32; // 15–60
+        let hour = 9 + (prng(time_step, account_idx as u64 + 202) * 9.0) as u8;
+        let dow = (prng(time_step, account_idx as u64 + 203) * 5.0) as u8;
+        let merch_risk = 15 + (prng(time_step, account_idx as u64 + 204) * 45.0) as u32;
         let distance_km = 2.0 + prng(time_step, account_idx as u64 + 205) * 30.0;
         let tx = Transaction {
             tx_id: format!("TX-{}-{}-SUSP", account, time_step),
@@ -1819,20 +1723,18 @@ fn synthesise_transaction(
         };
         (tx, false)
     } else if scenario < 0.65 {
-        // REVIEW: one flag fires but amount < 1000 prevents R5 from chaining
-        // Sub-variant a: highMerchantRisk only or Sub-variant b: highVelocity only
         let sub = prng(time_step, account_idx as u64 + 300);
         let (merch_risk, vel) = if sub < 0.5 {
             *vel_entry = (*vel_entry).saturating_sub(1).min(4);
-            let mr = 71 + (prng(time_step, account_idx as u64 + 301) * 24.0) as u32; // 71–95
+            let mr = 71 + (prng(time_step, account_idx as u64 + 301) * 24.0) as u32;
             (mr, *vel_entry)
         } else {
-            let v = 6 + (prng(time_step, account_idx as u64 + 302) * 5.0) as u32; // 6–10
+            let v = 6 + (prng(time_step, account_idx as u64 + 302) * 5.0) as u32;
             *vel_entry = v;
-            let mr = 10 + (prng(time_step, account_idx as u64 + 303) * 45.0) as u32; // 10–55
+            let mr = 10 + (prng(time_step, account_idx as u64 + 303) * 45.0) as u32;
             (mr, v)
         };
-        let amount = 20.0 + prng(time_step, account_idx as u64 + 304) * 920.0; // < 1000
+        let amount = 20.0 + prng(time_step, account_idx as u64 + 304) * 920.0;
         let hour = 8 + (prng(time_step, account_idx as u64 + 305) * 12.0) as u8;
         let dow = (prng(time_step, account_idx as u64 + 306) * 7.0) as u8;
         let distance_km = 1.0 + prng(time_step, account_idx as u64 + 307) * 40.0;
@@ -1850,10 +1752,9 @@ fn synthesise_transaction(
         };
         (tx, false)
     } else {
-        // CLEAR: reset velocity to baseline so accumulated FRAUD velocity doesn't pollute this scenario
         *vel_entry = 1;
         let vel = 1u32;
-        let amount = 10.0 + prng(time_step, account_idx as u64 + 400) * 600.0; // < 1000
+        let amount = 10.0 + prng(time_step, account_idx as u64 + 400) * 600.0;
         let hour = 8 + (prng(time_step, account_idx as u64 + 401) * 13.0) as u8;
         let dow = (prng(time_step, account_idx as u64 + 402) * 7.0) as u8;
         let merch_risk = 5 + (prng(time_step, account_idx as u64 + 403) * 50.0) as u32;

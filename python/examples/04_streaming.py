@@ -1,22 +1,4 @@
-"""RDF Stream Processing: windows over streams, and joins across them.
-
-This is the real engine. The query builder's `as_stream` builds something else -- a
-list that accumulates triples and applies limit, offset and distinct to them, with no
-windows and no RSP-QL. `RspEngine` takes an RSP-QL query, opens a stream per window,
-and joins results across the windows as they fire.
-
-Two things to know:
-
-* `timestamp` is the stream's own clock, not wall time. A window of `[RANGE 4 STEP 2]`
-  counts in whatever unit you stamp with, so a test can drive a stream in a loop
-  without waiting for anything.
-* `stop()` flushes every window and waits for the coordinator, so the results are
-  complete when it returns. There is no sleep in this file, and that is the point:
-  the engine used to return from `stop()` while its threads were still working, and
-  callers slept and hoped.
-
-Run with `scripts/smoke_python.py`. Every claim below is asserted.
-"""
+"""RDF Stream Processing: windows over streams, and joins across them"""
 
 import kolibrie
 
@@ -31,8 +13,6 @@ def heading(text):
 
 def one_window():
     heading("One window over one stream")
-    # RANGE is the window's width and STEP how far it moves, both in the stream's
-    # own time unit.
     engine = kolibrie.RspEngine(
         f"""
         REGISTER RSTREAM <http://out/readings> AS
@@ -54,8 +34,6 @@ def one_window():
     print(f"  streamed 8 readings, got {len(solutions)} solutions")
     assert solutions, "a window that fires should produce solutions"
 
-    # Every solution binds the one variable the query selects, to one of the
-    # subjects that was streamed.
     streamed = {f"http://example/r{tick}" for tick in range(8)}
     for solution in solutions:
         bound = dict(solution)
@@ -66,8 +44,6 @@ def one_window():
 
 def two_windows_joined():
     heading("Two windows, joined across streams")
-    # One window per stream, and a pattern per window. The two patterns bind
-    # different variables, so a solution pairs a room with a zone.
     engine = kolibrie.RspEngine(
         f"""
         REGISTER RSTREAM <http://out/alerts> AS
@@ -90,10 +66,11 @@ def two_windows_joined():
     print(f"  streamed 6 + 6, got {len(solutions)} joined solutions")
     for solution in solutions[:3]:
         bound = dict(solution)
-        print(f"    room={bound['room'].rsplit('/', 1)[-1]:8} zone={bound['zone'].rsplit('/', 1)[-1]}")
+        print(
+            f"    room={bound['room'].rsplit('/', 1)[-1]:8} zone={bound['zone'].rsplit('/', 1)[-1]}"
+        )
 
     assert solutions, "both windows fired, so the join should produce solutions"
-    # Each solution carries a variable from each window: that is the join.
     for solution in solutions:
         bound = dict(solution)
         assert set(bound) == {"room", "zone"}, bound
@@ -116,13 +93,9 @@ def results_are_complete_when_stop_returns():
 
     engine.stop()
     settled = engine.result_count()
-    # Read again: nothing arrives late, because stop() joined the window threads and
-    # the coordinator before returning.
     assert engine.result_count() == settled, "a result arrived after stop() returned"
     print(f"  {settled} solutions, and the count does not move after stop()")
 
-    # Stopping twice is harmless; using a stopped engine is an error rather than a
-    # silent no-op.
     engine.stop()
     try:
         engine.add("sensors", f"<http://example/late> a <{READING}> .", 99)
@@ -133,8 +106,6 @@ def results_are_complete_when_stop_returns():
 
 def reading_values_from_a_stream():
     heading("Terms in a solution are terms")
-    # Streamed literals keep their datatype, so a solution's values need reading
-    # rather than using directly -- the same as any other query result.
     xsd_integer = "http://www.w3.org/2001/XMLSchema#integer"
     engine = kolibrie.RspEngine(
         """

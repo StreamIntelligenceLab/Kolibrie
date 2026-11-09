@@ -8,16 +8,7 @@
  * you can obtain one at https://mozilla.org/MPL/2.0/.
  */
 
-//! Drive the datalogmtl engine from a MeTeoR-syntax program + data file and
-//! print the full materialization as coalesced `Pred(args)@[l,r]` lines, so the
-//! output can be diffed against the MeTeoR reference reasoner.
-//!
-//! Usage:
-//!   meteor_compare --program <file> --data <file> [--horizon T] [--store snapshot|interval]
-//!
-//! Facts with interval `[l,r]` are densified onto the integer grid (inserted at
-//! every tick in `[l,r]`). The engine is advanced over ticks `0..=T`; at each
-//! tick every fact holding in the store is recorded, then coalesced on output.
+//! Runs a MeTeoR-syntax program and prints its materialisation as `Pred(args)@[l,r]` lines
 
 use std::collections::{BTreeSet, HashMap};
 use std::time::Instant;
@@ -64,29 +55,23 @@ fn main() {
                 store_kind = args.get(i + 1).cloned().unwrap_or_default();
                 i += 2;
             }
-            // Evaluation strategy: tick (per-tick engine) or interval (automata).
             "--strategy" => {
                 strategy = args.get(i + 1).cloned().unwrap_or_default();
                 strategy_set = true;
                 i += 2;
             }
-            // Data contract: streaming (past-only) or static (past + future operators).
             "--mode" => {
                 mode_str = args.get(i + 1).cloned().unwrap_or_default();
                 i += 2;
             }
-            // Print timing + fact/derivation counts as JSON instead of the full
-            // materialization (for the performance harness).
             "--timing" => {
                 timing = true;
                 i += 1;
             }
-            // Disable skipping provably-empty ticks (for A/B comparison).
             "--no-skip" => {
                 skip_empty = false;
                 i += 1;
             }
-            // Answer entailment for the query facts in <file> (with --strategy omega).
             "--entail" => {
                 entail_file = args.get(i + 1).cloned();
                 i += 2;
@@ -109,8 +94,6 @@ fn main() {
             other
         )),
     };
-    // Future operators require the static (interval) engine; the tick engine
-    // cannot see the future. In static mode default the strategy to interval.
     if mode == Mode::Static {
         if strategy_set && strategy == "tick" {
             fail("--mode static requires the interval engine; drop '--strategy tick'");
@@ -166,7 +149,6 @@ fn main() {
     };
 
     if timing {
-        // Minimal JSON so the perf harness can parse without a JSON dep.
         println!(
             "{{\"reason_ms\": {:.3}, \"atoms\": {}, \"intervals\": {}, \"horizon\": {}}}",
             out.reason_micros as f64 / 1000.0,
@@ -187,14 +169,7 @@ struct RunOutput {
     atom_count: usize,
 }
 
-/// Run the engine over the relevant ticks in `0..=horizon`, timing the loop.
-///
-/// A tick is *relevant* only if some base fact lies within a rule's temporal
-/// reach of it; other ticks provably derive nothing (no base fact active and
-/// none within any operator's lookback), so they are skipped. Reach is
-/// `num_rules * w_max` for non-recursive programs (a safe bound on how far a
-/// fact can propagate forward through the rule chain); recursive programs fall
-/// back to evaluating every tick.
+/// Run the engine over the relevant ticks in `0..=horizon`, timing the loop
 fn run<S: TemporalStore>(
     store: S,
     rules: Vec<DatalogMTLRule>,
@@ -208,7 +183,6 @@ fn run<S: TemporalStore>(
     let mut eval = DatalogMTLEvaluator::new(rules, store, dict.clone())
         .unwrap_or_else(|e| fail(&format!("invalid program: {}", e)));
 
-    // Densify facts: tick -> triples valid at that tick.
     let mut by_tick: HashMap<u64, Vec<Triple>> = HashMap::new();
     for f in facts {
         for t in f.start..=f.end.min(horizon) {
@@ -231,7 +205,6 @@ fn run<S: TemporalStore>(
         let ingest = by_tick.remove(&t).unwrap_or_default();
         eval.advance(t, ingest);
 
-        // Record every fact (base + derived) active at this tick.
         for b in eval.store.query_at(&wildcard, t) {
             if let (Some(&s), Some(&p), Some(&o)) = (b.get("_s"), b.get("_p"), b.get("_o")) {
                 holds
@@ -256,9 +229,8 @@ fn run<S: TemporalStore>(
     }
 }
 
-/// Interval-native ("automata") strategy: materialize with interval transducers
-/// (no densification, no per-tick loop), then expand to integer points clipped to
-/// `[0, horizon]` and reuse the same coalesced output path as the tick strategy.
+/// Interval-native strategy: materialises with interval transducers and prints like the tick
+/// strategy
 fn run_interval(
     rules: Vec<DatalogMTLRule>,
     facts: &[TemporalFact],
@@ -299,10 +271,7 @@ fn run_interval(
     }
 }
 
-/// ω-strategy: unbounded-time materialization (`materialize_omega`). With
-/// `--entail <file>` it answers entailment for each query fact `Pred(args)@[l,r]`
-/// (works for arbitrarily far-future times); otherwise it prints the model
-/// clipped to `[0, horizon]` like `--strategy interval`.
+/// ω-strategy: unbounded-time materialization (`materialize_omega`)
 fn run_omega(
     rules: Vec<DatalogMTLRule>,
     facts: &[TemporalFact],
@@ -377,9 +346,8 @@ fn run_omega(
     }
 }
 
-/// Mark each tick in `0..=horizon` relevant if some base fact lies within the
-/// program's temporal reach of it. Recursive programs (or `skip_empty=false`)
-/// mark every tick relevant.
+/// Mark each tick in `0..=horizon` relevant if some base fact lies within the program's temporal
+/// reach of it
 fn relevant_ticks(
     rules: &[DatalogMTLRule],
     facts: &[TemporalFact],
@@ -397,7 +365,6 @@ fn relevant_ticks(
     if reach >= horizon {
         return vec![true; n];
     }
-    // Difference array over [start, end+reach] for each base fact: O(facts + H).
     let mut diff = vec![0i64; n + 1];
     for f in facts {
         let lo = f.start.min(horizon) as usize;
@@ -414,9 +381,8 @@ fn relevant_ticks(
     relevant
 }
 
-/// The identifying predicate of an atom: for a `?s rdf:type Class` triple it is
-/// `Class` (object); otherwise the predicate-position constant. `None` if that
-/// position is not a constant.
+/// The identifying predicate of an atom: for a `?s rdf:type Class` triple it is `Class` (object);
+/// otherwise the predicate-position constant
 fn atom_pred_id(pat: &TriplePattern, rdf_type: u32) -> Option<u32> {
     let pred = match &pat.1 {
         Term::Constant(c) => *c,
@@ -456,8 +422,8 @@ fn collect_body_preds(atom: &TemporalAtom, rdf_type: u32, out: &mut Vec<u32>) {
     }
 }
 
-/// True if the rule set has a predicate reachable from itself (a cycle in the
-/// body-predicate -> head-predicate dependency graph).
+/// True if the rule set has a predicate reachable from itself (a cycle in the body-predicate ->
+/// head-predicate dependency graph)
 fn is_recursive(rules: &[DatalogMTLRule], rdf_type: u32) -> bool {
     let mut edges: HashMap<u32, Vec<u32>> = HashMap::new();
     for r in rules {

@@ -1,8 +1,8 @@
+use kolibrie::database::KolibrieDB;
 use kolibrie::execute_query::{execute, execute_sparql_update};
-use kolibrie::sparql_database::SparqlDatabase;
 use kolibrie::sparql_protocol::answer;
 
-fn query(database: &mut SparqlDatabase, sparql: &str) -> Vec<Vec<String>> {
+fn query(database: &mut KolibrieDB, sparql: &str) -> Vec<Vec<String>> {
     execute(sparql, database)
         .expect("query should run")
         .into_rows()
@@ -10,7 +10,7 @@ fn query(database: &mut SparqlDatabase, sparql: &str) -> Vec<Vec<String>> {
 
 #[test]
 fn graph_composes_with_filter_bind_and_values() {
-    let mut database = SparqlDatabase::new();
+    let mut database = KolibrieDB::new();
     execute_sparql_update(
         r#"
         INSERT DATA {
@@ -48,7 +48,7 @@ fn graph_composes_with_filter_bind_and_values() {
 
 #[test]
 fn dollar_variables_and_arithmetic_filter_comments_execute_end_to_end() {
-    let mut database = SparqlDatabase::new();
+    let mut database = KolibrieDB::new();
     execute_sparql_update(
         r#"
         INSERT DATA {
@@ -81,7 +81,7 @@ fn dollar_variables_and_arithmetic_filter_comments_execute_end_to_end() {
 
 #[test]
 fn every_supported_sparql_literal_quote_form_lowers_identically() {
-    let mut database = SparqlDatabase::new();
+    let mut database = KolibrieDB::new();
     execute_sparql_update(
         r#"
         INSERT DATA {
@@ -114,7 +114,7 @@ fn every_supported_sparql_literal_quote_form_lowers_identically() {
 
 #[test]
 fn iri_and_prefixed_name_escapes_normalize_during_the_single_lowering_step() {
-    let mut database = SparqlDatabase::new();
+    let mut database = KolibrieDB::new();
     execute_sparql_update(
         r#"
         PREFIX ex: <http://example.com/>
@@ -168,7 +168,7 @@ fn iri_and_prefixed_name_escapes_normalize_during_the_single_lowering_step() {
 
 #[test]
 fn graph_union_subquery_preserves_unbound_columns() {
-    let mut database = SparqlDatabase::new();
+    let mut database = KolibrieDB::new();
     execute_sparql_update(
         r#"
         INSERT DATA {
@@ -205,7 +205,7 @@ fn graph_union_subquery_preserves_unbound_columns() {
 
 #[test]
 fn from_and_from_named_replace_the_query_dataset() {
-    let mut database = SparqlDatabase::new();
+    let mut database = KolibrieDB::new();
     execute_sparql_update(
         r#"
         INSERT DATA {
@@ -268,7 +268,7 @@ fn from_and_from_named_replace_the_query_dataset() {
 
 #[test]
 fn graph_variable_is_compatible_with_triple_variables() {
-    let mut database = SparqlDatabase::new();
+    let mut database = KolibrieDB::new();
     execute_sparql_update(
         r#"
         INSERT DATA {
@@ -291,7 +291,7 @@ fn graph_variable_is_compatible_with_triple_variables() {
 
 #[test]
 fn modify_where_uses_unified_graph_union_and_filter_plan() {
-    let mut database = SparqlDatabase::new();
+    let mut database = KolibrieDB::new();
     execute_sparql_update(
         r#"
         INSERT DATA {
@@ -342,7 +342,7 @@ fn modify_where_uses_unified_graph_union_and_filter_plan() {
 
 #[test]
 fn insert_template_blank_nodes_are_fresh_per_solution() {
-    let mut database = SparqlDatabase::new();
+    let mut database = KolibrieDB::new();
     execute_sparql_update(
         r#"
         INSERT DATA {
@@ -392,7 +392,7 @@ fn insert_template_blank_nodes_are_fresh_per_solution() {
 
 #[test]
 fn unbound_template_terms_are_skipped_and_invalid_updates_do_not_mutate() {
-    let mut database = SparqlDatabase::new();
+    let mut database = KolibrieDB::new();
     execute_sparql_update(
         r#"
         INSERT DATA {
@@ -443,7 +443,7 @@ fn unbound_template_terms_are_skipped_and_invalid_updates_do_not_mutate() {
 
 #[test]
 fn empty_insert_data_graph_block_does_not_create_a_graph() {
-    let mut database = SparqlDatabase::new();
+    let mut database = KolibrieDB::new();
     let summary = execute_sparql_update(
         "INSERT DATA { GRAPH <urn:empty-from-data> {} }",
         &mut database,
@@ -455,7 +455,7 @@ fn empty_insert_data_graph_block_does_not_create_a_graph() {
 
 #[test]
 fn graph_union_composes_with_aggregation_order_and_limit() {
-    let mut database = SparqlDatabase::new();
+    let mut database = KolibrieDB::new();
     execute_sparql_update(
         r#"
         INSERT DATA {
@@ -498,10 +498,7 @@ fn graph_union_composes_with_aggregation_order_and_limit() {
     );
 }
 
-/// The body of a response from `answer`.
-///
-/// The response carries a status line now, so the body is no longer the whole
-/// string; checking the status as well is the point of the change.
+/// The body of a response from `answer`
 fn body_of(response: &str) -> &str {
     response
         .split_once("\r\n\r\n")
@@ -511,14 +508,12 @@ fn body_of(response: &str) -> &str {
 
 #[test]
 fn legacy_and_http_adapters_route_through_the_same_update_executor() {
-    let mut database = SparqlDatabase::new();
+    let mut database = KolibrieDB::new();
 
-    // The error-preserving API is standards-only.
     assert!(
         execute_sparql_update("INSERT { <urn:legacy> <urn:p> <urn:o> }", &mut database,).is_err()
     );
 
-    // The historical query adapter opts into the standalone DATA alias.
     assert!(query(&mut database, "INSERT { <urn:legacy> <urn:p> <urn:o> }",).is_empty());
     assert_eq!(
         query(&mut database, "SELECT ?s WHERE { ?s <urn:p> <urn:o> }",),
@@ -531,7 +526,6 @@ fn legacy_and_http_adapters_route_through_the_same_update_executor() {
         "\r\n",
         "INSERT DATA { <urn:http-direct> <urn:p> <urn:o> }"
     );
-    // The response now carries a status line, so the body is checked after it.
     let response = answer(&mut database, direct_request);
     assert!(response.starts_with("HTTP/1.1 200 OK"), "{response}");
     assert!(

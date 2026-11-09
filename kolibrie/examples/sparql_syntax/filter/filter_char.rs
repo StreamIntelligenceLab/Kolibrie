@@ -10,7 +10,6 @@
 
 use kolibrie::prelude::*;
 
-// Adding FILTER
 fn filter_char() {
     let rdf_data = r##"
 <?xml version="1.0"?>
@@ -31,7 +30,7 @@ fn filter_char() {
 
 </rdf:RDF>
     "##;
-    let mut database = SparqlDatabase::new();
+    let mut database = KolibrieDB::new();
     database.parse_rdf(rdf_data);
 
     let sparql = r#"
@@ -47,7 +46,6 @@ fn filter_char() {
         .expect("query should run")
         .into_rows();
 
-    // Now the main function is responsible for printing the results
     println!("Results:");
     for result in results {
         if let [title, author] = &result[..] {

@@ -20,10 +20,8 @@ use std::time::Instant;
 fn simple_streamertail_optimizer() {
     println!("=== Simple Volcano Optimizer Example ===");
 
-    // Step 1: Execute the physical plan on a sample database
-    let mut database = SparqlDatabase::new();
+    let mut database = KolibrieDB::new();
 
-    // Add some sample data
     let alice_id = database.dictionary_mut().encode("http://example.org/alice");
     let bob_id = database.dictionary_mut().encode("http://example.org/bob");
     let name_id = database.dictionary_mut().encode("foaf:name");
@@ -57,7 +55,6 @@ fn simple_streamertail_optimizer() {
         object: age_25,
     });
 
-    // Step 2: Create the logical plan using new API
     let name_scan = LogicalOperator::scan((
         Term::Variable("person".to_string()),
         Term::Constant(name_id),
@@ -72,14 +69,12 @@ fn simple_streamertail_optimizer() {
 
     let logical_plan = LogicalOperator::join(name_scan, age_scan);
 
-    // Step 3: Initialize the optimizer and optimize
     let mut optimizer = Streamertail::new(&database);
     let best_plan = optimizer.find_best_plan(&logical_plan);
 
     println!("Logical Plan: {:?}", logical_plan);
     println!("Optimized Physical Plan: {:?}", best_plan);
 
-    // Step 4: Execute the optimized plan
     let start = Instant::now();
     let results = best_plan.execute(&mut database);
     let duration = start.elapsed();
@@ -95,10 +90,8 @@ fn simple_streamertail_optimizer() {
 fn streamertail_optimizer_multiple_triples() {
     println!("=== Multiple Triples Example ===");
 
-    // Step 1: Execute the physical plan on a sample database
-    let mut database = SparqlDatabase::new();
+    let mut database = KolibrieDB::new();
 
-    // Step 2: Add some triples to the database
     for i in 0..10 {
         let person_uri = format!("http://example.org/person{}", i);
         let age_value = format!("{}", 20 + i);
@@ -111,21 +104,18 @@ fn streamertail_optimizer_multiple_triples() {
         let name_value = database.dictionary_mut().encode(&format!("Person{}", i));
         let age_value_id = database.dictionary_mut().encode(&age_value);
 
-        // Add name triple
         database.add_triple(Triple {
             subject: person_id,
             predicate: name_id,
             object: name_value,
         });
 
-        // Add age triple
         database.add_triple(Triple {
             subject: person_id,
             predicate: age_id,
             object: age_value_id,
         });
 
-        // Add type triple
         database.add_triple(Triple {
             subject: person_id,
             predicate: type_id,
@@ -138,7 +128,6 @@ fn streamertail_optimizer_multiple_triples() {
         database.default_triple_count()
     );
 
-    // Step 3: Create the logical plan with joins
     let type_id = database.dictionary_mut().encode("rdf:type");
     let person_type = database.dictionary_mut().encode("foaf:Person");
     let age_id = database.dictionary_mut().encode("foaf:age");
@@ -155,20 +144,17 @@ fn streamertail_optimizer_multiple_triples() {
         Term::Variable("age".to_string()),
     ));
 
-    // Create a filter condition
     let condition = Condition::new("age".to_string(), ">".to_string(), "25".to_string());
     let filtered_age = LogicalOperator::selection(age_scan, condition);
 
     let logical_plan = LogicalOperator::join(type_scan, filtered_age);
 
-    // Step 4: Initialize the optimizer and optimize
     let mut optimizer = Streamertail::new(&database);
     let best_plan = optimizer.find_best_plan(&logical_plan);
 
     println!("Logical Plan: {:?}", logical_plan);
     println!("Optimized Physical Plan: {:?}", best_plan);
 
-    // Step 5: Execute the optimized plan
     let start = Instant::now();
     let results = best_plan.execute(&mut database);
     let duration = start.elapsed();
@@ -184,10 +170,8 @@ fn streamertail_optimizer_multiple_triples() {
 fn streamertail_optimizer_rdf() {
     println!("=== RDF Example with SPARQL Parsing ===");
 
-    // Step 1: Execute the physical plan on a sample database
-    let mut database = SparqlDatabase::new();
+    let mut database = KolibrieDB::new();
 
-    // Step 2: Add some triples to the database
     for i in 0..10 {
         let person_uri = format!("http://example.org/person{}", i);
         let company_uri = format!("http://example.org/company{}", i % 3);
@@ -202,14 +186,12 @@ fn streamertail_optimizer_rdf() {
         let company_id = database.dictionary_mut().encode(&company_uri);
         let location = database.dictionary_mut().encode(&format!("City{}", i % 3));
 
-        // Person works at company
         database.add_triple(Triple {
             subject: person_id,
             predicate: works_at_id,
             object: company_id,
         });
 
-        // Company located in city
         database.add_triple(Triple {
             subject: company_id,
             predicate: located_id,
@@ -222,7 +204,6 @@ fn streamertail_optimizer_rdf() {
         database.default_triple_count()
     );
 
-    // Step 3: Create logical plan using build_logical_plan utility
     let variables = vec![("VAR", "person"), ("VAR", "location")];
     let patterns = vec![
         ("?person", "http://example.org/worksAt", "?org"),
@@ -242,14 +223,12 @@ fn streamertail_optimizer_rdf() {
         None,
     );
 
-    // Step 4: Initialize the optimizer and optimize
     let mut optimizer = Streamertail::new(&database);
     let best_plan = optimizer.find_best_plan(&logical_plan);
 
     println!("Logical Plan: {:?}", logical_plan);
     println!("Optimized Physical Plan: {:?}", best_plan);
 
-    // Step 5: Execute the optimized plan
     let start = Instant::now();
     let results = best_plan.execute(&mut database);
     let duration = start.elapsed();
@@ -265,10 +244,8 @@ fn streamertail_optimizer_rdf() {
 fn streamertail_optimizer_index_patterns() {
     println!("=== Index Pattern Examples ===");
 
-    // Step 1: Initialize the database
-    let mut database = SparqlDatabase::new();
+    let mut database = KolibrieDB::new();
 
-    // Step 2: Add triples to the database
     for i in 0..100 {
         let person_uri = format!("http://example.org/person{}", i);
         let age_value = format!("{}", i);
@@ -304,9 +281,7 @@ fn streamertail_optimizer_index_patterns() {
     let age_42_id = database.dictionary_mut().encode("42");
     let age_69_id = database.dictionary_mut().encode("69");
 
-    // Define different triple patterns to test various index strategies
     let patterns = vec![
-        // (1) No bounds => full table scan
         (
             "Unbound pattern",
             (
@@ -315,7 +290,6 @@ fn streamertail_optimizer_index_patterns() {
                 Term::Variable("o".to_string()),
             ),
         ),
-        // (2) predicate+object => POS index
         (
             "Predicate+Object bound",
             (
@@ -324,7 +298,6 @@ fn streamertail_optimizer_index_patterns() {
                 Term::Constant(age_42_id),
             ),
         ),
-        // (3) subject bound => SPO index
         (
             "Subject bound",
             (
@@ -333,7 +306,6 @@ fn streamertail_optimizer_index_patterns() {
                 Term::Variable("o".to_string()),
             ),
         ),
-        // (4) predicate bound => PSO index
         (
             "Predicate bound",
             (
@@ -342,7 +314,6 @@ fn streamertail_optimizer_index_patterns() {
                 Term::Variable("o".to_string()),
             ),
         ),
-        // (5) object bound => OSP index
         (
             "Object bound",
             (
@@ -351,7 +322,6 @@ fn streamertail_optimizer_index_patterns() {
                 Term::Constant(age_69_id),
             ),
         ),
-        // (6) fully bound => direct check
         (
             "Fully bound",
             (
@@ -362,7 +332,6 @@ fn streamertail_optimizer_index_patterns() {
         ),
     ];
 
-    // For each pattern, build + optimize + execute
     for (i, (description, pattern)) in patterns.iter().enumerate() {
         let logical_plan = LogicalOperator::scan(pattern.clone());
         let mut optimizer = Streamertail::new(&database);
@@ -372,7 +341,6 @@ fn streamertail_optimizer_index_patterns() {
         println!("Pattern: {:?}", pattern);
         println!("Physical Plan: {:?}", best_plan);
 
-        // Execute the best plan
         let start = Instant::now();
         let results = best_plan.execute(&mut database);
         let duration = start.elapsed();
@@ -388,10 +356,8 @@ fn streamertail_optimizer_index_patterns() {
 fn streamertail_optimizer_performance_test() {
     println!("=== Performance Test ===");
 
-    // Step 1: Initialize the database with larger dataset
-    let mut database = SparqlDatabase::new();
+    let mut database = KolibrieDB::new();
 
-    // Step 2: Add many triples to test performance
     println!("Adding triples...");
     let start = Instant::now();
 
@@ -435,12 +401,10 @@ fn streamertail_optimizer_performance_test() {
         database.default_triple_count()
     );
 
-    // Test different query types
     let name_id = database.dictionary_mut().encode("foaf:name");
     let age_id = database.dictionary_mut().encode("foaf:age");
     let works_at_id = database.dictionary_mut().encode("ex:worksAt");
 
-    // Query 1: Simple scan
     println!("\n--- Query 1: Simple Scan ---");
     let logical_plan1 = LogicalOperator::scan((
         Term::Variable("person".to_string()),
@@ -461,7 +425,6 @@ fn streamertail_optimizer_performance_test() {
     println!("Execution time: {:?}", execution_time1);
     println!("Results: {} rows", results1.len());
 
-    // Query 2: Join query
     println!("\n--- Query 2: Join Query ---");
     let name_scan = LogicalOperator::scan((
         Term::Variable("person".to_string()),
@@ -490,7 +453,6 @@ fn streamertail_optimizer_performance_test() {
     println!("Execution time: {:?}", execution_time2);
     println!("Results: {} rows", results2.len());
 
-    // Query 3: Complex join with filter
     println!("\n--- Query 3: Complex Join with Filter ---");
     let works_scan = LogicalOperator::scan((
         Term::Variable("person".to_string()),

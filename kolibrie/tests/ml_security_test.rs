@@ -1,6 +1,6 @@
+use kolibrie::database::KolibrieDB;
 use kolibrie::execute_query::{execute_sparql_query, QueryError};
 use kolibrie::ml_policy::{validate_artifact_filename, validate_model_name, MlExecutionContext};
-use kolibrie::sparql_database::SparqlDatabase;
 
 #[test]
 fn artifact_names_are_portable_single_components() {
@@ -28,7 +28,7 @@ fn artifact_names_are_portable_single_components() {
 
 #[test]
 fn denied_declaration_does_not_register_prefixes_or_models() {
-    let mut db = SparqlDatabase::new();
+    let mut db = KolibrieDB::new();
     let before = db.prefixes().clone();
     let query = r#"PREFIX secret: <urn:secret:> MODEL "m" { ARCH MLP { HIDDEN [4] } OUTPUT BINARY { true } }"#;
     let (remaining, _) = kolibrie::parser::parse_combined_query(query).unwrap();
@@ -41,7 +41,7 @@ fn denied_declaration_does_not_register_prefixes_or_models() {
 
 #[test]
 fn restrictive_default_still_runs_ordinary_queries() {
-    let mut db = SparqlDatabase::new();
+    let mut db = KolibrieDB::new();
     assert_eq!(
         execute_sparql_query("SELECT ?x WHERE { VALUES ?x { 7 } }", &mut db).unwrap(),
         vec![vec!["7"]]
@@ -53,7 +53,7 @@ fn restrictive_default_still_runs_ordinary_queries() {
 
 #[test]
 fn rule_ml_is_rejected_before_prefix_registration() {
-    let mut db = SparqlDatabase::new();
+    let mut db = KolibrieDB::new();
     let request = r#"PREFIX ex: <urn:canary:>
 RULE :Predict :- CONSTRUCT { ?s ex:p ?prediction } WHERE { ?s ex:x ?x }
 ML.PREDICT(MODEL "unapproved", INPUT { SELECT ?x WHERE { ?s ex:x ?x } }, OUTPUT ?prediction)"#;
@@ -82,7 +82,7 @@ fn default_policy_rejects_prediction_relation_and_training_routes() {
     ] {
         let (remaining, _) = kolibrie::parser::parse_combined_query(request).unwrap();
         assert!(remaining.trim().is_empty());
-        let mut db = SparqlDatabase::new();
+        let mut db = KolibrieDB::new();
         let error = execute_sparql_query(request, &mut db).unwrap_err();
         assert_eq!(
             error.to_string(),
@@ -148,7 +148,7 @@ mod enabled {
     fn legacy_http_cannot_inherit_trusted_local_authority() {
         let fixture = Fixture::new();
         let local = MlExecutionContext::trusted_local(&fixture.0.join("training")).unwrap();
-        let mut db = SparqlDatabase::with_ml_context(local);
+        let mut db = KolibrieDB::with_ml_context(local);
         let query = r#"PREFIX secret: <urn:secret:> MODEL "m" { ARCH MLP { HIDDEN [4] } OUTPUT BINARY { true } }"#;
         let request = format!(
             "POST /sparql HTTP/1.1\r\nContent-Type: application/sparql-query\r\n\r\n{query}"
@@ -187,7 +187,6 @@ mod enabled {
         let approved = MlExecutionContext::from_registry(&registry).unwrap();
         assert_eq!(approved.predict("new", &[vec![0.0]]).unwrap(), vec!["0.5"]);
         assert!(approved.predict("unlisted", &[vec![0.0]]).is_err());
-        // Registry changes do not apply during runtime
         fs::write(&registry, r#"{"models":[]}"#).unwrap();
         assert!(approved.predict("new", &[vec![0.0]]).is_ok());
         fs::write(&approved_artifact, b"tampered").unwrap();

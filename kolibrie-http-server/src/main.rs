@@ -8,28 +8,7 @@
  * you can obtain one at https://mozilla.org/MPL/2.0/.
  */
 
-//! The Kolibrie HTTP server: a REST surface and the browser playground, on port 8080.
-//!
-//! A hand-rolled server over [`std::net::TcpListener`] with a thread
-//! per connection — no framework. Three families of endpoint, each keyed by a
-//! session the client creates first:
-//!
-//! | endpoint | purpose |
-//! |---|---|
-//! | `POST /query` | one-shot SPARQL over posted data |
-//! | `POST /rsp-query`, `/rsp/register`, `/rsp/push`, `GET /rsp/events/<id>` | RSP-QL streaming, results delivered as server-sent events |
-//! | `POST /datalogmtl/register`, `/datalogmtl/push`, `/datalogmtl/static`, `GET /datalogmtl/events/<id>` | DatalogMTL, streaming or whole-timeline |
-//!
-//! # Trust
-//!
-//! The ML context is resolved once at startup and the process **exits** if it is
-//! invalid, rather than starting and refusing requests later. Over HTTP that
-//! context never carries trusted-local authority: the server does not train, does
-//! not write artifacts, and does not accept model declarations from a query. See
-//! `kolibrie`'s `ml::policy` for what the modes mean.
-//!
-//! Binds `0.0.0.0`, so it is reachable from outside the host. There is no
-//! authentication of any kind.
+//! The Kolibrie HTTP server: a REST surface and the browser playground, on port 8080
 
 use datalog::parser_n3_logic::parse_n3_rule;
 use datalog::reasoning::Reasoner;
@@ -46,12 +25,12 @@ use datalogmtl::rdf_parser::{
 use datalogmtl::store::IntervalFactStore;
 use datalogmtl::stream::{RdfEvent, ShapeIngester};
 use datalogmtl::syntax::{DatalogMTLRule, Mode};
+use kolibrie::database::KolibrieDB;
 use kolibrie::execute_query::QueryError;
 use kolibrie::rsp_engine::{
     OperationMode, QueryExecutionMode, RSPBuilder, ResultConsumer, SimpleR2R,
 };
 use kolibrie::rule_execution::process_rule_definition;
-use kolibrie::sparql_database::SparqlDatabase;
 use serde::{Deserialize, Serialize};
 use shared::dictionary::Dictionary;
 use shared::term_encoder::SharedTerms;
@@ -65,17 +44,12 @@ use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::Duration;
 
-// ── Session state for persistent RSP engines ────────────────────────────────
-
 struct EngineSession {
     engine: kolibrie::rsp_engine::RSPEngine<Triple, Vec<(String, String)>>,
-    /// Lazily set when the SSE client connects.
     sse_sender: Arc<Mutex<Option<Sender<String>>>>,
 }
 
 type Sessions = Arc<Mutex<HashMap<String, EngineSession>>>;
-
-// ── DatalogMTL^RDF session state ─────────────────────────────────────────────
 
 struct DmtlSession {
     evaluator: DatalogMTLEvaluator<IntervalFactStore>,
@@ -97,8 +71,6 @@ struct HttpRequest {
     body: Vec<u8>,
 }
 
-// ── Request/response types ───────────────────────────────────────────────────
-
 #[derive(Debug, Deserialize)]
 struct QueryRequest {
     #[serde(default)]
@@ -107,9 +79,6 @@ struct QueryRequest {
     queries: Option<Vec<String>>,
     #[serde(default)]
     rdf: Option<String>,
-    // N3 logic rules in { pattern } => { conclusion } syntax with @prefix declarations.
-    // Parsed by parse_n3_rule (parser_n3_logic.rs) via the Reasoner — completely separate
-    // from the SPARQL RULE syntax handled by process_rule_definition (parser.rs).
     #[serde(default)]
     n3logic: Option<String>,
     #[serde(default)]
@@ -120,7 +89,6 @@ struct QueryRequest {
     format: String,
 }
 
-// Default format is RDF/XML for backwards compatibility
 fn default_format() -> String {
     "rdfxml".to_string()
 }
@@ -142,8 +110,6 @@ struct QueryResult {
 struct ErrorResponse {
     error: String,
 }
-
-// ── RSP-QL stateless endpoint (legacy) ──────────────────────────────────────
 
 #[derive(Debug, Deserialize)]
 struct StreamEvent {
@@ -169,8 +135,6 @@ struct RspQueryResponse {
     total_results: usize,
     execution_time_ms: f64,
 }
-
-// ── RSP-QL persistent session endpoints ─────────────────────────────────────
 
 #[derive(Debug, Deserialize)]
 struct RspRegisterRequest {
@@ -198,8 +162,6 @@ struct RspPushRequest {
     timestamp: usize,
     ntriples: String,
 }
-
-// ── DatalogMTL^RDF request/response types ────────────────────────────────────
 
 #[derive(Debug, Deserialize)]
 struct DmtlRegisterRequest {
@@ -234,21 +196,14 @@ struct DmtlTickResult {
     metrics: serde_json::Value,
 }
 
-// ── Static (batch) materialization over interval-valued data ─────────────────
-
 #[derive(Debug, Deserialize)]
 struct DmtlStaticRequest {
-    /// Rules — RDF triple-pattern (`(?x,:p,?o):-...`) or MeTeoR (`B(X):-Boxminus[0,5]A(X)`).
     program: String,
-    /// Facts with validity intervals — `<s> <p> <o> @[l,r] .` (rdf) or `A(a)@[0,10]` (meteor).
     data: String,
-    /// "interval" (finite materialization) or "omega" (unbounded, periodic).
     #[serde(default)]
     strategy: Option<String>,
-    /// Optional entailment queries (one fact per line), for omega.
     #[serde(default)]
     queries: Option<String>,
-    /// Input syntax: "rdf" (default) or "meteor".
     #[serde(default)]
     syntax: Option<String>,
 }
@@ -261,17 +216,12 @@ struct DmtlEntailAnswer {
 
 #[derive(Debug, Serialize)]
 struct DmtlStaticResponse {
-    /// Derived (and base) facts as `Pred(args)@[l,r]` lines, sorted.
     facts: Vec<String>,
     entailment: Vec<DmtlEntailAnswer>,
     note: Option<String>,
 }
 
-// ── Helpers ──────────────────────────────────────────────────────────────────
-
-/// Format a decoded dictionary term as an N-Triples token:
-/// - plain URIs → `<uri>`
-/// - literals (start with `"`) and blank nodes (`_:`) → as-is
+/// Format a decoded dictionary term as an N-Triples token
 fn term_to_ntriples_token(term: &str) -> String {
     if term.starts_with('"') || term.starts_with("_:") {
         term.to_string()
@@ -280,8 +230,8 @@ fn term_to_ntriples_token(term: &str) -> String {
     }
 }
 
-/// Export every triple in `db` as an N-Triples string.
-fn db_to_ntriples(db: &SparqlDatabase) -> String {
+/// Export every triple in `db` as an N-Triples string
+fn db_to_ntriples(db: &KolibrieDB) -> String {
     let dict = db.dictionary();
     let mut out = String::new();
     let triples = db.query_default_triples(None, None, None);
@@ -302,12 +252,11 @@ fn db_to_ntriples(db: &SparqlDatabase) -> String {
     out
 }
 
-/// Convert collected RSP result rows into a table (first row = headers).
+/// Convert collected RSP result rows into a table (first row = headers)
 fn results_to_table(results: &[Vec<(String, String)>]) -> Vec<Vec<String>> {
     if results.is_empty() {
         return vec![];
     }
-    // Collect all variable names while preserving first-seen order.
     let mut headers: Vec<String> = Vec::new();
     for row in results {
         for (key, _) in row {
@@ -327,8 +276,6 @@ fn results_to_table(results: &[Vec<(String, String)>]) -> Vec<Vec<String>> {
     }
     table
 }
-
-// ── Main & connection handling ───────────────────────────────────────────────
 
 fn has_n3_rule_text(text: &str) -> bool {
     text.lines()
@@ -410,18 +357,7 @@ fn http_ml_context(
         .as_ref()
 }
 
-/// The response for a failed query, mapping [`QueryError`] to this server's wire
-/// codes.
-///
-/// Goes through [`ml_error_response`] rather than matching the variants against a
-/// second status table: three other callers still pass bare strings, so the table has
-/// to stay there, and two copies of it would drift.
-///
-/// The mapping is deliberately the one that was in place when these errors were
-/// `String`s. Every non-ML failure — a syntax error included — reports as
-/// `QUERY_EXECUTION_FAILED` with 400. For a parse failure that is misleading, and the
-/// variants now make a `QUERY_PARSE_ERROR` possible, but adding one changes what
-/// clients receive and is not part of this change.
+/// The response for a failed query, mapping [`QueryError`] to this server's wire codes
 fn query_error_response(error: &QueryError) -> String {
     let code = match error {
         QueryError::Ml(policy) => policy.to_string(),
@@ -475,8 +411,6 @@ fn main() {
 fn handle_client(mut stream: TcpStream, sessions: Sessions, dmtl_sessions: DmtlSessions) {
     match read_http_request(&mut stream) {
         Ok(request) => {
-            // SSE handler must keep the connection open, so it is handled here
-            // rather than returning a String from handle_request.
             if request.method == "GET" && request.path.starts_with("/rsp/events/") {
                 let session_id = request.path["/rsp/events/".len()..].to_string();
                 rsp_events_sse(&session_id, stream, &sessions);
@@ -838,8 +772,6 @@ fn handle_request(
     error_response(404, "Not Found")
 }
 
-// ── RSP persistent session handlers ─────────────────────────────────────────
-
 fn request_body(body: &[u8]) -> Option<&str> {
     match std::str::from_utf8(body) {
         Ok(body) => Some(body),
@@ -859,8 +791,7 @@ fn rsp_register(body: &str, sessions: &Sessions) -> String {
         }
     };
 
-    // Validate RSP policy before creating a session
-    let policy_db = SparqlDatabase::new();
+    let policy_db = KolibrieDB::new();
     for text in std::iter::once(&req.query).chain(req.sparql_rules.iter().flatten()) {
         if let Err(error) =
             kolibrie::execute_query::validate_query_policy(&strip_hash_comments(text), &policy_db)
@@ -870,11 +801,9 @@ fn rsp_register(body: &str, sessions: &Sessions) -> String {
     }
     println!("RSP register: building engine for new session");
 
-    // The SSE sender is lazily populated when the browser opens the SSE connection.
     let sse_sender: Arc<Mutex<Option<Sender<String>>>> = Arc::new(Mutex::new(None));
     let sse_sender_for_consumer = Arc::clone(&sse_sender);
 
-    // Consumer: serialize each result row as JSON and forward to the SSE channel.
     let result_consumer = ResultConsumer::<Vec<(String, String)>> {
         function: Arc::new(move |row: Vec<(String, String)>| {
             let map: serde_json::Map<String, serde_json::Value> = row
@@ -921,7 +850,6 @@ fn rsp_register(body: &str, sessions: &Sessions) -> String {
             }
         };
 
-    // Load static background data if provided.
     if let Some(static_rdf) = &req.static_rdf {
         if !static_rdf.trim().is_empty() {
             let cleaned_static_rdf;
@@ -935,7 +863,7 @@ fn rsp_register(body: &str, sessions: &Sessions) -> String {
             let ntriples = match req.static_format.as_str() {
                 "ntriples" => static_rdf_for_parse.to_string(),
                 _ => {
-                    let mut static_db = SparqlDatabase::new();
+                    let mut static_db = KolibrieDB::new();
                     match req.static_format.as_str() {
                         "turtle" => static_db.parse_turtle(static_rdf_for_parse),
                         _ => static_db.parse_rdf(static_rdf_for_parse),
@@ -1014,11 +942,8 @@ fn rsp_push(body: &str, sessions: &Sessions) -> String {
             .add_to_stream(&req.stream, triple, req.timestamp);
     }
 
-    // Flush pending multi-window results
     session.engine.process_single_thread_window_results();
 
-    // Signal end-of-firing to the SSE client so it can flush its display buffer
-    // immediately rather than waiting for the debounce timeout.
     if let Some(tx) = session.sse_sender.lock().unwrap().as_ref() {
         let _ = tx.send("__FIRING_END__".to_string());
     }
@@ -1026,10 +951,9 @@ fn rsp_push(body: &str, sessions: &Sessions) -> String {
     json_ok()
 }
 
-/// SSE handler — writes the event-stream headers and then blocks, forwarding
-/// results to the browser as they arrive via an in-process channel.
+/// SSE handler — writes the event-stream headers and then blocks, forwarding results to the browser
+/// as they arrive via an in-process channel
 fn rsp_events_sse(session_id: &str, mut stream: TcpStream, sessions: &Sessions) {
-    // Clone the Arc so we can release the sessions lock before blocking.
     let sse_sender_arc = {
         let lock = sessions.lock().unwrap();
         match lock.get(session_id) {
@@ -1045,7 +969,6 @@ fn rsp_events_sse(session_id: &str, mut stream: TcpStream, sessions: &Sessions) 
     let (tx, rx) = mpsc::channel::<String>();
     sse_sender_arc.lock().unwrap().replace(tx);
 
-    // Write SSE headers — no Content-Length, connection stays open.
     if stream
         .write_all(
             b"HTTP/1.1 200 OK\r\n\
@@ -1062,10 +985,8 @@ fn rsp_events_sse(session_id: &str, mut stream: TcpStream, sessions: &Sessions) 
 
     println!("RSP_CLIENT_CONNECTED");
 
-    // Block-forward events until the client disconnects or the tx is dropped.
     for received in rx {
         let msg = if received == "__FIRING_END__" {
-            // Named event so the browser can flush its firing buffer immediately.
             "event: firing\ndata: {}\n\n".to_string()
         } else {
             format!("data: {}\n\n", received)
@@ -1078,8 +999,6 @@ fn rsp_events_sse(session_id: &str, mut stream: TcpStream, sessions: &Sessions) 
 
     println!("RSP_CLIENT_DISCONNECTED");
 }
-
-// ── Existing SPARQL and legacy RSP-QL handlers ───────────────────────────────
 
 fn serve_playground() -> String {
     let html = include_str!("../../web/playground.html");
@@ -1102,7 +1021,6 @@ fn execute_sparql_with_context(body: &str) -> String {
     }
 }
 
-// Use only the host-selected ML policy
 fn execute_sparql_with_policy(
     body: &str,
     context: &kolibrie::ml_policy::MlExecutionContext,
@@ -1115,7 +1033,6 @@ fn execute_sparql_with_policy(
         }
     };
 
-    // Collect all queries
     let mut queries = Vec::new();
     if let Some(single_query) = request.sparql {
         queries.push(single_query);
@@ -1128,7 +1045,6 @@ fn execute_sparql_with_policy(
         return json_error_response("No queries provided");
     }
 
-    // Collect all rules
     let mut rules = Vec::new();
     if let Some(single_rule) = request.rule {
         rules.push(single_rule);
@@ -1143,9 +1059,8 @@ fn execute_sparql_with_policy(
         rules.len()
     );
 
-    let mut database = SparqlDatabase::new();
+    let mut database = KolibrieDB::new();
     database.set_ml_context(context.clone());
-    // Validate the full request before changing database state
     for text in queries.iter().chain(rules.iter()) {
         if let Err(error) =
             kolibrie::execute_query::validate_query_policy(&strip_hash_comments(text), &database)
@@ -1154,7 +1069,6 @@ fn execute_sparql_with_policy(
         }
     }
 
-    // Load RDF data once
     if let Some(rdf_data) = request.rdf {
         if !rdf_data.trim().is_empty() {
             let cleaned_rdf_data;
@@ -1188,19 +1102,14 @@ fn execute_sparql_with_policy(
         }
     }
 
-    // Process N3 rules with the datalog reasoner
     if let Some(ref n3_rules_text) = request.n3logic {
         let n3_rules_text = strip_hash_comments(n3_rules_text);
         if has_n3_rule_text(&n3_rules_text) {
             println!("Processing N3 logic rules from N3 Logic sub-tab...");
 
-            // One term space between the store and the reasoner, so a term either
-            // interns once or decodes consistently on both sides.
             let mut kg = Reasoner::new();
             kg.adopt_terms(database.terms());
 
-            // Decode all triples to owned strings using database.dictionary BEFORE
-            // creating kg's mutable borrow — avoids the RwLockReadGuard conflict.
             let decoded_triples: Vec<(String, String, String)> = {
                 let dict_guard = kg.term_view();
                 database
@@ -1221,7 +1130,6 @@ fn execute_sparql_with_policy(
 
             println!("Decoded triple count: {}", decoded_triples.len());
 
-            // Now load into the Reasoner — no borrow conflict
             for (s, p, o) in &decoded_triples {
                 kg.add_abox_triple(s, p, o);
             }
@@ -1236,25 +1144,17 @@ fn execute_sparql_with_policy(
                         rule.conclusion.len(),
                     );
 
-                    // **IMPORTANT**: Register N3 prefixes with the database so SPARQL rules can use them
                     for (prefix, uri) in prefixes {
                         database.add_prefix(prefix.to_string(), uri.to_string());
                     }
 
-                    // Register the rule and infer new facts
                     kg.add_rule(rule);
                     let inferred = kg.infer_new_facts_semi_naive();
                     println!("N3 rule inferred {} fact(s)", inferred.len());
 
-                    // Push inferred triples into the database triple store
                     for triple in inferred {
                         database.add_triple(triple);
                     }
-
-                    // No dictionary sync here on purpose. The store and the
-                    // reasoner share one encoding, so terms interned while inferring
-                    // were already visible to SPARQL; the assignment that used to sit
-                    // here handed the store back the handle it already held.
 
                     if database.default_triple_count() > 0 {
                         database.invalidate_stats_cache();
@@ -1270,7 +1170,6 @@ fn execute_sparql_with_policy(
         }
     }
 
-    // Process all SPARQL-syntax rules (RULE :Name :- CONSTRUCT { } WHERE { })
     for (idx, rule_def) in rules.iter().enumerate() {
         let rule_def = strip_hash_comments(rule_def);
         if !rule_def.trim().is_empty() {
@@ -1296,7 +1195,6 @@ fn execute_sparql_with_policy(
         }
     }
 
-    // Execute all queries
     let mut all_results = Vec::new();
 
     for (idx, query) in queries.iter().enumerate() {
@@ -1359,13 +1257,12 @@ fn execute_rsp_query(body: &str) -> String {
 
     if let Err(error) = kolibrie::execute_query::validate_query_policy(
         &strip_hash_comments(&request.query),
-        &SparqlDatabase::new(),
+        &KolibrieDB::new(),
     ) {
         return query_error_response(&error);
     }
     println!("RSP_REQUEST event_count={}", request.events.len());
 
-    // Collect results via a shared container that the engine writes into.
     let result_container: Arc<Mutex<Vec<Vec<(String, String)>>>> = Arc::new(Mutex::new(Vec::new()));
     let rc_clone = Arc::clone(&result_container);
 
@@ -1395,7 +1292,6 @@ fn execute_rsp_query(body: &str) -> String {
             }
         };
 
-    // Load static background data from the SPARQL tab (if provided).
     if let Some(static_rdf) = &request.static_rdf {
         if !static_rdf.trim().is_empty() {
             let cleaned_static_rdf;
@@ -1409,7 +1305,7 @@ fn execute_rsp_query(body: &str) -> String {
             let ntriples = match request.static_format.as_str() {
                 "ntriples" => static_rdf_for_parse.to_string(),
                 _ => {
-                    let mut static_db = SparqlDatabase::new();
+                    let mut static_db = KolibrieDB::new();
                     match request.static_format.as_str() {
                         "turtle" => static_db.parse_turtle(static_rdf_for_parse),
                         _ => static_db.parse_rdf(static_rdf_for_parse),
@@ -1427,7 +1323,6 @@ fn execute_rsp_query(body: &str) -> String {
         }
     }
 
-    // Sort events by timestamp, then push them to the engine.
     let mut events = request.events;
     events.sort_by_key(|e| e.timestamp);
 
@@ -1443,7 +1338,6 @@ fn execute_rsp_query(body: &str) -> String {
         }
     }
 
-    // Flush all pending window results.
     engine.stop();
 
     let execution_time = start_time.elapsed().as_secs_f64() * 1000.0;
@@ -1483,8 +1377,6 @@ fn execute_rsp_query(body: &str) -> String {
         json
     )
 }
-
-// ── Response helpers ─────────────────────────────────────────────────────────
 
 #[cfg(test)]
 mod tests {
@@ -1633,10 +1525,6 @@ mod tests {
         assert!(response.contains("7"));
     }
 
-    // Pins the wire format across the move from `String` errors to `QueryError`.
-    // Each case is the response the string-matching version produced for the same
-    // failure, so a change to `query_error_response` that clients would notice fails
-    // here rather than in a browser.
     #[test]
     fn query_error_responses_keep_their_wire_codes() {
         use kolibrie::execute_query::QueryError;
@@ -1653,8 +1541,6 @@ mod tests {
                 QueryError::Ml(MlError::InvalidConfiguration),
                 "ML_INVALID_CONFIGURATION",
             ),
-            // Not in the status table, so it lands on the default arm, as it did
-            // when it arrived as the string "ML_EXECUTION_FAILED".
             (
                 QueryError::Ml(MlError::ExecutionFailed),
                 "QUERY_EXECUTION_FAILED",
@@ -1679,7 +1565,6 @@ mod tests {
         }
     }
 
-    // A parse failure carries the offending snippet. It must not reach the client.
     #[test]
     fn query_error_responses_do_not_leak_the_request() {
         use kolibrie::execute_query::QueryError;
@@ -1730,7 +1615,7 @@ fn json_ok() -> String {
     )
 }
 
-/// A 200 response carrying an arbitrary JSON body.
+/// A 200 response carrying an arbitrary JSON body
 fn json_response(json: &str) -> String {
     format!(
         "HTTP/1.1 200 OK\r\n\
@@ -1787,7 +1672,6 @@ fn error_response(code: u16, message: &str) -> String {
         message
     )
 }
-// ── DatalogMTL^RDF handlers ───────────────────────────────────────────────────
 
 fn handle_dmtl_register(body: &str, dmtl_sessions: &DmtlSessions) -> String {
     let req: DmtlRegisterRequest = match serde_json::from_str(body) {
@@ -1806,7 +1690,6 @@ fn handle_dmtl_register(body: &str, dmtl_sessions: &DmtlSessions) -> String {
 
     println!("DMTL register: {} rule(s) parsed", rules.len());
 
-    // Parse stream shapes into the same dict before Arc-wrapping
     let (shapes, stream_iris) = if let Some(ref shape_text) = req.stream_shapes {
         if !shape_text.trim().is_empty() {
             match parse_stream_shapes(shape_text, &mut dict) {
@@ -1907,8 +1790,6 @@ fn handle_dmtl_push(body: &str, dmtl_sessions: &DmtlSessions) -> String {
                 timestamp: req.timestamp,
                 triples: raw,
             };
-            // Emit the shape's EXPIRY facts for channels that went quiet before
-            // evicting them, otherwise a stale source disappears silently.
             let expired: Vec<Triple> = ingester
                 .expiry_facts(req.timestamp)
                 .into_iter()
@@ -2015,11 +1896,7 @@ fn handle_dmtl_sse(session_id: &str, mut stream: TcpStream, dmtl_sessions: &Dmtl
     println!("DMTL SSE: client disconnected for session {}", session_id);
 }
 
-// ── DatalogMTL N-Triples helpers ─────────────────────────────────────────────
-
-/// Decode a dictionary term to an N-Triples token.
-/// Literals (start with `"`) and blank nodes (`_:`) are returned as-is;
-/// everything else is wrapped in angle brackets.
+/// Decode a dictionary term to an N-Triples token
 fn decode_dmtl_term(val: Option<&str>) -> String {
     match val {
         None => "?".to_string(),
@@ -2028,14 +1905,11 @@ fn decode_dmtl_term(val: Option<&str>) -> String {
     }
 }
 
-/// Tokenize N-Triples text and encode each term into the shared dictionary.
+/// Tokenize N-Triples text and encode each term into the shared dictionary
 fn tokenize_and_encode_ntriples(ntriples: &str, dict_arc: &SharedTerms) -> Vec<Triple> {
     let mut triples = Vec::new();
     for line in ntriples.lines() {
         if let Some([s, p, o]) = tokenize_ntriples_line(line) {
-            // The shared space, not a view: these terms have to be interned where
-            // everything else will look them up. A view refused the call, which is
-            // what it is for.
             let (subject, predicate, object) = dict_arc.encode_triple(&s, &p, &o);
             triples.push(Triple {
                 subject,
@@ -2047,9 +1921,7 @@ fn tokenize_and_encode_ntriples(ntriples: &str, dict_arc: &SharedTerms) -> Vec<T
     triples
 }
 
-/// Tokenise one N-Triples line. Returns the three raw term strings (IRI
-/// brackets stripped; literals kept with quotes; blank nodes kept as-is).
-/// Returns `None` for comment lines, blank lines, and malformed lines.
+/// Tokenise one N-Triples line
 fn tokenize_ntriples_line(line: &str) -> Option<[String; 3]> {
     let line = line.trim();
     if line.is_empty() || line.starts_with('#') {
@@ -2060,7 +1932,6 @@ fn tokenize_ntriples_line(line: &str) -> Option<[String; 3]> {
     let mut tokens: Vec<String> = Vec::new();
 
     while tokens.len() < 3 && i < bytes.len() {
-        // Skip whitespace
         while i < bytes.len() && (bytes[i] == b' ' || bytes[i] == b'\t') {
             i += 1;
         }
@@ -2078,7 +1949,7 @@ fn tokenize_ntriples_line(line: &str) -> Option<[String; 3]> {
                 tokens.push(String::from_utf8_lossy(&bytes[start..i]).into_owned());
                 if i < bytes.len() {
                     i += 1;
-                } // skip '>'
+                }
             }
             b'"' => {
                 let start = i;
@@ -2094,7 +1965,6 @@ fn tokenize_ntriples_line(line: &str) -> Option<[String; 3]> {
                     }
                     i += 1;
                 }
-                // Consume optional @lang tag or ^^<datatype>
                 if i < bytes.len() && bytes[i] == b'@' {
                     while i < bytes.len() && bytes[i] != b' ' && bytes[i] != b'\t' {
                         i += 1;
@@ -2120,7 +1990,7 @@ fn tokenize_ntriples_line(line: &str) -> Option<[String; 3]> {
                 }
                 tokens.push(String::from_utf8_lossy(&bytes[start..i]).into_owned());
             }
-            b'.' => break, // end-of-triple marker
+            b'.' => break,
             _ => {
                 i += 1;
             }
@@ -2134,23 +2004,13 @@ fn tokenize_ntriples_line(line: &str) -> Option<[String; 3]> {
     }
 }
 
-// ── DatalogMTL rule text parser ───────────────────────────────────────────────
-//
-// Rule format:
-//   (?x, :wasNear, ?y) :- (?x, :loc, ?l), Diamond[1000,5000](?y, :loc, ?l).
-//
-// Terms: ?var = Variable, <iri> = Constant (brackets stripped),
-//        :name = Constant (stored as ":name"), "lit" = Constant (stored with quotes).
-
-/// Static (batch) materialization over interval-valued data, using the
-/// interval-native engine (MeTeoR-syntax rules + facts, past AND future operators).
+/// Batch materialisation over interval-valued data with the interval-native engine
 fn handle_dmtl_static(body: &str) -> String {
     let req: DmtlStaticRequest = match serde_json::from_str(body) {
         Ok(r) => r,
         Err(e) => return json_error_response(&format!("Invalid JSON: {}", e)),
     };
     let strategy = req.strategy.as_deref().unwrap_or("interval");
-    // Syntax: "rdf" (triple patterns + N-Triples intervals) or "meteor" (Pred(args)@[l,r]).
     let rdf = req.syntax.as_deref().unwrap_or("rdf") != "meteor";
     let dict: SharedTerms = SharedTerms::new();
 
@@ -2208,9 +2068,8 @@ type StaticInput = (
     Vec<(Triple, TInterval)>,
 );
 
-/// Parse the static request in RDF-style: triple-pattern rules + `<s> <p> <o> @[l,r]` facts.
+/// Parse the static request in RDF-style: triple-pattern rules + `<s> <p> <o> @[l,r]` facts
 fn parse_static_rdf(req: &DmtlStaticRequest, dict: &SharedTerms) -> Result<StaticInput, String> {
-    // Parsing interns, so it needs the shared space rather than a view.
     let rules = dict
         .try_with_terms(|d| parse_dmtl_rules(&req.program, d, Mode::Static))
         .map_err(|e| e.to_string())?
@@ -2223,7 +2082,7 @@ fn parse_static_rdf(req: &DmtlStaticRequest, dict: &SharedTerms) -> Result<Stati
     Ok((rules, facts, queries))
 }
 
-/// Parse the static request in MeTeoR-style: `Pred(args)` rules + `Pred(args)@[l,r]` facts.
+/// Parse the static request in MeTeoR-style: `Pred(args)` rules + `Pred(args)@[l,r]` facts
 fn parse_static_meteor(req: &DmtlStaticRequest, dict: &SharedTerms) -> Result<StaticInput, String> {
     let rules = parse_program(&req.program, dict, Mode::Static)
         .map_err(|e| format!("Program parse error: {}", e))?;
@@ -2242,7 +2101,7 @@ fn parse_static_meteor(req: &DmtlStaticRequest, dict: &SharedTerms) -> Result<St
     Ok((rules, facts, queries))
 }
 
-/// Parse RDF interval facts: `<s> <p> <o> @[l,r] .` (one per line).
+/// Parse RDF interval facts: `<s> <p> <o> @[l,r] .` (one per line)
 fn parse_dmtl_interval_facts(
     text: &str,
     dict: &SharedTerms,
@@ -2267,7 +2126,6 @@ fn parse_dmtl_interval_facts(
         let interval = parse_dmtl_interval(&iv_inner[..rb])?;
         let toks = tokenize_ntriples_line(&line[..at])
             .ok_or_else(|| format!("data line {}: could not parse triple: '{}'", i + 1, line))?;
-        // Interning, so the shared space rather than a view.
         let (subject, predicate, object) = dict.encode_triple(&toks[0], &toks[1], &toks[2]);
         let triple = Triple {
             subject,
@@ -2282,7 +2140,7 @@ fn parse_dmtl_interval_facts(
     Ok(out)
 }
 
-/// Format a materialized fact as `<atom>@[l,r]` in the requested syntax.
+/// Format a materialized fact as `<atom>@[l,r]` in the requested syntax
 fn fmt_fact(triple: &Triple, iv: &TInterval, dict: &Dictionary, rdf: bool) -> String {
     let atom = if rdf {
         fmt_rdf_triple(triple, dict)
@@ -2292,7 +2150,7 @@ fn fmt_fact(triple: &Triple, iv: &TInterval, dict: &Dictionary, rdf: bool) -> St
     format!("{}@{}", atom, fmt_tinterval(iv))
 }
 
-/// Render a triple in RDF/N-Triples style: `<s> <p> <o>` (literals/blanks as-is).
+/// Render a triple in RDF/N-Triples style: `<s> <p> <o>` (literals/blanks as-is)
 fn fmt_rdf_triple(triple: &Triple, dict: &Dictionary) -> String {
     let d = |id| dict.decode(id).unwrap_or("?");
     format!(
@@ -2303,7 +2161,7 @@ fn fmt_rdf_triple(triple: &Triple, dict: &Dictionary) -> String {
     )
 }
 
-/// Render a `TInterval` as `[l,r]` / `(l,r)` with `±inf` for unbounded tails.
+/// Render a `TInterval` as `[l,r]` / `(l,r)` with `±inf` for unbounded tails
 fn fmt_tinterval(iv: &TInterval) -> String {
     let l = if iv.start == NEG_INF {
         "-inf".to_string()

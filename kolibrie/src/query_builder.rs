@@ -8,35 +8,30 @@
  * you can obtain one at https://mozilla.org/MPL/2.0/.
  */
 
+use crate::database::KolibrieDB;
 use crate::rsp::r2s::{Relation2StreamOperator, StreamOperator};
 use crate::rsp::s2r::{ContentContainer, ReportStrategy, Tick, WindowTriple};
 use crate::rsp::window_runner::{WindowRunner, WindowSpec};
-use crate::sparql_database::SparqlDatabase;
 use shared::triple::Triple;
 use std::collections::{BTreeMap, BTreeSet, HashSet};
 use std::fmt;
 use std::sync::{Arc, Mutex};
 
-/// Builds and runs a query against a store without writing SPARQL text.
-///
-/// Borrows the database, so the builder cannot outlive it. Filters and joins
-/// accumulate and apply when the query is run; building one has no effect on its
-/// own.
+/// Builds and runs a query against a store without writing SPARQL text
 pub struct QueryBuilder<'a> {
-    db: &'a SparqlDatabase,
+    db: &'a KolibrieDB,
     subject_filter: Option<TripleFilter>,
     predicate_filter: Option<TripleFilter>,
     object_filter: Option<TripleFilter>,
     custom_filter: Option<Box<dyn Fn(&Triple) -> bool + 'a>>,
     join_conditions: Vec<JoinCondition>,
-    join_db: Option<&'a SparqlDatabase>,
+    join_db: Option<&'a KolibrieDB>,
     distinct_results: bool,
     sort_key: Option<Box<dyn Fn(&Triple) -> String + 'a>>,
     sort_direction: SortDirection,
     limit: Option<usize>,
     offset: Option<usize>,
 
-    // RSP Integration fields
     window_spec: Option<WindowSpec>,
     stream_operator: Option<StreamOperator>,
     r2s_operator: Option<Relation2StreamOperator<Triple>>,
@@ -46,9 +41,6 @@ pub struct QueryBuilder<'a> {
     is_streaming: bool,
 }
 
-// Cannot derive: the custom filter and sort key are `dyn Fn`. Summarised besides,
-// since `db` is a whole store. Whether a closure is present is the part that matters,
-// because `Clone` drops both and a cloned builder therefore behaves differently.
 impl fmt::Debug for QueryBuilder<'_> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("QueryBuilder")
@@ -75,22 +67,19 @@ impl<'a> Clone for QueryBuilder<'a> {
             subject_filter: self.subject_filter.clone(),
             predicate_filter: self.predicate_filter.clone(),
             object_filter: self.object_filter.clone(),
-            // Custom closures cannot be cloned, so they are dropped
             custom_filter: None,
             join_conditions: self.join_conditions.clone(),
             join_db: self.join_db,
             distinct_results: self.distinct_results,
-            // Likewise drop any sort_key
             sort_key: None,
             sort_direction: self.sort_direction,
             limit: self.limit,
             offset: self.offset,
 
-            // RSP fields - reset for cloned instance
             window_spec: self.window_spec.clone(),
             stream_operator: self.stream_operator.clone(),
-            r2s_operator: None, // Will be recreated if needed
-            runner: None,       // Will be recreated if needed
+            r2s_operator: None,
+            runner: None,
             stream_results: Arc::new(Mutex::new(Vec::new())),
             current_timestamp: 0,
             is_streaming: false,
@@ -100,23 +89,18 @@ impl<'a> Clone for QueryBuilder<'a> {
 
 /// Defines different ways to filter triple components
 pub enum TripleFilter {
-    /// Matches the decoded term exactly.
+    /// Matches the decoded term exactly
     Exact(String),
-    /// Matches when the decoded term contains this substring.
+    /// Matches when the decoded term contains this substring
     Contains(String),
-    /// Matches when the decoded term starts with this prefix.
+    /// Matches when the decoded term starts with this prefix
     StartsWith(String),
-    /// Matches when the decoded term ends with this suffix.
+    /// Matches when the decoded term ends with this suffix
     EndsWith(String),
-    /// Matches when the predicate returns `true`.
-    ///
-    /// Note that [`Clone`] **panics** on this variant: a closure cannot be cloned,
-    /// and the impl chose to panic rather than silently drop the filter. Avoid
-    /// cloning a builder that carries one.
+    /// Matches when the predicate returns `true`
     Custom(Box<dyn Fn(&str) -> bool>),
 }
 
-// Manual implementation of Debug for TripleFilter
 impl fmt::Debug for TripleFilter {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
@@ -129,7 +113,6 @@ impl fmt::Debug for TripleFilter {
     }
 }
 
-// Manual implementation of Clone for TripleFilter
 impl Clone for TripleFilter {
     fn clone(&self) -> Self {
         match self {
@@ -137,7 +120,6 @@ impl Clone for TripleFilter {
             Self::Contains(s) => Self::Contains(s.clone()),
             Self::StartsWith(s) => Self::StartsWith(s.clone()),
             Self::EndsWith(s) => Self::EndsWith(s.clone()),
-            // We can't clone function pointers, so this is a limitation
             Self::Custom(_) => panic!("Cannot clone TripleFilter::Custom"),
         }
     }
@@ -145,18 +127,16 @@ impl Clone for TripleFilter {
 
 /// Defines conditions for joining two SPARQL databases
 pub enum JoinCondition {
-    /// Join where both triples share a subject.
+    /// Join where both triples share a subject
     OnSubject,
-    /// Join where both share a predicate.
+    /// Join where both share a predicate
     OnPredicate,
-    /// Join where both share an object.
+    /// Join where both share an object
     OnObject,
-    /// Join where the predicate accepts the pair. Compares encoded ids, so a
-    /// closure wanting term text must decode them first.
+    /// Join where the predicate accepts the pair
     Custom(Box<dyn Fn(&Triple, &Triple) -> bool>),
 }
 
-// Manual implementation of Debug for JoinCondition
 impl fmt::Debug for JoinCondition {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
@@ -184,32 +164,27 @@ impl Clone for JoinCondition {
 /// Defines sort direction for query results
 #[derive(Debug, Clone, Copy)]
 pub enum SortDirection {
-    /// Smallest first.
+    /// Smallest first
     Ascending,
-    /// Largest first.
+    /// Largest first
     Descending,
 }
 
-/// Starting a [`QueryBuilder`] from a store.
-///
-/// An extension trait rather than a method on [`SparqlDatabase`], because the store
-/// is a layer below this one and should not name the builder. Implemented for
-/// `SparqlDatabase` and re-exported from [`crate::prelude`], so `db.query()` keeps
-/// working for anyone who imports either.
+/// Starting a [`QueryBuilder`] from a store
 pub trait Queryable {
-    /// Starts a programmatic query against this store.
+    /// Starts a programmatic query against this store
     fn query(&self) -> QueryBuilder<'_>;
 }
 
-impl Queryable for SparqlDatabase {
+impl Queryable for KolibrieDB {
     fn query(&self) -> QueryBuilder<'_> {
         QueryBuilder::new(self)
     }
 }
 
 impl<'a> QueryBuilder<'a> {
-    /// Creates a new QueryBuilder for the given SparqlDatabase
-    pub fn new(db: &'a SparqlDatabase) -> Self {
+    /// Creates a new QueryBuilder for the given KolibrieDB
+    pub fn new(db: &'a KolibrieDB) -> Self {
         Self {
             db,
             subject_filter: None,
@@ -224,7 +199,6 @@ impl<'a> QueryBuilder<'a> {
             limit: None,
             offset: None,
 
-            // RSP fields
             window_spec: None,
             stream_operator: None,
             r2s_operator: None,
@@ -316,8 +290,8 @@ impl<'a> QueryBuilder<'a> {
         self
     }
 
-    /// Join with another SparqlDatabase
-    pub fn join(mut self, other: &'a SparqlDatabase) -> Self {
+    /// Join with another KolibrieDB
+    pub fn join(mut self, other: &'a KolibrieDB) -> Self {
         self.join_db = Some(other);
         self
     }
@@ -392,7 +366,6 @@ impl<'a> QueryBuilder<'a> {
     /// Get the raw triple results
     pub fn get_triples(self) -> BTreeSet<Triple> {
         if self.is_streaming {
-            // For streaming queries, return empty set as results come through stream
             BTreeSet::new()
         } else {
             self.apply_filters().into_iter().collect()
@@ -427,10 +400,8 @@ impl<'a> QueryBuilder<'a> {
 
     /// Get decoded triples in legacy set order
     pub fn get_decoded_triples(self) -> Vec<(String, String, String)> {
-        // Store a reference to the database
         let db = self.db;
 
-        // Now call get_triples which consumes self
         let triples = self.get_triples();
         let mut results = Vec::with_capacity(triples.len());
 
@@ -448,11 +419,9 @@ impl<'a> QueryBuilder<'a> {
 
     /// Get only the subjects from the results
     pub fn get_subjects(self) -> Vec<String> {
-        // Store a reference to the database
         let db = self.db;
         let distinct = self.distinct_results;
 
-        // Now call get_triples which consumes self
         let triples = self.get_triples();
         let mut results = Vec::with_capacity(triples.len());
 
@@ -474,11 +443,9 @@ impl<'a> QueryBuilder<'a> {
 
     /// Get only the predicates from the results
     pub fn get_predicates(self) -> Vec<String> {
-        // Store a reference to the database
         let db = self.db;
         let distinct = self.distinct_results;
 
-        // Now call get_triples which consumes self
         let triples = self.get_triples();
         let mut results = Vec::with_capacity(triples.len());
 
@@ -500,11 +467,9 @@ impl<'a> QueryBuilder<'a> {
 
     /// Get only the objects from the results
     pub fn get_objects(self) -> Vec<String> {
-        // Store a reference to the database
         let db = self.db;
         let distinct = self.distinct_results;
 
-        // Now call get_triples which consumes self
         let triples = self.get_triples();
         let mut results = Vec::with_capacity(triples.len());
 
@@ -566,17 +531,14 @@ impl<'a> QueryBuilder<'a> {
         results
     }
 
-    // Applies all the configured filters and returns the matching triples
     fn apply_filters(self) -> Vec<Triple> {
         let mut results = BTreeSet::new();
         let dict = self.db.dictionary.read();
 
-        // Apply basic filters
         let default_triples = self.db.query_default_triples(None, None, None);
         for triple in &default_triples {
             let mut matches = true;
 
-            // Check subject filter
             if let Some(filter) = &self.subject_filter {
                 if let Some(subject) = dict.decode(triple.subject) {
                     matches &= Self::apply_filter(filter, subject);
@@ -585,7 +547,6 @@ impl<'a> QueryBuilder<'a> {
                 }
             }
 
-            // Check predicate filter
             if matches {
                 if let Some(filter) = &self.predicate_filter {
                     if let Some(predicate) = dict.decode(triple.predicate) {
@@ -596,7 +557,6 @@ impl<'a> QueryBuilder<'a> {
                 }
             }
 
-            // Check object filter
             if matches {
                 if let Some(filter) = &self.object_filter {
                     if let Some(object) = dict.decode(triple.object) {
@@ -607,18 +567,15 @@ impl<'a> QueryBuilder<'a> {
                 }
             }
 
-            // Apply custom filter if specified
             if matches && self.custom_filter.is_some() {
                 matches &= self.custom_filter.as_ref().unwrap()(triple);
             }
 
-            // Add matching triple
             if matches {
                 results.insert(triple.clone());
             }
         }
 
-        // Apply join if specified
         if let Some(other_db) = self.join_db {
             if !self.join_conditions.is_empty() {
                 results = self.apply_join(results, other_db);
@@ -637,7 +594,6 @@ impl<'a> QueryBuilder<'a> {
         Self::slice_ordered(ordered, self.offset, self.limit)
     }
 
-    // Helper method to apply a filter to a string value
     fn apply_filter(filter: &TripleFilter, value: &str) -> bool {
         match filter {
             TripleFilter::Exact(s) => value == s,
@@ -648,11 +604,10 @@ impl<'a> QueryBuilder<'a> {
         }
     }
 
-    // Helper method to apply join conditions
     fn apply_join(
         &self,
         left_triples: BTreeSet<Triple>,
-        right_db: &SparqlDatabase,
+        right_db: &KolibrieDB,
     ) -> BTreeSet<Triple> {
         let mut joined_triples = BTreeSet::new();
         let right_triples = right_db.query_default_triples(None, None, None);
@@ -849,31 +804,25 @@ impl<'a> QueryBuilder<'a> {
         self.is_streaming
     }
 
-    // Helper method to execute query on window content
     fn execute_query_on_window_content(
         &self,
         content: &ContentContainer<WindowTriple>,
     ) -> Vec<Triple> {
         let mut matching_triples = Vec::new();
 
-        // Convert WindowTriple to Triple and apply filters
         for window_triple in content.iter() {
-            // Check if this triple matches our filters
             let mut matches = true;
 
-            // Apply subject filter
             if let Some(filter) = &self.subject_filter {
                 matches &= Self::apply_filter(filter, &window_triple.subject);
             }
 
-            // Apply predicate filter
             if matches {
                 if let Some(filter) = &self.predicate_filter {
                     matches &= Self::apply_filter(filter, &window_triple.predicate);
                 }
             }
 
-            // Apply object filter
             if matches {
                 if let Some(filter) = &self.object_filter {
                     matches &= Self::apply_filter(filter, &window_triple.object);
@@ -881,14 +830,12 @@ impl<'a> QueryBuilder<'a> {
             }
 
             if matches {
-                // Convert to Triple (simplified encoding)
                 let triple = Triple {
                     subject: self.encode_string(&window_triple.subject),
                     predicate: self.encode_string(&window_triple.predicate),
                     object: self.encode_string(&window_triple.object),
                 };
 
-                // Apply custom filter if present
                 if let Some(custom_filter) = &self.custom_filter {
                     if custom_filter(&triple) {
                         matching_triples.push(triple);
@@ -899,25 +846,19 @@ impl<'a> QueryBuilder<'a> {
             }
         }
 
-        // Apply sorting, limiting, etc
         self.post_process_results(matching_triples)
     }
 
-    // Helper method for string encoding (simplified)
     fn encode_string(&self, s: &str) -> u32 {
-        // This is a simplified encoding - in practice use your dictionary
         s.len() as u32
     }
 
-    // Helper method to post-process results
     fn post_process_results(&self, mut results: Vec<Triple>) -> Vec<Triple> {
-        // Apply distinct if requested
         if self.distinct_results {
             let mut seen = HashSet::new();
             results.retain(|triple| seen.insert(triple.clone()));
         }
 
-        // Apply sorting if specified
         if let Some(key_fn) = &self.sort_key {
             match self.sort_direction {
                 SortDirection::Ascending => results.sort_by_key(|t| key_fn(t)),
@@ -925,7 +866,6 @@ impl<'a> QueryBuilder<'a> {
             }
         }
 
-        // Apply offset and limit
         Self::slice_ordered(results, self.offset, self.limit)
     }
 }

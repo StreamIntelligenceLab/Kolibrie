@@ -8,31 +8,16 @@
  * you can obtain one at https://mozilla.org/MPL/2.0/.
  */
 
-//! When two RDF terms are the same term, and when they only look alike.
-//!
-//! The store interns every term as one flat string, so a term's identity is whatever
-//! string survived parsing. That makes these assertions worth pinning rather than
-//! assuming: the lexical form of a literal, its datatype and its language tag all
-//! have to reach the dictionary, or terms that RDF says are different collapse into
-//! one and the difference cannot be recovered afterwards.
-//!
-//! Each test below names the RDF rule it rests on. They are about *term* identity
-//! (RDF 1.1 §3.3, literal term equality), not value equality: `"1"^^xsd:integer` and
-//! `"01"^^xsd:integer` denote the same value and are still two distinct terms, which
-//! is why the datatype alone is not enough — the lexical form must survive too.
-//!
-//! Blank nodes are deliberately absent. Their real defect is that labels are not
-//! scoped to the document they came from, so `_:b` read from two files is one node;
-//! that is a larger change than literal identity and is not what these pin.
+//! When two RDF terms are the same term, and when they only look alike
 
-use kolibrie::sparql_database::SparqlDatabase;
+use kolibrie::database::KolibrieDB;
 
 const XSD_INTEGER: &str = "http://www.w3.org/2001/XMLSchema#integer";
 const XSD_STRING: &str = "http://www.w3.org/2001/XMLSchema#string";
 
-/// Parses N-Triples and returns the object term of `<urn:s{n}>`, as the store kept it.
+/// Parses N-Triples and returns the object term of `<urn:s{n}>`, as the store kept it
 fn object_terms(ntriples: &str) -> Vec<String> {
-    let mut database = SparqlDatabase::new();
+    let mut database = KolibrieDB::new();
     database.parse_ntriples_and_add(ntriples);
     let dictionary = database.dictionary();
     let mut objects: Vec<(u32, String)> = database
@@ -48,16 +33,12 @@ fn object_terms(ntriples: &str) -> Vec<String> {
             )
         })
         .collect();
-    // Subject ids are minted in document order, so this restores the input order.
     objects.sort_by_key(|(subject, _)| *subject);
     objects.into_iter().map(|(_, object)| object).collect()
 }
 
 #[test]
 fn a_typed_literal_is_not_the_same_term_as_its_lexical_form() {
-    // RDF 1.1 §3.3: a literal is a triple of lexical form, datatype IRI and optional
-    // language tag. `"25"` is `"25"^^xsd:string`; `"25"^^xsd:integer` is a different
-    // term, because the datatype differs.
     let objects = object_terms(&format!(
         "<urn:s1> <urn:p> \"25\"^^<{XSD_INTEGER}> .\n<urn:s2> <urn:p> \"25\" .\n"
     ));
@@ -71,8 +52,6 @@ fn a_typed_literal_is_not_the_same_term_as_its_lexical_form() {
 
 #[test]
 fn two_literals_differing_only_in_datatype_are_distinct() {
-    // The sharpest case: identical lexical form, different datatype IRI. Nothing but
-    // the datatype distinguishes them, so if the datatype is dropped they are equal.
     let objects = object_terms(&format!(
         "<urn:s1> <urn:p> \"25\"^^<{XSD_INTEGER}> .\n<urn:s2> <urn:p> \"25\"^^<{XSD_STRING}> .\n"
     ));
@@ -85,9 +64,6 @@ fn two_literals_differing_only_in_datatype_are_distinct() {
 
 #[test]
 fn a_datatype_survives_a_round_trip() {
-    // Stronger than distinctness, and the property that actually matters for a store:
-    // the datatype has to be *recoverable*, not merely accounted for. A term that
-    // comes back without it cannot be serialised back to the graph that was read.
     let objects = object_terms(&format!("<urn:s1> <urn:p> \"25\"^^<{XSD_INTEGER}> .\n"));
     assert_eq!(objects.len(), 1);
     assert!(
@@ -99,9 +75,6 @@ fn a_datatype_survives_a_round_trip() {
 
 #[test]
 fn a_language_tag_is_not_part_of_the_lexical_form() {
-    // `"hello"@en` has lexical form `hello` and language `en`. A plain literal whose
-    // lexical form is the six characters `hello@en` is a different term. Gluing the
-    // tag onto the text makes them one.
     let objects =
         object_terms("<urn:s1> <urn:p> \"hello\"@en .\n<urn:s2> <urn:p> \"hello@en\" .\n");
     assert_eq!(objects.len(), 2, "both triples should be stored");
@@ -110,8 +83,6 @@ fn a_language_tag_is_not_part_of_the_lexical_form() {
         "a language-tagged literal and a plain literal spelled the same way are \
          different RDF terms"
     );
-    // Distinctness alone is too weak: dropping the tag entirely would also satisfy
-    // it, and did. The tag has to still be there.
     assert!(
         objects[0].ends_with("@en"),
         "the language tag must survive, got {:?}",
@@ -119,22 +90,15 @@ fn a_language_tag_is_not_part_of_the_lexical_form() {
     );
 }
 
-// ── Reading a value out of a term ───────────────────────────────────────────────
-//
-// Keeping the datatype is only half of it. A literal's *number* lives in its lexical
-// form, so anything that reads a term as a number has to look past the spelling. The
-// engine parsed the spelling directly, which worked only while the spelling happened
-// to be the lexical form — exactly the accident the tests above removed.
-
 fn query_one(ntriples: &str, sparql: &str) -> Vec<Vec<String>> {
-    let mut database = SparqlDatabase::new();
+    let mut database = KolibrieDB::new();
     database.parse_ntriples_and_add(ntriples);
     kolibrie::execute_query::execute(sparql, &mut database)
         .expect("query should run")
         .into_rows()
 }
 
-/// Three ages, written as `xsd:integer` literals the way a real graph would.
+/// Three ages, written as `xsd:integer` literals the way a real graph would
 fn typed_ages() -> String {
     format!(
         "<urn:a> <urn:age> \"30\"^^<{XSD_INTEGER}> .\n\
@@ -163,9 +127,6 @@ fn a_typed_integer_orders_as_a_number() {
         "SELECT ?age WHERE { ?s <urn:age> ?age } ORDER BY ?age",
     );
     let ordered: Vec<&str> = rows.iter().map(|row| row[0].as_str()).collect();
-    // Numeric order is 7, 21, 30. String order would be "21", "30", "7", and the
-    // spelling `"7"^^<…>` would sort differently again -- so this fails in a
-    // different way for each thing that could be compared instead of the value.
     assert_eq!(
         ordered.len(),
         3,
@@ -183,9 +144,6 @@ fn a_typed_integer_orders_as_a_number() {
 
 #[test]
 fn a_typed_integer_filters_as_a_number() {
-    // FILTER has two paths that must agree: a lexical comparison that already read
-    // through the literal's furniture, and an arithmetic one that did not. A typed
-    // literal was a number in the first and not in the second.
     let rows = query_one(
         &typed_ages(),
         "SELECT ?age WHERE { ?s <urn:age> ?age . FILTER(?age > 10) }",
@@ -217,20 +175,16 @@ fn arithmetic_over_a_typed_integer_agrees_with_comparison() {
 
 #[test]
 fn every_reader_spells_one_term_one_way() {
-    // Readers that disagree about spelling mint different ids for the same term, so
-    // data loaded as Turtle could never join against data loaded as N-Triples. All
-    // three of these used to differ: N-Triples kept only the lexical form, and Turtle
-    // produced `30"^^xsd:integer` -- a stray quote, and a prefix never expanded.
     let from_ntriples = object_terms(&format!("<urn:a> <urn:age> \"30\"^^<{XSD_INTEGER}> .\n"));
 
-    let mut prefixed = SparqlDatabase::new();
+    let mut prefixed = KolibrieDB::new();
     prefixed.parse_turtle(
         "@prefix xsd: <http://www.w3.org/2001/XMLSchema#> .\n\
          <urn:a> <urn:age> \"30\"^^xsd:integer .\n",
     );
     let from_turtle_prefixed = stored_objects(&prefixed);
 
-    let mut full = SparqlDatabase::new();
+    let mut full = KolibrieDB::new();
     full.parse_turtle(&format!("<urn:a> <urn:age> \"30\"^^<{XSD_INTEGER}> .\n"));
     let from_turtle_full = stored_objects(&full);
 
@@ -244,8 +198,8 @@ fn every_reader_spells_one_term_one_way() {
     );
 }
 
-/// The object terms of a database, as stored.
-fn stored_objects(database: &SparqlDatabase) -> Vec<String> {
+/// The object terms of a database, as stored
+fn stored_objects(database: &KolibrieDB) -> Vec<String> {
     let dictionary = database.dictionary();
     database
         .query_default_triples(None, None, None)
@@ -259,16 +213,9 @@ fn stored_objects(database: &SparqlDatabase) -> Vec<String> {
         .collect()
 }
 
-// ── RDF/XML ─────────────────────────────────────────────────────────────────────
-//
-// RDF/XML carries a literal's datatype on the enclosing property element, as
-// `rdf:datatype`, and its language as `xml:lang`. The reader looked at neither, so
-// every literal it produced was a plain one whatever the document said — the same
-// loss as the N-Triples reader's, by a different route.
-
 #[test]
 fn rdf_xml_keeps_a_datatype() {
-    let mut database = SparqlDatabase::new();
+    let mut database = KolibrieDB::new();
     database.parse_rdf(&format!(
         r#"<rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#"
                    xmlns:ex="http://example.org/">
@@ -288,7 +235,7 @@ fn rdf_xml_keeps_a_datatype() {
 
 #[test]
 fn rdf_xml_keeps_a_language_tag() {
-    let mut database = SparqlDatabase::new();
+    let mut database = KolibrieDB::new();
     database.parse_rdf(
         r#"<rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#"
                    xmlns:rdfs="http://www.w3.org/2000/01/rdf-schema#">
@@ -308,9 +255,7 @@ fn rdf_xml_keeps_a_language_tag() {
 
 #[test]
 fn rdf_xml_leaves_a_plain_literal_alone() {
-    // The guard on the change: a property element with neither attribute still
-    // produces the plain literal it always did.
-    let mut database = SparqlDatabase::new();
+    let mut database = KolibrieDB::new();
     database.parse_rdf(
         r#"<rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#"
                    xmlns:ex="http://example.org/">
@@ -324,9 +269,7 @@ fn rdf_xml_leaves_a_plain_literal_alone() {
 
 #[test]
 fn rdf_xml_does_not_carry_a_datatype_to_the_next_literal() {
-    // State kept across elements is the obvious way to get this wrong: the second
-    // property element has no datatype and must not inherit the first one's.
-    let mut database = SparqlDatabase::new();
+    let mut database = KolibrieDB::new();
     database.parse_rdf(&format!(
         r#"<rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#"
                    xmlns:ex="http://example.org/">
@@ -350,10 +293,7 @@ fn rdf_xml_does_not_carry_a_datatype_to_the_next_literal() {
 
 #[test]
 fn rdf_xml_inherits_a_language_from_an_enclosing_element() {
-    // `xml:lang` is scoped to an element and its descendants (XML 1.0 §2.12, and
-    // RDF/XML §6.1.2 builds on it), and documents routinely declare it once on the
-    // root. A reader that only looks at the property element itself sees none.
-    let mut database = SparqlDatabase::new();
+    let mut database = KolibrieDB::new();
     database.parse_rdf(
         r#"<rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#"
                    xmlns:ex="http://example.org/" xml:lang="fr">
@@ -370,7 +310,7 @@ fn rdf_xml_inherits_a_language_from_an_enclosing_element() {
 
 #[test]
 fn rdf_xml_lets_an_inner_language_override_an_outer_one() {
-    let mut database = SparqlDatabase::new();
+    let mut database = KolibrieDB::new();
     database.parse_rdf(
         r#"<rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#"
                    xmlns:ex="http://example.org/" xml:lang="fr">
@@ -391,9 +331,7 @@ fn rdf_xml_lets_an_inner_language_override_an_outer_one() {
 
 #[test]
 fn rdf_xml_does_not_let_a_language_outlive_its_element() {
-    // The failure a scope stack exists to prevent: the tag leaking to a sibling that
-    // closed over nothing.
-    let mut database = SparqlDatabase::new();
+    let mut database = KolibrieDB::new();
     database.parse_rdf(
         r#"<rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#"
                    xmlns:ex="http://example.org/">
@@ -412,21 +350,8 @@ fn rdf_xml_does_not_let_a_language_outlive_its_element() {
     );
 }
 
-// ── Blank nodes ─────────────────────────────────────────────────────────────────
-//
-// A blank node label identifies a node *within the document it was read from* and
-// means nothing outside it (RDF 1.1 §3.4). Two files each saying `_:b` describe two
-// different nodes, and merging them must keep them apart. The readers interned the
-// label itself, so the two became one node and the merge silently fused unrelated
-// statements — the one case in this file where the defect invents a fact rather than
-// losing one.
-//
-// SPARQL updates already scoped their labels, minting `_:kolibrie-update-N-label`;
-// the readers did not. Relabelling is forced rather than chosen: the dictionary keys
-// on a term's text, so two distinct nodes must have two distinct spellings.
-
-/// The subject terms of a database, as stored.
-fn stored_subjects(database: &SparqlDatabase) -> Vec<String> {
+/// The subject terms of a database, as stored
+fn stored_subjects(database: &KolibrieDB) -> Vec<String> {
     let dictionary = database.dictionary();
     let mut subjects: Vec<String> = database
         .query_default_triples(None, None, None)
@@ -444,7 +369,7 @@ fn stored_subjects(database: &SparqlDatabase) -> Vec<String> {
 
 #[test]
 fn two_documents_do_not_share_a_blank_node() {
-    let mut database = SparqlDatabase::new();
+    let mut database = KolibrieDB::new();
     database.parse_ntriples_and_add("_:b <urn:p> <urn:first> .\n");
     database.parse_ntriples_and_add("_:b <urn:p> <urn:second> .\n");
     let subjects = stored_subjects(&database);
@@ -458,11 +383,7 @@ fn two_documents_do_not_share_a_blank_node() {
 
 #[test]
 fn one_document_keeps_its_blank_node_shared() {
-    // The other half, and the one scoping can break: within a document the label
-    // does identify one node, so two statements about `_:b` are about one subject.
-    // Minting a fresh node per occurrence would satisfy the test above and destroy
-    // every blank-node-linked structure in the graph.
-    let mut database = SparqlDatabase::new();
+    let mut database = KolibrieDB::new();
     database.parse_ntriples_and_add("_:b <urn:p> <urn:first> .\n_:b <urn:q> <urn:second> .\n");
     let subjects = stored_subjects(&database);
     assert_eq!(subjects.len(), 2, "two triples, got {subjects:?}");
@@ -474,10 +395,7 @@ fn one_document_keeps_its_blank_node_shared() {
 
 #[test]
 fn a_blank_node_label_is_distinguishable_from_the_label_it_was_written_as() {
-    // Scoping has to be visible in the term, since that is the only place identity
-    // can live, but the label it came from should still be legible in it -- the
-    // convention SPARQL updates already set.
-    let mut database = SparqlDatabase::new();
+    let mut database = KolibrieDB::new();
     database.parse_ntriples_and_add("_:original <urn:p> <urn:o> .\n");
     let subjects = stored_subjects(&database);
     assert!(
@@ -498,7 +416,7 @@ fn a_blank_node_label_is_distinguishable_from_the_label_it_was_written_as() {
 
 #[test]
 fn turtle_scopes_blank_nodes_as_well() {
-    let mut database = SparqlDatabase::new();
+    let mut database = KolibrieDB::new();
     database.parse_turtle("_:b <urn:p> <urn:first> .\n");
     database.parse_turtle("_:b <urn:p> <urn:second> .\n");
     let subjects = stored_subjects(&database);
@@ -511,9 +429,7 @@ fn turtle_scopes_blank_nodes_as_well() {
 
 #[test]
 fn a_blank_node_in_the_object_is_scoped_with_its_subject() {
-    // Within one document a label names one node wherever it appears, including
-    // across positions: this is the shape that makes a blank node useful at all.
-    let mut database = SparqlDatabase::new();
+    let mut database = KolibrieDB::new();
     database.parse_ntriples_and_add("<urn:s> <urn:p> _:b .\n_:b <urn:q> <urn:o> .\n");
     let dictionary = database.dictionary();
     let triples = database.query_default_triples(None, None, None);
@@ -535,7 +451,7 @@ fn a_blank_node_in_the_object_is_scoped_with_its_subject() {
 
 #[test]
 fn nquads_scopes_blank_nodes_including_the_graph_name() {
-    let mut database = SparqlDatabase::new();
+    let mut database = KolibrieDB::new();
     database.parse_nquads_and_add("_:b <urn:p> <urn:first> .\n");
     database.parse_nquads_and_add("_:b <urn:p> <urn:second> .\n");
     let subjects = stored_subjects(&database);
@@ -545,7 +461,7 @@ fn nquads_scopes_blank_nodes_including_the_graph_name() {
 
 #[test]
 fn n3_scopes_blank_nodes_as_well() {
-    let mut database = SparqlDatabase::new();
+    let mut database = KolibrieDB::new();
     database.parse_n3("_:b <urn:p> <urn:first> .\n");
     database.parse_n3("_:b <urn:p> <urn:second> .\n");
     let subjects = stored_subjects(&database);
@@ -555,13 +471,9 @@ fn n3_scopes_blank_nodes_as_well() {
 
 #[test]
 fn a_blank_node_inside_a_quoted_triple_is_scoped_too() {
-    // Scoping only the outermost term would leave a nested label bare, so two
-    // documents would still share the node a quoted triple asserts about.
-    let mut database = SparqlDatabase::new();
+    let mut database = KolibrieDB::new();
     database.parse_ntriples_and_add("<< _:b <urn:p> <urn:o> >> <urn:says> <urn:first> .\n");
     database.parse_ntriples_and_add("<< _:b <urn:p> <urn:o> >> <urn:says> <urn:second> .\n");
-    // A quoted triple is a tagged id that the dictionary alone cannot resolve, so
-    // these are decoded through the store rather than with `stored_subjects`.
     let mut subjects: Vec<String> = database
         .query_default_triples(None, None, None)
         .into_iter()
@@ -585,13 +497,7 @@ fn a_blank_node_inside_a_quoted_triple_is_scoped_too() {
 
 #[test]
 fn a_second_n3_read_keeps_its_own_document() {
-    // Not about terms' spelling but about their ids, and found by the test above.
-    // Each parallel chunk parsed into its own database and its triples were then
-    // inserted carrying that database's ids, while only the dictionaries were
-    // merged. With an empty target both numbered terms in the same order, so the
-    // first read looked right; a second read reinterpreted its ids as the first
-    // document's terms, storing a copy of the first document in place of the second.
-    let mut database = SparqlDatabase::new();
+    let mut database = KolibrieDB::new();
     database.parse_n3("<urn:a> <urn:p> <urn:first> .\n");
     database.parse_n3("<urn:b> <urn:q> <urn:second> .\n");
     let dictionary = database.dictionary();
@@ -618,19 +524,6 @@ fn a_second_n3_read_keeps_its_own_document() {
     );
 }
 
-// ── Streaming ───────────────────────────────────────────────────────────────────
-//
-// A stream has many documents, so per-document scoping meets its limit here. Each
-// arriving element is its own document in RDF's terms, but the dictionary never
-// forgets a term: minting a node per element makes it grow without bound, and
-// `Dictionary::encode` asserts rather than wraps when ids reach the quoted-triple
-// range, so a long-running stream would not merely leak but eventually panic.
-//
-// A stream therefore shares one scope across its elements. That is bounded, keeps the
-// stream's labels apart from every file's and every other stream's, and matches what
-// the engine did before scoping existed — so it is not a change in stream semantics,
-// only a change in what the labels are spelled as.
-
 #[test]
 fn a_stream_does_not_grow_the_dictionary_per_element() {
     use kolibrie::rsp::r2r::R2ROperator;
@@ -655,8 +548,6 @@ fn a_stream_does_not_grow_the_dictionary_per_element() {
 
 #[test]
 fn two_streams_do_not_share_a_blank_node() {
-    // The property the stream scope still has to provide: bounded within a stream,
-    // separate between streams.
     use kolibrie::rsp::r2r::R2ROperator;
     let mut first = kolibrie::rsp::simple_r2r::SimpleR2R::new();
     let mut second = kolibrie::rsp::simple_r2r::SimpleR2R::new();
@@ -680,21 +571,8 @@ fn two_streams_do_not_share_a_blank_node() {
     );
 }
 
-// ── The wire form ───────────────────────────────────────────────────────────────
-//
-// A canonical spelling is deliberately not a wire form: an IRI is stored bare and a
-// plain literal unquoted, which keeps identity cheap and left every existing term
-// untouched. Writing that text straight out produced `http://example/x .` for an IRI
-// and a typed literal quoted a second time — a plain literal whose text merely looks
-// typed, which any other RDF tool reads as a string.
-//
-// It went unnoticed because these readers re-canonicalise what they read, so a round
-// trip through Kolibrie recovered the datatype. Only a second implementation would
-// have noticed, which is exactly the case that matters for exchanging data between
-// systems, so these assert the emitted text rather than what re-reading gives back.
-
 fn wire_of(ntriples: &str) -> String {
-    let mut database = SparqlDatabase::new();
+    let mut database = KolibrieDB::new();
     database.parse_ntriples_and_add(ntriples);
     database.generate_ntriples()
 }
@@ -720,7 +598,6 @@ fn a_language_tagged_literal_goes_out_with_its_tag() {
 
 #[test]
 fn an_iri_goes_out_in_brackets_whatever_its_scheme() {
-    // `urn:` is not `http:`, and used to be written as a literal.
     let wire = wire_of("<urn:a> <urn:at> <urn:place> .\n");
     assert!(wire.contains("<urn:place>"), "got {wire:?}");
     assert!(
@@ -731,8 +608,6 @@ fn an_iri_goes_out_in_brackets_whatever_its_scheme() {
 
 #[test]
 fn a_blank_node_goes_out_as_a_blank_node() {
-    // `<_:b>` is an IRI, not a blank node. generate_nquads guarded this; the
-    // N-Triples writer did not.
     let wire = wire_of("_:b <urn:p> <urn:o> .\n");
     assert!(
         !wire.contains("<_:"),
@@ -748,8 +623,7 @@ fn a_literal_containing_a_quote_goes_out_escaped() {
         wire.contains("\\\""),
         "an embedded quote must be escaped, got {wire:?}"
     );
-    // And the escaping has to be recoverable: re-reading gives the original text.
-    let mut back = SparqlDatabase::new();
+    let mut back = KolibrieDB::new();
     back.parse_ntriples_and_add(&wire);
     let dictionary = back.dictionary();
     let objects: Vec<String> = back
@@ -769,7 +643,7 @@ fn every_term_survives_a_round_trip_through_the_wire() {
          <urn:a> <urn:at> <urn:place> .\n"
     );
     let wire = wire_of(&source);
-    let mut back = SparqlDatabase::new();
+    let mut back = KolibrieDB::new();
     back.parse_ntriples_and_add(&wire);
     let dictionary = back.dictionary();
     let mut objects: Vec<String> = back
@@ -789,21 +663,9 @@ fn every_term_survives_a_round_trip_through_the_wire() {
     );
 }
 
-// ── Exchanging data between systems ─────────────────────────────────────────────
-//
-// The plain serialisers emit document-local blank node labels, which are sound within
-// one store and unsound the moment two stores merge each other's output: a label means
-// nothing outside its document, and the scope counter is process-local, so two
-// instances both mint `_:kolibrie-doc-1-b` for their first document. RDF 1.1 §3.5
-// answers that by replacing blank nodes with IRIs, which are global.
-
 #[test]
 fn two_instances_would_collide_without_skolemisation() {
-    // Why skolemisation is needed rather than nice to have. Each store is a fresh
-    // process-local counter in a real deployment, which this cannot simulate in one
-    // process -- so it asserts the weaker, sufficient fact: the label carries no
-    // trace of which instance minted it, and nothing else in it would separate them.
-    let mut database = SparqlDatabase::new();
+    let mut database = KolibrieDB::new();
     database.parse_ntriples_and_add("_:b <urn:p> <urn:o> .\n");
     let wire = database.generate_ntriples();
     assert!(
@@ -818,7 +680,7 @@ fn two_instances_would_collide_without_skolemisation() {
 
 #[test]
 fn skolemising_replaces_a_blank_node_with_an_iri_under_the_given_authority() {
-    let mut database = SparqlDatabase::new();
+    let mut database = KolibrieDB::new();
     database.parse_ntriples_and_add("_:b <urn:p> <urn:o> .\n");
     let wire = database.generate_ntriples_skolemised("http://alice.example");
     assert!(
@@ -833,15 +695,13 @@ fn skolemising_replaces_a_blank_node_with_an_iri_under_the_given_authority() {
 
 #[test]
 fn two_authorities_do_not_collide() {
-    // The property that makes a merge safe.
-    let mut database = SparqlDatabase::new();
+    let mut database = KolibrieDB::new();
     database.parse_ntriples_and_add("_:b <urn:p> <urn:o> .\n");
     let from_alice = database.generate_ntriples_skolemised("http://alice.example");
     let from_bob = database.generate_ntriples_skolemised("http://bob.example");
     assert_ne!(from_alice, from_bob);
 
-    // Merged into one store, they are two nodes rather than one.
-    let mut merged = SparqlDatabase::new();
+    let mut merged = KolibrieDB::new();
     merged.parse_ntriples_and_add(&from_alice);
     merged.parse_ntriples_and_add(&from_bob);
     let subjects = stored_subjects(&merged);
@@ -853,20 +713,16 @@ fn two_authorities_do_not_collide() {
 fn a_skolemised_node_arrives_as_an_iri_and_can_be_turned_back() {
     use shared::rdf_term::{deskolemise, kind_of, skolemise, TermKind};
 
-    let mut database = SparqlDatabase::new();
+    let mut database = KolibrieDB::new();
     database.parse_ntriples_and_add("_:b <urn:p> <urn:o> .\n");
     let wire = database.generate_ntriples_skolemised("http://alice.example");
 
-    let mut receiver = SparqlDatabase::new();
+    let mut receiver = KolibrieDB::new();
     receiver.parse_ntriples_and_add(&wire);
     let arrived = &stored_subjects(&receiver)[0];
 
-    // An IRI on arrival, which is what keeps a merge between systems sound.
     assert_eq!(kind_of(arrived), TermKind::Iri, "got {arrived:?}");
 
-    // Recoverable for a consumer that would rather have the node back. The exact
-    // label depends on a counter shared across this binary's tests, so what is
-    // pinned is that it comes back as a blank node and skolemises to the same IRI.
     let recovered = deskolemise(arrived).expect("a Skolem IRI");
     assert!(recovered.starts_with("_:"), "got {recovered:?}");
     assert_eq!(
@@ -878,9 +734,7 @@ fn a_skolemised_node_arrives_as_an_iri_and_can_be_turned_back() {
 
 #[test]
 fn skolemisation_does_not_touch_a_literal_that_mentions_a_label() {
-    // Rewriting the serialised text would find `_:b` inside this literal, which is
-    // not a term at all.
-    let mut database = SparqlDatabase::new();
+    let mut database = KolibrieDB::new();
     database.parse_ntriples_and_add("<urn:a> <urn:says> \"see _:b here\" .\n");
     let wire = database.generate_ntriples_skolemised("http://alice.example");
     assert!(

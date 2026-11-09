@@ -14,18 +14,16 @@ extern crate kolibrie;
 use criterion::*;
 use kolibrie::prelude::*;
 
-// Simple query
-fn setup_database() -> SparqlDatabase {
-    // Set current directory to the root of the project
+fn setup_database() -> KolibrieDB {
     std::env::set_current_dir(std::path::Path::new(env!("CARGO_MANIFEST_DIR")))
         .expect("Failed to set project root as current directory");
     let file_path = "../datasets/synthetic_data_employee_100K.rdf";
-    let mut db = SparqlDatabase::new();
+    let mut db = KolibrieDB::new();
     db.parse_rdf_from_file(&file_path);
     db
 }
 
-fn execute_sample_query(database: &mut SparqlDatabase) {
+fn execute_sample_query(database: &mut KolibrieDB) {
     let sparql = r#"
     PREFIX ds: <https://data.cityofchicago.org/resource/xzkq-xp2w/>
     PREFIX foaf: <http://xmlns.com/foaf/0.1/>
@@ -39,7 +37,7 @@ fn execute_sample_query(database: &mut SparqlDatabase) {
         .into_rows();
 }
 
-fn execute_sample_query_volcano(database: &mut SparqlDatabase) {
+fn execute_sample_query_volcano(database: &mut KolibrieDB) {
     let sparql = r#"
     PREFIX ds: <https://data.cityofchicago.org/resource/xzkq-xp2w/>
     PREFIX foaf: <http://xmlns.com/foaf/0.1/>
@@ -53,9 +51,7 @@ fn execute_sample_query_volcano(database: &mut SparqlDatabase) {
         .into_rows();
 }
 
-/////////////////////////////////////////////////////////////////////////
-// Complex query
-fn execute_sample_query_complex(database: &mut SparqlDatabase) {
+fn execute_sample_query_complex(database: &mut KolibrieDB) {
     let sparql = r#"
     PREFIX foaf: <http://xmlns.com/foaf/0.1/>
     PREFIX ds: <https://data.cityofchicago.org/resource/xzkq-xp2w/>
@@ -74,7 +70,7 @@ fn execute_sample_query_complex(database: &mut SparqlDatabase) {
         .into_rows();
 }
 
-fn execute_sample_query_volcano_complex(database: &mut SparqlDatabase) {
+fn execute_sample_query_volcano_complex(database: &mut KolibrieDB) {
     let sparql = r#"
     PREFIX foaf: <http://xmlns.com/foaf/0.1/>
     PREFIX ds: <https://data.cityofchicago.org/resource/xzkq-xp2w/>
@@ -96,7 +92,6 @@ fn execute_sample_query_volcano_complex(database: &mut SparqlDatabase) {
 fn my_benchmark(c: &mut Criterion) {
     let mut db = setup_database();
 
-    // Benchmark for executing SPARQL query
     c.bench_function("execute_query_join parallel", |b| {
         b.iter(|| execute_sample_query(&mut db))
     });
@@ -109,7 +104,6 @@ fn my_benchmark(c: &mut Criterion) {
 fn my_benchmark2(c: &mut Criterion) {
     let mut db = setup_database();
 
-    // Benchmark for executing SPARQL query
     c.bench_function("COMPLEX QUERY: execute_query_join parallel", |b| {
         b.iter(|| execute_sample_query_complex(&mut db))
     });

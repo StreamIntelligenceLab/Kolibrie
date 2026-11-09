@@ -8,19 +8,7 @@
  * you can obtain one at https://mozilla.org/MPL/2.0/.
  */
 
-//! Hash join over solution bindings, in the current representation and the proposed one.
-//!
-//! This bench exists to falsify a premise, not only to guard a change. The
-//! architecture proposal replaces `MapRows = Vec<HashMap<String, u32>>` with a
-//! schema+tuple `Relation` (variable names resolved once into column positions,
-//! rows as `Vec<u32>`), on the argument that the current shape re-hashes a `String`
-//! key for every column of every row and allocates a `HashMap` per row.
-//!
-//! If schema+tuple is *not* faster here, a central premise of the shared join
-//! library is wrong and we should know that before building on it.
-//!
-//! `Relation` below is a deliberately minimal stand-in — enough to measure the
-//! representation, not a proposal for the real API.
+//! Hash join over solution bindings, in the current representation and the proposed one
 
 extern crate criterion;
 
@@ -30,14 +18,8 @@ use std::collections::HashMap;
 
 const LEFT_ROWS: usize = 20_000;
 const RIGHT_ROWS: usize = 20_000;
-/// Distinct join-key values. Fewer keys means more matches per key, which is what
-/// separates "hashing cost dominates" from "output size dominates".
+/// Distinct join-key values
 const KEYS: u32 = 2_000;
-
-// ── The shape that was replaced: Vec<HashMap<String, u32>> ─────────────────────
-//
-// Named `MapRows` here because `MapRows` now means the schema-and-tuples type this
-// benchmark was written to argue for. Keeping both lets the comparison still run.
 
 type MapRows = Vec<Binding>;
 
@@ -60,8 +42,8 @@ fn make_bindings(rows: usize, vars: &[&str], key_var: &str) -> MapRows {
         .collect()
 }
 
-/// Mirrors the shape of the engine's existing hash join: build a map keyed by the
-/// shared variables, then probe and merge whole rows.
+/// Mirrors the shape of the engine's existing hash join: build a map keyed by the shared variables,
+/// then probe and merge whole rows
 fn hash_join_maps(left: &MapRows, right: &MapRows, shared: &[&str]) -> MapRows {
     let mut index: HashMap<Vec<u32>, Vec<&HashMap<String, u32>>> = HashMap::new();
     for row in right {
@@ -93,15 +75,7 @@ fn hash_join_maps(left: &MapRows, right: &MapRows, shared: &[&str]) -> MapRows {
     out
 }
 
-// ── Control: a struct that genuinely only wraps the map shape ───────────────────
-
-/// `MapRows` behind a struct with accessors, keeping one `HashMap` per row.
-///
-/// This exists to answer "why would wrapping a HashMap in a struct cost anything?"
-/// It should not, and this arm measures that it does not. `Relation` is a different
-/// thing: it does not wrap the per-row map, it removes it, which is where its win
-/// and its conversion cost both come from. Separating the two means neither gets
-/// credited to the other.
+/// `MapRows` behind a struct with accessors, keeping one `HashMap` per row
 struct WrappedMaps {
     rows: MapRows,
 }
@@ -124,8 +98,8 @@ impl WrappedMaps {
     }
 }
 
-/// The same join as `hash_join_maps`, reaching every row through the accessors
-/// above rather than touching the field. Identical work, one indirection added.
+/// The same join as `hash_join_maps`, reaching every row through the accessors above rather than
+/// touching the field
 fn hash_join_wrapped(left: &WrappedMaps, right: &WrappedMaps, shared: &[&str]) -> WrappedMaps {
     let mut index: HashMap<Vec<u32>, Vec<&HashMap<String, u32>>> = HashMap::new();
     for i in 0..right.len() {
@@ -153,8 +127,6 @@ fn hash_join_wrapped(left: &WrappedMaps, right: &WrappedMaps, shared: &[&str]) -
     }
     WrappedMaps::new(out)
 }
-
-// ── Proposed representation: schema + tuples ────────────────────────────────────
 
 struct Relation {
     schema: Vec<String>,
@@ -188,8 +160,8 @@ fn make_relation(rows: usize, vars: &[&str], key_var: &str) -> Relation {
     Relation { schema, rows }
 }
 
-/// The point: variable names are resolved to column indices **once**, before the
-/// loop, so the inner loop touches only integers.
+/// The point: variable names are resolved to column indices **once**, before the loop, so the inner
+/// loop touches only integers
 fn hash_join_relation(left: &Relation, right: &Relation, shared: &[&str]) -> Relation {
     let lcols: Vec<usize> = shared.iter().filter_map(|v| left.column(v)).collect();
     let rcols: Vec<usize> = shared.iter().filter_map(|v| right.column(v)).collect();
@@ -226,11 +198,7 @@ fn hash_join_relation(left: &Relation, right: &Relation, shared: &[&str]) -> Rel
     }
 }
 
-// ── Conversion at the boundary ───────────────────────────────────────────────────
-
-/// `Relation` to the map shape, which is what an engine adopting `Relation`
-/// internally would have to do at every edge that still returns the old shape —
-/// `MtlStore::query_at` in `datalogmtl`, and the four optimizer entry points.
+/// Converts a `Relation` to the map shape that older entry points return
 fn relation_to_maps(r: &Relation) -> MapRows {
     r.rows
         .iter()
@@ -246,15 +214,8 @@ fn relation_to_maps(r: &Relation) -> MapRows {
         .collect()
 }
 
-/// The map shape to `Relation`, which is what the same engine would do at every
-/// edge that still *supplies* the old shape.
-///
-/// This mirrors `shared::terms::Bindings`'s own construction, including taking the
-/// schema as the **union** of every row's variables rather than the first row's.
-/// That costs a pass over all rows and a membership test per key, and it is not
-/// optional: solution mappings are partial, so a variable may be bound only in a
-/// later row. An earlier version of this helper read the first row alone, which
-/// measured a conversion the real type cannot perform.
+/// The map shape to `Relation`, which is what the same engine would do at every edge that still
+/// *supplies* the old shape
 fn maps_to_relation(b: &MapRows) -> Relation {
     let mut schema: Vec<String> = Vec::new();
     for row in b {
@@ -278,13 +239,8 @@ fn maps_to_relation(b: &MapRows) -> Relation {
     Relation { schema, rows }
 }
 
-/// The same hash join over the real `shared::terms::Bindings`, through its public
-/// API rather than the stand-in's bare fields.
-///
-/// The stand-in has `schema` and `rows` public and is local to this file, so the
-/// optimiser sees everything. The real type encapsulates both behind accessors in
-/// another crate. This arm exists to check that the measured win survives the API,
-/// rather than assuming it does.
+/// The same hash join over the real `shared::terms::Bindings`, through its public API rather than
+/// the stand-in's bare fields
 fn hash_join_real(left: &Bindings, right: &Bindings, shared: &[&str]) -> Bindings {
     let lk: Vec<usize> = shared.iter().filter_map(|v| left.column(v)).collect();
     let rk: Vec<usize> = shared.iter().filter_map(|v| right.column(v)).collect();
@@ -321,8 +277,6 @@ fn hash_join_real(left: &Bindings, right: &Bindings, shared: &[&str]) -> Binding
 }
 
 fn make_real(rows: usize, vars: &[&str], key_var: &str) -> Bindings {
-    // No conversion step any more: the production type *is* the tuple shape, which
-    // is what this bench existed to argue for.
     make_bindings(rows, vars, key_var).into()
 }
 
@@ -336,8 +290,6 @@ fn bench_join(c: &mut Criterion) {
     let lr = make_relation(LEFT_ROWS, &left_vars, "x");
     let rr = make_relation(RIGHT_ROWS, &right_vars, "x");
 
-    // Sanity: both shapes must produce the same number of rows, or the comparison
-    // is meaningless. A bench that silently measures different work is worse than none.
     let n_maps = hash_join_maps(&lb, &rb, &shared).len();
     let n_rel = hash_join_relation(&lr, &rr, &shared).rows.len();
     assert_eq!(
@@ -371,8 +323,6 @@ fn bench_join(c: &mut Criterion) {
             )
         })
     });
-    // What the incremental path would actually cost: join cheaply in `Relation`
-    // form, then hand the old shape back across an unchanged boundary.
     group.bench_function("relation_join_then_to_maps", |b| {
         b.iter(|| {
             let joined = hash_join_relation(black_box(&lr), black_box(&rr), &shared);
@@ -380,7 +330,6 @@ fn bench_join(c: &mut Criterion) {
         })
     });
 
-    // The other direction: take the old shape in, convert once, then join.
     group.bench_function("maps_to_relation_then_join", |b| {
         b.iter(|| {
             let l = maps_to_relation(black_box(&lb));
@@ -389,7 +338,6 @@ fn bench_join(c: &mut Criterion) {
         })
     });
 
-    // The conversions alone, so the two above can be decomposed.
     let joined_rel = hash_join_relation(&lr, &rr, &shared);
     group.bench_function("convert_result_to_maps", |b| {
         b.iter(|| black_box(relation_to_maps(black_box(&joined_rel)).len()))
@@ -398,7 +346,6 @@ fn bench_join(c: &mut Criterion) {
         b.iter(|| black_box(maps_to_relation(black_box(&lb)).rows.len()))
     });
 
-    // The real type, through its public API, against the stand-in above.
     group.bench_function("schema_plus_tuples_real_type", |b| {
         b.iter(|| black_box(hash_join_real(black_box(&lreal), black_box(&rreal), &shared).len()))
     });

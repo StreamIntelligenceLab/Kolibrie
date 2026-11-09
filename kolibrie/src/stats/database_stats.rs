@@ -8,12 +8,7 @@
  * you can obtain one at https://mozilla.org/MPL/2.0/.
  */
 
-//! [`DatabaseStats`]: the cardinalities the cost model reads.
-//!
-//! Collected by scanning the store, so building them is proportional to its size —
-//! which is why the store caches them and refreshes according to its
-//! [`PlanningStatsPolicy`](crate::sparql_database::PlanningStatsPolicy) rather than
-//! on every write.
+//! [`DatabaseStats`]: the cardinalities the cost model reads
 
 use shared::dataset_index::{DatasetIndex, GraphId};
 use std::collections::{HashMap, HashSet};
@@ -75,8 +70,8 @@ impl Hasher for TermHasher {
     }
 }
 
-/// Hasher builder for term-id keys, avoiding the default hasher's overhead on
-/// integers that are already well distributed.
+/// Hasher builder for term-id keys, avoiding the default hasher's overhead on integers that are
+/// already well distributed
 pub type TermBuildHasher = BuildHasherDefault<TermHasher>;
 /// A map keyed by dictionary id
 pub type TermMap<V> = HashMap<u32, V, TermBuildHasher>;
@@ -90,20 +85,17 @@ const EXACT_SAMPLING_THRESHOLD: u64 = 100_000;
 
 /// Deterministic quad hash used for sampling, stable across processes
 fn stable_quad_hash(graph: GraphId, subject: u32, predicate: u32, object: u32) -> u64 {
-    // Offset named ids so `Default` and `Named(0)` hash differently
     let graph_key = match graph {
         GraphId::Default => 0u64,
         GraphId::Named(id) => id as u64 + 1,
     };
 
-    // FNV-1a over the four components
     let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
     for component in [graph_key, subject as u64, predicate as u64, object as u64] {
         hash ^= component;
         hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
     }
 
-    // Avalanche finalizer; the sampler uses the low bits
     hash ^= hash >> 33;
     hash = hash.wrapping_mul(0xff51_afd7_ed55_8ccd);
     hash ^= hash >> 33;
@@ -172,29 +164,28 @@ impl SampleScale {
 /// Database statistics for cost-based optimization
 #[derive(Debug)]
 pub struct DatabaseStats {
-    /// Quads across every graph. The denominator for most selectivity estimates.
+    /// Quads across every graph
     pub total_triples: u64,
-    /// Distinct quoted triples interned.
+    /// Distinct quoted triples interned
     pub quoted_triple_count: u64,
-    /// Named graphs, excluding the default graph.
+    /// Named graphs, excluding the default graph
     pub named_graph_count: u64,
-    /// Quads per graph.
+    /// Quads per graph
     pub graph_cardinalities: GraphMap<u64>,
-    /// Quads per predicate — the most useful figure, since a bound predicate is
-    /// the common case.
+    /// Quads per predicate — the most useful figure, since a bound predicate is the common case
     pub predicate_cardinalities: TermMap<u64>,
-    /// Quads per subject.
+    /// Quads per subject
     pub subject_cardinalities: TermMap<u64>,
-    /// Quads per object.
+    /// Quads per object
     pub object_cardinalities: TermMap<u64>,
-    /// Join-key domain sizes: a join through predicate `p` fans out by roughly `cardinality(p) / distinct(p)` rows per binding
+    /// Join-key domain sizes: a join through predicate `p` fans out by roughly `cardinality(p) /
+    /// distinct(p)` rows per binding
     pub predicate_distinct_subjects: TermMap<u64>,
-    /// Distinct objects per predicate; the object-side counterpart of the
-    /// fan-out estimate above.
+    /// Distinct objects per predicate; the object-side counterpart of the fan-out estimate above
     pub predicate_distinct_objects: TermMap<u64>,
     /// Dataset-wide domain sizes, used when a pattern leaves its predicate unbound
     pub distinct_subjects: u64,
-    /// Distinct objects across the dataset.
+    /// Distinct objects across the dataset
     pub distinct_objects: u64,
 }
 
@@ -216,14 +207,8 @@ impl DatabaseStats {
         }
     }
 
-    /// Gathers statistics from a dataset index using sampling for performance.
-    ///
-    /// Takes the index and the quoted-triple count rather than a store, so the cost
-    /// model's statistics do not depend on the store that happens to hold them.
-    /// [`SparqlDatabase::gather_stats`](crate::sparql_database::SparqlDatabase::gather_stats)
-    /// is the store-side caller.
+    /// Gathers statistics from a dataset index using sampling for performance
     pub fn gather_stats_fast(index: &DatasetIndex, quoted_triple_count: u64) -> Self {
-        // Pass 1: exact per-graph and total quad counts
         let named_graphs = index.named_graphs();
         let mut graph_cardinalities =
             GraphMap::with_capacity_and_hasher(named_graphs.len() + 1, TermBuildHasher::default());
@@ -236,7 +221,6 @@ impl DatabaseStats {
         }
         let named_graph_count = named_graphs.len() as u64;
 
-        // Pass 2: term statistics over the sampled quads
         let plan = SamplingPlan::for_total(total_triples);
         let mut sampled: u64 = 0;
         let mut predicate_cardinalities = TermMap::<u64>::default();
@@ -267,7 +251,6 @@ impl DatabaseStats {
             all_objects.insert(object);
         });
 
-        // Scale sampled counts back up to the whole dataset
         let scale = SampleScale::new(plan, total_triples, sampled);
         predicate_cardinalities
             .values_mut()
@@ -279,7 +262,6 @@ impl DatabaseStats {
             .values_mut()
             .for_each(|v| *v = scale.scale_up(*v));
 
-        // Distinct counts do not grow linearly with the sample, so each is capped at its cardinality
         let scale_distinct =
             |observed: u64, cardinality: u64| scale.scale_up(observed).min(cardinality).max(1);
         let predicate_distinct_subjects = predicate_subjects
@@ -365,9 +347,7 @@ impl DatabaseStats {
         self.object_cardinalities.get(&object).copied().unwrap_or(0)
     }
 
-    /// Quads in `graph`, or the unmeasured-graph default when it is absent from
-    /// the statistics — which is why an empty or newly created graph does not make
-    /// a plan look free.
+    /// Quads in `graph`, or the unmeasured-graph default when the graph has no statistics
     pub fn get_graph_cardinality(&self, graph: GraphId) -> u64 {
         self.graph_cardinalities.get(&graph).copied().unwrap_or(0)
     }
@@ -444,7 +424,6 @@ mod tests {
 
     #[test]
     fn just_past_the_threshold_the_step_is_two_not_one() {
-        // An integer `total / budget` truncated to 1 here, sampling the first
         let plan = SamplingPlan::for_total(EXACT_SAMPLING_THRESHOLD + 1);
         assert_eq!(plan.step, 2);
         assert!(!plan.is_exact());
@@ -538,7 +517,6 @@ mod tests {
         shuffled.reverse();
         assert_eq!(forward, sample_size(plan, &shuffled));
 
-        // Simulates a different iteration order
         let mut rotated = quads.clone();
         rotated.rotate_left(1_337);
         assert_eq!(forward, sample_size(plan, &rotated));

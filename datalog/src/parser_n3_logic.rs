@@ -8,16 +8,7 @@
  * you can obtain one at https://mozilla.org/MPL/2.0/.
  */
 
-//! Parser for N3 logic rules, including the window annotations RSP-QL needs.
-//!
-//! Reads `{ premise } => { conclusion }` under `@prefix` declarations and produces
-//! [`shared::rule::Rule`] values whose terms are already interned, which is why
-//! parsing needs a dictionary rather than only a string.
-//!
-//! [`parse_n3_rules_for_sds`] additionally returns a [`WindowContext`]. A rule
-//! mentioning two windows is indistinguishable from one mentioning two predicates
-//! unless the window each predicate came from is recorded, and the cross-window
-//! materialisation needs exactly that to decide when a derived fact expires.
+//! Parser for N3 logic rules, including the window annotations RSP-QL needs
 
 use crate::reasoning::*;
 use nom::combinator::{map, opt};
@@ -41,12 +32,11 @@ pub struct WindowContext {
     pub predicate_to_window: HashMap<u32, String>,
     /// Maps window IRI → window width α (in the same time unit as event timestamps)
     pub window_widths: HashMap<String, u64>,
-    /// All component IRIs found in the rules (windows + output-only components),
-    /// sorted longest-first for [`crate::cross_window_sds::strip_window_prefix`]
+    /// All component IRIs in the rules, longest first, for
+    /// [`crate::cross_window_sds::strip_window_prefix`]
     pub all_component_iris: Vec<String>,
 }
 
-// Parsing prefix statements
 fn parse_prefix(input: &str) -> IResult<&str, (&str, &str)> {
     let (input, _) = tag("@prefix").parse(input)?;
     let (input, _) = multispace1.parse(input)?;
@@ -112,21 +102,16 @@ fn parse_nested_unresolved_rule(input: &str) -> IResult<&str, UnresolvedTriple> 
 fn parse_unresolved_clause_block(input: &str) -> IResult<&str, Vec<UnresolvedTriple>> {
     separated_list1(
         multispace0,
-        alt((
-            parse_nested_unresolved_rule, // if it's a nested rule
-            parse_unresolved_triple,      // if it's just a triple
-        )),
+        alt((parse_nested_unresolved_rule, parse_unresolved_triple)),
     )
     .parse(input)
 }
 
-// Updated to parse multiple conclusion triples
 fn parse_unresolved_rule(
     input: &str,
 ) -> IResult<&str, (Vec<UnresolvedTriple>, Vec<UnresolvedTriple>)> {
     let (input, _) = multispace0.parse(input)?;
 
-    // Parse premise
     let (input, premise_triples) = delimited(
         tag("{"),
         parse_unresolved_clause_block,
@@ -138,10 +123,9 @@ fn parse_unresolved_rule(
     let (input, _) = tag("=>").parse(input)?;
     let (input, _) = multispace0.parse(input)?;
 
-    // Parse multiple conclusions
     let (input, conclusion_triples) = delimited(
         tag("{"),
-        parse_unresolved_clause_block, // Using the same parser for multiple triples
+        parse_unresolved_clause_block,
         preceded(multispace0, tag("}")),
     )
     .parse(input)?;
@@ -156,16 +140,13 @@ pub fn parse_n3_rule<'a>(
 ) -> IResult<&'a str, (Vec<(&'a str, &'a str)>, Rule)> {
     let (input, prefixes) = many0(preceded(multispace0, parse_prefix)).parse(input)?;
 
-    // Build a HashMap for prefix expansion
     let prefix_map: HashMap<String, String> = prefixes
         .iter()
         .map(|(prefix, uri)| (prefix.to_string(), uri.to_string()))
         .collect();
 
-    // Parse to an intermediate unresolved form with multiple conclusions
     let (input, (premise_triples, conclusion_triples)) = parse_unresolved_rule(input)?;
 
-    // Convert from unresolved string-based data to final `Term` with dictionary encoding
     let premise_parsed: Vec<TriplePattern> = premise_triples
         .into_iter()
         .map(|(s, p, o)| {
@@ -177,7 +158,6 @@ pub fn parse_n3_rule<'a>(
         })
         .collect();
 
-    // Convert all conclusions
     let conclusions_parsed: Vec<TriplePattern> = conclusion_triples
         .into_iter()
         .map(|(s, p, o)| {
@@ -204,7 +184,6 @@ fn to_term(ut: UnresolvedTerm, graph: &mut Reasoner, prefix_map: &HashMap<String
     match ut {
         UnresolvedTerm::Var(v) => Term::Variable(v),
         UnresolvedTerm::Prefixed(s) => {
-            // Expand the prefix!
             let expanded = expand_prefix(&s, prefix_map);
             Term::Constant(graph.encode_term(&expanded))
         }
@@ -219,21 +198,16 @@ fn expand_prefix(prefixed: &str, prefix_map: &HashMap<String, String>) -> String
         let local = &prefixed[colon_pos + 1..];
 
         if let Some(base_uri) = prefix_map.get(prefix) {
-            // Expand: prefix + local part
             format!("{}{}", base_uri, local)
         } else {
-            // No prefix found, return as-is
             prefixed.to_string()
         }
     } else {
-        // No colon, return as-is
         prefixed.to_string()
     }
 }
 
-/// Parse a complete N3 document: one shared prefix block followed by any
-/// number of rules.  All rules share the same prefix map, avoiding context
-/// loss between rules when the document is parsed in one shot
+/// Parse a complete N3 document: one shared prefix block followed by any number of rules
 pub fn parse_n3_document<'a>(
     input: &'a str,
     graph: &mut Reasoner,
@@ -245,12 +219,6 @@ pub fn parse_n3_document<'a>(
         .map(|(k, v)| (k.to_string(), v.to_string()))
         .collect();
 
-    // A rule may be terminated by `.`, as every N3 statement is, and
-    // `parse_unresolved_rule` stops at the conclusion's closing brace. Accepting the
-    // terminator here is what lets a document be written the conventional way: this
-    // function requires the whole input to be consumed, so a trailing dot used to
-    // make it fail with `Eof` while the single-rule parser silently left the dot
-    // behind and looked fine.
     let terminated = |input| {
         let (input, rule) = preceded(multispace0, parse_unresolved_rule).parse(input)?;
         let (input, _) =
@@ -301,8 +269,7 @@ pub fn parse_n3_document<'a>(
     Ok((input, (prefix_map, rules)))
 }
 
-/// Parse an N3 rule document while associating predicate constants with their
-/// owning SDS windows
+/// Parse an N3 rule document while associating predicate constants with their owning SDS windows
 pub fn parse_n3_rules_for_sds(
     input: &str,
     graph: &mut Reasoner,
@@ -311,7 +278,6 @@ pub fn parse_n3_rules_for_sds(
     let (_, (prefix_map, rules)) =
         parse_n3_document(input, graph).map_err(|e| format!("N3 parse error: {:?}", e))?;
 
-    // Sort window IRIs longest-first for correct prefix matching.
     let mut sorted_window_iris: Vec<&String> = window_widths.keys().collect();
     sorted_window_iris.sort_by(|a, b| b.len().cmp(&a.len()));
 
@@ -319,10 +285,6 @@ pub fn parse_n3_rules_for_sds(
     let mut output_iris: Vec<String> = Vec::new();
 
     {
-        // Walk predicate positions only. Each decode takes the lock for its own
-        // call, which is what a scoped encoder gives up in exchange for not handing
-        // the lock out; the walk is over rule predicates, not facts.
-        //
         for rule in &rules {
             let preds = rule
                 .premise
@@ -333,7 +295,6 @@ pub fn parse_n3_rules_for_sds(
             for term in preds {
                 if let Term::Constant(id) = term {
                     if let Some(iri) = graph.decode_term(*id) {
-                        // Check against known window IRIs (longest-first)
                         let matched = sorted_window_iris
                             .iter()
                             .find(|w| iri.starts_with(w.as_str()))
@@ -342,8 +303,6 @@ pub fn parse_n3_rules_for_sds(
                         if let Some(window_iri) = matched {
                             predicate_to_window.insert(*id, window_iri);
                         } else {
-                            // Unknown window → look for a matching prefix_map value
-                            // (these are output / result component IRIs)
                             for comp_iri in prefix_map.values() {
                                 if iri.starts_with(comp_iri.as_str())
                                     && !output_iris.contains(comp_iri)
@@ -360,7 +319,6 @@ pub fn parse_n3_rules_for_sds(
         }
     }
 
-    // Build all_component_iris: windows + output, sorted longest-first, deduped
     let mut all_component_iris: Vec<String> = window_widths
         .keys()
         .cloned()

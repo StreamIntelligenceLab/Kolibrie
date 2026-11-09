@@ -37,15 +37,22 @@ ENV RUSTUP_HOME=/usr/local/rustup \
     CARGO_HOME=/usr/local/cargo \
     PATH=/usr/local/cargo/bin:$PATH
 
-# ML runtimes are installed only for explicitly enabled images.
+COPY --from=ghcr.io/astral-sh/uv:0.13.5 /uv /usr/local/bin/uv
+
+# ML runtimes are installed only for explicitly enabled images, from uv.lock
+ENV UV_PROJECT_ENVIRONMENT=/app/.venv \
+    UV_PYTHON_DOWNLOADS=never \
+    UV_COMPILE_BYTECODE=1 \
+    UV_LINK_MODE=copy
 RUN if [ "$ENABLE_ML" = "true" ]; then \
-      apt-get update && apt-get install -y python3 python3-pip python3-dev && \
-      pip3 install --no-cache-dir numpy scikit-learn rdflib pandas packaging psutil && \
-      pip3 install --no-cache-dir -e /app/ml/src && \
+      apt-get update && apt-get install -y python3 python3-dev && \
+      uv sync --locked --no-dev --no-cache && \
       rm -rf /var/lib/apt/lists/*; \
     fi
 
-ENV PYTHONPATH=/app/ml/src:/app/python/target/release:${PYTHONPATH}
+# The embedded interpreter finds the environment through the python3 on PATH
+ENV PATH=/app/.venv/bin:$PATH \
+    PYTHONPATH=/app/ml/src:/app/python/target/release:${PYTHONPATH}
 
 ARG ENABLE_WEB_UI
 RUN if [ "$ENABLE_ML" = "true" ]; then \

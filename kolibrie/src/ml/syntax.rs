@@ -10,12 +10,7 @@
 
 use crate::parser::parse_sparql_query;
 use shared::query::{GroupGraphPattern, MLPredictClause, NeuralRelationDecl};
-/// Rewrites an `ML.PREDICT` clause into the equivalent neural relation
-/// declaration.
-///
-/// `ML.PREDICT` is sugar: the two forms mean the same thing, so lowering lets one
-/// evaluation path serve both. Re-parses the clause's input query, which is why it
-/// can fail on a clause that itself parsed.
+/// Rewrites an `ML.PREDICT` clause into the equivalent neural relation declaration
 pub fn lower_ml_predict_alias(
     ml_predict: &MLPredictClause<'_>,
 ) -> Result<NeuralRelationDecl, String> {

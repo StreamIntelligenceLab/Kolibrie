@@ -8,20 +8,7 @@
  * you can obtain one at https://mozilla.org/MPL/2.0/.
  */
 
-//! Maintaining a materialised streaming dataset across ticks instead of rebuilding it.
-//!
-//! Carries the previous result forward as [`SdsWithExpiry`] and derives only from
-//! the facts that arrived since, which is what makes the cost proportional to the
-//! delta rather than to the window contents.
-//!
-//! Expiry is what makes this possible without recomputing: every derived fact is
-//! tagged with an [`ExpirationProvenance`]
-//! tag giving the time it stops holding, which is the minimum over the facts it was
-//! derived from, so a fact leaving a window retracts its consequences without any
-//! search for them.
-//!
-//! [`cross_window_naive`](super::cross_window_naive) computes the same thing the
-//! slow way and is the oracle this is tested against.
+//! Maintaining a materialised streaming dataset across ticks instead of rebuilding it
 
 use crate::cross_window_sds::{
     all_component_iris, strip_window_prefix, translate_sds_to_datalog, Sds,
@@ -82,10 +69,8 @@ pub fn incremental_sds_plus(
         reasoner.dataset_index.insert(t);
     }
 
-    // Seed TagStore with expiry values from D_old ∪ D_new.
     let mut initial_tags = TagStore::new(ExpirationProvenance);
     for (t, e) in d_old.iter().chain(d_new.iter()) {
-        // set_tag skips u64::MAX (= one()), so static facts are implicitly ∞.
         if *e < u64::MAX {
             initial_tags.set_tag(t, *e);
         }

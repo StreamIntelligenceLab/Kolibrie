@@ -10,8 +10,8 @@
 
 #![cfg(feature = "ml")]
 
+use kolibrie::database::KolibrieDB;
 use kolibrie::rule_execution::process_rule_definition;
-use kolibrie::sparql_database::SparqlDatabase;
 
 #[path = "common/ml_local.rs"]
 mod ml_local;
@@ -25,7 +25,7 @@ fn tmp_model_path(name: &str) -> String {
     format!("kolibrie_ml_predict_{}_{}_{}.bin", name, id, nanos)
 }
 
-fn populate_multiclass_db(db: &mut SparqlDatabase) {
+fn populate_multiclass_db(db: &mut KolibrieDB) {
     for (idx, label, features) in [
         ("s0", "A", [1.0, 0.0, 0.0]),
         ("s1", "A", [1.0, 0.0, 0.0]),
@@ -41,7 +41,7 @@ fn populate_multiclass_db(db: &mut SparqlDatabase) {
     }
 }
 
-fn populate_binary_db(db: &mut SparqlDatabase) {
+fn populate_binary_db(db: &mut KolibrieDB) {
     for (idx, label, features) in [
         ("t0", "1", [1.0, 1.0]),
         ("t1", "1", [1.0, 1.0]),
@@ -54,7 +54,7 @@ fn populate_binary_db(db: &mut SparqlDatabase) {
     }
 }
 
-fn clear_materialized_predicate(db: &mut SparqlDatabase, predicate: &str) {
+fn clear_materialized_predicate(db: &mut KolibrieDB, predicate: &str) {
     if let Some(triples) = db.take_neural_materialized(predicate) {
         for triple in triples {
             db.delete_triple(&triple);
@@ -62,7 +62,7 @@ fn clear_materialized_predicate(db: &mut SparqlDatabase, predicate: &str) {
     }
 }
 
-fn train_multiclass(db: &mut SparqlDatabase, save_path: &str) {
+fn train_multiclass(db: &mut KolibrieDB, save_path: &str) {
     let program = format!(
         r#"
 PREFIX ex: <http://example.org/>
@@ -100,8 +100,7 @@ TRAIN NEURAL RELATION ex:predictedDigit {{
     clear_materialized_predicate(db, "http://example.org/predictedDigit");
 }
 
-fn train_binary(db: &mut SparqlDatabase, save_path: &str) {
-    // Use a linear model to avoid random convergence failures
+fn train_binary(db: &mut KolibrieDB, save_path: &str) {
     let program = format!(
         r#"
 PREFIX ex: <http://example.org/>
@@ -139,7 +138,7 @@ TRAIN NEURAL RELATION ex:isFraud {{
 }
 
 /// Decode the first object for a matching subject and predicate
-fn lookup_object(db: &SparqlDatabase, subject_iri: &str, predicate_iri: &str) -> Option<String> {
+fn lookup_object(db: &KolibrieDB, subject_iri: &str, predicate_iri: &str) -> Option<String> {
     let dict = db.dictionary();
     let s = *dict.string_to_id.get(subject_iri)?;
     let p = *dict.string_to_id.get(predicate_iri)?;
@@ -152,7 +151,7 @@ fn lookup_object(db: &SparqlDatabase, subject_iri: &str, predicate_iri: &str) ->
     None
 }
 
-fn count_triples_with_predicate(db: &SparqlDatabase, predicate_iri: &str) -> usize {
+fn count_triples_with_predicate(db: &KolibrieDB, predicate_iri: &str) -> usize {
     let dict = db.dictionary();
     let Some(&pred_id) = dict.string_to_id.get(predicate_iri) else {
         return 0;
@@ -235,21 +234,15 @@ ML.PREDICT(MODEL "digit_model",
 "#;
     process_rule_definition(rule, &mut db).expect("rule processing failed");
 
-    // Only s0 and s1 have x0 > 0
     let count = count_triples_with_predicate(&db, "http://example.org/predictedDigit");
     assert_eq!(count, 2, "FILTER did not restrict predictions correctly");
 
-    // Filtered-out sample has no prediction
     assert!(lookup_object(&db, "s2", "http://example.org/predictedDigit").is_none());
 }
 
 #[test]
 fn top_level_ml_predict_materializes_after_training() {
     let mut db = ml_local::database();
-    // Asserts exact labels, so it is seeded for the same reason
-    // `rerun_cleans_stale_predictions` is: an unseeded initialisation can leave a
-    // sample misclassified. This one had not been seen to fail, but it is flaky by
-    // construction rather than by luck.
     db.set_training_seed(Some(7));
     populate_multiclass_db(&mut db);
     train_multiclass(&mut db, &tmp_model_path("top_level"));
@@ -357,18 +350,15 @@ ML.PREDICT(MODEL "fraud_model",
 "#;
     process_rule_definition(rule, &mut db).expect("rule processing failed");
 
-    // Every positive and negative row gets `isFraud true`
     let fraud_count = count_triples_with_predicate(&db, "http://example.org/isFraud");
     assert_eq!(
         fraud_count, 4,
         "binary ML.PREDICT should emit for every row"
     );
 
-    // Companion probability predicate appends _prob to the full IRI
     let prob_count = count_triples_with_predicate(&db, "http://example.org/isFraud_prob");
     assert_eq!(prob_count, 4);
 
-    // Positive rows should score higher than negatives
     let prob_pos = lookup_object(&db, "t0", "http://example.org/isFraud_prob")
         .and_then(|s| s.parse::<f64>().ok())
         .unwrap();
@@ -387,10 +377,6 @@ ML.PREDICT(MODEL "fraud_model",
 #[test]
 fn rerun_cleans_stale_predictions() {
     let mut db = ml_local::database();
-    // This asserts one exact predicted label, so it needs the model to have learned
-    // the task. Weight initialisation is unseeded by default, and an unlucky draw
-    // left s0 misclassified after 80 epochs on three features, failing this about
-    // once in twenty runs.
     db.set_training_seed(Some(7));
     populate_multiclass_db(&mut db);
     train_multiclass(&mut db, &tmp_model_path("rerun"));
@@ -421,7 +407,6 @@ ML.PREDICT(MODEL "digit_model",
     let after_first = count_triples_with_predicate(&db, "http://example.org/predictedDigit");
     assert_eq!(after_first, 6);
 
-    // Flip s0's features so it now looks like C
     db.delete_triple_parts("s0", "http://example.org/x0", "1");
     db.delete_triple_parts("s0", "http://example.org/x1", "0");
     db.delete_triple_parts("s0", "http://example.org/x2", "0");
@@ -436,7 +421,6 @@ ML.PREDICT(MODEL "digit_model",
         "rerun should replace triples, not accumulate them"
     );
 
-    // s0 should now predict C
     assert_eq!(
         lookup_object(&db, "s0", "http://example.org/predictedDigit").as_deref(),
         Some("C"),
@@ -476,9 +460,7 @@ ML.PREDICT(MODEL "digit_model",
 "#;
     process_rule_definition(rule, &mut db).expect("rule processing failed");
 
-    // ML side-effect triple
     assert!(lookup_object(&db, "s0", "http://example.org/predictedDigit").is_some());
-    // Static Datalog triple
     assert!(lookup_object(&db, "s0", "http://example.org/alert").is_some());
 }
 
@@ -514,7 +496,6 @@ ML.PREDICT(MODEL "digit_model",
     process_rule_definition(rule, &mut db).expect("first run failed");
     assert!(count_triples_with_predicate(&db, "http://example.org/predictedDigit") > 0);
 
-    // Remove all feature triples so INPUT returns no rows
     let subjects: Vec<&'static str> = vec!["s0", "s1", "s2", "s3", "s4", "s5"];
     for s in subjects {
         for (pred, val) in [

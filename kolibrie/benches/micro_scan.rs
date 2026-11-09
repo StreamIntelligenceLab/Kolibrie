@@ -8,22 +8,7 @@
  * you can obtain one at https://mozilla.org/MPL/2.0/.
  */
 
-//! Index scanning — and the cost of putting a trait in front of it.
-//!
-//! This bench answers a design question rather than only guarding a change. The
-//! architecture proposal replaces direct `DatasetIndex` access with a `QuadSource`
-//! trait so the planner and the reasoners can compile without the engine. Two
-//! choices in that trait are contested:
-//!
-//!   1. static dispatch (`&impl QuadSource`) vs dynamic (`&dyn QuadSource`)
-//!   2. row-at-a-time (`Iterator<Item = Quad>`) vs batch (`Iterator<Item = Vec<Quad>>`)
-//!
-//! Dynamic dispatch and per-call allocation are both cheap in isolation and
-//! expensive in a hot loop, so the honest way to settle it is to measure all four
-//! shapes against the current direct call before committing.
-//!
-//! The traits below are throwaway stand-ins for the proposed API, defined here so
-//! the measurement can happen without first building the real thing.
+//! Index scanning — and the cost of putting a trait in front of it
 
 extern crate criterion;
 
@@ -48,20 +33,18 @@ fn index() -> DatasetIndex {
     index
 }
 
-// ── Stand-ins for the proposed QuadSource shapes ────────────────────────────────
-
-/// Statically dispatched, returns an owned Vec — closest to today's `query_graph`.
+/// Statically dispatched, returns an owned Vec — closest to today's `query_graph`
 trait ScanStatic {
     fn scan(&self, g: GraphId, s: Option<u32>, p: Option<u32>, o: Option<u32>) -> Vec<Quad>;
 }
 
-/// Dynamically dispatched. Object-safe, so it can be stored as `Box<dyn …>`.
+/// Dynamically dispatched
 trait ScanDyn {
     fn scan(&self, g: GraphId, s: Option<u32>, p: Option<u32>, o: Option<u32>) -> Vec<Quad>;
 }
 
-/// Dynamically dispatched AND row-at-a-time, which is the shape that allocates a
-/// boxed iterator per call. This is the combination most likely to cost real time.
+/// Dynamically dispatched AND row-at-a-time, which is the shape that allocates a boxed iterator per
+/// call
 trait ScanDynIter {
     fn scan<'a>(
         &'a self,
@@ -105,8 +88,6 @@ fn bench_dispatch(c: &mut Criterion) {
     let dyn_ref: &dyn ScanDyn = &index;
     let dyn_iter_ref: &dyn ScanDynIter = &index;
 
-    // Three selectivities, because dispatch overhead is a fixed cost per call: it is
-    // invisible on a scan returning 160k quads and dominant on one returning 8.
     let cases: [(&str, Option<u32>, Option<u32>, Option<u32>); 3] = [
         ("selective_subject", Some(42), None, None),
         ("medium_predicate", None, Some(SUBJECTS), None),

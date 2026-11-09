@@ -21,7 +21,6 @@ fn main() {
 
     println!("[Stage 1] Loading base facts...");
 
-    // Certain `knows` facts (8 triples)
     kg.add_abox_triple("Alice", "knows", "Bob");
     kg.add_abox_triple("Alice", "knows", "Charlie");
     kg.add_abox_triple("Bob", "knows", "Diana");
@@ -31,7 +30,6 @@ fn main() {
     kg.add_abox_triple("Eve", "knows", "Frank");
     kg.add_abox_triple("Frank", "knows", "Alice");
 
-    // Probabilistic `trusts` facts (7 triples) — seeded for provenance inference
     kg.add_tagged_triple("Alice", "trusts", "Bob", 0.90);
     kg.add_tagged_triple("Alice", "trusts", "Charlie", 0.70);
     kg.add_tagged_triple("Bob", "trusts", "Diana", 0.80);
@@ -52,7 +50,6 @@ fn main() {
     let strong_bond_id = kg.encode_term("strongBond");
     let trust_comm_id = kg.encode_term("trustCommunity");
 
-    // Rule 1: knows(X,Y) ∧ knows(Y,Z) -> connected(X,Z)  (two-hop)
     let rule1 = Rule {
         premise: vec![
             (
@@ -75,7 +72,6 @@ fn main() {
         filters: vec![],
     };
 
-    // Rule 2: connected(X,Y) ∧ connected(Y,Z) -> connected(X,Z)  (transitive closure)
     let rule2 = Rule {
         premise: vec![
             (
@@ -98,7 +94,6 @@ fn main() {
         filters: vec![],
     };
 
-    // Rule 3: strongBond(X,Y) ∧ strongBond(Y,Z) -> trustCommunity(X,Z)  (uses provenance output)
     let rule3 = Rule {
         premise: vec![
             (
@@ -123,10 +118,7 @@ fn main() {
 
     kg.add_rule(rule1);
     kg.add_rule(rule2);
-    // Rule 3 is added later — it uses strongBond from the provenance round
 
-    // Rule 4: trusts(X,Y) ∧ trusts(Y,Z) -> indirectTrust(X,Z)
-    //   Uses AddMultProbability provenance (⊗ = multiply for conjunction)
     let rule4 = Rule {
         premise: vec![
             (
@@ -149,8 +141,6 @@ fn main() {
         filters: vec![],
     };
 
-    // Rule 5: connected(X,Z) ∧ trusts(X,Z) -> strongBond(X,Z)
-    //   Uses classically-inferred `connected` from Round 1
     let rule5 = Rule {
         premise: vec![
             (
@@ -211,7 +201,6 @@ fn main() {
     println!("    indirectTrust(X,Z) :- trusts(X,Y), trusts(Y,Z)");
     println!("    strongBond(X,Z)    :- connected(X,Z), trusts(X,Z)");
 
-    // Add provenance rules (plain Rules — provenance is program-level, not per-rule)
     kg.add_rule(rule4);
     kg.add_rule(rule5);
 
@@ -259,7 +248,6 @@ fn main() {
     println!("  (Uses provenance-inferred strongBond facts from Stage 3!)");
     println!("  Classical rule: trustCommunity(X,Z) :- strongBond(X,Y), strongBond(Y,Z)");
 
-    // Add rule3 now so it participates in the second classical round
     kg.add_rule(rule3);
 
     let facts3 = kg.infer_new_facts_semi_naive();

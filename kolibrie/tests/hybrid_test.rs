@@ -4,12 +4,12 @@
  * KU Leuven — Stream Intelligence Lab, Belgium
  */
 
+use kolibrie::database::KolibrieDB;
 use kolibrie::rule_execution::process_rule_definition;
-use kolibrie::sparql_database::SparqlDatabase;
 
 #[test]
 fn hybrid_rule_emits_typed_status_annotations() {
-    let mut database = SparqlDatabase::new();
+    let mut database = KolibrieDB::new();
     database.add_tagged_triple(
         "http://example.org/a",
         "http://example.org/input",
@@ -41,7 +41,7 @@ fn hybrid_rule_emits_typed_status_annotations() {
 
 #[test]
 fn hybrid_rule_rejects_recursive_dependency() {
-    let mut database = SparqlDatabase::new();
+    let mut database = KolibrieDB::new();
     database.add_tagged_triple("a", "ancestor", "b", 0.8);
     let rule = r#"
         RULE :Recursive PROB(provenance=hybrid, threshold=0.7) :-
@@ -58,7 +58,7 @@ fn hybrid_rule_rejects_recursive_dependency() {
 
 #[test]
 fn cost_ratio_threshold_is_recorded_in_rdf_metadata() {
-    let mut database = SparqlDatabase::new();
+    let mut database = KolibrieDB::new();
     database.add_tagged_triple(
         "http://example.org/a",
         "http://example.org/input",
@@ -104,21 +104,10 @@ fn cost_ratio_threshold_is_recorded_in_rdf_metadata() {
     assert!(policy_object.contains("auto:cost"));
 }
 
-/// A plain rule — no window clause, no `PROB` annotation — derives from the store's
-/// facts.
-///
-/// This exists because nothing covered it. Every other `process_rule_definition`
-/// test here uses the annotated path, and the `ml` ones assert on predictions rather
-/// than on derivation, so the plain path could have stopped seeing the store's facts
-/// entirely and the whole of `verify.sh` would still have passed: 646 tests green and
-/// all 51 examples running, because the examples print results rather than assert on
-/// them and the smoke run only checks exit status.
-///
-/// Verified to fail when the base facts are withheld, which is the only reason to
-/// trust it.
+/// A plain rule — no window clause, no `PROB` annotation — derives from the store's facts
 #[test]
 fn plain_rule_derives_from_the_stores_facts() {
-    let mut database = SparqlDatabase::new();
+    let mut database = KolibrieDB::new();
     database.add_triple_parts(
         "http://example.org/alice",
         "http://example.org/parent",
@@ -144,18 +133,10 @@ fn plain_rule_derives_from_the_stores_facts() {
     assert_eq!(derived.len(), 1, "the derived fact should reach the store");
 }
 
-/// A provenance-annotated rule derives from the store's facts.
-///
-/// Added for the same reason as `plain_rule_derives_from_the_stores_facts`: nothing
-/// covered `rule_execution`'s annotated path. Thirty-two tests fail if the base is
-/// withheld inside datalog's provenance driver, but they reach it through `program`
-/// or through datalog directly — passing `None` at `rule_execution`'s six provenance
-/// call sites left all 647 green.
-///
-/// Verified to fail when the base is withheld, which is the only reason to trust it.
+/// A provenance-annotated rule derives from the store's facts
 #[test]
 fn annotated_rule_derives_from_the_stores_facts() {
-    let mut database = SparqlDatabase::new();
+    let mut database = KolibrieDB::new();
     database.add_tagged_triple(
         "http://example.org/a",
         "http://example.org/input",
@@ -176,26 +157,16 @@ fn annotated_rule_derives_from_the_stores_facts() {
     );
 }
 
-/// A hybrid rule can match a fact the store holds untagged, not only its seeds.
-///
-/// This distinction is why the hybrid path's base facts matter at all.
-/// `materialize_lineage` inserts the snapshot's seed triples into the reasoner
-/// itself, so a rule whose body is satisfied entirely by tagged facts derives
-/// correctly even with no base at all — which is why the three `provenance=hybrid`
-/// tests above pass whether the store's facts reach the reasoner or not.
-///
-/// Here the body needs one tagged fact and one plain one, so the base is load
-/// bearing. Verified to fail when it is withheld.
+/// A hybrid rule can match a fact the store holds untagged, not only its seeds
 #[test]
 fn hybrid_rule_matches_an_untagged_fact_from_the_store() {
-    let mut database = SparqlDatabase::new();
+    let mut database = KolibrieDB::new();
     database.add_tagged_triple(
         "http://example.org/a",
         "http://example.org/input",
         "http://example.org/yes",
         0.8,
     );
-    // Untagged, so it is not a seed and reaches the reasoner only as a base fact.
     database.add_triple_parts(
         "http://example.org/a",
         "http://example.org/kind",

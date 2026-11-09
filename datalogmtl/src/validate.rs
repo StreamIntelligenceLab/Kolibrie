@@ -8,28 +8,13 @@
  * you can obtain one at https://mozilla.org/MPL/2.0/.
  */
 
-//! What a program must satisfy before it can be evaluated.
-//!
-//! Two checks, both of which reject a rule rather than let it quietly derive
-//! nothing: every interval must have `start <= end`, and every head variable must
-//! be bound somewhere in the body that can actually witness a value.
-//!
-//! # Why `Box` does not bind
-//!
-//! Only [`Base`](crate::syntax::TemporalAtom::Base) and
-//! [`Diamond`](crate::syntax::TemporalAtom::Diamond) atoms make a variable safe.
-//! The universal operators have no witness to take a value from — `Box` asserts
-//! something about every point in a window rather than finding a point — and the
-//! `phi` side of `Since` is universal for the same reason. A rule whose head
-//! variable occurs only there could never bind it, so it is an error at
-//! construction instead of an empty result at every tick.
+//! What a program must satisfy before it can be evaluated
 
 use crate::syntax::{DatalogMTLRule, TemporalAtom};
 use shared::terms::Term;
 use std::collections::HashSet;
 
-/// Validate a set of DatalogMTL^RDF rules.
-/// Returns Err with a descriptive message on the first violation found.
+/// Validate a set of DatalogMTL^RDF rules
 pub fn validate_rules(rules: &[DatalogMTLRule]) -> Result<(), String> {
     for rule in rules {
         validate_variable_safety(rule)?;
@@ -38,8 +23,7 @@ pub fn validate_rules(rules: &[DatalogMTLRule]) -> Result<(), String> {
     Ok(())
 }
 
-/// Head variables must appear in at least one Base or Diamond body atom.
-/// Variables inside Box or the phi of Since are NOT safe.
+/// Head variables must appear in at least one Base or Diamond body atom
 fn validate_variable_safety(rule: &DatalogMTLRule) -> Result<(), String> {
     let mut safe: HashSet<String> = HashSet::new();
     for atom in &rule.body {
@@ -70,19 +54,13 @@ fn collect_safe_vars(atom: &TemporalAtom, safe: &mut HashSet<String>) {
         }
         TemporalAtom::Diamond { inner, .. } => collect_safe_vars(inner, safe),
         TemporalAtom::Prev { inner, .. } => collect_safe_vars(inner, safe),
-        // psi is existential in Since, so its variables are safe.
         TemporalAtom::Since { psi, .. } => collect_safe_vars(psi, safe),
-        // Box: variables in the inner pattern are safe because the evaluator
-        // collects consistent bindings that hold at every timestamp.
         TemporalAtom::Box_ { inner, .. } => collect_safe_vars(inner, safe),
-        // Every conjunct must hold, so each one binds.
         TemporalAtom::Conj(atoms) => {
             for a in atoms {
                 collect_safe_vars(a, safe);
             }
         }
-        // Future operators mirror their past duals: Diamond/Box inner vars are
-        // safe; Until's psi (existential trigger) is safe like Since's.
         TemporalAtom::DiamondPlus { inner, .. } => collect_safe_vars(inner, safe),
         TemporalAtom::BoxPlus { inner, .. } => collect_safe_vars(inner, safe),
         TemporalAtom::Until { psi, .. } => collect_safe_vars(psi, safe),

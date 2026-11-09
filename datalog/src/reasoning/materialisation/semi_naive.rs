@@ -1,8 +1,4 @@
-//! Semi-naive forward chaining: each round joins against only what the last one derived.
-//!
-//! A derivation is new only if it uses at least one fact from the previous round, so
-//! for each rule this tries each premise position in turn against the delta and
-//! joins the remaining premises against everything. The default strategy.
+//! Semi-naive forward chaining: each round joins against only what the last one derived
 
 use crate::reasoning::materialisation::infer_generic::{InferenceStrategy, SolutionMapping};
 use crate::reasoning::materialisation::replace_variables_with_bound_values;
@@ -32,11 +28,9 @@ impl SemiNaiveStrategy {
         for i in 0..nr_premises {
             let mut current_bindings = vec![BTreeMap::new()];
 
-            // At least one premise should be satisfied by facts derived from last round (if not, then you simply derive the same things)
             current_bindings =
                 join_premise_with_hash_join(&rule.premise[i], &delta_facts, current_bindings, dict);
 
-            // Join remaining premises with all facts (includes delta facts as well)
             for j in 0..nr_premises {
                 if j == i {
                     continue;
@@ -52,7 +46,6 @@ impl SemiNaiveStrategy {
                 }
             }
 
-            // Convert and add results
             for binding in current_bindings {
                 let u32_binding = convert_string_binding_to_u32(&binding, dict);
                 results.push(u32_binding);
@@ -71,24 +64,18 @@ impl InferenceStrategy for SemiNaiveStrategy {
         all_facts: &Vec<Triple>,
         known_facts: &HashSet<Triple>,
     ) -> HashSet<Triple> {
-        // Also HashSet to prevent duplicate triples from being added this round
         let mut inferred_facts_this_round: HashSet<Triple> = HashSet::new();
 
         let end_idx_for_delta = all_facts.len();
-        let delta_facts = &all_facts[self.start_idx_for_delta..end_idx_for_delta]; // Take derived facts from last round and use as delta
-        self.start_idx_for_delta = end_idx_for_delta; // Update the pointer for the next round
+        let delta_facts = &all_facts[self.start_idx_for_delta..end_idx_for_delta];
+        self.start_idx_for_delta = end_idx_for_delta;
 
-        // Loop over each rule
         for rule in rules {
-            // These are all bindings such that the premise is satisfied for the given rule
             let binding_sets =
                 self.find_premise_solutions(dictionary, rule, all_facts, delta_facts);
 
-            // For each binding that satisfies the premises of the rule, get to the conclusion and apply bindings
             for binding_set in &binding_sets {
                 if evaluate_filters(&binding_set, &rule.filters, dictionary) {
-                    // Loop over each conclusion of the rule, since for the current binding,
-                    // the conclusions of the rule can be inferred (because premises are met)
                     for conclusion in &rule.conclusion {
                         let inferred_fact = replace_variables_with_bound_values(
                             conclusion,
@@ -109,24 +96,15 @@ impl InferenceStrategy for SemiNaiveStrategy {
 }
 
 impl Reasoner {
-    /// Derives every entailed fact by semi-naive forward chaining, returning the
-    /// new ones and leaving them in [`dataset_index`](Reasoner::dataset_index).
-    ///
-    /// The default choice: same fixpoint as
-    /// [`infer_new_facts_naive`](Reasoner::infer_new_facts_naive) without
-    /// re-deriving what it already knows.
+    /// Derives every entailed fact by semi-naive forward chaining and returns the new ones
     pub fn infer_new_facts_semi_naive(&mut self) -> Vec<Triple> {
         self.infer_with_strategy(SemiNaiveStrategy {
             start_idx_for_delta: 0,
         })
     }
 
-    /// As [`infer_new_facts_semi_naive`](Self::infer_new_facts_semi_naive), reading
-    /// the base facts from `base` instead of requiring them to have been inserted
-    /// here first.
-    ///
-    /// For a caller that wants to reason over a store it does not own. Nothing is
-    /// copied into this reasoner's index but the facts it derives.
+    /// As [`infer_new_facts_semi_naive`](Self::infer_new_facts_semi_naive), reading base facts from
+    /// `base`
     pub fn infer_new_facts_semi_naive_over(
         &mut self,
         base: &dyn shared::quad_source::QuadSource,

@@ -41,7 +41,9 @@ __pycache__/
 .env*
 venv/
 env/
+.venv/
 python/.venv/
+.ruff_cache/
 
 # IDE & editor files
 .vscode/

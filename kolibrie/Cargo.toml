@@ -101,8 +101,7 @@ name = "micro_dictionary"
 path = "benches/micro_dictionary.rs"
 harness = false
 
-# Heavy tier: thread-contention sweep over the shared dictionary. Research rather
-# than a refactor guard, so `perf_bench.sh routine` does not run it.
+# Heavy tier: thread-contention sweep over the shared dictionary.
 [[bench]]
 name = "contended_dictionary"
 path = "benches/contended_dictionary.rs"
