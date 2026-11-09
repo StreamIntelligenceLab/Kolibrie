@@ -9,31 +9,28 @@
  */
 
 extern crate kolibrie;
+use kolibrie::database::KolibrieDB;
 use kolibrie::execute_query::execute;
 use kolibrie::query_builder::Queryable;
-use kolibrie::sparql_database::SparqlDatabase;
 use shared::triple::Triple;
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    fn default_triples(db: &SparqlDatabase) -> Vec<Triple> {
+    fn default_triples(db: &KolibrieDB) -> Vec<Triple> {
         db.query_default_triples(None, None, None)
     }
 
-    fn setup_test_db() -> SparqlDatabase {
-        let mut db = SparqlDatabase::new();
+    fn setup_test_db() -> KolibrieDB {
+        let mut db = KolibrieDB::new();
 
-        // Acquire write lock once for all encoding
         let mut dict = db.dictionary_mut();
 
-        // Create common IDs
         let person1 = dict.encode("http://example.org/person1");
         let person2 = dict.encode("http://example.org/person2");
         let company = dict.encode("http://example.org/company1");
 
-        // Create predicates
         let predicates = [
             (dict.encode("ex:name"), "name"),
             (dict.encode("ex:age"), "age"),
@@ -43,7 +40,6 @@ mod tests {
             (dict.encode("ex:industry"), "industry"),
         ];
 
-        // Create objects
         let objects = [
             (dict.encode("John Smith"), "john"),
             (dict.encode("Jane Doe"), "jane"),
@@ -56,71 +52,67 @@ mod tests {
             (dict.encode("Technology"), "tech"),
         ];
 
-        // Release lock before inserting triples
         drop(dict);
 
-        // Insert triples: Person 1 (John)
         let p = &predicates;
         let o = &objects;
         db.add_triple(Triple {
             subject: person1,
             predicate: p[0].0,
             object: o[0].0,
-        }); // name: John
+        });
         db.add_triple(Triple {
             subject: person1,
             predicate: p[1].0,
             object: o[3].0,
-        }); // age: 30
+        });
         db.add_triple(Triple {
             subject: person1,
             predicate: p[2].0,
             object: o[5].0,
-        }); // email: john@...
+        });
         db.add_triple(Triple {
             subject: person1,
             predicate: p[3].0,
             object: company,
-        }); // worksFor: company1
+        });
 
-        // Person 2 (Jane)
         db.add_triple(Triple {
             subject: person2,
             predicate: p[0].0,
             object: o[1].0,
-        }); // name: Jane
+        });
         db.add_triple(Triple {
             subject: person2,
             predicate: p[1].0,
             object: o[4].0,
-        }); // age: 25
+        });
         db.add_triple(Triple {
             subject: person2,
             predicate: p[2].0,
             object: o[6].0,
-        }); // email: jane@...
+        });
         db.add_triple(Triple {
             subject: person2,
             predicate: p[3].0,
             object: company,
-        }); // worksFor: company1
+        });
 
-        // Company
         db.add_triple(Triple {
             subject: company,
             predicate: p[0].0,
             object: o[2].0,
-        }); // name: ACME
+        });
         db.add_triple(Triple {
             subject: company,
             predicate: p[4].0,
             object: o[7].0,
-        }); // founded: 2000
+        });
         db.add_triple(Triple {
             subject: company,
             predicate: p[5].0,
             object: o[8].0,
-        }); // industry: Technology
+        });
 
         db
     }
@@ -129,11 +121,9 @@ mod tests {
     fn test_delete_triple() {
         let mut db = setup_test_db();
 
-        // Initial count
         let initial_count = default_triples(&db).len();
         assert_eq!(initial_count, 11);
 
-        // Create a triple to delete
         let mut dict = db.dictionary_mut();
         let person1 = dict.encode("http://example.org/person1");
         let pred_name = dict.encode("ex:name");
@@ -146,14 +136,11 @@ mod tests {
             object: obj_john,
         };
 
-        // Delete the triple
         let deleted = db.delete_triple(&triple_to_delete);
         assert!(deleted, "Triple should be deleted successfully");
 
-        // Verify count decreased
         assert_eq!(default_triples(&db).len(), initial_count - 1);
 
-        // Verify triple is gone
         assert!(!default_triples(&db).contains(&triple_to_delete));
     }
 
@@ -161,22 +148,19 @@ mod tests {
     fn test_delete_triple_parts() {
         let mut db = setup_test_db();
 
-        // Initial count
         let initial_count = default_triples(&db).len();
         assert_eq!(initial_count, 11);
 
-        // Delete using string parts
         let deleted =
             db.delete_triple_parts("http://example.org/person2", "ex:email", "jane@example.com");
         assert!(deleted, "Triple should be deleted successfully");
 
-        // Verify count decreased
         assert_eq!(default_triples(&db).len(), initial_count - 1);
     }
 
     #[test]
     fn test_turtle_prefix_query_with_variable_predicate() {
-        let mut db = SparqlDatabase::new();
+        let mut db = KolibrieDB::new();
         db.parse_turtle(
             r#"
             @prefix ex: <http://example.org/> .
@@ -208,7 +192,7 @@ mod tests {
 
     #[test]
     fn test_turtle_semicolon_predicate_shorthand() {
-        let mut db = SparqlDatabase::new();
+        let mut db = KolibrieDB::new();
         db.parse_turtle(
             r#"
             @prefix ex: <http://example.org/> .
@@ -238,7 +222,7 @@ mod tests {
 
     #[test]
     fn test_turtle_comma_object_shorthand() {
-        let mut db = SparqlDatabase::new();
+        let mut db = KolibrieDB::new();
         db.parse_turtle(
             r#"
             @prefix ex: <http://example.org/> .
@@ -266,7 +250,7 @@ mod tests {
 
     #[test]
     fn test_turtle_semicolon_and_comma_shorthand_together() {
-        let mut db = SparqlDatabase::new();
+        let mut db = KolibrieDB::new();
         db.parse_turtle(
             r#"
             @prefix ex: <http://example.org/> .
@@ -306,7 +290,6 @@ mod tests {
     fn test_basic_filters() {
         let db = setup_test_db();
 
-        // Test exact matches
         let subj_filter = db
             .query()
             .with_subject("http://example.org/person1")
@@ -319,7 +302,6 @@ mod tests {
         let obj_filter = db.query().with_object("Jane Doe").get_triples();
         assert_eq!(obj_filter.len(), 1);
 
-        // Test pattern matching
         let subj_like = db.query().with_subject_like("person").get_triples();
         assert_eq!(subj_like.len(), 8);
 
@@ -329,7 +311,6 @@ mod tests {
         let obj_like = db.query().with_object_like("example.com").get_triples();
         assert_eq!(obj_like.len(), 2);
 
-        // Test prefix/suffix matching
         let subj_start = db
             .query()
             .with_subject_starting("http://example.org/person")
@@ -339,7 +320,6 @@ mod tests {
         let pred_end = db.query().with_predicate_ending("For").get_triples();
         assert_eq!(pred_end.len(), 2);
 
-        // Test custom filter - collect numeric objects first
         let dict = db.dictionary();
         let numeric_objects: Vec<_> = default_triples(&db)
             .iter()
@@ -354,7 +334,6 @@ mod tests {
     fn test_combination_and_results() {
         let db = setup_test_db();
 
-        // Test compound query
         let person_names = db
             .query()
             .with_subject_like("person")
@@ -362,16 +341,13 @@ mod tests {
             .get_triples();
         assert_eq!(person_names.len(), 2);
 
-        // Test count
         let name_count = db.query().with_predicate("ex:name").count();
         assert_eq!(name_count, 3);
 
-        // Test get_subjects
         let name_subjects = db.query().with_predicate("ex:name").get_subjects();
         assert_eq!(name_subjects.len(), 3);
         assert!(name_subjects.contains(&"http://example.org/person1".to_string()));
 
-        // Test get_predicates
         let person_predicates = db
             .query()
             .with_subject("http://example.org/person1")
@@ -379,12 +355,10 @@ mod tests {
         assert_eq!(person_predicates.len(), 4);
         assert!(person_predicates.contains(&"ex:name".to_string()));
 
-        // Test get_objects
         let age_values = db.query().with_predicate("ex:age").get_objects();
         assert_eq!(age_values.len(), 2);
         assert!(age_values.contains(&"30".to_string()));
 
-        // Test get_decoded_triples
         let jane_triples = db
             .query()
             .with_subject("http://example.org/person2")
@@ -403,11 +377,9 @@ mod tests {
     fn test_result_manipulation() {
         let db = setup_test_db();
 
-        // Test order_by - get triples first then sort
         let age_triples = db.query().with_predicate("ex:age").get_triples();
         assert_eq!(age_triples.len(), 2);
 
-        // Check that we got both ages
         let dict = db.dictionary();
         let mut age_values: Vec<_> = age_triples
             .iter()
@@ -418,7 +390,6 @@ mod tests {
         age_values.sort();
         assert_eq!(age_values, vec!["25", "30"]);
 
-        // Test limit and offset
         let all: Vec<_> = db.query().get_triples().into_iter().collect();
 
         let limited = db.query().limit(2).get_triples();
@@ -434,7 +405,6 @@ mod tests {
         assert_eq!(offset.len(), 2);
         assert_eq!(offset[0], all[2]);
 
-        // Test grouping
         let dict = db.dictionary();
         let groups = db
             .query()
@@ -449,11 +419,9 @@ mod tests {
     fn test_distinct_and_join() {
         let mut db = setup_test_db();
 
-        // Test distinct
         let orig_count = default_triples(&db).len();
         assert_eq!(orig_count, 11);
 
-        // Add a second email for Person1
         let mut dict = db.dictionary_mut();
         let subject1 = dict.encode("http://example.org/person1");
         let pred_email = dict.encode("ex:email");
@@ -466,7 +434,6 @@ mod tests {
             object: new_email,
         });
 
-        // Test all emails for person1
         let emails = db
             .query()
             .with_subject("http://example.org/person1")
@@ -474,7 +441,6 @@ mod tests {
             .get_triples();
         assert_eq!(emails.len(), 2);
 
-        // Test simple join
         let tech_companies = db
             .query()
             .with_predicate("ex:industry")
@@ -495,7 +461,6 @@ mod tests {
     fn test_complex_query() {
         let db = setup_test_db();
 
-        // Find people under 30 who work for ACME
         let acme = db
             .query()
             .with_predicate("ex:name")
@@ -508,16 +473,13 @@ mod tests {
             .with_object(acme[0].as_str())
             .get_triples();
 
-        // Filter young employees - collect subject IDs first
         let dict = db.dictionary();
         let triples = default_triples(&db);
         let young_subject_ids: Vec<u32> = employees
             .iter()
             .filter_map(|t| {
-                // let subj_str = dict.decode(t.subject).unwrap_or("");
                 let age_pred = dict.string_to_id.get("ex:age")?;
 
-                // Find age triple for this subject
                 let age_triple = triples
                     .iter()
                     .find(|triple| triple.subject == t.subject && triple.predicate == *age_pred)?;

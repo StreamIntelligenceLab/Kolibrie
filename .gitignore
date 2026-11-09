@@ -91,7 +91,12 @@ kolibrie/src/cuda/cudajoin.exp
 kolibrie/src/cuda/cudajoin.lib
 
 # venv
+.venv/
 python/.venv/
+
+# Python tool caches
+.ruff_cache/
+.pytest_cache/
 
 # Some other directories
 benchmark_dataset/
@@ -100,3 +105,6 @@ benchmark_dataset/
 .idea/
  out.txt
 .zed/
+
+# macOS folder settings
+.DS_Store

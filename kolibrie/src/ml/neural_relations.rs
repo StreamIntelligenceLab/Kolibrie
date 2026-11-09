@@ -8,19 +8,7 @@
  * you can obtain one at https://mozilla.org/MPL/2.0/.
  */
 
-//! Predicates whose facts come from a model rather than from data.
-//!
-//! A neural relation declares that querying some predicate should run a model over
-//! the rows a pattern selects. Declaring one is not authority to run it — every entry
-//! point here checks the [`MlExecutionContext`](crate::ml_policy::MlExecutionContext)
-//! first, and an unapproved model is refused before anything executes.
-//!
-//! # Argmax here, distributions in `program`
-//!
-//! These entry points bind the single most likely label. A full distribution needs
-//! the probabilistic machinery in [`program`](crate::program), which can represent
-//! competing labels as a mutually exclusive group; see
-//! [`DISTRIBUTION_REQUIRES_PROGRAM`].
+//! Predicates whose facts come from a model rather than from data
 
 use std::collections::HashMap;
 use std::error::Error;
@@ -38,21 +26,17 @@ use crate::ml::execute_train::{
     OwnedNeuralCallSpec, OwnedNeuralChoice, OwnedNeuralGroupType, OwnedNeuralTrainingClause,
 };
 use crate::ml_feature_loader::build_feature_vec;
-use crate::parser::parse_combined_query;
-// Re-exported, not redefined: the implementation lives one layer down in
-// `neural_registry`, and `kolibrie::neural_relations::register_neural_declarations`
-// stays a working path for callers that already use it.
 pub use crate::neural_registry::register_neural_declarations;
+use crate::parser::parse_combined_query;
 
+use crate::database::KolibrieDB;
 use crate::neural_registry::{default_model_artifact_path, model_hidden_layers, model_output_type};
-use crate::sparql_database::SparqlDatabase;
 use shared::terms::Bindings;
 
 type NeuralResult<T> = Result<T, Box<dyn Error>>;
 
-/// Message explaining that `OUTPUT ?v DISTRIBUTION` is only supported through
-/// [`program`](crate::program), because representing competing labels as mutually
-/// exclusive needs the probabilistic machinery these entry points do not have.
+/// Message saying that `OUTPUT ?v DISTRIBUTION` is only supported through
+/// [`program`](crate::program)
 pub const DISTRIBUTION_REQUIRES_PROGRAM: &str =
     "ML.PREDICT ... OUTPUT ?v DISTRIBUTION runs only through kolibrie::program; legacy entry points predict the argmax";
 
@@ -89,7 +73,7 @@ fn build_select_query(patterns: &[(String, String, String)], vars: &[String]) ->
 }
 
 fn resolve_model_components(
-    database: &SparqlDatabase,
+    database: &KolibrieDB,
     predicate: &str,
 ) -> Result<(NeuralRelationDecl, ModelDecl), String> {
     let relation = database
@@ -110,9 +94,9 @@ fn resolve_model_components(
     Ok((relation, model))
 }
 
-/// Resolves a parsed training declaration into owned, prefix-expanded form.
+/// Resolves a parsed training declaration into owned, prefix-expanded form
 pub fn lower_train_decl_to_owned(
-    database: &SparqlDatabase,
+    database: &KolibrieDB,
     train_decl: &TrainNeuralRelationDecl,
 ) -> Result<OwnedNeuralTrainingClause, String> {
     let (relation, model) = resolve_model_components(database, &train_decl.predicate)?;
@@ -194,21 +178,14 @@ pub fn lower_train_decl_to_owned(
     })
 }
 
-/// Trains the model behind a neural relation and writes its artifact.
-///
-/// Requires trusted-local authority: the artifact path is resolved through the ML
-/// context, so a declaration naming a path cannot write outside the directory the
-/// host granted.
+/// Trains the model behind a neural relation and writes its artifact
 pub fn execute_train_decl(
-    database: &mut SparqlDatabase,
+    database: &mut KolibrieDB,
     train_decl: &TrainNeuralRelationDecl,
 ) -> NeuralResult<()> {
     database.ml_context.require_local()?;
     let owned_clause = lower_train_decl_to_owned(database, train_decl)?;
     let base_reasoner = build_ground_reasoner_from_db(database, None);
-    // Reproducible when the host fixed a seed, independent otherwise. The
-    // programmatic path through `program` always had this control; the declarative
-    // one did not, which left a `TRAIN NEURAL RELATION` run impossible to repeat.
     match database.training_seed() {
         Some(seed) => {
             execute_ml_training_owned_seeded(&owned_clause, &base_reasoner, database, seed)?;
@@ -232,7 +209,7 @@ pub fn execute_train_decl(
 }
 
 fn run_ml_predict_input_query(
-    database: &mut SparqlDatabase,
+    database: &mut KolibrieDB,
     input_raw: &str,
     prefixes: &HashMap<String, String>,
 ) -> NeuralResult<Vec<HashMap<String, String>>> {
@@ -248,10 +225,7 @@ fn run_ml_predict_input_query(
     query_training_rows(database, &query_with_prefixes)
 }
 
-fn encode_prediction_rows(
-    database: &mut SparqlDatabase,
-    rows: &[HashMap<String, String>],
-) -> Bindings {
+fn encode_prediction_rows(database: &mut KolibrieDB, rows: &[HashMap<String, String>]) -> Bindings {
     rows.iter()
         .map(|row| {
             row.iter()
@@ -262,7 +236,7 @@ fn encode_prediction_rows(
 }
 
 fn resolve_unique_relation_for_model(
-    database: &SparqlDatabase,
+    database: &KolibrieDB,
     model_name: &str,
 ) -> NeuralResult<NeuralRelationDecl> {
     let matching: Vec<NeuralRelationDecl> = database
@@ -287,10 +261,9 @@ fn resolve_unique_relation_for_model(
     }
 }
 
-/// Runs an `ML.PREDICT` that appears at the top level of a request rather than
-/// attached to a rule.
+/// Runs an `ML.PREDICT` that appears at the top level of a request rather than attached to a rule
 pub fn execute_top_level_ml_predict(
-    database: &mut SparqlDatabase,
+    database: &mut KolibrieDB,
     ml_predict: &MLPredictClause<'_>,
     prefixes: &HashMap<String, String>,
 ) -> NeuralResult<()> {
@@ -342,9 +315,9 @@ pub fn execute_top_level_ml_predict(
     Ok(())
 }
 
-/// Parses and runs a program's neural declarations against a store.
+/// Parses and runs a program's neural declarations against a store
 pub fn execute_neural_program(
-    database: &mut SparqlDatabase,
+    database: &mut KolibrieDB,
     program: &str,
 ) -> Result<(), crate::execute_query::QueryError> {
     crate::execute_query::validate_query_policy(program, database)?;
@@ -412,7 +385,7 @@ pub fn execute_neural_program(
     Ok(())
 }
 
-fn remove_materialized_triples(database: &mut SparqlDatabase, predicate: &str) {
+fn remove_materialized_triples(database: &mut KolibrieDB, predicate: &str) {
     if let Some(old_triples) = database.neural_materialized_triples.remove(predicate) {
         for triple in old_triples {
             database.delete_triple(&triple);
@@ -420,11 +393,8 @@ fn remove_materialized_triples(database: &mut SparqlDatabase, predicate: &str) {
     }
 }
 
-/// Runs one neural relation's model and adds the predicted facts to the store.
-pub fn materialize_neural_relation(
-    database: &mut SparqlDatabase,
-    predicate: &str,
-) -> NeuralResult<()> {
+/// Runs one neural relation's model and adds the predicted facts to the store
+pub fn materialize_neural_relation(database: &mut KolibrieDB, predicate: &str) -> NeuralResult<()> {
     database.ml_context.require_local()?;
     let (relation, model_decl) = resolve_model_components(database, predicate)?;
     let artifact_path = database
@@ -518,14 +488,9 @@ pub fn materialize_neural_relation(
     Ok(())
 }
 
-/// Materialises whichever neural relations the given patterns could match.
-///
-/// This is the implicit path: querying a neural predicate runs its model without
-/// the query saying so. [`SparqlDatabase`](crate::sparql_database::SparqlDatabase)
-/// can switch it off, and [`execute_program`](crate::program::execute_program) does
-/// exactly that so a program's own declarations are the only thing invoking a model.
+/// Materialises whichever neural relations the given patterns could match
 pub fn materialize_neural_relations_for_patterns(
-    database: &mut SparqlDatabase,
+    database: &mut KolibrieDB,
     patterns: &[(&str, &str, &str)],
     prefixes: &HashMap<String, String>,
 ) -> Result<(), String> {
@@ -556,7 +521,7 @@ mod tests {
     use crate::rule_execution::process_rule_definition;
     use shared::query::{LossFn, ModelArch, OptimizerKind};
 
-    fn populate_multiclass_db(db: &mut SparqlDatabase) {
+    fn populate_multiclass_db(db: &mut KolibrieDB) {
         for (idx, label, features) in [
             ("s0", "A", [1.0, 0.0, 0.0]),
             ("s1", "A", [1.0, 0.0, 0.0]),
@@ -572,7 +537,7 @@ mod tests {
         }
     }
 
-    fn populate_binary_db(db: &mut SparqlDatabase) {
+    fn populate_binary_db(db: &mut KolibrieDB) {
         for (idx, label, features) in [
             ("t0", "1", [1.0, 1.0]),
             ("t1", "1", [1.0, 1.0]),
@@ -783,7 +748,6 @@ WHERE {
         let mut db = ml_local::database();
         populate_binary_db(&mut db);
 
-        // Use a linear model to avoid random convergence failures
         let rule = r#"
 PREFIX ex: <http://example.org/>
 
@@ -828,17 +792,14 @@ WHERE {
     }
 }
 
-/// The ML layer's implementation of the hooks query evaluation calls.
-///
-/// A unit type: every method takes the store as an argument, so there is no state to
-/// hold. The crate root is what selects it for the build.
+/// The ML layer's implementation of the hooks query evaluation calls
 #[derive(Debug, Clone, Copy, Default)]
 pub struct NeuralRuntime;
 
 impl crate::ml::runtime::MlRuntime for NeuralRuntime {
     fn materialize_for_patterns(
         &self,
-        database: &mut SparqlDatabase,
+        database: &mut KolibrieDB,
         patterns: &[(&str, &str, &str)],
         prefixes: &HashMap<String, String>,
     ) -> Result<(), String> {
@@ -847,7 +808,7 @@ impl crate::ml::runtime::MlRuntime for NeuralRuntime {
 
     fn execute_train_decl(
         &self,
-        database: &mut SparqlDatabase,
+        database: &mut KolibrieDB,
         declaration: &TrainNeuralRelationDecl,
     ) -> Result<(), String> {
         execute_train_decl(database, declaration).map_err(|error| error.to_string())
@@ -855,7 +816,7 @@ impl crate::ml::runtime::MlRuntime for NeuralRuntime {
 
     fn execute_program(
         &self,
-        database: &mut SparqlDatabase,
+        database: &mut KolibrieDB,
         program: &str,
     ) -> Result<(), crate::query_error::QueryError> {
         execute_neural_program(database, program)
@@ -863,7 +824,7 @@ impl crate::ml::runtime::MlRuntime for NeuralRuntime {
 
     fn execute_predict_clause(
         &self,
-        database: &mut SparqlDatabase,
+        database: &mut KolibrieDB,
         clause: &MLPredictClause<'_>,
         rule: &mut shared::query::CombinedRule<'_>,
         prefixes: &HashMap<String, String>,

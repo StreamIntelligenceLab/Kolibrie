@@ -1,12 +1,12 @@
 mod common;
 use common::query;
-use kolibrie::sparql_database::SparqlDatabase;
+use kolibrie::database::KolibrieDB;
 
 fn assert_parity(expression: &str, input: &str, expected: &str) {
     let inner = format!("SELECT ({expression} AS ?result) WHERE {{ {input} }}");
     let outer = format!("SELECT ?result WHERE {{ {{ {inner} }} }}");
     for text in [inner, outer] {
-        let mut db = SparqlDatabase::new();
+        let mut db = KolibrieDB::new();
         assert_eq!(
             query(&mut db, &text),
             vec![vec![expected.to_string()]],
@@ -67,7 +67,7 @@ fn empty_input_and_invalid_numeric_operands_are_explicit() {
     for expression in ["SUM(?x)", "AVG(?x)", "SUM(DISTINCT ?x)", "AVG(DISTINCT ?x)"] {
         assert_parity(expression, r#"VALUES ?x { 1 "invalid" 2 }"#, "");
     }
-    let mut db = SparqlDatabase::new();
+    let mut db = KolibrieDB::new();
     assert!(query(
         &mut db,
         "SELECT ?x (COUNT(*) AS ?n) WHERE { VALUES ?x { } } GROUP BY ?x"

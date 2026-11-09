@@ -11,27 +11,16 @@
 use std::alloc::{GlobalAlloc, Layout, System};
 use std::sync::atomic::{AtomicUsize, Ordering};
 
+use kolibrie::database::KolibrieDB;
 use kolibrie::execute_query::{execute, execute_sparql_update};
-use kolibrie::sparql_database::SparqlDatabase;
 
 static ALLOCATIONS: AtomicUsize = AtomicUsize::new(0);
 static BYTES: AtomicUsize = AtomicUsize::new(0);
 
 struct CountingAllocator;
 
-// `unsafe` is unavoidable here: `GlobalAlloc` is an unsafe trait and every method on
-// it is unsafe, because the allocator is what the rest of the program's memory safety
-// rests on. The allow is scoped to this impl so that new unsafe elsewhere still fails
-// the lint gate.
-//
-// SAFETY: every method forwards to `System`, the allocator these obligations are
-// already discharged by, and adds only relaxed counter arithmetic. That means:
-// pointers returned by `alloc` come from `System` and so are valid for `layout`;
-// `dealloc` and `realloc` receive pointers this allocator produced, since it is the
-// single `#[global_allocator]` for the test binary, and pass them back to the
-// allocator that produced them with the same layout. The counters are atomics, so
-// they add no synchronisation requirement, and nothing here allocates, which would
-// re-enter the allocator.
+// SAFETY: every method forwards to `System`, the allocator these obligations are already
+// discharged by, and adds only relaxed counter arithmetic
 #[allow(unsafe_code)]
 unsafe impl GlobalAlloc for CountingAllocator {
     unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
@@ -60,8 +49,8 @@ const DEPARTMENTS: usize = 50;
 const REGIONS: usize = 10;
 const EX: &str = "http://example.org/";
 
-fn setup_database() -> SparqlDatabase {
-    let mut database = SparqlDatabase::new();
+fn setup_database() -> KolibrieDB {
+    let mut database = KolibrieDB::new();
 
     let mut default_graph = String::with_capacity(SUBJECTS * 160);
     for i in 0..SUBJECTS {
@@ -101,7 +90,6 @@ const QUERIES: [(&str, &str); 6] = [
         "SELECT ?s ?r WHERE { GRAPH ?g { ?s <http://example.org/region> ?r } }",
     ),
     (
-        // A GRAPH pattern fed by an earlier binding pattern, so the graph scope
         "graph_variable_after_join",
         "SELECT ?s ?d ?r WHERE { ?s <http://example.org/dept> ?d . GRAPH ?g { ?s <http://example.org/region> ?r } }",
     ),
@@ -127,7 +115,6 @@ const QUERIES: [(&str, &str); 6] = [
 fn allocation_profile() {
     let mut database = setup_database();
 
-    // Warm up so thread-pool and dictionary growth are not attributed to a query
     for (_, sparql) in QUERIES {
         execute(sparql, &mut database)
             .expect("query should run")

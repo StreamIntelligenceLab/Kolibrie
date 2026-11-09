@@ -8,10 +8,7 @@
  * you can obtain one at https://mozilla.org/MPL/2.0/.
  */
 
-//! Timed binding-relations and the relational join that carries interval
-//! payloads. An atom evaluates to a `BindingRelation` (variable tuple ->
-//! interval list); conjunction is a natural join with per-binding interval
-//! **intersection**; temporal operators transduce the interval lists.
+//! Timed binding-relations and the relational join that carries interval payloads
 
 use super::interval::{coalesce, intersect_lists, TInterval};
 use super::transducer;
@@ -21,18 +18,14 @@ use shared::terms::{Term, TriplePattern};
 use shared::triple::Triple;
 use std::collections::HashMap;
 
-/// The interval-valued fact base, indexed for pattern matching.
+/// The interval-valued fact base, indexed for pattern matching
 pub struct Database {
-    /// When each fact holds. Canonical — non-overlapping and ascending — only
-    /// after [`coalesce_all`](Self::coalesce_all); [`add_raw`](Self::add_raw)
-    /// deliberately leaves it unmerged.
+    /// When each fact holds
     pub facts: HashMap<Triple, Vec<TInterval>>,
     by_pred: HashMap<u32, Vec<Triple>>,
     by_pred_obj: HashMap<(u32, u32), Vec<Triple>>,
 }
 
-// Summarised rather than derived: this is the fact base, so the derived form would
-// print every fact and both indexes over them.
 impl std::fmt::Debug for Database {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let intervals: usize = self.facts.values().map(Vec::len).sum();
@@ -44,7 +37,7 @@ impl std::fmt::Debug for Database {
 }
 
 impl Database {
-    /// An empty fact base.
+    /// An empty fact base
     pub fn new() -> Self {
         Database {
             facts: HashMap::new(),
@@ -61,7 +54,7 @@ impl Database {
             .push(t.clone());
     }
 
-    /// Append one interval to a fact (indexes the triple if new). Does not coalesce.
+    /// Append one interval to a fact (indexes the triple if new)
     pub fn add_raw(&mut self, t: Triple, iv: TInterval) {
         if !self.facts.contains_key(&t) {
             self.index_triple(&t);
@@ -69,14 +62,14 @@ impl Database {
         self.facts.entry(t).or_default().push(iv);
     }
 
-    /// Coalesce every fact's interval list into canonical form.
+    /// Coalesce every fact's interval list into canonical form
     pub fn coalesce_all(&mut self) {
         for ivs in self.facts.values_mut() {
             *ivs = coalesce(std::mem::take(ivs));
         }
     }
 
-    /// Union `new_ivs` into fact `t`, coalescing. Returns true if it changed.
+    /// Union `new_ivs` into fact `t`, coalescing
     pub fn add_intervals(&mut self, t: Triple, new_ivs: &[TInterval]) -> bool {
         let is_new = !self.facts.contains_key(&t);
         if is_new {
@@ -90,7 +83,7 @@ impl Database {
         *entry != old
     }
 
-    /// Candidate ground triples that could match a pattern, using the indexes.
+    /// Candidate ground triples that could match a pattern, using the indexes
     fn candidates(&self, pattern: &TriplePattern) -> Vec<Triple> {
         let pred = as_const(&pattern.1);
         let obj = as_const(&pattern.2);
@@ -109,16 +102,14 @@ fn as_const(term: &Term) -> Option<u32> {
     }
 }
 
-/// A relation over some variables with an interval list per binding tuple.
+/// A relation over some variables with an interval list per binding tuple
 #[derive(Debug)]
 pub struct BindingRelation {
-    /// The variables this relation binds, sorted and distinct. The order defines
-    /// the tuple layout in [`rows`](Self::rows), so the two must be read together.
-    pub vars: Vec<String>, // sorted, distinct
-    /// One entry per binding tuple, positionally aligned to
-    /// [`vars`](Self::vars), mapped to the intervals over which that tuple
-    /// holds.
-    pub rows: HashMap<Vec<u32>, Vec<TInterval>>, // values aligned to `vars`
+    /// The variables this relation binds, sorted and distinct
+    pub vars: Vec<String>,
+    /// One entry per binding tuple, positionally aligned to [`vars`](Self::vars), mapped to the
+    /// intervals over which that tuple holds
+    pub rows: HashMap<Vec<u32>, Vec<TInterval>>,
 }
 
 impl BindingRelation {
@@ -130,7 +121,7 @@ impl BindingRelation {
     }
 }
 
-/// Distinct variable names appearing in a pattern, sorted.
+/// Distinct variable names appearing in a pattern, sorted
 fn pattern_vars(pattern: &TriplePattern) -> Vec<String> {
     let mut vs = Vec::new();
     for term in [&pattern.0, &pattern.1, &pattern.2] {
@@ -144,7 +135,7 @@ fn pattern_vars(pattern: &TriplePattern) -> Vec<String> {
     vs
 }
 
-/// Evaluate a (possibly nested) temporal atom to a timed binding-relation.
+/// Evaluate a (possibly nested) temporal atom to a timed binding-relation
 pub fn eval_atom(atom: &TemporalAtom, db: &Database) -> BindingRelation {
     match atom {
         TemporalAtom::Base(pattern) => eval_base(pattern, db),
@@ -159,8 +150,6 @@ pub fn eval_atom(atom: &TemporalAtom, db: &Database) -> BindingRelation {
         TemporalAtom::Prev { .. } => {
             panic!("Prev has no MeTeoR analogue and is unsupported by the interval strategy");
         }
-        // All conjuncts hold at the same instants, so the result holds exactly
-        // where their validity intervals overlap.
         TemporalAtom::Conj(atoms) => {
             let mut iter = atoms.iter();
             let Some(first) = iter.next() else {
@@ -216,7 +205,7 @@ fn eval_base(pattern: &TriplePattern, db: &Database) -> BindingRelation {
     BindingRelation { vars, rows }
 }
 
-/// Apply an interval-list transform to every row, dropping rows that become empty.
+/// Apply an interval-list transform to every row, dropping rows that become empty
 fn map_transduce(
     r: BindingRelation,
     f: impl Fn(&[TInterval]) -> Vec<TInterval>,
@@ -231,9 +220,7 @@ fn map_transduce(
     BindingRelation { vars: r.vars, rows }
 }
 
-/// Natural join of two relations on shared variables, combining the interval
-/// lists per matched binding with `combine` (intersection for conjunction,
-/// `since` for the Since operator).
+/// Natural join of two relations on shared variables, combining interval lists with `combine`
 pub fn join_with(
     a: &BindingRelation,
     b: &BindingRelation,
@@ -265,7 +252,6 @@ pub fn join_with(
         .map(|v| b.vars.iter().position(|x| x == v).unwrap())
         .collect();
 
-    // Hash b by its shared-variable values.
     let mut b_index: HashMap<Vec<u32>, Vec<(&Vec<u32>, &Vec<TInterval>)>> = HashMap::new();
     for (bk, bints) in &b.rows {
         let key: Vec<u32> = b_shared.iter().map(|&i| bk[i]).collect();
@@ -303,7 +289,7 @@ pub fn join_with(
     }
 }
 
-/// Conjunctive join (interval intersection) — used to fold a rule body.
+/// Conjunctive join (interval intersection) — used to fold a rule body
 pub fn conjoin(a: &BindingRelation, b: &BindingRelation) -> BindingRelation {
     join_with(a, b, |x, y| intersect_lists(x, y))
 }

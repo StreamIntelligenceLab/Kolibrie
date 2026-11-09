@@ -13,9 +13,7 @@ use crate::evaluator::DatalogMTLEvaluator;
 use crate::store::TemporalSnapshotStore;
 use crate::syntax::{DatalogMTLRule, Interval, TemporalAtom};
 
-/// Test 4a: Box positive — inner holds at every integer point in the window.
-/// Rule: (?x :stableReading ?v) :- Box[0, 5] (?x :sensor ?v)
-/// Dense semantics: the sensor must fire at every integer tick 0..=5.
+/// Test 4a: Box positive — inner holds at every integer point in the window
 #[test]
 fn test_box_positive() {
     let dict = make_dict();
@@ -36,7 +34,6 @@ fn test_box_positive() {
     let store = TemporalSnapshotStore::new(100);
     let mut eval = DatalogMTLEvaluator::new(vec![rule], store, dict.clone()).unwrap();
 
-    // Feed (S :sensor :v42) at every integer tick from 0 to 5.
     let mut last_derived = Vec::new();
     for t in 0..=5u64 {
         let (d, _) = eval.advance(t, vec![triple(sensor_s, sensor_p, val42)]);
@@ -51,8 +48,7 @@ fn test_box_positive() {
     );
 }
 
-/// Test 4b: Box negative — a different value at one integer point breaks it.
-/// Dense semantics: any point where the exact fact is absent fails Box.
+/// Test 4b: Box negative — a different value at one integer point breaks it
 #[test]
 fn test_box_value_inconsistency() {
     let dict = make_dict();
@@ -74,13 +70,11 @@ fn test_box_value_inconsistency() {
     let store = TemporalSnapshotStore::new(100);
     let mut eval = DatalogMTLEvaluator::new(vec![rule], store, dict.clone()).unwrap();
 
-    // Feed val42 at every tick 0..=5, but a DIFFERENT value at t=3.
     for t in 0..=5u64 {
         let val = if t == 3 { val99 } else { val42 };
         eval.advance(t, vec![triple(sensor_s, sensor_p, val)]);
     }
 
-    // At t=5, Box[0,5](?x :sensor :v42) fails because :v42 is absent at t=3.
     let (derived, _) = eval.advance(5, vec![]);
     let expected42 = triple(sensor_s, stable, val42);
 
@@ -93,8 +87,7 @@ fn test_box_value_inconsistency() {
     );
 }
 
-/// Test 4c: Box fails when window is empty (no timestamps in range).
-/// Box[1000, 5000] at t=0: t < interval.start (0 < 1000) → early exit, no derivation.
+/// Test 4c: Box fails when window is empty (no timestamps in range)
 #[test]
 fn test_box_vacuous() {
     let dict = make_dict();
@@ -103,8 +96,6 @@ fn test_box_vacuous() {
     let stable = enc(&dict, ":stableReading");
     let val42 = enc(&dict, ":v42");
 
-    // Box[1000, 5000]: at t=0, t < interval.start → early exit.
-    // Even if timestamps_in were called, an empty window must yield [] (no vacuous truth).
     let rule = DatalogMTLRule {
         id: "stableReading".into(),
         head: (v("x"), c(stable), v("val")),
@@ -120,7 +111,6 @@ fn test_box_vacuous() {
     let store = TemporalSnapshotStore::new(10_000);
     let mut eval = DatalogMTLEvaluator::new(vec![rule], store, dict.clone()).unwrap();
 
-    // At t=0, t < 1000 (interval.start) → guard fires, no derivation expected.
     let (derived, metrics) = eval.advance(0, vec![triple(sensor_s, sensor_p, val42)]);
     assert!(metrics.fixpoint_iterations >= 1);
     let expected = triple(sensor_s, stable, val42);

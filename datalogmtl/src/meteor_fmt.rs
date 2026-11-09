@@ -8,17 +8,15 @@
  * you can obtain one at https://mozilla.org/MPL/2.0/.
  */
 
-//! Reverse of [`crate::parser`]: render derived RDF triples back into MeTeoR's
-//! textual atom form and coalesce per-atom integer tick-sets into closed
-//! intervals, so datalogmtl output can be diffed line-for-line against MeTeoR.
+//! Renders derived triples back into MeTeoR's textual form, coalesced into closed intervals
 
 use crate::parser::RDF_TYPE;
 use shared::dictionary::Dictionary;
 use shared::triple::Triple;
 use std::collections::{BTreeSet, HashMap};
 
-/// Render a triple as a MeTeoR atom string (no interval):
-///   `(x, rdf:type, A)` → `A(x)`;  `(x, C, y)` → `C(x,y)`.
+/// Render a triple as a MeTeoR atom string (no interval): `(x, rdf:type, A)` → `A(x)`;  `(x, C, y)`
+/// → `C(x,y)`
 pub fn atom_string(triple: &Triple, dict: &Dictionary) -> String {
     let s = dict.decode(triple.subject).unwrap_or("?");
     let p = dict.decode(triple.predicate).unwrap_or("?");
@@ -30,8 +28,7 @@ pub fn atom_string(triple: &Triple, dict: &Dictionary) -> String {
     }
 }
 
-/// Coalesce a per-triple set of integer timepoints into MeTeoR-format lines
-/// `Pred(args)@[l,r]`, one line per contiguous interval, globally sorted.
+/// Coalesces a triple's integer time points into sorted `Pred(args)@[l,r]` lines
 pub fn format_tick_sets(ticks: &HashMap<Triple, BTreeSet<u64>>, dict: &Dictionary) -> Vec<String> {
     let mut lines = Vec::new();
     for (triple, points) in ticks {
@@ -44,7 +41,7 @@ pub fn format_tick_sets(ticks: &HashMap<Triple, BTreeSet<u64>>, dict: &Dictionar
     lines
 }
 
-/// Merge a sorted set of integer points into maximal contiguous closed intervals.
+/// Merge a sorted set of integer points into maximal contiguous closed intervals
 fn coalesce(points: &BTreeSet<u64>) -> Vec<(u64, u64)> {
     let mut out: Vec<(u64, u64)> = Vec::new();
     for &t in points {

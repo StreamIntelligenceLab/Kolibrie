@@ -1,7 +1,7 @@
+use kolibrie::database::KolibrieDB;
 use kolibrie::execute_query::{execute, execute_sparql_update};
-use kolibrie::sparql_database::SparqlDatabase;
 
-fn query(database: &mut SparqlDatabase, sparql: &str) -> Vec<Vec<String>> {
+fn query(database: &mut KolibrieDB, sparql: &str) -> Vec<Vec<String>> {
     execute(sparql, database)
         .expect("query should run")
         .into_rows()
@@ -9,7 +9,7 @@ fn query(database: &mut SparqlDatabase, sparql: &str) -> Vec<Vec<String>> {
 
 #[test]
 fn nested_graph_and_union_preserve_solution_multiplicity() {
-    let mut database = SparqlDatabase::new();
+    let mut database = KolibrieDB::new();
     execute_sparql_update(
         r#"
         PREFIX ex: <http://example.org/>
@@ -77,7 +77,7 @@ fn nested_graph_and_union_preserve_solution_multiplicity() {
 
 #[test]
 fn insert_and_delete_data_work_in_default_and_named_graphs() {
-    let mut database = SparqlDatabase::new();
+    let mut database = KolibrieDB::new();
     let inserted = execute_sparql_update(
         r#"
         PREFIX ex: <http://example.org/>
@@ -116,8 +116,6 @@ fn insert_and_delete_data_work_in_default_and_named_graphs() {
     .unwrap();
     assert_eq!(deleted.deleted_quads, 1);
 
-    // Deleting the last quad leaves the named graph identity available to an
-    // empty GRAPH pattern.
     assert_eq!(
         query(&mut database, "SELECT ?g WHERE { GRAPH ?g {} }",),
         vec![vec!["http://example.org/g".to_string()]]
@@ -126,7 +124,7 @@ fn insert_and_delete_data_work_in_default_and_named_graphs() {
 
 #[test]
 fn insert_delete_and_combined_modify_use_where_bindings() {
-    let mut database = SparqlDatabase::new();
+    let mut database = KolibrieDB::new();
     execute_sparql_update(
         r#"
         PREFIX ex: <http://example.org/>
@@ -199,7 +197,7 @@ fn insert_delete_and_combined_modify_use_where_bindings() {
 
 #[test]
 fn delete_template_where_and_invalid_data_are_handled() {
-    let mut database = SparqlDatabase::new();
+    let mut database = KolibrieDB::new();
     execute_sparql_update("INSERT DATA { <urn:s> <urn:p> \"value\" }", &mut database).unwrap();
 
     let summary = execute_sparql_update(
@@ -215,7 +213,7 @@ fn delete_template_where_and_invalid_data_are_handled() {
 
 #[test]
 fn rebuilding_indexes_keeps_named_quads_and_empty_graphs() {
-    let mut database = SparqlDatabase::new();
+    let mut database = KolibrieDB::new();
     execute_sparql_update(
         r#"
         INSERT DATA {
@@ -254,7 +252,7 @@ fn rebuilding_indexes_keeps_named_quads_and_empty_graphs() {
 
 #[test]
 fn graph_variables_flow_from_where_into_delete_and_insert_templates() {
-    let mut database = SparqlDatabase::new();
+    let mut database = KolibrieDB::new();
     execute_sparql_update(
         r#"
         INSERT DATA {

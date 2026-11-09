@@ -7,14 +7,10 @@
 * you can obtain one at https://mozilla.org/MPL/2.0/.
 */
 
-//! A straightforward [`R2ROperator`] backed by a
-//! [`SparqlDatabase`].
-//!
-//! Loads each window's content into a store and evaluates the query against it:
-//! correct, and enough for a window whose content fits in memory.
+//! A straightforward [`R2ROperator`] backed by a [`KolibrieDB`]
 
+use crate::database::KolibrieDB;
 use crate::rsp::r2r::{AsAnyMut, R2ROperator};
-use crate::sparql_database::SparqlDatabase;
 use crate::streamertail_optimizer::{ExecutionEngine, PhysicalOperator};
 use datalog::parser_n3_logic::parse_n3_rule;
 use datalog::reasoning::Reasoner;
@@ -31,33 +27,24 @@ use log::{debug, error};
 #[cfg(test)]
 use std::{println as debug, println as error};
 
-/// Which evaluation path a window's query takes.
+/// Which evaluation path a window's query takes
 #[derive(Clone, Copy, Debug)]
 pub enum QueryExecutionMode {
-    /// Direct evaluation, without cost-based planning.
+    /// Direct evaluation, without cost-based planning
     Standard,
-    /// Through the [`streamertail_optimizer`](crate::streamertail_optimizer),
-    /// which costs alternative plans first.
+    /// Through the [`streamertail_optimizer`](crate::streamertail_optimizer), which costs
+    /// alternative plans first
     Volcano,
 }
-/// An [`R2ROperator`] that loads each window's content into a store and queries it.
+/// An [`R2ROperator`] that loads each window's content into a store and queries it
 pub struct SimpleR2R {
-    /// The store holding the current window's content plus any background data.
-    pub item: SparqlDatabase,
-    /// Whether queries run through the standard path or the Volcano optimizer.
+    /// The store holding the current window's content plus any background data
+    pub item: KolibrieDB,
+    /// Whether queries run through the standard path or the Volcano optimizer
     pub execution_mode: QueryExecutionMode,
-    /// Reasoning rules applied to each window's content.
+    /// Reasoning rules applied to each window's content
     pub rules: Vec<Rule>,
     derived_triples: Vec<Triple>,
-    /// The blank-node scope every element of this stream is read in.
-    ///
-    /// One scope for the operator's whole life, not one per element. Each arriving
-    /// element is its own document in RDF's terms, but the dictionary never forgets a
-    /// term, so a fresh scope per element would mint a term per element and grow it
-    /// without bound -- measured at 204 terms over 200 elements against 5 for the
-    /// same stream without blank nodes -- until the assertion guarding the id space
-    /// fired. Sharing one scope is bounded, and still keeps this stream's labels
-    /// apart from every file's and every other stream's.
     document: u64,
     hybrid_config: Option<HybridConfig>,
     live_seed_snapshot: SeedSnapshot,
@@ -65,8 +52,6 @@ pub struct SimpleR2R {
     last_hybrid_error: Option<String>,
 }
 
-// Summarised rather than derived: `item` is a whole store, so the derived form would
-// print the window's content plus any background data on every log line.
 impl std::fmt::Debug for SimpleR2R {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("SimpleR2R")
@@ -81,10 +66,10 @@ impl std::fmt::Debug for SimpleR2R {
 }
 
 impl SimpleR2R {
-    /// An operator with an empty store and no rules.
+    /// An operator with an empty store and no rules
     pub fn new() -> Self {
         SimpleR2R {
-            item: SparqlDatabase::new(),
+            item: KolibrieDB::new(),
             execution_mode: QueryExecutionMode::Standard,
             rules: Vec::new(),
             derived_triples: Vec::new(),
@@ -96,10 +81,10 @@ impl SimpleR2R {
         }
     }
 
-    /// As [`Self::new`], choosing how queries are executed.
+    /// As [`Self::new`], choosing how queries are executed
     pub fn with_execution_mode(execution_mode: QueryExecutionMode) -> Self {
         SimpleR2R {
-            item: SparqlDatabase::new(),
+            item: KolibrieDB::new(),
             execution_mode,
             rules: Vec::new(),
             derived_triples: Vec::new(),
@@ -111,12 +96,12 @@ impl SimpleR2R {
         }
     }
 
-    /// Replaces the rules applied to each window's content.
+    /// Replaces the rules applied to each window's content
     pub fn add_reasoning_rules(&mut self, rules: Vec<Rule>) {
         self.rules.extend(rules);
     }
 
-    /// Enables probabilistic evaluation with this configuration.
+    /// Enables probabilistic evaluation with this configuration
     pub fn set_hybrid_config(&mut self, config: HybridConfig) -> Result<(), HybridError> {
         config.validate()?;
         if self
@@ -132,40 +117,36 @@ impl SimpleR2R {
         Ok(())
     }
 
-    /// Supplies the seeds the current window's uncertain items were registered
-    /// under, which probabilistic evaluation needs to resolve its literals.
+    /// Supplies the seeds the current window's uncertain items were registered under, which
+    /// probabilistic evaluation needs to resolve its literals
     pub fn set_live_seed_snapshot(&mut self, snapshot: SeedSnapshot) {
         self.live_seed_snapshot = snapshot;
     }
 
-    /// Probabilities from the most recent evaluation, by fact.
+    /// Probabilities from the most recent evaluation, by fact
     pub fn last_hybrid_results(&self) -> &HashMap<Triple, HybridProbabilityResult> {
         &self.last_hybrid_results
     }
 
-    /// Why the most recent probabilistic evaluation failed, if it did. Evaluation
-    /// failing does not stop the window from reporting its deterministic results.
+    /// Why the most recent probabilistic evaluation failed, if it did
     pub fn last_hybrid_error(&self) -> Option<&str> {
         self.last_hybrid_error.as_deref()
     }
 
-    /// Whether probabilistic evaluation is configured.
+    /// Whether probabilistic evaluation is configured
     pub fn hybrid_enabled(&self) -> bool {
         self.hybrid_config.is_some()
     }
 }
 
-/// Allow downcasting from trait objects by exposing Any for mutable references.
-/// This helps code that needs to access concrete `SimpleR2R` internals (e.g. the SparqlDatabase).
+/// Allow downcasting from trait objects by exposing Any for mutable references
 impl AsAnyMut for SimpleR2R {
     fn as_any_mut(&mut self) -> &mut dyn std::any::Any {
         self
     }
 }
 
-/// Implement the R2R operator trait for SimpleR2R. Note: the `R` generic parameter
-/// is `Vec<PhysicalOperator>` (a list of physical plans). The output `O` is
-/// a binding map `HashMap<String, String>` per row.
+/// Implement the R2R operator trait for SimpleR2R
 impl R2ROperator<Triple, Vec<PhysicalOperator>, Vec<(String, String)>> for SimpleR2R {
     fn load_triples(&mut self, _data: &str, _syntax: String) -> Result<(), String> {
         error!("Unsupported operation");
@@ -203,7 +184,6 @@ impl R2ROperator<Triple, Vec<PhysicalOperator>, Vec<(String, String)>> for Simpl
     }
 
     fn materialize(&mut self) -> Vec<Triple> {
-        // Evict derived triples from the previous cycle
         for t in &self.derived_triples {
             self.item.delete_triple(t);
         }
@@ -215,10 +195,6 @@ impl R2ROperator<Triple, Vec<PhysicalOperator>, Vec<(String, String)>> for Simpl
 
         let mut reasoner = Reasoner::new();
         reasoner.adopt_terms(self.item.terms());
-        // The window's facts are read straight from `self.item` rather than inserted
-        // here first. Building a second set of sorted indexes over content this
-        // operator is about to throw away was the whole cost, and inference flattens
-        // it back into a `Vec` immediately.
         reasoner.rules = self.rules.clone();
         self.last_hybrid_results.clear();
         self.last_hybrid_error = None;
@@ -264,8 +240,6 @@ impl R2ROperator<Triple, Vec<PhysicalOperator>, Vec<(String, String)>> for Simpl
     fn execute_query(&mut self, op: &PhysicalOperator) -> Vec<Vec<(String, String)>> {
         debug!("SimpleR2R executing query with PhysicalOperator");
 
-        // Execute the physical operator using the Volcano execution engine.
-        // The engine returns Vec<HashMap<String,String>> (bindings per row).
         ExecutionEngine::execute(op, &mut self.item)
             .into_iter()
             .map(|hashmap| {

@@ -8,11 +8,7 @@
  * you can obtain one at https://mozilla.org/MPL/2.0/.
  */
 
-//! [`Streamertail`]: enumerating candidate plans and selecting the cheapest.
-//!
-//! Translates a logical plan into a physical one, choosing a join algorithm and scan
-//! strategy per operator from what the cost model predicts rather than from the order
-//! the query was written in.
+//! [`Streamertail`]: enumerating candidate plans and selecting the cheapest
 
 use super::cost::{collect_pattern_variables, CostEstimator};
 use super::execution::{DatasetView, ExecutionEngine};
@@ -20,7 +16,7 @@ use super::operators::{LogicalOperator, PhysicalOperator};
 use super::types::{ConditionArithmetic, ConditionExpression};
 use crate::stats::DatabaseStats;
 
-use crate::sparql_database::SparqlDatabase;
+use crate::database::KolibrieDB;
 use shared::dataset_index::{GraphTerm, QuadPattern};
 use shared::terms::{Term, TriplePattern};
 use std::collections::{BTreeMap, HashMap, HashSet};
@@ -28,19 +24,16 @@ use std::sync::Arc;
 
 /// Volcano-style query optimizer with cost-based optimization
 pub struct Streamertail {
-    /// Plans already costed, keyed by a canonical form of the logical subplan, so
-    /// a repeated subexpression is not re-optimised.
+    /// Plans already costed, keyed by a canonical form of the logical subplan, so a repeated
+    /// subexpression is not re-optimised
     pub memo: HashMap<String, PhysicalOperator>,
-    /// Variables the query projects, which decides what may be dropped early.
+    /// Variables the query projects, which decides what may be dropped early
     pub selected_variables: Vec<String>,
-    /// Statistics the cost model reads. Shared, and possibly slightly stale under
-    /// the store's bounded statistics policy.
+    /// Statistics the cost model reads
     pub stats: Arc<DatabaseStats>,
     dataset: Option<DatasetView>,
 }
 
-// Summarised rather than derived: the memo holds a physical plan per costed
-// subexpression, so the derived form prints every plan considered.
 impl std::fmt::Debug for Streamertail {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("Streamertail")
@@ -80,7 +73,7 @@ fn serialize_arith_expr(expr: &ConditionArithmetic) -> String {
 
 impl Streamertail {
     /// Creates a new volcano optimizer
-    pub fn new(database: &SparqlDatabase) -> Self {
+    pub fn new(database: &KolibrieDB) -> Self {
         let stats = Arc::new(database.gather_stats());
         Self {
             memo: HashMap::new(),
@@ -90,10 +83,7 @@ impl Streamertail {
         }
     }
 
-    /// An optimizer reusing an existing statistics snapshot.
-    ///
-    /// Preferred over rebuilding: collecting statistics scans the store, so a
-    /// per-query rebuild would cost more than the planning it informs.
+    /// An optimizer reusing an existing statistics snapshot
     pub fn with_cached_stats(stats: Arc<DatabaseStats>) -> Self {
         Self {
             memo: HashMap::new(),
@@ -126,7 +116,8 @@ impl Streamertail {
         self.find_best_plan_recursive(&reordered)
     }
 
-    /// Reorders each uninterrupted group of same-scope scans so every scan after the first shares a variable with the ones before it
+    /// Reorders each uninterrupted group of same-scope scans so every scan after the first shares a
+    /// variable with the ones before it
     fn reorder_logical(&self, plan: &LogicalOperator) -> LogicalOperator {
         match plan {
             LogicalOperator::Join { left, right } => {
@@ -197,7 +188,8 @@ impl Streamertail {
         plan.unwrap_or_else(LogicalOperator::unit)
     }
 
-    /// Orders scans so the cheapest anchored pattern runs first and every later pattern joins through a variable the prefix already binds
+    /// Orders scans so the cheapest anchored pattern runs first and every later pattern joins
+    /// through a variable the prefix already binds
     fn greedy_order_scans(&self, patterns: Vec<QuadPattern>) -> Vec<QuadPattern> {
         let cost_estimator = self.cost_estimator();
         let empty = HashSet::new();
@@ -224,7 +216,6 @@ impl Streamertail {
         let mut bound: HashSet<String> = HashSet::new();
         let mut order: Vec<usize> = Vec::with_capacity(patterns.len());
 
-        // Nothing is bound yet, so constants alone rank the seed
         let seed = *remaining
             .iter()
             .min_by_key(|&&index| {
@@ -278,7 +269,7 @@ impl Streamertail {
     pub fn execute_plan(
         &self,
         plan: &PhysicalOperator,
-        database: &mut SparqlDatabase,
+        database: &mut KolibrieDB,
     ) -> Vec<HashMap<String, String>> {
         ExecutionEngine::execute(plan, database)
     }
@@ -287,7 +278,7 @@ impl Streamertail {
     pub fn execute_plan_with_dataset(
         &self,
         plan: &PhysicalOperator,
-        database: &mut SparqlDatabase,
+        database: &mut KolibrieDB,
         dataset: &DatasetView,
     ) -> Vec<HashMap<String, String>> {
         ExecutionEngine::execute_with_dataset(plan, database, dataset)
@@ -297,7 +288,7 @@ impl Streamertail {
     pub fn optimize_and_execute(
         &mut self,
         logical_plan: &LogicalOperator,
-        database: &mut SparqlDatabase,
+        database: &mut KolibrieDB,
     ) -> Vec<HashMap<String, String>> {
         let physical_plan = self.find_best_plan(logical_plan);
         self.execute_plan(&physical_plan, database)
@@ -314,7 +305,6 @@ impl Streamertail {
             return None;
         }
 
-        // Count subject-centered stars only. Object-position "stars" can explode
         let mut var_counts: BTreeMap<String, Vec<usize>> = BTreeMap::new();
 
         for (idx, pattern) in patterns.iter().enumerate() {
@@ -323,25 +313,21 @@ impl Streamertail {
             }
         }
 
-        // Find variables that appear as the subject in at least 3 patterns
         let mut star_vars: Vec<(&String, &Vec<usize>)> = var_counts
             .iter()
             .filter(|(_, indices)| indices.len() >= 3)
             .collect();
 
-        // Sort by number of occurrences (most frequent first)
         star_vars.sort_by_key(|(_, indices)| std::cmp::Reverse(indices.len()));
 
         if star_vars.is_empty() {
             return None;
         }
 
-        // Greedily assign patterns to stars
         let mut used_patterns: HashSet<usize> = HashSet::new();
         let mut stars: Vec<(String, Vec<TriplePattern>)> = Vec::new();
 
         for (var, pattern_indices) in star_vars {
-            // Get patterns for this variable that haven't been used yet
             let available: Vec<usize> = pattern_indices
                 .iter()
                 .filter(|&&idx| !used_patterns.contains(&idx))
@@ -352,7 +338,6 @@ impl Streamertail {
                 let star_patterns: Vec<TriplePattern> =
                     available.iter().map(|&idx| patterns[idx].clone()).collect();
 
-                // Mark these patterns as used
                 for &idx in &available {
                     used_patterns.insert(idx);
                 }
@@ -410,7 +395,6 @@ impl Streamertail {
             } = proj_pred.as_ref()
             {
                 if let Some(stars) = self.is_star_query(sel_pred) {
-                    // Build: Projection(Filter(StarJoin))
                     let star_plan = self.build_star_join_from_patterns(stars, sel_pred);
                     let filtered_plan = PhysicalOperator::filter(star_plan, condition.clone());
                     let projected_plan =
@@ -420,7 +404,6 @@ impl Streamertail {
             }
         }
 
-        // Handle Selection wrapping star query (no projection)
         if let LogicalOperator::Selection {
             predicate,
             condition,
@@ -433,7 +416,6 @@ impl Streamertail {
             }
         }
 
-        // Handle star query without selection or projection
         if !matches!(
             logical_plan,
             LogicalOperator::Selection { .. } | LogicalOperator::Projection { .. }
@@ -449,7 +431,6 @@ impl Streamertail {
         match logical_plan {
             LogicalOperator::Unit => candidates.push(PhysicalOperator::unit()),
             LogicalOperator::Scan { pattern } => {
-                // Implementation rules: Map logical scan to physical scans
                 let best_scan = self.choose_best_scan(pattern);
                 candidates.push(best_scan);
             }
@@ -468,9 +449,7 @@ impl Streamertail {
                 predicate,
                 condition,
             } => {
-                // Transformations: Push down selections
                 let best_child_plan = self.find_best_plan_recursive(predicate);
-                // Implementation rules: Apply selection as a filter
                 candidates.push(PhysicalOperator::filter(best_child_plan, condition.clone()));
             }
             LogicalOperator::Projection {
@@ -484,11 +463,9 @@ impl Streamertail {
                 ));
             }
             LogicalOperator::Join { left, right } => {
-                // Join order is already fixed by `reorder_logical`
                 let best_left_plan = self.find_best_plan_recursive(left);
                 let best_right_plan = self.find_best_plan_recursive(right);
 
-                // Implementation rules: costing decides between the three join algorithms
                 candidates.push(PhysicalOperator::bind_join(
                     best_left_plan.clone(),
                     best_right_plan.clone(),
@@ -512,10 +489,8 @@ impl Streamertail {
                 candidates.push(best_buffer);
             }
             LogicalOperator::Subquery { inner, spec } => {
-                // Recursively optimize the inner query
                 let optimized_inner = self.find_best_plan_recursive(inner);
 
-                // Keep every subquery-local SELECT modifier attached until execution
                 let subquery_plan = PhysicalOperator::subquery(optimized_inner, spec.clone());
 
                 candidates.push(subquery_plan);
@@ -526,10 +501,8 @@ impl Streamertail {
                 arguments,
                 output_variable,
             } => {
-                // Recursively optimize the input
                 let best_input_plan = self.find_best_plan_recursive(input);
 
-                // Create the physical BIND operator
                 let bind_plan = PhysicalOperator::bind(
                     best_input_plan,
                     function_name.clone(),
@@ -540,7 +513,6 @@ impl Streamertail {
                 candidates.push(bind_plan);
             }
             LogicalOperator::Values { variables, values } => {
-                // VALUES is a leaf operator
                 candidates.push(PhysicalOperator::values(variables.clone(), values.clone()));
             }
             LogicalOperator::MLPredict {
@@ -549,13 +521,10 @@ impl Streamertail {
                 input_variables,
                 output_variable,
             } => {
-                // Recursively optimize the input
                 let best_input_plan = self.find_best_plan_recursive(input);
 
-                // Preserve operator layout while execution uses the approved registry
                 let model_path = String::new();
 
-                // Create the physical ML.PREDICT operator
                 let ml_predict_plan = PhysicalOperator::ml_predict(
                     best_input_plan,
                     model_name.clone(),
@@ -568,7 +537,6 @@ impl Streamertail {
             }
         }
 
-        // Cost-based optimization: Choose the best candidate
         let cost_estimator = self.cost_estimator();
         let best_plan = candidates
             .into_iter()
@@ -578,7 +546,6 @@ impl Streamertail {
             })
             .unwrap();
 
-        // Memoize the best plan
         self.memoize(key, best_plan)
     }
 
@@ -670,7 +637,6 @@ impl Streamertail {
                 PhysicalOperator::StarJoin { join_var, patterns }
             }
         } else {
-            // Shouldn't happen, but return a dummy scan as fallback
             PhysicalOperator::table_scan((
                 Term::Variable("?s".to_string()),
                 Term::Variable("?p".to_string()),
@@ -691,17 +657,16 @@ impl Streamertail {
         let estimated_size = cost_estimator.estimate_quad_cardinality(pattern);
 
         match bound_vars {
-            3 => PhysicalOperator::quad_index_scan(pattern.clone()), // Fully bound - always use index
-            2 => PhysicalOperator::quad_index_scan(pattern.clone()), // Two bounds - index is better
+            3 => PhysicalOperator::quad_index_scan(pattern.clone()),
+            2 => PhysicalOperator::quad_index_scan(pattern.clone()),
             1 => {
-                // Use index if result set is small enough
                 if estimated_size < 10000 {
                     PhysicalOperator::quad_index_scan(pattern.clone())
                 } else {
                     PhysicalOperator::quad_table_scan(pattern.clone())
                 }
             }
-            0 => PhysicalOperator::quad_table_scan(pattern.clone()), // Full scan
+            0 => PhysicalOperator::quad_table_scan(pattern.clone()),
             _ => PhysicalOperator::quad_table_scan(pattern.clone()),
         }
     }
@@ -839,7 +804,6 @@ impl Streamertail {
                 )
             }
             LogicalOperator::Values { variables, values } => {
-                // Values are semantic content, not merely a cardinality hint
                 format!("Values({variables:?}, {values:?})")
             }
             LogicalOperator::MLPredict {
@@ -900,9 +864,9 @@ impl Streamertail {
     }
 
     /// Updates the optimizer's statistics
-    pub fn update_stats(&mut self, database: &SparqlDatabase) {
+    pub fn update_stats(&mut self, database: &KolibrieDB) {
         self.stats = Arc::new(database.gather_stats());
-        self.memo.clear(); // Clear memo as stats have changed
+        self.memo.clear();
     }
 
     /// Sets the selected variables for the query
@@ -923,8 +887,7 @@ mod tests {
     use shared::terms::Term;
 
     fn create_test_optimizer() -> Streamertail {
-        // Create a mock database for testing
-        let database = SparqlDatabase::new();
+        let database = KolibrieDB::new();
         Streamertail::new(&database)
     }
 

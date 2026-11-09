@@ -17,7 +17,7 @@ fn dict() -> SharedTerms {
     SharedTerms::new()
 }
 
-/// Parse in streaming mode (past-only) — the default for these tests.
+/// Parse in streaming mode (past-only) — the default for these tests
 fn parse_program(text: &str, d: &SharedTerms) -> Result<Vec<DatalogMTLRule>, String> {
     parse_program_raw(text, d, Mode::Streaming)
 }
@@ -26,7 +26,7 @@ fn id(d: &SharedTerms, s: &str) -> u32 {
     d.encode(s)
 }
 
-/// Unary body atom maps to (?x rdf:type A) and Diamondminus -> Diamond.
+/// Unary body atom maps to (?x rdf:type A) and Diamondminus -> Diamond
 #[test]
 fn test_unary_diamond_mapping() {
     let d = dict();
@@ -34,7 +34,6 @@ fn test_unary_diamond_mapping() {
     assert_eq!(rules.len(), 1);
     let rule = &rules[0];
 
-    // Head: (X, rdf:type, B)
     assert_eq!(rule.head.0, Term::Variable("X".into()));
     assert_eq!(rule.head.1, Term::Constant(id(&d, RDF_TYPE)));
     assert_eq!(rule.head.2, Term::Constant(id(&d, "B")));
@@ -55,7 +54,7 @@ fn test_unary_diamond_mapping() {
     }
 }
 
-/// Binary atom maps to (?x C ?y).
+/// Binary atom maps to (?x C ?y)
 #[test]
 fn test_binary_mapping() {
     let d = dict();
@@ -72,7 +71,7 @@ fn test_binary_mapping() {
     }
 }
 
-/// `L Since[a,b] R` -> Since { phi = L, psi = R }.
+/// `L Since[a,b] R` -> Since { phi = L, psi = R }
 #[test]
 fn test_since_mapping() {
     let d = dict();
@@ -87,7 +86,7 @@ fn test_since_mapping() {
     }
 }
 
-/// Stacked operators nest outermost-first.
+/// Stacked operators nest outermost-first
 #[test]
 fn test_stacked_operators() {
     let d = dict();
@@ -101,23 +100,21 @@ fn test_stacked_operators() {
     }
 }
 
-/// Facts parse into grounded triples with closed integer intervals.
+/// Facts parse into grounded triples with closed integer intervals
 #[test]
 fn test_fact_parsing() {
     let d = dict();
     let facts = parse_data("A(a)@[0,10]\nC(a,b)@3", &d).unwrap();
     assert_eq!(facts.len(), 2);
-    // A(a)@[0,10] -> (a, rdf:type, A) over [0,10]
     assert_eq!(facts[0].triple.subject, id(&d, "a"));
     assert_eq!(facts[0].triple.predicate, id(&d, RDF_TYPE));
     assert_eq!(facts[0].triple.object, id(&d, "A"));
     assert_eq!((facts[0].start, facts[0].end), (0, 10));
-    // C(a,b)@3 -> (a, C, b) at [3,3]
     assert_eq!(facts[1].triple.predicate, id(&d, "C"));
     assert_eq!((facts[1].start, facts[1].end), (3, 3));
 }
 
-/// Out-of-fragment inputs are rejected with a descriptive error.
+/// Out-of-fragment inputs are rejected with a descriptive error
 #[test]
 fn test_fragment_rejections() {
     let d = dict();
@@ -151,11 +148,10 @@ fn test_fragment_rejections() {
     );
 }
 
-/// Future operators parse only in Static mode, into the right variants.
+/// Future operators parse only in Static mode, into the right variants
 #[test]
 fn test_future_operators_static() {
     let d = dict();
-    // Streaming rejects; static accepts.
     assert!(parse_program_raw("B(X):-Boxplus[1,2]A(X)", &d, Mode::Streaming).is_err());
     assert!(parse_program_raw("B(X):-Boxplus[1,2]A(X)", &d, Mode::Static).is_ok());
 

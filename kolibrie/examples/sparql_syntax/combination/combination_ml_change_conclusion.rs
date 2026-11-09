@@ -1,8 +1,8 @@
+use kolibrie::database::KolibrieDB;
 use kolibrie::execute_query::execute;
 use kolibrie::ml::execute::execute_ml_prediction_from_clause;
 use kolibrie::parser::parse_standalone_rule;
 use kolibrie::rule_execution::process_rule_definition;
-use kolibrie::sparql_database::SparqlDatabase;
 use ml::MLHandler;
 use pyo3::prepare_freethreaded_python;
 use serde::{Deserialize, Serialize};
@@ -30,9 +30,8 @@ struct CongestionPrediction {
     timestamp: SystemTime,
 }
 
-// Function to extract traffic data from the database
 fn extract_traffic_data_from_database(
-    database: &SparqlDatabase,
+    database: &KolibrieDB,
 ) -> Result<Vec<TrafficData>, Box<dyn Error>> {
     let dict = database.dictionary();
     let default_triples = database.query_default_triples(None, None, None);
@@ -40,12 +39,10 @@ fn extract_traffic_data_from_database(
     let traffic_data: Vec<TrafficData> = default_triples
         .iter()
         .filter(|triple| {
-            // Use dict instead of database.dictionary
             dict.decode(triple.predicate)
                 .map_or(false, |pred| pred.ends_with("avgVehicleSpeed"))
         })
         .map(|triple| {
-            // All decode calls use dict
             let road_id = dict
                 .decode(triple.subject)
                 .unwrap_or_default()
@@ -81,7 +78,6 @@ fn extract_traffic_data_from_database(
         })
         .collect();
 
-    // Release lock before printing
     drop(dict);
 
     println!("Found {} traffic data entries", traffic_data.len());
@@ -99,7 +95,6 @@ fn extract_traffic_data_from_database(
     Ok(traffic_data)
 }
 
-// Function that handles congestion prediction logic
 fn predict_congestion(
     ml_handler: &MLHandler,
     best_model: &str,
@@ -115,7 +110,6 @@ fn predict_congestion(
     println!("\n[Rust] Building feature vectors...");
     let feature_build_start = std::time::Instant::now();
 
-    // Build feature vectors based on selected variables
     let features: Vec<Vec<f64>> = traffic_data
         .iter()
         .map(|data| {
@@ -142,17 +136,15 @@ fn predict_congestion(
     );
     println!("Using features for congestion prediction: {:?}", features);
 
-    // Call ML prediction (this now includes detailed timing)
     let prediction_results = ml_handler.predict(best_model, features)?;
 
-    // Extract timing information from the ML prediction result
     let timing = kolibrie::ml::execute::MLPredictTiming {
-        total_time: 0.0,          // Will be updated by execute_ml_prediction_from_clause
-        rust_to_python_time: 0.0, // Will be updated by execute_ml_prediction_from_clause
+        total_time: 0.0,
+        rust_to_python_time: 0.0,
         python_preprocessing_time: prediction_results.timing.preprocessing_time,
         actual_prediction_time: prediction_results.timing.actual_prediction_time,
         python_postprocessing_time: prediction_results.timing.postprocessing_time,
-        python_to_rust_time: 0.0, // Will be updated by execute_ml_prediction_from_clause
+        python_to_rust_time: 0.0,
     };
 
     println!("\nML Model Performance:");
@@ -169,7 +161,6 @@ fn predict_congestion(
         prediction_results.performance_metrics.cpu_usage_percent
     );
 
-    // Create congestion predictions with severity levels
     let predictions: Vec<CongestionPrediction> = traffic_data
         .iter()
         .zip(prediction_results.predictions.iter())
@@ -202,17 +193,16 @@ fn predict_congestion(
     Ok((predictions, timing))
 }
 
-// Struct to manage dynamic rule configurations
 struct DynamicRuleManager {
     current_rules: HashMap<String, String>,
-    database: SparqlDatabase,
+    database: KolibrieDB,
 }
 
 impl DynamicRuleManager {
     fn new() -> Self {
         Self {
             current_rules: HashMap::new(),
-            database: SparqlDatabase::with_ml_context(local_ml::trusted_context()),
+            database: KolibrieDB::with_ml_context(local_ml::trusted_context()),
         }
     }
 
@@ -221,7 +211,6 @@ impl DynamicRuleManager {
         println!("Initial RDF data loaded.");
     }
 
-    // Update rule with new definition
     fn update_rule(
         &mut self,
         rule_name: &str,
@@ -281,7 +270,6 @@ impl DynamicRuleManager {
                 }
             }
         } else {
-            // Non-ML rule processing remains unchanged
             match process_rule_definition(rule_definition, &mut self.database) {
                 Ok((rule, inferred_facts)) => {
                     println!("Rule '{}' processed successfully.", rule_name);
@@ -323,7 +311,6 @@ impl DynamicRuleManager {
         Ok(())
     }
 
-    // Manual implementation of emergency priority rule
     fn manually_apply_emergency_priority_rule(&mut self) {
         println!("     Manually applying emergency priority rule...");
 
@@ -336,14 +323,12 @@ impl DynamicRuleManager {
                     road_uri, count
                 );
 
-                // Create priority level triple
                 self.add_triple(
                     &road_uri,
                     "http://example.org/traffic#priorityLevel",
                     "HIGH",
                 );
 
-                // Create clearance required triple
                 self.add_triple(
                     &road_uri,
                     "http://example.org/traffic#clearanceRequired",
@@ -353,7 +338,6 @@ impl DynamicRuleManager {
         }
     }
 
-    // Manual implementation of weather congestion rule
     fn manually_apply_weather_congestion_rule(&mut self) {
         println!("     Manually applying weather congestion rule...");
 
@@ -367,14 +351,12 @@ impl DynamicRuleManager {
                     road_uri, congestion_level
                 );
 
-                // Create weather impact triple
                 self.add_triple(
                     &road_uri,
                     "http://example.org/traffic#weatherImpact",
                     "HIGH",
                 );
 
-                // Create adjusted congestion level triple
                 self.add_triple(
                     &road_uri,
                     "http://example.org/traffic#adjustedCongestionLevel",
@@ -384,7 +366,6 @@ impl DynamicRuleManager {
         }
     }
 
-    // Helper functions for manual rule application
     fn find_roads_with_emergency_vehicles(&self) -> Vec<(String, i32)> {
         let mut results = Vec::new();
         let dict = self.database.dictionary();
@@ -458,7 +439,6 @@ impl DynamicRuleManager {
     ) {
         let road_subject = format!("http://example.org/traffic#{}", prediction.road_id);
 
-        // Encode with write lock
         let road_subject_id = {
             let mut dict = self.database.dictionary_mut();
             dict.encode(&road_subject)
@@ -480,7 +460,6 @@ impl DynamicRuleManager {
                     .database
                     .resolve_query_term(predicate_str, &self.database.prefixes().clone());
 
-                // Acquire write lock for encoding
                 let mut dict = self.database.dictionary_mut();
                 let predicate_id = dict.encode(&expanded_predicate);
 
@@ -495,7 +474,7 @@ impl DynamicRuleManager {
                     dict.encode(object_str)
                 };
 
-                drop(dict); // Release write lock
+                drop(dict);
 
                 let enhanced_triple = Triple {
                     subject: road_subject_id,
@@ -506,7 +485,6 @@ impl DynamicRuleManager {
                 if self.database.insert_triple(&enhanced_triple) {
                     facts.push(enhanced_triple.clone());
 
-                    // Acquire read lock for printing
                     let dict = self.database.dictionary();
                     println!(
                         "  Created triple: {} {} {}",
@@ -519,20 +497,17 @@ impl DynamicRuleManager {
         }
     }
 
-    // Pattern match on FilterExpression enum
     fn prediction_matches_where_clause(
         &self,
         prediction: &CongestionPrediction,
         rule: &CombinedRule,
     ) -> bool {
-        // Get the road's data from the database
         let road_subject = format!("http://example.org/traffic#{}", prediction.road_id);
         let road_subject_id = {
             let mut dict = self.database.dictionary_mut();
             dict.encode(&road_subject)
         };
 
-        // Get road data
         let avg_speed = self
             .get_road_data(road_subject_id, "avgVehicleSpeed")
             .unwrap_or(0.0);
@@ -545,11 +520,9 @@ impl DynamicRuleManager {
             prediction.road_id, avg_speed, vehicle_count
         );
 
-        // Handle different rule types with specific filters
         let rule_predicate = rule.head.predicate;
 
         if rule_predicate.contains("CongestionWithSeverity") {
-            // Rule: FILTER (?speed < 30)
             let matches = avg_speed < 30.0;
             println!(
                 "    CongestionWithSeverity filter: speed {:.1} < 30? {}",
@@ -559,7 +532,6 @@ impl DynamicRuleManager {
         }
 
         if rule_predicate.contains("IncidentResponse") {
-            // Rule: FILTER (?speed < 20 && ?count > 100)
             let speed_matches = avg_speed < 20.0;
             let count_matches = vehicle_count > 100.0;
             let overall_matches = speed_matches && count_matches;
@@ -572,7 +544,6 @@ impl DynamicRuleManager {
             return overall_matches;
         }
 
-        // Parse filters properly (for generic cases)
         let (_, filters, _, _, _) = &rule.body;
 
         for filter in filters {
@@ -621,7 +592,6 @@ impl DynamicRuleManager {
         true
     }
 
-    // Helper method to get road data
     fn get_road_data(&self, road_subject_id: u32, data_type: &str) -> Option<f64> {
         let dict = self.database.dictionary();
 
@@ -641,7 +611,6 @@ impl DynamicRuleManager {
     fn add_prediction_to_database(&mut self, prediction: &CongestionPrediction) {
         let subject = format!("http://example.org/traffic#{}", prediction.road_id);
 
-        // Add congestion level
         let congestion_predicate = "http://example.org/traffic#congestionLevel";
         self.add_triple(
             &subject,
@@ -649,11 +618,9 @@ impl DynamicRuleManager {
             &prediction.congestion_level.to_string(),
         );
 
-        // Add severity
         let severity_predicate = "http://example.org/traffic#congestionSeverity";
         self.add_triple(&subject, severity_predicate, &prediction.severity);
 
-        // Add confidence
         let confidence_predicate = "http://example.org/traffic#predictionConfidence";
         self.add_triple(
             &subject,
@@ -696,10 +663,8 @@ impl DynamicRuleManager {
 fn main() -> Result<(), Box<dyn Error>> {
     prepare_freethreaded_python();
 
-    // Initialize dynamic rule manager
     let mut rule_manager = DynamicRuleManager::new();
 
-    // Load initial traffic data
     let traffic_data = r#"
         <?xml version="1.0"?>
         <rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#"
@@ -727,7 +692,6 @@ fn main() -> Result<(), Box<dyn Error>> {
     println!("Dynamic Traffic Monitoring System Started");
     println!("=========================================================");
 
-    // SCENARIO 1: Initial parameterless rule for basic congestion detection
     println!("\nSCENARIO 1: Basic Congestion Detection");
     let basic_rule = r#"PREFIX ex: <http://example.org/traffic#>
 RULE :DetectCongestion :- 
@@ -751,7 +715,6 @@ RULE :DetectCongestion :-
 
     rule_manager.update_rule("basic_congestion", basic_rule)?;
 
-    // Query current congestion levels
     rule_manager.query(
         r#"PREFIX ex: <http://example.org/traffic#>
         SELECT ?road ?level WHERE { 
@@ -760,9 +723,8 @@ RULE :DetectCongestion :-
         "Current congestion levels",
     )?;
 
-    // SCENARIO 2: Update rule on the fly - Add severity classification
     println!("\nSCENARIO 2: Enhanced Rule with Severity (Dynamic Update)");
-    std::thread::sleep(std::time::Duration::from_secs(2)); // Simulate time passing
+    std::thread::sleep(std::time::Duration::from_secs(2));
 
     let enhanced_rule = r#"PREFIX ex: <http://example.org/traffic#>
 RULE :DetectCongestionWithSeverity :- 
@@ -789,7 +751,6 @@ RULE :DetectCongestionWithSeverity :-
 
     rule_manager.update_rule("enhanced_congestion", enhanced_rule)?;
 
-    // Query enhanced results
     rule_manager.query(
         r#"PREFIX ex: <http://example.org/traffic#>
         SELECT ?road ?level WHERE { 
@@ -814,10 +775,8 @@ RULE :DetectCongestionWithSeverity :-
         "Traffic alerts",
     )?;
 
-    // SCENARIO 3: Add new data and update rule logic again
     println!("\nSCENARIO 3: Adding Emergency Vehicles Data and Priority Rules");
 
-    // Add new emergency vehicle data
     let emergency_data = r#"
         <?xml version="1.0"?>
         <rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#"
@@ -839,7 +798,6 @@ RULE :DetectCongestionWithSeverity :-
 
     rule_manager.load_initial_data(emergency_data);
 
-    // Priority rule for emergency vehicles
     let priority_rule = r#"PREFIX ex: <http://example.org/traffic#>
 RULE :EmergencyPriority :- 
     CONSTRUCT {
@@ -853,7 +811,6 @@ RULE :EmergencyPriority :-
 
     rule_manager.update_rule("emergency_priority", priority_rule)?;
 
-    // Weather-aware congestion rule
     let weather_rule = r#"PREFIX ex: <http://example.org/traffic#>
 RULE :WeatherAwareCongestion :- 
     CONSTRUCT {
@@ -868,7 +825,6 @@ RULE :WeatherAwareCongestion :-
 
     rule_manager.update_rule("weather_congestion", weather_rule)?;
 
-    // Query comprehensive traffic status with separate queries
     rule_manager.query(
         r#"PREFIX ex: <http://example.org/traffic#>
         SELECT ?road ?congestion WHERE { 
@@ -901,10 +857,8 @@ RULE :WeatherAwareCongestion :-
         "Weather conditions",
     )?;
 
-    // SCENARIO 4: Real-time rule modification based on conditions
     println!("\nSCENARIO 4: Real-time Adaptive Rules");
 
-    // Simulate a traffic incident and modify rules accordingly
     println!("Traffic incident detected on HighwayA1!");
 
     let incident_rule = r#"PREFIX ex: <http://example.org/traffic#>
@@ -933,7 +887,6 @@ RULE :IncidentResponse :-
 
     rule_manager.update_rule("incident_response", incident_rule)?;
 
-    // Final comprehensive queries
     rule_manager.query(
         r#"PREFIX ex: <http://example.org/traffic#>
         SELECT ?road ?congestion WHERE { 
@@ -966,7 +919,6 @@ RULE :IncidentResponse :-
         "Recommended actions",
     )?;
 
-    // Show all active rules
     rule_manager.list_current_rules();
 
     println!("\nDynamic rule management demonstration completed!");

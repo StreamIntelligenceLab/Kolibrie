@@ -10,7 +10,6 @@
 
 use kolibrie::prelude::*;
 
-// Simple select
 fn simple_select() {
     let rdf_data = r#"
         <?xml version="1.0" encoding="UTF-8"?>
@@ -29,7 +28,7 @@ fn simple_select() {
         </rdf:RDF>
     "#;
 
-    let mut database = SparqlDatabase::new();
+    let mut database = KolibrieDB::new();
     database.parse_rdf(rdf_data);
 
     let sparql = r#"
@@ -44,7 +43,6 @@ fn simple_select() {
         .expect("query should run")
         .into_rows();
 
-    // Now the main function is responsible for printing the results
     println!("Results: {:?}", results);
 }
 

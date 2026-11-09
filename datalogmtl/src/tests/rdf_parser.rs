@@ -8,7 +8,7 @@
  * you can obtain one at https://mozilla.org/MPL/2.0/.
  */
 
-//! Tests for the RDF triple-pattern parser (`crate::rdf_parser`).
+//! Tests for the RDF triple-pattern parser (`crate::rdf_parser`)
 
 use shared::dictionary::Dictionary;
 use shared::terms::Term;
@@ -23,10 +23,7 @@ fn cst(t: &Term) -> u32 {
     }
 }
 
-// ── The two IRI bugs the lift had to fix ──────────────────────────────────────
-
-/// `#` inside `<…>` is part of the IRI, not the start of a line comment.
-/// Without this, every `rdf:type` pattern lost its fragment.
+/// `#` inside `<…>` is part of the IRI, not the start of a line comment
 #[test]
 fn test_comment_strip_preserves_iri_fragment() {
     let mut dict = Dictionary::new();
@@ -44,7 +41,7 @@ fn test_comment_strip_preserves_iri_fragment() {
     );
 }
 
-/// A real `#` comment after an IRI still terminates the line.
+/// A real `#` comment after an IRI still terminates the line
 #[test]
 fn test_comment_after_iri_still_strips() {
     let mut dict = Dictionary::new();
@@ -57,7 +54,7 @@ fn test_comment_after_iri_still_strips() {
     assert_eq!(rules.len(), 1, "commented-out rule must not be parsed");
 }
 
-/// Dots in a host name must not terminate a shape block.
+/// Dots in a host name must not terminate a shape block
 #[test]
 fn test_stream_iri_with_dots() {
     let mut dict = Dictionary::new();
@@ -77,9 +74,7 @@ fn test_stream_iri_with_dots() {
     assert_eq!(shapes[0].staleness.max_gap_ms, 10);
 }
 
-// ── Ground facts ──────────────────────────────────────────────────────────────
-
-/// Plain N-Triples, as any RDF tool would emit it.
+/// Plain N-Triples, as any RDF tool would emit it
 #[test]
 fn test_parse_facts_ntriples() {
     let mut dict = Dictionary::new();
@@ -101,7 +96,7 @@ fn test_parse_facts_ntriples() {
     );
 }
 
-/// Dots inside IRIs must not terminate the statement.
+/// Dots inside IRIs must not terminate the statement
 #[test]
 fn test_parse_facts_dotted_iris() {
     let mut dict = Dictionary::new();
@@ -117,7 +112,7 @@ fn test_parse_facts_dotted_iris() {
     );
 }
 
-/// A literal object may contain spaces and a trailing language tag.
+/// A literal object may contain spaces and a trailing language tag
 #[test]
 fn test_parse_facts_literal_with_spaces() {
     let mut dict = Dictionary::new();
@@ -133,7 +128,7 @@ fn test_parse_facts_literal_with_spaces() {
     );
 }
 
-/// PREFIX remains available as a convenience, though it is not strict N-Triples.
+/// PREFIX remains available as a convenience, though it is not strict N-Triples
 #[test]
 fn test_parse_facts_prefixed_convenience() {
     let mut dict = Dictionary::new();
@@ -186,8 +181,6 @@ fn test_parse_facts_empty_is_ok() {
         .is_empty());
 }
 
-// ── EXPIRY ────────────────────────────────────────────────────────────────────
-
 #[test]
 fn test_expiry_patterns_parse() {
     let mut dict = Dictionary::new();
@@ -212,8 +205,8 @@ fn test_expiry_patterns_parse() {
     );
 }
 
-/// A shape with no EXPIRY section is still valid — it just transmits nothing
-/// when a channel goes quiet, which is the old behaviour.
+/// A shape with no EXPIRY section is still valid — it just transmits nothing when a channel goes
+/// quiet, which is the old behaviour
 #[test]
 fn test_expiry_is_optional() {
     let mut dict = Dictionary::new();
@@ -225,8 +218,8 @@ fn test_expiry_is_optional() {
     assert!(shapes[0].on_expiry.is_empty());
 }
 
-/// Only the channel key survives expiry, so a non-key variable can never be
-/// instantiated — reject it at parse time rather than emitting nothing.
+/// Only the channel key survives expiry, so a non-key variable can never be instantiated — reject
+/// it at parse time rather than emitting nothing
 #[test]
 fn test_expiry_rejects_non_key_variable() {
     let mut dict = Dictionary::new();
@@ -247,8 +240,6 @@ fn test_expiry_rejects_non_key_variable() {
     );
     assert!(err.contains("KEY"), "error should mention KEY: {}", err);
 }
-
-// ── PREFIX handling ───────────────────────────────────────────────────────────
 
 #[test]
 fn test_prefix_expansion_matches_full_iri() {
@@ -276,8 +267,8 @@ fn test_prefix_expansion_matches_full_iri() {
     );
 }
 
-/// Back-compat: `:name` with no empty prefix declared is interned verbatim,
-/// exactly as the playground and http-server have always relied on.
+/// Back-compat: `:name` with no empty prefix declared is interned verbatim, exactly as the
+/// playground and http-server have always relied on
 #[test]
 fn test_bare_colon_name_interned_verbatim() {
     let mut dict = Dictionary::new();
@@ -321,8 +312,6 @@ fn test_unknown_prefix_is_an_error() {
     );
 }
 
-// ── Rule labels ───────────────────────────────────────────────────────────────
-
 #[test]
 fn test_rule_label_becomes_id_else_index() {
     let mut dict = Dictionary::new();
@@ -337,8 +326,6 @@ fn test_rule_label_becomes_id_else_index() {
     assert_eq!(rules[0].id, "alpha");
     assert_eq!(rules[1].id, "1", "unlabelled rules keep the index id");
 }
-
-// ── Operators ─────────────────────────────────────────────────────────────────
 
 #[test]
 fn test_since_binary_atom() {
@@ -396,13 +383,6 @@ fn test_stacked_operators() {
         other => panic!("expected Box, got {:?}", other),
     }
 }
-
-// ── The drone demo's shipped configuration ────────────────────────────────────
-//
-// Mirrors DEFAULT_RULES / DEFAULT_SHAPES in
-// kolibrie/examples/real_scenario/drone_traffic_safety_demo.rs. The demo also
-// parses its own text at startup and panics on failure, so drift shows up
-// immediately when running it; this test guards the parser features it needs.
 
 const DEMO_RULES: &str = r#"
 PREFIX dront: <http://example.org/dront/>
@@ -507,8 +487,6 @@ fn test_demo_defaults_parse() {
         ]
     );
 
-    // Background facts must be valid N-Triples and dual-classify every zone:
-    // the generic class feeds the geofence rules, the numbered one zoneTour.
     let facts = parse_facts(DEMO_STATIC, &mut dict).expect("demo background facts must parse");
     assert_eq!(facts.len(), 6, "three zones x (generic + numbered) class");
 
@@ -519,17 +497,14 @@ fn test_demo_defaults_parse() {
     assert_eq!(shapes[0].event_pattern.len(), 8);
     assert_eq!(shapes[0].channel_key, vec!["drone".to_string()]);
     assert_eq!(shapes[0].staleness.max_gap_ms, 10);
-    // controlLinkLoss has nothing to observe without this.
     assert_eq!(shapes[0].on_expiry.len(), 1);
 }
 
-/// The demo's rules and shape must agree with `init_vocab`'s full IRIs — a
-/// mismatch would parse and validate, then silently match nothing at runtime.
+/// The demo's rules and shape use the same full IRIs as `init_vocab`
 #[test]
 fn test_demo_defaults_match_vocab_iris() {
     let mut dict = Dictionary::new();
 
-    // Intern the vocab IRIs first, the way init_vocab does.
     let rdf_type = dict.encode("http://www.w3.org/1999/02/22-rdf-syntax-ns#type");
     let in_zone = dict.encode("http://example.org/dront/inZone");
     let violated = dict.encode("http://utm.example.org/violatedZone");
@@ -546,7 +521,6 @@ fn test_demo_defaults_match_vocab_iris() {
         },
         other => panic!("expected Box, got {:?}", other),
     }
-    // `<false>` is the demo's quoting device for the bare string "false".
     match &rules[2].body[0] {
         TemporalAtom::Base(p) => assert_eq!(cst(&p.2), xsd_false),
         other => panic!("expected base atom, got {:?}", other),
@@ -554,10 +528,8 @@ fn test_demo_defaults_match_vocab_iris() {
     assert_eq!(cst(&shapes[0].event_pattern[0].1), rdf_type);
 }
 
-// ── Conjunction under an operator ─────────────────────────────────────────────
-
-/// `Op[a,b]((p1), (p2))` scopes the operator over BOTH patterns, which is
-/// strictly stronger than hoisting the second one out of the operator.
+/// `Op[a,b]((p1), (p2))` scopes the operator over BOTH patterns, which is strictly stronger than
+/// hoisting the second one out of the operator
 #[test]
 fn test_operator_over_conjunction() {
     let mut dict = Dictionary::new();
@@ -581,8 +553,8 @@ fn test_operator_over_conjunction() {
     }
 }
 
-/// A single parenthesised pattern must still parse as one Base atom, not a
-/// one-element conjunction — the two forms must stay distinguishable.
+/// A single parenthesised pattern must still parse as one Base atom, not a one-element conjunction
+/// — the two forms must stay distinguishable
 #[test]
 fn test_single_pattern_is_not_a_conjunction() {
     let mut dict = Dictionary::new();
@@ -601,7 +573,7 @@ fn test_single_pattern_is_not_a_conjunction() {
     }
 }
 
-/// Conjuncts may themselves be operator atoms, not just plain patterns.
+/// Conjuncts may themselves be operator atoms, not just plain patterns
 #[test]
 fn test_conjunction_of_nested_operators() {
     let mut dict = Dictionary::new();
@@ -624,8 +596,7 @@ fn test_conjunction_of_nested_operators() {
     }
 }
 
-/// Redundant grouping parens around a single operator atom must be transparent:
-/// `Diamond[0,10](Box[1,11](...))` is the same as writing the operators adjacent.
+/// Redundant parentheses around a single operator atom are transparent
 #[test]
 fn test_redundant_grouping_parens() {
     let mut dict = Dictionary::new();
@@ -648,7 +619,7 @@ fn test_redundant_grouping_parens() {
     }
 }
 
-/// A bracketed literal must not be mistaken for an operator keyword.
+/// A bracketed literal must not be mistaken for an operator keyword
 #[test]
 fn test_literal_with_brackets_is_not_an_operator() {
     let mut dict = Dictionary::new();

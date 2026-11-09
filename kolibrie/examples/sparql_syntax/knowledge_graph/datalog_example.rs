@@ -19,7 +19,6 @@ fn main() {
     kg.add_abox_triple("Bob", "parent", "Charlie");
     kg.add_abox_triple("Charlie", "parent", "David");
 
-    // Encode predicates once with proper locking
     let parent_id = kg.encode_term("parent");
     let ancestor_id = kg.encode_term("ancestor");
 
@@ -74,11 +73,7 @@ fn main() {
         }
     }
 
-    let results = kg.query_abox(
-        None,             // subject: any (this is our variable X)
-        Some("ancestor"), // predicate: "ancestor"
-        Some("David"),    // object: "David"
-    );
+    let results = kg.query_abox(None, Some("ancestor"), Some("David"));
 
     for triple in results {
         if let Some(ancestor) = kg.decode_term(triple.subject) {

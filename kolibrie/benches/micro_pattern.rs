@@ -8,22 +8,7 @@
  * you can obtain one at https://mozilla.org/MPL/2.0/.
  */
 
-//! Pattern matching and triple construction — the reasoner's inner loop.
-//!
-//! **Why this bench lives in `kolibrie` and not in `datalog`.** Benching from a crate
-//! other than the one defining the function is the measurement that matters: a bench
-//! inside the defining crate inlines freely and tells us nothing about what callers
-//! actually pay. Cross-crate calls are inlined only through LTO, and `lto = "thin"`
-//! reduces that loss without eliminating it. (`[profile.bench]` inherits `release`,
-//! so thin LTO is in effect here.)
-//!
-//! Step 6 moved both functions to `shared::pattern`, and this file now imports from
-//! there. Be clear about what that before/after comparison can and cannot show: this
-//! call site was *already* cross-crate, `kolibrie -> datalog`, and is now
-//! `kolibrie -> shared`, so it is close to unchanged by construction. The boundary the
-//! move actually introduces is `datalog -> shared` inside the reasoner's own loops,
-//! which this bench does not exercise — `family_tree_cross_window_compare` is the
-//! probe for that, since it drives `cross_window_incremental` through the reasoner.
+//! Pattern matching and triple construction — the reasoner's inner loop
 
 extern crate criterion;
 
@@ -38,8 +23,7 @@ const FACTS: usize = 10_000;
 const SUBJECTS: u32 = 500;
 const PREDICATES: u32 = 10;
 
-/// A fact table with a realistic mix: many subjects, few predicates, so a
-/// predicate-bound pattern matches a meaningful fraction rather than all or nothing.
+/// A fact table with many subjects and few predicates
 fn facts() -> Vec<Triple> {
     (0..FACTS as u32)
         .map(|i| Triple {
@@ -58,9 +42,6 @@ fn bench_matches(c: &mut Criterion) {
     let facts = facts();
     let mut group = c.benchmark_group("micro_pattern/matches_rule_pattern");
 
-    // Three selectivities. The all-variable case is the reasoner's common shape;
-    // the fully-bound case isolates the call overhead itself, which is what a lost
-    // inline shows up in most clearly.
     let patterns: Vec<(&str, TriplePattern)> = vec![
         ("all_variables", (var("s"), var("p"), var("o"))),
         (

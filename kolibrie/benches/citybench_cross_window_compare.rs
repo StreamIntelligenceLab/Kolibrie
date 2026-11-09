@@ -110,8 +110,6 @@ fn make_citybench_sds(size: usize, update_ratio_percent: usize) -> Sds {
 }
 
 fn signature(result: &HashMap<String, Vec<Triple>>, dict: &SharedTerms) -> BTreeSet<String> {
-    // A copy: this decodes every triple it prints, and a scoped encoder will not
-    // hold its lock across the walk.
     let d = dict.view();
     let mut out = BTreeSet::new();
 
@@ -175,7 +173,6 @@ fn bench_citybench_cross_window(c: &mut Criterion) {
                     let rules = parse_rules(&dict);
                     let next_sds = make_citybench_sds(size, ratio);
 
-                    // Explicit warmup outside the measured loop.
                     black_box(naive_sds_plus(&rules, &next_sds, &dict, CURRENT_TIME));
 
                     b.iter(|| {
@@ -198,7 +195,6 @@ fn bench_citybench_cross_window(c: &mut Criterion) {
                     let initial_sds = make_citybench_sds(size, 0);
                     let next_sds = make_citybench_sds(size, ratio);
 
-                    // Warmup/state preparation is intentionally outside the measured loop
                     let previous = prepare_incremental_state(&rules, &initial_sds, &dict);
                     black_box(incremental_sds_plus(
                         &rules,

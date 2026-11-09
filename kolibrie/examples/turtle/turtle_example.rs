@@ -12,9 +12,8 @@ extern crate kolibrie;
 use kolibrie::prelude::*;
 
 fn main() {
-    let mut db = SparqlDatabase::new();
+    let mut db = KolibrieDB::new();
 
-    // Employee dataset in Turtle format
     let turtle_data = r#"
         <http://example.org/employee1> <http://example.org/name> "Alice" .
         <http://example.org/employee1> <http://example.org/jobTitle> "Engineer" .
@@ -30,16 +29,14 @@ fn main() {
     "#;
     db.parse_turtle(turtle_data);
 
-    // Filter employees with salary greater than 5000 using QueryBuilder
     let filtered_triples = db
         .query()
         .with_predicate("<http://example.org/salary>")
         .filter(|triple| {
-            // Acquire read lock for dictionary access
             let dict = db.dictionary();
             if let Some(object) = dict.decode(triple.object) {
                 let result = object.parse::<i32>().unwrap_or(0) > 5000;
-                drop(dict); // Release lock early
+                drop(dict);
                 return result;
             }
             drop(dict);
@@ -47,7 +44,6 @@ fn main() {
         })
         .get_triples();
 
-    // Print the filtered triples
     println!("Filtered Triples:");
     for triple in filtered_triples.clone() {
         let dict = db.dictionary();

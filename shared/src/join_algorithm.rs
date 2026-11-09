@@ -20,7 +20,6 @@ fn extract_join_parameters(premise: &TriplePattern) -> (String, String) {
     let subject_var = match subject_term {
         Term::Variable(v) => v.clone(),
         Term::Constant(c) => {
-            // For constants, create a synthetic variable name
             format!("__const_subj_{}", c)
         }
         Term::QuotedTriple(_) => "__quoted_subj".to_string(),
@@ -29,7 +28,6 @@ fn extract_join_parameters(premise: &TriplePattern) -> (String, String) {
     let object_var = match object_term {
         Term::Variable(v) => v.clone(),
         Term::Constant(c) => {
-            // For constants, create a synthetic variable name
             format!("__const_obj_{}", c)
         }
         Term::QuotedTriple(_) => "__quoted_obj".to_string(),
@@ -38,7 +36,7 @@ fn extract_join_parameters(premise: &TriplePattern) -> (String, String) {
     (subject_var, object_var)
 }
 
-/// Match or bind the premise's predicate variable; false on conflict.
+/// Match or bind the premise's predicate variable; false on conflict
 fn bind_predicate(
     result: &mut BTreeMap<String, String>,
     pred_var: Option<&str>,
@@ -67,21 +65,18 @@ pub fn perform_hash_join_for_rules(
     dict: &Dictionary,
     final_results: Vec<BTreeMap<String, String>>,
 ) -> Vec<BTreeMap<String, String>> {
-    // Extract variable names from the premise
     let (subject, object) = extract_join_parameters(premise);
 
     if final_results.is_empty() {
         return Vec::new();
     }
 
-    // Constant predicate filters here; a variable one is bound per row.
     let (predicate_filter, predicate_var) = match &premise.1 {
         Term::Constant(c) => (Some(*c), None),
         Term::Variable(v) => (None, Some(v.as_str())),
         Term::QuotedTriple(_) => return Vec::new(),
     };
 
-    // Constant subject/object IDs are compared directly against the triple.
     let subject_filter = match &premise.0 {
         Term::Constant(c) => Some(*c),
         _ => None,
@@ -91,13 +86,11 @@ pub fn perform_hash_join_for_rules(
         _ => None,
     };
 
-    // A premise like (?v, p, ?v) requires subject == object.
     let same_subject_object_var = matches!(
         (&premise.0, &premise.2),
         (Term::Variable(a), Term::Variable(b)) if a == b
     );
 
-    // Pre-filter triples (this is very fast)
     let filtered_triples: Vec<&Triple> = triples
         .iter()
         .filter(|triple| {
@@ -112,10 +105,8 @@ pub fn perform_hash_join_for_rules(
         return Vec::new();
     }
 
-    // Build simple hash table - this is the key optimization
     let hash_table = build_simple_hash_table(&final_results, &subject, &object, dict);
 
-    // Parallel processing with minimal overhead
     let chunk_size = (filtered_triples.len() / rayon::current_num_threads().max(1)).max(1000);
 
     filtered_triples
@@ -211,7 +202,6 @@ fn process_triple_fast(
     let object_id = triple.object;
     let predicate_id = triple.predicate;
 
-    // Fast path: both variables bound
     if let Some(indices) = hash_table.both_bound.get(&(subject_id, object_id)) {
         for &idx in indices {
             let mut result = hash_table.results[idx].clone();
@@ -222,7 +212,6 @@ fn process_triple_fast(
         return;
     }
 
-    // Subject bound path
     if let Some(indices) = hash_table.subject_bound.get(&subject_id) {
         for &idx in indices {
             let mut result = hash_table.results[idx].clone();
@@ -235,7 +224,6 @@ fn process_triple_fast(
         }
     }
 
-    // Object bound path
     if let Some(indices) = hash_table.object_bound.get(&object_id) {
         for &idx in indices {
             let mut result = hash_table.results[idx].clone();
@@ -248,7 +236,6 @@ fn process_triple_fast(
         }
     }
 
-    // Neither bound path
     for &idx in &hash_table.neither_bound {
         let mut result = hash_table.results[idx].clone();
 

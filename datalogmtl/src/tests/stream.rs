@@ -11,7 +11,7 @@
 use super::{enc, make_dict, triple};
 use crate::stream::{RdfEvent, ShapeIngester, StalenessPolicy, StreamShape};
 
-/// Test 8: Stream shape — single sensor channel.
+/// Test 8: Stream shape — single sensor channel
 #[test]
 fn test_stream_single_sensor() {
     let dict = make_dict();
@@ -44,7 +44,6 @@ fn test_stream_single_sensor() {
 
     let mut ingester = ShapeIngester::new(vec![shape]);
 
-    // Events at t=0, 1000, 2000 — same room, different obs IRIs, same val.
     for (t, obs) in [(0u64, obs1), (1000, obs2), (2000, obs3)] {
         let event = RdfEvent {
             stream_iri: "http://example.org/tempStream".into(),
@@ -64,13 +63,11 @@ fn test_stream_single_sensor() {
         }
     }
 
-    // Channel {room: room42} should be active after t=2000.
     let active = ingester.active_channels();
     assert_eq!(active.len(), 1, "Should have exactly 1 active channel");
     let channel_state = active.values().next().unwrap();
     assert_eq!(channel_state.last_event_time, 2000);
 
-    // At t=5000 (gap > 2000ms after t=2000), channel should be expired.
     let expired = ingester.expired_channels(5000);
     assert_eq!(expired.len(), 1, "Channel should be expired at t=5000");
 
@@ -82,7 +79,7 @@ fn test_stream_single_sensor() {
     );
 }
 
-/// Test 9: Stream shape — composite key, two sensors in same room.
+/// Test 9: Stream shape — composite key, two sensors in same room
 #[test]
 fn test_stream_composite_key() {
     let dict = make_dict();
@@ -124,7 +121,6 @@ fn test_stream_composite_key() {
 
     let mut ingester = ShapeIngester::new(vec![shape]);
 
-    // t=0: sensorA in room42, val=22
     ingester.process_event(&RdfEvent {
         stream_iri: "http://example.org/tempStream".into(),
         timestamp: 0,
@@ -135,7 +131,6 @@ fn test_stream_composite_key() {
         ],
     });
 
-    // t=0: sensorB in room42, val=23
     ingester.process_event(&RdfEvent {
         stream_iri: "http://example.org/tempStream".into(),
         timestamp: 0,
@@ -146,14 +141,12 @@ fn test_stream_composite_key() {
         ],
     });
 
-    // Two distinct channels should exist.
     assert_eq!(
         ingester.active_channels().len(),
         2,
         "Should have 2 distinct channels for sensorA and sensorB"
     );
 
-    // t=1000: sensorA update
     ingester.process_event(&RdfEvent {
         stream_iri: "http://example.org/tempStream".into(),
         timestamp: 1000,
@@ -164,14 +157,12 @@ fn test_stream_composite_key() {
         ],
     });
 
-    // Still 2 channels.
     assert_eq!(
         ingester.active_channels().len(),
         2,
         "sensorA update should not affect sensorB channel count"
     );
 
-    // Find sensorB channel — its last_event_time should still be 0.
     let channels = ingester.active_channels();
     let sensor_b_state = channels
         .iter()
@@ -187,12 +178,7 @@ fn test_stream_composite_key() {
     );
 }
 
-/// A channel that goes quiet transmits its shape's EXPIRY facts.
-///
-/// Silence is not an event, so without this a rule has nothing to observe when a
-/// source stops reporting. The facts must REPEAT for as long as the channel
-/// stays stale: a `Box[0,n]` rule needs the fact at every integer point in its
-/// window, so a one-shot expiry edge could never satisfy one.
+/// A channel that goes quiet transmits its shape's EXPIRY facts
 #[test]
 fn test_expiry_facts_repeat_while_stale() {
     use shared::terms::Term;
@@ -227,7 +213,6 @@ fn test_expiry_facts_repeat_while_stale() {
         triples: vec![triple(obs, made_by, sensor)],
     });
 
-    // Still fresh: expiry_time is 0 + 10, so nothing until t > 10.
     assert!(
         ingester.expiry_facts(5).is_empty(),
         "fresh channel must not expire"
@@ -237,7 +222,6 @@ fn test_expiry_facts_repeat_while_stale() {
         "boundary is not yet stale"
     );
 
-    // Stale, and it keeps reporting on every later tick.
     for t in [11u64, 12, 50] {
         let facts = ingester.expiry_facts(t);
         assert_eq!(facts.len(), 1, "stale channel should transmit at t={}", t);
@@ -245,7 +229,6 @@ fn test_expiry_facts_repeat_while_stale() {
         assert_eq!(facts[0].1, t, "fact is stamped at the querying tick");
     }
 
-    // A fresh event silences it again.
     ingester.process_event(&RdfEvent {
         stream_iri: "http://example.org/s".into(),
         timestamp: 50,

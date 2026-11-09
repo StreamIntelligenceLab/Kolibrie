@@ -17,11 +17,9 @@ use shared::terms::Term;
 fn knowledge_graph() {
     let mut graph = Reasoner::new();
 
-    // Add ABox triples (instance-level)
     graph.add_abox_triple("Alice", "hasParent", "Bob");
     graph.add_abox_triple("Bob", "hasParent", "Charlie");
 
-    // Define a dynamic rule: If X hasParent Y and Y hasParent Z, then X hasGrandparent Z
     let has_parent_id = graph.encode_term("hasParent");
     let has_grandparent_id = graph.encode_term("hasGrandparent");
 
@@ -47,13 +45,10 @@ fn knowledge_graph() {
         filters: vec![],
     };
 
-    // Add the rule to the knowledge graph
     graph.add_rule(grandparent_rule);
 
-    // Infer new facts
     let inferred_facts = graph.infer_new_facts();
 
-    // Print inferred facts
     for triple in inferred_facts {
         println!(
             "{} -- {} -- {}",
@@ -67,18 +62,14 @@ fn knowledge_graph() {
 fn backward_chaining() {
     let mut kg = Reasoner::new();
 
-    // ABox (facts)
     kg.add_abox_triple("Alice", "parent", "Bob");
     kg.add_abox_triple("Bob", "parent", "Charlie");
 
-    // Encode terms
     let parent = kg.encode_term("parent");
     let ancestor = kg.encode_term("ancestor");
     let charlie = kg.encode_term("Charlie");
 
-    // Rules
     let rule1 = Rule {
-        // ancestor(X, Y) :- parent(X, Y)
         premise: vec![(
             Term::Variable("X".to_string()),
             Term::Constant(parent),
@@ -94,7 +85,6 @@ fn backward_chaining() {
     };
 
     let rule2 = Rule {
-        // ancestor(X, Z) :- parent(X, Y), ancestor(Y, Z)
         premise: vec![
             (
                 Term::Variable("X".to_string()),
@@ -119,7 +109,6 @@ fn backward_chaining() {
     kg.add_rule(rule1);
     kg.add_rule(rule2);
 
-    // Query: Who are the ancestors of Charlie?
     let query = (
         Term::Variable("A".to_string()),
         Term::Constant(ancestor),
@@ -128,7 +117,6 @@ fn backward_chaining() {
 
     let results = kg.backward_chaining(&query);
 
-    // Decode and print results
     for res in results {
         if let Some(ancestor_term) = res.get("A") {
             if let Term::Constant(ancestor_id) = resolve_term(ancestor_term, &res) {
@@ -163,7 +151,6 @@ fn test() {
             println!("\nParsed Rule:");
             println!("{:?}", rule);
 
-            // Add parsed rule to KnowledgeGraph
             graph.add_rule(rule);
 
             let old_facts = graph.dataset_index.query(None, None, None);
@@ -201,7 +188,6 @@ fn test2() {
             println!("\nParsed Rule:");
             println!("{:?}", rule);
 
-            // Add parsed rule to KnowledgeGraph
             kg.add_rule(rule);
 
             let old_facts = kg.dataset_index.query(None, None, None);

@@ -10,10 +10,10 @@
 
 use chrono::Utc;
 use datalog::reasoning::Reasoner;
+use kolibrie::database::KolibrieDB;
 use kolibrie::execute_query::execute;
 use kolibrie::parser::convert_combined_rule;
 use kolibrie::prelude::*;
-use kolibrie::sparql_database::SparqlDatabase;
 use rumqttc::{Client, MqttOptions, QoS};
 use serde::{Deserialize, Serialize};
 use shared::terms::Term;
@@ -23,7 +23,6 @@ use std::thread;
 use std::time::Instant;
 use std::time::{Duration, SystemTime};
 
-// Define the MQTT message structures to match Python output
 #[derive(Debug, Deserialize, Serialize, Clone)]
 struct SensorData {
     id: String,
@@ -50,7 +49,6 @@ struct CameraData {
     detections: Vec<Detection>,
 }
 
-// This structure will store sensor data as it arrives from MQTT
 struct MqttSensorState {
     room_data: HashMap<String, f64>,
     sensors: HashMap<String, SensorData>,
@@ -72,13 +70,10 @@ impl MqttSensorState {
         }
     }
 
-    // Helper method to update room-level aggregated data
     fn update_aggregated_data(&mut self) {
-        // Initialize with default values
-        self.room_data.insert("noiseLevel".to_string(), 30.0); // Default noise level
-        self.room_data.insert("lightLevel".to_string(), 70.0); // Default light level
+        self.room_data.insert("noiseLevel".to_string(), 30.0);
+        self.room_data.insert("lightLevel".to_string(), 70.0);
 
-        // Calculate average noise level from noise sensors
         let mut total_noise = 0.0;
         let mut noise_count = 0;
 
@@ -96,7 +91,6 @@ impl MqttSensorState {
             );
         }
 
-        // Calculate light level as an aggregate of PIR sensors (as an approximation)
         let mut total_light = 0.0;
         let mut light_count = 0;
 
@@ -115,7 +109,6 @@ impl MqttSensorState {
         }
     }
 
-    // Helper method to find the highest confidence object type from camera detections
     fn get_highest_confidence_object_type(&self) -> Option<(String, f64)> {
         let mut highest_conf_type = None;
         let mut highest_conf = 0.0;
@@ -133,7 +126,6 @@ impl MqttSensorState {
     }
 }
 
-// Function to start MQTT subscription in a background thread
 fn start_mqtt_collection(sensor_state: Arc<Mutex<MqttSensorState>>) -> thread::JoinHandle<()> {
     thread::spawn(move || {
         let mut mqttoptions = MqttOptions::new("rust_kolibrie_client", "localhost", 1883);
@@ -142,7 +134,6 @@ fn start_mqtt_collection(sensor_state: Arc<Mutex<MqttSensorState>>) -> thread::J
 
         let (mut client, mut connection) = Client::new(mqttoptions, 10);
 
-        // Subscribe to the topics that our Python script is publishing to
         client.subscribe("sensors/pir/#", QoS::AtLeastOnce).unwrap();
         client
             .subscribe("sensors/noise/#", QoS::AtLeastOnce)
@@ -158,7 +149,6 @@ fn start_mqtt_collection(sensor_state: Arc<Mutex<MqttSensorState>>) -> thread::J
                 if let Ok(rumqttc::Event::Incoming(rumqttc::Packet::Publish(msg))) = notification {
                     let topic = msg.topic.clone();
                     if let Ok(payload) = String::from_utf8(msg.payload.to_vec()) {
-                        // Parse the topic to determine message type
                         let topic_parts: Vec<&str> = topic.split('/').collect();
 
                         if topic_parts.len() >= 2 {
@@ -193,24 +183,20 @@ fn start_mqtt_collection(sensor_state: Arc<Mutex<MqttSensorState>>) -> thread::J
                                 }
                             }
 
-                            // Update room-level aggregated data
                             sensor_state.update_aggregated_data();
                         }
                     }
                 }
             }
 
-            // Small sleep to prevent CPU spinning
             thread::sleep(Duration::from_millis(10));
         }
     })
 }
 
-// Convert MQTT data to RDF triples
 fn mqtt_data_to_rdf(sensor_state: &MqttSensorState) -> String {
     let mut rdf_parts = Vec::new();
 
-    // Add XML header
     rdf_parts.push(
         r#"<?xml version="1.0"?>
         <rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#"
@@ -218,7 +204,6 @@ fn mqtt_data_to_rdf(sensor_state: &MqttSensorState) -> String {
             .to_string(),
     );
 
-    // Add room definition
     let current_datetime = Utc::now().format("%Y-%m-%d %H:%M:%S").to_string();
     let room_light_level = sensor_state
         .room_data
@@ -251,7 +236,6 @@ fn mqtt_data_to_rdf(sensor_state: &MqttSensorState) -> String {
         room_light_level, room_noise_level, current_datetime
     ));
 
-    // Define a mapping from MQTT sensor IDs to grid positions and descriptions
     let sensor_positions: HashMap<&str, (u32, u32, &str)> = [
         ("sensor_nw_pir", (0, 0, "MotionSensor1")),
         ("sensor_ne_pir", (150, 0, "MotionSensor2")),
@@ -266,7 +250,6 @@ fn mqtt_data_to_rdf(sensor_state: &MqttSensorState) -> String {
     .cloned()
     .collect();
 
-    // Add motion and noise sensors
     for (id, sensor) in &sensor_state.sensors {
         if let Some(&(grid_x, grid_y, description)) = sensor_positions.get(id.as_str()) {
             match sensor.sensor_type.as_str() {
@@ -333,20 +316,16 @@ fn mqtt_data_to_rdf(sensor_state: &MqttSensorState) -> String {
         }
     }
 
-    // Get the highest confidence object type from detections (if any)
     let highest_conf_obj = sensor_state.get_highest_confidence_object_type();
     println!("Highest confidence object: {:?}", highest_conf_obj);
 
-    // Add camera data
     for (id, camera) in &sensor_state.cameras {
         if let Some(&(grid_x, grid_y, description)) = sensor_positions.get(id.as_str()) {
-            // Check if any person was detected by this camera
             let person_detected = camera
                 .detections
                 .iter()
                 .any(|d| d.detection_type == "person");
 
-            // If it's the static camera
             if id == "static_cam" {
                 rdf_parts.push(format!(
                     r#"
@@ -363,10 +342,7 @@ fn mqtt_data_to_rdf(sensor_state: &MqttSensorState) -> String {
           </rdf:Description>"#,
                     id, description, id, grid_x, grid_y, person_detected, current_datetime
                 ));
-            }
-            // If it's the rotating camera
-            else if id == "rotating_cam1" {
-                // Calculate a deterministic rotation angle based on the timestamp
+            } else if id == "rotating_cam1" {
                 let angle = (camera.timestamp % 360) as u32;
 
                 rdf_parts.push(format!(
@@ -388,9 +364,7 @@ fn mqtt_data_to_rdf(sensor_state: &MqttSensorState) -> String {
                 ));
             }
 
-            // Process all detections to create detection events
             for (i, detection) in camera.detections.iter().enumerate() {
-                // Calculate a time for the detection based on the camera timestamp
                 let detection_time = {
                     let timestamp_seconds = camera.timestamp / 1000;
                     let hour = (timestamp_seconds / 3600) % 24;
@@ -398,7 +372,6 @@ fn mqtt_data_to_rdf(sensor_state: &MqttSensorState) -> String {
                     format!("{:02}:{:02}", hour, minute)
                 };
 
-                // Use the detection's object type directly
                 rdf_parts.push(format!(
                     r#"
           <!-- Detection event: {} detected -->
@@ -422,17 +395,15 @@ fn mqtt_data_to_rdf(sensor_state: &MqttSensorState) -> String {
         }
     }
 
-    // Define time window definitions for different categories
     let object_types = ["car", "bus", "truck", "person"];
 
     for object_type in object_types.iter() {
-        // Different time slots for different object types
         let (start_time1, end_time1, start_time2, end_time2) = match *object_type {
             "car" => ("08:00", "12:00", "14:00", "18:00"),
             "bus" => ("07:00", "10:00", "15:00", "20:00"),
             "truck" => ("10:00", "14:00", "16:00", "19:00"),
-            "person" => ("07:00", "22:00", "00:00", "00:00"), // Person allowed most of the day
-            _ => ("09:00", "17:00", "00:00", "00:00"),        // Default for other types
+            "person" => ("07:00", "22:00", "00:00", "00:00"),
+            _ => ("09:00", "17:00", "00:00", "00:00"),
         };
 
         rdf_parts.push(format!(
@@ -454,38 +425,29 @@ fn mqtt_data_to_rdf(sensor_state: &MqttSensorState) -> String {
         ));
     }
 
-    // Close the RDF
     rdf_parts.push("</rdf:RDF>".to_string());
 
-    // Join all parts and return
     rdf_parts.join("\n")
 }
 
 fn main() {
     println!("Starting continuous MQTT data monitoring...");
 
-    // Create a shared state for our MQTT sensor data
     let sensor_state = Arc::new(Mutex::new(MqttSensorState::new()));
 
-    // Start MQTT collection in background
     let _mqtt_thread = start_mqtt_collection(sensor_state.clone());
 
-    // Wait a bit for initial data to arrive
     println!("Waiting for initial data...");
-    thread::sleep(Duration::from_secs(10)); // Increased to 10 seconds to collect more initial data
+    thread::sleep(Duration::from_secs(10));
 
-    // Create database and knowledge graph
     let mut database;
     let mut kg;
 
-    // Main processing loop
     let mut last_update_time = Instant::now();
-    let update_interval = Duration::from_secs(10); // Process updates every 10 seconds
+    let update_interval = Duration::from_secs(10);
 
     loop {
-        // Check if it's time to process updates
         if last_update_time.elapsed() >= update_interval {
-            // Check if we have new data to process
             let should_process;
 
             {
@@ -500,23 +462,18 @@ fn main() {
             if should_process {
                 println!("\n=== Processing updated sensor data ===");
 
-                // Convert the collected MQTT data to RDF/XML
                 let rdf_xml_data = mqtt_data_to_rdf(&sensor_state.lock().unwrap());
                 println!("Generated RDF/XML data from MQTT messages");
 
-                // Create fresh database and knowledge graph for this update
-                database = SparqlDatabase::new();
+                database = KolibrieDB::new();
                 kg = Reasoner::new();
 
-                // Parse the RDF data into the database
                 database.parse_rdf(&rdf_xml_data);
                 println!(
                     "Updated RDF triples: {} triples",
                     database.default_triple_count()
                 );
 
-                // Load data into knowledge graph - FIXED: Proper lock handling
-                // Collect triples first to avoid holding lock during iteration
                 let triples_to_add = database.query_default_triples(None, None, None);
 
                 for triple in triples_to_add {
@@ -524,7 +481,7 @@ fn main() {
                     let subject = dict.decode(triple.subject).map(|s| s.to_string());
                     let predicate = dict.decode(triple.predicate).map(|p| p.to_string());
                     let object = dict.decode(triple.object).map(|o| o.to_string());
-                    drop(dict); // Release lock before calling add_abox_triple
+                    drop(dict);
 
                     if let (Some(s), Some(p), Some(o)) = (subject, predicate, object) {
                         kg.add_abox_triple(&s, &p, &o);
@@ -536,7 +493,6 @@ fn main() {
                     database.default_triple_count()
                 );
 
-                // Rule 1: If it's quiet (noise level < 30), use noise for detection
                 let rule1 = r#"PREFIX ex: <http://example.org#>
 RULE :UseNoiseSensor :-
     WHERE {
@@ -552,7 +508,6 @@ WHERE {
     :UseNoiseSensor(?room)
 }"#;
 
-                // Rule 2: Universally define motion sensor for all rooms (will be superseded by noise-based if quiet)
                 let rule2 = r#"PREFIX ex: <http://example.org#>
 RULE :DefaultMotionSensor :-
     WHERE {
@@ -567,7 +522,6 @@ WHERE {
     :DefaultMotionSensor(?room)
 }"#;
 
-                // Rule 3a: If it's not dark (light level > 50), use cameras for detection
                 let rule3a = r#"PREFIX ex: <http://example.org#>
 RULE :UseCameraDetection :-
     WHERE {
@@ -583,7 +537,6 @@ WHERE {
     :UseCameraDetection(?room)
 }"#;
 
-                // Rule 3b: If it's not dark (light level > 50), use cameras for identification
                 let rule3b = r#"PREFIX ex: <http://example.org#>
 RULE :UseCameraIdentification :-
     WHERE {
@@ -599,7 +552,6 @@ WHERE {
     :UseCameraIdentification(?room)
 }"#;
 
-                // Mark all detection events as unauthorized unless they are within their allowed time windows
                 let rule_mark_all_unauthorized = r#"PREFIX ex: <http://example.org#>
 RULE :MarkAllEventsUnauthorized :-
     WHERE {
@@ -614,7 +566,6 @@ WHERE {
     :MarkAllEventsUnauthorized(?event)
 }"#;
 
-                // Execute rules
                 let rules = [rule1, rule2, rule3a, rule3b, rule_mark_all_unauthorized];
 
                 println!("Processing {} rules:", rules.len());
@@ -629,25 +580,23 @@ WHERE {
                             {
                                 println!("Rule #{} - Successfully parsed", idx + 1);
 
-                                // FIXED: Acquire write lock for conversion
                                 let mut dict = database.dictionary_mut();
                                 let dynamic_rule = convert_combined_rule(
                                     rule_def,
                                     &mut dict,
                                     &combined_query.prefixes,
                                 );
-                                drop(dict); // Release lock
+                                drop(dict);
 
                                 println!("Rule #{} - Adding to knowledge graph", idx + 1);
                                 kg.add_rule(dynamic_rule.clone());
 
-                                // FIXED: Handle mapping the rule name with proper lock
                                 if let Some(first_conclusion) = &dynamic_rule.conclusion.first() {
                                     if let Term::Constant(code) = first_conclusion.1 {
                                         let dict = database.dictionary();
                                         if let Some(expanded) = dict.decode(code) {
                                             let expanded = expanded.to_string();
-                                            drop(dict); // Release lock
+                                            drop(dict);
 
                                             if let Some(idx) = expanded.rfind('#') {
                                                 let local = &expanded[idx + 1..];
@@ -672,12 +621,10 @@ WHERE {
                     }
                 }
 
-                // Execute inference
                 println!("Running inference engine...");
                 let inferred_facts = kg.infer_new_facts_semi_naive();
                 println!("Inferred {} new fact(s):", inferred_facts.len());
 
-                // FIXED: Proper lock handling for decoding inferred facts
                 let dict = database.dictionary();
                 for triple in inferred_facts.iter() {
                     let s = dict.decode(triple.subject).unwrap_or_default();
@@ -685,14 +632,12 @@ WHERE {
                     let o = dict.decode(triple.object).unwrap_or_default();
                     println!("  Inferred: {} {} {}", s, p, o);
                 }
-                drop(dict); // Release lock before modifying database
+                drop(dict);
 
-                // Add inferred facts to database
                 for triple in inferred_facts.iter() {
                     database.add_triple(triple.clone());
                 }
 
-                // Query for sensors by grid position
                 let query_grid_sensors = r#"PREFIX ex: <http://example.org#>
                 SELECT ?sensor ?type ?x ?y
                 WHERE {
@@ -709,7 +654,6 @@ WHERE {
                     println!("{:?}", row);
                 }
 
-                // Query for detection strategies
                 let query_strategies = r#"PREFIX ex: <http://example.org#>
                 SELECT ?room ?strategy
                 WHERE {
@@ -724,7 +668,6 @@ WHERE {
                     println!("{:?}", row);
                 }
 
-                // Query for fallback strategies
                 let query_fallbacks = r#"PREFIX ex: <http://example.org#>
                 SELECT ?room ?strategy
                 WHERE {
@@ -739,7 +682,6 @@ WHERE {
                     println!("{:?}", row);
                 }
 
-                // Check for active motion detection
                 let query_motion = r#"PREFIX ex: <http://example.org#>
                 SELECT ?sensor ?detected
                 WHERE {
@@ -756,7 +698,6 @@ WHERE {
                     println!("{:?}", row);
                 }
 
-                // Check for detected objects by type
                 let query_detections = r#"PREFIX ex: <http://example.org#>
                 SELECT ?event ?category ?confidence ?time
                 WHERE {
@@ -773,7 +714,6 @@ WHERE {
                     println!("{:?}", row);
                 }
 
-                // Check for unauthorized events
                 let query_unauthorized = r#"PREFIX ex: <http://example.org#>
                 SELECT ?event ?category ?time
                 WHERE {
@@ -796,7 +736,6 @@ WHERE {
             last_update_time = Instant::now();
         }
 
-        // Sleep a bit to prevent busy-waiting
         thread::sleep(Duration::from_millis(100));
     }
 }

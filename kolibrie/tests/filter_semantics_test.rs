@@ -11,9 +11,9 @@
 mod common;
 
 use common::{query, rows1};
-use kolibrie::sparql_database::SparqlDatabase;
+use kolibrie::database::KolibrieDB;
 
-fn people() -> SparqlDatabase {
+fn people() -> KolibrieDB {
     common::database_with(
         r#"<urn:alice> <urn:name> "Alice" .
 <urn:alice> <urn:age> 30 .
@@ -24,7 +24,7 @@ fn people() -> SparqlDatabase {
     )
 }
 
-fn names_where(database: &mut SparqlDatabase, filter: &str) -> Vec<Vec<String>> {
+fn names_where(database: &mut KolibrieDB, filter: &str) -> Vec<Vec<String>> {
     query(
         database,
         &format!(
@@ -33,8 +33,6 @@ fn names_where(database: &mut SparqlDatabase, filter: &str) -> Vec<Vec<String>> 
         ),
     )
 }
-
-// ---------------------------------------------------------------------------
 
 #[test]
 fn greater_than_orders_non_numeric_operands_lexically() {
@@ -57,7 +55,6 @@ fn less_than_orders_non_numeric_operands_lexically() {
 #[test]
 fn greater_or_equal_does_not_admit_every_non_numeric_operand() {
     let mut database = people();
-    // Zero-coercion made this true for "Alice" as well, since 0.0 >= 0.0
     assert_eq!(
         names_where(&mut database, r#"?n >= "Bob""#),
         rows1(&["urn:bob", "urn:carol"])
@@ -85,12 +82,9 @@ fn comparing_a_string_against_a_number_is_an_error_and_drops_the_row() {
     );
 }
 
-// ---------------------------------------------------------------------------
-
 #[test]
 fn negating_an_unbound_comparison_does_not_admit_every_row() {
     let mut database = people();
-    // `?missing` is never bound, so the comparison errors and `!error` stays an error
     assert_eq!(
         names_where(&mut database, "!(?missing > 100)"),
         Vec::<Vec<String>>::new()
@@ -120,8 +114,6 @@ fn negating_a_satisfiable_comparison_still_inverts_it() {
         rows1(&["urn:bob"])
     );
 }
-
-// ---------------------------------------------------------------------------
 
 #[test]
 fn true_or_error_is_true() {
@@ -192,8 +184,6 @@ fn nested_boolean_expressions_keep_their_shape() {
         rows1(&["urn:alice", "urn:bob", "urn:carol"])
     );
 }
-
-// ---------------------------------------------------------------------------
 
 #[test]
 fn subquery_filter_negating_an_unbound_comparison_admits_no_row() {

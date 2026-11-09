@@ -11,10 +11,10 @@
 mod common;
 
 use common::{ordered, query, rows1};
-use kolibrie::sparql_database::SparqlDatabase;
+use kolibrie::database::KolibrieDB;
 
 /// Three values chosen so numeric and lexical comparison disagree cyclically
-fn cyclic_database() -> SparqlDatabase {
+fn cyclic_database() -> KolibrieDB {
     common::database_with(
         r#"<urn:a> <urn:v> 9 .
 <urn:b> <urn:v> 100 .
@@ -22,7 +22,7 @@ fn cyclic_database() -> SparqlDatabase {
     )
 }
 
-fn numeric_database() -> SparqlDatabase {
+fn numeric_database() -> KolibrieDB {
     common::database_with(
         r#"<urn:n1> <urn:v> 10 .
 <urn:n2> <urn:v> 9 .
@@ -61,7 +61,6 @@ fn descending_reverses_the_numeric_order() {
 #[test]
 fn numeric_and_non_numeric_values_get_a_consistent_order() {
     let mut database = cyclic_database();
-    // Numbers first, in numeric order; then everything else lexically
     assert_eq!(
         subjects(ordered(
             &mut database,
@@ -85,7 +84,6 @@ fn descending_reverses_the_mixed_order() {
 
 #[test]
 fn ordering_a_large_mixed_column_is_deterministic_and_does_not_panic() {
-    // A wide spread of values whose numeric and lexical orders disagree
     let mut triples = String::new();
     let values = [
         "9",
@@ -148,7 +146,6 @@ fn order_by_the_second_key_breaks_ties_on_the_first() {
 #[test]
 fn a_subquery_orders_before_it_limits() {
     let mut database = cyclic_database();
-    // The subquery must keep the two smallest values under the same total
     assert_eq!(
         query(
             &mut database,

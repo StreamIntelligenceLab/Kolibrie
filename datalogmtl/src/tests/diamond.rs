@@ -13,8 +13,7 @@ use crate::evaluator::DatalogMTLEvaluator;
 use crate::store::TemporalSnapshotStore;
 use crate::syntax::{DatalogMTLRule, Interval, TemporalAtom};
 
-/// Test 3: Diamond operator.
-/// Rule: (?x :wasNear ?y) :- (?x :location ?loc), Diamond[1000, 5000] (?y :location ?loc)
+/// Test 3: Diamond operator
 #[test]
 fn test_diamond_basic() {
     let dict = make_dict();
@@ -24,7 +23,6 @@ fn test_diamond_basic() {
     let was_near = enc(&dict, ":wasNear");
     let room1 = enc(&dict, ":room1");
 
-    // Rule: (?x :wasNear ?y) :- (?x :location ?loc), Diamond[1000,5000] (?y :location ?loc)
     let rule = DatalogMTLRule {
         id: "wasNear".into(),
         head: (v("x"), c(was_near), v("y")),
@@ -43,10 +41,8 @@ fn test_diamond_basic() {
     let store = TemporalSnapshotStore::new(10_000);
     let mut eval = DatalogMTLEvaluator::new(vec![rule], store, dict.clone()).unwrap();
 
-    // t=0: B is in room1
     eval.advance(0, vec![triple(b, location, room1)]);
 
-    // t=3000: A is in room1 — B was in room1 3000ms ago, within [1000, 5000]
     let (derived, _) = eval.advance(3000, vec![triple(a, location, room1)]);
 
     let expected = triple(a, was_near, b);
@@ -56,7 +52,6 @@ fn test_diamond_basic() {
         derived
     );
 
-    // t=6000: A still in room1, but B at t=0 is 6000ms ago — outside [1000, 5000]
     let (derived2, _) = eval.advance(6000, vec![triple(a, location, room1)]);
     assert!(
         !derived2.contains(&expected),

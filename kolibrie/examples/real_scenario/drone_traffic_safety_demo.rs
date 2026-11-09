@@ -33,16 +33,9 @@ const TICK_MS: u64 = 1000;
 const TELEMETRY_STREAM: &str = "http://utm.example.org/telemetry";
 const MAX_GAP_MS: u64 = 10_000;
 
-// The evaluator uses DENSE integer semantics: Box/Since require the inner atom
-// to hold at EVERY integer time point in their window. So the reasoner's time
-// unit must be the sampling period — feeding it milliseconds while sampling
-// once a second leaves 999 unsatisfied points between every pair of samples,
-// and no universal operator can ever hold. Wall-clock ms stay in the UI only.
-/// Fallback staleness when a config declares no stream shape. Live configs take
-/// this from the shape's `STALENESS`; rule windows live in `DEFAULT_RULES`.
+/// Fallback staleness when a config declares no stream shape
 const MAX_GAP_TICKS: u64 = MAX_GAP_MS / TICK_MS;
-/// Nominal store retention. Actual eviction is driven by the evaluator's `w_max`
-/// (the widest rule window), which is recomputed on every config swap.
+/// Nominal store retention
 const STORE_HORIZON_TICKS: u64 = 620;
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
@@ -91,7 +84,6 @@ struct DroneView {
     link: String,
     current_zone: Option<String>,
     off_plan: bool,
-    /// Consecutive ticks in `current_zone` (or in open air when that is null).
     dwell_ticks: u64,
 }
 
@@ -112,11 +104,8 @@ struct TickView {
     rdf_events: Vec<String>,
     derived: Vec<String>,
     alerts: Vec<AlertView>,
-    /// Version of the rule/shape config that produced this tick. The UI watches
-    /// this to confirm a submitted swap has actually landed.
     config_version: u64,
     active_rules: Vec<String>,
-    /// Set when a submitted config failed to apply; the old rules keep running.
     config_error: Option<String>,
     metrics: MetricsView,
 }
@@ -127,10 +116,7 @@ struct MetricsView {
     new_triples: usize,
     snapshots: usize,
     eval_time_us: u64,
-    /// Triples handed to the evaluator this tick — drops to near zero if the
-    /// stream shape stops matching the telemetry.
     stream_facts: usize,
-    /// Widest rule window; drives store eviction. Confirms a swap refreshed it.
     w_max_ticks: u64,
 }
 
@@ -143,9 +129,6 @@ struct DroneRuntime {
     automated: bool,
     last_telemetry_ms: u64,
     previous_zones: HashSet<&'static str>,
-    /// Zone the dwell counter is running for, and how many consecutive ticks it
-    /// has been there. Counted in TICKS, not wall-clock ms, so it is exactly the
-    /// number a `Box[0,n]` window is waiting for.
     dwell_zone: Option<&'static str>,
     dwell_ticks: u64,
 }
@@ -174,15 +157,10 @@ struct Vocab {
     dront_in_zone: u32,
     dront_entered_zone: u32,
     dront_on_flight_plan: u32,
-    // Zone classification (dront:status / dront:Restricted) is no longer listed
-    // here: it moved into DEFAULT_STATIC so it can be edited during a demo.
     utm_position: u32,
     utm_altitude: u32,
     utm_ais_status: u32,
     utm_active: u32,
-    // The rules' OUTPUT vocabulary (violatedZone / status / linkLost /
-    // offCourse) is not listed here: it now lives in DEFAULT_RULES, and the
-    // parser interns it into this same dictionary when the rules are loaded.
     xsd_false: u32,
     xsd_true: u32,
     drone_a: u32,
@@ -195,7 +173,7 @@ struct Vocab {
 type EventLog = Arc<Mutex<Vec<String>>>;
 type Config = Arc<ConfigHandle>;
 
-/// The rule/shape text currently driving the engine.
+/// The rule/shape text currently driving the engine
 #[derive(Debug, Clone, Serialize)]
 struct ConfigText {
     rules: String,
@@ -204,7 +182,7 @@ struct ConfigText {
     version: u64,
 }
 
-/// A parsed, validated configuration waiting to be picked up by the tick loop.
+/// A parsed, validated configuration waiting to be picked up by the tick loop
 struct PendingConfig {
     rules: Vec<DatalogMTLRule>,
     shapes: Vec<StreamShape>,
@@ -213,12 +191,7 @@ struct PendingConfig {
     reset_store: bool,
 }
 
-/// Shared between the HTTP handlers and the tick loop.
-///
-/// The handler parses and validates synchronously (so it can report precise
-/// errors) and parks the result in `pending`; the tick loop drains it at the top
-/// of the next tick. That keeps the swap off the request thread and means no
-/// lock is ever held across `evaluator.advance`.
+/// Shared between the HTTP handlers and the tick loop
 struct ConfigHandle {
     current: Mutex<ConfigText>,
     pending: Mutex<Option<PendingConfig>>,
@@ -244,9 +217,6 @@ fn main() {
     let events = Arc::new(Mutex::new(Vec::new()));
     let state = Arc::new(Mutex::new(DemoState::new()));
 
-    // The dictionary lives out here so the HTTP thread can intern IRIs from
-    // user-typed rules into the SAME dictionary the engine matches against —
-    // Term::Constant ids are per-Dictionary and would otherwise match nothing.
     let dictionary = SharedTerms::new();
     let vocab = init_vocab(&dictionary);
     let config: Config = Arc::new(ConfigHandle::new(
@@ -321,9 +291,6 @@ fn start_demo_loop(
     config: Config,
 ) {
     thread::spawn(move || {
-        // Parse the shipped defaults through the same parser the editor uses, so
-        // a broken default is a loud startup failure rather than a silent
-        // never-fires.
         let shapes = rdf_parser::parse_stream_shapes_shared(DEFAULT_SHAPES, &dictionary)
             .expect("default stream shape must parse");
         let rules = rdf_parser::parse_rules_shared(DEFAULT_RULES, &dictionary, Mode::Streaming)
@@ -342,19 +309,10 @@ fn start_demo_loop(
 
         let mut config_error: Option<String> = None;
 
-        // The reasoner's clock is a COUNTER, not the wall clock. Deriving `t`
-        // from elapsed time meant each iteration took `TICK_MS + work`, so the
-        // drift eventually swallowed an integer tick — and a hole is fatal under
-        // dense semantics: `Box[0,n]` needs the fact at EVERY integer point, so
-        // one skipped tick silently disables every universal operator whose
-        // window spans it. Sleeping to an absolute deadline keeps the tick
-        // sequence contiguous and still self-corrects against the wall clock.
         let started = state.lock().unwrap().started;
         let mut tick: u64 = 0;
 
         loop {
-            // Drain any pending swap before the tick, so we never hold a lock
-            // across `advance`.
             let pending = config.pending.lock().unwrap().take();
             if let Some(p) = pending {
                 match apply_config(
@@ -367,7 +325,6 @@ fn start_demo_loop(
                     &config,
                 ) {
                     Ok(()) => config_error = None,
-                    // Keep running on the old rules rather than dropping the demo.
                     Err(e) => config_error = Some(e),
                 }
             }
@@ -398,14 +355,11 @@ fn start_demo_loop(
             if target_ms > elapsed_ms {
                 thread::sleep(Duration::from_millis(target_ms - elapsed_ms));
             }
-            // If the work overran its budget we simply continue immediately:
-            // time is caught up by running sooner, never by skipping a tick.
         }
     });
 }
 
-/// Staleness of the first shape, in ticks. Falls back to the built-in default
-/// when a config declares no shapes.
+/// Staleness of the first shape, in ticks
 fn shape_staleness(shapes: &[StreamShape]) -> u64 {
     shapes
         .first()
@@ -413,13 +367,7 @@ fn shape_staleness(shapes: &[StreamShape]) -> u64 {
         .unwrap_or(MAX_GAP_TICKS)
 }
 
-/// Swap in a new rule set and stream shape.
-///
-/// Both the ingester and the evaluator are rebuilt rather than mutated:
-/// `ShapeIngester` has no way to replace its shapes, and `DatalogMTLEvaluator`
-/// computes its private `w_max` (which drives store eviction) only in `new` —
-/// assigning `.rules` directly would leave eviction pinned to the OLD window and
-/// a wider new rule could never fire.
+/// Swap in a new rule set and stream shape
 fn apply_config(
     p: PendingConfig,
     ingester: &mut ShapeIngester,
@@ -429,12 +377,8 @@ fn apply_config(
     dictionary: &SharedTerms,
     config: &Config,
 ) -> Result<(), String> {
-    // Re-validate here: it is the only fallible step in `new`, so checking first
-    // means the store below is never stranded by a failing rebuild.
     validate_rules(&p.rules)?;
 
-    // Carry the fact history over unless asked to clear it, so windows do not
-    // have to refill from scratch after every edit.
     let store = if p.reset_store {
         IntervalFactStore::new(STORE_HORIZON_TICKS)
     } else {
@@ -472,22 +416,16 @@ fn start_http_server(
     });
 }
 
-/// Largest request body accepted, so a bad client cannot exhaust memory.
+/// Largest request body accepted, so a bad client cannot exhaust memory
 const MAX_BODY_BYTES: usize = 1024 * 1024;
 
-/// Read one request, honouring `Content-Length`.
-///
-/// A single fixed-size `read` is not enough here: a rules program easily exceeds
-/// one TCP segment, and a truncated body would surface as a confusing JSON parse
-/// error. GET requests carry no `Content-Length`, so this returns as soon as the
-/// headers are complete and `/` and `/events` behave exactly as before.
+/// Read one request, honouring `Content-Length`
 fn read_request(stream: &mut TcpStream) -> Option<(String, String, String)> {
     let _ = stream.set_read_timeout(Some(Duration::from_secs(10)));
 
     let mut raw: Vec<u8> = Vec::new();
     let mut chunk = [0u8; 8192];
 
-    // Headers first.
     let header_end = loop {
         if let Some(pos) = raw.windows(4).position(|w| w == b"\r\n\r\n") {
             break pos + 4;
@@ -525,7 +463,6 @@ fn read_request(stream: &mut TcpStream) -> Option<(String, String, String)> {
         .unwrap_or(0)
         .min(MAX_BODY_BYTES);
 
-    // Then top up until the declared body has arrived.
     while raw.len() - header_end < content_length {
         match stream.read(&mut chunk) {
             Ok(0) | Err(_) => break,
@@ -583,12 +520,7 @@ fn get_config(stream: TcpStream, config: &Config) {
     write_json(stream, 200, &payload.to_string());
 }
 
-/// Parse and validate a submitted config, then park it for the tick loop.
-///
-/// All three failure modes are reported separately so the editor can say which
-/// box is wrong. `validate_rules` matters here because the RDF parser — unlike
-/// the MeTeoR one — does not run it, so an unsafe head variable would otherwise
-/// only fail later, inside the tick loop, where the user cannot see it.
+/// Parse and validate a submitted config, then park it for the tick loop
 fn post_config(stream: TcpStream, body: &str, dictionary: &SharedTerms, config: &Config) {
     let req: ConfigUpdate = match serde_json::from_str(body) {
         Ok(r) => r,
@@ -620,8 +552,6 @@ fn post_config(stream: TcpStream, body: &str, dictionary: &SharedTerms, config: 
         "version": version,
         "rule_ids": rule_ids,
         "w_max_ticks": w_max,
-        // Widening a window still needs history the store never kept, so tell
-        // the UI how long the new rules need before they can be trusted.
         "warmup_ticks": if req.reset_store { w_max } else { 0 },
     });
 
@@ -759,19 +689,12 @@ fn build_tick(
     t: u64,
     config_error: Option<String>,
 ) -> TickView {
-    // The stream shape's STALENESS is in ticks; the drone-B freshness checks
-    // below are in wall-clock ms, so convert once here. Editing STALENESS in the
-    // Rules tab therefore really does change when the link reads as expired.
     let max_gap_ms = staleness_ticks.saturating_mul(TICK_MS);
-    // `t` is the caller's contiguous tick counter — never derive it from elapsed
-    // time, or drift will skip integers and break dense operators. The animation
-    // and the UI clock use the nominal wall-clock position of that tick.
     let tick_ms = t * TICK_MS;
     state.drone_a.position = scripted_drone_a(tick_ms);
     state.drone_a.last_telemetry_ms = tick_ms;
 
     let zones = zones();
-    // Re-asserted every tick; see DEFAULT_STATIC for why.
     let mut triples = static_facts.to_vec();
     let mut rdf_events = Vec::new();
 
@@ -788,10 +711,6 @@ fn build_tick(
         rdf_events.extend(b_triples.1);
     }
 
-    // Facts for channels that have gone quiet. These come from the shape's
-    // EXPIRY declaration, so what a stale drone "says" is editable alongside
-    // everything else rather than hardcoded here. Must run after the telemetry
-    // above, or a drone that just reported would also be reported stale.
     let expiry = ingester.expiry_facts(t);
     if !expiry.is_empty() {
         rdf_events.extend(decode_triples(
@@ -804,7 +723,6 @@ fn build_tick(
     state.drone_a.previous_zones = drone_a.previous_zones;
     state.drone_b.previous_zones = drone_b.previous_zones;
 
-    // One dwell step per tick, after positions are settled.
     tick_dwell(&mut state.drone_a, &zones);
     tick_dwell(&mut state.drone_b, &zones);
 
@@ -931,19 +849,14 @@ fn telemetry_for_drone(
     (facts, lines)
 }
 
-/// The zone containing this position, if any. `drone_view` and the dwell counter
-/// must agree on "current zone", so both go through here.
+/// The zone containing this position, if any
 fn zone_at(position: LatLng, zones: &[Zone]) -> Option<&Zone> {
     zones
         .iter()
         .find(|zone| haversine_m(position, zone.center) <= zone.radius_m)
 }
 
-/// Advance the drone's dwell counter by one tick.
-///
-/// Counts consecutive ticks in the same zone (or consecutively in open air), and
-/// resets the moment that changes — so it reads as exactly the number a
-/// `Box[0,n]` window is still waiting for.
+/// Advance the drone's dwell counter by one tick
 fn tick_dwell(drone: &mut DroneRuntime, zones: &[Zone]) {
     let here = zone_at(drone.position, zones).map(|z| z.id);
     if here == drone.dwell_zone {
@@ -970,8 +883,7 @@ fn drone_view(drone: &DroneRuntime, link: &str, zones: &[Zone]) -> DroneView {
     }
 }
 
-/// Level and wording for the rules the demo ships with, keyed by rule id.
-/// Custom rules fall back to a generic alert.
+/// Level and wording for the rules the demo ships with, keyed by rule id
 const ALERT_TEMPLATES: &[(&str, &str, &str)] = &[
     (
         "sustainedGeofenceViolation",
@@ -1000,16 +912,10 @@ const ALERT_TEMPLATES: &[(&str, &str, &str)] = &[
     ),
 ];
 
-/// Maximum alerts surfaced per tick, so a runaway recursive rule cannot flood
-/// the UI.
+/// Maximum alerts surfaced per tick, so a runaway recursive rule cannot flood the UI
 const MAX_ALERTS: usize = 20;
 
-/// Turn derived triples into alerts.
-///
-/// `advance` returns triples with no rule provenance, so attribution is
-/// reconstructed by finding the rule whose head unifies with each derived
-/// triple. Every derived triple came from some rule's head; the only ambiguity
-/// is two rules sharing a head shape, which is acceptable here.
+/// Turn derived triples into alerts
 fn alerts_from_derived(
     derived: &[Triple],
     rules: &[DatalogMTLRule],
@@ -1032,7 +938,6 @@ fn alerts_from_derived(
             Some((_, level, message)) => (level.to_string(), message.to_string()),
             None => ("warning".to_string(), dict.decode_triple(t)),
         };
-        // Only report a zone when the rule's head actually carries one.
         let zone = matches!(rule.head.2, Term::Variable(_)).then(|| local(&dict, t.object));
 
         alerts.push(AlertView {
@@ -1106,14 +1011,7 @@ fn init_vocab(dictionary: &SharedTerms) -> Vocab {
     }
 }
 
-/// Default rule program, in the RDF triple-pattern syntax of
-/// `datalogmtl::rdf_parser`. This text is the source of truth: it is parsed at
-/// startup and shipped to the Rules tab, so what you see is what is running.
-///
-/// All windows are in TICKS (1 tick == TICK_MS), not milliseconds — the
-/// evaluator's dense integer semantics require the time unit to be the sampling
-/// period. IRIs must match `init_vocab` exactly or the rules match nothing;
-/// `<false>` is the quoting device for the bare string `vocab.xsd_false`.
+/// Default rule program, in the RDF triple-pattern syntax of `datalogmtl::rdf_parser`
 const DEFAULT_RULES: &str = r#"
 PREFIX dront: <http://example.org/dront/>
 PREFIX utm:   <http://utm.example.org/>
@@ -1164,16 +1062,7 @@ PREFIX utm:   <http://utm.example.org/>
     ).
 "#;
 
-/// Default stream shape. `STALENESS` is in ticks, like every other window here.
-///
-/// `EXPIRY` is what a channel transmits once it has gone quiet for `STALENESS`
-/// ticks — silence is not itself an event, so `controlLinkLoss` would have
-/// nothing to observe without it. It repeats every tick while the channel stays
-/// stale, which is what that rule's `Box[0,10]` needs.
-///
-/// Note the PATTERN can only ever match LESS than the telemetry the demo emits —
-/// `telemetry_for_drone` builds a fixed set of 8 triples, so adding a pattern
-/// that nothing produces makes the whole event stop matching.
+/// Default stream shape
 const DEFAULT_SHAPES: &str = r#"
 PREFIX rdf:   <http://www.w3.org/1999/02/22-rdf-syntax-ns#>
 PREFIX sosa:  <http://www.w3.org/ns/sosa/>
@@ -1195,17 +1084,7 @@ STREAM <http://utm.example.org/telemetry>
 .
 "#;
 
-/// Default background facts, as N-Triples: which zones are restricted.
-///
-/// Both `sustainedGeofenceViolation` and `offCourseSinceRestrictedEntry` join
-/// against `(?z, dront:status, dront:Restricted)`, so declassifying a zone here
-/// disarms those rules over it — the quickest thing to change during a live
-/// demo. Zone geometry stays in Rust; only the classification is reasoned over.
-///
-/// These are re-asserted on every tick: the store is time-indexed and evicts
-/// below `t - w_max`, so a fact inserted only once would age out and the joins
-/// would silently stop matching. Coalescing makes that cheap (one interval per
-/// fact, not one per tick).
+/// Default background facts, as N-Triples: which zones are restricted
 const DEFAULT_STATIC: &str = r#"
 # Zone classification. Plain N-Triples — paste in anything an RDF tool emits.
 #

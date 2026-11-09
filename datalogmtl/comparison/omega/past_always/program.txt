@@ -1,2 +1,0 @@
-Q(X):-Seed(X)
-Q(X):-Diamondplus[0,1]Q(X)

@@ -1,6 +1,6 @@
+use kolibrie::database::KolibrieDB;
 use kolibrie::rsp_engine::{QueryExecutionMode, RSPBuilder, ResultConsumer, SimpleR2R};
 use kolibrie::rule_execution::process_rule_definition;
-use kolibrie::sparql_database::SparqlDatabase;
 use ml::MLHandler;
 
 use datalog::reasoning::Reasoner;
@@ -12,17 +12,13 @@ use std::thread;
 use std::time::Duration;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    // Setup ML Model
     let mut ml_handler = setup_ml_model()?;
 
-    // Setup database with initial ontology
     let mut database = setup_knowledge_base();
 
-    // Define and load reasoning rule
     let rule_query = define_comfort_rule();
     let (rule, _inferred) = process_rule_definition(&rule_query, &mut database)?;
 
-    // Setup RSP Engine with reasoning
     let result_container = Arc::new(Mutex::new(Vec::new()));
     let result_container_clone = result_container.clone();
 
@@ -31,7 +27,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             let mut results = result_container_clone.lock().unwrap();
             results.push(bindings.clone());
 
-            // Print real-time alerts
             let binding_map: HashMap<_, _> = bindings.iter().cloned().collect();
             if let (Some(room), Some(temp)) = (binding_map.get("room"), binding_map.get("temp")) {
                 println!("Stream Alert: Room {} at {}", room, temp);
@@ -64,7 +59,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             )))
             .build()?;
 
-    // Run the combined workflow
     println!(
         "Time | Room    | Temp  | Humidity | Occupancy | ML Predicted | Comfort Level | Action"
     );
@@ -74,7 +68,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     run_combined_workflow(&mut engine, &mut ml_handler, &mut database, &rule)?;
 
-    // Stop the engine
     engine.stop();
     thread::sleep(Duration::from_secs(1));
 
@@ -97,7 +90,6 @@ fn setup_ml_model() -> Result<MLHandler, Box<dyn std::error::Error>> {
 
     std::fs::create_dir_all(&model_dir)?;
 
-    // Check if models exist
     let models_exist = std::fs::read_dir(&model_dir)?
         .filter_map(Result::ok)
         .filter(|entry| {
@@ -126,17 +118,15 @@ fn setup_ml_model() -> Result<MLHandler, Box<dyn std::error::Error>> {
     Ok(ml_handler)
 }
 
-fn setup_knowledge_base() -> SparqlDatabase {
-    let mut database = SparqlDatabase::with_ml_context(local_ml::trusted_context());
+fn setup_knowledge_base() -> KolibrieDB {
+    let mut database = KolibrieDB::with_ml_context(local_ml::trusted_context());
 
-    // Register prefixes
     database.add_prefix("ex".to_string(), "http://example.org/".to_string());
     database.add_prefix(
         "rdf".to_string(),
         "http://www.w3.org/1999/02/22-rdf-syntax-ns#".to_string(),
     );
 
-    // Add initial ontology - room definitions
     database.add_triple_parts(
         "http://example.org/Office1",
         "http://www.w3.org/1999/02/22-rdf-syntax-ns#type",
@@ -170,7 +160,7 @@ WHERE {
 fn run_combined_workflow(
     engine: &mut kolibrie::rsp_engine::RSPEngine<Triple, Vec<(String, String)>>,
     ml_handler: &mut MLHandler,
-    database: &mut SparqlDatabase,
+    database: &mut KolibrieDB,
     comfort_rule: &Rule,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let rooms = vec!["Office1", "Office2"];
@@ -183,16 +173,13 @@ fn run_combined_workflow(
             let humidity = 50.0 + (time as f64 * 2.0);
             let occupancy = 5 + time + room_idx;
 
-            // ML Prediction
             let input_data = vec![vec![temp, humidity, occupancy as f64]];
             let ml_result = ml_handler.predict(&best_model, input_data)?;
             let predicted_temp = ml_result.predictions[0];
 
-            // Create sensor and room URIs
             let sensor_uri = format!("http://example.org/Sensor_{}", room);
             let room_uri = format!("http://example.org/{}", room);
 
-            // Add triples
             database.add_triple_parts(&sensor_uri, "http://example.org/hasRoom", &room_uri);
             database.add_triple_parts(
                 &sensor_uri,
@@ -223,10 +210,8 @@ fn run_combined_workflow(
                 engine.add_to_stream("sensorStream", triple.clone(), time);
             }
 
-            // Create a NEW reasoner with its own dictionary
             let mut reasoner = Reasoner::new();
 
-            // Decode all triples FIRST with proper scoping
             let decoded_triples: Vec<(String, String, String)> = {
                 let dict = database.dictionary();
                 database
@@ -241,18 +226,14 @@ fn run_combined_workflow(
                     .collect()
             };
 
-            // Now add to reasoner (reasoner has its own dictionary)
             for (s, p, o) in decoded_triples {
                 reasoner.add_abox_triple(&s, &p, &o);
             }
 
-            // Add the rule
             reasoner.add_rule(comfort_rule.clone());
 
-            // Perform inference
             let inferred_facts = reasoner.infer_new_facts_semi_naive();
 
-            // Add inferred facts back with proper encoding and error handling
             for fact in &inferred_facts {
                 let decoded = match (
                     reasoner.decode_term(fact.subject),
@@ -268,10 +249,8 @@ fn run_combined_workflow(
                 }
             }
 
-            // Query for the inferred comfort level
             let comfort_level = query_comfort_level(database, &sensor_uri);
 
-            // Determine action
             let action = if temp > 25.0 || predicted_temp > 26.0 {
                 "ACTIVATE COOLING"
             } else if predicted_temp > 24.0 {
@@ -292,9 +271,7 @@ fn run_combined_workflow(
     Ok(())
 }
 
-// Helper function to query the inferred comfort level
-fn query_comfort_level(database: &SparqlDatabase, sensor_uri: &str) -> String {
-    // Proper lock scoping
+fn query_comfort_level(database: &KolibrieDB, sensor_uri: &str) -> String {
     let (comfort_pred_id, sensor_id) = {
         let dict = database.dictionary();
         let comfort = dict

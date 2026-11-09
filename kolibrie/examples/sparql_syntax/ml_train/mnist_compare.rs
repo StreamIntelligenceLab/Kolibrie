@@ -1,13 +1,13 @@
-//! JSON adapter for the standalone mnist_deepproblog benchmark. All timings exclude JSON I/O.
+//! JSON adapter for the standalone mnist_deepproblog benchmark
 use std::{collections::BTreeMap, error::Error, fs, path::Path, time::Instant};
 
 use kolibrie::{
+    database::KolibrieDB,
     ml_policy::MlExecutionContext,
     program::{
         compile_program, execute_program, parse_probability_literal, query_program_result,
         PredictionSnapshot, ProgramOptions, ProgramTimings,
     },
-    sparql_database::SparqlDatabase,
 };
 use ml::{MlpNeuralPredicate, OutputType};
 use serde::Deserialize;
@@ -119,7 +119,7 @@ fn train(req: &Request, output_dir: &Path) -> Result<Value> {
         }
     }
     let start = Instant::now();
-    let mut db = SparqlDatabase::with_ml_context(MlExecutionContext::trusted_local(output_dir)?);
+    let mut db = KolibrieDB::with_ml_context(MlExecutionContext::trusted_local(output_dir)?);
     for (i, (image, label)) in req.train_images.iter().zip(&req.train_labels).enumerate() {
         load_image(
             &mut db,
@@ -192,7 +192,6 @@ fn train(req: &Request, output_dir: &Path) -> Result<Value> {
         predictions.insert(name.to_string(), rows);
     }
 
-    // Direct prediction with the published artifact, the same rows and batching.
     let bytes = fs::read(output_dir.join(ARTIFACT))?;
     if format!("{:x}", Sha256::digest(&bytes)) != report.artifact_sha256 {
         return Err("published artifact differs from the trained model".into());
@@ -203,7 +202,7 @@ fn train(req: &Request, output_dir: &Path) -> Result<Value> {
     let mut inference_s = BTreeMap::new();
     let mut max_difference: f64 = 0.0;
     for (name, images) in &req.eval_images {
-        model.predict(&images[..images.len().min(req.batch_size)])?; // untimed warm-up
+        model.predict(&images[..images.len().min(req.batch_size)])?;
         let mut probs = Vec::new();
         let mut times = Vec::new();
         let set_start = Instant::now();
@@ -283,7 +282,7 @@ fn reason(req: &Request) -> Result<Value> {
         let start = Instant::now();
         let query = pair_term(index);
         let (left, right) = (image_term(a), image_term(b));
-        let mut db = SparqlDatabase::new();
+        let mut db = KolibrieDB::new();
         load_knowledge(&mut db)?;
         load_pair(&mut db, &query, &left, &right);
         let mut snapshot = PredictionSnapshot::new();

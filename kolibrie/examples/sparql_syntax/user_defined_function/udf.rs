@@ -10,7 +10,6 @@
 
 use kolibrie::prelude::*;
 
-// Adding udf
 fn udf() {
     let rdf_data = r##"
 <rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#"
@@ -23,12 +22,10 @@ fn udf() {
     </rdf:Description>
 </rdf:RDF>
     "##;
-    let mut database = SparqlDatabase::new();
+    let mut database = KolibrieDB::new();
     database.parse_rdf(rdf_data);
 
-    database.register_udf("concatValues", |args: Vec<&str>| {
-        args.join("_") // Concatenates arguments with an underscore
-    });
+    database.register_udf("concatValues", |args: Vec<&str>| args.join("_"));
 
     let sparql = r#"
     PREFIX ex: <http://example.com/>
@@ -42,7 +39,6 @@ fn udf() {
         .expect("query should run")
         .into_rows();
 
-    // Now the main function is responsible for printing the results
     println!("Results:{:?}", results);
 }
 

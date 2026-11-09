@@ -8,13 +8,7 @@
  * you can obtain one at https://mozilla.org/MPL/2.0/.
  */
 
-//! Unit tests for the parser's combinators.
-//!
-//! These live inside the crate rather than in `tests/` because they exercise the
-//! combinators, which are `pub(crate)`: an integration test can only reach `pub`
-//! items, and making 26 combinators public to be testable put `nom`'s `IResult` in
-//! this crate's API. Testing internals from inside is what lets the surface stay
-//! small, which is §4's rule, and P5's.
+//! Unit tests for the parser's combinators
 
 #[cfg(test)]
 mod tests {
@@ -38,15 +32,13 @@ mod tests {
         let result = identifier("person_name");
         assert_eq!(result, Ok(("", "person_name")));
 
-        // Debug what the parser actually returns
         let result = identifier("123invalid");
         assert!(result.is_ok());
 
-        // If your identifier parser allows numbers at start, test with something that should fail
-        let result = identifier(""); // Empty string should fail
+        let result = identifier("");
         assert!(result.is_err());
 
-        let result = identifier("!invalid"); // Special characters should fail
+        let result = identifier("!invalid");
         assert!(result.is_err());
     }
 
@@ -61,23 +53,18 @@ mod tests {
 
     #[test]
     fn test_predicate_parsing() {
-        // Test prefixed predicate
         let result = predicate("ex:worksAt");
         assert_eq!(result, Ok(("", "ex:worksAt")));
 
-        // Test colon-prefixed predicate
         let result = predicate(":worksAt");
         assert_eq!(result, Ok(("", ":worksAt")));
 
-        // Test 'a' predicate (rdf:type)
         let result = predicate("a");
         assert_eq!(result, Ok(("", "a")));
 
-        // Test URI predicate
         let result = predicate("<http://example.org/worksAt>");
         assert_eq!(result, Ok(("", "http://example.org/worksAt")));
 
-        // Test variable as predicate
         let result = predicate("?predicate");
         assert_eq!(result, Ok(("", "?predicate")));
     }
@@ -109,8 +96,7 @@ mod tests {
         let (remaining, triples) = result.unwrap();
         assert_eq!(remaining, "");
         assert_eq!(triples.len(), 2);
-        // Fix: Your parser strips the quotes from literals
-        assert_eq!(triples[0], ("?person", "ex:name", "John")); // Without quotes
+        assert_eq!(triples[0], ("?person", "ex:name", "John"));
         assert_eq!(triples[1], ("?person", "ex:age", "25"));
     }
 
@@ -137,24 +123,20 @@ mod tests {
         let result = parse_arithmetic_expression(input);
 
         assert!(result.is_ok());
-        // Add specific assertions for the arithmetic structure
     }
 
     #[test]
     fn test_select_parsing() {
-        // Test simple SELECT
         let result = parse_select("SELECT ?person ?name");
         assert!(result.is_ok());
         let (_, variables) = result.unwrap();
         assert_eq!(variables.len(), 2);
 
-        // Test SELECT *
         let result = parse_select("SELECT *");
         assert!(result.is_ok());
         let (_, variables) = result.unwrap();
         assert_eq!(variables[0], ("*", "*", None));
 
-        // Test SELECT with aggregation
         let result = parse_select("SELECT SUM(?salary) AS ?total");
         assert!(result.is_ok());
     }
@@ -235,14 +217,11 @@ WHERE {
 
         let (_, query) = result.unwrap();
 
-        // Check that variables are parsed correctly
         assert_eq!(query.variables.len(), 3);
         assert_eq!(query.variables[0].1, "?patient");
         assert_eq!(query.variables[1].1, "?name");
         assert_eq!(query.variables[2].1, "?riskScore");
 
-        // The unified syntax tree retains lexical terms. `a` is expanded
-        // exactly once when the AST is lowered to the execution plan.
         let GroupGraphPattern::Bgp(patterns) = query.pattern else {
             panic!("expected a BGP");
         };
@@ -268,29 +247,23 @@ WHERE {
 
         let (_, rule) = result.unwrap();
 
-        // Check rule head
         assert_eq!(rule.head.predicate, ":OverheatingAlert");
 
-        // Check conclusion
         assert_eq!(rule.conclusion.len(), 1);
         assert_eq!(rule.conclusion[0].0, "?room");
 
-        // Check body patterns
         let (patterns, filters, _, _, _) = &rule.body;
         assert!(patterns.len() >= 3);
 
-        // First pattern should have 'a' for rdf:type
         assert_eq!(patterns[0].0, "?reading");
         assert!(patterns[0].1 == "a" || patterns[0].1.contains("type"));
         assert!(patterns[0].2.contains("Sensor"));
 
-        // Check that filters are present
         assert_eq!(filters.len(), 1);
     }
 
     #[test]
     fn test_triple_block_with_a_syntax() {
-        // Test that triple blocks can parse 'a' as a predicate
         let input = "?patient a example:Test ; example:name \"John\"";
         let result = parse_triple_block(input);
 
@@ -299,7 +272,6 @@ WHERE {
         assert_eq!(remaining, "");
         assert_eq!(triples.len(), 2);
 
-        // First triple - 'a'
         assert_eq!(triples[0].0, "?patient");
         assert_eq!(
             triples[0].1,
@@ -307,7 +279,6 @@ WHERE {
         );
         assert!(triples[0].2.contains("Test"));
 
-        // Second triple is a normal pattern
         assert_eq!(triples[1].0, "?patient");
         assert!(triples[1].1.contains("name"));
         assert_eq!(triples[1].2, "John");
@@ -333,10 +304,8 @@ WHERE {
 
         let (_, rule) = result.unwrap();
 
-        // Check rule head
         assert_eq!(rule.head.predicate, ":TransitiveRelated");
 
-        // Check PROB annotation is present and correct
         let prob = rule
             .prob_annotation
             .as_ref()
@@ -345,11 +314,9 @@ WHERE {
         assert!((prob.threshold.unwrap() - 0.3).abs() < 1e-9);
         assert!((prob.confidence.unwrap() - 0.9).abs() < 1e-9);
 
-        // Check conclusion
         assert_eq!(rule.conclusion.len(), 1);
         assert_eq!(rule.conclusion[0], ("?x", "ex:related", "?z"));
 
-        // Check body patterns
         let (patterns, filters, _, _, _) = &rule.body;
         assert_eq!(patterns.len(), 2);
         assert_eq!(patterns[0], ("?x", "ex:related", "?y"));
@@ -388,7 +355,6 @@ WHERE {
             "confidence should be None when not specified"
         );
 
-        // Check filter is parsed
         let (_, filters, _, _, _) = &rule.body;
         assert_eq!(filters.len(), 1);
     }
@@ -422,7 +388,6 @@ WHERE {
 
     #[test]
     fn test_rule_without_prob_annotation_still_works() {
-        // Regression: rules without PROB should parse identically to before
         let input = r#"RULE :SimpleRule :-
 CONSTRUCT {
     ?x ex:inferred true .
@@ -457,14 +422,12 @@ WHERE {
 
         let (_, query) = result.unwrap();
 
-        // Check that SELECT * is parsed correctly
         assert_eq!(query.variables.len(), 1);
         assert_eq!(query.variables[0], ("*", "*", None));
 
         let (_, combined) = parse_combined_query(input).unwrap();
         assert_eq!(combined.prefixes["ex"], "http://example.org#");
 
-        // Check that the triple pattern is parsed correctly
         let GroupGraphPattern::Bgp(patterns) = query.pattern else {
             panic!("expected a BGP");
         };
@@ -1182,8 +1145,6 @@ ML.PREDICT(MODEL "digit_model",
 
     #[test]
     fn a_parse_error_offset_points_at_the_rejected_text() {
-        // Not `input.len() - offending.len()`: the parser narrows the error to the
-        // token, so subtracting its length lands past the start of it.
         let input = "DELETE DATA { <urn:s> <urn:p> ?illegal }";
         let error = parse_combined_query(input).expect_err("a variable is illegal here");
         let offset = error.offset_in(input);

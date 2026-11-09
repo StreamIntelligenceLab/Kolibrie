@@ -11,70 +11,54 @@
 use std::collections::BTreeSet;
 use std::sync::{Arc, Mutex};
 
-/// Trait defining a provenance semiring for annotated datalog evaluation.
-///
-/// Implementors provide a tag space with identity elements, semiring operations
-/// (disjunction ⊕, conjunction ⊗), negation, saturation, and probability I/O.
+/// Trait defining a provenance semiring for annotated datalog evaluation
 pub trait Provenance: Clone + 'static {
-    /// The type of annotations (tags) on derived facts.
+    /// The type of annotations (tags) on derived facts
     type Tag: Clone + PartialEq + std::fmt::Debug;
 
-    /// Additive identity (false / empty derivation).
+    /// Additive identity (false / empty derivation)
     fn zero(&self) -> Self::Tag;
 
-    /// Multiplicative identity (true / certain fact).
+    /// Multiplicative identity (true / certain fact)
     fn one(&self) -> Self::Tag;
 
-    /// Disjunction (⊕): combines tags from alternative derivation paths.
-    /// Used when the same fact is derived via multiple rule applications.
+    /// Disjunction (⊕): combines tags from alternative derivation paths
     fn disjunction(&self, a: &Self::Tag, b: &Self::Tag) -> Self::Tag;
 
-    /// Conjunction (⊗): combines tags from joined premises.
-    /// Used when multiple premise triples contribute to a single derivation.
+    /// Conjunction (⊗): combines tags from joined premises
     fn conjunction(&self, a: &Self::Tag, b: &Self::Tag) -> Self::Tag;
 
-    /// Negation (⊖): used for stratified negation-as-failure.
+    /// Negation (⊖): used for stratified negation-as-failure
     fn negate(&self, a: &Self::Tag) -> Self::Tag;
 
-    /// Saturation (⊜): applied at fixpoint to stabilize tags.
-    /// For simple provenances this is typically the identity function.
+    /// Saturation (⊜): applied at fixpoint to stabilize tags
     fn saturate(&self, a: &Self::Tag) -> Self::Tag;
 
-    /// Convert a probability value (from input data) to a tag.
+    /// Convert a probability value (from input data) to a tag
     fn tag_from_probability(&self, prob: f64) -> Self::Tag;
 
-    /// Convert a probability and a unique input-fact index to a tag.
-    /// Default ignores `_id` and delegates to `tag_from_probability`.
-    /// Override for provenances that track variable identities (e.g. TopKProofs).
+    /// Convert a probability and a unique input-fact index to a tag
     fn tag_from_probability_with_id(&self, prob: f64, _id: usize) -> Self::Tag {
         self.tag_from_probability(prob)
     }
 
-    /// Recover a probability value from a tag (for output / RDF-star encoding).
+    /// Recover a probability value from a tag (for output / RDF-star encoding)
     fn recover_probability(&self, tag: &Self::Tag) -> f64;
 
-    /// Check whether a tag has converged (old ≈ new after saturation).
-    /// Returns `true` if the tag is considered stable.
+    /// Check whether a tag has converged (old ≈ new after saturation)
     fn is_saturated(&self, old: &Self::Tag, new: &Self::Tag) -> bool;
 
-    /// Whether this semiring has given up on exactness and its tags should be
-    /// treated as a bound rather than a value.
-    ///
-    /// Defaults to `false`. An approximate semiring such as [`TopKProofs`] reports
-    /// `true` once it has discarded proofs, which lets a caller decide whether to
-    /// escalate to an exact method.
+    /// Whether this semiring has given up on exactness and its tags should be treated as a bound
+    /// rather than a value
     fn is_exhausted(&self) -> bool {
         false
     }
 }
 
-/// Epsilon for floating-point convergence comparisons.
+/// Epsilon for floating-point convergence comparisons
 const PROB_EPSILON: f64 = 1e-9;
 
-/// Min-max probability provenance.
-///
-/// - Tag: f64 in [0, 1]; ⊕ = max, ⊗ = min
-/// - Possibilistic semantics (fuzzy Datalog).
+/// Min-max probability provenance
 #[derive(Debug, Clone)]
 pub struct MinMaxProbability;
 
@@ -117,10 +101,7 @@ impl Provenance for MinMaxProbability {
     }
 }
 
-/// Add-multiply probability provenance.
-///
-/// - Tag: f64 in [0, 1]; ⊕ = noisy-OR, ⊗ = multiplication
-/// - Models independent probabilistic events.
+/// Add-multiply probability provenance
 #[derive(Debug, Clone)]
 pub struct AddMultProbability;
 
@@ -163,10 +144,7 @@ impl Provenance for AddMultProbability {
     }
 }
 
-/// Boolean provenance (classical two-valued logic).
-///
-/// - Tag: bool; ⊕ = OR, ⊗ = AND
-/// - No probability tracking; equivalent to classical datalog.
+/// Boolean provenance (classical two-valued logic)
 #[derive(Debug, Clone)]
 pub struct BooleanProvenance;
 
@@ -213,32 +191,21 @@ impl Provenance for BooleanProvenance {
     }
 }
 
-/// A proof is a set of input-variable IDs (all must hold simultaneously).
+/// A proof is a set of input-variable IDs (all must hold simultaneously)
 pub type Proof = BTreeSet<u32>;
-/// A tag is at most k proofs, ranked by descending probability.
+/// A tag is at most k proofs, ranked by descending probability
 pub type TopKTag = Vec<Proof>;
 
-/// Top-K proof-tracking provenance.
-///
-/// Retains the k most probable proof paths for each derived fact.
-/// Probability is recovered from the retained proofs via weighted model counting.
-///
-/// Larger k gives more accurate results at higher cost; k ≤ 10 is recommended for
-/// most use cases. `k` must be in `[1, 63]`.
+/// Top-K proof-tracking provenance
 #[derive(Debug, Clone)]
 pub struct TopKProofs {
-    /// How many proofs to retain per fact. Must be in `[1, 63]`.
+    /// How many proofs to retain per fact
     pub k: usize,
     prob_table: Arc<Mutex<Vec<f64>>>,
 }
 
 impl TopKProofs {
-    /// Retains at most `k` proofs per fact.
-    ///
-    /// # Panics
-    ///
-    /// If `k` is outside `[1, 63]`: `recover_probability` enumerates proof subsets
-    /// through a `u64` bitmask, so 63 is the hard ceiling.
+    /// Retains at most `k` proofs per fact
     pub fn new(k: usize) -> Self {
         assert!(
             k >= 1 && k <= 63,
@@ -309,9 +276,7 @@ impl Provenance for TopKProofs {
         result
     }
 
-    /// Approximate negation. Returns `one()` for empty tags, `zero()` for certain facts;
-    /// otherwise allocates a synthetic seed with probability `1 − p`.
-    /// Use `WmcProvenance` for exact correlation-aware negation.
+    /// Approximate negation
     fn negate(&self, a: &TopKTag) -> TopKTag {
         if a.is_empty() {
             return self.one();
@@ -355,8 +320,7 @@ impl Provenance for TopKProofs {
         vec![proof]
     }
 
-    /// Computes the probability of a derived fact from its retained proof paths.
-    /// Result is an approximation when fewer than all proof paths were retained.
+    /// Computes the probability of a derived fact from its retained proof paths
     fn recover_probability(&self, tag: &TopKTag) -> f64 {
         if tag.is_empty() {
             return 0.0;
@@ -388,26 +352,21 @@ impl Provenance for TopKProofs {
     }
 }
 
-/// A signed literal: `(seed_id, polarity)` where `true` = positive, `false` = negated.
+/// A signed literal: `(seed_id, polarity)` where `true` = positive, `false` = negated
 pub type WmcLiteral = (u32, bool);
-/// A single conjunction of signed seed literals (one proof path).
+/// A single conjunction of signed seed literals (one proof path)
 pub type WmcClause = BTreeSet<WmcLiteral>;
-/// A DNF formula: disjunction of conjunctions — the complete proof formula.
+/// A DNF formula: disjunction of conjunctions — the complete proof formula
 pub type WmcFormula = BTreeSet<WmcClause>;
 
-/// WMC provenance — exact Weighted Model Count via recursive Shannon expansion.
-///
-/// ⊕ = set-union of DNF clauses (subsumption-pruned)
-/// ⊗ = Cartesian-product of DNF clauses (contradictory + subsumed pruned)
-/// `negate` = De Morgan complement (signed literals, exact)
-/// `recover_probability` = Shannon WMC with memoization
+/// WMC provenance — exact Weighted Model Count via recursive Shannon expansion
 #[derive(Debug, Clone)]
 pub struct DnfWmcProvenance {
     prob_table: Arc<Mutex<Vec<f64>>>,
 }
 
 impl DnfWmcProvenance {
-    /// A semiring that keeps the full DNF formula and counts it exactly.
+    /// A semiring that keeps the full DNF formula and counts it exactly
     pub fn new() -> Self {
         Self {
             prob_table: Arc::new(Mutex::new(Vec::new())),
@@ -421,11 +380,10 @@ impl Default for DnfWmcProvenance {
     }
 }
 
-/// Backward-compatible alias. Use [`DnfWmcProvenance`] for explicit DNF or
-/// [`crate::sdd::SddProvenance`] for the faster SDD-based implementation.
+/// Backward-compatible alias
 pub type WmcProvenance = DnfWmcProvenance;
 
-/// Remove clauses subsumed by a shorter clause in the same formula.
+/// Remove clauses subsumed by a shorter clause in the same formula
 fn remove_subsumed(formula: WmcFormula) -> WmcFormula {
     let clauses: Vec<WmcClause> = formula.into_iter().collect();
     clauses
@@ -435,7 +393,7 @@ fn remove_subsumed(formula: WmcFormula) -> WmcFormula {
         .collect()
 }
 
-/// Remove contradictory clauses (those containing both `(v, true)` and `(v, false)`).
+/// Remove contradictory clauses (those containing both `(v, true)` and `(v, false)`)
 pub(crate) fn remove_contradictory(formula: WmcFormula) -> WmcFormula {
     formula
         .into_iter()
@@ -512,7 +470,7 @@ impl Provenance for DnfWmcProvenance {
         remove_subsumed(remove_contradictory(product))
     }
 
-    /// Exact negation over the proof formula, preserving correlations between literals.
+    /// Exact negation over the proof formula, preserving correlations between literals
     fn negate(&self, a: &WmcFormula) -> WmcFormula {
         if a.is_empty() {
             return self.one();
@@ -618,16 +576,13 @@ mod tests {
     fn minmax_identities() {
         let p = MinMaxProbability;
         let a = 0.7;
-        // ⊕ identity: a ⊕ 0 = a
         assert!((p.disjunction(&a, &p.zero()) - a).abs() < PROB_EPSILON);
-        // ⊗ identity: a ⊗ 1 = a
         assert!((p.conjunction(&a, &p.one()) - a).abs() < PROB_EPSILON);
     }
 
     #[test]
     fn minmax_annihilator() {
         let p = MinMaxProbability;
-        // a ⊗ 0 = 0
         assert!((p.conjunction(&0.7, &p.zero()) - p.zero()).abs() < PROB_EPSILON);
     }
 
@@ -685,7 +640,6 @@ mod tests {
     fn addmult_disjunction_noisy_or() {
         let p = AddMultProbability;
         let result = p.disjunction(&0.7, &0.6);
-        // noisy-OR: 0.7 + 0.6 - 0.7*0.6 = 1.3 - 0.42 = 0.88
         assert!((result - 0.88).abs() < PROB_EPSILON);
     }
 
@@ -746,11 +700,9 @@ mod tests {
     #[test]
     fn topk_conjunction_identity() {
         let p = TopKProofs::new(5);
-        // a ⊗ one = a
         let a = vec![make_proof(&[0])];
         let result = p.conjunction(&a, &p.one());
         assert_eq!(result, a);
-        // zero ⊗ a = zero
         let zero_result = p.conjunction(&p.zero(), &a);
         assert_eq!(zero_result, vec![]);
     }
@@ -758,7 +710,6 @@ mod tests {
     #[test]
     fn topk_conjunction_shared_variable() {
         let p = TopKProofs::new(5);
-        // {0} ⊗ {0, 1} = {{0, 1}} (union, no duplication)
         let a = vec![make_proof(&[0])];
         let b = vec![make_proof(&[0, 1])];
         let result = p.conjunction(&a, &b);
@@ -768,7 +719,6 @@ mod tests {
     #[test]
     fn topk_disjunction_dedup_and_truncate() {
         let p = TopKProofs::new(2);
-        // [{0}] ⊕ [{0}, {1}] = [{0}, {1}] (dedup, truncate to 2)
         let a = vec![make_proof(&[0])];
         let b = vec![make_proof(&[0]), make_proof(&[1])];
         let result = p.disjunction(&a, &b);
@@ -793,7 +743,6 @@ mod tests {
         let p = TopKProofs::new(5);
         p.tag_from_probability_with_id(0.8, 0);
         p.tag_from_probability_with_id(0.6, 1);
-        // {0} and {1} are independent — noisy-OR: 0.8 + 0.6 - 0.48 = 0.92
         let tag = vec![make_proof(&[0]), make_proof(&[1])];
         let prob = p.recover_probability(&tag);
         assert!(
@@ -805,14 +754,10 @@ mod tests {
 
     #[test]
     fn topk_wmc_overlap_canonical() {
-        // Canonical overlap example: proof1={0,1}, proof2={0,2}
-        // P(x)=0.8, P(y)=0.6, P(z)=0.5
-        // Exact: P(x∧y) + P(x∧z) - P(x∧y∧z) = 0.48 + 0.40 - 0.24 = 0.64
-        // noisy-OR of 0.48 and 0.40 = 0.688 (wrong — overcounts x)
         let p = TopKProofs::new(5);
-        p.tag_from_probability_with_id(0.8, 0); // x
-        p.tag_from_probability_with_id(0.6, 1); // y
-        p.tag_from_probability_with_id(0.5, 2); // z
+        p.tag_from_probability_with_id(0.8, 0);
+        p.tag_from_probability_with_id(0.6, 1);
+        p.tag_from_probability_with_id(0.5, 2);
         let tag = vec![make_proof(&[0, 1]), make_proof(&[0, 2])];
         let wmc = p.recover_probability(&tag);
         assert!(

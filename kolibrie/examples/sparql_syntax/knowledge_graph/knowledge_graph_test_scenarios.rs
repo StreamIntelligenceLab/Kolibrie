@@ -14,18 +14,15 @@ use shared::terms::Term;
 use shared::terms::TriplePattern;
 use std::time::Instant;
 
-// Test scenario 1: 100 facts, 2 rules
 fn test1() {
     let mut kg = Reasoner::new();
 
-    // Generate 100 facts programmatically (ABox)
     for i in 0..5 {
         let subject = format!("person{}", i);
-        let object = format!("person{}", (i + 1) % 5); // Wraps around to connect the last person with the first
+        let object = format!("person{}", (i + 1) % 5);
         kg.add_abox_triple(&subject, "likes", &object);
     }
 
-    // Add transitivity rule: likes(X, Y) & likes(Y, Z) => likes(X, Z)
     let likes_id = { kg.encode_term("likes") };
 
     kg.add_rule(Rule {
@@ -50,7 +47,6 @@ fn test1() {
         filters: vec![],
     });
 
-    // Add symmetry rule: likes(X, Y) => likes(Y, X)
     kg.add_rule(Rule {
         premise: vec![(
             Term::Variable("x".to_string()),
@@ -66,17 +62,12 @@ fn test1() {
         filters: vec![],
     });
 
-    // Run the optimized inference
     let start = Instant::now();
     let inferred_facts = kg.infer_new_facts_semi_naive();
     let duration = start.elapsed();
     println!("Inference took: {:?}", duration);
 
-    let results = kg.query_abox(
-        Some("person0"), // subject
-        Some("likes"),   // predicate
-        None,            // object -> wildcard
-    );
+    let results = kg.query_abox(Some("person0"), Some("likes"), None);
 
     println!("person0 likes these people:");
     for triple in results {
@@ -86,7 +77,6 @@ fn test1() {
         println!("  {} {} {}", s_str, p_str, o_str);
     }
 
-    // Display the newly inferred facts
     println!("Inferred facts:");
     for fact in inferred_facts {
         println!(
@@ -98,7 +88,6 @@ fn test1() {
     }
 }
 
-// Test scenario 2: One piece of data, 100 rules
 fn test2() {
     let mut kg = Reasoner::new();
     kg.add_abox_triple("myInstance", "type", "Class0");
@@ -133,11 +122,7 @@ fn test2() {
     let inferred_facts = kg.infer_new_facts_semi_naive();
     let duration = start.elapsed();
     println!("Inference took: {:?}", duration);
-    let results = kg.query_abox(
-        Some("myInstance"), // subject
-        Some("type"),       // predicate
-        None,               // object -> wildcard
-    );
+    let results = kg.query_abox(Some("myInstance"), Some("type"), None);
 
     println!("myInstance has these types after inference:");
     for triple in &results {
@@ -164,14 +149,12 @@ fn transitivity_benchmark() {
     for facts_count in 1..=50 {
         let mut kg = Reasoner::new();
 
-        // Add 'facts_count' facts in a chain: person0 likes person1, person1 likes person2, ...
         for i in 0..facts_count {
             let subject = format!("person{}", i);
             let object = format!("person{}", i + 1);
             kg.add_abox_triple(&subject, "likes", &object);
         }
 
-        // Only transitivity rule
         let likes_id = { kg.encode_term("likes") };
 
         kg.add_rule(Rule {
@@ -200,7 +183,6 @@ fn transitivity_benchmark() {
         let inferred_facts = kg.infer_new_facts_semi_naive();
         let duration = start.elapsed();
 
-        // Print time in seconds, e.g. 0.00123
         println!(
             "{},{:.6},{:?}",
             facts_count,

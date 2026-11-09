@@ -8,18 +8,7 @@
  * you can obtain one at https://mozilla.org/MPL/2.0/.
  */
 
-//! Python bindings for Kolibrie, exported as the `kolibrie` extension module.
-//!
-//! Four surfaces, registered by the submodules here: the SPARQL query builder, the
-//! Datalog knowledge graph, the term helpers that let a caller read a value out of a
-//! term instead of parsing the string a query handed back, and the RSP engine.
-//!
-//! The interesting documentation for this crate is the Python API rather than this
-//! Rust shim, which is why the `[lib]` sets `doc = false`.
-//!
-//! The library must be *named* `kolibrie` for Python to import it under that
-//! name, which collides with the `kolibrie` crate's own rustdoc output and is the
-//! other reason the docs are turned off here.
+//! Python bindings for Kolibrie, exported as the `kolibrie` extension module
 
 mod py_knowledge_graph;
 mod py_query_builder;
@@ -30,15 +19,9 @@ use pyo3::prelude::*;
 
 #[pymodule]
 fn kolibrie(m: &Bound<'_, PyModule>) -> PyResult<()> {
-    // Register the Datalog/KG types
     py_knowledge_graph::register(m)?;
-    // Register the SPARQL‐QueryBuilder types
     py_query_builder::register(m)?;
-    // Register the term helpers, so a caller can read a value out of a term
-    // rather than parsing its spelling
     py_rdf_term::register(m)?;
-    // Register the RSP engine: RSP-QL over real windows, not the list the query
-    // builder's `as_stream` accumulates
     py_rsp::register(m)?;
     Ok(())
 }

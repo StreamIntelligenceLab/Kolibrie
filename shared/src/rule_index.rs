@@ -12,44 +12,30 @@ use crate::terms::Term::*;
 use crate::terms::*;
 use std::collections::{HashMap, HashSet};
 
-/// Index of a rule in the reasoner's rule list.
+/// Index of a rule in the reasoner's rule list
 pub type RuleId = usize;
-/// Stands in for a variable position when a pattern is indexed.
-///
-/// A premise with a variable subject is filed under this key, so a lookup for a
-/// concrete subject must consult both the concrete key and this one. It therefore
-/// collides with a real term whose id is `u32::MAX` — unreachable in practice,
-/// since [`Dictionary`](crate::dictionary::Dictionary) stops below `0x8000_0000`.
+/// Stands in for a variable position when a pattern is indexed
 pub const WILDCARD: u32 = u32::MAX;
 
 #[derive(Debug, Clone)]
-/// Maps a fact to the rules whose premises could match it.
-///
-/// This is the reverse of the usual direction: rather than scanning every rule
-/// against every new fact, semi-naive evaluation asks which rules a fact could
-/// possibly fire, which is what keeps a derivation round proportional to the delta
-/// rather than to the program size.
-///
-/// Every premise is filed under all six two-position orderings, with [`WILDCARD`]
-/// standing in for variable positions. Six maps make any binding pattern a direct
-/// lookup; the cost is that each premise is stored six times.
+/// Maps a fact to the rules whose premises could match it
 pub struct RuleIndex {
-    /// Subject then predicate.
+    /// Subject then predicate
     pub spo: HashMap<u32, HashMap<u32, HashSet<RuleId>>>,
-    /// Predicate then object.
+    /// Predicate then object
     pub pos: HashMap<u32, HashMap<u32, HashSet<RuleId>>>,
-    /// Object then subject.
+    /// Object then subject
     pub osp: HashMap<u32, HashMap<u32, HashSet<RuleId>>>,
-    /// Predicate then subject.
+    /// Predicate then subject
     pub pso: HashMap<u32, HashMap<u32, HashSet<RuleId>>>,
-    /// Object then predicate.
+    /// Object then predicate
     pub ops: HashMap<u32, HashMap<u32, HashSet<RuleId>>>,
-    /// Subject then object.
+    /// Subject then object
     pub sop: HashMap<u32, HashMap<u32, HashSet<RuleId>>>,
 }
 
 impl RuleIndex {
-    /// An empty index.
+    /// An empty index
     pub fn new() -> Self {
         Self {
             spo: HashMap::new(),
@@ -61,7 +47,7 @@ impl RuleIndex {
         }
     }
 
-    /// Drops every indexed premise, keeping the allocation.
+    /// Drops every indexed premise, keeping the allocation
     pub fn clear(&mut self) {
         self.spo.clear();
         self.pos.clear();
@@ -71,12 +57,10 @@ impl RuleIndex {
         self.sop.clear();
     }
 
-    /// Files one premise of `rule_id`, so a matching fact will list that rule as a
-    /// candidate. Call once per premise.
+    /// Files one premise of `rule_id`, so a matching fact will list that rule as a candidate
     pub fn insert_premise_pattern(&mut self, pattern: &TriplePattern, rule_id: RuleId) {
         let (s_val, p_val, o_val) = triple_pattern_to_keys(pattern);
 
-        // Insert into each of the six permutations
         self.spo
             .entry(s_val)
             .or_default()
@@ -115,11 +99,7 @@ impl RuleIndex {
             .insert(rule_id);
     }
 
-    /// Rules that might fire for a fact with the given bound positions.
-    ///
-    /// Over-approximates: the result is a superset of the rules that actually
-    /// match, because indexing keys on at most two positions and ignores repeated
-    /// variables. Callers still have to run the full match.
+    /// Rules that might fire for a fact with the given bound positions
     pub fn query_candidate_rules(
         &self,
         s: Option<u32>,
@@ -129,26 +109,22 @@ impl RuleIndex {
         let mut results = HashSet::new();
 
         match (s, p, o) {
-            // (S, P, O) fully bound
             (Some(ss), Some(pp), Some(oo)) => {
                 if let Some(pred_map) = self.spo.get(&ss) {
                     if let Some(rule_set) = pred_map.get(&pp) {
                         results.extend(rule_set);
                     }
                 }
-                //   - s -> sop
                 if let Some(obj_map) = self.sop.get(&ss) {
                     if let Some(rule_set) = obj_map.get(&oo) {
                         results.extend(rule_set);
                     }
                 }
-                //   - p -> pos
                 if let Some(obj_map) = self.pos.get(&pp) {
                     if let Some(rule_set) = obj_map.get(&oo) {
                         results.extend(rule_set);
                     }
                 }
-                //   - o -> osp or ops
                 if let Some(subj_map) = self.osp.get(&oo) {
                     if let Some(rule_set) = subj_map.get(&ss) {
                         results.extend(rule_set);
@@ -161,34 +137,26 @@ impl RuleIndex {
                 }
             }
 
-            // (S, P, None)
             (Some(ss), Some(pp), None) => {
-                // subject + predicate known, object unknown
-                // => use the spo map if it has s->p => union all rule_ids
                 if let Some(pred_map) = self.spo.get(&ss) {
                     if let Some(rule_set) = pred_map.get(&pp) {
                         results.extend(rule_set);
                     }
                 }
 
-                // plus the "pso" map if it has p->s => union all
                 if let Some(subj_map) = self.pso.get(&pp) {
                     if let Some(rule_set) = subj_map.get(&ss) {
                         results.extend(rule_set);
                     }
                 }
-                // etc.
             }
 
-            // (S, None, O)
             (Some(ss), None, Some(oo)) => {
-                // We can use the sop map if it has s->o => union all
                 if let Some(obj_map) = self.sop.get(&ss) {
                     if let Some(rule_set) = obj_map.get(&oo) {
                         results.extend(rule_set);
                     }
                 }
-                // and also the osp map if it has o->s => union
                 if let Some(subj_map) = self.osp.get(&oo) {
                     if let Some(rule_set) = subj_map.get(&ss) {
                         results.extend(rule_set);
@@ -196,9 +164,7 @@ impl RuleIndex {
                 }
             }
 
-            // (None, P, O)
             (None, Some(pp), Some(oo)) => {
-                // pos, ops
                 if let Some(obj_map) = self.pos.get(&pp) {
                     if let Some(rule_set) = obj_map.get(&oo) {
                         results.extend(rule_set);
@@ -211,9 +177,7 @@ impl RuleIndex {
                 }
             }
 
-            // (S, None, None)
             (Some(ss), None, None) => {
-                // union everything from spo[s] and sop[s]
                 if let Some(pred_map) = self.spo.get(&ss) {
                     for (_p, rule_set) in pred_map {
                         results.extend(rule_set);
@@ -226,9 +190,7 @@ impl RuleIndex {
                 }
             }
 
-            // (None, P, None)
             (None, Some(pp), None) => {
-                // union everything from pos[p] and pso[p]
                 if let Some(obj_map) = self.pos.get(&pp) {
                     for (_o, rule_set) in obj_map {
                         results.extend(rule_set);
@@ -241,9 +203,7 @@ impl RuleIndex {
                 }
             }
 
-            // (None, None, O)
             (None, None, Some(oo)) => {
-                // union everything from osp[o] and ops[o]
                 if let Some(subj_map) = self.osp.get(&oo) {
                     for (_s, rule_set) in subj_map {
                         results.extend(rule_set);
@@ -256,9 +216,7 @@ impl RuleIndex {
                 }
             }
 
-            // (None, None, None): no constraints => return all rule_ids
             (None, None, None) => {
-                // union everything from all 6 permutations
                 for (_, pred_map) in &self.spo {
                     for (_, rule_set) in pred_map {
                         results.extend(rule_set);

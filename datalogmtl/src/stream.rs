@@ -8,99 +8,74 @@
  * you can obtain one at https://mozilla.org/MPL/2.0/.
  */
 
-//! Turning RDF events into temporal facts: stream shapes, channels and staleness.
-//!
-//! An event is a small graph of triples arriving at a timestamp. A
-//! [`StreamShape`] says which events belong to a stream, which variables identify
-//! one logical channel — a particular sensor, say — and how long a reading from
-//! that channel stays valid.
-//!
-//! # Readings are step functions, and silence is an event
-//!
-//! A channel's latest reading holds until the next one arrives or until
-//! `max_gap_ms` has passed, so [`ShapeIngester`] produces intervals of validity
-//! rather than instants. When a channel does go stale,
-//! [`StreamShape::on_expiry`] facts are emitted on its behalf, because a rule
-//! cannot observe the absence of an event: without them, a source that has stopped
-//! reporting looks exactly like one reporting normally. Only
-//! [`ChannelKey`] variables can appear in those patterns, since the key binding is
-//! all that is still known about a channel whose reading has expired.
+//! Turning RDF events into temporal facts: stream shapes, channels and staleness
 
 use shared::pattern::matches_rule_pattern;
 use shared::terms::TriplePattern;
 use shared::triple::Triple;
 use std::collections::HashMap;
 
-/// IRI identifying a named stream.
+/// IRI identifying a named stream
 pub type StreamIri = String;
 
-/// A BGP event pattern: one or more triple patterns that must all match
-/// the triples of one incoming RDF event graph.
+/// A BGP event pattern: one or more triple patterns that must all match the triples of one incoming
+/// RDF event graph
 pub type EventPattern = Vec<TriplePattern>;
 
-/// The composite primary key for a stream channel.
-/// A list of variable names whose bindings together identify one logical channel.
+/// The composite primary key for a stream channel
 pub type ChannelKey = Vec<String>;
 
-/// A key binding: the actual values for a specific channel.
+/// A key binding: the actual values for a specific channel
 pub type KeyBinding = HashMap<String, u32>;
 
-/// Staleness policy for a stream shape.
+/// Staleness policy for a stream shape
 #[derive(Debug, Clone)]
 pub struct StalenessPolicy {
-    /// If no new event arrives within max_gap_ms, the channel's reading expires.
+    /// If no new event arrives within max_gap_ms, the channel's reading expires
     pub max_gap_ms: u64,
 }
 
-/// A stream shape declaration.
+/// A stream shape declaration
 #[derive(Debug, Clone)]
 pub struct StreamShape {
-    /// Stream this shape applies to. An event from another stream is ignored.
+    /// Stream this shape applies to
     pub stream_iri: StreamIri,
-    /// Patterns that must all match within one event for it to count.
+    /// Patterns that must all match within one event for it to count
     pub event_pattern: EventPattern,
-    /// Variables whose bindings identify a channel. Two events agreeing on these
-    /// are successive readings from the same source; the later replaces the
-    /// earlier.
+    /// Variables whose bindings identify a channel
     pub channel_key: ChannelKey,
-    /// How long a reading survives without a successor.
+    /// How long a reading survives without a successor
     pub staleness: StalenessPolicy,
     /// Facts transmitted on behalf of a channel that has gone stale, produced by
-    /// [`ShapeIngester::expiry_facts`]. Silence is not itself an event, so
-    /// without this a downstream rule has nothing to observe when a source stops
-    /// reporting.
-    ///
-    /// Only [`ChannelKey`] variables may appear here — the key binding is the
-    /// only thing still known about a channel once its reading has expired.
+    /// [`ShapeIngester::expiry_facts`]
     pub on_expiry: Vec<TriplePattern>,
 }
 
-/// The active state of one logical channel (one distinct key binding).
+/// The active state of one logical channel (one distinct key binding)
 #[derive(Debug, Clone)]
 pub struct ChannelState {
-    /// The triples belonging to the most recent event on this channel.
+    /// The triples belonging to the most recent event on this channel
     pub active_triples: Vec<Triple>,
-    /// When this reading became valid (absolute ms).
+    /// When this reading became valid (absolute ms)
     pub validity_start: u64,
-    /// When this reading expires (absolute ms = last_event_time + max_gap_ms).
+    /// When this reading expires (absolute ms = last_event_time + max_gap_ms)
     pub expiry_time: u64,
-    /// Timestamp of the most recent event on this channel.
+    /// Timestamp of the most recent event on this channel
     pub last_event_time: u64,
 }
 
-/// An incoming RDF event: a small graph of triples arriving together at time t.
+/// An incoming RDF event: a small graph of triples arriving together at time t
 #[derive(Debug, Clone)]
 pub struct RdfEvent {
-    /// Stream the event arrived on.
+    /// Stream the event arrived on
     pub stream_iri: StreamIri,
-    /// Arrival time, absolute, in the unit the rules are written in.
+    /// Arrival time, absolute, in the unit the rules are written in
     pub timestamp: u64,
-    /// The event's graph. Matched as a whole: a shape's patterns must all find a
-    /// triple here, so a partial event matches nothing.
+    /// The event's graph
     pub triples: Vec<Triple>,
 }
 
-/// Stable, hashable representation of a channel key (sorted pairs).
+/// Stable, hashable representation of a channel key (sorted pairs)
 type ChannelId = (usize, Vec<(String, u32)>);
 
 fn key_binding_to_id(shape_idx: usize, binding: &KeyBinding) -> ChannelId {
@@ -109,16 +84,12 @@ fn key_binding_to_id(shape_idx: usize, binding: &KeyBinding) -> ChannelId {
     (shape_idx, pairs)
 }
 
-/// The shape ingester. Maintains channel state per shape and emits
-/// step-function-derived (triple, validity_interval) pairs to the evaluator.
+/// The shape ingester
 pub struct ShapeIngester {
     shapes: Vec<StreamShape>,
-    /// Per (shape_index, sorted_key_pairs), the current channel state.
     channels: HashMap<ChannelId, ChannelState>,
 }
 
-// Summarised rather than derived: each live channel holds the triples of its most
-// recent event, so the derived form grows with the stream.
 impl std::fmt::Debug for ShapeIngester {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("ShapeIngester")
@@ -129,13 +100,7 @@ impl std::fmt::Debug for ShapeIngester {
 }
 
 impl ShapeIngester {
-    // Took an `Arc<RwLock<Dictionary>>` until step 3. It was stored and never read:
-    // events arrive already encoded, so ingestion does no interning. Six call sites
-    // were threading a dictionary here for nothing.
-    /// An ingester for `shapes`, with no channels yet.
-    ///
-    /// Shape order is the index used internally to identify a channel, so it is
-    /// fixed for the ingester's lifetime.
+    /// An ingester for `shapes`, with no channels yet
     pub fn new(shapes: Vec<StreamShape>) -> Self {
         Self {
             shapes,
@@ -143,8 +108,7 @@ impl ShapeIngester {
         }
     }
 
-    /// Process an incoming event. Returns triples to insert into the store at
-    /// the event's timestamp (newly active triples for matching channels).
+    /// Process an incoming event
     pub fn process_event(&mut self, event: &RdfEvent) -> Vec<(Triple, u64)> {
         let mut to_insert = Vec::new();
 
@@ -185,7 +149,7 @@ impl ShapeIngester {
         to_insert
     }
 
-    /// Check for expired channels at time t.
+    /// Check for expired channels at time t
     pub fn expired_channels(&self, t: u64) -> Vec<ChannelId> {
         self.channels
             .iter()
@@ -194,16 +158,7 @@ impl ShapeIngester {
             .collect()
     }
 
-    /// Facts to transmit at `t` for every channel whose reading has expired.
-    ///
-    /// This is a *standing* condition, not an edge: as long as the channel stays
-    /// stale it keeps producing, which is what universal operators need — a
-    /// `Box[0,n]` rule requires the fact at every integer point in its window, so
-    /// a one-shot expiry edge could never satisfy one.
-    ///
-    /// Call it after [`Self::process_event`] for the tick, so a channel that just
-    /// reported is not also reported stale. Channels evicted by
-    /// [`Self::evict_expired`] stop producing.
+    /// Facts to transmit at `t` for every channel whose reading has expired
     pub fn expiry_facts(&self, t: u64) -> Vec<(Triple, u64)> {
         let mut out = Vec::new();
         for ((shape_idx, key), state) in &self.channels {
@@ -238,19 +193,18 @@ impl ShapeIngester {
         out
     }
 
-    /// Remove expired channels at time t.
+    /// Remove expired channels at time t
     pub fn evict_expired(&mut self, t: u64) {
         self.channels.retain(|_, state| state.expiry_time >= t);
     }
 
-    /// Returns all currently active channel states.
+    /// Returns all currently active channel states
     pub fn active_channels(&self) -> &HashMap<ChannelId, ChannelState> {
         &self.channels
     }
 }
 
-/// Attempt to match an EventPattern against the triples of one incoming event.
-/// Returns Some(bindings) if all patterns match, None if any pattern fails.
+/// Attempt to match an EventPattern against the triples of one incoming event
 fn match_event_pattern(
     pattern: &EventPattern,
     event_triples: &[Triple],

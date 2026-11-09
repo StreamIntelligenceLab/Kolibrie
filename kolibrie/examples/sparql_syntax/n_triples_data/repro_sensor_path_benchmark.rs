@@ -8,8 +8,8 @@
  * you can obtain one at https://mozilla.org/MPL/2.0/.
  */
 
+use kolibrie::database::KolibrieDB;
 use kolibrie::execute_query::execute;
-use kolibrie::sparql_database::SparqlDatabase;
 use std::fs;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
@@ -50,23 +50,16 @@ struct QueryMeasurement {
     end_rss_bytes: Option<u64>,
 }
 
-/// Sensors in the generated stand-in corpus, each monitoring one chain.
+/// Sensors in the generated stand-in corpus, each monitoring one chain
 const GENERATED_SENSORS: usize = 2_000;
 
-/// Segments per chain. Six is the query's window, so a chain of this length yields
-/// `GENERATED_CHAIN - 5` matches, and anything shorter yields none.
+/// Segments per chain
 const GENERATED_CHAIN: usize = 10;
 
-/// One chain in this many is left unmatched, by having its middle segment monitored
-/// by nobody. Without that the query matches every window it looks at, which makes
-/// the join cheaper than the corpus this was written against.
+/// One chain in this many is left unmatched, by having its middle segment monitored by nobody
 const GENERATED_BROKEN_IN: usize = 4;
 
-/// N-Triples in the shape [`REPRO_QUERY`] looks for: chains of `base:connectsTo`
-/// segments, all `base:monitoredBy` one `base:Sensor`, everything typed.
-///
-/// A stand-in for the Train Benchmark corpus, not a reproduction of it. Timings taken
-/// against this are comparable with each other and with nothing else.
+/// N-Triples in the shape [`REPRO_QUERY`] looks for
 fn generated_dataset() -> String {
     const BASE: &str = "http://www.semanticweb.org/ontologies/2015/trainbenchmark#";
     const RDF_TYPE: &str = "http://www.w3.org/1999/02/22-rdf-syntax-ns#type";
@@ -79,8 +72,6 @@ fn generated_dataset() -> String {
         for segment in 0..GENERATED_CHAIN {
             let id = format!("{BASE}segment{sensor}_{segment}");
             out.push_str(&format!("<{id}> <{RDF_TYPE}> <{BASE}Segment> .\n"));
-            // The break leaves one segment unmonitored, so no window containing it
-            // can satisfy the query's six `monitoredBy` patterns.
             if !(broken && segment == GENERATED_CHAIN / 2) {
                 out.push_str(&format!(
                     "<{id}> <{BASE}monitoredBy> <{BASE}sensor{sensor}> .\n"
@@ -97,12 +88,7 @@ fn generated_dataset() -> String {
     out
 }
 
-/// The corpus file, if one is to be found.
-///
-/// First argument, then `KOLIBRIE_REPRO_DATASET`, then the path this example was
-/// written against — which `.gitignore` excludes, so a fresh checkout never has it.
-/// Returns `None` when none of them is readable, and the corpus is generated instead;
-/// the example used to fail with a bare `No such file or directory` here.
+/// The corpus file, if one is to be found
 fn dataset_path() -> Option<String> {
     let mut candidates = std::env::args()
         .nth(1)
@@ -144,7 +130,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("Input lines: {}", line_count);
 
     let load_start = Instant::now();
-    let mut db = SparqlDatabase::new();
+    let mut db = KolibrieDB::new();
     db.parse_ntriples_and_add(&data);
     let load_time = load_start.elapsed();
     println!("Loaded triples: {}", db.default_triple_count());
@@ -257,10 +243,9 @@ fn bytes_to_mb(bytes: u64) -> f64 {
     bytes as f64 / 1_048_576.0
 }
 
-// SAFETY: `counters` is zeroed and has its `cb` set to its own size before the call,
-// which is the contract `GetProcessMemoryInfo` documents; the pointer is to a live
-// local, and `GetCurrentProcess` returns a pseudo-handle that needs no closing. The
-// return value is checked before any field is read.
+// SAFETY: `counters` is zeroed and has its `cb` set to its own size before the call, which is the
+// contract `GetProcessMemoryInfo` documents; the pointer is to a live local, and
+// `GetCurrentProcess` returns a pseudo-handle that needs no closing
 #[allow(unsafe_code)]
 #[cfg(windows)]
 fn current_rss_bytes() -> Option<u64> {
@@ -284,9 +269,7 @@ fn current_rss_bytes() -> Option<u64> {
     }
 }
 
-// SAFETY: `sysconf` takes an integer name and returns a long, touching no memory the
-// caller owns. `_SC_PAGESIZE` is a valid name, and a non-positive result is treated as
-// failure rather than used as a multiplier.
+// SAFETY: `sysconf` takes an integer name and returns a long, touching no memory the caller owns
 #[allow(unsafe_code)]
 #[cfg(all(unix, not(target_os = "macos")))]
 fn current_rss_bytes() -> Option<u64> {
@@ -300,14 +283,8 @@ fn current_rss_bytes() -> Option<u64> {
     }
 }
 
-// SAFETY: `getrusage` writes into the `rusage` it is given, and a zeroed `rusage` is a
-// valid initial value for a plain C struct of integers. `RUSAGE_SELF` is a valid who
-// argument, and the return value is checked before `ru_maxrss` is read.
-//
-// Note this measures something different from the other two: `ru_maxrss` is *peak*
-// resident size, where /proc/self/statm and `WorkingSetSize` are current. On macOS it
-// is already in bytes, where Linux reports it in kilobytes. So the figure this example
-// prints on macOS is a high-water mark and will not fall back down.
+// SAFETY: `getrusage` writes into the `rusage` it is given, and a zeroed `rusage` is a valid
+// initial value for a plain C struct of integers
 #[allow(unsafe_code)]
 #[cfg(target_os = "macos")]
 fn current_rss_bytes() -> Option<u64> {

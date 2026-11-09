@@ -117,13 +117,11 @@ fn test_translate_filters_expired() {
     let dict = make_dict();
     let sds = make_sds();
     let translated = translate_sds_to_datalog(&sds, &dict, 15);
-    // Sensor fact (expiry=15) must be filtered at current_time=15
     let expiry15_present = translated.iter().any(|(_, e)| *e == 15);
     assert!(
         !expiry15_present,
         "expired fact (expiry=15 at current_time=15) should be filtered"
     );
-    // Map fact (expiry=23) should still be present
     let alive = translated.iter().any(|(_, e)| *e == 23);
     assert!(alive, "alive map fact (expiry=23) should remain");
 }
@@ -216,7 +214,6 @@ fn test_naive_incremental_agree() {
     let component_iris = all_component_iris(&sds);
     let incr_result = sds_with_expiry_to_external(&incr_internal, &dict, &component_iris);
 
-    // Compare triple sets (predicate strings) per component
     let naive_preds = pred_strings(&naive_result, "http://result/", &dict);
     let incr_preds = pred_strings(&incr_result, "http://result/", &dict);
     assert_eq!(

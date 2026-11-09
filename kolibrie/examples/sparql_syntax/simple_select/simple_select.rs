@@ -10,7 +10,6 @@
 
 use kolibrie::prelude::*;
 
-// Simple select
 fn simple_select() {
     let rdf_data = r#"
         <rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#"
@@ -30,7 +29,7 @@ fn simple_select() {
         </rdf:RDF>
     "#;
 
-    let mut database = SparqlDatabase::new();
+    let mut database = KolibrieDB::new();
     database.parse_rdf(rdf_data);
 
     let sparql = r#"PREFIX ex: <http://example.org/> SELECT ?person ?location WHERE {?person ex:worksAt ?location}"#;
@@ -39,7 +38,6 @@ fn simple_select() {
         .expect("query should run")
         .into_rows();
 
-    // Now the main function is responsible for printing the results
     println!("Results:");
     for result in results {
         if let [person, location] = &result[..] {

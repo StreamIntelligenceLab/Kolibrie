@@ -1,11 +1,8 @@
-"""Structural regression: examples must not train or generate at import time.
+"""Structural regression: examples must not train or generate at import time"""
 
-This supplements (does not replace) runtime approved-module tests.
-Run with python -m unittest discover -s ml/tests.
-"""
 import ast
-from pathlib import Path
 import unittest
+from pathlib import Path
 
 
 class ExampleImportSafety(unittest.TestCase):
@@ -15,19 +12,21 @@ class ExampleImportSafety(unittest.TestCase):
             with self.subTest(example=path.name):
                 tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
                 generators = [
-                    node for node in tree.body
+                    node
+                    for node in tree.body
                     if isinstance(node, ast.FunctionDef) and node.name == "generate_models"
                 ]
                 self.assertEqual(len(generators), 1)
                 for node in tree.body:
-                    if isinstance(node, (ast.FunctionDef, ast.ClassDef, ast.Import, ast.ImportFrom)):
+                    if isinstance(
+                        node, (ast.FunctionDef, ast.ClassDef, ast.Import, ast.ImportFrom)
+                    ):
                         continue
                     if isinstance(node, ast.Expr) and isinstance(node.value, ast.Constant):
-                        continue  # module docstring
+                        continue
                     if isinstance(node, ast.If):
                         self.assertEqual(ast.unparse(node.test), "__name__ == '__main__'")
                         continue
-                    # Constants are allowed, executable model construction is not.
                     if isinstance(node, ast.Assign):
                         self.assertFalse(any(isinstance(n, ast.Call) for n in ast.walk(node)))
                         continue

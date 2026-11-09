@@ -19,7 +19,7 @@ block after it, the way rustdoc hides setup behind `#` lines:
 
     <!-- readme-examples: preamble
     use kolibrie::prelude::*;
-    let mut db = SparqlDatabase::new();
+    let mut db = KolibrieDB::new();
     -->
 
 A preamble holds until the next one. `<!-- readme-examples: preamble none -->` clears
@@ -99,7 +99,9 @@ def as_program(code: str, preamble: str = "") -> str:
     wrapped. Lints are relaxed because an example is written to be read: an unused
     import in a snippet is not a defect worth failing on.
     """
-    header = "#![allow(unused_imports, unused_variables, unused_mut, dead_code, unreachable_code)]\n"
+    header = (
+        "#![allow(unused_imports, unused_variables, unused_mut, dead_code, unreachable_code)]\n"
+    )
     if re.search(r"\bfn\s+main\s*\(", code):
         return header + code + "\n"
     # `use` declarations have to stay at the top level, so they are hoisted out of
@@ -142,16 +144,14 @@ publish = false
 path = "src/lib.rs"
 
 [dependencies]
-kolibrie = {{ path = "{ROOT / 'kolibrie'}" }}
-shared = {{ path = "{ROOT / 'shared'}" }}
-datalog = {{ path = "{ROOT / 'datalog'}" }}
-datalogmtl = {{ path = "{ROOT / 'datalogmtl'}" }}
+kolibrie = {{ path = "{ROOT / "kolibrie"}" }}
+shared = {{ path = "{ROOT / "shared"}" }}
+datalog = {{ path = "{ROOT / "datalog"}" }}
+datalogmtl = {{ path = "{ROOT / "datalogmtl"}" }}
 """
     )
     for line, code, preamble in cases:
-        (WORKSPACE / "examples" / f"readme_line_{line}.rs").write_text(
-            as_program(code, preamble)
-        )
+        (WORKSPACE / "examples" / f"readme_line_{line}.rs").write_text(as_program(code, preamble))
 
 
 def main() -> int:
@@ -161,9 +161,7 @@ def main() -> int:
     arguments = parser.parse_args()
 
     found = blocks(README.read_text())
-    cases = [
-        (line, code, preamble) for line, code, preamble, reason in found if reason is None
-    ]
+    cases = [(line, code, preamble) for line, code, preamble, reason in found if reason is None]
     skipped = [(line, reason) for line, _, _, reason in found if reason is not None]
 
     if arguments.list:

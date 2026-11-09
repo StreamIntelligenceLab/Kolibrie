@@ -14,19 +14,17 @@ use crate::quoted_triple_store::QuotedTripleStore;
 use crate::triple::Triple;
 use std::collections::HashMap;
 
-/// Stores provenance tags for triples, parameterized by a [`Provenance`] semiring.
-///
-/// Absence of a triple in the store means it carries the `one()` tag (certain fact).
+/// Stores provenance tags for triples, parameterized by a [`Provenance`] semiring
 #[derive(Debug, Clone)]
 pub struct TagStore<P: Provenance> {
     tags: HashMap<Triple, P::Tag>,
     provenance: P,
-    /// Seed triples in sort order (index == seed variable ID).
+    /// Seed triples in sort order (index == seed variable ID)
     pub seed_triples: Vec<Triple>,
 }
 
 impl<P: Provenance> TagStore<P> {
-    /// An empty store: every triple initially carries `provenance.one()`.
+    /// An empty store: every triple initially carries `provenance.one()`
     pub fn new(provenance: P) -> Self {
         Self {
             tags: HashMap::new(),
@@ -35,13 +33,12 @@ impl<P: Provenance> TagStore<P> {
         }
     }
 
-    /// Get the provenance reference.
-    /// The semiring this store annotates with.
+    /// Get the provenance reference
     pub fn provenance(&self) -> &P {
         &self.provenance
     }
 
-    /// Get the tag for a triple. Returns `one()` if not explicitly stored (certain fact).
+    /// Get the tag for a triple
     pub fn get_tag(&self, triple: &Triple) -> P::Tag {
         self.tags
             .get(triple)
@@ -49,7 +46,7 @@ impl<P: Provenance> TagStore<P> {
             .unwrap_or_else(|| self.provenance.one())
     }
 
-    /// Set the tag for a triple. If the tag equals `one()`, it is removed (implicit certainty).
+    /// Set the tag for a triple
     pub fn set_tag(&mut self, triple: &Triple, tag: P::Tag) {
         if tag == self.provenance.one() {
             self.tags.remove(triple);
@@ -58,8 +55,7 @@ impl<P: Provenance> TagStore<P> {
         }
     }
 
-    /// Update a triple's tag using disjunction (⊕) with a new derivation tag.
-    /// Returns `true` if the tag changed.
+    /// Update a triple's tag using disjunction (⊕) with a new derivation tag
     pub fn update_disjunction(&mut self, triple: &Triple, new_tag: &P::Tag) -> bool {
         let old_tag = self.get_tag(triple);
         let combined = self.provenance.disjunction(&old_tag, new_tag);
@@ -71,28 +67,27 @@ impl<P: Provenance> TagStore<P> {
         }
     }
 
-    /// Check if a triple has an explicit (non-one) tag stored.
+    /// Check if a triple has an explicit (non-one) tag stored
     pub fn has_explicit_tag(&self, triple: &Triple) -> bool {
         self.tags.contains_key(triple)
     }
 
-    /// Returns the number of triples with explicit tags.
+    /// Returns the number of triples with explicit tags
     pub fn len(&self) -> usize {
         self.tags.len()
     }
 
-    /// Whether no triple carries an explicit tag. Note that this is the state in
-    /// which every fact is certain, not the state in which there are no facts.
+    /// Whether no triple carries an explicit tag
     pub fn is_empty(&self) -> bool {
         self.tags.is_empty()
     }
 
-    /// Iterate over all (triple, tag) pairs with explicit tags.
+    /// Iterate over all (triple, tag) pairs with explicit tags
     pub fn iter(&self) -> impl Iterator<Item = (&Triple, &P::Tag)> {
         self.tags.iter()
     }
 
-    /// Export tags as RDF-star triples encoding probability values.
+    /// Export tags as RDF-star triples encoding probability values
     pub fn encode_as_rdf_star(
         &self,
         dict: &mut Dictionary,
@@ -121,10 +116,7 @@ impl<P: Provenance> TagStore<P> {
 use crate::provenance::WmcProvenance;
 
 impl TagStore<WmcProvenance> {
-    /// Export tags as RDF-star triples enriched with proof-path explanation.
-    ///
-    /// Superset of [`Self::encode_as_rdf_star`]; also emits `prob:proofCount`,
-    /// `prob:hasProof`, `prob:formula`, `prob:hasSeed`, and `prob:hasNegatedSeed` triples.
+    /// Export tags as RDF-star triples enriched with proof-path explanation
     pub fn encode_as_rdf_star_with_explanation(
         &self,
         dict: &mut Dictionary,
@@ -143,7 +135,6 @@ impl TagStore<WmcProvenance> {
         for (triple, formula) in &self.tags {
             let derived_qt = qt_store.encode(triple.subject, triple.predicate, triple.object);
 
-            // prob:proofCount
             let count_lit = format!("\"{}\"^^<{}>", formula.len(), xsd_int);
             let count_id = dict.encode(&count_lit);
             result.push(Triple {
@@ -152,7 +143,6 @@ impl TagStore<WmcProvenance> {
                 object: count_id,
             });
 
-            // prob:formula — raw debug representation of the DNF
             let raw = format!("{:?}", formula);
             let formula_lit = format!("\"{}\"^^<{}>", raw.replace('"', "'"), xsd_str);
             let formula_lit_id = dict.encode(&formula_lit);
@@ -162,26 +152,21 @@ impl TagStore<WmcProvenance> {
                 object: formula_lit_id,
             });
 
-            // per-proof path annotations
             for (proof_idx, clause) in formula.iter().enumerate() {
                 let idx_lit = format!("\"{}\"^^<{}>", proof_idx, xsd_int);
                 let idx_id = dict.encode(&idx_lit);
 
-                // << d >> prob:hasProof "N"^^xsd:integer
                 result.push(Triple {
                     subject: derived_qt,
                     predicate: has_proof_id,
                     object: idx_id,
                 });
 
-                // Level-2: << << d >> prob:hasProof "N" >> prob:hasSeed << seed >>
-                //          or prob:hasNegatedSeed for polarity=false literals
                 let proof_annot_qt = qt_store.encode(derived_qt, has_proof_id, idx_id);
                 for &(seed_var_id, polarity) in clause {
                     if let Some(seed_t) = self.seed_triples.get(seed_var_id as usize) {
                         let seed_qt =
                             qt_store.encode(seed_t.subject, seed_t.predicate, seed_t.object);
-                        // Polarity-aware predicate: hasSeed for positive, hasNegatedSeed for negative
                         let pred_id = if polarity {
                             has_seed_id
                         } else {
@@ -204,7 +189,8 @@ impl TagStore<WmcProvenance> {
 use crate::sdd::SddProvenance;
 
 impl TagStore<SddProvenance> {
-    /// Export tags as RDF-star triples enriched with proof-path explanation via SDD model enumeration.
+    /// Export tags as RDF-star triples enriched with proof-path explanation via SDD model
+    /// enumeration
     pub fn encode_as_rdf_star_with_explanation(
         &self,
         dict: &mut Dictionary,
@@ -225,10 +211,8 @@ impl TagStore<SddProvenance> {
         for (triple, sdd_id) in &self.tags {
             let derived_qt = qt_store.encode(triple.subject, triple.predicate, triple.object);
 
-            // Enumerate proof paths from the SDD
             let models = mgr.enumerate_models(*sdd_id);
 
-            // prob:proofCount
             let count_lit = format!("\"{}\"^^<{}>", models.len(), xsd_int);
             let count_id = dict.encode(&count_lit);
             result.push(Triple {
@@ -237,7 +221,6 @@ impl TagStore<SddProvenance> {
                 object: count_id,
             });
 
-            // prob:formula — debug representation
             let raw = format!("{:?}", sdd_id);
             let formula_lit = format!("\"{}\"^^<{}>", raw.replace('"', "'"), xsd_str);
             let formula_lit_id = dict.encode(&formula_lit);
@@ -247,7 +230,6 @@ impl TagStore<SddProvenance> {
                 object: formula_lit_id,
             });
 
-            // per-proof path annotations
             for (proof_idx, clause) in models.iter().enumerate() {
                 let idx_lit = format!("\"{}\"^^<{}>", proof_idx, xsd_int);
                 let idx_id = dict.encode(&idx_lit);
@@ -326,11 +308,9 @@ mod tests {
         let t = make_triple(1, 2, 3);
         store.set_tag(&t, 0.5);
 
-        // max(0.5, 0.8) = 0.8 -> changed
         assert!(store.update_disjunction(&t, &0.8));
         assert!((store.get_tag(&t) - 0.8).abs() < 1e-9);
 
-        // max(0.8, 0.6) = 0.8 -> no change (saturated)
         assert!(!store.update_disjunction(&t, &0.6));
         assert!((store.get_tag(&t) - 0.8).abs() < 1e-9);
     }
@@ -341,7 +321,6 @@ mod tests {
         let t = make_triple(1, 2, 3);
         store.set_tag(&t, 0.3);
 
-        // noisy-OR: 0.3 + 0.4 - 0.3*0.4 = 0.7 - 0.12 = 0.58 -> changed
         assert!(store.update_disjunction(&t, &0.4));
         assert!((store.get_tag(&t) - 0.58).abs() < 1e-9);
     }
@@ -352,11 +331,9 @@ mod tests {
         let t = make_triple(1, 2, 3);
         store.set_tag(&t, false);
 
-        // false ⊕ true = true -> changed
         assert!(store.update_disjunction(&t, &true));
         assert_eq!(store.get_tag(&t), true);
 
-        // true ⊕ true = true -> no change
         assert!(!store.update_disjunction(&t, &true));
     }
 
@@ -374,14 +351,12 @@ mod tests {
 
     fn make_wmc_store_two_proofs() -> TagStore<WmcProvenance> {
         use crate::provenance::{WmcClause, WmcFormula};
-        // formula {{(0,T),(1,T)},{(0,T),(2,T)}} — two proof paths sharing seed 0
         let p = WmcProvenance::new();
         let mut store = TagStore::new(p);
         let clause0: WmcClause = [(0u32, true), (1u32, true)].iter().copied().collect();
         let clause1: WmcClause = [(0u32, true), (2u32, true)].iter().copied().collect();
         let formula: WmcFormula = [clause0, clause1].iter().cloned().collect();
         store.tags.insert(make_triple(10, 20, 30), formula);
-        // seed_triples: id0 = (1,2,3), id1 = (4,5,6), id2 = (7,8,9)
         store.seed_triples = vec![
             make_triple(1, 2, 3),
             make_triple(4, 5, 6),
@@ -408,7 +383,6 @@ mod tests {
             "one proofCount triple per derived fact"
         );
 
-        // The object should encode "2"^^xsd:integer
         let count_str = dict.decode(count_triples[0].object).unwrap();
         assert!(
             count_str.contains('2'),
@@ -448,7 +422,6 @@ mod tests {
             .iter()
             .filter(|t| t.predicate == has_seed_pred)
             .collect();
-        // clause {0,1} -> 2 seeds, clause {0,2} -> 2 seeds = 4 total
         assert_eq!(
             hs_triples.len(),
             4,
@@ -464,7 +437,6 @@ mod tests {
         let clause: WmcClause = [(0u32, true), (1u32, true)].iter().copied().collect();
         let formula: WmcFormula = std::iter::once(clause).collect();
         store.tags.insert(make_triple(10, 20, 30), formula);
-        // seed_triples intentionally empty — should produce no hasSeed triples, no panic
         assert!(store.seed_triples.is_empty());
 
         let mut dict = Dictionary::new();

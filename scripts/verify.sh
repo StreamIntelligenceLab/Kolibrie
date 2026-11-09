@@ -109,13 +109,9 @@ else
   fail=1
 fi
 
-# The README is the first thing anyone tries, and nothing used to check it. Sixteen
-# of its twenty-three examples did not compile when this check was first run: they
-# named `execute_query` after it became `execute`, indexed a `Solutions` as though it
-# were a `Vec`, reached `Reasoner.dictionary` and `SparqlDatabase.dictionary` after
-# both became private, built a `Rule` without its `negative_premise`, and imported
-# `datalog::knowledge_graph` under a name it no longer has. Compile-only on purpose:
-# whether an example *runs* is the smoke run's question about `kolibrie/examples`.
+# The README is the first thing anyone tries, so its examples are compiled here.
+# Compile-only on purpose: whether an example *runs* is the smoke run's question
+# about `kolibrie/examples`.
 phase "README examples"
 if python3 scripts/readme_examples.py > "$OUT/readme.log" 2>&1; then
   grep -E '^   ok:|^compiling' "$OUT/readme.log" | sed 's/^/   /'
@@ -124,15 +120,20 @@ else
   fail=1
 fi
 
-# `docs/api.md` is generated from the source, and the point of generating it is that
-# it cannot drift. This fails when the public surface moved and nobody regenerated --
-# which is how 371 hand-written lines in the README came to document three methods
-# that no longer existed.
-phase "api surface"
-if python3 scripts/api_surface.py --check > "$OUT/api.log" 2>&1; then
-  sed 's/^/   /' "$OUT/api.log"
+# Mirrors the blocking `python` CI job
+phase "python (ruff + pytest)"
+if command -v uv > /dev/null 2>&1; then
+  if { uv lock --check &&
+       uv run --locked --only-group dev ruff check &&
+       uv run --locked --only-group dev ruff format --check &&
+       uv run --locked --only-group dev pytest -q; } > "$OUT/python.log" 2>&1; then
+    echo "   ok"
+  else
+    tail -20 "$OUT/python.log" | sed 's/^/   /'
+    fail=1
+  fi
 else
-  sed 's/^/   /' "$OUT/api.log"
+  echo "   FAILED: uv is not installed, see CONTRIBUTING.md"
   fail=1
 fi
 

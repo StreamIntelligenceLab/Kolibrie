@@ -1,10 +1,9 @@
 #!/usr/bin/env bash
 # Hunt intermittent test failures by stressing the prebuilt test binaries directly.
 #
-# Why not just loop `cargo test`: a full workspace run takes ~3 minutes, and eight of
-# them failed to reproduce a 1-in-25 flake. The test binaries themselves take 1-4
-# seconds, so running them directly gives roughly two orders of magnitude more
-# iterations per minute. That found the same flake on the first pass.
+# Why not just loop `cargo test`: the test binaries themselves start and finish much
+# faster than a full workspace run, so running them directly gives far more
+# iterations in the same time.
 #
 # Unlike `scripts/verify.sh` (run once per change, tells you if it is good), this is
 # for investigation: run it when a count disagrees with the known baseline, or when

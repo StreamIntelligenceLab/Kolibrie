@@ -11,7 +11,7 @@
 use kolibrie::prelude::*;
 
 fn n3_simple_query() {
-    let mut db = SparqlDatabase::new();
+    let mut db = KolibrieDB::new();
 
     let n3_data = r#"
         @prefix ex: <http://example.org/> .

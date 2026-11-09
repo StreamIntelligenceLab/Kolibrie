@@ -31,19 +31,15 @@ fn values() {
 
 </rdf:RDF>
 "#;
-    // Create an instance of SparqlDatabase
-    let mut database = SparqlDatabase::new();
+    let mut database = KolibrieDB::new();
     database.parse_rdf(rdf_data);
 
-    // Sample SPARQL query using VALUES clause
     let sparql_query = r#"PREFIX ex: <http://example.org/> SELECT ?person ?company WHERE { VALUES ?company { ex:companyA ex:companyB } ?person ex:worksAt ?company }"#;
 
-    // Execute the query on the database
     let results = execute(sparql_query, &mut database)
         .expect("query should run")
         .into_rows();
 
-    // Display the results
     println!("Query Results:");
     for result in results {
         println!("{:?}", result);

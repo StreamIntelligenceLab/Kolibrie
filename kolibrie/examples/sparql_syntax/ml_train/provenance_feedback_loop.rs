@@ -1,17 +1,9 @@
-/*
- * Small feedback-loop example for provenance, RDF-star, and neural relations
- *
- * The flow is:
- *   probabilistic evidence -> provenance-aware RULE syntax -> RDF-star annotations
- *   -> SPARQL-star feature query -> train a neural relation -> feed predictions back into RULE syntax
- */
-
+use kolibrie::database::KolibrieDB;
 use kolibrie::execute_query::execute;
 use kolibrie::ml::execute_train::build_ground_reasoner_from_db;
 use kolibrie::ml::neural_relations::execute_neural_program;
 use kolibrie::parser::{convert_combined_rule, parse_combined_query};
 use kolibrie::rule_execution::process_rule_definition;
-use kolibrie::sparql_database::SparqlDatabase;
 use shared::sdd::SddProvenance;
 
 const EX: &str = "http://example.org/";
@@ -38,7 +30,7 @@ fn sensor_iri(id: &str) -> String {
     format!("{EX}sensor/{id}")
 }
 
-fn populate_static_data(db: &mut SparqlDatabase, sensors: &[SensorCase]) {
+fn populate_static_data(db: &mut KolibrieDB, sensors: &[SensorCase]) {
     let sensor_type = iri("type");
     let gold_response = iri("goldResponse");
     let dispatch_policy = iri("dispatchPolicy");
@@ -55,12 +47,7 @@ fn populate_static_data(db: &mut SparqlDatabase, sensors: &[SensorCase]) {
     db.add_triple_parts(&dispatch_policy, &required_response, LABEL_DISPATCH);
 }
 
-fn add_probabilistic_fact(
-    db: &mut SparqlDatabase,
-    subject: &str,
-    predicate: &str,
-    probability: f64,
-) {
+fn add_probabilistic_fact(db: &mut KolibrieDB, subject: &str, predicate: &str, probability: f64) {
     db.add_tagged_triple(subject, predicate, "true", probability);
 }
 
@@ -158,7 +145,7 @@ ORDER BY ?sensor"#
     )
 }
 
-fn execute_sdd_rule_batch(db: &mut SparqlDatabase, rule_inputs: &[String]) -> usize {
+fn execute_sdd_rule_batch(db: &mut KolibrieDB, rule_inputs: &[String]) -> usize {
     let mut reasoner = build_ground_reasoner_from_db(db, None);
     reasoner.probability_seeds = db.probability_seeds().clone();
 
@@ -253,7 +240,7 @@ fn numeric_lexical(term: &str) -> String {
     trimmed.to_string()
 }
 
-fn provenance_rows_from_rdf_star(db: &SparqlDatabase) -> Vec<Vec<String>> {
+fn provenance_rows_from_rdf_star(db: &KolibrieDB) -> Vec<Vec<String>> {
     let prob_value = format!("{PROB}value");
     let proof_count = format!("{PROB}proofCount");
     let risk_signal = iri("riskSignal");
@@ -273,7 +260,7 @@ fn provenance_rows_from_rdf_star(db: &SparqlDatabase) -> Vec<Vec<String>> {
         }
 
         let inner = subject[2..subject.len() - 2].trim();
-        let (sensor, pred, obj) = SparqlDatabase::split_quoted_triple_content(inner);
+        let (sensor, pred, obj) = KolibrieDB::split_quoted_triple_content(inner);
         if pred != risk_signal || obj != high {
             continue;
         }
@@ -294,7 +281,7 @@ fn provenance_rows_from_rdf_star(db: &SparqlDatabase) -> Vec<Vec<String>> {
         .collect()
 }
 
-fn materialize_feature_triples_from_rows(db: &mut SparqlDatabase, rows: &[Vec<String>]) -> usize {
+fn materialize_feature_triples_from_rows(db: &mut KolibrieDB, rows: &[Vec<String>]) -> usize {
     let risk_prob_feature = iri("riskProbFeature");
     let proof_count_feature = iri("proofCountFeature");
     let mut count = 0usize;
@@ -388,7 +375,7 @@ fn main() {
         },
     ];
 
-    let mut db = SparqlDatabase::with_ml_context(local_ml::trusted_context());
+    let mut db = KolibrieDB::with_ml_context(local_ml::trusted_context());
 
     println!("Syntax-first provenance -> neural relation -> reasoning feedback loop");
     println!("Probabilistic base facts are still loaded through a Rust helper; rules, queries, and neural declarations are shown in syntax\n");

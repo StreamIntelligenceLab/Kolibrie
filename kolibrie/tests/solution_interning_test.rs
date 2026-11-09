@@ -8,30 +8,19 @@
  * you can obtain one at https://mozilla.org/MPL/2.0/.
  */
 
-//! A result that spans more than one decode chunk reports the right values.
-//!
-//! `Solutions` interns its values per chunk and then shifts each chunk's indices by a
-//! prefix sum, so a cell in the second chunk refers into the second chunk's slice of
-//! the term table. Nothing here tested that: every other query test returns fewer
-//! rows than one chunk holds, so deleting the shift entirely left the whole suite
-//! green while every row past the first chunk silently read another row's value.
-//!
-//! These tests are therefore sized deliberately. `ROWS` must stay above the decode
-//! chunk size for them to mean anything.
+//! A result that spans more than one decode chunk reports the right values
 
+use kolibrie::database::KolibrieDB;
 use kolibrie::execute_query::execute;
-use kolibrie::sparql_database::SparqlDatabase;
 use std::collections::BTreeSet;
 
-/// Comfortably more than one decode chunk, which is 1024 rows.
+/// Comfortably more than one decode chunk, which is 1024 rows
 const ROWS: usize = 3_000;
 
-fn database_with_distinct_objects() -> SparqlDatabase {
-    let mut database = SparqlDatabase::new();
+fn database_with_distinct_objects() -> KolibrieDB {
+    let mut database = KolibrieDB::new();
     let mut data = String::with_capacity(ROWS * 80);
     for i in 0..ROWS {
-        // Subject and object both unique and tied to each other, so a row that reads
-        // the wrong term table entry disagrees with its own subject.
         data.push_str(&format!("<urn:s{i}> <urn:p> <urn:o{i}> .\n"));
     }
     kolibrie::execute_query::execute_sparql_update(
@@ -54,11 +43,6 @@ fn every_row_past_the_first_chunk_keeps_its_own_value() {
         "the fixture must span several chunks"
     );
 
-    // Checked against the values the fixture put in, not against each other. Both
-    // columns of a row shift by the same amount when the prefix sum is wrong, so a
-    // row in the second chunk reads `urn:s0` and `urn:o0` together -- self-consistent
-    // and completely wrong. An earlier version of this test compared the two columns
-    // and passed with the shift deleted.
     let mut seen: BTreeSet<(String, String)> = BTreeSet::new();
     for solution in solutions.iter() {
         seen.insert((
@@ -117,11 +101,7 @@ fn materialising_a_multi_chunk_result_agrees_with_borrowing_it() {
 
 #[test]
 fn equal_results_compare_equal_with_different_term_tables() {
-    // Interning happens before LIMIT, so the limited query interns a value that
-    // projection then drops and the filtered one never interns at all. The two hold
-    // different term tables and must still compare equal, which comparing the fields
-    // directly would not do.
-    let mut database = SparqlDatabase::new();
+    let mut database = KolibrieDB::new();
     kolibrie::execute_query::execute_sparql_update(
         "INSERT DATA { <urn:s1> <urn:p> \"a\" . <urn:s2> <urn:p> \"b\" . <urn:s3> <urn:p> \"c\" . }",
         &mut database,

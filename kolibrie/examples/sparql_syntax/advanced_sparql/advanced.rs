@@ -65,7 +65,7 @@ fn query() {
   </rdf:Description>
 </rdf:RDF> 
         "#;
-    let mut database = SparqlDatabase::new();
+    let mut database = KolibrieDB::new();
     database.parse_rdf(rdf_data);
 
     let sparql = r#"PREFIX ex: <http://example.org/> SELECT ?person ?location ?city WHERE {?person ex:worksAt ?location . ?location ex:located ?city}"#;

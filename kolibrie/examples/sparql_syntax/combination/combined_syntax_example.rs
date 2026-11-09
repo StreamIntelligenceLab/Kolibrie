@@ -8,14 +8,14 @@
  * you can obtain one at https://mozilla.org/MPL/2.0/.
  */
 
+use kolibrie::database::KolibrieDB;
 use kolibrie::prelude::*;
 use kolibrie::rule_execution::process_rule_definition;
-use kolibrie::sparql_database::SparqlDatabase;
 
 fn main() {
     println!("=== Combined SPARQL / RDF-star / RULE / Provenance RULE Example ===\n");
 
-    let mut database = SparqlDatabase::new();
+    let mut database = KolibrieDB::new();
     println!("[Stage 1] Loading base RDF facts (standard triples)...");
 
     database.add_triple_parts(
@@ -249,7 +249,7 @@ SELECT ?sensor WHERE {
     println!("                               — Stage 6  (provenance-based, uses Stage 4 output as premise)");
 }
 
-/// Shorten a full URI for display: keeps only the local name after the last '/' or '#'.
+/// Shorten a full URI for display: keeps only the local name after the last '/' or '#'
 fn shorten(uri: &str) -> &str {
     if let Some(pos) = uri.rfind('/') {
         &uri[pos + 1..]

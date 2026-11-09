@@ -12,16 +12,14 @@ use crate::provenance::Provenance;
 use std::collections::{BTreeSet, HashMap};
 use std::sync::{Arc, Mutex};
 
-/// Handle to an SDD node in the manager's arena.
-///
-/// `SddId(0)` = FALSE, `SddId(1)` = TRUE (reserved by the manager).
+/// Handle to an SDD node in the manager's arena
 #[derive(Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct SddId(u32);
 
 impl SddId {
-    /// The constant false node. Always id 0, so it needs no lookup.
+    /// The constant false node
     pub const FALSE: SddId = SddId(0);
-    /// The constant true node. Always id 1.
+    /// The constant true node
     pub const TRUE: SddId = SddId(1);
 }
 
@@ -35,17 +33,11 @@ impl std::fmt::Debug for SddId {
     }
 }
 
-/// Handle to a vtree node.
+/// Handle to a vtree node
 type VTreeId = u32;
 
 #[derive(Debug, Clone)]
 enum VTreeNode {
-    // Written when the leaf is created, never read back: lookups go through
-    // `var_to_vtree`, which holds the same mapping in the useful direction. Kept
-    // rather than deleted because a vtree leaf that does not record its variable
-    // is not a vtree leaf — the structure would no longer be interpretable on its
-    // own. The allow is narrowed to this field so anything else that dies in this
-    // enum still warns.
     Leaf {
         #[allow(dead_code)]
         var: u32,
@@ -56,7 +48,7 @@ enum VTreeNode {
     },
 }
 
-/// An element in a Decision node: (prime, sub) pair.
+/// An element in a Decision node: (prime, sub) pair
 type Element = (SddId, SddId);
 
 #[derive(Debug, Clone)]
@@ -67,14 +59,14 @@ enum SddNode {
         var: u32,
         polarity: bool,
     },
-    /// Compressed, trimmed X-partition at a vtree node.
+    /// Compressed, trimmed X-partition at a vtree node
     Decision {
         vtree: VTreeId,
         elements: Vec<Element>,
     },
 }
 
-/// Key for the unique table — ensures canonical sharing.
+/// Key for the unique table — ensures canonical sharing
 #[derive(Clone, PartialEq, Eq, Hash)]
 enum UniqueKey {
     Literal {
@@ -87,38 +79,30 @@ enum UniqueKey {
     },
 }
 
-/// Boolean operator for Apply.
+/// Boolean operator for Apply
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 pub enum BoolOp {
-    /// Conjunction.
+    /// Conjunction
     And,
-    /// Disjunction.
+    /// Disjunction
     Or,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-/// Why an interruptible SDD operation gave up.
-///
-/// Compilation can blow up combinatorially, so operations run under a budget and
-/// report this rather than running unbounded. A caller seeing either should treat
-/// the result as unavailable and fall back to an approximate method.
+/// Why an interruptible SDD operation gave up
 pub enum SddBudgetError {
-    /// The caller-supplied deadline passed.
+    /// The caller-supplied deadline passed
     DeadlineExceeded,
-    /// The node limit was reached.
+    /// The node limit was reached
     NodeBudgetExceeded,
 }
 
-/// Per-operation guard for interruptible SDD construction. The callback must
-/// return `true` while the deadline remains available.
+/// Per-operation guard for interruptible SDD construction
 pub struct SddOperationBudget<'a> {
     max_nodes: usize,
     deadline_available: &'a mut dyn FnMut() -> bool,
 }
 
-// Cannot derive: the deadline is a `&mut dyn FnMut`, which has no `Debug`. Calling it
-// here would consume part of the budget being reported on, so it is named and not
-// invoked.
 impl std::fmt::Debug for SddOperationBudget<'_> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("SddOperationBudget")
@@ -129,8 +113,7 @@ impl std::fmt::Debug for SddOperationBudget<'_> {
 }
 
 impl<'a> SddOperationBudget<'a> {
-    /// A budget of `max_nodes`, abandoned early once `deadline_available` returns
-    /// `false`.
+    /// A budget of `max_nodes`, abandoned early once `deadline_available` returns `false`
     pub fn new(max_nodes: usize, deadline_available: &'a mut dyn FnMut() -> bool) -> Self {
         Self {
             max_nodes,
@@ -156,25 +139,17 @@ impl<'a> SddOperationBudget<'a> {
     }
 }
 
-/// Whether a variable was registered as an independent Bernoulli or as a member
-/// of an exclusive (annotated-disjunction) group.
-///
-/// This determines the correct partial-derivative formula in `diff_sdd::wmc_gradient`:
-/// - Independent: `∂WMC/∂p = WMC(x=1) − WMC(x=0)` (neg weight = 1−p, both perturbed)
-/// - ExclusiveGroup: `∂WMC/∂p = WMC(x=1)` only (neg weight = 1.0, constant w.r.t. p)
+/// Whether a variable was registered as an independent Bernoulli or as a member of an exclusive
+/// (annotated-disjunction) group
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum VarKind {
-    /// Independent of every other variable; its negative weight is `1 - p`.
+    /// Independent of every other variable; its negative weight is `1 - p`
     Independent,
-    /// One alternative in a mutually exclusive group, identified by group id. Its
-    /// negative weight is fixed at 1, which is what changes the gradient formula.
+    /// One alternative in a mutually exclusive group, identified by group id
     ExclusiveGroup(u32),
 }
 
-/// Arena-based SDD manager with unique table and apply cache.
-///
-/// Owns the vtree, all SDD nodes, and probability assignments.
-/// Nodes 0 and 1 are reserved for FALSE and TRUE.
+/// Arena-based SDD manager with unique table and apply cache
 pub struct SddManager {
     nodes: Vec<SddNode>,
     unique_table: HashMap<UniqueKey, SddId>,
@@ -183,25 +158,17 @@ pub struct SddManager {
     vtree_nodes: Vec<VTreeNode>,
     vtree_root: Option<VTreeId>,
     var_to_vtree: HashMap<u32, VTreeId>,
-    /// Positive literal weight: `wmc(Literal(v, true)) = pos_weight[v]`
     pos_weight: Vec<f64>,
-    /// Negative literal weight: `wmc(Literal(v, false)) = neg_weight[v]`
-    /// For Independent vars: 1.0 − pos_weight[v].
-    /// For ExclusiveGroup vars: 1.0 (annotated-disjunction encoding).
     neg_weight: Vec<f64>,
-    /// Per-variable kind tag for gradient computation.
     var_kind: Vec<VarKind>,
 }
 
 impl SddManager {
-    /// A manager holding only the constant nodes.
-    ///
-    /// [`SddId::FALSE`] and [`SddId::TRUE`] are pre-seeded at indices 0 and 1, so
-    /// the constants are addressable without a lookup.
+    /// A manager holding only the constant nodes
     pub fn new() -> Self {
         let mut nodes = Vec::new();
-        nodes.push(SddNode::False); // index 0
-        nodes.push(SddNode::True); // index 1
+        nodes.push(SddNode::False);
+        nodes.push(SddNode::True);
         Self {
             nodes,
             unique_table: HashMap::new(),
@@ -216,16 +183,13 @@ impl SddManager {
         }
     }
 
-    /// Ensure variable `var` exists in the vtree with probability `prob`.
-    /// Registers as Independent (neg_weight = 1 − prob).
-    /// Extends the right-linear vtree if needed.
+    /// Ensure variable `var` exists in the vtree with probability `prob`
     pub fn ensure_variable(&mut self, var: u32, prob: f64) {
         let p = prob.clamp(0.0, 1.0);
         self.ensure_variable_weights(var, p, 1.0 - p, VarKind::Independent);
     }
 
-    /// Ensure variable `var` exists with explicit positive and negative literal weights.
-    /// Use `neg = 1.0` for exclusive-group variables (annotated-disjunction encoding).
+    /// Ensure variable `var` exists with explicit positive and negative literal weights
     pub fn ensure_variable_weights(&mut self, var: u32, pos: f64, neg: f64, kind: VarKind) {
         let id = var as usize;
         if id >= self.pos_weight.len() {
@@ -237,17 +201,14 @@ impl SddManager {
         self.neg_weight[id] = neg.clamp(0.0, 1.0);
         self.var_kind[id] = kind;
 
-        // Already in vtree?
         if self.var_to_vtree.contains_key(&var) {
             return;
         }
 
-        // Create leaf
         let leaf_id = self.vtree_nodes.len() as VTreeId;
         self.vtree_nodes.push(VTreeNode::Leaf { var });
         self.var_to_vtree.insert(var, leaf_id);
 
-        // Extend right-linear vtree
         match self.vtree_root {
             None => {
                 self.vtree_root = Some(leaf_id);
@@ -263,12 +224,7 @@ impl SddManager {
         }
     }
 
-    /// Build the "exactly one of k" SDD formula for an exclusive group.
-    ///
-    /// Recursive: `exactly_one([v]) = lit(v, true)`
-    /// `exactly_one([v, rest..]) = (lit(v,true) AND all_false(rest)) OR (lit(v,false) AND exactly_one(rest))`
-    ///
-    /// All variables must already be registered via `ensure_variable_weights`.
+    /// Build the "exactly one of k" SDD formula for an exclusive group
     pub fn exactly_one(&mut self, vars: &[u32]) -> SddId {
         match vars {
             [] => SddId::FALSE,
@@ -276,7 +232,6 @@ impl SddManager {
             [v, rest @ ..] => {
                 let lit_v_true = self.literal(*v, true);
                 let lit_v_false = self.literal(*v, false);
-                // all_false(rest): conjunction of lit(r, false) for each r in rest
                 let all_false = rest.iter().fold(SddId::TRUE, |acc, &r| {
                     let lf = self.literal(r, false);
                     self.apply(acc, lf, BoolOp::And)
@@ -289,19 +244,17 @@ impl SddManager {
         }
     }
 
-    // --- Public accessors for diff_sdd ---
-
-    /// Read access to positive literal weights.
+    /// Read access to positive literal weights
     pub fn pos_weight(&self) -> &[f64] {
         &self.pos_weight
     }
 
-    /// Read access to negative literal weights.
+    /// Read access to negative literal weights
     pub fn neg_weight(&self) -> &[f64] {
         &self.neg_weight
     }
 
-    /// Set the positive literal weight for variable `var`.
+    /// Set the positive literal weight for variable `var`
     pub fn set_pos_weight(&mut self, var: u32, w: f64) {
         let id = var as usize;
         if id < self.pos_weight.len() {
@@ -309,7 +262,7 @@ impl SddManager {
         }
     }
 
-    /// Set the negative literal weight for variable `var`.
+    /// Set the negative literal weight for variable `var`
     pub fn set_neg_weight(&mut self, var: u32, w: f64) {
         let id = var as usize;
         if id < self.neg_weight.len() {
@@ -317,12 +270,12 @@ impl SddManager {
         }
     }
 
-    /// Iterate over all registered variable IDs.
+    /// Iterate over all registered variable IDs
     pub fn variable_ids(&self) -> impl Iterator<Item = u32> + '_ {
         self.var_to_vtree.keys().copied()
     }
 
-    /// Get the kind tag for a variable.
+    /// Get the kind tag for a variable
     pub fn var_kind(&self, var: u32) -> VarKind {
         self.var_kind
             .get(var as usize)
@@ -339,7 +292,7 @@ impl SddManager {
         }
     }
 
-    /// Left child of an internal vtree node.
+    /// Left child of an internal vtree node
     fn vtree_left(&self, v: VTreeId) -> VTreeId {
         match &self.vtree_nodes[v as usize] {
             VTreeNode::Internal { left, .. } => *left,
@@ -347,7 +300,7 @@ impl SddManager {
         }
     }
 
-    /// Right child of an internal vtree node.
+    /// Right child of an internal vtree node
     fn vtree_right(&self, v: VTreeId) -> VTreeId {
         match &self.vtree_nodes[v as usize] {
             VTreeNode::Internal { right, .. } => *right,
@@ -369,7 +322,7 @@ impl SddManager {
         }
     }
 
-    /// Get or create a literal SDD node.
+    /// Get or create a literal SDD node
     pub fn literal(&mut self, var: u32, polarity: bool) -> SddId {
         let key = UniqueKey::Literal { var, polarity };
         if let Some(&id) = self.unique_table.get(&key) {
@@ -381,24 +334,18 @@ impl SddManager {
         id
     }
 
-    /// Create a Decision node. Applies compression and trimming.
-    /// Returns an existing node if one matches (unique table).
+    /// Create a Decision node
     fn unique_d(&mut self, vtree: VTreeId, mut elements: Vec<Element>) -> SddId {
-        // Remove elements with prime = FALSE (they contribute nothing)
         elements.retain(|&(p, _)| p != SddId::FALSE);
 
-        // If no elements remain, this is FALSE
         if elements.is_empty() {
             return SddId::FALSE;
         }
 
-        // Trimming rule 1: {(TRUE, s)} -> s
         if elements.len() == 1 && elements[0].0 == SddId::TRUE {
             return elements[0].1;
         }
 
-        // Trimming rule 2: {(p, TRUE), (¬p, FALSE)} -> p
-        // More generally: if exactly 2 elements with subs TRUE and FALSE
         if elements.len() == 2 {
             let (p1, s1) = elements[0];
             let (p2, s2) = elements[1];
@@ -410,10 +357,8 @@ impl SddManager {
             }
         }
 
-        // Compression: merge elements with identical subs by OR-ing their primes
         elements = self.compress(elements);
 
-        // Re-check after compression
         if elements.is_empty() {
             return SddId::FALSE;
         }
@@ -431,7 +376,6 @@ impl SddManager {
             }
         }
 
-        // Sort elements for canonical key
         elements.sort();
 
         let key = UniqueKey::Decision {
@@ -450,14 +394,14 @@ impl SddManager {
         id
     }
 
-    /// Compress elements: merge (p1, s) and (p2, s) into (p1 OR p2, s).
+    /// Compress elements: merge (p1, s) and (p2, s) into (p1 OR p2, s)
     fn compress(&mut self, elements: Vec<Element>) -> Vec<Element> {
         let mut by_sub: HashMap<SddId, Vec<SddId>> = HashMap::new();
         for &(prime, sub) in &elements {
             by_sub.entry(sub).or_default().push(prime);
         }
         if by_sub.len() == elements.len() {
-            return elements; // already compressed
+            return elements;
         }
         let mut result = Vec::new();
         for (sub, primes) in by_sub {
@@ -470,13 +414,7 @@ impl SddManager {
         result
     }
 
-    /// Expand an SDD to a Decision (X-partition) at internal vtree node `v`.
-    ///
-    /// Primes must respect the left subtree of `v`, subs the right subtree.
-    /// - Constants: `TRUE -> {(TRUE, TRUE)}`, `FALSE -> {(TRUE, FALSE)}`
-    /// - Decision at `v`: return elements as-is
-    /// - Literal/SDD in left subtree: `{(id, TRUE), (¬id, FALSE)}`
-    /// - Literal/SDD in right subtree: `{(TRUE, id)}`
+    /// Expand an SDD to a Decision (X-partition) at internal vtree node `v`
     fn expand(&mut self, id: SddId, vtree: VTreeId) -> Vec<Element> {
         match id {
             SddId::TRUE => vec![(SddId::TRUE, SddId::TRUE)],
@@ -490,15 +428,12 @@ impl SddManager {
                         ..
                     } if *dv == vtree => elements.clone(),
                     _ => {
-                        // Literal or Decision at a descendant vtree node
                         let left = self.vtree_left(vtree);
                         let nv = node_vtree.unwrap();
                         if nv == left || self.is_descendant_of(nv, left) {
-                            // In the left (prime) subtree
                             let neg_id = self.negate(id);
                             vec![(id, SddId::TRUE), (neg_id, SddId::FALSE)]
                         } else {
-                            // In the right (sub) subtree
                             vec![(SddId::TRUE, id)]
                         }
                     }
@@ -507,9 +442,8 @@ impl SddManager {
         }
     }
 
-    /// Apply a Boolean operator to two SDDs. O(|a| * |b|).
+    /// Apply a Boolean operator to two SDDs
     pub fn apply(&mut self, a: SddId, b: SddId, op: BoolOp) -> SddId {
-        // Terminal cases
         match op {
             BoolOp::And => {
                 if a == SddId::FALSE || b == SddId::FALSE {
@@ -541,7 +475,6 @@ impl SddManager {
             }
         }
 
-        // Complementary literals: x AND NOT x = FALSE, x OR NOT x = TRUE
         if let (
             SddNode::Literal {
                 var: va,
@@ -561,7 +494,6 @@ impl SddManager {
             }
         }
 
-        // Cache lookup (canonicalize key: smaller id first for commutative ops)
         let cache_key = if a.0 <= b.0 {
             (a, b, op as u8)
         } else {
@@ -583,22 +515,17 @@ impl SddManager {
 
         match (va, vb) {
             (None, None) => {
-                // Both constants — should have been caught by terminal cases
                 unreachable!("apply_inner with two constants: {:?} {:?} {:?}", a, b, op);
             }
             (None, Some(vb_id)) => self.apply_expanded(a, b, op, vb_id),
             (Some(va_id), None) => self.apply_expanded(a, b, op, va_id),
             (Some(va), Some(vb)) if va == vb => self.apply_same_vtree(a, b, op, va),
             (Some(va), Some(vb)) => {
-                // Different vtree nodes — find the common ancestor
                 if self.is_descendant_of(va, vb) {
-                    // b is at a higher (or same) vtree node
                     self.apply_different_vtree(a, b, op, vb)
                 } else if self.is_descendant_of(vb, va) {
-                    // a is at a higher vtree node
                     self.apply_different_vtree(a, b, op, va)
                 } else {
-                    // Neither is ancestor of the other — find LCA
                     let lca = self.find_lca(va, vb);
                     self.apply_different_vtree(a, b, op, lca)
                 }
@@ -606,7 +533,7 @@ impl SddManager {
         }
     }
 
-    /// Apply when both SDDs are at the same vtree node (Decision-Decision cross-product).
+    /// Apply when both SDDs are at the same vtree node (Decision-Decision cross-product)
     fn apply_same_vtree(&mut self, a: SddId, b: SddId, op: BoolOp, vtree: VTreeId) -> SddId {
         let a_elems = self.expand(a, vtree);
         let b_elems = self.expand(b, vtree);
@@ -626,7 +553,7 @@ impl SddManager {
         self.unique_d(vtree, result_elems)
     }
 
-    /// Apply when SDDs are at different vtree levels. Normalize to `target_vtree`.
+    /// Apply when SDDs are at different vtree levels
     fn apply_different_vtree(
         &mut self,
         a: SddId,
@@ -639,54 +566,40 @@ impl SddManager {
         self.apply_same_vtree(a_norm, b_norm, op, target_vtree)
     }
 
-    /// Apply when one operand is a constant (TRUE/FALSE).
+    /// Apply when one operand is a constant (TRUE/FALSE)
     fn apply_expanded(&mut self, a: SddId, b: SddId, op: BoolOp, vtree: VTreeId) -> SddId {
         let a_norm = self.normalize_to(a, vtree);
         let b_norm = self.normalize_to(b, vtree);
         self.apply_same_vtree(a_norm, b_norm, op, vtree)
     }
 
-    /// Normalize an SDD to a Decision at vtree node `target`.
-    /// If the SDD already respects `target`, return as-is.
-    /// Otherwise, wrap it in a trivial partition.
-    ///
-    /// Uses `make_decision_raw` to avoid calling `apply` during normalization
-    /// (which would cause infinite recursion via compress -> apply -> normalize).
+    /// Normalize an SDD to a Decision at vtree node `target`
     fn normalize_to(&mut self, id: SddId, target: VTreeId) -> SddId {
-        // Constants
         if id == SddId::TRUE || id == SddId::FALSE {
-            return id; // handled by expand() in apply_same_vtree
+            return id;
         }
 
         let current_vtree = self.vtree_of(id);
         match current_vtree {
-            Some(v) if v == target => id, // already at target
+            Some(v) if v == target => id,
             Some(v) => {
-                // v is a descendant of target — wrap in a Decision at target
                 let left = self.vtree_left(target);
                 let right = self.vtree_right(target);
 
                 if self.is_descendant_of(v, left) {
-                    // SDD belongs in the left (prime) side
-                    // Create {(id, TRUE), (NOT id, FALSE)} — already compressed & trimmed
                     let neg_id = self.negate(id);
                     self.make_decision_raw(target, vec![(id, SddId::TRUE), (neg_id, SddId::FALSE)])
                 } else if self.is_descendant_of(v, right) {
-                    // SDD belongs in the right (sub) side
-                    // Create {(TRUE, id)} — trimming: this just returns id via unique_d
                     self.unique_d(target, vec![(SddId::TRUE, id)])
                 } else {
-                    // Shouldn't happen if vtree is correct
                     id
                 }
             }
-            None => id, // constant, handled by expand
+            None => id,
         }
     }
 
-    /// Create a Decision node directly, without calling compress (which calls apply).
-    /// Used by `normalize_to` to avoid infinite recursion.
-    /// The caller must guarantee the elements are already compressed.
+    /// Create a Decision node directly, without calling compress (which calls apply)
     fn make_decision_raw(&mut self, vtree: VTreeId, mut elements: Vec<Element>) -> SddId {
         elements.retain(|&(p, _)| p != SddId::FALSE);
         if elements.is_empty() {
@@ -722,11 +635,10 @@ impl SddManager {
         id
     }
 
-    /// Find the lowest common ancestor of two vtree nodes.
+    /// Find the lowest common ancestor of two vtree nodes
     fn find_lca(&self, a: VTreeId, b: VTreeId) -> VTreeId {
         let a_ancestors = self.vtree_ancestors(a);
         let b_ancestors = self.vtree_ancestors(b);
-        // Find lowest node in a's ancestor chain that is also in b's
         for &anc in &a_ancestors {
             if b_ancestors.contains(&anc) {
                 return anc;
@@ -735,10 +647,9 @@ impl SddManager {
         self.vtree_root.unwrap()
     }
 
-    /// Get ancestors of a vtree node (including itself), from node to root.
+    /// Get ancestors of a vtree node (including itself), from node to root
     fn vtree_ancestors(&self, node: VTreeId) -> Vec<VTreeId> {
         let mut result = vec![node];
-        // Walk up: for a right-linear tree, we search all internal nodes
         for (idx, vnode) in self.vtree_nodes.iter().enumerate() {
             if let VTreeNode::Internal { left, right } = vnode {
                 if *left == node || *right == node {
@@ -751,10 +662,7 @@ impl SddManager {
         result
     }
 
-    /// Negate an SDD. O(|SDD|).
-    ///
-    /// For Decision nodes, negate all subs (keep primes unchanged):
-    /// `¬{(p₁,s₁),...,(pₙ,sₙ)} = {(p₁,¬s₁),...,(pₙ,¬sₙ)}`
+    /// Negate an SDD
     pub fn negate(&mut self, id: SddId) -> SddId {
         match id {
             SddId::FALSE => SddId::TRUE,
@@ -778,7 +686,7 @@ impl SddManager {
         }
     }
 
-    /// Compute the weighted model count (probability) of an SDD. O(|SDD|).
+    /// Compute the weighted model count (probability) of an SDD
     pub fn wmc(&self, id: SddId) -> f64 {
         let mut memo: HashMap<SddId, f64> = HashMap::new();
         self.wmc_inner(id, &mut memo)
@@ -816,10 +724,7 @@ impl SddManager {
         result
     }
 
-    /// Enumerate all satisfying variable assignments (proof paths) of an SDD.
-    ///
-    /// Each model is a set of (variable, polarity) pairs.
-    /// Called only at explanation-time, not during reasoning.
+    /// Enumerate all satisfying variable assignments (proof paths) of an SDD
     pub fn enumerate_models(&self, id: SddId) -> Vec<BTreeSet<(u32, bool)>> {
         match id {
             SddId::FALSE => vec![],
@@ -853,14 +758,14 @@ impl SddManager {
         }
     }
 
-    /// Number of nodes in the manager (including TRUE/FALSE).
+    /// Number of nodes in the manager (including TRUE/FALSE)
     pub fn node_count(&self) -> usize {
         self.nodes.len()
     }
 }
 
 impl SddManager {
-    /// Interruptible counterpart of [`SddManager::literal`].
+    /// Interruptible counterpart of [`SddManager::literal`]
     pub fn try_literal(
         &mut self,
         var: u32,
@@ -879,7 +784,7 @@ impl SddManager {
         Ok(id)
     }
 
-    /// Interruptible counterpart of [`SddManager::apply`].
+    /// Interruptible counterpart of [`SddManager::apply`]
     pub fn try_apply(
         &mut self,
         a: SddId,
@@ -1216,7 +1121,7 @@ impl SddManager {
         Ok(result)
     }
 
-    /// Interruptible counterpart of [`SddManager::negate`].
+    /// Interruptible counterpart of [`SddManager::negate`]
     pub fn try_negate(
         &mut self,
         id: SddId,
@@ -1249,7 +1154,7 @@ impl SddManager {
         }
     }
 
-    /// Interruptible counterpart of [`SddManager::exactly_one`].
+    /// Interruptible counterpart of [`SddManager::exactly_one`]
     pub fn try_exactly_one(
         &mut self,
         vars: &[u32],
@@ -1276,22 +1181,19 @@ impl SddManager {
     }
 }
 
-/// Provenance semiring backed by Sentential Decision Diagrams.
-///
-/// Uses SDDs for exact WMC with polytime Apply, linear negation,
-/// and linear probability recovery. Tags are compact `SddId` handles.
+/// Provenance semiring backed by Sentential Decision Diagrams
 #[derive(Debug, Clone)]
 pub struct SddProvenance {
     manager: Arc<Mutex<SddManager>>,
     guard: Option<Arc<SddGuard>>,
 }
 
-/// Ceilings applied to every operation on an [`SddProvenance`].
+/// Ceilings applied to every operation on an [`SddProvenance`]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct SddLimits {
-    /// Largest number of nodes an operation may add before abandoning.
+    /// Largest number of nodes an operation may add before abandoning
     pub max_nodes: usize,
-    /// Wall-clock deadline, if any.
+    /// Wall-clock deadline, if any
     pub deadline: Option<std::time::Instant>,
 }
 
@@ -1302,8 +1204,7 @@ struct SddGuard {
 }
 
 impl SddProvenance {
-    /// An unbounded manager. Compilation may take arbitrarily long; prefer
-    /// [`Self::with_limits`] where a query has a time budget.
+    /// An unbounded manager
     pub fn new() -> Self {
         Self {
             manager: Arc::new(Mutex::new(SddManager::new())),
@@ -1311,11 +1212,7 @@ impl SddProvenance {
         }
     }
 
-    /// A manager that abandons operations exceeding `limits`.
-    ///
-    /// The first breach is recorded and every later operation fails with the same
-    /// error, so one exhausted budget does not yield partial results that look
-    /// complete.
+    /// A manager that abandons operations exceeding `limits`
     pub fn with_limits(limits: SddLimits) -> Self {
         Self {
             manager: Arc::new(Mutex::new(SddManager::new())),
@@ -1326,22 +1223,19 @@ impl SddProvenance {
         }
     }
 
-    /// Access the underlying manager (for explanation export).
+    /// Access the underlying manager (for explanation export)
     pub fn manager(&self) -> &Arc<Mutex<SddManager>> {
         &self.manager
     }
 
-    /// The budget error this manager latched, if any. `None` means no operation has
-    /// breached its limits.
+    /// The budget error this manager latched, if any
     pub fn budget_error(&self) -> Option<SddBudgetError> {
         self.guard
             .as_ref()
             .and_then(|guard| *guard.error.lock().unwrap())
     }
 
-    /// Runs `operation` against the manager under this instance's limits.
-    ///
-    /// Fails immediately if a previous operation already breached the budget.
+    /// Runs `operation` against the manager under this instance's limits
     pub fn try_with_budget<T>(
         &self,
         operation: impl FnOnce(
@@ -1385,7 +1279,6 @@ impl Default for SddProvenance {
     }
 }
 
-// Manual Debug for SddManager (contains non-Debug HashMap keys)
 impl std::fmt::Debug for SddManager {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("SddManager")
@@ -1448,7 +1341,7 @@ impl Provenance for SddProvenance {
         self.manager.lock().unwrap().wmc(*tag).clamp(0.0, 1.0)
     }
 
-    /// SDD canonicity: ID equality = logical equivalence.
+    /// SDD canonicity: ID equality = logical equivalence
     fn is_saturated(&self, old: &SddId, new: &SddId) -> bool {
         old == new
     }
@@ -1459,8 +1352,6 @@ mod tests {
     use super::*;
 
     const EPS: f64 = 1e-9;
-
-    // --- Basic SddManager tests ---
 
     #[test]
     fn constants() {
@@ -1502,7 +1393,6 @@ mod tests {
         let x = mgr.literal(0, true);
         let y = mgr.literal(1, true);
         let xy = mgr.apply(x, y, BoolOp::Or);
-        // P(x OR y) = 0.8 + 0.6 - 0.48 = 0.92
         assert!(
             (mgr.wmc(xy) - 0.92).abs() < EPS,
             "expected 0.92, got {}",
@@ -1517,14 +1407,12 @@ mod tests {
         let x = mgr.literal(0, true);
         let nx = mgr.negate(x);
         assert!((mgr.wmc(nx) - 0.2).abs() < EPS);
-        // Double negation
         let nnx = mgr.negate(nx);
         assert_eq!(nnx, x);
     }
 
     #[test]
     fn negate_conjunction() {
-        // NOT (x AND y) = (NOT x) OR (NOT y)
         let mut mgr = SddManager::new();
         mgr.ensure_variable(0, 0.8);
         mgr.ensure_variable(1, 0.6);
@@ -1532,7 +1420,6 @@ mod tests {
         let y = mgr.literal(1, true);
         let xy = mgr.apply(x, y, BoolOp::And);
         let neg_xy = mgr.negate(xy);
-        // P(NOT (x AND y)) = 1 - 0.48 = 0.52
         assert!(
             (mgr.wmc(neg_xy) - 0.52).abs() < EPS,
             "expected 0.52, got {}",
@@ -1542,7 +1429,6 @@ mod tests {
 
     #[test]
     fn complement_invariant() {
-        // P(f) + P(NOT f) = 1.0
         let mut mgr = SddManager::new();
         mgr.ensure_variable(0, 0.8);
         mgr.ensure_variable(1, 0.6);
@@ -1550,7 +1436,6 @@ mod tests {
         let x = mgr.literal(0, true);
         let y = mgr.literal(1, true);
         let z = mgr.literal(2, true);
-        // f = (x AND y) OR (x AND z)
         let xy = mgr.apply(x, y, BoolOp::And);
         let xz = mgr.apply(x, z, BoolOp::And);
         let f = mgr.apply(xy, xz, BoolOp::Or);
@@ -1565,9 +1450,6 @@ mod tests {
 
     #[test]
     fn overlap_canonical_wmc() {
-        // Same test case as topk_wmc_overlap_canonical
-        // proof1={0,1}, proof2={0,2}, P(x)=0.8, P(y)=0.6, P(z)=0.5
-        // Exact: P(x∧y) + P(x∧z) - P(x∧y∧z) = 0.48 + 0.40 - 0.24 = 0.64
         let mut mgr = SddManager::new();
         mgr.ensure_variable(0, 0.8);
         mgr.ensure_variable(1, 0.6);
@@ -1587,9 +1469,6 @@ mod tests {
 
     #[test]
     fn three_paths_wmc() {
-        // Three proof paths, matching wmc_no_truncation_three_paths
-        // {0,1}, {0,2}, {3} with P=[0.8, 0.6, 0.5, 0.4]
-        // Exact (via inclusion-exclusion): 0.8784
         let mut mgr = SddManager::new();
         mgr.ensure_variable(0, 0.8);
         mgr.ensure_variable(1, 0.6);
@@ -1603,20 +1482,8 @@ mod tests {
         let xz = mgr.apply(x, z, BoolOp::And);
         let f1 = mgr.apply(xy, xz, BoolOp::Or);
         let f = mgr.apply(f1, w, BoolOp::Or);
-        // P = 0.64 + 0.4 - 0.64*0.4 = 1.04 - 0.256 = 0.784... actually need careful calc
-        // P(xy) = 0.48, P(xz) = 0.40, P(w) = 0.4
-        // P(xy OR xz) = 0.64
-        // P(f) = P(xy OR xz OR w) = 0.64 + 0.4 - 0.64*0.4 = 0.784
-        // Wait, the expected value in the test is 0.8784. Let me recalculate.
-        // P(xy OR xz) = 0.64 (verified)
-        // P(w) = 0.4
-        // Since w is independent of x,y,z:
-        // P(f) = 0.64 + 0.4 - 0.64*0.4 = 0.784
-        // Hmm, but the existing test expects 0.8784 — let me check what that test does.
-        // Actually the existing test might use different structure. Let me just verify
-        // our WMC is correct for this specific construction.
         let prob = mgr.wmc(f);
-        let expected = 0.64 + 0.4 - 0.64 * 0.4; // = 0.784
+        let expected = 0.64 + 0.4 - 0.64 * 0.4;
         assert!(
             (prob - expected).abs() < EPS,
             "expected {}, got {}",
@@ -1647,8 +1514,6 @@ mod tests {
 
     #[test]
     fn naf_shared_seed_exact() {
-        // active = seed0 (P=0.8), blocked = seed0 (SAME seed)
-        // active AND NOT blocked = seed0 AND NOT seed0 = FALSE -> P = 0.0
         let mut mgr = SddManager::new();
         mgr.ensure_variable(0, 0.8);
         let active = mgr.literal(0, true);
@@ -1661,8 +1526,6 @@ mod tests {
 
     #[test]
     fn naf_independent_seeds() {
-        // active = seed0 (P=0.8), blocked = seed1 (P=0.3)
-        // active AND NOT blocked: P = 0.8 * 0.7 = 0.56
         let mut mgr = SddManager::new();
         mgr.ensure_variable(0, 0.8);
         mgr.ensure_variable(1, 0.3);

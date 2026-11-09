@@ -8,15 +8,11 @@
  * you can obtain one at https://mozilla.org/MPL/2.0/.
  */
 
-//! Building a logical plan from a parsed query.
-//!
-//! The bridge from the lexical syntax tree in [`shared::query`] to
-//! [`LogicalOperator`]: terms are resolved against a
-//! dictionary and graph patterns become plan nodes.
+//! Building a logical plan from a parsed query
 
 use super::operators::{LogicalOperator, PhysicalOperator};
 use super::types::{Condition, SubqueryProjection, SubquerySpec};
-use crate::sparql_database::SparqlDatabase;
+use crate::database::KolibrieDB;
 use shared::dataset_index::{GraphTerm, QuadPattern};
 use shared::query::{FilterExpression, GroupGraphPattern, SubQuery, ValuesClause};
 use shared::terms::{Term, TriplePattern};
@@ -28,7 +24,6 @@ pub fn extract_pattern(op: &PhysicalOperator) -> Option<&QuadPattern> {
         PhysicalOperator::TableScan { pattern } | PhysicalOperator::IndexScan { pattern } => {
             Some(pattern)
         }
-        // If it's a Filter, keep searching in its child
         PhysicalOperator::Filter { input, .. } => extract_pattern(input),
         _ => None,
     }
@@ -46,7 +41,7 @@ pub fn pattern_contains_variable(pattern: &TriplePattern, var: &str) -> bool {
     since = "0.3.0",
     note = "use CostEstimator::estimate_cost; this returns fictional constants"
 )]
-pub fn estimate_operator_selectivity(op: &LogicalOperator, _database: &SparqlDatabase) -> u64 {
+pub fn estimate_operator_selectivity(op: &LogicalOperator, _database: &KolibrieDB) -> u64 {
     match op {
         LogicalOperator::Unit => 0,
         LogicalOperator::Scan { pattern } => {
@@ -58,10 +53,10 @@ pub fn estimate_operator_selectivity(op: &LogicalOperator, _database: &SparqlDat
             let bound_count = count_bound_terms(&triple);
 
             match bound_count {
-                3 => 1, // Highest priority - fully bound
-                2 => 2, // High priority - two bounds
-                1 => 3, // Medium priority - one bound
-                0 => 4, // Lowest priority - no bounds
+                3 => 1,
+                2 => 2,
+                1 => 3,
+                0 => 4,
                 _ => 5,
             }
         }
@@ -71,17 +66,14 @@ pub fn estimate_operator_selectivity(op: &LogicalOperator, _database: &SparqlDat
             .sum(),
         LogicalOperator::Graph { input, .. } => estimate_operator_selectivity(input, _database),
         LogicalOperator::Selection { predicate, .. } => {
-            // Selections are generally high priority due to filtering
             estimate_operator_selectivity(predicate, _database) + 10
         }
         LogicalOperator::Join { left, right } => {
-            // Join cost depends on both sides
             let left_sel = estimate_operator_selectivity(left, _database);
             let right_sel = estimate_operator_selectivity(right, _database);
             left_sel + right_sel + 5
         }
         LogicalOperator::Projection { predicate, .. } => {
-            // Projection doesn't change selectivity much
             estimate_operator_selectivity(predicate, _database) + 1
         }
         LogicalOperator::Buffer { .. } => 10000,
@@ -125,13 +117,11 @@ pub fn build_logical_plan(
     patterns: Vec<(&str, &str, &str)>,
     filters: Vec<FilterExpression>,
     prefixes: &HashMap<String, String>,
-    database: &mut SparqlDatabase,
+    database: &mut KolibrieDB,
     binds: &[(&str, Vec<&str>, &str)],
     values_clause: Option<&ValuesClause>,
 ) -> LogicalOperator {
-    // Create base operator from VALUES if present, otherwise empty join base
     let mut result = if let Some(values_clause) = values_clause {
-        // Convert ValuesClause to LogicalOperator::Values
         let variables: Vec<String> = values_clause
             .variables
             .iter()
@@ -142,7 +132,6 @@ pub fn build_logical_plan(
 
         LogicalOperator::values(variables, values)
     } else {
-        // The empty group pattern is the SPARQL unit table
         let first_pattern = if patterns.is_empty() {
             LogicalOperator::unit()
         } else {
@@ -159,7 +148,6 @@ pub fn build_logical_plan(
         first_pattern
     };
 
-    // If we have VALUES, join it with all patterns
     let start_idx = if values_clause.is_some() { 0 } else { 1 };
 
     for (subject_str, predicate_str, object_str) in patterns.iter().skip(start_idx) {
@@ -169,13 +157,11 @@ pub fn build_logical_plan(
         result = LogicalOperator::join(result, scan_op);
     }
 
-    // Apply filters that couldn't be pushed down
     for filter in filters {
         let condition = convert_filter_to_condition(&filter, prefixes, database);
         result = LogicalOperator::selection(result, condition);
     }
 
-    // Apply BIND clauses
     for (func_name, args, output_var) in binds {
         let function_name = func_name.to_string();
         let arguments: Vec<String> = args.iter().map(|s| s.to_string()).collect();
@@ -184,7 +170,6 @@ pub fn build_logical_plan(
         result = LogicalOperator::bind(result, function_name, arguments, output_variable);
     }
 
-    // Apply projection if specific variables were requested
     if !variables.is_empty() {
         let var_names: Vec<String> = variables.into_iter().map(|(_, v)| v.to_string()).collect();
         result = LogicalOperator::projection(result, var_names);
@@ -197,12 +182,12 @@ pub fn build_logical_plan(
 pub fn compile_term(
     term_str: &str,
     prefixes: &HashMap<String, String>,
-    database: &mut SparqlDatabase,
+    database: &mut KolibrieDB,
 ) -> Term {
     let trimmed = term_str.trim();
     if trimmed.starts_with("<<") && trimmed.ends_with(">>") {
         let inner = trimmed[2..trimmed.len() - 2].trim();
-        let (s_str, p_str, o_str) = SparqlDatabase::split_quoted_triple_content(inner);
+        let (s_str, p_str, o_str) = KolibrieDB::split_quoted_triple_content(inner);
         let s_term = compile_term(&s_str, prefixes, database);
         let p_term = if p_str.trim() == "a" {
             compile_term(
@@ -215,7 +200,6 @@ pub fn compile_term(
         };
         let o_term = compile_term(&o_str, prefixes, database);
 
-        // If all components are constants, resolve to a single Constant ID
         if let (Term::Constant(s_id), Term::Constant(p_id), Term::Constant(o_id)) =
             (&s_term, &p_term, &o_term)
         {
@@ -223,7 +207,6 @@ pub fn compile_term(
             let qt_id = qt.encode(*s_id, *p_id, *o_id);
             Term::Constant(qt_id)
         } else {
-            // Contains variables — use QuotedTriple variant for pattern matching
             Term::QuotedTriple(Box::new((s_term, p_term, o_term)))
         }
     } else if trimmed.starts_with('?') || trimmed.starts_with('$') {
@@ -238,19 +221,17 @@ pub fn compile_term(
 fn resolve_sparql_lexical_value(
     value: &str,
     prefixes: &HashMap<String, String>,
-    database: &SparqlDatabase,
+    database: &KolibrieDB,
 ) -> String {
     let trimmed = value.trim();
     if trimmed.starts_with('<') && trimmed.ends_with('>') && !trimmed.starts_with("<<") {
         unescape_sparql_iri(&trimmed[1..trimmed.len() - 1])
     } else if trimmed.starts_with(['"', '\'']) {
-        // Literal lexical values are never prefix names, even when their
         literal_lexical_value(trimmed)
     } else if trimmed.starts_with("_:") {
         trimmed.to_string()
     } else {
         let expanded = database.resolve_query_term(trimmed, prefixes);
-        // PN_LOCAL_ESC contributes the escaped character itself to the local name
         unescape_sparql_iri(&expanded)
     }
 }
@@ -366,7 +347,7 @@ fn literal_lexical_value(literal: &str) -> String {
 pub fn compile_triple(
     pattern: (&str, &str, &str),
     prefixes: &HashMap<String, String>,
-    database: &mut SparqlDatabase,
+    database: &mut KolibrieDB,
 ) -> TriplePattern {
     (
         compile_term(pattern.0, prefixes, database),
@@ -387,7 +368,7 @@ pub fn compile_triple(
 pub fn compile_graph_term(
     graph: &str,
     prefixes: &HashMap<String, String>,
-    database: &mut SparqlDatabase,
+    database: &mut KolibrieDB,
 ) -> Result<GraphTerm, String> {
     match compile_term(graph, prefixes, database) {
         Term::Variable(variable) => Ok(GraphTerm::Variable(variable)),
@@ -400,7 +381,7 @@ pub fn compile_graph_term(
 pub fn build_logical_plan_from_group(
     pattern: &GroupGraphPattern<'_>,
     prefixes: &HashMap<String, String>,
-    database: &mut SparqlDatabase,
+    database: &mut KolibrieDB,
 ) -> Result<LogicalOperator, String> {
     build_logical_plan_from_group_in_scope(pattern, prefixes, database, &GraphTerm::Default)
 }
@@ -409,7 +390,7 @@ pub fn build_logical_plan_from_group(
 fn build_logical_plan_from_group_in_scope(
     pattern: &GroupGraphPattern<'_>,
     prefixes: &HashMap<String, String>,
-    database: &mut SparqlDatabase,
+    database: &mut KolibrieDB,
     graph_scope: &GraphTerm,
 ) -> Result<LogicalOperator, String> {
     match pattern {
@@ -434,7 +415,6 @@ fn build_logical_plan_from_group_in_scope(
             for pattern in patterns {
                 match pattern {
                     GroupGraphPattern::Filter(filter) => {
-                        // SPARQL FILTER scope is the containing group graph
                         filters.push(filter);
                     }
                     GroupGraphPattern::Bind((function, arguments, output)) => {
@@ -515,7 +495,7 @@ fn append_join(left: LogicalOperator, right: LogicalOperator) -> LogicalOperator
 fn values_operator(
     values_clause: &ValuesClause<'_>,
     prefixes: &HashMap<String, String>,
-    database: &mut SparqlDatabase,
+    database: &mut KolibrieDB,
 ) -> Result<LogicalOperator, String> {
     let variables = values_clause
         .variables
@@ -529,7 +509,7 @@ fn values_operator(
 fn compile_values_rows(
     values_clause: &ValuesClause<'_>,
     prefixes: &HashMap<String, String>,
-    database: &mut SparqlDatabase,
+    database: &mut KolibrieDB,
 ) -> Result<Vec<Vec<Option<u32>>>, String> {
     let mut rows = Vec::with_capacity(values_clause.values.len());
     for row in &values_clause.values {
@@ -550,13 +530,12 @@ fn compile_values_rows(
     Ok(rows)
 }
 
-// Compatibility helper for existing callers in this module
 fn convert_pattern_to_triple(
     subject_str: &str,
     predicate_str: &str,
     object_str: &str,
     prefixes: &HashMap<String, String>,
-    database: &mut SparqlDatabase,
+    database: &mut KolibrieDB,
 ) -> TriplePattern {
     compile_triple((subject_str, predicate_str, object_str), prefixes, database)
 }
@@ -565,7 +544,7 @@ fn convert_pattern_to_triple(
 pub fn build_logical_plan_from_subquery(
     subquery: &SubQuery,
     prefixes: &HashMap<String, String>,
-    database: &mut SparqlDatabase,
+    database: &mut KolibrieDB,
 ) -> Result<LogicalOperator, String> {
     build_logical_plan_from_subquery_in_scope(subquery, prefixes, database, &GraphTerm::Default)
 }
@@ -573,7 +552,7 @@ pub fn build_logical_plan_from_subquery(
 fn build_logical_plan_from_subquery_in_scope(
     subquery: &SubQuery,
     prefixes: &HashMap<String, String>,
-    database: &mut SparqlDatabase,
+    database: &mut KolibrieDB,
     graph_scope: &GraphTerm,
 ) -> Result<LogicalOperator, String> {
     let inner_plan = build_logical_plan_from_group_in_scope(
@@ -625,7 +604,7 @@ fn resolve_with_prefixes(uri: &str, prefixes: &HashMap<String, String>) -> Strin
     if let Some(colon_pos) = uri.find(':') {
         let (prefix, suffix) = uri.split_at(colon_pos);
         if let Some(base_uri) = prefixes.get(prefix) {
-            format!("{}{}", base_uri, &suffix[1..]) // Skip the ':'
+            format!("{}{}", base_uri, &suffix[1..])
         } else {
             uri.to_string()
         }
@@ -638,7 +617,7 @@ fn resolve_with_prefixes(uri: &str, prefixes: &HashMap<String, String>) -> Strin
 fn convert_filter_to_condition(
     filter: &FilterExpression,
     prefixes: &HashMap<String, String>,
-    database: &SparqlDatabase,
+    database: &KolibrieDB,
 ) -> Condition {
     Condition::from_filter_with_resolver(filter, |value| {
         resolve_sparql_lexical_value(value, prefixes, database)
@@ -697,7 +676,7 @@ mod tests {
 
     #[test]
     fn graph_scope_is_lowered_onto_child_scans() {
-        let mut database = SparqlDatabase::new();
+        let mut database = KolibrieDB::new();
         let prefixes = HashMap::new();
         let pattern = GroupGraphPattern::Graph {
             name: "?g",
@@ -722,7 +701,7 @@ mod tests {
 
     #[test]
     fn nested_graph_scope_overrides_the_outer_scan_scope() {
-        let mut database = SparqlDatabase::new();
+        let mut database = KolibrieDB::new();
         let prefixes = HashMap::new();
         let pattern = GroupGraphPattern::Graph {
             name: "?outer",

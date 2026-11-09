@@ -11,9 +11,8 @@
 use kolibrie::prelude::*;
 
 fn n_triple_simple_query() {
-    let mut db = SparqlDatabase::new();
+    let mut db = KolibrieDB::new();
 
-    // N-Triples format
     let ntriples_data = r#"
 <http://example.org/john> <http://example.org/hasFriend> <http://example.org/jane> .
 <http://example.org/jane> <http://example.org/name> "Jane Doe" .
@@ -22,7 +21,6 @@ fn n_triple_simple_query() {
 <http://example.org/john> <http://example.org/age> "30"^^<http://www.w3.org/2001/XMLSchema#integer> .
     "#;
 
-    // Use the parse_ntriples function
     db.parse_ntriples_and_add(ntriples_data);
 
     let sparql_query = r#"

@@ -10,7 +10,6 @@
 
 use kolibrie::prelude::*;
 
-// A little bit advanced join
 fn advanced_join() {
     let rdf_data = r#"
         <rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#"
@@ -32,7 +31,7 @@ fn advanced_join() {
         </rdf:RDF>
     "#;
 
-    let mut database = SparqlDatabase::new();
+    let mut database = KolibrieDB::new();
     database.parse_rdf(rdf_data);
 
     let sparql = r#"PREFIX ex: <http://example.org/> SELECT ?person ?location ?city ?zipcode WHERE {?person ex:worksAt ?location . ?location ex:located ?city . ?location ex:zipcode ?zipcode}"#;
@@ -41,7 +40,6 @@ fn advanced_join() {
         .expect("query should run")
         .into_rows();
 
-    // Now the main function is responsible for printing the results
     println!("Results:");
     for result in results {
         if let [person, location, city, zip] = &result[..] {

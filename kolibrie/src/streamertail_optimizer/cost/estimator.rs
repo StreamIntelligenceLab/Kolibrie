@@ -8,11 +8,7 @@
  * you can obtain one at https://mozilla.org/MPL/2.0/.
  */
 
-//! [`CostEstimator`]: predicting cardinality and work for a candidate plan.
-//!
-//! Estimates only have to rank plans correctly; absolute accuracy is not the goal.
-//! They read [`DatabaseStats`], which
-//! may lag the data under the store's default statistics policy.
+//! [`CostEstimator`]: predicting cardinality and work for a candidate plan
 
 use super::super::operators::PhysicalOperator;
 use super::super::types::{Condition, ConditionExpression};
@@ -61,25 +57,23 @@ pub struct CostConstants;
 impl CostConstants {
     /// Retained for source compatibility
     pub const COST_PER_ROW_SCAN: u64 = 100;
-    /// Per row returned by an index scan.
+    /// Per row returned by an index scan
     pub const COST_PER_ROW_INDEX_SCAN: u64 = 1;
     /// Fixed overhead of opening one index scan, so a ground pattern is never free
     pub const COST_PER_SCAN_PROBE: u64 = 1;
     /// Cardinality assumed for a graph absent from the statistics
     pub const UNMEASURED_GRAPH_CARDINALITY: u64 = 1;
-    /// Per row a filter examines, whether or not it survives.
+    /// Per row a filter examines, whether or not it survives
     pub const COST_PER_FILTER: u64 = 1;
-    /// Per row built, probed or emitted by a hash join.
+    /// Per row built, probed or emitted by a hash join
     pub const COST_PER_ROW_JOIN: u64 = 2;
-    /// Per row pair a nested-loop join considers. Deliberately far above the hash
-    /// join's figure, which is what makes the optimizer prefer hashing unless the
-    /// inner side is tiny.
+    /// Per row pair a nested-loop join considers
     pub const COST_PER_ROW_NESTED_LOOP: u64 = 10;
-    /// Per row projected.
+    /// Per row projected
     pub const COST_PER_PROJECTION: u64 = 1;
     /// One index probe of a dependent plan's right side
     pub const COST_PER_PROBE: u64 = 2;
-    /// Baseline cost of handling one tuple.
+    /// Baseline cost of handling one tuple
     pub const TUPLE_COST: u64 = 1;
 }
 
@@ -111,7 +105,6 @@ impl<'a> CostEstimator<'a> {
     pub fn estimate_cost(&self, plan: &PhysicalOperator) -> u64 {
         match plan {
             PhysicalOperator::Unit => 0,
-            // `TableScan` and `IndexScan` dispatch to the same executor function
             PhysicalOperator::TableScan { pattern } | PhysicalOperator::IndexScan { pattern } => {
                 CostConstants::COST_PER_SCAN_PROBE.saturating_add(
                     self.estimate_quad_cardinality(pattern)
@@ -122,7 +115,6 @@ impl<'a> CostEstimator<'a> {
                 .iter()
                 .map(|branch| self.estimate_cost(branch))
                 .fold(0u64, u64::saturating_add),
-            // Mirrors `estimate_output_cardinality_in_context`: an invisible
             PhysicalOperator::Graph { input, graph } => match graph {
                 GraphTerm::Default => self.estimate_cost(input),
                 GraphTerm::Named(graph) if self.fixed_graph_is_visible(*graph) => {
@@ -134,7 +126,6 @@ impl<'a> CostEstimator<'a> {
                     .saturating_mul(self.visible_named_graphs().len() as u64),
             },
             PhysicalOperator::Filter { input, condition } => {
-                // Selectivity decides how many rows survive, not how much work
                 let _ = condition;
                 let input_cost = self.estimate_cost(input);
                 let input_cardinality = self.estimate_output_cardinality(input);
@@ -148,7 +139,6 @@ impl<'a> CostEstimator<'a> {
                 let left_cardinality = self.estimate_output_cardinality(left);
                 let output = self.estimate_output_cardinality(plan);
 
-                // The right side is re-entered once per left solution, so a shared variable makes it a probe
                 let per_left_row = if self.shares_a_variable(left, right) {
                     CostConstants::COST_PER_PROBE.saturating_mul(Self::probe_width(right).max(1))
                 } else {
@@ -191,7 +181,6 @@ impl<'a> CostEstimator<'a> {
                 self.estimate_cost(input) + CostConstants::COST_PER_PROJECTION
             }
             PhysicalOperator::StarJoin { patterns, .. } => {
-                // Cost = scan most selective + filter rest
                 let mut costs: Vec<u64> = patterns
                     .iter()
                     .map(|pattern| self.estimate_star_pattern_cardinality(pattern))
@@ -203,14 +192,12 @@ impl<'a> CostEstimator<'a> {
 
                 costs.sort();
 
-                // Start with smallest, then check each remaining
                 let base_cost = costs[0] * CostConstants::COST_PER_ROW_INDEX_SCAN;
                 let filter_cost =
                     costs.iter().skip(1).sum::<u64>() * CostConstants::COST_PER_ROW_INDEX_SCAN / 10;
 
                 base_cost + filter_cost
             }
-            // The buffer's rows still have to be joined against the incoming
             PhysicalOperator::InMemoryBuffer { content, .. } => {
                 (content.len() as u64).saturating_mul(CostConstants::TUPLE_COST)
             }
@@ -218,7 +205,6 @@ impl<'a> CostEstimator<'a> {
                 let inner_cost = self.estimate_cost(inner);
                 let inner_card = self.estimate_output_cardinality(inner);
 
-                // Executing the inner plan, storing its rows, then projecting them
                 let materialization_cost = inner_card * CostConstants::TUPLE_COST;
                 let projection_width =
                     spec.projection
@@ -237,23 +223,14 @@ impl<'a> CostEstimator<'a> {
                 let input_cost = self.estimate_cost(input);
                 let input_cardinality = self.estimate_output_cardinality(input);
 
-                // Cost depends on function complexity
                 let function_cost = match function_name.as_str() {
-                    "CONCAT" => {
-                        // CONCAT cost is proportional to number of arguments
-                        arguments.len() as u64 * CostConstants::COST_PER_PROJECTION
-                    }
-                    _ => {
-                        // Generic UDF - assume moderate cost
-                        CostConstants::COST_PER_PROJECTION * 2
-                    }
+                    "CONCAT" => arguments.len() as u64 * CostConstants::COST_PER_PROJECTION,
+                    _ => CostConstants::COST_PER_PROJECTION * 2,
                 };
 
-                // Total cost = input cost + (cardinality * function cost per row)
                 input_cost + (input_cardinality * function_cost)
             }
             PhysicalOperator::Values { values, .. } => {
-                // VALUES has minimal cost - just the number of rows
                 (values.len() as u64) * CostConstants::TUPLE_COST
             }
             PhysicalOperator::MLPredict {
@@ -264,7 +241,6 @@ impl<'a> CostEstimator<'a> {
                 let input_cost = self.estimate_cost(input);
                 let cardinality = self.estimate_output_cardinality(input);
 
-                // Python interop dominates, plus a per-row cost scaled by feature count
                 let python_overhead = 1000;
                 let per_row_cost = 100 * input_variables.len() as u64;
 
@@ -275,43 +251,32 @@ impl<'a> CostEstimator<'a> {
 
     /// Estimates the cardinality of a triple pattern
     pub fn estimate_cardinality(&self, pattern: &TriplePattern) -> u64 {
-        // Treat QuotedTriple terms as variables for cardinality estimation
         match pattern {
-            // Fully bound - always returns 0 or 1
             (Term::Constant(_), Term::Constant(_), Term::Constant(_)) => 1,
 
-            // Two bounds - use actual index stats
-            (Term::Constant(s), Term::Constant(p), Term::Variable(_)) => {
-                // Look up actual SPO cardinality
-                self.stats
-                    .get_subject_cardinality(*s)
-                    .min(self.stats.get_predicate_cardinality(*p))
-                    .max(1)
-            }
+            (Term::Constant(s), Term::Constant(p), Term::Variable(_)) => self
+                .stats
+                .get_subject_cardinality(*s)
+                .min(self.stats.get_predicate_cardinality(*p))
+                .max(1),
 
-            (Term::Constant(s), Term::Variable(_), Term::Constant(o)) => {
-                // S*O pattern
-                self.stats
-                    .get_subject_cardinality(*s)
-                    .min(self.stats.get_object_cardinality(*o))
-                    .max(1)
-            }
+            (Term::Constant(s), Term::Variable(_), Term::Constant(o)) => self
+                .stats
+                .get_subject_cardinality(*s)
+                .min(self.stats.get_object_cardinality(*o))
+                .max(1),
 
-            (Term::Variable(_), Term::Constant(p), Term::Constant(o)) => {
-                // *PO pattern
-                self.stats
-                    .get_predicate_cardinality(*p)
-                    .min(self.stats.get_object_cardinality(*o))
-                    .max(1)
-            }
+            (Term::Variable(_), Term::Constant(p), Term::Constant(o)) => self
+                .stats
+                .get_predicate_cardinality(*p)
+                .min(self.stats.get_object_cardinality(*o))
+                .max(1),
 
-            // One bound - use predicate/subject/object cardinality directly
             (Term::Constant(s), Term::Variable(_), Term::Variable(_)) => {
                 self.stats.get_subject_cardinality(*s).max(1)
             }
 
             (Term::Variable(_), Term::Constant(p), Term::Variable(_)) => {
-                // This is the KEY one - should return ACTUAL predicate cardinality!
                 self.stats.get_predicate_cardinality(*p).max(1)
             }
 
@@ -319,10 +284,8 @@ impl<'a> CostEstimator<'a> {
                 self.stats.get_object_cardinality(*o).max(1)
             }
 
-            // No bounds - full scan
             (Term::Variable(_), Term::Variable(_), Term::Variable(_)) => self.stats.total_triples,
 
-            // Patterns with QuotedTriple terms — estimate based on bound positions
             _ => {
                 let bound = [&pattern.0, &pattern.1, &pattern.2]
                     .iter()
@@ -339,7 +302,8 @@ impl<'a> CostEstimator<'a> {
         }
     }
 
-    /// Estimates a scan of `pattern` where every position `bound` pins down divides it by that position's domain size
+    /// Estimates a scan of `pattern` where every position `bound` pins down divides it by that
+    /// position's domain size
     pub fn estimate_bound_scan_cardinality(
         &self,
         pattern: &QuadPattern,
@@ -376,7 +340,7 @@ impl<'a> CostEstimator<'a> {
         (base / divisor.max(1)).max(1)
     }
 
-    /// Estimates a graph-scoped scan. Fixed graphs are capped by their direct
+    /// Estimates a graph-scoped scan
     pub fn estimate_quad_cardinality(&self, pattern: &QuadPattern) -> u64 {
         let graph_cardinality = self.graph_term_cardinality(&pattern.graph);
 
@@ -434,7 +398,6 @@ impl<'a> CostEstimator<'a> {
 
     pub(crate) fn visible_named_graphs(&self) -> Vec<GraphId> {
         match self.dataset {
-            // Use the live dataset view; statistics may be stale
             Some(dataset) => dataset.named_graphs.iter().copied().collect(),
             None => self
                 .stats
@@ -446,7 +409,7 @@ impl<'a> CostEstimator<'a> {
         }
     }
 
-    /// Returns the catalogued, visible named-graph count. Empty graphs count
+    /// Returns the catalogued, visible named-graph count
     pub fn visible_named_graph_count(&self) -> u64 {
         self.visible_named_graphs().len() as u64
     }
@@ -472,15 +435,13 @@ impl<'a> CostEstimator<'a> {
     /// Recursively estimates the selectivity of a filter expression
     fn estimate_filter_selectivity(&self, expr: &ConditionExpression) -> f64 {
         match expr {
-            ConditionExpression::Comparison(_, op, _) => {
-                match op.as_str() {
-                    "=" => 0.05,       // Equality is very selective
-                    "!=" => 0.95,      // Not equal is not very selective
-                    ">" | "<" => 0.25, // Range queries
-                    ">=" | "<=" => 0.30,
-                    _ => 0.5, // Unknown operators
-                }
-            }
+            ConditionExpression::Comparison(_, op, _) => match op.as_str() {
+                "=" => 0.05,
+                "!=" => 0.95,
+                ">" | "<" => 0.25,
+                ">=" | "<=" => 0.30,
+                _ => 0.5,
+            },
             ConditionExpression::ArithmeticComparison(_, op, _) => match op.as_str() {
                 "=" => 0.05,
                 "!=" => 0.95,
@@ -489,26 +450,20 @@ impl<'a> CostEstimator<'a> {
                 _ => 0.5,
             },
             ConditionExpression::And(left, right) => {
-                // AND is more selective - multiply selectivities
                 let left_sel = self.estimate_filter_selectivity(left);
                 let right_sel = self.estimate_filter_selectivity(right);
                 left_sel * right_sel
             }
             ConditionExpression::Or(left, right) => {
-                // OR is less selective - use formula: sel(A OR B) = sel(A) + sel(B) - sel(A)*sel(B)
                 let left_sel = self.estimate_filter_selectivity(left);
                 let right_sel = self.estimate_filter_selectivity(right);
                 left_sel + right_sel - (left_sel * right_sel)
             }
             ConditionExpression::Not(inner) => {
-                // NOT inverts selectivity
                 let inner_sel = self.estimate_filter_selectivity(inner);
                 1.0 - inner_sel
             }
-            ConditionExpression::ArithmeticExpr(_) => {
-                // Conservative estimate for arithmetic expressions
-                0.5
-            }
+            ConditionExpression::ArithmeticExpr(_) => 0.5,
             ConditionExpression::FunctionCall(func_name, _) => match func_name.as_str() {
                 "isTRIPLE" => 0.1,
                 _ => 0.5,
@@ -543,7 +498,8 @@ impl<'a> CostEstimator<'a> {
         }
     }
 
-    /// Estimates surviving rows as the cross product divided by the domain size of each shared variable
+    /// Estimates surviving rows as the cross product divided by the domain size of each shared
+    /// variable
     pub fn estimate_join_cardinality_from_patterns(
         &self,
         left_cardinality: u64,
@@ -579,7 +535,6 @@ impl<'a> CostEstimator<'a> {
         }
 
         if divisor <= 1 {
-            // No statistic for the join variable: assume one match per row on the larger side
             return left_cardinality.max(right_cardinality);
         }
 
@@ -693,7 +648,6 @@ impl<'a> CostEstimator<'a> {
             PhysicalOperator::BindJoin { left, right }
             | PhysicalOperator::HashJoin { left, right }
             | PhysicalOperator::NestedLoopJoin { left, right } => {
-                // The join algorithm does not change how many rows survive
                 let left_cardinality =
                     self.estimate_output_cardinality_in_context(left, active_graph);
                 let right_cardinality =
@@ -713,7 +667,6 @@ impl<'a> CostEstimator<'a> {
                 self.estimate_output_cardinality_in_context(input, active_graph)
             }
             PhysicalOperator::StarJoin { patterns, .. } => {
-                // The most selective pattern anchors the star, the rest filter it
                 let mut cardinalities: Vec<u64> = patterns
                     .iter()
                     .map(|p| self.estimate_cardinality(p))
@@ -725,29 +678,21 @@ impl<'a> CostEstimator<'a> {
 
                 cardinalities.sort();
 
-                // Base cardinality is the smallest (most selective) pattern
                 let base = cardinalities[0];
 
-                // Each additional pattern acts as a filter
                 let filter_factor = 0.5_f64.powi((patterns.len() - 1) as i32);
 
                 ((base as f64 * filter_factor) as u64).max(1)
             }
             PhysicalOperator::InMemoryBuffer { content, .. } => content.len() as u64,
             PhysicalOperator::Subquery { inner, .. } => {
-                // Subquery cardinality is the same as inner query
                 self.estimate_output_cardinality_in_context(inner, active_graph)
             }
             PhysicalOperator::Bind { input, .. } => {
-                // BIND doesn't change cardinality, just adds a column
                 self.estimate_output_cardinality_in_context(input, active_graph)
             }
-            PhysicalOperator::Values { values, .. } => {
-                // Cardinality is simply the number of value rows
-                values.len() as u64
-            }
+            PhysicalOperator::Values { values, .. } => values.len() as u64,
             PhysicalOperator::MLPredict { input, .. } => {
-                // ML.PREDICT doesn't change cardinality, just adds a column
                 self.estimate_output_cardinality_in_context(input, active_graph)
             }
         }
@@ -811,11 +756,6 @@ mod tests {
     use shared::terms::{Bindings, Term};
     use std::collections::HashMap;
 
-    // Removed with `count_bound_variables` in step 3: three tests covering a method
-    // the cost model never called. The estimator does not use bound-variable counts
-    // for selectivity today; when it does, the method and its tests come back
-    // together. Keeping them meant the suite reported coverage of code that never ran.
-
     fn unbound_scan(graph: GraphTerm) -> PhysicalOperator {
         PhysicalOperator::quad_table_scan(QuadPattern {
             subject: Term::Variable("?s".to_string()),
@@ -858,12 +798,11 @@ mod tests {
 
     #[test]
     fn distinct_counts_are_gathered_per_predicate() {
-        use crate::sparql_database::SparqlDatabase;
+        use crate::database::KolibrieDB;
         use shared::dataset_index::{GraphId, Quad};
 
-        let mut database = SparqlDatabase::new();
+        let mut database = KolibrieDB::new();
         let predicate = database.dictionary.write().encode("urn:p");
-        // Three subjects share one object, so subjects and objects differ
         for subject_name in ["urn:a", "urn:b", "urn:c"] {
             let subject = database.dictionary.write().encode(subject_name);
             let object = database.dictionary.write().encode("urn:shared");
@@ -886,7 +825,6 @@ mod tests {
     fn join_cardinality_divides_by_the_shared_variable_domain() {
         let stats = join_stats();
         let estimator = CostEstimator::new(&stats);
-        // ?a EDGE ?b joined with ?b EDGE ?c through ?b
         let left = [pattern(
             variable("?a"),
             Term::Constant(EDGE),
@@ -1001,7 +939,6 @@ mod tests {
             hash,
             nested
         );
-        // Both sides share ?y, so each bind-join re-entry is an indexed probe
         assert!(
             bind < hash,
             "an indexed probe should beat a build/probe pass here: bind={} hash={}",
@@ -1014,7 +951,6 @@ mod tests {
     fn cost_model_prefers_hash_join_for_a_cross_product() {
         let stats = join_stats();
         let estimator = CostEstimator::new(&stats);
-        // No shared variable: every bind-join re-entry repeats the *whole*
         let left = PhysicalOperator::quad_index_scan(pattern(
             variable("?a"),
             Term::Constant(EDGE),
@@ -1030,7 +966,6 @@ mod tests {
             estimator.estimate_cost(&PhysicalOperator::bind_join(left.clone(), right.clone()));
         let hash = estimator.estimate_cost(&PhysicalOperator::hash_join(left, right));
 
-        // `HashJoin - BindJoin` used to be non-negative for every input, so the bind join always won
         assert!(
             hash < bind,
             "a cross product must not re-read the right side per row: hash={} bind={}",
@@ -1045,7 +980,6 @@ mod tests {
         let estimator = CostEstimator::new(&stats);
         let scanned = pattern(variable("?x"), Term::Constant(EDGE), variable("?y"));
 
-        // `TableScan` and `IndexScan` dispatch to the same executor function
         assert_eq!(
             estimator.estimate_cost(&PhysicalOperator::quad_table_scan(scanned.clone())),
             estimator.estimate_cost(&PhysicalOperator::quad_index_scan(scanned)),
@@ -1058,7 +992,6 @@ mod tests {
         let estimator = CostEstimator::new(&stats);
         let ground = pattern(Term::Constant(1), Term::Constant(EDGE), Term::Constant(2));
 
-        // Cardinality already accounts for boundness; discounting a second time
         assert!(
             estimator.estimate_cost(&PhysicalOperator::quad_index_scan(ground)) > 0,
             "a ground scan still has to probe the index"
@@ -1085,7 +1018,6 @@ mod tests {
         let input_cost = estimator.estimate_cost(&input);
         let filtered = estimator.estimate_cost(&PhysicalOperator::filter(input, condition));
 
-        // Selectivity reduces how many rows survive, not how much work was done
         assert!(
             filtered >= input_cost,
             "filtering added work: input={} filtered={}",
@@ -1101,7 +1033,6 @@ mod tests {
         let content: Bindings = vec![HashMap::new(), HashMap::new(), HashMap::new()].into();
         let buffer = PhysicalOperator::buffer(content, "test".to_string());
 
-        // A buffer reporting zero rows makes every join above it estimate an empty result
         assert_eq!(estimator.estimate_output_cardinality(&buffer), 3);
     }
 
@@ -1113,7 +1044,6 @@ mod tests {
         let estimator = CostEstimator::new(&stats);
 
         let inner = unbound_scan(GraphTerm::Default);
-        // Graph 42 does not exist, so nothing under it can be read. The cost
         let scoped = PhysicalOperator::graph(inner, GraphTerm::Named(42));
 
         assert_eq!(estimator.estimate_output_cardinality(&scoped), 0);
@@ -1129,7 +1059,6 @@ mod tests {
         stats.graph_cardinalities.insert(GraphId::Named(10), 7);
         stats.graph_cardinalities.insert(GraphId::Named(20), 0);
 
-        // FROM <10> creates a seven-row query default. FROM NAMED <20>
         let dataset = DatasetView::new([GraphId::Named(10)], [GraphId::Named(20)]);
         let estimator = CostEstimator::with_dataset(&stats, &dataset);
 

@@ -11,10 +11,10 @@
 mod common;
 
 use common::{query, rows1, rows2};
-use kolibrie::sparql_database::SparqlDatabase;
+use kolibrie::database::KolibrieDB;
 
 /// Two departments, four employees, with a repeated salary so that grouping
-fn staff() -> SparqlDatabase {
+fn staff() -> KolibrieDB {
     common::database_with(
         r#"<urn:e1> <urn:dept> <urn:sales> .
 <urn:e1> <urn:salary> 100 .
@@ -33,12 +33,9 @@ fn staff() -> SparqlDatabase {
 
 const STAFF_PATTERN: &str = "?e <urn:dept> ?d . ?e <urn:salary> ?salary . ?e <urn:name> ?name";
 
-// ---------------------------------------------------------------------------
-
 #[test]
 fn a_non_grouped_variable_is_not_carried_out_of_the_group() {
     let mut database = staff();
-    // `?name` is neither a grouping key nor an aggregate, so it has no value
     assert_eq!(
         query(
             &mut database,
@@ -69,7 +66,6 @@ fn the_grouping_key_is_carried_out_of_the_group() {
 #[test]
 fn duplicate_values_still_contribute_to_the_aggregate() {
     let mut database = staff();
-    // Sales holds 100, 200 and 100; a set-based sum would report 300
     assert_eq!(
         query(
             &mut database,
@@ -100,7 +96,6 @@ fn count_reports_the_group_size() {
 #[test]
 fn each_group_aggregates_only_its_own_rows() {
     let mut database = staff();
-    // Sales holds 100, 200 and 100; engineering holds 500 alone
     assert_eq!(
         query(
             &mut database,
@@ -131,8 +126,6 @@ fn averaging_uses_every_row_in_the_group() {
     );
 }
 
-// ---------------------------------------------------------------------------
-
 #[test]
 fn min_over_numbers_compares_numerically() {
     let mut database = staff();
@@ -160,7 +153,6 @@ fn max_over_numbers_compares_numerically() {
 #[test]
 fn min_over_non_numeric_terms_returns_the_smallest_term() {
     let mut database = staff();
-    // Discarding every non-numeric term left this aggregate with no value
     assert_eq!(
         query(
             &mut database,
@@ -182,12 +174,9 @@ fn max_over_non_numeric_terms_returns_the_largest_term() {
     );
 }
 
-// ---------------------------------------------------------------------------
-
 #[test]
 fn summing_an_empty_pattern_yields_one_row_holding_zero() {
     let mut database = staff();
-    // An ungrouped aggregate over no solutions is still one solution
     assert_eq!(
         query(
             &mut database,
@@ -220,8 +209,6 @@ fn grouping_an_empty_pattern_yields_no_rows() {
         Vec::<Vec<String>>::new()
     );
 }
-
-// ---------------------------------------------------------------------------
 
 #[test]
 fn a_subquery_group_carries_only_its_key_and_aggregates() {

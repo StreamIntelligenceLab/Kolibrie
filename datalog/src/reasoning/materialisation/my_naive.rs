@@ -1,8 +1,4 @@
-//! Naive forward chaining: every rule against every fact, every round.
-//!
-//! Re-derives everything it already knows on each pass, so it is the slowest
-//! strategy and the one whose result is easiest to trust. Kept as a reference for
-//! the others.
+//! Naive forward chaining: every rule against every fact, every round
 
 use crate::reasoning::materialisation::infer_generic::{InferenceStrategy, SolutionMapping};
 use crate::reasoning::materialisation::replace_variables_with_bound_values;
@@ -17,7 +13,6 @@ pub(crate) struct NaiveStrategy;
 
 impl NaiveStrategy {
     /// Convert rule evaluation to use the optimized hash join
-    /// Optimised hash-join: return early when build map is empty (see for loop)
     fn find_premise_solutions(
         &mut self,
         dict: &Dictionary,
@@ -28,10 +23,8 @@ impl NaiveStrategy {
             return Vec::new();
         }
 
-        // Initialise current bindings to an empty vector
         let mut cur_binding_set = vec![BTreeMap::new()];
 
-        // Process each premise with the build hash-table using the optimized join
         for premise in &rule.premise {
             cur_binding_set =
                 join_premise_with_hash_join(premise, all_facts, cur_binding_set, dict);
@@ -40,7 +33,6 @@ impl NaiveStrategy {
             }
         }
 
-        // Convert results back to HashMap<String, u32>
         cur_binding_set
             .into_iter()
             .map(|binding| convert_string_binding_to_u32(&binding, dict))
@@ -56,19 +48,13 @@ impl InferenceStrategy for NaiveStrategy {
         all_facts: &Vec<Triple>,
         known_facts: &HashSet<Triple>,
     ) -> HashSet<Triple> {
-        // Also HashSet to prevent duplicate triples from being added this round
         let mut inferred_facts_this_round: HashSet<Triple> = HashSet::new();
 
-        // Loop over each rule
         for rule in rules {
-            // These are all bindings such that the premise is satisfied for the given rule
             let binding_sets = self.find_premise_solutions(dictionary, rule, all_facts);
 
-            // For each binding that satisfies the premises of the rule, get to the conclusion and apply bindings
             for binding_set in &binding_sets {
                 if evaluate_filters(&binding_set, &rule.filters, dictionary) {
-                    // Loop over each conclusion of the rule, since for the current binding,
-                    // the conclusions of the rule can be inferred (because premises are met)
                     for conclusion in &rule.conclusion {
                         let inferred_fact = replace_variables_with_bound_values(
                             conclusion,
@@ -89,11 +75,8 @@ impl InferenceStrategy for NaiveStrategy {
 }
 
 impl Reasoner {
-    /// Derives every entailed fact by naive forward chaining, returning the new
-    /// ones and leaving them in [`dataset_index`](Reasoner::dataset_index).
-    ///
-    /// Prefer [`infer_new_facts_semi_naive`](Reasoner::infer_new_facts_semi_naive)
-    /// unless the point is to check it against something.
+    /// Derives every entailed fact by naive forward chaining, returning the new ones and leaving
+    /// them in [`dataset_index`](Reasoner::dataset_index)
     pub fn infer_new_facts_naive(&mut self) -> Vec<Triple> {
         self.infer_with_strategy(NaiveStrategy)
     }

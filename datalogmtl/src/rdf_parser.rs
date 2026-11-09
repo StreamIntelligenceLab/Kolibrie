@@ -8,68 +8,8 @@
  * you can obtain one at https://mozilla.org/MPL/2.0/.
  */
 
-//! Parser for **RDF triple-pattern** DatalogMTL syntax — the counterpart to
-//! [`crate::parser`], which reads MeTeoR's `Pred(args)` syntax.
-//!
-//! Use this one whenever rules must line up with real RDF data: predicates and
-//! constants are IRIs interned into the caller's [`Dictionary`], so the ids match
-//! facts produced elsewhere. (The MeTeoR parser interns the bare functor, so
-//! `inZone(D,Z)` yields a different id than `<http://…/inZone>` and silently
-//! matches nothing.)
-//!
-//! # Rules
-//!
-//! ```text
-//! PREFIX dront: <http://example.org/dront/>
-//!
-//! [sustainedGeofenceViolation]
-//! (?d, dront:violatedZone, ?z) :-
-//!     Box[0,30](?d, dront:inZone, ?z),
-//!     (?z, dront:status, dront:Restricted).
-//! ```
-//!
-//! Rules are terminated by a `.` at depth 0 and may span lines. An optional
-//! `[label]` before the head becomes the rule id (otherwise the rule index is
-//! used). Operators: `Diamond`/`Diamondminus`, `Box`/`Boxminus`, `Prev`, and
-//! `Since[a,b](phi, psi)`; in [`Mode::Static`] also `Diamondplus`, `Boxplus` and
-//! `Until[a,b](phi, psi)`. Operators stack: `Box[0,5]Diamond[0,2](?x, :p, ?y)`.
-//!
-//! # Stream shapes
-//!
-//! ```text
-//! STREAM <http://utm.example.org/telemetry>
-//!     PATTERN (?obs, rdf:type, sosa:Observation)
-//!             (?obs, sosa:madeBySensor, ?drone)
-//!     KEY ?drone
-//!     STALENESS 10
-//!     EXPIRY (?drone, utm:channelStatus, utm:expired)
-//! .
-//! ```
-//!
-//! Keywords are case-sensitive and blocks are separated by a depth-0 `.`.
-//! `STREAM` and `PATTERN` are required; `KEY` defaults to empty and `STALENESS`
-//! to `0`. The unit of `STALENESS` is whatever unit the caller's timestamps use.
-//!
-//! `EXPIRY` declares facts transmitted on behalf of a channel that has gone
-//! stale — silence is not itself an event, so without it a rule has nothing to
-//! observe when a source stops reporting. Only `KEY` variables may appear there,
-//! since the key binding is all that is still known about an expired channel.
-//! See [`crate::stream::ShapeIngester::expiry_facts`].
-//!
-//! # Terms
-//!
-//! | Form | Meaning |
-//! |---|---|
-//! | `?x` | variable |
-//! | `<http://…>` | IRI constant (brackets stripped before interning) |
-//! | `pfx:local` | IRI constant, expanded against a `PREFIX` declaration |
-//! | `:name` | with no empty `PREFIX` declared, interned verbatim as `":name"` |
-//! | `"lit"` | literal constant, interned with its quotes |
-//!
-//! `PREFIX` declarations are per text blob — rules and stream shapes are parsed
-//! independently, so each must declare the prefixes it uses. Anything inside
-//! `<…>` or `"…"` is opaque to the scanner, so `#` in an IRI fragment is not
-//! mistaken for a comment and `.` in a host name does not terminate a block.
+//! Parser for **RDF triple-pattern** DatalogMTL syntax — the counterpart to [`crate::parser`],
+//! which reads MeTeoR's `Pred(args)` syntax
 
 use std::collections::HashMap;
 
@@ -81,12 +21,10 @@ use crate::stream::{StalenessPolicy, StreamShape};
 use crate::syntax::{DatalogMTLRule, Interval, Mode, TemporalAtom};
 use shared::term_encoder::SharedTerms;
 
-/// Prefix label (without the trailing `:`) → IRI namespace.
+/// Prefix label (without the trailing `:`) → IRI namespace
 type PrefixMap = HashMap<String, String>;
 
-// ── Public API ────────────────────────────────────────────────────────────────
-
-/// Parse a rule program. `dict` receives every IRI/literal encountered.
+/// Parse a rule program
 pub fn parse_rules(
     text: &str,
     dict: &mut Dictionary,
@@ -103,8 +41,6 @@ pub fn parse_rules(
             continue;
         }
 
-        // Optional `[label]` before the head becomes the rule id. A head always
-        // starts with `(` or a term, so a leading `[` is unambiguous.
         let (label, rule_str) = split_label(rule_str)?;
         let rule_str = rule_str.trim();
 
@@ -131,7 +67,7 @@ pub fn parse_rules(
     Ok(rules)
 }
 
-/// Parse `STREAM`/`PATTERN`/`KEY`/`STALENESS` blocks into stream shapes.
+/// Parse `STREAM`/`PATTERN`/`KEY`/`STALENESS` blocks into stream shapes
 pub fn parse_stream_shapes(text: &str, dict: &mut Dictionary) -> Result<Vec<StreamShape>, String> {
     let (prefixes, cleaned) = extract_prefixes(text)?;
 
@@ -144,7 +80,6 @@ pub fn parse_stream_shapes(text: &str, dict: &mut Dictionary) -> Result<Vec<Stre
             continue;
         }
 
-        // Find positions of each keyword and sort
         let kws = ["STREAM", "PATTERN", "KEY", "STALENESS", "EXPIRY"];
         let mut kw_positions: Vec<(&str, usize)> = kws
             .iter()
@@ -152,7 +87,6 @@ pub fn parse_stream_shapes(text: &str, dict: &mut Dictionary) -> Result<Vec<Stre
             .collect();
         kw_positions.sort_by_key(|(_, pos)| *pos);
 
-        // Build keyword → content map (text from end-of-keyword to start-of-next-keyword)
         let mut sections: HashMap<&str, String> = HashMap::new();
         for i in 0..kw_positions.len() {
             let (kw, kw_pos) = kw_positions[i];
@@ -165,7 +99,6 @@ pub fn parse_stream_shapes(text: &str, dict: &mut Dictionary) -> Result<Vec<Stre
             sections.insert(kw, block[content_start..content_end].trim().to_string());
         }
 
-        // STREAM: first whitespace-delimited token is the IRI
         let stream_raw = sections
             .get("STREAM")
             .ok_or_else(|| format!("Shape block {}: missing STREAM keyword", bi))?;
@@ -175,7 +108,6 @@ pub fn parse_stream_shapes(text: &str, dict: &mut Dictionary) -> Result<Vec<Stre
             .ok_or_else(|| format!("Shape block {}: empty STREAM value", bi))?;
         let stream_iri = expand_iri_text(stream_iri_raw, &prefixes);
 
-        // PATTERN: collect all (…,…,…) groups
         let pattern_text = sections.get("PATTERN").cloned().unwrap_or_default();
         if pattern_text.trim().is_empty() {
             return Err(format!("Shape '{}': missing PATTERN section", stream_iri));
@@ -188,7 +120,6 @@ pub fn parse_stream_shapes(text: &str, dict: &mut Dictionary) -> Result<Vec<Stre
             ));
         }
 
-        // KEY: collect ?var tokens
         let key_text = sections.get("KEY").cloned().unwrap_or_default();
         let channel_key: Vec<String> = key_text
             .split_whitespace()
@@ -196,9 +127,6 @@ pub fn parse_stream_shapes(text: &str, dict: &mut Dictionary) -> Result<Vec<Stre
             .map(|s| s[1..].to_string())
             .collect();
 
-        // EXPIRY: facts transmitted while the channel is stale. Only key
-        // variables can be instantiated once a reading has expired, so reject
-        // anything else here rather than silently emitting nothing.
         let expiry_text = sections.get("EXPIRY").cloned().unwrap_or_default();
         let on_expiry = parse_pattern_group(&expiry_text, dict, &prefixes)?;
         for pattern in &on_expiry {
@@ -215,7 +143,6 @@ pub fn parse_stream_shapes(text: &str, dict: &mut Dictionary) -> Result<Vec<Stre
             }
         }
 
-        // STALENESS: first token parsed as u64
         let staleness_text = sections.get("STALENESS").cloned().unwrap_or_default();
         let max_gap_ms = staleness_text
             .split_whitespace()
@@ -235,18 +162,7 @@ pub fn parse_stream_shapes(text: &str, dict: &mut Dictionary) -> Result<Vec<Stre
     Ok(shapes)
 }
 
-/// Parse ground facts written as **N-Triples**:
-///
-/// ```text
-/// <http://utm.example.org/zone/hospital> <http://example.org/dront/status> <http://example.org/dront/Restricted> .
-/// ```
-///
-/// Terms are whitespace-separated and the statement is `.`-terminated, so this
-/// accepts N-Triples as produced by any RDF tool. `PREFIX` lines and the
-/// resulting prefixed names are also accepted as a convenience, though using
-/// them means the text is no longer strictly N-Triples.
-///
-/// Variables are rejected — a fact has nothing to bind them from.
+/// Parse ground facts written as **N-Triples**
 pub fn parse_facts(text: &str, dict: &mut Dictionary) -> Result<Vec<Triple>, String> {
     let (prefixes, cleaned) = extract_prefixes(text)?;
     let mut facts = Vec::new();
@@ -277,11 +193,7 @@ pub fn parse_facts(text: &str, dict: &mut Dictionary) -> Result<Vec<Triple>, Str
     Ok(facts)
 }
 
-/// Split one N-Triples statement into its terms.
-///
-/// Not a plain whitespace split: `<…>` and `"…"` are read as single units, so an
-/// IRI or a literal containing spaces stays intact. Anything trailing a closing
-/// quote (`@en`, `^^<…>`) is kept with the literal.
+/// Split one N-Triples statement into its terms
 fn split_ntriples_terms(stmt: &str) -> Vec<String> {
     let mut terms = Vec::new();
     let chars: Vec<char> = stmt.chars().collect();
@@ -298,19 +210,18 @@ fn split_ntriples_terms(stmt: &str) -> Vec<String> {
                 while i < chars.len() && chars[i] != '>' {
                     i += 1;
                 }
-                i = (i + 1).min(chars.len()); // include '>'
+                i = (i + 1).min(chars.len());
             }
             '"' => {
                 i += 1;
                 while i < chars.len() {
                     match chars[i] {
-                        '\\' => i += 2, // escaped char, including \"
+                        '\\' => i += 2,
                         '"' => break,
                         _ => i += 1,
                     }
                 }
-                i = (i + 1).min(chars.len()); // include closing quote
-                                              // Keep a language tag or datatype suffix with the literal.
+                i = (i + 1).min(chars.len());
                 while i < chars.len() && !chars[i].is_whitespace() {
                     if chars[i] == '<' {
                         while i < chars.len() && chars[i] != '>' {
@@ -345,16 +256,13 @@ fn ground_term(term: &Term, index: usize, position: &str) -> Result<u32, String>
     }
 }
 
-/// [`parse_facts`] for callers holding a shared dictionary.
-///
-/// Takes the write lock for the whole parse — never call it while already
-/// holding a lock on the same dictionary.
+/// [`parse_facts`] for callers holding a shared dictionary
 pub fn parse_facts_shared(text: &str, dict: &SharedTerms) -> Result<Vec<Triple>, String> {
     dict.try_with_terms(|guard| parse_facts(text, guard))
         .map_err(|_| "dictionary lock poisoned".to_string())?
 }
 
-/// Parse a bare `start,end` interval body (the text between `[` and `]`).
+/// Parse a bare `start,end` interval body (the text between `[` and `]`)
 pub fn parse_interval(s: &str) -> Result<Interval, String> {
     let parts: Vec<&str> = s.splitn(2, ',').collect();
     if parts.len() != 2 {
@@ -371,10 +279,7 @@ pub fn parse_interval(s: &str) -> Result<Interval, String> {
     Ok(Interval { start, end })
 }
 
-/// [`parse_rules`] for callers holding a shared dictionary.
-///
-/// Takes the write lock for the whole parse — never call it while already
-/// holding a lock on the same dictionary.
+/// [`parse_rules`] for callers holding a shared dictionary
 pub fn parse_rules_shared(
     text: &str,
     dict: &SharedTerms,
@@ -384,10 +289,7 @@ pub fn parse_rules_shared(
         .map_err(|_| "dictionary lock poisoned".to_string())?
 }
 
-/// [`parse_stream_shapes`] for callers holding a shared dictionary.
-///
-/// Takes the write lock for the whole parse — never call it while already
-/// holding a lock on the same dictionary.
+/// [`parse_stream_shapes`] for callers holding a shared dictionary
 pub fn parse_stream_shapes_shared(
     text: &str,
     dict: &SharedTerms,
@@ -396,10 +298,7 @@ pub fn parse_stream_shapes_shared(
         .map_err(|_| "dictionary lock poisoned".to_string())?
 }
 
-// ── Comment stripping and PREFIX extraction ───────────────────────────────────
-
-/// Strip a `#` line comment. `#` inside `<…>` or `"…"` is content, not a
-/// comment — without this, `<http://…/22-rdf-syntax-ns#type>` loses its fragment.
+/// Strip a `#` line comment
 fn strip_comment(line: &str) -> &str {
     let bytes = line.as_bytes();
     let mut in_iri = false;
@@ -416,10 +315,7 @@ fn strip_comment(line: &str) -> &str {
     line
 }
 
-/// Pull `PREFIX name: <iri>` declarations off the top of a blob, returning the
-/// map and the remaining text joined into one line for depth-0 splitting.
-///
-/// A declaration must sit on its own line; everything else is passed through.
+/// Splits the `PREFIX name: <iri>` declarations off the top of a blob
 fn extract_prefixes(text: &str) -> Result<(PrefixMap, String), String> {
     let mut prefixes = PrefixMap::new();
     let mut body = Vec::new();
@@ -442,7 +338,7 @@ fn extract_prefixes(text: &str) -> Result<(PrefixMap, String), String> {
     Ok((prefixes, body.join(" ")))
 }
 
-/// `rest` is everything after the `PREFIX` keyword: `name: <iri>`.
+/// `rest` is everything after the `PREFIX` keyword: `name: <iri>`
 fn parse_prefix_decl(rest: &str) -> Result<(String, String), String> {
     let rest = rest.trim();
     let colon = rest
@@ -459,7 +355,7 @@ fn parse_prefix_decl(rest: &str) -> Result<(String, String), String> {
     Ok((name, iri_part[1..iri_part.len() - 1].to_string()))
 }
 
-/// If `s` starts with `word` as a whole word, return the remainder.
+/// If `s` starts with `word` as a whole word, return the remainder
 fn strip_keyword<'a>(s: &'a str, word: &str) -> Option<&'a str> {
     let rest = s.strip_prefix(word)?;
     match rest.chars().next() {
@@ -469,7 +365,7 @@ fn strip_keyword<'a>(s: &'a str, word: &str) -> Option<&'a str> {
     }
 }
 
-/// Split a leading `[label]` off a rule, returning `(label, remainder)`.
+/// Split a leading `[label]` off a rule, returning `(label, remainder)`
 fn split_label(rule_str: &str) -> Result<(Option<String>, &str), String> {
     if !rule_str.starts_with('[') {
         return Ok((None, rule_str));
@@ -484,12 +380,7 @@ fn split_label(rule_str: &str) -> Result<(Option<String>, &str), String> {
     Ok((Some(label), &rule_str[close + 1..]))
 }
 
-// ── Scanning helpers (aware of `<…>` and `"…"`) ───────────────────────────────
-
-/// Split on `sep` at paren/bracket depth 0, treating `<…>` and `"…"` as opaque.
-///
-/// The opacity matters: a dotted host name in `<http://utm.example.org/…>` must
-/// not terminate a block when splitting on `.`.
+/// Split on `sep` at paren/bracket depth 0, treating `<…>` and `"…"` as opaque
 fn split_at_depth0(s: &str, sep: char) -> Vec<String> {
     let mut parts = Vec::new();
     let mut current = String::new();
@@ -544,7 +435,7 @@ fn split_at_depth0(s: &str, sep: char) -> Vec<String> {
     parts
 }
 
-/// Find the byte offset of `:-` at depth 0, outside `<…>` and `"…"`.
+/// Find the byte offset of `:-` at depth 0, outside `<…>` and `"…"`
 fn find_rule_sep(s: &str) -> Option<usize> {
     let bytes = s.as_bytes();
     let mut depth: i32 = 0;
@@ -583,7 +474,7 @@ fn find_rule_sep(s: &str) -> Option<usize> {
     None
 }
 
-/// Find `word` as a whole word, ignoring occurrences inside `<…>` or `"…"`.
+/// Find `word` as a whole word, ignoring occurrences inside `<…>` or `"…"`
 fn find_whole_word(text: &str, word: &str) -> Option<usize> {
     let wlen = word.len();
     let tbytes = text.as_bytes();
@@ -636,9 +527,7 @@ fn find_whole_word(text: &str, word: &str) -> Option<usize> {
     None
 }
 
-// ── Terms and atoms ───────────────────────────────────────────────────────────
-
-/// Resolve an IRI written as `<iri>`, `pfx:local`, or a bare token.
+/// Resolve an IRI written as `<iri>`, `pfx:local`, or a bare token
 fn expand_iri_text(raw: &str, prefixes: &PrefixMap) -> String {
     if raw.starts_with('<') && raw.ends_with('>') && raw.len() >= 2 {
         return raw[1..raw.len() - 1].to_string();
@@ -658,10 +547,8 @@ fn parse_term(s: &str, dict: &mut Dictionary, prefixes: &PrefixMap) -> Result<Te
     } else if s.starts_with('<') && s.ends_with('>') && s.len() >= 2 {
         Ok(Term::Constant(dict.encode(&s[1..s.len() - 1])))
     } else if s.starts_with('"') {
-        // literal kept with quotes
         Ok(Term::Constant(dict.encode(s)))
     } else if s.starts_with("_:") {
-        // N-Triples blank node, interned verbatim — `_` is not a prefix.
         Ok(Term::Constant(dict.encode(s)))
     } else if let Some(colon) = s.find(':') {
         let prefix = &s[..colon];
@@ -671,7 +558,6 @@ fn parse_term(s: &str, dict: &mut Dictionary, prefixes: &PrefixMap) -> Result<Te
                 base,
                 &s[colon + 1..]
             )))),
-            // ":name" with no empty prefix declared is interned verbatim.
             None if prefix.is_empty() => Ok(Term::Constant(dict.encode(s))),
             None => Err(format!(
                 "Unknown prefix '{}:' in term '{}' — declare it with `PREFIX {}: <...>`",
@@ -683,7 +569,7 @@ fn parse_term(s: &str, dict: &mut Dictionary, prefixes: &PrefixMap) -> Result<Te
     }
 }
 
-/// Every operator keyword that can introduce an atom.
+/// Every operator keyword that can introduce an atom
 const OP_KEYWORDS: [&str; 9] = [
     "Diamondminus",
     "Diamond",
@@ -697,11 +583,6 @@ const OP_KEYWORDS: [&str; 9] = [
 ];
 
 /// Does this depth-0 fragment look like a nested ATOM rather than a bare term?
-///
-/// Used to tell `((a,b,c), (d,e,f))` — a conjunction — from `(a,b,c)`, a single
-/// triple pattern whose parts are terms. Matching operator keywords exactly
-/// (rather than sniffing for brackets) keeps a literal like `"a[b]"` from being
-/// mistaken for an operator.
 fn looks_like_atom(part: &str) -> bool {
     let p = part.trim();
     p.starts_with('(')
@@ -710,8 +591,7 @@ fn looks_like_atom(part: &str) -> bool {
             .any(|k| p.strip_prefix(k).is_some_and(|rest| rest.starts_with('[')))
 }
 
-/// Parse every balanced `(…)` group in a section into triple patterns.
-/// Shared by the `PATTERN` and `EXPIRY` sections of a shape block.
+/// Parse every balanced `(…)` group in a section into triple patterns
 fn parse_pattern_group(
     text: &str,
     dict: &mut Dictionary,
@@ -777,8 +657,6 @@ fn parse_temporal_atom(
     if s.starts_with('(') {
         if s.ends_with(')') {
             let parts = split_at_depth0(&s[1..s.len() - 1], ',');
-            // `((a,b,c), (d,e,f))` is a conjunction under an operator; `(a,b,c)`
-            // is a single pattern, whose depth-0 parts are bare terms.
             if parts.len() >= 2 && parts.iter().all(|p| looks_like_atom(p)) {
                 let mut atoms = Vec::new();
                 for part in &parts {
@@ -786,15 +664,12 @@ fn parse_temporal_atom(
                 }
                 return Ok(TemporalAtom::Conj(atoms));
             }
-            // Redundant grouping parens around one atom, as in
-            // `Diamond[0,10](Box[1,11](...))`. Unwrap and recurse.
             if parts.len() == 1 && looks_like_atom(&parts[0]) {
                 return parse_temporal_atom(parts[0].trim(), dict, prefixes, mode);
             }
         }
         return Ok(TemporalAtom::Base(parse_triple_pattern(s, dict, prefixes)?));
     }
-    // Past operators (`Diamond`≡`Diamondminus`, `Box`≡`Boxminus`).
     for (kw, kind) in [
         ("Diamondminus[", "Diamond"),
         ("Diamond[", "Diamond"),
@@ -809,7 +684,6 @@ fn parse_temporal_atom(
     if let Some(rest) = s.strip_prefix("Since[") {
         return parse_binary_atom(rest, dict, prefixes, mode, "Since");
     }
-    // Future operators — static data only.
     for (kw, kind) in [("Diamondplus[", "Diamondplus"), ("Boxplus[", "Boxplus")] {
         if let Some(rest) = s.strip_prefix(kw) {
             require_static(mode, kind)?;
@@ -857,7 +731,7 @@ fn parse_interval_atom(
     }
 }
 
-/// Binary operator `Kind[a,b](phi, psi)` — `Since` (past) or `Until` (future).
+/// Binary operator `Kind[a,b](phi, psi)` — `Since` (past) or `Until` (future)
 fn parse_binary_atom(
     rest: &str,
     dict: &mut Dictionary,

@@ -12,8 +12,8 @@ extern crate criterion;
 extern crate kolibrie;
 
 use criterion::*;
+use kolibrie::database::KolibrieDB;
 use kolibrie::execute_query::{execute, execute_sparql_update};
-use kolibrie::sparql_database::SparqlDatabase;
 
 const SUBJECTS: usize = 20_000;
 const NAMED_GRAPHS: usize = 4;
@@ -23,8 +23,8 @@ const REGIONS: usize = 10;
 const EX: &str = "http://example.org/";
 
 /// Builds the fixture: salary and department in the default graph, region
-fn setup_database() -> SparqlDatabase {
-    let mut database = SparqlDatabase::new();
+fn setup_database() -> KolibrieDB {
+    let mut database = KolibrieDB::new();
 
     let mut default_graph = String::with_capacity(SUBJECTS * 160);
     for i in 0..SUBJECTS {
@@ -63,7 +63,7 @@ const GRAPH_VARIABLE_SCAN: &str = r#"
 SELECT ?s ?r
 WHERE { GRAPH ?g { ?s <http://example.org/region> ?r } }"#;
 
-/// Scans a single named graph with no graph variable to bind. The seed row
+/// Scans a single named graph with no graph variable to bind
 const GRAPH_FIXED_SCAN: &str = r#"
 SELECT ?s ?r
 WHERE { GRAPH <http://example.org/g0> { ?s <http://example.org/region> ?r } }"#;
@@ -95,11 +95,7 @@ WHERE {
     ?s <http://example.org/dept> ?d
 }"#;
 
-/// A projection whose values repeat: 20,000 solutions over 50 distinct departments.
-///
-/// The counterpart to `join_two_patterns`, whose columns are a distinct IRI and a
-/// near-distinct literal per row. Grouping columns, rdf:type and graph names all have
-/// this shape, and it is the case where storing each value once can pay.
+/// A projection whose values repeat: 20,000 solutions over 50 distinct departments
 const LOW_CARDINALITY_PROJECTION: &str = r#"
 SELECT ?d
 WHERE {
@@ -130,12 +126,6 @@ fn hot_paths(c: &mut Criterion) {
         });
     }
 
-    // The same queries read through the borrowing API instead of `into_rows`.
-    //
-    // `into_rows` materialises an owned String per cell whatever the result holds
-    // internally, so it cannot show a difference between owning the values and
-    // referring to them. `iter` and `get` return `&str`, so these arms are the ones
-    // a representation change can move.
     for (name, sparql) in [
         ("borrowed_read/join_two_patterns", JOIN_TWO_PATTERNS),
         (

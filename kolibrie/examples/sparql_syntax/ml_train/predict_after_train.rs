@@ -8,8 +8,8 @@
  * you can obtain one at https://mozilla.org/MPL/2.0/.
  */
 
+use kolibrie::database::KolibrieDB;
 use kolibrie::ml::neural_relations::execute_neural_program;
-use kolibrie::sparql_database::SparqlDatabase;
 
 fn tmp_model_path(name: &str) -> String {
     let nanos = std::time::SystemTime::now()
@@ -25,7 +25,7 @@ fn tmp_model_path(name: &str) -> String {
 }
 
 fn main() {
-    let mut database = SparqlDatabase::with_ml_context(local_ml::trusted_context());
+    let mut database = KolibrieDB::with_ml_context(local_ml::trusted_context());
 
     for (sample, label, x0, x1, x2) in [
         ("s0", "A", "1", "0", "0"),

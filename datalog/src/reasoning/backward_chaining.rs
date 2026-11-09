@@ -1,15 +1,4 @@
-//! Goal-directed evaluation: proving one query without materialising everything.
-//!
-//! Unification works over [`Term`] rather than over dictionary
-//! ids alone, because a goal can carry unbound variables where a fact never does.
-//! Quoted triples unify component-wise.
-//!
-//! # Depth limit
-//!
-//! There is no loop check. Recursion is bounded by a hard-coded depth of 10, and
-//! exceeding it yields no bindings, which is indistinguishable from the goal having
-//! no proof. A recursive rule set deeper than that silently answers nothing, so
-//! forward chaining is the safer choice when the rules are known to recurse.
+//! Goal-directed evaluation: proving one query without materialising everything
 
 use crate::reasoning::Reasoner;
 use shared::rule::Rule;
@@ -53,7 +42,6 @@ fn unify_terms(term1: &Term, term2: &Term, bindings: &mut HashMap<String, Term>)
             }
             true
         }
-        // QuotedTriple terms unify if their components unify
         (Term::QuotedTriple(qt1), Term::QuotedTriple(qt2)) => {
             unify_terms(&qt1.0, &qt2.0, bindings)
                 && unify_terms(&qt1.1, &qt2.1, bindings)
@@ -68,12 +56,7 @@ fn unify_terms(term1: &Term, term2: &Term, bindings: &mut HashMap<String, Term>)
     }
 }
 
-/// Follows a variable through the binding chain to whatever it ultimately stands for.
-///
-/// Chains, because unification can bind one variable to another: resolving `?x`
-/// where `?x` is bound to `?y` and `?y` to a constant yields the constant. An
-/// unbound variable resolves to itself, so the result is a `Term` and not an
-/// `Option`.
+/// Follows a variable through the binding chain to whatever it ultimately stands for
 pub fn resolve_term<'a>(term: &'a Term, bindings: &'a HashMap<String, Term>) -> Term {
     match term {
         Term::Variable(v) => {
@@ -122,7 +105,6 @@ fn rename_rule_variables(rule: &Rule, counter: &mut usize) -> Rule {
     ) -> Term {
         match term {
             Term::Variable(v) => {
-                // If a variable mapping already exists (e.g. ?person -> v0) then just clone that name
                 if let Some(new_v) = var_map.get(v) {
                     Term::Variable(new_v.clone())
                 } else {
@@ -166,14 +148,14 @@ fn rename_rule_variables(rule: &Rule, counter: &mut usize) -> Rule {
 }
 
 impl Reasoner {
-    /// Returns all variable bindings that satisfy `query` via backward chaining.
+    /// Returns all variable bindings that satisfy `query` via backward chaining
     pub fn backward_chaining(&self, query: &TriplePattern) -> Vec<HashMap<String, Term>> {
         let bindings = HashMap::new();
         let mut variable_counter = 0;
         self.backward_chaining_helper(query, &bindings, 0, &mut variable_counter)
     }
 
-    /// Recursive helper for backward chaining. Depth-limited to prevent infinite loops.
+    /// Recursive helper for backward chaining
     fn backward_chaining_helper(
         &self,
         query: &TriplePattern,
@@ -197,11 +179,9 @@ impl Reasoner {
             }
         }
 
-        // Match with rules
         for rule in &self.rules {
             let renamed_rule = rename_rule_variables(rule, variable_counter);
 
-            // Try to unify with each conclusion in the rule
             for conclusion in &renamed_rule.conclusion {
                 if let Some(rb) = unify_patterns(conclusion, &substituted, bindings) {
                     let mut premise_results = vec![rb.clone()];

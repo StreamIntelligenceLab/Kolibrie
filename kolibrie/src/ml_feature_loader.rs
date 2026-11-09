@@ -8,12 +8,7 @@
  * you can obtain one at https://mozilla.org/MPL/2.0/.
  */
 
-//! Turning RDF terms into the numbers a model consumes.
-//!
-//! Pure conversion, and deliberately nothing else. Loading the rows to convert needs
-//! to run a query, which is a layer above this one, so
-//! [`query_training_rows`](crate::execute_query::query_training_rows) lives there and
-//! this module depends on nothing in the crate.
+//! Turning RDF terms into the numbers a model consumes
 
 use std::error::Error;
 
@@ -23,7 +18,6 @@ use std::collections::HashMap;
 pub(crate) type RdfTerm = String;
 type LoaderResult<T> = Result<T, Box<dyn Error>>;
 
-// Not gated: program.rs and execute_query.rs use this one in the default build.
 pub(crate) fn rdf_term_to_f64(term: &RdfTerm) -> LoaderResult<f64> {
     let trimmed = term.trim();
     if let Ok(value) = trimmed.parse::<f64>() {
@@ -55,7 +49,6 @@ pub(crate) fn rdf_term_to_f64(term: &RdfTerm) -> LoaderResult<f64> {
     Err(format!("Non-numeric RDF term in neural feature vector: {}", term).into())
 }
 
-// Gated: only the ml-gated modules build feature vectors.
 #[cfg(feature = "ml")]
 pub(crate) fn build_feature_vec(
     row: &HashMap<String, RdfTerm>,

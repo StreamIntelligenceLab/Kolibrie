@@ -8,8 +8,8 @@
  * you can obtain one at https://mozilla.org/MPL/2.0/.
  */
 
+use kolibrie_core::database::KolibrieDB;
 use kolibrie_core::execute_query::execute;
-use kolibrie_core::sparql_database::SparqlDatabase;
 use pyo3::exceptions::{PyOSError, PyRuntimeError, PyValueError};
 use pyo3::prelude::*;
 use pyo3::types::PyAny;
@@ -48,31 +48,21 @@ fn normalize_load_format(path: &str, format: Option<&str>) -> PyResult<LoadForma
     }
 }
 
-/// Locks a mutex, turning a poisoned lock into a Python exception.
-///
-/// Every lock in this file goes through this. They had been handled three ways: two
-/// different messages for the same condition, and -- in ten places -- not handled at
-/// all. A swallowed lock did nothing and said nothing: `count` answered zero, the
-/// accessors answered an empty list, and `add_stream_triple` returned success having
-/// stored nothing. None of those is distinguishable by a caller from a query that
-/// simply matched nothing, which is the ambiguity `exec_query` was changed to avoid.
+/// Locks a mutex, turning a poisoned lock into a Python exception
 fn locked<'a, T>(mutex: &'a Mutex<T>, what: &str) -> PyResult<MutexGuard<'a, T>> {
     mutex
         .lock()
         .map_err(|_| PyRuntimeError::new_err(format!("{what} lock poisoned")))
 }
 
-#[pyclass(name = "SparqlDatabase")]
-pub struct PySparqlDatabase {
-    db: Arc<Mutex<SparqlDatabase>>,
+#[pyclass(name = "KolibrieDB")]
+pub struct PyKolibrieDB {
+    db: Arc<Mutex<KolibrieDB>>,
 }
 
-// Summarised rather than derived: this wraps a whole store. `try_lock` because a
-// `Debug` impl must not block — Python can reach this from any thread, including one
-// that already holds the lock.
-impl std::fmt::Debug for PySparqlDatabase {
+impl std::fmt::Debug for PyKolibrieDB {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let mut s = f.debug_struct("SparqlDatabase");
+        let mut s = f.debug_struct("KolibrieDB");
         match self.db.try_lock() {
             Ok(db) => s.field("quads", &db.quad_count()),
             Err(_) => s.field("quads", &"<locked>"),
@@ -82,11 +72,11 @@ impl std::fmt::Debug for PySparqlDatabase {
 }
 
 #[pymethods]
-impl PySparqlDatabase {
+impl PyKolibrieDB {
     #[new]
     fn new() -> Self {
-        PySparqlDatabase {
-            db: Arc::new(Mutex::new(SparqlDatabase::new())),
+        PyKolibrieDB {
+            db: Arc::new(Mutex::new(KolibrieDB::new())),
         }
     }
 
@@ -101,50 +91,32 @@ impl PySparqlDatabase {
         Ok(())
     }
 
-    /// Load N-Triples from a string.
-    ///
-    /// The counterpart to `parse_turtle`, and the format data usually arrives in
-    /// over a wire: `load_file` could already read N-Triples from disk, so text
-    /// held in memory had to be written to a file first.
-    ///
-    /// Blank node labels are scoped to this call, which is one document. Two calls
-    /// naming `_:b` describe two different nodes, as RDF says they do.
+    /// Load N-Triples from a string
     fn load_ntriples(&self, ntriples: &str) -> PyResult<()> {
         let mut db = locked(&self.db, "database")?;
         db.parse_ntriples_and_add(ntriples);
         Ok(())
     }
 
-    /// Serialise the default graph as N-Triples.
-    ///
-    /// Blank nodes are written with their document-local labels, which is sound
-    /// within this store and unsound across two: see `to_ntriples_skolemised` for
-    /// the form to publish or exchange.
+    /// Serialise the default graph as N-Triples
     fn to_ntriples(&self) -> PyResult<String> {
         let db = locked(&self.db, "database")?;
         Ok(db.generate_ntriples())
     }
 
-    /// Serialise every graph as N-Quads, which unlike N-Triples keeps named graphs.
+    /// Serialise every graph as N-Quads, which unlike N-Triples keeps named graphs
     fn to_nquads(&self) -> PyResult<String> {
         let db = locked(&self.db, "database")?;
         Ok(db.generate_nquads())
     }
 
-    /// Serialise as N-Triples, replacing blank nodes with Skolem IRIs under `base`.
-    ///
-    /// The form to publish or exchange. A blank node label means nothing outside
-    /// the document it came from, so two systems merging each other's output would
-    /// fuse unrelated nodes. `base` must be an authority you control: a Skolem IRI
-    /// is globally unique because its authority is, which is why there is no
-    /// default for it.
+    /// Serialise as N-Triples, replacing blank nodes with Skolem IRIs under `base`
     fn to_ntriples_skolemised(&self, base: &str) -> PyResult<String> {
         let db = locked(&self.db, "database")?;
         Ok(db.generate_ntriples_skolemised(base))
     }
 
-    /// Serialise as N-Quads, replacing blank nodes with Skolem IRIs under `base`.
-    /// See `to_ntriples_skolemised`.
+    /// Serialise as N-Quads, replacing blank nodes with Skolem IRIs under `base`
     fn to_nquads_skolemised(&self, base: &str) -> PyResult<String> {
         let db = locked(&self.db, "database")?;
         Ok(db.generate_nquads_skolemised(base))
@@ -188,12 +160,7 @@ impl PySparqlDatabase {
         Ok(())
     }
 
-    /// Execute a SELECT and return its rows.
-    ///
-    /// Raises on a syntax or execution failure rather than returning an empty
-    /// table, matching `update` below: an empty list now means the query matched
-    /// nothing, where it previously also meant the query was rejected or the
-    /// database lock was poisoned.
+    /// Execute a SELECT and return its rows
     fn exec_query(&self, query: &str) -> PyResult<Vec<Vec<String>>> {
         let mut db = locked(&self.db, "database")?;
         execute(query, &mut db)
@@ -201,23 +168,7 @@ impl PySparqlDatabase {
             .map_err(|error| PyErr::new::<PyRuntimeError, _>(error.to_string()))
     }
 
-    /// Parses a Kolibrie `RULE` block, runs it, and returns the triples it derived.
-    ///
-    /// The `CONSTRUCT` form, written down rather than assembled:
-    ///
-    /// ```text
-    /// RULE :Grandparent :-
-    /// CONSTRUCT { ?x <urn:hasGrandparent> ?z . }
-    /// WHERE { ?x <urn:hasParent> ?y . ?y <urn:hasParent> ?z . } .
-    /// ```
-    ///
-    /// The derived triples are added to this store, and the prefixes the rule
-    /// declared are registered on it, so a later query can use them. Each derived
-    /// triple comes back as `(subject, predicate, object)` in canonical spelling.
-    ///
-    /// A `PROB(...)` annotation on the rule is accepted and governs how the
-    /// derivation is weighted; a rule naming a model the host has not approved is
-    /// refused before anything is parsed.
+    /// Parses a Kolibrie `RULE` block, runs it, and returns the triples it derived
     fn add_rule(&self, rule: &str) -> PyResult<Vec<(String, String, String)>> {
         let mut db = locked(&self.db, "database")?;
         let (_rule, derived) =
@@ -237,9 +188,7 @@ impl PySparqlDatabase {
             .collect())
     }
 
-    /// Execute INSERT/DELETE DATA or a template-based INSERT/DELETE WHERE.
-    /// Syntax and execution failures are raised instead of being returned as
-    /// an ambiguous result table.
+    /// Execute INSERT/DELETE DATA or a template-based INSERT/DELETE WHERE
     fn update(&self, update: &str) -> PyResult<()> {
         let mut db = locked(&self.db, "database")?;
         kolibrie_core::execute_query::execute_sparql_update(update, &mut db)
@@ -247,7 +196,7 @@ impl PySparqlDatabase {
             .map_err(PyValueError::new_err)
     }
 
-    /// Start building a query.
+    /// Start building a query
     fn query(&self) -> PyQueryBuilder {
         PyQueryBuilder {
             db: Arc::clone(&self.db),
@@ -268,13 +217,12 @@ impl PySparqlDatabase {
             offset: None,
             sort_direction: PySortDirection::Ascending,
 
-            // RSP fields
             window_width: None,
             window_slide: None,
             report_strategies: Vec::new(),
             tick_strategy: PyTick::TimeDriven,
             stream_operator: None,
-            periodic_periods: Vec::new(), // <- This was missing!
+            periodic_periods: Vec::new(),
         }
     }
 }
@@ -294,7 +242,6 @@ pub enum PyStreamOperator {
     DSTREAM,
 }
 
-// Simple enum for report strategies
 #[pyclass(name = "ReportStrategy")]
 #[derive(Clone, Debug)]
 pub enum PyReportStrategy {
@@ -331,16 +278,12 @@ pub enum PyTick {
     BatchDriven,
 }
 
-// Simplified streaming interface
 #[pyclass(name = "StreamingQuery")]
 pub struct PyStreamingQuery {
     config: StreamingConfig,
-    // Store accumulated results
     results: Arc<Mutex<Vec<Vec<(String, String, String)>>>>,
 }
 
-// Summarised rather than derived: `results` accumulates every solution the stream has
-// produced. Not locked, for the reason given on [`PySparqlDatabase`].
 impl std::fmt::Debug for PyStreamingQuery {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let mut s = f.debug_struct("StreamingQuery");
@@ -354,7 +297,6 @@ impl std::fmt::Debug for PyStreamingQuery {
 
 #[derive(Clone)]
 struct StreamingConfig {
-    // Query filters
     subject: Option<String>,
     subject_like: Option<String>,
     subject_starting: Option<String>,
@@ -371,13 +313,12 @@ struct StreamingConfig {
     limit: Option<usize>,
     offset: Option<usize>,
 
-    // RSP config
     window_width: Option<usize>,
     window_slide: Option<usize>,
-    report_strategies: Vec<String>, // Store as strings instead
+    report_strategies: Vec<String>,
     tick_strategy: PyTick,
     stream_operator: Option<PyStreamOperator>,
-    periodic_periods: Vec<usize>, // Store periodic periods separately
+    periodic_periods: Vec<usize>,
 }
 
 impl PyStreamingQuery {
@@ -401,7 +342,6 @@ impl PyStreamingQuery {
     ) -> PyResult<()> {
         let mut matches = true;
 
-        // Apply subject filters
         if let Some(ref s) = self.config.subject {
             matches &= subject == s;
         }
@@ -415,7 +355,6 @@ impl PyStreamingQuery {
             matches &= subject.ends_with(s);
         }
 
-        // Apply predicate filters
         if matches {
             if let Some(ref p) = self.config.predicate {
                 matches &= predicate == p;
@@ -431,7 +370,6 @@ impl PyStreamingQuery {
             }
         }
 
-        // Apply object filters
         if matches {
             if let Some(ref o) = self.config.object {
                 matches &= object == o;
@@ -456,9 +394,7 @@ impl PyStreamingQuery {
 
             {
                 let mut results = locked(&self.results, "results")?;
-                // Apply distinct filter if configured
                 if self.config.distinct {
-                    // Check if this triple already exists in any result batch
                     let mut already_exists = false;
                     for batch in results.iter() {
                         if batch.contains(&triple) {
@@ -471,10 +407,8 @@ impl PyStreamingQuery {
                     }
                 }
 
-                // Create a new result batch with this triple
                 let mut batch = vec![triple];
 
-                // Apply limit if configured
                 if let Some(limit) = self.config.limit {
                     let total_count: usize = results.iter().map(|batch| batch.len()).sum();
                     if total_count >= limit {
@@ -498,11 +432,9 @@ impl PyStreamingQuery {
             let results = locked(&self.results, "results")?;
             let mut current_results = results.clone();
 
-            // Apply offset if configured
             if let Some(offset) = self.config.offset {
                 let total_triples: usize = current_results.iter().map(|batch| batch.len()).sum();
                 if offset < total_triples {
-                    // For simplicity, we'll skip entire batches if needed
                     let mut skipped = 0;
                     current_results.retain(|batch| {
                         if skipped < offset {
@@ -534,13 +466,12 @@ impl PyStreamingQuery {
 
     /// Stop the streaming query
     fn stop_stream(&self) -> PyResult<()> {
-        // In a full implementation, this would stop background processing
         Ok(())
     }
 
     /// Check if currently in streaming mode
     fn is_streaming(&self) -> PyResult<bool> {
-        Ok(true) // Always true for streaming queries
+        Ok(true)
     }
 
     /// Get window configuration
@@ -574,7 +505,7 @@ impl PyStreamingQuery {
 
 #[pyclass(name = "QueryBuilder")]
 pub struct PyQueryBuilder {
-    db: Arc<Mutex<SparqlDatabase>>,
+    db: Arc<Mutex<KolibrieDB>>,
     subject: Option<String>,
     subject_like: Option<String>,
     subject_starting: Option<String>,
@@ -592,18 +523,14 @@ pub struct PyQueryBuilder {
     offset: Option<usize>,
     sort_direction: PySortDirection,
 
-    // RSP fields (simplified)
     window_width: Option<usize>,
     window_slide: Option<usize>,
-    report_strategies: Vec<String>, // Store as strings
+    report_strategies: Vec<String>,
     tick_strategy: PyTick,
     stream_operator: Option<PyStreamOperator>,
-    periodic_periods: Vec<usize>, // Store periodic periods separately
+    periodic_periods: Vec<usize>,
 }
 
-// Summarised rather than derived: `db` is a whole store, and the filter fields are
-// numerous enough that printing only the ones that are set is more readable than
-// twenty `None`s.
 impl std::fmt::Debug for PyQueryBuilder {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let set: Vec<&str> = [
@@ -636,126 +563,126 @@ impl std::fmt::Debug for PyQueryBuilder {
 
 #[pymethods]
 impl PyQueryBuilder {
-    /// Set an exact subject filter.
+    /// Set an exact subject filter
     fn with_subject(&self, subj: &str) -> Self {
         let mut new_builder = self.clone();
         new_builder.subject = Some(subj.to_owned());
         new_builder
     }
 
-    /// Set an exact predicate filter.
+    /// Set an exact predicate filter
     fn with_predicate(&self, pred: &str) -> Self {
         let mut new_builder = self.clone();
         new_builder.predicate = Some(pred.to_owned());
         new_builder
     }
 
-    /// Set an exact object filter.
+    /// Set an exact object filter
     fn with_object(&self, obj: &str) -> Self {
         let mut new_builder = self.clone();
         new_builder.object = Some(obj.to_owned());
         new_builder
     }
 
-    /// Filter subjects containing a substring.
+    /// Filter subjects containing a substring
     fn with_subject_like(&self, pattern: &str) -> Self {
         let mut new_builder = self.clone();
         new_builder.subject_like = Some(pattern.to_owned());
         new_builder
     }
 
-    /// Filter subjects starting with a prefix.
+    /// Filter subjects starting with a prefix
     fn with_subject_starting(&self, prefix: &str) -> Self {
         let mut new_builder = self.clone();
         new_builder.subject_starting = Some(prefix.to_owned());
         new_builder
     }
 
-    /// Filter subjects ending with a suffix.
+    /// Filter subjects ending with a suffix
     fn with_subject_ending(&self, suffix: &str) -> Self {
         let mut new_builder = self.clone();
         new_builder.subject_ending = Some(suffix.to_owned());
         new_builder
     }
 
-    /// Filter predicates containing a substring.
+    /// Filter predicates containing a substring
     fn with_predicate_like(&self, pattern: &str) -> Self {
         let mut new_builder = self.clone();
         new_builder.predicate_like = Some(pattern.to_owned());
         new_builder
     }
 
-    /// Filter predicates starting with a prefix.
+    /// Filter predicates starting with a prefix
     fn with_predicate_starting(&self, prefix: &str) -> Self {
         let mut new_builder = self.clone();
         new_builder.predicate_starting = Some(prefix.to_owned());
         new_builder
     }
 
-    /// Filter predicates ending with a suffix.
+    /// Filter predicates ending with a suffix
     fn with_predicate_ending(&self, suffix: &str) -> Self {
         let mut new_builder = self.clone();
         new_builder.predicate_ending = Some(suffix.to_owned());
         new_builder
     }
 
-    /// Filter objects containing a substring.
+    /// Filter objects containing a substring
     fn with_object_like(&self, pattern: &str) -> Self {
         let mut new_builder = self.clone();
         new_builder.object_like = Some(pattern.to_owned());
         new_builder
     }
 
-    /// Filter objects starting with a prefix.
+    /// Filter objects starting with a prefix
     fn with_object_starting(&self, prefix: &str) -> Self {
         let mut new_builder = self.clone();
         new_builder.object_starting = Some(prefix.to_owned());
         new_builder
     }
 
-    /// Filter objects ending with a suffix.
+    /// Filter objects ending with a suffix
     fn with_object_ending(&self, suffix: &str) -> Self {
         let mut new_builder = self.clone();
         new_builder.object_ending = Some(suffix.to_owned());
         new_builder
     }
 
-    /// Only return distinct results.
+    /// Only return distinct results
     fn distinct(&self) -> Self {
         let mut new_builder = self.clone();
         new_builder.distinct = true;
         new_builder
     }
 
-    /// Limit the number of results.
+    /// Limit the number of results
     fn limit(&self, n: usize) -> Self {
         let mut new_builder = self.clone();
         new_builder.limit = Some(n);
         new_builder
     }
 
-    /// Skip the first n results.
+    /// Skip the first n results
     fn offset(&self, n: usize) -> Self {
         let mut new_builder = self.clone();
         new_builder.offset = Some(n);
         new_builder
     }
 
-    /// Set sort direction to ascending.
+    /// Set sort direction to ascending
     fn asc(&self) -> Self {
         let mut new_builder = self.clone();
         new_builder.sort_direction = PySortDirection::Ascending;
         new_builder
     }
 
-    /// Set sort direction to descending.
+    /// Set sort direction to descending
     fn desc(&self) -> Self {
         let mut new_builder = self.clone();
         new_builder.sort_direction = PySortDirection::Descending;
         new_builder
     }
 
-    /// Configure windowing for stream processing.
+    /// Configure windowing for stream processing
     fn window(&self, width: usize, slide: usize) -> Self {
         let mut new_builder = self.clone();
         new_builder.window_width = Some(width);
@@ -763,14 +690,14 @@ impl PyQueryBuilder {
         new_builder
     }
 
-    /// Add a report strategy for window processing.
+    /// Add a report strategy for window processing
     fn with_report_strategy(&self, strategy: &str) -> Self {
         let mut new_builder = self.clone();
         new_builder.report_strategies.push(strategy.to_string());
         new_builder
     }
 
-    /// Add a periodic report strategy with a specific period.
+    /// Add a periodic report strategy with a specific period
     fn with_periodic_report(&self, period: usize) -> Self {
         let mut new_builder = self.clone();
         new_builder.report_strategies.push("periodic".to_string());
@@ -778,21 +705,21 @@ impl PyQueryBuilder {
         new_builder
     }
 
-    /// Set the tick strategy for window processing.
+    /// Set the tick strategy for window processing
     fn with_tick_strategy(&self, tick: PyTick) -> Self {
         let mut new_builder = self.clone();
         new_builder.tick_strategy = tick;
         new_builder
     }
 
-    /// Configure stream operator (RSTREAM, ISTREAM, DSTREAM).
+    /// Configure stream operator (RSTREAM, ISTREAM, DSTREAM)
     fn with_stream_operator(&self, operator: PyStreamOperator) -> Self {
         let mut new_builder = self.clone();
         new_builder.stream_operator = Some(operator);
         new_builder
     }
 
-    /// Initialize streaming mode and return a streaming query handle.
+    /// Initialize streaming mode and return a streaming query handle
     fn as_stream(&self) -> PyResult<PyStreamingQuery> {
         let config = StreamingConfig {
             subject: self.subject.clone(),
@@ -822,42 +749,42 @@ impl PyQueryBuilder {
         Ok(PyStreamingQuery::new(config))
     }
 
-    /// Build and execute the query, returning decoded (s,p,o) tuples.
+    /// Build and execute the query, returning decoded (s,p,o) tuples
     fn get_decoded_triples(&self) -> PyResult<Vec<(String, String, String)>> {
         let db = locked(&self.db, "database")?;
         let qb = self.build_rust_query_builder(&*db);
         Ok(qb.get_decoded_triples())
     }
 
-    /// Return just the decoded subjects.
+    /// Return just the decoded subjects
     fn get_subjects(&self) -> PyResult<Vec<String>> {
         let db = locked(&self.db, "database")?;
         let qb = self.build_rust_query_builder(&*db);
         Ok(qb.get_subjects())
     }
 
-    /// Return just the decoded predicates.
+    /// Return just the decoded predicates
     fn get_predicates(&self) -> PyResult<Vec<String>> {
         let db = locked(&self.db, "database")?;
         let qb = self.build_rust_query_builder(&*db);
         Ok(qb.get_predicates())
     }
 
-    /// Return just the decoded objects.
+    /// Return just the decoded objects
     fn get_objects(&self) -> PyResult<Vec<String>> {
         let db = locked(&self.db, "database")?;
         let qb = self.build_rust_query_builder(&*db);
         Ok(qb.get_objects())
     }
 
-    /// Count the number of matches.
+    /// Count the number of matches
     fn count(&self) -> PyResult<usize> {
         let db = locked(&self.db, "database")?;
         let qb = self.build_rust_query_builder(&*db);
         Ok(qb.count())
     }
 
-    /// Group results by subject, returning a dictionary.
+    /// Group results by subject, returning a dictionary
     fn group_by_subject(&self) -> PyResult<HashMap<String, Vec<(String, String, String)>>> {
         let results = self.get_decoded_triples()?;
         let mut groups = HashMap::new();
@@ -871,7 +798,7 @@ impl PyQueryBuilder {
         Ok(groups)
     }
 
-    /// Group results by predicate, returning a dictionary.
+    /// Group results by predicate, returning a dictionary
     fn group_by_predicate(&self) -> PyResult<HashMap<String, Vec<(String, String, String)>>> {
         let results = self.get_decoded_triples()?;
         let mut groups = HashMap::new();
@@ -885,7 +812,7 @@ impl PyQueryBuilder {
         Ok(groups)
     }
 
-    /// Group results by object, returning a dictionary.
+    /// Group results by object, returning a dictionary
     fn group_by_object(&self) -> PyResult<HashMap<String, Vec<(String, String, String)>>> {
         let results = self.get_decoded_triples()?;
         let mut groups = HashMap::new();
@@ -921,7 +848,6 @@ impl Clone for PyQueryBuilder {
             offset: self.offset,
             sort_direction: self.sort_direction.clone(),
 
-            // RSP fields
             window_width: self.window_width,
             window_slide: self.window_slide,
             report_strategies: self.report_strategies.clone(),
@@ -936,13 +862,12 @@ impl PyQueryBuilder {
     /// Helper method to build the Rust QueryBuilder with all configured filters
     fn build_rust_query_builder<'a>(
         &self,
-        db: &'a SparqlDatabase,
+        db: &'a KolibrieDB,
     ) -> kolibrie_core::query_builder::QueryBuilder<'a> {
         use kolibrie_core::query_builder::QueryBuilder;
 
         let mut qb = QueryBuilder::new(db);
 
-        // Apply exact filters
         if let Some(ref s) = self.subject {
             qb = qb.with_subject(s);
         }
@@ -953,7 +878,6 @@ impl PyQueryBuilder {
             qb = qb.with_object(o);
         }
 
-        // Apply pattern filters
         if let Some(ref s) = self.subject_like {
             qb = qb.with_subject_like(s);
         }
@@ -984,7 +908,6 @@ impl PyQueryBuilder {
             qb = qb.with_object_ending(o);
         }
 
-        // Apply modifiers
         if self.distinct {
             qb = qb.distinct();
         }
@@ -995,7 +918,6 @@ impl PyQueryBuilder {
             qb = qb.offset(n);
         }
 
-        // Apply sort direction
         match self.sort_direction {
             PySortDirection::Ascending => qb = qb.asc(),
             PySortDirection::Descending => qb = qb.desc(),
@@ -1006,13 +928,11 @@ impl PyQueryBuilder {
 }
 
 pub(crate) fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
-    // Register classes
-    m.add_class::<PySparqlDatabase>()?;
+    m.add_class::<PyKolibrieDB>()?;
     m.add_class::<PyQueryBuilder>()?;
     m.add_class::<PyStreamingQuery>()?;
     m.add_class::<PyPeriodicReportStrategy>()?;
 
-    // Register enums
     m.add_class::<PySortDirection>()?;
     m.add_class::<PyStreamOperator>()?;
     m.add_class::<PyReportStrategy>()?;

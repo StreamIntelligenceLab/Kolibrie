@@ -10,7 +10,7 @@
 
 #![cfg(feature = "exec-stats")]
 
-use kolibrie::sparql_database::SparqlDatabase;
+use kolibrie::database::KolibrieDB;
 use kolibrie::streamertail_optimizer::execution::exec_stats;
 use kolibrie::streamertail_optimizer::PhysicalOperator;
 use shared::dataset_index::{GraphTerm, QuadPattern};
@@ -26,7 +26,7 @@ fn var(name: &str) -> Term {
     Term::Variable(name.to_string())
 }
 
-fn constant(database: &SparqlDatabase, value: &str) -> Term {
+fn constant(database: &KolibrieDB, value: &str) -> Term {
     Term::Constant(database.encode_term(value))
 }
 
@@ -40,17 +40,16 @@ fn quad(pattern: TriplePattern) -> QuadPattern {
 }
 
 /// Runs a plan and reports the work it performed
-fn work_of(database: &mut SparqlDatabase, plan: &PhysicalOperator) -> exec_stats::Snapshot {
+fn work_of(database: &mut KolibrieDB, plan: &PhysicalOperator) -> exec_stats::Snapshot {
     exec_stats::reset();
     let rows = plan.execute_with_ids(database);
     let snapshot = exec_stats::snapshot();
-    // Touch the result so the execution cannot be optimized away
     assert!(rows.len() < usize::MAX);
     snapshot
 }
 
-fn star_fixture() -> SparqlDatabase {
-    let mut database = SparqlDatabase::new();
+fn star_fixture() -> KolibrieDB {
+    let mut database = KolibrieDB::new();
     let mut triples = String::new();
     for subject in 0..40 {
         triples.push_str(&format!(
@@ -59,7 +58,6 @@ fn star_fixture() -> SparqlDatabase {
         triples.push_str(&format!(
             "<http://ex/s{subject}> <http://ex/age> \"{subject}\" .\n"
         ));
-        // Only a fifth of the subjects have a city, making that arm selective
         if subject % 5 == 0 {
             triples.push_str(&format!(
                 "<http://ex/s{subject}> <http://ex/city> <http://ex/c{subject}> .\n"
@@ -70,7 +68,7 @@ fn star_fixture() -> SparqlDatabase {
     database
 }
 
-/// The consensus asks for `StarJoin` to be measured before any decision about
+/// `StarJoin` does the same work as a chain of bind joins
 #[test]
 fn star_join_performs_the_same_work_as_a_bind_join_chain() {
     let _guard = COUNTER_LOCK.lock().unwrap();
@@ -101,7 +99,6 @@ fn star_join_performs_the_same_work_as_a_bind_join_chain() {
     let star_work = work_of(&mut database, &star);
     let chain_work = work_of(&mut database, &chain);
 
-    // `StarJoin`'s executor simply chains scans with a hard-coded default
     assert_eq!(
         star_work.quads_examined, chain_work.quads_examined,
         "StarJoin examined a different number of quads than the equivalent chain: \
@@ -121,7 +118,6 @@ fn a_selective_leading_pattern_examines_fewer_quads() {
     let knows = constant(&database, "http://ex/knows");
     let city = constant(&database, "http://ex/city");
 
-    // Leading with the selective arm binds ?s eight times instead of scanning the wide one
     let selective_first = PhysicalOperator::bind_join(
         PhysicalOperator::quad_index_scan(quad((var("s"), city.clone(), var("c")))),
         PhysicalOperator::quad_index_scan(quad((var("s"), knows.clone(), var("o")))),

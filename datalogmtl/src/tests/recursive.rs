@@ -13,13 +13,7 @@ use crate::evaluator::DatalogMTLEvaluator;
 use crate::store::{TemporalSnapshotStore, TemporalStore};
 use crate::syntax::{DatalogMTLRule, TemporalAtom};
 
-/// Test 6: Recursive rules — transitive ancestor.
-/// Rules:
-///   (?x :ancestor ?z) :- (?x :parent ?z)
-///   (?x :ancestor ?z) :- (?x :parent ?y), (?y :ancestor ?z)
-///
-/// ABox at t=0: (a :parent b), (b :parent c), (c :parent d)
-/// Expected: 6 ancestor triples: a->b, a->c, a->d, b->c, b->d, c->d
+/// Test 6: Recursive rules — transitive ancestor
 #[test]
 fn test_recursive_ancestor() {
     let dict = make_dict();
@@ -57,7 +51,6 @@ fn test_recursive_ancestor() {
         ],
     );
 
-    // Expected 6 ancestor triples
     let expected = vec![
         triple(a, ancestor, b),
         triple(a, ancestor, cc),

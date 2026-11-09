@@ -67,7 +67,7 @@ fn main() {
     </rdf:RDF>
     "#;
 
-    let mut database = SparqlDatabase::new();
+    let mut database = KolibrieDB::new();
     database.parse_rdf(rdf_data);
 
     let sparql_with_limit = r#"

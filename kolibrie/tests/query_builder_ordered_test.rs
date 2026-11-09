@@ -1,9 +1,9 @@
+use kolibrie::database::KolibrieDB;
 use kolibrie::query_builder::QueryBuilder;
-use kolibrie::sparql_database::SparqlDatabase;
 use std::collections::BTreeSet;
 
-fn fixture() -> SparqlDatabase {
-    let mut db = SparqlDatabase::new();
+fn fixture() -> KolibrieDB {
+    let mut db = KolibrieDB::new();
     for (s, o) in [("s1", "b"), ("s2", "c"), ("s3", "a"), ("s1", "b")] {
         db.add_triple_parts(s, "p", o);
     }

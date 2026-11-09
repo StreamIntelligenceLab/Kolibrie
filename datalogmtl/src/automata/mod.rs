@@ -8,14 +8,7 @@
  * you can obtain one at https://mozilla.org/MPL/2.0/.
  */
 
-//! Interval-native ("automata") evaluation strategy for DatalogMTL.
-//!
-//! Temporal operators are interval-arithmetic **transducers** (the batch I/O of
-//! each operator's automaton) over rational/real-line intervals ported from
-//! MeTeoR, and a **semi-naive-ready** interval fixpoint materializes the program.
-//! Cost scales with the number of interval endpoints, independent of the time
-//! horizon and interval widths — and it matches MeTeoR's semantics exactly
-//! (dissolving the ℤ-vs-ℝ artifact of the tick engine).
+//! Interval-native ("automata") evaluation strategy for DatalogMTL
 
 pub mod eval;
 pub mod interval;

@@ -1,9 +1,9 @@
+use kolibrie::database::KolibrieDB;
 use kolibrie::execute_query::{execute, execute_sparql_update};
-use kolibrie::sparql_database::SparqlDatabase;
 use kolibrie::sparql_protocol::answer;
 use shared::dataset_index::GraphId;
 
-fn query(database: &mut SparqlDatabase, sparql: &str) -> Vec<Vec<String>> {
+fn query(database: &mut KolibrieDB, sparql: &str) -> Vec<Vec<String>> {
     execute(sparql, database)
         .expect("query should run")
         .into_rows()
@@ -11,7 +11,7 @@ fn query(database: &mut SparqlDatabase, sparql: &str) -> Vec<Vec<String>> {
 
 #[test]
 fn illegal_bound_update_positions_are_skipped() {
-    let mut database = SparqlDatabase::new();
+    let mut database = KolibrieDB::new();
     execute_sparql_update(
         r#"
         INSERT DATA {
@@ -73,7 +73,7 @@ fn illegal_bound_update_positions_are_skipped() {
 
 #[test]
 fn nquads_round_trip_keeps_default_and_named_quads() {
-    let mut source = SparqlDatabase::new();
+    let mut source = KolibrieDB::new();
     execute_sparql_update(
         r#"
         INSERT DATA {
@@ -99,7 +99,7 @@ fn nquads_round_trip_keeps_default_and_named_quads() {
         "<http://example.com/named> <http://example.com/p> \"value\" <http://example.com/g> ."
     ));
 
-    let mut restored = SparqlDatabase::new();
+    let mut restored = KolibrieDB::new();
     restored.parse_nquads_and_add(&serialized);
     assert_eq!(
         query(
@@ -126,16 +126,6 @@ fn nquads_round_trip_keeps_default_and_named_quads() {
         r#"SELECT ?s WHERE { ?s <http://example.com/p> "quoted \"value\"" }"#,
     );
     assert_eq!(escaped_literal_rows.len(), 1);
-    // Still a blank node, and still carrying the label it was written with.
-    //
-    // This used to assert the `_:kolibrie-update-` prefix specifically, which pinned
-    // a blank node label's lexical form across a serialise-and-re-read. RDF 1.1
-    // section 3.4 makes that form insignificant, and reading a serialisation is
-    // reading a new document, so its blank nodes are a fresh set and are scoped
-    // again -- by the reader now, which is what stops two documents sharing a node.
-    // What this round trip has to show is what its sibling assertion above shows for
-    // the serialised form: that the node survives as a node rather than becoming an
-    // IRI or losing its shape.
     let restored_label = &escaped_literal_rows[0][0];
     assert!(
         restored_label.starts_with("_:"),
@@ -147,11 +137,7 @@ fn nquads_round_trip_keeps_default_and_named_quads() {
     );
 }
 
-/// Splits an HTTP response from `answer` into its status and body.
-///
-/// The status is checked as well as the body: the response used to be a bare body
-/// that the caller wrapped in `200 OK`, so a failure was indistinguishable from a
-/// success here.
+/// Splits an HTTP response from `answer` into its status and body
 fn split_response(response: &str) -> (String, String) {
     let (head, body) = response
         .split_once("\r\n\r\n")
@@ -167,7 +153,7 @@ fn split_response(response: &str) -> (String, String) {
 
 #[test]
 fn http_sparql_query_encodings_use_the_unified_query_executor() {
-    let mut database = SparqlDatabase::new();
+    let mut database = KolibrieDB::new();
     execute_sparql_update(
         "INSERT DATA { <urn:http-subject> <urn:p> <urn:o> }",
         &mut database,
@@ -212,7 +198,6 @@ fn http_sparql_query_encodings_use_the_unified_query_executor() {
         "\r\n",
         "INSERT DATA { <urn:must-not-exist> <urn:p> <urn:o> }"
     );
-    // An Update on the query endpoint is refused, and now says so in the status.
     assert_eq!(
         split_response(&answer(&mut database, update_on_query_endpoint)),
         (
@@ -245,7 +230,7 @@ fn http_sparql_query_encodings_use_the_unified_query_executor() {
 
 #[test]
 fn update_blank_node_allocation_skips_persisted_lexical_collisions() {
-    let mut database = SparqlDatabase::new();
+    let mut database = KolibrieDB::new();
     execute_sparql_update("INSERT DATA { _:first <urn:seed> <urn:o> }", &mut database).unwrap();
     let allocated = query(
         &mut database,
@@ -258,8 +243,6 @@ fn update_blank_node_allocation_skips_persisted_lexical_collisions() {
         .and_then(|(number, _)| number.parse::<u64>().ok())
         .unwrap();
 
-    // Preload a range of labels that a restarted/process-local allocator
-    // could otherwise mistake for new blank nodes.
     for candidate in allocation + 1..=allocation + 512 {
         database.add_triple_parts(
             &format!("_:kolibrie-update-{candidate}-second"),
@@ -288,7 +271,7 @@ fn update_blank_node_allocation_skips_persisted_lexical_collisions() {
 
 #[test]
 fn statistics_include_terms_that_exist_only_in_named_graphs() {
-    let mut database = SparqlDatabase::new();
+    let mut database = KolibrieDB::new();
     execute_sparql_update(
         "INSERT DATA { GRAPH <urn:g> { <urn:s> <urn:p> <urn:o> } }",
         &mut database,

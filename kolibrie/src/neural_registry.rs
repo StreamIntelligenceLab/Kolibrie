@@ -8,39 +8,19 @@
  * you can obtain one at https://mozilla.org/MPL/2.0/.
  */
 
-//! Recording model, neural relation and training declarations on a store.
-//!
-//! Registration is not execution. Putting a declaration on a store needs the store,
-//! the ML policy and the declaration types, and none of the machinery that later
-//! runs a model, so it sits below [`neural_relations`](crate::ml::neural_relations)
-//! rather than inside it. `parser`, `execute_query` and `program` all register
-//! declarations and none of them should have to reach into the ML runtime to do it.
-//!
-//! # Not gated on `ml`
-//!
-//! Unlike the runtime, this compiles either way. With the feature off
-//! [`require_local`](crate::ml_policy::MlExecutionContext::require_local) already
-//! refuses with `ML_FEATURE_DISABLED`, and a request declaring nothing never reaches
-//! it, so one implementation gives both behaviours and the stub that used to mirror
-//! this in `neural_relations_disabled` is gone.
+//! Recording model, neural relation and training declarations on a store
 
-use crate::sparql_database::SparqlDatabase;
+use crate::database::KolibrieDB;
 #[cfg(feature = "ml")]
 use ml::OutputType;
 #[cfg(feature = "ml")]
-use shared::query::NeuralOutputKind;
-// `ModelArch` is named only by `model_hidden_layers`, which is ml-gated, so the
-// import has to be too or a default build warns.
-#[cfg(feature = "ml")]
 use shared::query::ModelArch;
+#[cfg(feature = "ml")]
+use shared::query::NeuralOutputKind;
 use shared::query::{ModelDecl, NeuralRelationDecl, TrainNeuralRelationDecl, TrainingDataSource};
 use std::collections::HashMap;
 
-/// The default artifact filename for a model.
-///
-/// Every non-alphanumeric character becomes `_`, so the result is a safe filename
-/// — but two model names differing only in punctuation collide. A host that cares
-/// should name artifacts explicitly.
+/// The default artifact filename for a model
 pub fn default_model_artifact_path(model_name: &str) -> String {
     let sanitized: String = model_name
         .chars()
@@ -50,7 +30,7 @@ pub fn default_model_artifact_path(model_name: &str) -> String {
 }
 
 pub(crate) fn normalize_term(
-    database: &SparqlDatabase,
+    database: &KolibrieDB,
     prefixes: &HashMap<String, String>,
     term: &str,
 ) -> String {
@@ -62,7 +42,7 @@ pub(crate) fn normalize_term(
 }
 
 pub(crate) fn normalize_triple(
-    database: &SparqlDatabase,
+    database: &KolibrieDB,
     prefixes: &HashMap<String, String>,
     triple: &(String, String, String),
 ) -> (String, String, String) {
@@ -73,12 +53,9 @@ pub(crate) fn normalize_triple(
     )
 }
 
-/// Registers model, relation and training declarations on a store.
-///
-/// Reports failures to stderr. Prefer
-/// [`register_neural_declarations_checked`] where the caller can handle an error.
+/// Registers model, relation and training declarations on a store
 pub fn register_neural_declarations(
-    database: &mut SparqlDatabase,
+    database: &mut KolibrieDB,
     prefixes: &HashMap<String, String>,
     model_decls: &[ModelDecl],
     neural_relation_decls: &[NeuralRelationDecl],
@@ -97,12 +74,9 @@ pub fn register_neural_declarations(
     }
 }
 
-/// Registers declarations, returning an error rather than reporting it.
-///
-/// Checks the ML policy for every model named, so a set containing one unapproved
-/// model registers none of them.
+/// Registers declarations, returning an error rather than reporting it
 pub fn register_neural_declarations_checked(
-    database: &mut SparqlDatabase,
+    database: &mut KolibrieDB,
     prefixes: &HashMap<String, String>,
     model_decls: &[ModelDecl],
     neural_relation_decls: &[NeuralRelationDecl],
@@ -184,8 +158,6 @@ pub(crate) fn model_output_type(model_decl: &ModelDecl) -> OutputType {
     }
 }
 
-// Gated for the same reason as `model_output_type`: every caller is ml-gated, so
-// in a default build this is dead code and warns.
 #[cfg(feature = "ml")]
 pub(crate) fn model_hidden_layers(model_decl: &ModelDecl) -> &[usize] {
     match &model_decl.arch {

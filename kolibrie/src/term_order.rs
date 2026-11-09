@@ -32,9 +32,6 @@ impl<'a> OrderKey<'a> {
                 number: 0.0,
                 lexical: "",
             },
-            // A term sorts by the number it denotes, which lives in its lexical
-            // form rather than its spelling. Comparing spellings put
-            // `"7"^^<...>` after `"21"^^<...>`.
             Some(value) => match shared::rdf_term::numeric_value(value) {
                 Some(number) => OrderKey {
                     class: CLASS_NUMBER,
@@ -69,9 +66,7 @@ impl Ord for OrderKey<'_> {
     fn cmp(&self, other: &Self) -> Ordering {
         self.class
             .cmp(&other.class)
-            // `total_cmp` keeps NaN and the two zeroes ordered, which `partial_cmp` cannot
             .then_with(|| self.number.total_cmp(&other.number))
-            // Two spellings of one number ("1" and "1.0") are numerically
             .then_with(|| self.lexical.cmp(other.lexical))
     }
 }
@@ -139,7 +134,6 @@ mod tests {
     fn numbers_compare_by_value_not_by_spelling() {
         assert_eq!(compare(Some("9"), Some("100")), Ordering::Less);
         assert_eq!(compare(Some("1e3"), Some("999")), Ordering::Greater);
-        // Numerically equal, so the lexical form decides — but it decides
         assert_eq!(compare(Some("007"), Some("7")), Ordering::Less);
         assert_eq!(compare(Some("7"), Some("007")), Ordering::Greater);
     }

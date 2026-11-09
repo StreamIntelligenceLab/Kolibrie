@@ -7,11 +7,11 @@
  * you can obtain one at https://mozilla.org/MPL/2.0/.
  */
 
+use kolibrie::database::KolibrieDB;
 use kolibrie::execute_query::execute;
 use kolibrie::ml::execute::execute_ml_prediction_from_clause;
 use kolibrie::parser::parse_standalone_rule;
 use kolibrie::rule_execution::process_rule_definition;
-use kolibrie::sparql_database::SparqlDatabase;
 use ml::MLHandler;
 use pyo3::prepare_freethreaded_python;
 use serde::{Deserialize, Serialize};
@@ -36,15 +36,12 @@ struct SavingsPrediction {
     timestamp: SystemTime,
 }
 
-// Function to extract financial data from the database
 fn extract_financial_data_from_database(
-    database: &SparqlDatabase,
+    database: &KolibrieDB,
 ) -> Result<Vec<FinancialData>, Box<dyn Error>> {
-    // Acquire read lock once at the start
     let dict = database.dictionary();
     let default_triples = database.query_default_triples(None, None, None);
 
-    // Extract data from database
     let financial_data: Vec<FinancialData> = default_triples
         .iter()
         .filter(|triple| {
@@ -66,7 +63,6 @@ fn extract_financial_data_from_database(
                 .parse()
                 .unwrap_or(0.0);
 
-            // Find spending and savings_rate
             let spending = default_triples
                 .iter()
                 .find(|t| {
@@ -89,7 +85,7 @@ fn extract_financial_data_from_database(
                 })
                 .and_then(|t| dict.decode(t.object))
                 .and_then(|v| v.parse().ok())
-                .unwrap_or(0.10); // Default to 10% savings rate if not specified
+                .unwrap_or(0.10);
 
             FinancialData {
                 user_id,
@@ -101,7 +97,6 @@ fn extract_financial_data_from_database(
         })
         .collect();
 
-    // Release the lock before printing
     drop(dict);
 
     println!("Found {} financial data entries", financial_data.len());
@@ -115,7 +110,6 @@ fn extract_financial_data_from_database(
         );
     }
 
-    // Ensure we have data before proceeding
     if financial_data.is_empty() {
         return Err("No input data found for ML prediction".into());
     }
@@ -123,7 +117,6 @@ fn extract_financial_data_from_database(
     Ok(financial_data)
 }
 
-// Function that handles savings prediction logic
 fn predict_savings(
     ml_handler: &MLHandler,
     best_model: &str,
@@ -136,21 +129,18 @@ fn predict_savings(
     ),
     Box<dyn Error>,
 > {
-    // Dynamically build feature vectors based on selected variables
     let features: Vec<Vec<f64>> = financial_data
         .iter()
         .map(|data| {
             let mut feature_vector = Vec::new();
 
-            // Only include features that were specified in the SELECT clause
             for feature_name in feature_names {
                 match feature_name.as_str() {
                     "income" => feature_vector.push(data.income),
                     "spending" => feature_vector.push(data.spending),
                     "savings_rate" => feature_vector.push(data.savings_rate),
                     "disposable_income" => feature_vector.push(data.income - data.spending),
-                    // Add other features as needed
-                    _ => {} // Skip unknown features
+                    _ => {}
                 }
             }
 
@@ -158,27 +148,23 @@ fn predict_savings(
         })
         .collect();
 
-    // Only proceed if we have features to process
     if features.is_empty() || features[0].is_empty() {
         return Err("No valid features found for prediction based on SELECT variables".into());
     }
 
     println!("Using features for prediction: {:?}", features);
 
-    // Use the selected model
     let prediction_results = ml_handler.predict(best_model, features)?;
 
-    // Create timing structure
     let timing = kolibrie::ml::execute::MLPredictTiming {
-        total_time: 0.0,          // Will be updated by execute_ml_prediction_from_clause
-        rust_to_python_time: 0.0, // Will be updated by execute_ml_prediction_from_clause
+        total_time: 0.0,
+        rust_to_python_time: 0.0,
         python_preprocessing_time: prediction_results.timing.preprocessing_time,
         actual_prediction_time: prediction_results.timing.actual_prediction_time,
         python_postprocessing_time: prediction_results.timing.postprocessing_time,
-        python_to_rust_time: 0.0, // Will be updated by execute_ml_prediction_from_clause
+        python_to_rust_time: 0.0,
     };
 
-    // Print performance of the selected model during this prediction
     println!("\nPerformance during prediction:");
     println!(
         "  Prediction Time: {:.4} seconds",
@@ -193,7 +179,6 @@ fn predict_savings(
         prediction_results.performance_metrics.cpu_usage_percent
     );
 
-    // Create prediction objects
     let predictions: Vec<SavingsPrediction> = financial_data
         .iter()
         .zip(prediction_results.predictions.iter())
@@ -212,7 +197,6 @@ fn predict_savings(
         })
         .collect();
 
-    // Print out predictions with explanations
     for (i, prediction) in predictions.iter().enumerate() {
         let data = &financial_data[i];
         let disposable_income = data.income - data.spending;
@@ -228,7 +212,6 @@ fn predict_savings(
         );
         println!("  Confidence: {:.2}%", prediction.confidence * 100.0);
 
-        // Provide some basic financial advice based on the prediction
         if prediction.predicted_savings < 0.0 {
             println!("  Warning: Negative savings predicted! Consider reducing expenses.");
         } else if prediction.predicted_savings < (data.income * 0.1) {
@@ -282,11 +265,10 @@ fn main() -> Result<(), Box<dyn Error>> {
         </rdf:RDF>
     "#;
 
-    let mut database = SparqlDatabase::with_ml_context(local_ml::trusted_context());
+    let mut database = KolibrieDB::with_ml_context(local_ml::trusted_context());
     database.parse_rdf(rdf_xml_data);
     println!("Database RDF triples loaded.");
 
-    // Define the rule separately with CONSTRUCT and WHERE clauses
     let rule_definition = r#"PREFIX finance: <http://example.org/finance#>
 PREFIX ex: <http://example.org#>
 
@@ -311,12 +293,10 @@ RULE :SavingsAlert :-
         OUTPUT ?predicted_savings
     )"#;
 
-    // Use process_rule_definition to process the rule
     match process_rule_definition(rule_definition, &mut database) {
         Ok((rule, inferred_facts)) => {
             println!("Rule processed successfully.");
 
-            // Print rule details
             println!("Rule details:");
             println!("  Premise patterns: {:?}", rule.premise);
             println!("  Filters: {:?}", rule.filters);
@@ -324,14 +304,12 @@ RULE :SavingsAlert :-
 
             println!("Inferred {} new fact(s):", inferred_facts.len());
 
-            // Acquire read lock for printing triples
             let dict = database.dictionary();
             for triple in inferred_facts.iter() {
                 println!("  {}", database.triple_to_string(triple, &*dict));
             }
             drop(dict);
 
-            // Parse the rule to get ML.PREDICT clause
             if let Ok((_rest, (parsed_rule, _))) = parse_standalone_rule(rule_definition) {
                 if let Some(ml_predict) = &parsed_rule.ml_predict {
                     println!("Using enhanced ML.PREDICT execution with model comparison...");
@@ -353,10 +331,8 @@ RULE :SavingsAlert :-
                                     prediction.confidence
                                 );
 
-                                // Acquire write lock for encoding and adding triples
                                 let mut dict = database.dictionary_mut();
 
-                                // Add predictions to database
                                 let subject = format!("http://example.org#{}", prediction.user_id);
                                 let predicate = "http://example.org/finance#predictedSavings";
                                 let subject_id = dict.encode(&subject);
@@ -364,7 +340,7 @@ RULE :SavingsAlert :-
                                 let object_id =
                                     dict.encode(&prediction.predicted_savings.to_string());
 
-                                drop(dict); // Release lock before inserting
+                                drop(dict);
 
                                 database.add_triple(Triple {
                                     subject: subject_id,
@@ -372,10 +348,8 @@ RULE :SavingsAlert :-
                                     object: object_id,
                                 });
 
-                                // Re-acquire lock for confidence score
                                 let mut dict = database.dictionary_mut();
 
-                                // Also add confidence score to the database
                                 let confidence_predicate =
                                     "http://example.org/finance#predictionConfidence";
                                 let confidence_predicate_id = dict.encode(confidence_predicate);
@@ -390,10 +364,8 @@ RULE :SavingsAlert :-
                                     object: confidence_object_id,
                                 });
 
-                                // Re-acquire lock for timestamp
                                 let mut dict = database.dictionary_mut();
 
-                                // Add timestamp to the database
                                 let timestamp_predicate =
                                     "http://example.org/finance#predictionTimestamp";
                                 let timestamp_str = format!(
@@ -413,13 +385,11 @@ RULE :SavingsAlert :-
                                 });
                             }
 
-                            // Acquire lock for metadata triple
                             let mut dict = database.dictionary_mut();
 
-                            // Add an execution metadata triple with current timestamp
                             let metadata_subject = "http://example.org#predictionExecution";
                             let timestamp_predicate = "http://example.org/metadata#executionTime";
-                            let timestamp_value = "2025-05-30 14:49:43"; // Current UTC time
+                            let timestamp_value = "2025-05-30 14:49:43";
 
                             let metadata_subject_id = dict.encode(metadata_subject);
                             let timestamp_predicate_id = dict.encode(timestamp_predicate);
@@ -446,7 +416,6 @@ RULE :SavingsAlert :-
         }
     }
 
-    // Define the SELECT query to get users with savings alerts
     let select_query = r#"PREFIX finance: <http://example.org/finance#>
 PREFIX ex: <http://example.org#>
 
@@ -455,7 +424,6 @@ WHERE {
     ?user ex:savingsAlert ?alert .
 }"#;
 
-    // Execute the SELECT query to get results
     let query_results = execute(select_query, &mut database)
         .expect("query should run")
         .into_rows();
@@ -464,7 +432,6 @@ WHERE {
         query_results
     );
 
-    // Execute a query to show predictions for comparison
     let predictions_query = r#"PREFIX finance: <http://example.org/finance#>
 SELECT ?user ?predicted_savings ?confidence
 WHERE {
@@ -477,7 +444,6 @@ WHERE {
         .into_rows();
     println!("ML Predictions in database: {:?}", predictions_results);
 
-    // Execute a query to show all user financial data for comparison
     let all_users_query = r#"PREFIX finance: <http://example.org/finance#>
 SELECT ?user ?income ?spending ?savings_rate
 WHERE {

@@ -21,7 +21,7 @@ fn op(s: u64, e: u64) -> Interval {
     Interval { start: s, end: e }
 }
 
-/// Diamond dilates: [2,17] under Diamondminus[0,2] -> [2,19].
+/// Diamond dilates: [2,17] under Diamondminus[0,2] -> [2,19]
 #[test]
 fn test_diamond_transducer() {
     assert_eq!(
@@ -30,7 +30,7 @@ fn test_diamond_transducer() {
     );
 }
 
-/// Box erodes: [2,19] under Boxminus[0,5] -> [7,19]; a too-short interval drops.
+/// Box erodes: [2,19] under Boxminus[0,5] -> [7,19]; a too-short interval drops
 #[test]
 fn test_box_transducer() {
     assert_eq!(transducer::box_(&[iv(2, 19)], &op(0, 5)), vec![iv(7, 19)]);
@@ -40,15 +40,13 @@ fn test_box_transducer() {
     );
 }
 
-/// Future ops: Diamondplus shifts earlier; Boxplus erodes from the right.
+/// Future ops: Diamondplus shifts earlier; Boxplus erodes from the right
 #[test]
 fn test_future_transducers() {
-    // Diamondplus[0,1]: [5,10] -> [5-1, 10-0] = [4,10].
     assert_eq!(
         transducer::diamond_plus(&[iv(5, 10)], &op(0, 1)),
         vec![iv(4, 10)]
     );
-    // Boxplus[0,2]: [5,10] -> [5-0, 10-2] = [5,8]; a too-short interval drops.
     assert_eq!(
         transducer::box_plus(&[iv(5, 10)], &op(0, 2)),
         vec![iv(5, 8)]
@@ -57,14 +55,13 @@ fn test_future_transducers() {
         transducer::box_plus(&[iv(5, 6)], &op(0, 2)),
         Vec::<TInterval>::new()
     );
-    // A(a)@[0,20] Until[1,2] B(a)@[5,5]  ->  [3,4].
     assert_eq!(
         transducer::until(&[iv(0, 20)], &[iv(5, 5)], &op(1, 2)),
         vec![iv(3, 4)]
     );
 }
 
-/// End-to-end future op in the interval evaluator (static).
+/// End-to-end future op in the interval evaluator (static)
 #[test]
 fn test_future_materialize() {
     let dict = make_dict();
@@ -97,22 +94,19 @@ fn test_future_materialize() {
     assert_eq!(db.facts.get(&b_a), Some(&vec![iv(4, 10)]));
 }
 
-/// Real-line coalescing: touching closed intervals merge; integer-adjacent
-/// (real-separated) ones do NOT — the ℤ-vs-ℝ fix.
+/// Real-line coalescing: touching closed intervals merge; integer-adjacent (real-separated) ones do
+/// NOT — the ℤ-vs-ℝ fix
 #[test]
 fn test_coalesce_real_line() {
-    assert_eq!(coalesce(vec![iv(1, 5), iv(5, 8)]), vec![iv(1, 8)]); // touch
-    assert_eq!(coalesce(vec![iv(1, 5), iv(6, 8)]), vec![iv(1, 5), iv(6, 8)]); // gap (1,6)
+    assert_eq!(coalesce(vec![iv(1, 5), iv(5, 8)]), vec![iv(1, 8)]);
+    assert_eq!(coalesce(vec![iv(1, 5), iv(6, 8)]), vec![iv(1, 5), iv(6, 8)]);
     assert_eq!(
         coalesce(vec![iv(2, 19), iv(20, 22)]),
         vec![iv(2, 19), iv(20, 22)]
     );
 }
 
-/// End-to-end: the g28 chained-operator case that the tick engine got wrong.
-/// RAC(X) :- Diamondminus[0,2] GraduateStudent(X)
-/// RA(X)  :- Boxminus[0,5] RAC(X)
-/// GS(g)@[2,17], GS(g)@[20,20]  =>  RAC(g)=[2,19]∪[20,22],  RA(g)=[7,19]  (MeTeoR).
+/// End-to-end: the g28 chained-operator case that the tick engine got wrong
 #[test]
 fn test_chained_operators_zvsr() {
     let dict = make_dict();
@@ -178,7 +172,7 @@ fn test_chained_operators_zvsr() {
     );
 }
 
-/// A binary temporal join: Near(X,Y) :- Loc(X,L), Diamondminus[1,5] Loc(Y,L).
+/// A binary temporal join: Near(X,Y) :- Loc(X,L), Diamondminus[1,5] Loc(Y,L)
 #[test]
 fn test_binary_temporal_join() {
     let dict = make_dict();
@@ -199,8 +193,6 @@ fn test_binary_temporal_join() {
             },
         ],
     };
-    // a at r1 over [3,3]; b at r1 over [0,0]. Near(a,b) holds where Loc(a,r1) AND
-    // Diamond[1,5]Loc(b,r1): b's [0,0] dilates to [1,5]; intersect [3,3] -> [3,3].
     let facts = vec![
         (
             Triple {
@@ -228,10 +220,8 @@ fn test_binary_temporal_join() {
     assert_eq!(db.facts.get(&near_ab), Some(&vec![iv(3, 3)]));
 }
 
-/// ω: an eventually-always recursion saturates to `[l, +∞)` and answers
-/// far-future entailment without materializing to that time.
-/// Alarm(X) :- Trigger(X)
-/// Alarm(X) :- Diamondminus[0,1] Alarm(X)   (overlapping copies -> continuous)
+/// ω: an eventually-always recursion saturates to `[l, +∞)` and answers far-future entailment
+/// without materializing to that time
 #[test]
 fn test_omega_eventually_always() {
     let dict = make_dict();
@@ -275,17 +265,15 @@ fn test_omega_eventually_always() {
         Some(&vec![TInterval::from_to_inf(5, false)]),
         "Alarm(a) must saturate to [5, +∞)",
     );
-    // Far-future entailment, answered from the lasso representation.
     assert!(entails(&model, &alarm_a, iv(1_000_000, 1_000_000)));
-    assert!(entails(&model, &alarm_a, iv(5, 1_000_000))); // whole span (continuous)
+    assert!(entails(&model, &alarm_a, iv(5, 1_000_000)));
     assert!(entails(&model, &alarm_a, iv(5, 5)));
     assert!(!entails(&model, &alarm_a, iv(4, 4)));
     assert_eq!(model.db.facts[&alarm_a][0].end, POS_INF);
 }
 
-/// ω: a genuinely periodic (gappy) program is *extracted* (prefix + period) and
-/// answers far-future entailment by extrapolation.
-/// P(X) :- Seed(X);  P(X) :- Diamondminus[2,2] P(X)   (holds at even ticks, forever)
+/// ω: a genuinely periodic (gappy) program is *extracted* (prefix + period) and answers far-future
+/// entailment by extrapolation
 #[test]
 fn test_omega_periodic_extracted() {
     let dict = make_dict();
@@ -324,7 +312,6 @@ fn test_omega_periodic_extracted() {
         predicate: rdf_type,
         object: p,
     };
-    // Holds at even ticks forever, not odd ones, and never over a 2-wide span.
     assert!(entails(&model, &p_a, iv(1000, 1000)));
     assert!(entails(&model, &p_a, iv(1_000_000, 1_000_000)));
     assert!(!entails(&model, &p_a, iv(1001, 1001)));
@@ -335,8 +322,7 @@ fn test_omega_periodic_extracted() {
     );
 }
 
-/// ω + future: backward recursion gives a LEFT (past) period.
-/// P(X) :- Seed(X);  P(X) :- Diamondplus[2,2] P(X)   (holds at even ticks toward −∞)
+/// ω + future: backward recursion gives a LEFT (past) period
 #[test]
 fn test_omega_left_periodic() {
     let dict = make_dict();
@@ -375,17 +361,16 @@ fn test_omega_left_periodic() {
         predicate: rdf_type,
         object: p,
     };
-    assert!(entails(&model, &p_a, iv(-1000, -1000))); // even → holds forever into the past
+    assert!(entails(&model, &p_a, iv(-1000, -1000)));
     assert!(entails(&model, &p_a, iv(-1_000_000, -1_000_000)));
-    assert!(!entails(&model, &p_a, iv(-1001, -1001))); // odd → never
+    assert!(!entails(&model, &p_a, iv(-1001, -1001)));
     assert!(
         !entails(&model, &p_a, iv(-1000, -999)),
         "no continuous coverage across the gap"
     );
 }
 
-/// ω + future: overlapping backward recursion saturates to `(−∞, e]`.
-/// Q(X) :- Seed(X);  Q(X) :- Diamondplus[0,1] Q(X)
+/// ω + future: overlapping backward recursion saturates to `(−∞, e]`
 #[test]
 fn test_omega_past_always() {
     let dict = make_dict();
@@ -427,12 +412,12 @@ fn test_omega_past_always() {
         Some(&vec![TInterval::from_neg_inf(0, false)]),
         "Q must saturate to (−∞, 0]"
     );
-    assert!(entails(&model, &q_a, iv(-1_000_000, 0))); // whole past span
+    assert!(entails(&model, &q_a, iv(-1_000_000, 0)));
     assert!(entails(&model, &q_a, iv(-1_000_000, -1_000_000)));
-    assert!(!entails(&model, &q_a, iv(1, 1))); // nothing in the future
+    assert!(!entails(&model, &q_a, iv(1, 1)));
 }
 
-/// ω over a finite program agrees with the finite evaluator (generalization check).
+/// ω over a finite program agrees with the finite evaluator (generalization check)
 #[test]
 fn test_omega_finite_agrees() {
     let dict = make_dict();

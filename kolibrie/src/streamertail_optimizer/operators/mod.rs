@@ -8,11 +8,7 @@
  * you can obtain one at https://mozilla.org/MPL/2.0/.
  */
 
-//! The two plan representations.
-//!
-//! [`LogicalOperator`] says *what* to compute and [`PhysicalOperator`] says *how*.
-//! Optimisation is the translation between them, and it is only interesting because
-//! the mapping is one-to-many.
+//! The two plan representations
 
 pub mod logical;
 pub mod physical;

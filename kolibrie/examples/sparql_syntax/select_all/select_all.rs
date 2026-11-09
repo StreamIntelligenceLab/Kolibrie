@@ -10,7 +10,6 @@
 
 use kolibrie::prelude::*;
 
-// Simple select all
 fn simple_select_all() {
     let rdf_data = r#"
         <?xml version="1.0" encoding="UTF-8"?>
@@ -50,7 +49,7 @@ fn simple_select_all() {
 </rdf:RDF>
     "#;
 
-    let mut database = SparqlDatabase::new();
+    let mut database = KolibrieDB::new();
     database.parse_rdf(rdf_data);
 
     let sparql = r#"PREFIX foaf: <http://xmlns.com/foaf/0.1/> PREFIX ds: <https://data.cityofchicago.org/resource/xzkq-xp2w/> SELECT * WHERE {?employee foaf:name ?name . ?employee foaf:title ?title . ?employee foaf:workplaceHomepage ?workplaceHomepage . ?employee ds:full_or_part_time ?full_or_part_time . ?employee ds:salary_or_hourly ?salary_or_hourly . ?employee ds:annual_salary ?salary}"#;
@@ -59,7 +58,6 @@ fn simple_select_all() {
         .expect("query should run")
         .into_rows();
 
-    // Now the main function is responsible for printing the results
     println!("Results:");
     for result in results {
         let name = &result[0];

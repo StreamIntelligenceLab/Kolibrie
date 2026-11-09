@@ -1,6 +1,8 @@
-# Pinned toolchain for day-to-day development and reproducible local builds.
-# This is NOT the MSRV — that is `rust-version` in [workspace.package] (1.85)
-# and is enforced separately by the `msrv` CI job.
+# Toolchain for day-to-day development: whatever stable is installed locally,
+# matching what CI builds with (dtolnay/rust-toolchain@stable).
+# rust-toolchain.toml cannot express a version range, so the floor is
+# `rust-version` in [workspace.package] (1.85), which cargo enforces and the
+# `msrv` CI job tests.
 [toolchain]
-channel    = "1.96.0"
+channel    = "stable"
 components = ["rustfmt", "clippy"]

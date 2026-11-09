@@ -7,11 +7,11 @@ mod ml_local {
     ));
 }
 
+use kolibrie::database::KolibrieDB;
 use kolibrie::program::{
     compile_program, execute_program, query_program_result, ProgramError, ProgramOptions,
     PublishedProgramResult,
 };
-use kolibrie::sparql_database::SparqlDatabase;
 use ml::{MlpNeuralPredicate, OutputType};
 
 const EX: &str = "http://example.org/";
@@ -34,7 +34,7 @@ fn samples() -> Vec<(&'static str, &'static str, [f64; 3], Option<&'static str>)
     ]
 }
 
-fn populate(db: &mut SparqlDatabase, eval_labels: bool) {
+fn populate(db: &mut KolibrieDB, eval_labels: bool) {
     for (name, split, features, label) in samples() {
         let subject = ex(name);
         db.add_triple_parts(&subject, &ex("split"), &ex(split));

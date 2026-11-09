@@ -48,7 +48,7 @@ fn sum_aggregate() {
     </rdf:Description>
 </rdf:RDF>
     "#;
-    let mut database = SparqlDatabase::new();
+    let mut database = KolibrieDB::new();
     database.parse_rdf(rdf_data);
 
     let sparql = r#"PREFIX foaf: <http://xmlns.com/foaf/0.1/> PREFIX ds: <https://data.cityofchicago.org/resource/xzkq-xp2w/> SELECT ?title SUM(?salary) AS ?total_salary WHERE {?employee foaf:title ?title . ?employee ds:annual_salary ?salary} GROUP BY ?title"#;
@@ -57,7 +57,6 @@ fn sum_aggregate() {
         .expect("query should run")
         .into_rows();
 
-    // Now the main function is responsible for printing the results
     println!("Results:");
     for result in results {
         if let [title, salary] = &result[..] {

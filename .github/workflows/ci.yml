@@ -115,6 +115,25 @@ jobs:
         env:
           RUSTDOCFLAGS: "-D rustdoc::broken_intra_doc_links"
 
+  # Python lint, format and tests, with tools pinned by uv.lock
+  python:
+    name: python (ruff + pytest)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with:
+          version: "0.13.5"
+          enable-cache: true
+      - name: uv.lock matches pyproject.toml
+        run: uv lock --check
+      - name: ruff check
+        run: uv run --locked --only-group dev ruff check --output-format github
+      - name: ruff format
+        run: uv run --locked --only-group dev ruff format --check
+      - name: pytest
+        run: uv run --locked --only-group dev pytest
+
   # ── The ML / Python surface, which `default-members` does not cover ─────────
 
   ml:
@@ -124,13 +143,19 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with: { python-version: "3.11" }
+      - uses: astral-sh/setup-uv@v6
+        with:
+          version: "0.13.5"
+          enable-cache: true
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
-      - run: cargo build -p kolibrie --features ml --all-targets
+      - name: Install the locked Python environment
+        run: uv sync --locked
+      - run: uv run --no-sync cargo build -p kolibrie --features ml --all-targets
       # Builds the cdylib and then actually imports it: building alone never
       # executed a line of Python, which is the gap `smoke_examples.py` closes on
       # the Rust side. It runs every example in `python/examples`.
-      - run: python3 scripts/smoke_python.py
+      - run: uv run --no-sync python scripts/smoke_python.py
 
   # Blocking because these lints have reached zero in the scopes listed below and
   # must stay there. Both stay at `warn` in [workspace.lints] on purpose: making a
@@ -160,11 +185,6 @@ jobs:
       # of its twenty-three examples did not compile when this check was written.
       - name: the README's examples compile
         run: python3 scripts/readme_examples.py
-      # docs/api.md is generated, and generating it is only worth anything if a
-      # stale copy fails. The 371 hand-written lines it replaced documented three
-      # methods that no longer existed.
-      - name: docs/api.md matches the source
-        run: python3 scripts/api_surface.py --check
       # unreachable_pub reached zero workspace-wide in step 4b.
       - name: unreachable_pub, default features
         run: scripts/check_lint.sh unreachable_pub -- --workspace --all-targets

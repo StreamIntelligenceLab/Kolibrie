@@ -13,9 +13,7 @@ use crate::evaluator::DatalogMTLEvaluator;
 use crate::store::{TemporalSnapshotStore, TemporalStore};
 use crate::syntax::{DatalogMTLRule, Interval, TemporalAtom};
 
-/// Test 5: Since operator.
-/// Rule: (?x :continuouslyActive) :-
-///   Since[0, 60000] ((?x :active :true), (?x :started :true))
+/// Test 5: Since operator
 #[test]
 fn test_since_basic() {
     let dict = make_dict();
@@ -25,8 +23,6 @@ fn test_since_basic() {
     let cont_active = enc(&dict, ":continuouslyActive");
     let true_val = enc(&dict, ":true");
 
-    // Rule: (?x :continuouslyActive) :-
-    //   Since[0, 60000] phi=(?x :active :true), psi=(?x :started :true)
     let rule = DatalogMTLRule {
         id: "continuouslyActive".into(),
         head: (v("x"), c(cont_active), c(true_val)),
@@ -43,17 +39,14 @@ fn test_since_basic() {
     let store = TemporalSnapshotStore::new(1_000);
     let mut eval = DatalogMTLEvaluator::new(vec![rule], store, dict.clone()).unwrap();
 
-    // t=0: W started (the reset/trigger psi).
     eval.advance(0, vec![triple(w, started, true_val)]);
 
-    // t=1..=6: W active at every integer tick (dense continuation phi).
     let mut last_metrics = None;
     for t in 1..=6u64 {
         let (_, m) = eval.advance(t, vec![triple(w, active, true_val)]);
         last_metrics = Some(m);
     }
 
-    // At t=6, :started held at 0 and :active held continuously on (0,6].
     let (derived6, metrics6) = eval.advance(6, vec![triple(w, active, true_val)]);
     let expected = triple(w, cont_active, true_val);
 
@@ -79,7 +72,6 @@ fn test_since_basic() {
         "since_scan_depth should be > 0"
     );
 
-    // Stop feeding :active. Advance to t=8 with no new triples.
     let (derived8, _) = eval.advance(8, vec![]);
     let all8: Vec<_> = eval
         .store
@@ -94,7 +86,6 @@ fn test_since_basic() {
         })
         .collect();
 
-    // Without :active at t=7,8, phi fails in (0, 8], so Since fails.
     assert!(
         !all8.contains(&expected) && !derived8.contains(&expected),
         "(W :continuouslyActive) should NOT hold at t=8 without :active"

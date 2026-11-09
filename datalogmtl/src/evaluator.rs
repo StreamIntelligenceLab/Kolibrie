@@ -8,35 +8,7 @@
  * you can obtain one at https://mozilla.org/MPL/2.0/.
  */
 
-//! The tick evaluator: one bottom-up fixpoint per time point, over a stream.
-//!
-//! [`DatalogMTLEvaluator::advance`] ingests the facts arriving at `t`, derives
-//! everything the rules entail at `t`, and evicts what can no longer matter.
-//!
-//! # The time unit is not a free choice
-//!
-//! `Box` is decided by stepping one integer at a time across its window, so a
-//! point in that window with no supporting fact fails it. Two consequences, both
-//! of which have cost real debugging time:
-//!
-//! - Cost is proportional to the window's width *in whatever unit the timestamps
-//!   use*, not to the number of facts in it.
-//! - With millisecond timestamps and a sampling period of one second,
-//!   `Box[0,5000]` asks for a fact at 5001 consecutive milliseconds and finds one
-//!   at every thousandth, so it derives nothing — silently, because deriving
-//!   nothing is also what a correctly unsatisfied rule does.
-//!
-//! Express time in units of the sampling period, so consecutive integers are
-//! consecutive observations. The interval engine in
-//! [`automata`](crate::automata) does not have this property at all, because it
-//! reasons over real intervals instead of integer points.
-//!
-//! # Eviction
-//!
-//! Each tick drops everything older than `t - w_max`, where `w_max` is the
-//! furthest back any single body atom can reach. Nesting adds, so
-//! `Box[0,5]Diamond[0,3]` reaches back 8; separate rules take the maximum rather
-//! than the sum, since each reaches back independently of the others.
+//! The tick evaluator: one bottom-up fixpoint per time point, over a stream
 
 use crate::metrics::TickMetrics;
 use crate::store::TemporalStore;
@@ -49,28 +21,18 @@ use shared::triple::Triple;
 use std::collections::HashSet;
 use std::time::Instant;
 
-/// A validated rule set together with the store it reads and writes.
-///
-/// Generic over the store so the representation can be chosen per workload
-/// without the evaluator knowing which it got.
+/// A validated rule set together with the store it reads and writes
 pub struct DatalogMTLEvaluator<S: TemporalStore> {
-    /// Rules, validated at construction. Mutating this afterwards bypasses that
-    /// check and leaves `w_max` stale, so eviction may then drop facts a rule
-    /// still needs; rebuild the evaluator instead.
+    /// Rules, validated at construction
     pub rules: Vec<DatalogMTLRule>,
-    /// Facts, both ingested and derived.
+    /// Facts, both ingested and derived
     pub store: S,
-    /// Term interning, shared with the caller: ids in the rules and the store
-    /// have to mean the same thing outside.
+    /// Term interning, shared with the caller: ids in the rules and the store have to mean the same
+    /// thing outside
     pub dictionary: SharedTerms,
-    /// Maximum interval width across all rules. Used for eviction cutoff.
     w_max: u64,
 }
 
-// Summarised rather than derived, and deliberately not bounded on `S: Debug`: the
-// store is the fact base, and requiring it to be printable would push that
-// obligation onto every store implementation for no benefit. `snapshot_count` is the
-// cheap question to ask one.
 impl<S: TemporalStore> std::fmt::Debug for DatalogMTLEvaluator<S> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("DatalogMTLEvaluator")
@@ -82,12 +44,7 @@ impl<S: TemporalStore> std::fmt::Debug for DatalogMTLEvaluator<S> {
 }
 
 impl<S: TemporalStore> DatalogMTLEvaluator<S> {
-    /// Validates `rules` and computes the eviction horizon from them.
-    ///
-    /// # Errors
-    ///
-    /// The message from [`validate_rules`]:
-    /// an interval with `start > end`, or a head variable no body atom can bind.
+    /// Validates `rules` and computes the eviction horizon from them
     pub fn new(
         rules: Vec<DatalogMTLRule>,
         store: S,
@@ -103,18 +60,15 @@ impl<S: TemporalStore> DatalogMTLEvaluator<S> {
         })
     }
 
-    /// Advance to time t, ingesting new_triples into the store.
-    /// Returns all newly derived triples and per-tick metrics.
+    /// Advance to time t, ingesting new_triples into the store
     pub fn advance(&mut self, t: u64, new_triples: Vec<Triple>) -> (Vec<Triple>, TickMetrics) {
         let start = Instant::now();
         let mut metrics = TickMetrics::new(t);
 
-        // 1. Ingest stream triples at t.
         for triple in &new_triples {
             self.store.insert(triple, t);
         }
 
-        // 2. Bottom-up fixpoint: derive new facts at t.
         let mut all_derived: HashSet<Triple> = HashSet::new();
         loop {
             let mut new_this_round = Vec::new();
@@ -141,7 +95,6 @@ impl<S: TemporalStore> DatalogMTLEvaluator<S> {
             metrics.new_triples += new_this_round.len();
         }
 
-        // 3. Evict snapshots older than w_max.
         let cutoff = t.saturating_sub(self.w_max);
         self.store.evict(cutoff);
 
@@ -152,10 +105,8 @@ impl<S: TemporalStore> DatalogMTLEvaluator<S> {
         (all_derived.into_iter().collect(), metrics)
     }
 
-    /// Evaluate one rule at time t. Returns all satisfying variable bindings.
+    /// Evaluate one rule at time t
     fn evaluate_rule(&self, rule: &DatalogMTLRule, t: u64, metrics: &mut TickMetrics) -> Bindings {
-        // Step 1: seed bindings from all Base atoms at the current snapshot,
-        // using indexed store lookups and indexed joins (no full-fact scan).
         let base_atoms: Vec<&TriplePattern> = rule
             .body
             .iter()
@@ -170,10 +121,9 @@ impl<S: TemporalStore> DatalogMTLEvaluator<S> {
 
         let mut bindings = self.seed_base_atoms(&base_atoms, t);
 
-        // Step 2: for each temporal atom, filter/extend bindings.
         for atom in &rule.body {
             match atom {
-                TemporalAtom::Base(_) => {} // already handled above
+                TemporalAtom::Base(_) => {}
                 TemporalAtom::Diamond { interval, inner } => {
                     metrics.diamond_evals += 1;
                     bindings = self.eval_diamond(interval, inner, t, &bindings);
@@ -191,13 +141,9 @@ impl<S: TemporalStore> DatalogMTLEvaluator<S> {
                     bindings = new_bindings;
                     metrics.since_scan_depth += depth;
                 }
-                // A top-level conjunction is just its conjuncts at time t.
                 TemporalAtom::Conj(_) => {
                     bindings = self.eval_atom_at(atom, t, &bindings);
                 }
-                // Future operators require static data; the streaming tick engine
-                // cannot evaluate them. Unreachable — the parser blocks future ops
-                // in Streaming mode, and Static mode uses the interval engine.
                 TemporalAtom::DiamondPlus { .. }
                 | TemporalAtom::BoxPlus { .. }
                 | TemporalAtom::Until { .. } => {
@@ -211,10 +157,7 @@ impl<S: TemporalStore> DatalogMTLEvaluator<S> {
         bindings
     }
 
-    /// Seed bindings by joining the rule's Base atoms at time `t` using indexed
-    /// store lookups. Each subsequent atom is queried with the running binding
-    /// substituted in, turning the join into indexed probes rather than an
-    /// O(facts^k) nested-loop scan.
+    /// Seed bindings by joining the rule's Base atoms at time `t` using indexed store lookups
     fn seed_base_atoms(&self, base_atoms: &[&TriplePattern], t: u64) -> Bindings {
         let Some((first, rest)) = base_atoms.split_first() else {
             return Bindings::unit();
@@ -229,8 +172,6 @@ impl<S: TemporalStore> DatalogMTLEvaluator<S> {
                 let spec = substitute_pattern(pattern, binding);
                 let candidates = self.store.query_at(&spec, t);
                 for candidate in candidates.iter() {
-                    // Owned, because a merge adds variables the row did not have and
-                    // a row of a sequence is a view into one schema.
                     let mut merged = binding.to_binding();
                     let mut consistent = true;
                     for (var, val) in candidate.iter() {
@@ -253,9 +194,7 @@ impl<S: TemporalStore> DatalogMTLEvaluator<S> {
         bindings
     }
 
-    // --- Temporal operator implementations ---
-
-    /// Diamond[a,b]: phi must hold at SOME t' in [t-b, t-a].
+    /// Diamond[a,b]: phi must hold at SOME t' in [t-b, t-a]
     fn eval_diamond(
         &self,
         interval: &Interval,
@@ -279,12 +218,7 @@ impl<S: TemporalStore> DatalogMTLEvaluator<S> {
         results
     }
 
-    /// Box[a,b]: phi must hold at EVERY integer point t' in [t-b, t-a]
-    /// (dense semantics, matching the DatalogMTL/MeTeoR reference: an integer in
-    /// the window with no supporting fact makes Box fail — it is not skipped).
-    /// Collects candidate bindings from the first point, then filters them
-    /// against every subsequent point — so variables introduced solely inside
-    /// Box (e.g. Box[0,5](?x :sensor ?v)) are still grounded.
+    /// Box[a,b]: phi must hold at every integer point t' in [t-b, t-a]
     fn eval_box(
         &self,
         interval: &Interval,
@@ -292,25 +226,18 @@ impl<S: TemporalStore> DatalogMTLEvaluator<S> {
         t: u64,
         bindings: &Bindings,
     ) -> Bindings {
-        // Universal operator: the whole window [t-end, t-start] must lie within
-        // observable time [0, t]. If t < end the window extends before time 0,
-        // where nothing holds, so Box fails. (Guarding on interval.start would
-        // let absolute_range's saturating_sub clamp the lower bound to 0 and
-        // spuriously satisfy Box at the leading boundary.)
         if t < interval.end {
             return Bindings::empty();
         }
-        let (lo, hi) = interval.absolute_range(t); // lo <= hi since end >= start
+        let (lo, hi) = interval.absolute_range(t);
         let mut results = Bindings::empty();
         'outer: for binding in bindings {
-            // Seed candidates from the first integer point.
             let mut candidates =
                 self.eval_atom_at(inner, lo, &Bindings::single(binding.to_binding()));
             if candidates.is_empty() {
                 continue 'outer;
             }
 
-            // Require every subsequent integer point in the window to satisfy inner.
             for t_prime in (lo + 1)..=hi {
                 let mut surviving = Bindings::empty();
                 for candidate in candidates {
@@ -330,7 +257,7 @@ impl<S: TemporalStore> DatalogMTLEvaluator<S> {
         results
     }
 
-    /// Prev[a,b]: phi holds at the MOST RECENT t' in [t-b, t-a].
+    /// Prev[a,b]: phi holds at the MOST RECENT t' in [t-b, t-a]
     fn eval_prev(
         &self,
         interval: &Interval,
@@ -355,10 +282,8 @@ impl<S: TemporalStore> DatalogMTLEvaluator<S> {
         results
     }
 
-    /// phi Since[a,b] psi:
-    ///   EXISTS t' in [t-b, t-a]: psi holds at t'
-    ///   AND FORALL t'' in (t', t]: phi holds at t''
-    /// Returns (bindings, total_scan_depth).
+    /// phi Since[a,b] psi: EXISTS t' in [t-b, t-a]: psi holds at t' AND FORALL t'' in (t', t]: phi
+    /// holds at t''
     fn eval_since(
         &self,
         interval: &Interval,
@@ -368,8 +293,6 @@ impl<S: TemporalStore> DatalogMTLEvaluator<S> {
         bindings: &Bindings,
     ) -> (Bindings, usize) {
         let (lo, hi) = interval.absolute_range(t);
-        // Reset candidates: fact-bearing points in the window where psi may hold
-        // (psi only holds where a fact exists, so scanning timestamps is complete).
         let since_timestamps = self.store.timestamps_in(lo, hi);
         let mut results = Bindings::empty();
         let mut scan_depth = 0;
@@ -383,8 +306,6 @@ impl<S: TemporalStore> DatalogMTLEvaluator<S> {
                     continue;
                 }
 
-                // FORALL integer t'' in (t', t]: phi must hold (dense semantics —
-                // an uncovered integer point makes the continuation fail).
                 for t_pp in (t_prime + 1)..=t {
                     scan_depth += 1;
                     let phi_results =
@@ -394,21 +315,19 @@ impl<S: TemporalStore> DatalogMTLEvaluator<S> {
                     }
                 }
                 results.extend(psi_results);
-                break 'reset; // existential: first valid reset point is enough
+                break 'reset;
             }
         }
         (results, scan_depth)
     }
 
-    /// Evaluate a single TemporalAtom at a fixed time point t_prime,
-    /// starting from the given partial bindings.
+    /// Evaluate a single TemporalAtom at a fixed time point t_prime, starting from the given
+    /// partial bindings
     fn eval_atom_at(&self, atom: &TemporalAtom, t_prime: u64, bindings: &Bindings) -> Bindings {
         match atom {
             TemporalAtom::Base(pattern) => {
                 let mut results = Bindings::empty();
                 for binding in bindings {
-                    // Specialize the pattern with already-bound variables so the
-                    // store query is as constrained (and indexed) as possible.
                     let spec = substitute_pattern(pattern, binding);
                     let candidates = self.store.query_at(&spec, t_prime);
                     for candidate in candidates.iter() {
@@ -444,8 +363,6 @@ impl<S: TemporalStore> DatalogMTLEvaluator<S> {
                 let (b, _) = self.eval_since(interval, phi, psi, t_prime, bindings);
                 b
             }
-            // All conjuncts hold at the SAME time point: thread bindings through
-            // them left to right, so each is constrained by the previous.
             TemporalAtom::Conj(atoms) => {
                 let mut current = bindings.clone();
                 for a in atoms {
@@ -456,8 +373,6 @@ impl<S: TemporalStore> DatalogMTLEvaluator<S> {
                 }
                 current
             }
-            // Future operators are unsupported by the streaming tick engine
-            // (blocked upstream by the parser/mode); yield no bindings.
             TemporalAtom::DiamondPlus { .. }
             | TemporalAtom::BoxPlus { .. }
             | TemporalAtom::Until { .. } => Bindings::empty(),
@@ -465,8 +380,7 @@ impl<S: TemporalStore> DatalogMTLEvaluator<S> {
     }
 }
 
-/// Substitute a pattern's variables that are already bound in `binding` with
-/// their constant values, so the resulting query is maximally constrained.
+/// Replaces a pattern's variables already bound in `binding` with their values
 fn substitute_pattern(pattern: &TriplePattern, binding: BindingRef<'_>) -> TriplePattern {
     let resolve = |term: &Term| -> Term {
         match term {
@@ -484,15 +398,7 @@ fn substitute_pattern(pattern: &TriplePattern, binding: BindingRef<'_>) -> Tripl
     )
 }
 
-/// How far back in time the rules can read. Drives store eviction.
-///
-/// Nesting is **additive**, not a max: `Diamond[6,20](Box[0,5] X)` evaluates the
-/// Box at some t' in `[t-20, t-6]`, and the Box then reads `[t'-5, t']` — so the
-/// earliest point touched is `t-25`. Taking the max here would evict `t-25..t-21`
-/// while a rule still needed it, and the rule would silently never fire.
-///
-/// A conjunction is the exception: its atoms all sit at the same time point, so
-/// its reach is the widest of them, not their sum.
+/// How far back in time the rules can read
 pub fn compute_w_max(rules: &[DatalogMTLRule]) -> u64 {
     fn atom_max(atom: &TemporalAtom) -> u64 {
         match atom {

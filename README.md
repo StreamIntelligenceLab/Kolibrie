@@ -42,7 +42,7 @@ For more information about our research and ongoing projects, please visit the [
 
 ### Native Installation
 
-Ensure you have [Rust](https://www.rust-lang.org/tools/install) installed (version 1.60 or higher).
+Ensure you have [Rust](https://www.rust-lang.org/tools/install) installed (version 1.85 or higher).
 
 Clone the repository:
 
@@ -60,7 +60,7 @@ cargo build --release
 Then, include it in your project:
 
 ```rust
-use kolibrie::sparql_database::SparqlDatabase;
+use kolibrie::database::KolibrieDB;
 ```
 
 ### WebUI
@@ -71,6 +71,24 @@ cargo run --bin kolibrie-http-server
 ```
 
 After that in the browser type `localhost:8080` or `0.0.0.0:8080`
+
+### Python and Machine Learning
+
+The `ml` feature runs Python models inside Kolibrie. Its Python packages are
+declared in `pyproject.toml` and pinned in `uv.lock`, and are installed with
+[uv](https://docs.astral.sh/uv/getting-started/installation/) and Python 3.10 or
+newer:
+
+```bash
+uv sync
+```
+
+Then run anything built with the `ml` feature through `uv run`, so the embedded
+interpreter loads the packages uv installed:
+
+```bash
+uv run cargo run --bin kolibrie-http-server --features ml
+```
 
 ### Docker Installation
 
@@ -152,23 +170,23 @@ docker run -it \
 
 ### Initializing the Database
 
-Create a new instance of the `SparqlDatabase`:
+Create a new instance of the `KolibrieDB`:
 
 ```rust
-use kolibrie::sparql_database::SparqlDatabase;
+use kolibrie::database::KolibrieDB;
 
 fn main() {
-    let mut db = SparqlDatabase::new();
+    let mut db = KolibrieDB::new();
     // Your code here
 }
 ```
 
 <!-- readme-examples: preamble
 use kolibrie::prelude::*;
-use kolibrie::sparql_database::SparqlDatabase;
+use kolibrie::database::KolibrieDB;
 use kolibrie::execute_query::{execute, execute_sparql_update};
-let mut db = SparqlDatabase::new();
-let mut other_db = SparqlDatabase::new();
+let mut db = KolibrieDB::new();
+let mut other_db = KolibrieDB::new();
 -->
 
 The snippets that follow assume that `db`, and the imports above, are in scope.
@@ -340,7 +358,7 @@ Supported forms are `INSERT DATA`, `DELETE DATA`, `INSERT ... WHERE`,
 `DELETE ... WHERE`, combined `DELETE/INSERT ... WHERE`, and `DELETE WHERE`.
 The `WHERE` pattern is evaluated once before changes are applied, with deletes
 performed before inserts. Python exposes the same behavior as
-`SparqlDatabase.update()`. Other SPARQL 1.1 Update forms such as `WITH`,
+`KolibrieDB.update()`. Other SPARQL 1.1 Update forms such as `WITH`,
 `USING`, `LOAD`, and graph-management operations are not part of this release.
 
 #### Query with FILTER
@@ -524,7 +542,7 @@ for (subject, predicate, object) in results {
 #### Query with Joins
 
 ```rust
-let other_db = SparqlDatabase::new();
+let other_db = KolibrieDB::new();
 // ...  populate other_db ...
 
 let results = db.query()
@@ -559,10 +577,10 @@ The **Volcano Optimizer** is integrated within **Kolibrie** to optimize query ex
 
 ```rust
 use kolibrie::execute_query::*;
-use kolibrie::sparql_database::*;
+use kolibrie::database::*;
 
 fn main() {
-    let mut db = SparqlDatabase::new();
+    let mut db = KolibrieDB::new();
 
     // Parse N-Triples data
     let ntriples_data = r#"
@@ -607,7 +625,7 @@ than a cast.
 <!-- readme-examples: preamble none -->
 
 ```rust
-use kolibrie::sparql_database::SparqlDatabase;
+use kolibrie::database::KolibrieDB;
 use shared::rdf_term::{kind_of, numeric_value, spell_literal, TermKind};
 
 fn main() {
@@ -634,7 +652,7 @@ fn main() {
     assert_eq!(kind_of("http://example.org/alice"), TermKind::Iri);
 
     // Which is what lets the engine aggregate typed data.
-    let mut db = SparqlDatabase::new();
+    let mut db = KolibrieDB::new();
     db.parse_ntriples_and_add(&format!(
         "<urn:a> <urn:age> \"30\"^^<{XSD_INTEGER}> .\n<urn:b> <urn:age> \"12\"^^<{XSD_INTEGER}> .\n"
     ));
@@ -655,10 +673,10 @@ readers scope it. Publishing a graph for another system to merge means replacing
 blank nodes with IRIs, which RDF 1.1 §3.5 calls skolemisation:
 
 ```rust
-use kolibrie::sparql_database::SparqlDatabase;
+use kolibrie::database::KolibrieDB;
 
 fn main() {
-    let mut db = SparqlDatabase::new();
+    let mut db = KolibrieDB::new();
     db.parse_ntriples_and_add("_:b <urn:reading> \"1\" .\n");
 
     // Document-local, and sound only inside this store: a second instance counts
@@ -675,10 +693,10 @@ fn main() {
 
 <!-- readme-examples: preamble
 use kolibrie::prelude::*;
-use kolibrie::sparql_database::SparqlDatabase;
+use kolibrie::database::KolibrieDB;
 use kolibrie::execute_query::{execute, execute_sparql_update};
-let mut db = SparqlDatabase::new();
-let mut other_db = SparqlDatabase::new();
+let mut db = KolibrieDB::new();
+let mut other_db = KolibrieDB::new();
 -->
 
 ### Working with the Reasoner
@@ -761,28 +779,12 @@ Alice is ancestor of Charlie
 
 ## API documentation
 
-Two generated references, neither written by hand:
+The API reference is generated from the source by
+[`cargo doc`](https://doc.rust-lang.org/cargo/commands/cargo-doc.html):
 
-- **[`cargo doc --workspace --open`]** is the authority. It carries the types, the
-  bounds, the panics and the prose, and it cannot disagree with the code because it
-  *is* the code.
-- **[`docs/api.md`](docs/api.md)** is the index: every public item, by crate and
-  file, generated by `scripts/api_surface.py`. It exists so a change to the public
-  surface shows up in a diff.
-
-How the workspace fits together — the crate graph, the modules of `kolibrie`
-arranged into layers, and what depends on what — is in
-[`docs/architecture.md`](docs/architecture.md), generated by
-`scripts/module_graph.py`.
-
-There used to be 371 lines here restating method signatures by hand, and they
-drifted: three methods that no longer existed were documented for a while after they
-were removed, here and in five translations that are gone for the same reason --
-nothing checked any of them. `scripts/verify.sh` now checks that `docs/api.md`
-matches the source and that every example in this README still compiles, so neither
-can go stale quietly again.
-
-[`cargo doc --workspace --open`]: https://doc.rust-lang.org/cargo/commands/cargo-doc.html
+```bash
+cargo doc --workspace --open
+```
 
 ## How to Contribute
 

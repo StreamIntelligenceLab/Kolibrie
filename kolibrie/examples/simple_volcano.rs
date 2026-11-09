@@ -8,7 +8,7 @@
  * you can obtain one at https://mozilla.org/MPL/2.0/.
  */
 
-use kolibrie::sparql_database::SparqlDatabase;
+use kolibrie::database::KolibrieDB;
 use kolibrie::streamertail_optimizer::operators::logical::LogicalOperator;
 use kolibrie::streamertail_optimizer::optimizer::Streamertail;
 use kolibrie::streamertail_optimizer::types::Condition;
@@ -19,31 +19,24 @@ use std::time::Instant;
 fn main() {
     println!("=== Simple Volcano Optimizer Example ===\n");
 
-    // Create a new database
-    let mut database = SparqlDatabase::new();
+    let mut database = KolibrieDB::new();
 
-    // Add some sample data
     add_sample_data(&mut database);
 
-    // Example 1: Simple scan query
     simple_scan_example(&mut database);
 
-    // Example 2: Join query
     join_example(&mut database);
 
-    // Example 3: Filter query
     filter_example(&mut database);
 
     println!("=== Example completed successfully! ===");
 }
 
-fn add_sample_data(database: &mut SparqlDatabase) {
+fn add_sample_data(database: &mut KolibrieDB) {
     println!("Adding sample data...");
 
-    // Acquire write lock on dictionary for all encoding operations
     let mut dict = database.dictionary_mut();
 
-    // Add some triples about people
     let alice_id = dict.encode("http://example.org/alice");
     let bob_id = dict.encode("http://example.org/bob");
     let charlie_id = dict.encode("http://example.org/charlie");
@@ -60,10 +53,8 @@ fn add_sample_data(database: &mut SparqlDatabase) {
     let age_35 = dict.encode("35");
     let company_id = dict.encode("http://example.org/company");
 
-    // Release lock early
     drop(dict);
 
-    // Add triples
     database.add_triple(Triple {
         subject: alice_id,
         predicate: name_id,
@@ -118,21 +109,19 @@ fn add_sample_data(database: &mut SparqlDatabase) {
     );
 }
 
-fn simple_scan_example(database: &mut SparqlDatabase) {
+fn simple_scan_example(database: &mut KolibrieDB) {
     println!("=== Example 1: Simple Scan ===");
 
     let mut dict = database.dictionary_mut();
     let name_id = dict.encode("http://example.org/name");
     drop(dict);
 
-    // Create a logical plan: scan for all names
     let logical_plan = LogicalOperator::scan((
         Term::Variable("person".to_string()),
         Term::Constant(name_id),
         Term::Variable("name".to_string()),
     ));
 
-    // Create optimizer and find best plan
     let start = Instant::now();
     let mut optimizer = Streamertail::new(database);
     let physical_plan = optimizer.find_best_plan(&logical_plan);
@@ -141,7 +130,6 @@ fn simple_scan_example(database: &mut SparqlDatabase) {
     println!("Optimization completed in {:?}", optimization_time);
     println!("Physical plan: {:?}\n", physical_plan);
 
-    // Execute the plan
     let start = Instant::now();
     let results = physical_plan.execute(database);
     let execution_time = start.elapsed();
@@ -154,7 +142,7 @@ fn simple_scan_example(database: &mut SparqlDatabase) {
     println!();
 }
 
-fn join_example(database: &mut SparqlDatabase) {
+fn join_example(database: &mut KolibrieDB) {
     println!("=== Example 2: Join Query ===");
 
     let mut dict = database.dictionary_mut();
@@ -162,7 +150,6 @@ fn join_example(database: &mut SparqlDatabase) {
     let age_id = dict.encode("http://example.org/age");
     drop(dict);
 
-    // Create a logical plan: join names with ages
     let name_scan = LogicalOperator::scan((
         Term::Variable("person".to_string()),
         Term::Constant(name_id),
@@ -177,7 +164,6 @@ fn join_example(database: &mut SparqlDatabase) {
 
     let logical_plan = LogicalOperator::join(name_scan, age_scan);
 
-    // Create optimizer and find best plan
     let start = Instant::now();
     let mut optimizer = Streamertail::new(database);
     let physical_plan = optimizer.find_best_plan(&logical_plan);
@@ -186,7 +172,6 @@ fn join_example(database: &mut SparqlDatabase) {
     println!("Optimization completed in {:?}", optimization_time);
     println!("Physical plan: {:?}\n", physical_plan);
 
-    // Execute the plan
     let start = Instant::now();
     let results = physical_plan.execute(database);
     let execution_time = start.elapsed();
@@ -199,14 +184,13 @@ fn join_example(database: &mut SparqlDatabase) {
     println!();
 }
 
-fn filter_example(database: &mut SparqlDatabase) {
+fn filter_example(database: &mut KolibrieDB) {
     println!("=== Example 3: Filter Query ===");
 
     let mut dict = database.dictionary_mut();
     let name_id = dict.encode("http://example.org/name");
     drop(dict);
 
-    // Create a logical plan: scan for all names and filter for "Alice"
     let scan = LogicalOperator::scan((
         Term::Variable("person".to_string()),
         Term::Constant(name_id),
@@ -216,7 +200,6 @@ fn filter_example(database: &mut SparqlDatabase) {
     let condition = Condition::new("name".to_string(), "=".to_string(), "Alice".to_string());
     let logical_plan = LogicalOperator::selection(scan, condition);
 
-    // Create optimizer and find best plan
     let start = Instant::now();
     let mut optimizer = Streamertail::new(database);
     let physical_plan = optimizer.find_best_plan(&logical_plan);
@@ -225,7 +208,6 @@ fn filter_example(database: &mut SparqlDatabase) {
     println!("Optimization completed in {:?}", optimization_time);
     println!("Physical plan: {:?}\n", physical_plan);
 
-    // Execute the plan
     let start = Instant::now();
     let results = physical_plan.execute(database);
     let execution_time = start.elapsed();

@@ -8,16 +8,16 @@
  * you can obtain one at https://mozilla.org/MPL/2.0/.
  */
 
-use kolibrie::sparql_database::SparqlDatabase;
+use kolibrie::database::KolibrieDB;
 use shared::dataset_index::GraphId;
 use std::collections::BTreeSet;
 
-fn create_empty_named_graph(database: &mut SparqlDatabase, name: &str) {
+fn create_empty_named_graph(database: &mut KolibrieDB, name: &str) {
     let graph_id = database.dictionary_mut().encode(name);
     assert!(database.create_graph(GraphId::Named(graph_id)));
 }
 
-fn decoded_graph_names(database: &SparqlDatabase) -> BTreeSet<String> {
+fn decoded_graph_names(database: &KolibrieDB) -> BTreeSet<String> {
     database
         .named_graphs()
         .into_iter()
@@ -30,7 +30,7 @@ fn decoded_graph_names(database: &SparqlDatabase) -> BTreeSet<String> {
 
 #[test]
 fn database_union_reencodes_and_preserves_the_complete_dataset() {
-    let mut left = SparqlDatabase::new();
+    let mut left = KolibrieDB::new();
     left.add_triple_parts("urn:left-default", "urn:p", "urn:o");
     left.add_quad_parts(
         "<< <urn:left-s> <urn:left-p> <urn:left-o> >>",
@@ -40,10 +40,7 @@ fn database_union_reencodes_and_preserves_the_complete_dataset() {
     );
     create_empty_named_graph(&mut left, "urn:left-empty");
 
-    let mut right = SparqlDatabase::new();
-    // Both independently-created databases start their dictionaries and
-    // quoted-triple stores at the same IDs. Distinct lexical values therefore
-    // exercise ID collision handling during the union.
+    let mut right = KolibrieDB::new();
     right.add_triple_parts("urn:right-default", "urn:p", "urn:o");
     right.add_quad_parts(
         "<< <urn:right-s> <urn:right-p> <urn:right-o> >>",

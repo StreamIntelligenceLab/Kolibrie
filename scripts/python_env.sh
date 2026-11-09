@@ -3,25 +3,16 @@
 #
 # Source this file; do not execute it.
 #
-# Why it is derived rather than written down: the three scripts that need this each
-# carried the same hardcoded string, naming an exact Homebrew patch version
-# (`python@3.11/3.11.11`) and `$HOME/miniconda3`. That breaks on `brew upgrade`, on
-# any machine laid out differently, and on Linux, where the loader does not read
-# DYLD_LIBRARY_PATH at all -- so a CI runner silently got nothing useful.
+# Why it is derived rather than written down: a hardcoded path names one exact
+# Python installation, which breaks on an upgrade, on a machine laid out
+# differently, and on Linux, where the loader does not read DYLD_LIBRARY_PATH.
+# Deriving it also picks the libpython the build actually linked against, since
+# DYLD_LIBRARY_PATH takes precedence over the rpath pyo3 bakes in.
 #
-# It was also wrong in a way that happened to work. It listed Homebrew's python@3.11
-# first, while the binaries on the machine it was written for link against
-# miniconda's 3.11: `otool -l` shows the rpath pyo3 baked in pointing at
-# `$HOME/miniconda3/lib`. DYLD_LIBRARY_PATH takes precedence over rpath, so the
-# hardcoded value was shadowing the libpython the build had actually chosen with a
-# different copy that merely shared its ABI.
-#
-# Scope, measured. The default suite does not need this at all: `cargo test
-# --workspace` passes all 773 tests with the variable unset, because pyo3's build
-# script bakes an absolute rpath into the binaries it links. The `ml` feature does
-# need it, because that rpath is not emitted transitively -- without it `cargo test
-# -p kolibrie --features ml` fails 34 targets with "Library not loaded:
-# @rpath/libpython3.11.dylib", and `kolibrie-http-server` exits 127.
+# Scope: the default suite does not need this, because pyo3's build script bakes an
+# absolute rpath into the binaries it links. The `ml` feature does, because that
+# rpath is not emitted transitively; without it the `ml` tests and
+# `kolibrie-http-server` cannot load libpython.
 #
 # An existing value wins: the derived directory is appended rather than prepended,
 # so anyone who has already aimed this at a particular interpreter keeps it.

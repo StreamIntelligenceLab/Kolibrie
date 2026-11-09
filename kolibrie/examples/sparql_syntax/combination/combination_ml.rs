@@ -7,10 +7,10 @@
  * you can obtain one at https://mozilla.org/MPL/2.0/.
  */
 
+use kolibrie::database::KolibrieDB;
 use kolibrie::execute_query::execute;
 use kolibrie::parser::parse_standalone_rule;
 use kolibrie::rule_execution::process_rule_definition;
-use kolibrie::sparql_database::SparqlDatabase;
 use kolibrie::streamertail_optimizer::operators::LogicalOperator;
 use kolibrie::streamertail_optimizer::optimizer::Streamertail;
 use pyo3::prepare_freethreaded_python;
@@ -62,9 +62,8 @@ fn main() -> Result<(), Box<dyn Error>> {
 </rdf:RDF>
     "#;
 
-    let mut database = SparqlDatabase::with_ml_context(
-        kolibrie::ml_policy::MlExecutionContext::from_environment()?,
-    );
+    let mut database =
+        KolibrieDB::with_ml_context(kolibrie::ml_policy::MlExecutionContext::from_environment()?);
     database.parse_rdf(rdf_xml_data);
     database.get_or_build_stats();
     println!("Database RDF triples loaded.");
@@ -191,7 +190,7 @@ WHERE {
 
 fn build_ml_predict_logical_plan(
     ml_predict: &shared::query::MLPredictClause,
-    database: &mut SparqlDatabase,
+    database: &mut KolibrieDB,
 ) -> Result<LogicalOperator, Box<dyn Error>> {
     let room_data = extract_data_for_ml(database)?;
 
@@ -216,7 +215,7 @@ fn build_ml_predict_logical_plan(
 }
 
 fn extract_data_for_ml(
-    database: &mut SparqlDatabase,
+    database: &mut KolibrieDB,
 ) -> Result<Vec<HashMap<String, u32>>, Box<dyn Error>> {
     let mut results = Vec::new();
 
@@ -317,7 +316,7 @@ fn process_ml_results(ml_results: Vec<HashMap<String, String>>) -> Vec<Predictio
         .collect()
 }
 
-fn add_prediction_to_database(prediction: &Prediction, database: &mut SparqlDatabase) {
+fn add_prediction_to_database(prediction: &Prediction, database: &mut KolibrieDB) {
     let subject = format!("http://example.org#{}", prediction.room_id);
     let predicate = "http://example.org/sensor#predictedTemperature";
 

@@ -10,7 +10,6 @@
 
 use kolibrie::prelude::*;
 
-// Simple select on my synthetic data (took small part of it)
 fn simple_select_synth_data() {
     let rdf_data = r#"
     <?xml version="1.0" encoding="UTF-8"?>
@@ -49,7 +48,7 @@ fn simple_select_synth_data() {
     </rdf:Description>
 </rdf:RDF>
     "#;
-    let mut database = SparqlDatabase::new();
+    let mut database = KolibrieDB::new();
     database.parse_rdf(rdf_data);
 
     let sparql = r#"PREFIX ds: <https://data.cityofchicago.org/resource/xzkq-xp2w/> SELECT ?employee ?salary WHERE {?employee ds:annual_salary ?salary}"#;
@@ -58,7 +57,6 @@ fn simple_select_synth_data() {
         .expect("query should run")
         .into_rows();
 
-    // Now the main function is responsible for printing the results
     println!("Results:");
     for result in results {
         if let [employee, salary] = &result[..] {

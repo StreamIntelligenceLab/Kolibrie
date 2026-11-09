@@ -8,22 +8,7 @@
  * you can obtain one at https://mozilla.org/MPL/2.0/.
  */
 
-//! An RSP-QL streaming dataset (SDS), and its translation to and from plain Datalog.
-//!
-//! Datalog has no notion of a window, so a rule spanning several windows is
-//! evaluated by flattening the SDS into ordinary triples with the originating window
-//! encoded into the predicate as `window_iri + local_name` — see
-//! [`annotate_predicate`]. [`strip_window_prefix`] reverses it, and
-//! [`all_component_iris`] sorts longest-first because one component IRI can be a
-//! prefix of another, where the shorter one would otherwise match first and strip
-//! too little.
-//!
-//! # Time
-//!
-//! A fact carries the timestamp it arrived at and a window carries a width `alpha`
-//! in the same unit. A fact is alive at `current_time` when
-//! `event_time + alpha > current_time`, so the interval is half-open and a fact
-//! expiring exactly now has already gone.
+//! An RSP-QL streaming dataset (SDS), and its translation to and from plain Datalog
 
 use shared::term_encoder::SharedTerms;
 use shared::triple::Triple;
@@ -50,11 +35,11 @@ pub fn strip_window_prefix<'a, 'b>(
 /// A single RDF triple from a streaming window, carrying its stream-level timestamp
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct WindowedTriple {
-    /// Subject IRI, as a string: not yet interned.
+    /// Subject IRI, as a string: not yet interned
     pub subject: String,
-    /// Local predicate name under the owning window IRI.  NOT a full IRI
+    /// Local predicate name under the owning window IRI
     pub predicate: String,
-    /// Object IRI or literal, as a string.
+    /// Object IRI or literal, as a string
     pub object: String,
     /// `t_d`: the timestamp at which this triple arrived in the stream
     pub event_time: u64,
@@ -65,25 +50,24 @@ pub struct WindowedTriple {
 pub struct WindowData {
     /// Window width α (in the same time unit as event_time)
     pub alpha: u64,
-    /// Contents of the window, including triples that have already expired:
-    /// liveness is decided per fact at translation time, not on arrival.
+    /// Contents of the window, including triples that have already expired: liveness is decided per
+    /// fact at translation time, not on arrival
     pub triples: Vec<WindowedTriple>,
 }
 
 /// An RSP-QL Streaming Dataset (SDS) at a point in time
 #[derive(Clone, Debug, Default)]
 pub struct Sds {
-    /// Sliding windows, by window IRI.
+    /// Sliding windows, by window IRI
     pub windows: HashMap<String, WindowData>,
-    /// Non-streaming graphs, by graph IRI. These never expire.
+    /// Non-streaming graphs, by graph IRI
     pub static_graphs: HashMap<String, Vec<(String, String, String)>>,
-    /// IRIs that only ever appear in rule conclusions. They hold no input facts
-    /// but their prefixes still have to be strippable, so they are listed.
+    /// IRIs that only ever appear in rule conclusions
     pub output_iris: HashSet<String>,
 }
 
 impl Sds {
-    /// An empty streaming dataset: no windows, no static graphs, no outputs.
+    /// An empty streaming dataset: no windows, no static graphs, no outputs
     pub fn new() -> Self {
         Self::default()
     }
@@ -102,8 +86,8 @@ pub fn all_component_iris(sds: &Sds) -> Vec<String> {
     iris
 }
 
-/// Translate the alive facts of an SDS at `current_time` into annotated
-/// datalog triples with per-fact expiration times
+/// Translate the alive facts of an SDS at `current_time` into annotated datalog triples with
+/// per-fact expiration times
 pub fn translate_sds_to_datalog(
     sds: &Sds,
     dict: &SharedTerms,
@@ -148,8 +132,8 @@ pub fn translate_sds_to_datalog(
     result
 }
 
-/// External / user-facing translation: strip window-IRI prefixes from
-/// annotated predicates and route each triple to its component bucket
+/// External / user-facing translation: strip window-IRI prefixes from annotated predicates and
+/// route each triple to its component bucket
 pub fn translate_datalog_back(
     facts: &[Triple],
     dict: &SharedTerms,
@@ -252,7 +236,6 @@ mod tests {
         let short = "http://w/";
         let long = "http://w/longer/";
         let annotated = "http://w/longer/pred";
-        // sorted longest-first
         let iris = vec![long.to_string(), short.to_string()];
         let result = strip_window_prefix(annotated, &iris);
         assert_eq!(result, Some((long, "pred")));
@@ -261,9 +244,8 @@ mod tests {
     #[test]
     fn translate_filters_expired() {
         let dict = make_dict();
-        let sds = make_sds(); // event_time=5, alpha=10 → expiry=15
-        let translated = translate_sds_to_datalog(&sds, &dict, 15); // current_time=15
-                                                                    // expiry=15 is NOT > 15, so filtered out
+        let sds = make_sds();
+        let translated = translate_sds_to_datalog(&sds, &dict, 15);
         assert!(
             translated.is_empty(),
             "fact with expiry=15 at current_time=15 should be filtered"
@@ -273,8 +255,8 @@ mod tests {
     #[test]
     fn translate_includes_alive() {
         let dict = make_dict();
-        let sds = make_sds(); // expiry=15
-        let translated = translate_sds_to_datalog(&sds, &dict, 14); // current_time=14
+        let sds = make_sds();
+        let translated = translate_sds_to_datalog(&sds, &dict, 14);
         assert_eq!(translated.len(), 1);
         assert_eq!(translated[0].1, 15);
     }
@@ -308,7 +290,6 @@ mod tests {
         assert!(back.contains_key("http://sensor/"));
         let triples = &back["http://sensor/"];
         assert_eq!(triples.len(), 1);
-        // predicate should be stripped to "reading"
         let pred_str = dict.decode(triples[0].predicate).unwrap().to_string();
         assert_eq!(pred_str, "reading");
     }
