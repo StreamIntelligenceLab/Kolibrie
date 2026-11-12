@@ -10,9 +10,12 @@
 
 //! Notation3 (N3) logic over Kolibrie's term dictionary and dataset index
 
+pub mod builtins;
 pub mod canon;
 pub mod error;
 mod lexer;
+mod matcher;
+mod numeric;
 pub mod parser;
 pub mod reasoner;
 pub mod rules;

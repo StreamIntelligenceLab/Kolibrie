@@ -1365,6 +1365,8 @@ dependencies = [
 name = "n3"
 version = "0.3.0"
 dependencies = [
+ "num-bigint",
+ "num-traits",
  "shared",
 ]
 

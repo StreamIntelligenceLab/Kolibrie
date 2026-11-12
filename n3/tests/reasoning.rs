@@ -160,8 +160,8 @@ fn unsupported_features_are_named_not_ignored() {
     for (program, feature) in [
         ("{ ?x :p ?y } <= { ?y :q ?x } .", "backward rules"),
         (
-            "{ ?x :p ?y . ?y math:greaterThan 1 } => { ?x :big true } .",
-            "math#greaterThan",
+            "{ ?x :p ?y . ?y string:matches \"a\" } => { ?x :big true } .",
+            "string#matches",
         ),
         ("{ ?x :p ?y } log:query { ?x :q ?y } .", "log:query"),
         ("{ ?x :p ?y } => false .", "fuses"),

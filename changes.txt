@@ -3,7 +3,9 @@ Added
 - DatalogMTL reasoning over RDF streams (`datalogmtl` crate): `Box`, `Diamond`, `Since`, and stream shapes with channel staleness and expiry
 - Interval-based DatalogMTL engine with future operators and unbounded (periodic) time, alongside the streaming tick engine
 - MeTeoR-syntax parser for DatalogMTL programs
-- N3 reasoning (`n3` crate): a full N3 parser and forward `=>` rules over lists, quoted formulas and blank nodes, with existentials introduced only where none is known; built-ins, backward rules and `log:query` are reported as unsupported
+- N3 reasoning (`n3` crate): a full N3 parser and forward `=>` rules over lists, quoted formulas and blank nodes, with existentials introduced only where none is known; backward rules, `log:query` and the remaining built-ins are reported as unsupported
+- N3 built-ins: `math:` arithmetic, comparisons and trigonometry with exact integers, the `string:` tests, `string:concatenation` and `string:format`, and `log:equalTo` / `log:notEqualTo`
+- N3 `log:outputString` text output
 - DatalogMTL endpoints in the HTTP server: `/datalogmtl/register`, `/datalogmtl/push`, `/datalogmtl/static` and `/datalogmtl/events/`
 - Drone geofencing demo with a visual clock in the web UI, and an updated traffic demo
 - `kolibrie-api`: one crate that re-exports the whole workspace

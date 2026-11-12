@@ -18,6 +18,8 @@ pub const LOG: &str = "http://www.w3.org/2000/10/swap/log#";
 pub const LOG_IMPLIES: &str = "http://www.w3.org/2000/10/swap/log#implies";
 /// `log:impliedBy`, the predicate `<=` abbreviates
 pub const LOG_IMPLIED_BY: &str = "http://www.w3.org/2000/10/swap/log#impliedBy";
+/// `log:outputString`, whose texts replace the triples as a run's output
+pub const LOG_OUTPUT_STRING: &str = "http://www.w3.org/2000/10/swap/log#outputString";
 /// `log:query`, which selects what a run outputs
 pub const LOG_QUERY: &str = "http://www.w3.org/2000/10/swap/log#query";
 /// `rdf:type`, the predicate `a` abbreviates

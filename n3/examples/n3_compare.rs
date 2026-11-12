@@ -90,7 +90,26 @@ fn inputs(path: &Path) -> Vec<PathBuf> {
     found
 }
 
-fn ours(path: &Path) -> Result<Vec<String>, N3Error> {
+/// What a run printed: N3 statements, canonicalised, or `log:outputString` text
+enum Answer {
+    Statements(Vec<String>),
+    Text(String),
+}
+
+impl Answer {
+    fn into_lines(self) -> Vec<String> {
+        match self {
+            Answer::Statements(lines) => lines,
+            Answer::Text(text) => text
+                .lines()
+                .map(|line| line.trim_end().to_string())
+                .filter(|line| !line.is_empty())
+                .collect(),
+        }
+    }
+}
+
+fn ours(path: &Path) -> Result<Answer, N3Error> {
     let mut reasoner = N3Reasoner::new();
     for input in inputs(path) {
         let text = std::fs::read_to_string(&input)
@@ -104,20 +123,32 @@ fn ours(path: &Path) -> Result<Vec<String>, N3Error> {
         reasoner.load(&document)?;
     }
     reasoner.run()?;
+    if let Some(text) = reasoner.output_strings() {
+        return Ok(Answer::Text(text));
+    }
     let statements: Vec<_> = reasoner
         .derived()
         .iter()
         .map(|t| reasoner.store.statement(t))
         .collect();
-    Ok(canonical_lines(&statements))
+    Ok(Answer::Statements(canonical_lines(&statements)))
 }
 
-fn expected(path: &Path, eyeron_home: &Path) -> Result<Vec<String>, String> {
-    let stored = path.parent().map(|dir| {
-        dir.join("output")
-            .join(path.file_name().unwrap_or_default())
-    });
-    let text = match stored.filter(|p| p.exists()) {
+fn expected(path: &Path, eyeron_home: &Path) -> Result<Answer, String> {
+    let golden = |extension: &str| {
+        let name = path.with_extension(extension);
+        path.parent()
+            .map(|dir| {
+                dir.join("output")
+                    .join(name.file_name().unwrap_or_default())
+            })
+            .filter(|p| p.exists())
+    };
+    if let Some(markdown) = golden("md") {
+        let text = std::fs::read_to_string(&markdown).map_err(|e| e.to_string())?;
+        return Ok(Answer::Text(text));
+    }
+    let text = match golden("n3") {
         Some(stored) => std::fs::read_to_string(&stored).map_err(|e| e.to_string())?,
         None => {
             let binary = eyeron_home.join("target/release/eyeron");
@@ -135,8 +166,10 @@ fn expected(path: &Path, eyeron_home: &Path) -> Result<Vec<String>, String> {
             String::from_utf8_lossy(&output.stdout).into_owned()
         }
     };
-    let document = parse_document(&text, None).map_err(|e| format!("oracle output: {e}"))?;
-    Ok(canonical_lines(&document.statements))
+    match parse_document(&text, None) {
+        Ok(document) => Ok(Answer::Statements(canonical_lines(&document.statements))),
+        Err(_) => Ok(Answer::Text(text)),
+    }
 }
 
 /// The known divergences listed next to a case, by case name
@@ -163,6 +196,7 @@ fn compare(path: &Path, eyeron_home: &Path) -> Outcome {
         Ok(lines) => lines,
         Err(reason) => return Outcome::NoOracle(reason),
     };
+    let (expected, actual) = (expected.into_lines(), actual.into_lines());
     let expected_set: BTreeSet<&String> = expected.iter().collect();
     let actual_set: BTreeSet<&String> = actual.iter().collect();
     if expected_set == actual_set {

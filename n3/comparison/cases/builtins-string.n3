@@ -1,0 +1,14 @@
+@prefix : <http://example.org/str#> .
+
+:alice :name "Alice" ; :city "Leuven" .
+:bob :name "bob" ; :city "Gent" .
+
+{ ?p :name ?n . ?p :city ?c . (?n " lives in " ?c) string:concatenation ?s } => { ?p :line ?s } .
+{ ?p :name ?n . ?n string:startsWith "A" } => { ?p :startsWithA true } .
+{ ?p :name ?n . ?n string:containsIgnoringCase "OB" } => { ?p :hasOb true } .
+{ ?p :name ?n . ?n string:lessThan "B" } => { ?p :beforeB true } .
+{ ?p :name ?n . ?n string:equalIgnoringCase "BOB" } => { ?p :isBob true } .
+{ ?p :city ?c . ("%s:%5s|%-4s|%03d|%.2f" ?c ?c ?c 7 3.14159) string:format ?s } => { ?p :formatted ?s } .
+{ ?p :name ?n . ?n log:equalTo "Alice" } => { ?p :exactlyAlice true } .
+{ ?p :name ?n . ?n log:notEqualTo "Alice" } => { ?p :notAlice true } .
+{ ?p :name ?n . ?m log:equalTo ?n } => { ?p :copied ?m } .

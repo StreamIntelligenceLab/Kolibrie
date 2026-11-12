@@ -10,8 +10,9 @@
 
 //! N3 rules compiled to patterns over dictionary ids
 
+use crate::builtins::{Builtin, BUILTIN_NAMESPACES};
 use crate::error::N3Error;
-use crate::syntax::{Node, Statement, LOG};
+use crate::syntax::{Node, Statement};
 use crate::terms::{Compound, TermStore};
 use shared::terms::{Term, TriplePattern};
 use std::collections::BTreeSet;
@@ -43,6 +44,8 @@ pub struct Atom {
     /// The same atom as a Kolibrie [`TriplePattern`], when every position is a constant or a
     /// variable
     pub flat: Option<TriplePattern>,
+    /// The built-in the predicate names, for a premise atom that is computed, not looked up
+    pub builtin: Option<Builtin>,
 }
 
 /// A forward rule `{ body } => { head }`
@@ -77,7 +80,8 @@ impl PTerm {
         }
     }
 
-    fn has_exists(&self) -> bool {
+    /// Whether an existential occurs anywhere in this position
+    pub(crate) fn has_exists(&self) -> bool {
         match self {
             PTerm::Exists(_) => true,
             PTerm::List(items) => items.iter().any(PTerm::has_exists),
@@ -99,6 +103,7 @@ impl Atom {
             predicate,
             object,
             flat,
+            builtin: None,
         }
     }
 
@@ -196,27 +201,19 @@ impl Compiler<'_> {
     }
 }
 
-/// The namespaces whose predicates are built-ins, which a rule body may not use yet
-const BUILTIN_NAMESPACES: [&str; 6] = [
-    "http://www.w3.org/2000/10/swap/math#",
-    "http://www.w3.org/2000/10/swap/string#",
-    "http://www.w3.org/2000/10/swap/list#",
-    "http://www.w3.org/2000/10/swap/time#",
-    "http://www.w3.org/2000/10/swap/crypto#",
-    "http://www.w3.org/2007/rif#",
-];
-
-fn check_builtins(body: &[Statement]) -> Result<(), N3Error> {
-    for statement in body {
-        if let Node::Iri(iri) = &statement.predicate {
-            let builtin = BUILTIN_NAMESPACES.iter().any(|ns| iri.starts_with(ns))
-                || (iri.starts_with(LOG) && iri != crate::syntax::LOG_IMPLIES);
-            if builtin {
-                return Err(N3Error::unsupported(format!("built-in <{iri}>")));
-            }
-        }
+/// The built-in a premise statement calls, or an error for a built-in this engine lacks
+fn builtin_of(statement: &Statement) -> Result<Option<Builtin>, N3Error> {
+    let Node::Iri(iri) = &statement.predicate else {
+        return Ok(None);
+    };
+    if let Some(builtin) = Builtin::from_iri(iri) {
+        return Ok(Some(builtin));
     }
-    Ok(())
+    let in_namespace = BUILTIN_NAMESPACES.iter().any(|ns| iri.starts_with(ns));
+    if in_namespace && iri != crate::syntax::LOG_IMPLIES {
+        return Err(N3Error::unsupported(format!("built-in <{iri}>")));
+    }
+    Ok(None)
 }
 
 fn formula_statements(node: &Node) -> Option<&[Statement]> {
@@ -234,8 +231,8 @@ fn formula_statements(node: &Node) -> Option<&[Statement]> {
 /// Compiles `{ body } => { head }`, given as the two sides of a `log:implies` statement
 ///
 /// # Errors
-/// Returns [`N3Error::Unsupported`] for a side that is not a formula, for a built-in in the
-/// body, and for a conclusion variable the body never binds
+/// Returns [`N3Error::Unsupported`] for a side that is not a formula, for a built-in this
+/// engine does not implement, and for a conclusion variable the body never binds
 pub fn compile_rule(store: &mut TermStore, body: &Node, head: &Node) -> Result<N3Rule, N3Error> {
     let Some(body) = formula_statements(body) else {
         return Err(N3Error::unsupported("a rule premise that is not a formula"));
@@ -255,9 +252,7 @@ pub fn compile_rule(store: &mut TermStore, body: &Node, head: &Node) -> Result<N
             }
         },
     };
-    check_builtins(body)?;
-
-    let body_atoms: Vec<Atom> = {
+    let mut body_atoms: Vec<Atom> = {
         let mut compiler = Compiler {
             store,
             side: Side::Body,
@@ -265,6 +260,9 @@ pub fn compile_rule(store: &mut TermStore, body: &Node, head: &Node) -> Result<N
         };
         body.iter().map(|s| compiler.atom(s, false)).collect()
     };
+    for (atom, statement) in body_atoms.iter_mut().zip(body) {
+        atom.builtin = builtin_of(statement)?;
+    }
     let mut bound = BTreeSet::new();
     for atom in &body_atoms {
         atom.variables(&mut bound);

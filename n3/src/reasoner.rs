@@ -11,14 +11,14 @@
 //! Forward N3 reasoning: semi-naive saturation over a Kolibrie [`DatasetIndex`]
 
 use crate::error::N3Error;
+use crate::matcher::Matcher;
 use crate::rules::{compile_rule, formula_node, Atom, N3Rule, PTerm};
-use crate::syntax::{Document, Node, LOG_IMPLIED_BY, LOG_IMPLIES, LOG_QUERY};
-use crate::terms::{Compound, TermStore};
+use crate::syntax::{Document, Node, LOG_IMPLIED_BY, LOG_IMPLIES, LOG_OUTPUT_STRING, LOG_QUERY};
+use crate::terms::TermStore;
 use shared::dataset_index::DatasetIndex;
-use shared::pattern::matches_rule_pattern;
 use shared::terms::Binding;
 use shared::triple::Triple;
-use std::collections::{BTreeSet, HashMap, HashSet};
+use std::collections::{HashMap, HashSet};
 
 /// Resource budgets that stop a run which would not reach a fixpoint
 #[derive(Debug, Clone, Copy)]
@@ -52,13 +52,6 @@ pub struct N3Reasoner {
     fresh: usize,
     /// Budgets for [`N3Reasoner::run`]
     pub limits: Limits,
-}
-
-/// What a pattern position says about the id it must match
-enum Key {
-    Bound(u32),
-    Free,
-    Impossible,
 }
 
 impl N3Reasoner {
@@ -134,7 +127,8 @@ impl N3Reasoner {
             for rule_index in self.existential_order() {
                 let rule = self.rules[rule_index].clone();
                 let before = pending.len();
-                for binding in self.solve(&rule.body, None, Binding::new()) {
+                let solutions = self.matcher().solve(&rule.body, None, Binding::new());
+                for binding in solutions {
                     let conclusion = self.fire(&rule, &binding)?;
                     self.commit(conclusion, &mut pending, &mut fresh_rules)?;
                 }
@@ -261,12 +255,26 @@ impl N3Reasoner {
         Ok(true)
     }
 
+    /// A matcher over this reasoner's facts and terms
+    fn matcher(&mut self) -> Matcher<'_> {
+        let implies = self.store.lookup(LOG_IMPLIES);
+        Matcher {
+            store: &mut self.store,
+            facts: &self.facts,
+            rule_facts: &self.rule_facts,
+            implies,
+        }
+    }
+
     /// Every binding of the rule body that uses at least one delta fact, or all bindings when
     /// `full`
-    fn rule_solutions(&self, rule: &N3Rule, delta: &DatasetIndex, full: bool) -> Vec<Binding> {
-        if rule.body.is_empty() {
+    fn rule_solutions(&mut self, rule: &N3Rule, delta: &DatasetIndex, full: bool) -> Vec<Binding> {
+        let data_atoms: Vec<usize> = (0..rule.body.len())
+            .filter(|&i| rule.body[i].builtin.is_none())
+            .collect();
+        if data_atoms.is_empty() {
             return if full {
-                vec![Binding::new()]
+                self.matcher().solve(&rule.body, None, Binding::new())
             } else {
                 Vec::new()
             };
@@ -276,10 +284,12 @@ impl N3Reasoner {
         let starts: Vec<Option<usize>> = if full {
             vec![None]
         } else {
-            (0..rule.body.len()).map(Some).collect()
+            data_atoms.into_iter().map(Some).collect()
         };
         for start in starts {
-            let solutions = self.solve(&rule.body, start.map(|i| (i, delta)), Binding::new());
+            let solutions =
+                self.matcher()
+                    .solve(&rule.body, start.map(|i| (i, delta)), Binding::new());
             for binding in solutions {
                 let mut key: Vec<(String, u32)> =
                     binding.iter().map(|(k, v)| (k.clone(), *v)).collect();
@@ -290,215 +300,6 @@ impl N3Reasoner {
             }
         }
         out
-    }
-
-    /// Joins `atoms`, matching the atom `seed.0` against `seed.1` and the rest against the store
-    fn solve(
-        &self,
-        atoms: &[Atom],
-        seed: Option<(usize, &DatasetIndex)>,
-        initial: Binding,
-    ) -> Vec<Binding> {
-        let mut remaining: Vec<usize> = (0..atoms.len()).collect();
-        let mut bindings = vec![initial];
-        let mut bound: BTreeSet<String> = bindings[0].keys().cloned().collect();
-        if let Some((first, index)) = seed {
-            remaining.retain(|&i| i != first);
-            bindings = self.extend(&atoms[first], &[index], bindings);
-            atoms[first].variables(&mut bound);
-        }
-        while !remaining.is_empty() && !bindings.is_empty() {
-            let pick = remaining
-                .iter()
-                .enumerate()
-                .max_by_key(|(_, &i)| boundness(&atoms[i], &bound))
-                .map(|(position, _)| position)
-                .unwrap_or(0);
-            let next = remaining.remove(pick);
-            let sources = self.sources(&atoms[next]);
-            bindings = self.extend(&atoms[next], &sources, bindings);
-            atoms[next].variables(&mut bound);
-        }
-        bindings
-    }
-
-    /// The indexes an atom matches against: the facts, plus the input rules when it asks for
-    /// `log:implies` by name
-    fn sources(&self, atom: &Atom) -> Vec<&DatasetIndex> {
-        let names_implies = matches!(atom.predicate, PTerm::Const(id)
-            if self.store.lookup(LOG_IMPLIES) == Some(id));
-        if names_implies {
-            vec![&self.facts, &self.rule_facts]
-        } else {
-            vec![&self.facts]
-        }
-    }
-
-    /// Extends each binding with every way `atom` matches a fact in one of `indexes`
-    fn extend(
-        &self,
-        atom: &Atom,
-        indexes: &[&DatasetIndex],
-        bindings: Vec<Binding>,
-    ) -> Vec<Binding> {
-        let mut out = Vec::new();
-        for binding in bindings {
-            let mut keys = [None, None, None];
-            let mut impossible = false;
-            for (slot, position) in atom.positions().into_iter().enumerate() {
-                match self.key(position, &binding) {
-                    Key::Bound(id) => keys[slot] = Some(id),
-                    Key::Free => {}
-                    Key::Impossible => impossible = true,
-                }
-            }
-            if impossible {
-                continue;
-            }
-            let candidates = indexes
-                .iter()
-                .flat_map(|index| index.query(keys[0], keys[1], keys[2]));
-            for fact in candidates {
-                if let Some(flat) = &atom.flat {
-                    let mut extended = binding.clone();
-                    if matches_rule_pattern(flat, &fact, &mut extended) {
-                        out.push(extended);
-                    }
-                    continue;
-                }
-                let mut partial = vec![binding.clone()];
-                for (position, id) in
-                    atom.positions()
-                        .into_iter()
-                        .zip([fact.subject, fact.predicate, fact.object])
-                {
-                    partial = partial
-                        .into_iter()
-                        .flat_map(|b| self.unify(position, id, b))
-                        .collect();
-                    if partial.is_empty() {
-                        break;
-                    }
-                }
-                out.extend(partial);
-            }
-        }
-        out
-    }
-
-    /// The id a position must equal under `binding`, if it can be known without a lookup scan
-    fn key(&self, position: &PTerm, binding: &Binding) -> Key {
-        match position {
-            PTerm::Const(id) => Key::Bound(*id),
-            PTerm::Var(name) => match binding.get(name) {
-                Some(&id) => Key::Bound(id),
-                None => Key::Free,
-            },
-            PTerm::List(items) => {
-                let mut ids = Vec::with_capacity(items.len());
-                for item in items {
-                    match self.key(item, binding) {
-                        Key::Bound(id) => ids.push(id),
-                        Key::Free => return Key::Free,
-                        Key::Impossible => return Key::Impossible,
-                    }
-                }
-                match self.store.find_list(&ids) {
-                    Some(id) => Key::Bound(id),
-                    None => Key::Impossible,
-                }
-            }
-            PTerm::Formula(_) | PTerm::Exists(_) => Key::Free,
-        }
-    }
-
-    /// Every extension of `binding` under which `position` denotes `id`
-    fn unify(&self, position: &PTerm, id: u32, mut binding: Binding) -> Vec<Binding> {
-        match position {
-            PTerm::Const(c) => {
-                if *c == id {
-                    vec![binding]
-                } else {
-                    Vec::new()
-                }
-            }
-            PTerm::Var(name) => match binding.get(name) {
-                Some(&bound) if bound != id => Vec::new(),
-                Some(_) => vec![binding],
-                None => {
-                    binding.insert(name.clone(), id);
-                    vec![binding]
-                }
-            },
-            PTerm::List(items) => {
-                let Some(Compound::List(members)) = self.store.compound(id) else {
-                    return Vec::new();
-                };
-                if members.len() != items.len() {
-                    return Vec::new();
-                }
-                let mut partial = vec![binding];
-                for (item, &member) in items.iter().zip(members) {
-                    partial = partial
-                        .into_iter()
-                        .flat_map(|b| self.unify(item, member, b))
-                        .collect();
-                    if partial.is_empty() {
-                        break;
-                    }
-                }
-                partial
-            }
-            PTerm::Formula(atoms) => {
-                let Some(Compound::Formula(triples)) = self.store.compound(id) else {
-                    return Vec::new();
-                };
-                if triples.len() != atoms.len() {
-                    return Vec::new();
-                }
-                let mut used = vec![false; triples.len()];
-                let mut out = Vec::new();
-                self.unify_formula(atoms, triples, &mut used, binding, &mut out);
-                out
-            }
-            PTerm::Exists(_) => Vec::new(),
-        }
-    }
-
-    /// Matches each atom to a distinct triple, collecting every consistent binding
-    fn unify_formula(
-        &self,
-        atoms: &[Atom],
-        triples: &[Triple],
-        used: &mut [bool],
-        binding: Binding,
-        out: &mut Vec<Binding>,
-    ) {
-        let Some((atom, rest)) = atoms.split_first() else {
-            out.push(binding);
-            return;
-        };
-        for (index, triple) in triples.iter().enumerate() {
-            if used[index] {
-                continue;
-            }
-            let mut partial = vec![binding.clone()];
-            for (position, id) in
-                atom.positions()
-                    .into_iter()
-                    .zip([triple.subject, triple.predicate, triple.object])
-            {
-                partial = partial
-                    .into_iter()
-                    .flat_map(|b| self.unify(position, id, b))
-                    .collect();
-            }
-            used[index] = true;
-            for b in partial {
-                self.unify_formula(rest, triples, used, b, out);
-            }
-            used[index] = false;
-        }
     }
 
     /// The conclusion triples of one firing; empty when its existential pieces already hold
@@ -519,7 +320,7 @@ impl N3Reasoner {
     }
 
     /// Whether some facts already satisfy the conclusion, existentials read as variables
-    fn conclusion_holds(&self, rule: &N3Rule, binding: &Binding) -> bool {
+    fn conclusion_holds(&mut self, rule: &N3Rule, binding: &Binding) -> bool {
         let as_pattern: Vec<Atom> = rule
             .head
             .iter()
@@ -531,7 +332,10 @@ impl N3Reasoner {
                 )
             })
             .collect();
-        !self.solve(&as_pattern, None, binding.clone()).is_empty()
+        !self
+            .matcher()
+            .solve(&as_pattern, None, binding.clone())
+            .is_empty()
     }
 
     fn instantiate(
@@ -582,6 +386,26 @@ impl N3Reasoner {
                 }
             }
         })
+    }
+
+    /// The `log:outputString` texts in the store, joined in order of their subjects, or `None`
+    /// when there are none
+    pub fn output_strings(&self) -> Option<String> {
+        let predicate = self.store.lookup(LOG_OUTPUT_STRING)?;
+        let mut entries: Vec<(String, String)> = self
+            .facts
+            .query(None, Some(predicate), None)
+            .into_iter()
+            .filter_map(|triple| match self.store.node(triple.object) {
+                Node::Literal { lexical, .. } => Some((self.store.n3(triple.subject), lexical)),
+                _ => None,
+            })
+            .collect();
+        if entries.is_empty() {
+            return None;
+        }
+        entries.sort();
+        Some(entries.into_iter().map(|(_, text)| text).collect())
     }
 
     /// The derived facts as N3 text, one statement per line
@@ -636,16 +460,4 @@ fn covers(head: &[Atom], piece: &[Atom]) -> bool {
                 .all(|(a, b)| compatible(a, b))
         })
     })
-}
-
-/// How many of an atom's positions are already fixed, for picking the next atom to join
-fn boundness(atom: &Atom, bound: &BTreeSet<String>) -> usize {
-    atom.positions()
-        .into_iter()
-        .filter(|position| {
-            let mut vars = BTreeSet::new();
-            position.variables(&mut vars);
-            vars.is_subset(bound) && !matches!(position, PTerm::Exists(_) | PTerm::Formula(_))
-        })
-        .count()
 }
