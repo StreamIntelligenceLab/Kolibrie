@@ -189,6 +189,7 @@ fn parse_with(text: &str, base: Option<&str>, trig: bool) -> Result<Document, N3
         blank_scopes: vec![HashMap::new()],
         quantifiers: vec![HashMap::new()],
         quantified: 0,
+        local_names: false,
     };
     parser.parse()?;
     Ok(parser.document)
@@ -222,6 +223,8 @@ struct Parser {
     /// The IRIs `@forAll` and `@forSome` bind in each open graph, outermost first
     quantifiers: Vec<HashMap<String, Node>>,
     quantified: usize,
+    /// Whether some formula already named its binders canonically, so later ones must shift them
+    local_names: bool,
 }
 
 fn is_word(kind: &TokenKind, word: &str) -> bool {
@@ -376,11 +379,6 @@ impl Parser {
             }
             TokenKind::AtKeyword(word) if word == "forAll" || word == "forSome" => {
                 let universal = word == "forAll";
-                if universal && self.blank_scopes.len() > 1 {
-                    return Err(N3Error::unsupported(
-                        "explicit quantification (@forAll inside a formula)",
-                    ));
-                }
                 self.advance();
                 loop {
                     let offset = self.offset();
@@ -689,8 +687,17 @@ impl Parser {
             }
         }
         self.blank_scopes.pop();
-        self.quantifiers.pop();
-        Ok(Node::Formula(statements))
+        let own: Vec<Node> = self
+            .quantifiers
+            .pop()
+            .unwrap_or_default()
+            .into_values()
+            .collect();
+        if own.is_empty() && !self.local_names {
+            return Ok(Node::Formula(statements));
+        }
+        self.local_names = true;
+        Ok(Node::Formula(canonical_binders(statements, &own)))
     }
 
     fn pname_term(&mut self, name: &str, offset: usize) -> Result<Node, N3Error> {
@@ -766,6 +773,73 @@ impl Parser {
             None => reference.to_string(),
         }
     }
+}
+
+/// The prefix of a variable a formula's own `@forAll` binds, once named canonically
+pub(crate) const LOCAL_UNIVERSAL: &str = "__l";
+/// The prefix of a blank node a formula's own `@forSome` binds, once named canonically
+pub(crate) const LOCAL_EXISTENTIAL: &str = "kolibrie-l";
+
+/// A formula's statements with the names its own quantifiers bind renamed by order of first
+/// occurrence, so formulas that differ only in those names are the same term
+///
+/// A name is the binder's depth above the term's own formula and a counter: `__l0.1` is this
+/// formula's first universal, and a nested formula's own names move from `__l0.n` to `__l1.n`.
+fn canonical_binders(statements: Vec<Statement>, own: &[Node]) -> Vec<Statement> {
+    fn visit(node: &Node, own: &[Node], order: &mut Vec<Node>) {
+        match node {
+            Node::List(items) => items.iter().for_each(|item| visit(item, own, order)),
+            Node::Formula(inner) => inner.iter().for_each(|s| visit_statement(s, own, order)),
+            other if own.contains(other) && !order.contains(other) => order.push(other.clone()),
+            _ => {}
+        }
+    }
+    fn visit_statement(statement: &Statement, own: &[Node], order: &mut Vec<Node>) {
+        for node in [&statement.subject, &statement.predicate, &statement.object] {
+            visit(node, own, order);
+        }
+    }
+    fn shift(name: &str, prefix: &str) -> Option<String> {
+        let (depth, rest) = name.strip_prefix(prefix)?.split_once('.')?;
+        let depth: usize = depth.parse().ok()?;
+        Some(format!("{prefix}{}.{rest}", depth + 1))
+    }
+    fn rename(node: &Node, order: &[Node]) -> Node {
+        if let Some(position) = order.iter().position(|o| o == node) {
+            return match node {
+                Node::Var(_) => Node::Var(format!("{LOCAL_UNIVERSAL}0.{}", position + 1)),
+                _ => Node::Blank(format!("{LOCAL_EXISTENTIAL}0.{}", position + 1)),
+            };
+        }
+        match node {
+            Node::Var(name) => {
+                Node::Var(shift(name, LOCAL_UNIVERSAL).unwrap_or_else(|| name.clone()))
+            }
+            Node::Blank(label) => {
+                Node::Blank(shift(label, LOCAL_EXISTENTIAL).unwrap_or_else(|| label.clone()))
+            }
+            Node::List(items) => Node::List(items.iter().map(|i| rename(i, order)).collect()),
+            Node::Formula(inner) => {
+                Node::Formula(inner.iter().map(|s| rename_statement(s, order)).collect())
+            }
+            other => other.clone(),
+        }
+    }
+    fn rename_statement(statement: &Statement, order: &[Node]) -> Statement {
+        Statement::new(
+            rename(&statement.subject, order),
+            rename(&statement.predicate, order),
+            rename(&statement.object, order),
+        )
+    }
+    let mut order = Vec::new();
+    for statement in &statements {
+        visit_statement(statement, own, &mut order);
+    }
+    statements
+        .iter()
+        .map(|s| rename_statement(s, &order))
+        .collect()
 }
 
 fn number_literal(text: &str) -> Node {

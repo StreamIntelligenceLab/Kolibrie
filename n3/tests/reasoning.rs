@@ -157,16 +157,10 @@ fn input_facts_are_not_reported_as_derived() {
 
 #[test]
 fn unsupported_features_are_named_not_ignored() {
-    for (program, feature) in [
-        (
-            "{ ?x :p ?y . ?y log:content \"a\" } => { ?x :big true } .",
-            "log#content",
-        ),
-        (
-            "{ :a :p ?x } => { :r :is true } . { :g :has { @forAll :y . :y :p :o } } => { :r :q true } .",
-            "@forAll inside a formula",
-        ),
-    ] {
+    for (program, feature) in [(
+        "{ ?x :p ?y . ?y log:content \"a\" } => { ?x :big true } .",
+        "log#content",
+    )] {
         match derive(program) {
             Err(N3Error::Unsupported(message)) => {
                 assert!(message.contains(feature), "{program}: {message}")
@@ -208,6 +202,41 @@ fn a_universal_fact_answers_every_instance() {
         derived,
         expect(":bob :mother _:b . :liz :mother _:l ."),
         "each instance gets its own mother"
+    );
+}
+
+#[test]
+fn formulas_that_differ_only_in_quantified_names_are_the_same() {
+    let derived = derive(
+        ":a :g { @forAll :x . @forSome :y . :x :p :y } .
+         { :a :g { @forAll :u . @forSome :v . :u :p :v } } => { :r :sameUpToRenaming true } .",
+    )
+    .expect("reasons");
+    assert_eq!(derived, expect(":r :sameUpToRenaming true ."));
+}
+
+#[test]
+fn inclusion_generalises_to_existentials_but_never_instantiates_universals() {
+    let derived = derive(
+        "{ { @forAll :x . :x :p :o } log:includes { :s :p :o } } => { :r :instantiated true } .
+         { { :s :p :o } log:includes { @forAll :x . :x :p :o } } => { :r :generalised true } .
+         { { @forAll :x . :x :p :o } log:includes { @forAll :y . @forSome :z . :y :p :z } } => { :r :existential true } ."
+    )
+    .expect("reasons");
+    assert_eq!(derived, expect(":r :existential true ."));
+}
+
+#[test]
+fn a_universal_conclusion_answers_every_instance_with_one_witness() {
+    let derived = derive(
+        "@forSome :m . {} => { @forAll :x . :x :hasMother :m } .
+         { :bob :hasMother ?b . :liz :hasMother ?l } => { :r :same (?b ?l) } .",
+    )
+    .expect("reasons");
+    assert_eq!(
+        derived,
+        expect(":r :same (_:m _:m) ."),
+        "the existential sits outside the universal, so everyone has the same mother"
     );
 }
 

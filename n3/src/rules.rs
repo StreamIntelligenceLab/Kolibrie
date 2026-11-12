@@ -12,6 +12,7 @@
 
 use crate::builtins::Builtin;
 use crate::error::N3Error;
+use crate::parser::{LOCAL_EXISTENTIAL, LOCAL_UNIVERSAL};
 use crate::syntax::{Node, Statement};
 use crate::terms::{Compound, TermStore};
 use shared::terms::{Term, TriplePattern};
@@ -63,6 +64,9 @@ pub struct N3Rule {
     pub fuse: bool,
     /// For `{ body } => ?f`, the term whose formula the rule concludes
     pub unquote: Option<PTerm>,
+    /// Conclusion atoms with a variable the conclusion's own `@forAll` binds: each firing asserts
+    /// them for every value of that variable, as a rule proved on demand
+    pub universal: Vec<Atom>,
 }
 
 impl N3Rule {
@@ -155,6 +159,13 @@ impl Compiler<'_> {
     /// Compiles one node; `quoted` is true inside a formula
     fn term(&mut self, node: &Node, quoted: bool) -> PTerm {
         match node {
+            // A formula's own @forAll and @forSome names are part of that formula, not the rule's.
+            Node::Var(name) if quoted && name.starts_with(LOCAL_UNIVERSAL) => {
+                PTerm::Const(self.store.quoted_var(name))
+            }
+            Node::Blank(label) if quoted && label.starts_with(LOCAL_EXISTENTIAL) => {
+                PTerm::Const(self.store.encode(node))
+            }
             Node::Var(name) => match (self.side, self.bound) {
                 (Side::Head, Some(bound)) if quoted && !bound.contains(name) => {
                     PTerm::Const(self.store.quoted_var(name))
@@ -234,6 +245,69 @@ fn builtin_of(statement: &Statement) -> Result<Option<Builtin>, N3Error> {
     Ok(None)
 }
 
+/// The prefix of a variable a rule conclusion's own `@forAll` binds
+pub(crate) const UNIVERSAL_HEAD: &str = "__u.";
+
+/// A rule side's statements read as patterns rather than as a quoted term: the side's own
+/// binders become the rule's (a conclusion's own universals keep a mark of their own), and
+/// binders of formulas nested in it move one level closer
+fn rule_side(statements: &[Statement], conclusion: bool) -> std::borrow::Cow<'_, [Statement]> {
+    fn local(n: &Node) -> bool {
+        match n {
+            Node::Var(name) => name.starts_with(LOCAL_UNIVERSAL),
+            Node::Blank(label) => label.starts_with(LOCAL_EXISTENTIAL),
+            Node::List(items) => items.iter().any(local),
+            Node::Formula(inner) => inner
+                .iter()
+                .any(|s| local(&s.subject) || local(&s.predicate) || local(&s.object)),
+            _ => false,
+        }
+    }
+    if !statements
+        .iter()
+        .any(|s| local(&s.subject) || local(&s.predicate) || local(&s.object))
+    {
+        return std::borrow::Cow::Borrowed(statements);
+    }
+    fn unshift(name: &str, prefix: &str, own: &str) -> Option<String> {
+        let (depth, rest) = name.strip_prefix(prefix)?.split_once('.')?;
+        let depth: usize = depth.parse().ok()?;
+        Some(match depth {
+            0 => format!("{own}{rest}"),
+            _ => format!("{prefix}{}.{rest}", depth - 1),
+        })
+    }
+    fn node(n: &Node, conclusion: bool) -> Node {
+        match n {
+            Node::Var(name) => {
+                let own = if conclusion { UNIVERSAL_HEAD } else { "__r." };
+                Node::Var(unshift(name, LOCAL_UNIVERSAL, own).unwrap_or_else(|| name.clone()))
+            }
+            Node::Blank(label) => Node::Blank(
+                unshift(label, LOCAL_EXISTENTIAL, "kolibrie-r.").unwrap_or_else(|| label.clone()),
+            ),
+            Node::List(items) => Node::List(items.iter().map(|i| node(i, conclusion)).collect()),
+            Node::Formula(inner) => {
+                Node::Formula(inner.iter().map(|s| statement(s, conclusion)).collect())
+            }
+            other => other.clone(),
+        }
+    }
+    fn statement(s: &Statement, conclusion: bool) -> Statement {
+        Statement::new(
+            node(&s.subject, conclusion),
+            node(&s.predicate, conclusion),
+            node(&s.object, conclusion),
+        )
+    }
+    std::borrow::Cow::Owned(
+        statements
+            .iter()
+            .map(|s| statement(s, conclusion))
+            .collect(),
+    )
+}
+
 fn formula_statements(node: &Node) -> Option<&[Statement]> {
     match node {
         Node::Formula(statements) => Some(statements),
@@ -255,13 +329,15 @@ pub fn compile_rule(store: &mut TermStore, body: &Node, head: &Node) -> Result<N
     let Some(body) = formula_statements(body) else {
         return Err(N3Error::unsupported("a rule premise that is not a formula"));
     };
+    let body = &rule_side(body, false)[..];
     let fuse = matches!(head, Node::Literal { lexical, datatype, .. }
         if lexical == "false" && datatype.as_deref() == Some(crate::syntax::XSD_BOOLEAN));
     let unquoted = (!fuse && formula_statements(head).is_none()).then_some(head);
-    let head: &[Statement] = match head {
-        _ if fuse || unquoted.is_some() => &[],
-        other => formula_statements(other).unwrap_or(&[]),
+    let head = match head {
+        _ if fuse || unquoted.is_some() => Vec::new(),
+        other => rule_side(formula_statements(other).unwrap_or(&[]), true).into_owned(),
     };
+    let head = &head[..];
     let mut body_atoms: Vec<Atom> = {
         let mut compiler = Compiler {
             store,
@@ -299,6 +375,13 @@ pub fn compile_rule(store: &mut TermStore, body: &Node, head: &Node) -> Result<N
         }
         None => None,
     };
+    let local = |atom: &Atom| {
+        let mut vars = BTreeSet::new();
+        atom.variables(&mut vars);
+        vars.iter().any(|v| v.starts_with(UNIVERSAL_HEAD))
+    };
+    let (universal, head_atoms): (Vec<Atom>, Vec<Atom>) =
+        head_atoms.into_iter().partition(|atom| local(atom));
     let has_existentials = head_atoms.iter().any(Atom::has_exists);
     let deferred = body_atoms
         .iter()
@@ -310,6 +393,7 @@ pub fn compile_rule(store: &mut TermStore, body: &Node, head: &Node) -> Result<N
         deferred,
         fuse,
         unquote,
+        universal,
     })
 }
 
@@ -331,6 +415,7 @@ pub fn compile_backward_rule(
             "a backward rule side that is not a formula",
         ));
     };
+    let (head, body) = (&rule_side(head, false)[..], &rule_side(body, false)[..]);
     let mut compiler = Compiler {
         store,
         side: Side::Body,
@@ -371,6 +456,7 @@ pub fn compile_backward_rule(
         deferred,
         fuse: false,
         unquote: None,
+        universal: Vec::new(),
     })
 }
 

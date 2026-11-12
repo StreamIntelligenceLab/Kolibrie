@@ -46,6 +46,9 @@ enum Scope {
     Quoted(Vec<Triple>),
 }
 
+/// The prefix of the pattern variable a clause's blank node becomes, an existential of the clause
+const EXISTS: &str = "?exists ";
+
 /// The prefix that keeps a quoted formula's variables apart from the rule's own
 const QUOTED: &str = "?quoted ";
 
@@ -128,7 +131,11 @@ impl ScopedOp {
                     PTerm::Var(name) => binding.get(name).map(|&id| (name.clone(), id)),
                     _ => None,
                 };
-                solve_in(m, &scope, &data_only, binding)
+                let solutions: Vec<Binding> = solve_in(m, &scope, &data_only, binding)
+                    .into_iter()
+                    .filter(|solution| quantifiers_respected(m, solution))
+                    .collect();
+                solutions
                     .into_iter()
                     .map(|mut solution| {
                         if let Some((name, formula)) = &held {
@@ -147,7 +154,10 @@ impl ScopedOp {
                 if matches!(scope, Scope::Quoted(_)) {
                     clause.iter_mut().for_each(|atom| atom.builtin = None);
                 }
-                if solve_in(m, &scope, &clause, binding.clone()).is_empty() {
+                let holds = solve_in(m, &scope, &clause, binding.clone())
+                    .iter()
+                    .any(|solution| quantifiers_respected(m, solution));
+                if !holds {
                     vec![binding]
                 } else {
                     Vec::new()
@@ -208,6 +218,14 @@ fn formula_atoms(m: &Matcher<'_>, id: u32) -> Option<Vec<Atom>> {
 fn open(m: &Matcher<'_>, id: u32) -> PTerm {
     match m.store.compound(id) {
         Some(Compound::Var(name)) => PTerm::Var(format!("{QUOTED}{name}")),
+        None if m
+            .store
+            .dictionary
+            .decode(id)
+            .is_some_and(|s| s.starts_with("_:")) =>
+        {
+            PTerm::Var(format!("{EXISTS}{id}"))
+        }
         Some(Compound::List(items)) => {
             let items: Vec<PTerm> = items.iter().map(|&item| open(m, item)).collect();
             if items.iter().all(|item| matches!(item, PTerm::Const(_))) {
@@ -249,9 +267,32 @@ fn substitute(m: &mut Matcher<'_>, id: u32, solution: &Binding) -> u32 {
     }
 }
 
+/// Whether a match of a clause against a graph respects the clause's quantifiers: each of its own
+/// universals stands for a distinct universal of the graph, as a pattern cannot instantiate one,
+/// and none of its existentials stands for a universal
+fn quantifiers_respected(m: &Matcher<'_>, solution: &Binding) -> bool {
+    let local = |id: u32| {
+        matches!(m.store.compound(id), Some(Compound::Var(name))
+            if name.starts_with(crate::parser::LOCAL_UNIVERSAL))
+    };
+    let mut images = BTreeSet::new();
+    for (name, &value) in solution {
+        if let Some(var) = name.strip_prefix(QUOTED) {
+            if var.starts_with(crate::parser::LOCAL_UNIVERSAL)
+                && (!local(value) || !images.insert(value))
+            {
+                return false;
+            }
+        } else if name.starts_with(EXISTS) && local(value) {
+            return false;
+        }
+    }
+    true
+}
+
 /// Removes the bindings of quoted variables, which belong to the clause and not the rule
 fn drop_quoted(mut binding: Binding) -> Binding {
-    binding.retain(|name, _| !name.starts_with(QUOTED));
+    binding.retain(|name, _| !name.starts_with(QUOTED) && !name.starts_with(EXISTS));
     binding
 }
 

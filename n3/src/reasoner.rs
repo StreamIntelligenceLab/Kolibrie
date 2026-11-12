@@ -83,6 +83,10 @@ pub struct N3Reasoner {
     answers: Vec<Triple>,
     /// Set when a backward proof hit the depth limit
     cut_off: Cell<bool>,
+    /// Set when a firing asserted a universal statement, which makes rules worth evaluating again
+    universals_added: bool,
+    /// The rule firings that asserted universal statements, so none asserts twice
+    asserted: HashSet<(usize, Vec<(String, u32)>)>,
     /// Proved backward goals, valid for the fact count recorded alongside
     proofs: RefCell<HashMap<[Option<u32>; 3], Vec<Triple>>>,
     proofs_for: Cell<usize>,
@@ -403,6 +407,14 @@ impl N3Reasoner {
         let conclusion = self.fire(&rule, &binding)?;
         if self.commit(conclusion, pending, fresh_rules)? > 0 && rule.deferred {
             self.retained.push((rule_index, binding));
+        }
+        if std::mem::take(&mut self.universals_added) {
+            // A new universal assertion can answer premises without any new fact.
+            self.proofs.borrow_mut().clear();
+            let asking: Vec<usize> = (0..self.rules.len())
+                .filter(|&i| self.asks_backward(&self.rules[i]))
+                .collect();
+            fresh_rules.extend(asking);
         }
         Ok(())
     }
@@ -768,7 +780,62 @@ impl N3Reasoner {
                 object,
             });
         }
+        if !rule.universal.is_empty() {
+            let mut key: Vec<(String, u32)> =
+                binding.iter().map(|(k, v)| (k.clone(), *v)).collect();
+            key.sort();
+            if !self
+                .asserted
+                .insert((std::ptr::from_ref(rule) as usize, key))
+            {
+                return Ok(out);
+            }
+        }
+        for atom in &rule.universal {
+            let positions = [&atom.subject, &atom.predicate, &atom.object]
+                .map(|p| self.instantiate_open(p, binding, &mut witnesses));
+            let [Some(subject), Some(predicate), Some(object)] = positions else {
+                continue;
+            };
+            let assertion = N3Rule {
+                body: Vec::new(),
+                head: vec![Atom::new(subject, predicate, object)],
+                has_existentials: false,
+                deferred: false,
+                fuse: false,
+                unquote: None,
+                universal: Vec::new(),
+            };
+            if !self
+                .backward
+                .iter()
+                .any(|b| b.body.is_empty() && b.head == assertion.head)
+            {
+                self.backward.push(assertion);
+                self.universals_added = true;
+            }
+        }
         Ok(out)
+    }
+
+    /// A conclusion position with every variable but the conclusion's own universals replaced by
+    /// its value, so the atom stays a pattern over those universals
+    fn instantiate_open(
+        &mut self,
+        position: &PTerm,
+        binding: &Binding,
+        witnesses: &mut HashMap<String, u32>,
+    ) -> Option<PTerm> {
+        Some(match position {
+            PTerm::Var(name) if name.starts_with(crate::rules::UNIVERSAL_HEAD) => position.clone(),
+            PTerm::List(items) => PTerm::List(
+                items
+                    .iter()
+                    .map(|item| self.instantiate_open(item, binding, witnesses))
+                    .collect::<Option<Vec<_>>>()?,
+            ),
+            other => PTerm::Const(self.instantiate(other, binding, witnesses)?),
+        })
     }
 
     /// Whether some facts already satisfy the conclusion, existentials read as variables
