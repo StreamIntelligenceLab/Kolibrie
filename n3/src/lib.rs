@@ -14,6 +14,7 @@ pub mod builtins;
 pub mod canon;
 pub mod error;
 mod lexer;
+pub mod lists;
 mod matcher;
 mod numeric;
 pub mod parser;

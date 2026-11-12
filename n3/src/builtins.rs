@@ -10,6 +10,7 @@
 
 //! N3 built-in predicates: computed instead of looked up
 
+use crate::lists::ListOp;
 use crate::matcher::Matcher;
 use crate::numeric::{compare, integer_literal, number_literal, numbers_equal, numeric, Numeric};
 use crate::rules::PTerm;
@@ -22,13 +23,14 @@ use std::cmp::Ordering;
 const MATH: &str = "http://www.w3.org/2000/10/swap/math#";
 const STRING: &str = "http://www.w3.org/2000/10/swap/string#";
 const LOG: &str = "http://www.w3.org/2000/10/swap/log#";
+const LIST: &str = "http://www.w3.org/2000/10/swap/list#";
 
 /// The namespaces whose predicates are built-ins
 pub(crate) const BUILTIN_NAMESPACES: [&str; 7] = [
     MATH,
     STRING,
     LOG,
-    "http://www.w3.org/2000/10/swap/list#",
+    LIST,
     "http://www.w3.org/2000/10/swap/time#",
     "http://www.w3.org/2000/10/swap/crypto#",
     "http://www.w3.org/2007/rif#",
@@ -77,6 +79,8 @@ pub enum Builtin {
     EqualTo,
     /// `log:notEqualTo`
     NotEqualTo,
+    /// A `list:` built-in
+    List(ListOp),
 }
 
 /// The functions `math:` defines with an inverse
@@ -197,6 +201,9 @@ impl Builtin {
                 _ => return None,
             });
         }
+        if let Some(name) = iri.strip_prefix(LIST) {
+            return ListOp::from_name(name).map(Builtin::List);
+        }
         match iri.strip_prefix(LOG)? {
             "equalTo" => Some(Builtin::EqualTo),
             "notEqualTo" => Some(Builtin::NotEqualTo),
@@ -204,7 +211,25 @@ impl Builtin {
         }
     }
 
-    /// Whether the atom can run with what is bound: `ground` says whether a position is fixed
+    /// Whether the atom can run in its forward mode, computing from its inputs alone; a
+    /// reverse mode waits until no premise is left that could bind those inputs from facts
+    pub(crate) fn forward(
+        self,
+        subject: &PTerm,
+        object: &PTerm,
+        ground: &dyn Fn(&PTerm) -> bool,
+    ) -> bool {
+        match self {
+            Builtin::EqualTo | Builtin::Compare(_) | Builtin::Text(_) | Builtin::NotEqualTo => {
+                ground(subject) && ground(object)
+            }
+            Builtin::List(op) => op.forward(subject, object, ground),
+            _ => ground(subject),
+        }
+    }
+
+    /// Whether the atom can run in some mode with what is bound: `ground` says whether a
+    /// position is fixed
     pub(crate) fn ready(
         self,
         subject: &PTerm,
@@ -232,6 +257,7 @@ impl Builtin {
             Builtin::Compare(_) | Builtin::Text(_) | Builtin::NotEqualTo => {
                 ground(subject) && ground(object)
             }
+            Builtin::List(op) => op.ready(subject, object, ground),
         }
     }
 
@@ -243,6 +269,9 @@ impl Builtin {
         object: &PTerm,
         binding: Binding,
     ) -> Vec<Binding> {
+        if let Builtin::List(op) = self {
+            return op.evaluate(matcher, subject, object, binding);
+        }
         let s = matcher.ground(subject, &binding);
         let o = matcher.ground(object, &binding);
         match self {
@@ -343,6 +372,7 @@ impl Builtin {
                 (Some(left), Some(right)) if !matcher.same_term(left, right) => vec![binding],
                 _ => Vec::new(),
             },
+            Builtin::List(_) => Vec::new(),
         }
     }
 }
@@ -381,7 +411,7 @@ fn number(matcher: &Matcher<'_>, id: Option<u32>) -> Option<Numeric> {
 
 fn numbers(matcher: &Matcher<'_>, id: Option<u32>) -> Option<Vec<Numeric>> {
     matcher
-        .members(id?)?
+        .list_items(id?)?
         .into_iter()
         .map(|member| number(matcher, Some(member)))
         .collect()
@@ -402,7 +432,7 @@ fn text(matcher: &Matcher<'_>, id: Option<u32>) -> Option<String> {
 
 fn texts(matcher: &Matcher<'_>, id: Option<u32>) -> Option<Vec<String>> {
     matcher
-        .members(id?)?
+        .list_items(id?)?
         .into_iter()
         .map(|member| text(matcher, Some(member)))
         .collect()

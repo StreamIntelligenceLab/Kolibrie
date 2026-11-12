@@ -11,14 +11,14 @@
 //! Forward N3 reasoning: semi-naive saturation over a Kolibrie [`DatasetIndex`]
 
 use crate::error::N3Error;
-use crate::matcher::Matcher;
+use crate::matcher::{Matcher, Vocabulary};
 use crate::rules::{compile_rule, formula_node, Atom, N3Rule, PTerm};
 use crate::syntax::{Document, Node, LOG_IMPLIED_BY, LOG_IMPLIES, LOG_OUTPUT_STRING, LOG_QUERY};
-use crate::terms::TermStore;
+use crate::terms::{Compound, TermStore};
 use shared::dataset_index::DatasetIndex;
 use shared::terms::Binding;
 use shared::triple::Triple;
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeSet, HashMap, HashSet};
 
 /// Resource budgets that stop a run which would not reach a fixpoint
 #[derive(Debug, Clone, Copy)]
@@ -48,6 +48,7 @@ pub struct N3Reasoner {
     rules: Vec<N3Rule>,
     rule_sources: HashSet<(u32, u32)>,
     rule_facts: DatasetIndex,
+    list_terms: BTreeSet<u32>,
     derived: Vec<Triple>,
     fresh: usize,
     /// Budgets for [`N3Reasoner::run`]
@@ -92,6 +93,12 @@ impl N3Reasoner {
 
     fn insert(&mut self, triple: Triple) -> bool {
         if self.known.insert(triple.clone()) {
+            for term in [triple.subject, triple.object] {
+                if matches!(self.store.compound(term), Some(Compound::List(items)) if !items.is_empty())
+                {
+                    self.list_terms.insert(term);
+                }
+            }
             self.facts.insert(&triple);
             true
         } else {
@@ -257,12 +264,13 @@ impl N3Reasoner {
 
     /// A matcher over this reasoner's facts and terms
     fn matcher(&mut self) -> Matcher<'_> {
-        let implies = self.store.lookup(LOG_IMPLIES);
+        let vocabulary = Vocabulary::of(&self.store);
         Matcher {
             store: &mut self.store,
             facts: &self.facts,
             rule_facts: &self.rule_facts,
-            implies,
+            list_terms: &self.list_terms,
+            vocabulary,
         }
     }
 
