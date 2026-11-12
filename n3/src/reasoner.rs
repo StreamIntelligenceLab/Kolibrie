@@ -12,12 +12,13 @@
 
 use crate::error::N3Error;
 use crate::matcher::{Matcher, Vocabulary};
-use crate::rules::{compile_rule, formula_node, Atom, N3Rule, PTerm};
+use crate::rules::{compile_backward_rule, compile_rule, formula_node, Atom, N3Rule, PTerm};
 use crate::syntax::{Document, Node, LOG_IMPLIED_BY, LOG_IMPLIES, LOG_OUTPUT_STRING, LOG_QUERY};
 use crate::terms::{Compound, TermStore};
 use shared::dataset_index::DatasetIndex;
 use shared::terms::Binding;
 use shared::triple::Triple;
+use std::cell::{Cell, RefCell};
 use std::collections::{BTreeSet, HashMap, HashSet};
 
 /// Resource budgets that stop a run which would not reach a fixpoint
@@ -27,6 +28,9 @@ pub struct Limits {
     pub max_facts: usize,
     /// Most saturation rounds
     pub max_rounds: usize,
+    /// How deep backward rules may call each other before a run stops with
+    /// [`N3Error::Limit`]
+    pub max_backward_depth: usize,
 }
 
 impl Default for Limits {
@@ -34,6 +38,7 @@ impl Default for Limits {
         Limits {
             max_facts: 5_000_000,
             max_rounds: 100_000,
+            max_backward_depth: 32,
         }
     }
 }
@@ -52,6 +57,20 @@ pub struct N3Reasoner {
     /// Firings that rested on a test of the whole graph, rechecked once reasoning ends
     retained: Vec<(usize, Binding)>,
     list_terms: BTreeSet<u32>,
+    /// Rules proved on demand: `{ head } <= { body }`
+    backward: Vec<N3Rule>,
+    /// `{ body } log:query { head }`, answered once reasoning is done
+    queries: Vec<N3Rule>,
+    /// The query answers, in the order they were found
+    answers: Vec<Triple>,
+    /// Set when a backward proof hit the depth limit
+    cut_off: Cell<bool>,
+    /// Set when a backward rule answered with a variable still open
+    open_answer: Cell<bool>,
+    /// Proved backward goals, valid for the fact count recorded alongside
+    proofs: RefCell<HashMap<[Option<u32>; 3], Vec<Triple>>>,
+    proofs_for: Cell<usize>,
+    cuts: Cell<usize>,
     derived: Vec<Triple>,
     fresh: usize,
     /// Budgets for [`N3Reasoner::run`]
@@ -82,7 +101,15 @@ impl N3Reasoner {
         let implied_by = self.store.lookup(LOG_IMPLIED_BY);
         for triple in triples {
             if Some(triple.predicate) == implied_by {
-                return Err(N3Error::unsupported("backward rules (<=)"));
+                if let (Some(head), Some(body)) = (
+                    formula_node(&self.store, triple.subject),
+                    formula_or_true(&self.store, triple.object),
+                ) {
+                    let rule = compile_backward_rule(&mut self.store, &head, &body)?;
+                    self.rule_facts.insert(triple);
+                    self.backward.push(rule);
+                    continue;
+                }
             }
             if Some(triple.predicate) == implies {
                 if let (Some(body), Some(head)) = (
@@ -110,10 +137,21 @@ impl N3Reasoner {
         for statement in &document.statements {
             if let Node::Iri(predicate) = &statement.predicate {
                 if predicate == LOG_IMPLIED_BY {
-                    return Err(N3Error::unsupported("backward rules (<=)"));
+                    let rule = compile_backward_rule(
+                        &mut self.store,
+                        &statement.subject,
+                        &statement.object,
+                    )?;
+                    let triple = self.store.encode_statement(statement);
+                    self.rule_facts.insert(&triple);
+                    self.backward.push(rule);
+                    continue;
                 }
                 if predicate == LOG_QUERY {
-                    return Err(N3Error::unsupported("log:query"));
+                    let query =
+                        compile_rule(&mut self.store, &statement.subject, &statement.object)?;
+                    self.queries.push(query);
+                    continue;
                 }
                 if predicate == LOG_IMPLIES {
                     let rule =
@@ -188,6 +226,18 @@ impl N3Reasoner {
             }
             if !progressed {
                 self.recheck_retained()?;
+                self.answer_queries()?;
+                if self.open_answer.get() {
+                    return Err(N3Error::unsupported(
+                        "backward rule answers that leave a variable open",
+                    ));
+                }
+                if self.cut_off.get() {
+                    return Err(N3Error::Limit(format!(
+                        "backward rules nested deeper than {}",
+                        self.limits.max_backward_depth
+                    )));
+                }
                 return Ok(&self.derived);
             }
         }
@@ -223,7 +273,7 @@ impl N3Reasoner {
                 if rule.waits() {
                     continue;
                 }
-                let full = ordinary_fresh.contains(&rule_index);
+                let full = ordinary_fresh.contains(&rule_index) || self.asks_backward(&rule);
                 for binding in self.rule_solutions(&rule, &delta_index, full) {
                     self.apply(rule_index, binding, pending, fresh_rules)?;
                 }
@@ -272,6 +322,49 @@ impl N3Reasoner {
             self.retained.push((rule_index, binding));
         }
         Ok(())
+    }
+
+    /// Whether a premise of `rule` could be answered by a backward rule, whose answers change
+    /// with facts that need not match the premise itself
+    fn asks_backward(&self, rule: &N3Rule) -> bool {
+        rule.body
+            .iter()
+            .filter(|a| a.builtin.is_none())
+            .any(|premise| {
+                self.backward.iter().flat_map(|b| &b.head).any(|head| {
+                    premise
+                        .positions()
+                        .into_iter()
+                        .zip(head.positions())
+                        .all(|(x, y)| compatible(x, y))
+                })
+            })
+    }
+
+    /// Answers every `log:query` over the saturated graph, without adding the answers to it
+    fn answer_queries(&mut self) -> Result<(), N3Error> {
+        let queries = self.queries.clone();
+        let mut seen = HashSet::new();
+        for query in &queries {
+            let solutions = self.matcher().solve(&query.body, None, Binding::new());
+            for binding in solutions {
+                for triple in self.fire(query, &binding)? {
+                    if seen.insert(triple.clone()) {
+                        self.answers.push(triple);
+                    }
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// What a run outputs: the query answers when the program has queries, else the derived facts
+    pub fn output(&self) -> &[Triple] {
+        if self.queries.is_empty() {
+            &self.derived
+        } else {
+            &self.answers
+        }
     }
 
     /// Checks that every firing that rested on a test of the whole graph still has its premise
@@ -403,7 +496,16 @@ impl N3Reasoner {
             .lookup(LOG_IMPLIED_BY)
             .is_some_and(|id| id == triple.predicate)
         {
-            return Err(N3Error::unsupported("backward rules (<=), derived"));
+            if let (Some(head), Some(body)) = (
+                formula_node(&self.store, triple.subject),
+                formula_or_true(&self.store, triple.object),
+            ) {
+                if self.rule_sources.insert((triple.subject, triple.object)) {
+                    let rule = compile_backward_rule(&mut self.store, &head, &body)?;
+                    self.backward.push(rule);
+                }
+            }
+            return Ok(false);
         }
         let Some(implies) = self.store.lookup(LOG_IMPLIES) else {
             return Ok(false);
@@ -426,6 +528,10 @@ impl N3Reasoner {
     /// A matcher over this reasoner's facts and terms
     fn matcher(&mut self) -> Matcher<'_> {
         let vocabulary = Vocabulary::of(&self.store);
+        if self.proofs_for.get() != self.known.len() {
+            self.proofs.borrow_mut().clear();
+            self.proofs_for.set(self.known.len());
+        }
         Matcher {
             store: &mut self.store,
             facts: &self.facts,
@@ -433,6 +539,13 @@ impl N3Reasoner {
             list_terms: &self.list_terms,
             sequence: &self.known,
             vocabulary,
+            backward: &self.backward,
+            goals: Vec::new(),
+            cut_off: &self.cut_off,
+            open_answer: &self.open_answer,
+            proofs: &self.proofs,
+            cuts: &self.cuts,
+            max_depth: self.limits.max_backward_depth,
         }
     }
 
@@ -570,13 +683,20 @@ impl N3Reasoner {
         })
     }
 
-    /// The `log:outputString` texts in the store, joined in order of their subjects, or `None`
-    /// when there are none
+    /// The `log:outputString` texts a run outputs, joined in order of their subjects, or `None`
+    /// when there are none: from the query answers when there are queries, else from every fact
     pub fn output_strings(&self) -> Option<String> {
         let predicate = self.store.lookup(LOG_OUTPUT_STRING)?;
-        let mut entries: Vec<(String, String)> = self
-            .facts
-            .query(None, Some(predicate), None)
+        let triples = if self.queries.is_empty() {
+            self.facts.query(None, Some(predicate), None)
+        } else {
+            self.answers
+                .iter()
+                .filter(|t| t.predicate == predicate)
+                .cloned()
+                .collect()
+        };
+        let mut entries: Vec<(String, String)> = triples
             .into_iter()
             .filter_map(|triple| match self.store.node(triple.object) {
                 Node::Literal { lexical, .. } => Some((self.store.n3(triple.subject), lexical)),
@@ -590,6 +710,16 @@ impl N3Reasoner {
         Some(entries.into_iter().map(|(_, text)| text).collect())
     }
 
+    /// What [`N3Reasoner::output`] returns, as N3 text, one statement per line
+    pub fn output_n3(&self) -> String {
+        let mut out = String::new();
+        for triple in self.output() {
+            out.push_str(&self.store.n3_triple(triple));
+            out.push('\n');
+        }
+        out
+    }
+
     /// The derived facts as N3 text, one statement per line
     pub fn derived_n3(&self) -> String {
         let mut out = String::new();
@@ -599,6 +729,16 @@ impl N3Reasoner {
         }
         out
     }
+}
+
+/// The node behind a formula id, or the literal `true` that stands for the empty premise
+fn formula_or_true(store: &TermStore, id: u32) -> Option<Node> {
+    formula_node(store, id).or_else(|| {
+        let node = store.node(id);
+        matches!(&node, Node::Literal { lexical, datatype, .. }
+            if lexical == "true" && datatype.as_deref() == Some(crate::syntax::XSD_BOOLEAN))
+        .then_some(node)
+    })
 }
 
 fn exists_as_var(position: &PTerm) -> PTerm {

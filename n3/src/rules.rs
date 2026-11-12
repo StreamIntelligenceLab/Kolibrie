@@ -312,6 +312,73 @@ pub fn compile_rule(store: &mut TermStore, body: &Node, head: &Node) -> Result<N
     })
 }
 
+/// Compiles `{ head } <= { body }`, a rule proved on demand when a premise asks for its head
+///
+/// Both sides compile as patterns: the head is matched against a goal, so its blank nodes are
+/// variables and it may name variables the body leaves open.
+///
+/// # Errors
+/// Returns [`N3Error::Unsupported`] for a side that is not a formula and for a built-in this
+/// engine does not implement
+pub fn compile_backward_rule(
+    store: &mut TermStore,
+    head: &Node,
+    body: &Node,
+) -> Result<N3Rule, N3Error> {
+    let (Some(head), Some(body)) = (formula_statements(head), formula_statements(body)) else {
+        return Err(N3Error::unsupported(
+            "a backward rule side that is not a formula",
+        ));
+    };
+    let mut compiler = Compiler {
+        store,
+        side: Side::Body,
+        bound: None,
+    };
+    let head_atoms: Vec<Atom> = head.iter().map(|s| compiler.atom(s, false)).collect();
+    let mut body_atoms: Vec<Atom> = body.iter().map(|s| compiler.atom(s, false)).collect();
+    for (atom, statement) in body_atoms.iter_mut().zip(body) {
+        atom.builtin = builtin_of(statement)?;
+    }
+    let deferred = body_atoms
+        .iter()
+        .any(|atom| atom.builtin.is_some_and(Builtin::reads_whole_graph));
+    Ok(N3Rule {
+        body: body_atoms,
+        head: head_atoms,
+        has_existentials: false,
+        deferred,
+        fuse: false,
+    })
+}
+
+impl Atom {
+    /// The atom with every variable renamed by `rename`, built-in kept
+    pub(crate) fn renamed(&self, rename: &dyn Fn(&str) -> String) -> Atom {
+        let mut atom = Atom::new(
+            self.subject.renamed(rename),
+            self.predicate.renamed(rename),
+            self.object.renamed(rename),
+        );
+        atom.builtin = self.builtin;
+        atom
+    }
+}
+
+impl PTerm {
+    /// The position with every variable renamed by `rename`
+    pub(crate) fn renamed(&self, rename: &dyn Fn(&str) -> String) -> PTerm {
+        match self {
+            PTerm::Var(name) => PTerm::Var(rename(name)),
+            PTerm::List(items) => PTerm::List(items.iter().map(|i| i.renamed(rename)).collect()),
+            PTerm::Formula(atoms) => {
+                PTerm::Formula(atoms.iter().map(|a| a.renamed(rename)).collect())
+            }
+            other => other.clone(),
+        }
+    }
+}
+
 /// Rebuilds the node behind a formula id, so a derived `log:implies` triple can become a rule
 pub fn formula_node(store: &TermStore, id: u32) -> Option<Node> {
     match store.compound(id) {

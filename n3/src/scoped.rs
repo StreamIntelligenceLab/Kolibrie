@@ -78,6 +78,24 @@ impl ScopedOp {
         }
     }
 
+    /// The variables the atom binds when it runs: the result of a collection, the clause of an
+    /// inclusion, the object of a conjunction or conclusion
+    pub(crate) fn outputs(self, subject: &PTerm, object: &PTerm, out: &mut BTreeSet<String>) {
+        match self {
+            ScopedOp::CollectAllIn => {
+                if let PTerm::List(parts) = subject {
+                    if let Some(result) = parts.get(2) {
+                        result.variables(out);
+                    }
+                }
+            }
+            ScopedOp::Includes | ScopedOp::Conjunction | ScopedOp::Conclusion => {
+                object.variables(out);
+            }
+            ScopedOp::NotIncludes | ScopedOp::ForAllIn => {}
+        }
+    }
+
     /// Whether the atom can run at all with what is bound; scoped tests and the built-ins
     /// reading formulas as data always can, once nothing else is left to bind their arguments
     pub(crate) fn ready(self) -> bool {
@@ -260,6 +278,13 @@ fn solve_in(m: &mut Matcher<'_>, scope: &Scope, clause: &[Atom], binding: Bindin
                 list_terms: &no_lists,
                 sequence: &sequence,
                 vocabulary: m.vocabulary,
+                backward: &[],
+                goals: Vec::new(),
+                cut_off: m.cut_off,
+                open_answer: m.open_answer,
+                proofs: m.proofs,
+                cuts: m.cuts,
+                max_depth: m.max_depth,
             };
             inner.solve(clause, None, binding)
         }

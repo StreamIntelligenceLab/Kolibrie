@@ -12,13 +12,14 @@
 
 use crate::builtins::Builtin;
 use crate::numeric::{numbers_equal, numeric};
-use crate::rules::{Atom, PTerm};
+use crate::rules::{Atom, N3Rule, PTerm};
 use crate::syntax::Node;
 use crate::terms::{Compound, TermStore};
 use shared::dataset_index::DatasetIndex;
 use shared::pattern::matches_rule_pattern;
 use shared::terms::Binding;
 use shared::triple::Triple;
+use std::cell::{Cell, RefCell};
 use std::collections::{BTreeSet, HashMap, HashSet};
 
 /// What a pattern position says about the id it must match
@@ -67,6 +68,22 @@ pub(crate) struct Matcher<'a> {
     /// The order facts were added in, which lookups keep so joins are deterministic
     pub(crate) sequence: &'a HashMap<Triple, usize>,
     pub(crate) vocabulary: Vocabulary,
+    /// Rules proved on demand when a premise asks for their head
+    pub(crate) backward: &'a [N3Rule],
+    /// The backward goals being proved, innermost last, so a goal never proves itself
+    pub(crate) goals: Vec<(usize, [Option<u32>; 3])>,
+    /// Set when a proof was cut off at `max_depth`, so the answer may be incomplete
+    pub(crate) cut_off: &'a Cell<bool>,
+    /// Set when a backward rule answered with a variable still open, which needs unification
+    /// over non-ground terms that this engine does not do
+    pub(crate) open_answer: &'a Cell<bool>,
+    /// Proved goals and their answers, one triple per proof, valid while the facts are unchanged
+    pub(crate) proofs: &'a RefCell<HashMap<[Option<u32>; 3], Vec<Triple>>>,
+    /// How many proofs were cut short by the cycle check or the depth limit, so a goal proved
+    /// meanwhile is not cached as complete
+    pub(crate) cuts: &'a Cell<usize>,
+    /// How deep backward rules may call each other
+    pub(crate) max_depth: usize,
 }
 
 impl Matcher<'_> {
@@ -97,16 +114,70 @@ impl Matcher<'_> {
                     .position(|&i| atoms[i].builtin.is_some_and(|b| test(b, &atoms[i])))
             };
             let forward = builtin_where(&|b, a| b.forward(&a.subject, &a.object, &is_ground));
-            let data = || {
-                remaining
+            let backward = self.backward;
+            let sample = &bindings[0];
+            let settled = |atom: &Atom| {
+                let mut vars = BTreeSet::new();
+                atom.variables(&mut vars);
+                vars.is_subset(&bound) || !asks(backward, atom, sample)
+            };
+            // Settled premises go most-bound first, the earliest on a tie; open backward goals go
+            // in the order written, since each one's inputs come from those before it.
+            let data = |wanted: bool| {
+                let mut candidates = remaining
                     .iter()
                     .enumerate()
-                    .filter(|(_, &i)| atoms[i].builtin.is_none())
-                    .max_by_key(|(_, &i)| boundness(&atoms[i], &bound))
-                    .map(|(position, _)| position)
+                    .filter(|(_, &i)| atoms[i].builtin.is_none() && settled(&atoms[i]) == wanted);
+                if wanted {
+                    candidates
+                        .min_by_key(|(position, &i)| {
+                            (std::cmp::Reverse(boundness(&atoms[i], &bound)), *position)
+                        })
+                        .map(|(position, _)| position)
+                } else {
+                    candidates.next().map(|(position, _)| position)
+                }
             };
-            let reverse = || builtin_where(&|b, a| b.ready(&a.subject, &a.object, &is_ground));
-            let Some(pick) = forward.or_else(data).or_else(reverse) else {
+            let reverse = || {
+                builtin_where(&|b, a| {
+                    !matches!(b, Builtin::Scoped(_)) && b.ready(&a.subject, &a.object, &is_ground)
+                })
+            };
+            let scoped = || {
+                builtin_where(&|b, a| {
+                    matches!(b, Builtin::Scoped(_)) && b.ready(&a.subject, &a.object, &is_ground)
+                })
+            };
+            // A scoped test can run once every variable it shares with the rest of the premise is
+            // bound; its own clause variables and its outputs need not be.
+            let inputs_bound = |index: usize| {
+                let atom = &atoms[index];
+                let Some(Builtin::Scoped(op)) = atom.builtin else {
+                    return false;
+                };
+                let mut outputs = BTreeSet::new();
+                op.outputs(&atom.subject, &atom.object, &mut outputs);
+                let mut mine = BTreeSet::new();
+                atom.variables(&mut mine);
+                remaining.iter().filter(|&&i| i != index).all(|&other| {
+                    let mut theirs = BTreeSet::new();
+                    atoms[other].variables(&mut theirs);
+                    theirs
+                        .intersection(&mine)
+                        .all(|v| bound.contains(v) || outputs.contains(v))
+                })
+            };
+            let scoped_ready = || remaining.iter().position(|&i| inputs_bound(i));
+            // A premise only backward rules can answer goes late while its inputs are open, so the
+            // proof starts with every constraint its other premises can supply; a scoped test goes
+            // last of all, because it reads whatever the rest of the premise binds.
+            let Some(pick) = forward
+                .or_else(|| data(true))
+                .or_else(reverse)
+                .or_else(scoped_ready)
+                .or_else(|| data(false))
+                .or_else(scoped)
+            else {
                 return Vec::new();
             };
             let next = remaining.remove(pick);
@@ -126,12 +197,143 @@ impl Matcher<'_> {
                     } else {
                         &[facts]
                     };
-                    self.extend(atom, sources, true, bindings)
+                    if self.backward.is_empty() {
+                        self.extend(atom, sources, true, bindings)
+                    } else {
+                        // Each fact and each proof is its own solution, as in eyeron, so a
+                        // collection over proofs counts them all.
+                        let mut out = Vec::new();
+                        for binding in bindings {
+                            out.extend(self.extend(atom, sources, true, vec![binding.clone()]));
+                            out.extend(self.prove(atom, &binding));
+                        }
+                        out
+                    }
                 }
             };
             atom.variables(&mut bound);
         }
         bindings
+    }
+
+    /// Every extension of `binding` under which a backward rule proves `goal`, one per proof,
+    /// reusing an earlier proof of the same goal over the same facts
+    fn prove(&mut self, goal: &Atom, binding: &Binding) -> Vec<Binding> {
+        if self.backward.is_empty() {
+            return Vec::new();
+        }
+        let open_or_ground = |position: &PTerm| match position {
+            PTerm::Var(_) => true,
+            other => {
+                let mut vars = BTreeSet::new();
+                other.variables(&mut vars);
+                vars.iter().all(|v| binding.contains_key(v))
+            }
+        };
+        let cacheable = goal.positions().into_iter().all(open_or_ground);
+        let keys = [
+            self.ground(&goal.subject, binding),
+            self.ground(&goal.predicate, binding),
+            self.ground(&goal.object, binding),
+        ];
+        if cacheable {
+            let cached = self.proofs.borrow().get(&keys).cloned();
+            if let Some(proved) = cached {
+                return proved
+                    .into_iter()
+                    .flat_map(|triple| self.unify_triple(goal, &triple, binding.clone()))
+                    .collect();
+            }
+        }
+        let cuts = self.cuts.get();
+        let answers = self.prove_uncached(goal, binding, keys);
+        if cacheable && self.cuts.get() == cuts {
+            let proved: Vec<Triple> = answers
+                .iter()
+                .filter_map(|answer| {
+                    Some(Triple {
+                        subject: self.ground(&goal.subject, answer)?,
+                        predicate: self.ground(&goal.predicate, answer)?,
+                        object: self.ground(&goal.object, answer)?,
+                    })
+                })
+                .collect();
+            if proved.len() == answers.len() {
+                self.proofs.borrow_mut().insert(keys, proved);
+            }
+        }
+        answers
+    }
+
+    /// [`Matcher::prove`] without the cache
+    fn prove_uncached(
+        &mut self,
+        goal: &Atom,
+        binding: &Binding,
+        keys: [Option<u32>; 3],
+    ) -> Vec<Binding> {
+        let mut out = Vec::new();
+        let backward = self.backward;
+        for (rule_index, rule) in backward.iter().enumerate() {
+            if self.goals.contains(&(rule_index, keys)) {
+                self.cuts.set(self.cuts.get() + 1);
+                continue;
+            }
+            let depth = self.goals.len();
+            let rename = |name: &str| format!("#{depth}#{name}");
+            for head in &rule.head {
+                if !goal
+                    .positions()
+                    .into_iter()
+                    .zip(head.positions())
+                    .all(|(g, h)| compatible_position(g, h))
+                {
+                    continue;
+                }
+                if depth >= self.max_depth {
+                    self.cut_off.set(true);
+                    self.cuts.set(self.cuts.get() + 1);
+                    continue;
+                }
+                let head = head.renamed(&rename);
+                let body: Vec<Atom> = rule.body.iter().map(|a| a.renamed(&rename)).collect();
+                let mut starts = vec![Binding::new()];
+                for (position, key) in head.positions().into_iter().zip(keys) {
+                    if let Some(id) = key {
+                        starts = starts
+                            .into_iter()
+                            .flat_map(|b| self.unify_value(position, id, b))
+                            .collect();
+                    }
+                }
+                for start in starts {
+                    self.goals.push((rule_index, keys));
+                    let solutions = self.solve(&body, None, start);
+                    self.goals.pop();
+                    for solution in solutions {
+                        let mut answers = vec![binding.clone()];
+                        for ((goal_position, head_position), key) in
+                            goal.positions().into_iter().zip(head.positions()).zip(keys)
+                        {
+                            if key.is_some() {
+                                continue;
+                            }
+                            let Some(value) = self.ground(head_position, &solution) else {
+                                self.open_answer.set(true);
+                                answers.clear();
+                                break;
+                            };
+                            answers = answers
+                                .into_iter()
+                                .flat_map(|b| self.unify_value(goal_position, value, b))
+                                .collect();
+                        }
+                        out.extend(answers);
+                    }
+                }
+            }
+        }
+        out
     }
 
     /// Extends each binding with every way `atom` matches a fact in one of `indexes`, and with
@@ -178,7 +380,14 @@ impl Matcher<'_> {
                     }
                     continue;
                 }
-                out.extend(self.unify_triple(atom, &fact, binding.clone()));
+                let possible = atom
+                    .positions()
+                    .into_iter()
+                    .zip([fact.subject, fact.predicate, fact.object])
+                    .all(|(position, id)| self.could_match(position, id, &binding));
+                if possible {
+                    out.extend(self.unify_triple(atom, &fact, binding.clone()));
+                }
             }
         }
         out
@@ -320,6 +529,26 @@ impl Matcher<'_> {
             }
         }
         partial
+    }
+
+    /// A cheap test, without allocating, that rules out ids `position` cannot match under
+    /// `binding`: a different constant or bound value, or a list of another shape
+    fn could_match(&self, position: &PTerm, id: u32, binding: &Binding) -> bool {
+        match position {
+            PTerm::Const(c) => *c == id,
+            PTerm::Var(name) => binding.get(name).is_none_or(|&bound| bound == id),
+            PTerm::List(items) => match self.store.compound(id) {
+                Some(Compound::List(members)) => {
+                    members.len() == items.len()
+                        && items
+                            .iter()
+                            .zip(members)
+                            .all(|(item, &member)| self.could_match(item, member, binding))
+                }
+                _ => false,
+            },
+            PTerm::Formula(_) | PTerm::Exists(_) => true,
+        }
     }
 
     /// The id a position must equal under `binding`, if it can be known without a lookup scan
@@ -520,6 +749,34 @@ impl Matcher<'_> {
             ) => da == db && numbers_equal(&x, &y),
             _ => false,
         }
+    }
+}
+
+/// Whether some backward rule could answer `atom`, with the variables `binding` binds read as
+/// their values
+fn asks(backward: &[N3Rule], atom: &Atom, binding: &Binding) -> bool {
+    let resolve = |position: &PTerm| match position {
+        PTerm::Var(name) => binding
+            .get(name)
+            .map_or_else(|| position.clone(), |&id| PTerm::Const(id)),
+        other => other.clone(),
+    };
+    backward.iter().flat_map(|rule| &rule.head).any(|head| {
+        atom.positions()
+            .into_iter()
+            .zip(head.positions())
+            .all(|(g, h)| compatible_position(&resolve(g), h))
+    })
+}
+
+/// Whether a goal position and a rule head position could denote the same term
+fn compatible_position(goal: &PTerm, head: &PTerm) -> bool {
+    match (goal, head) {
+        (PTerm::Const(a), PTerm::Const(b)) => a == b,
+        (PTerm::List(a), PTerm::List(b)) => {
+            a.len() == b.len() && a.iter().zip(b).all(|(x, y)| compatible_position(x, y))
+        }
+        _ => true,
     }
 }
 

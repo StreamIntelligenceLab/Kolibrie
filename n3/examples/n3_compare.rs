@@ -138,7 +138,7 @@ fn ours(path: &Path) -> Result<Answer, N3Error> {
         return Ok(Answer::Text(text));
     }
     let statements: Vec<_> = reasoner
-        .derived()
+        .output()
         .iter()
         .map(|t| reasoner.store.statement(t))
         .collect();

@@ -20,7 +20,7 @@ mod numeric;
 pub mod parser;
 pub mod reasoner;
 pub mod rules;
-mod scoped;
+pub mod scoped;
 pub mod syntax;
 pub mod terms;
 
@@ -28,7 +28,8 @@ pub use error::N3Error;
 pub use parser::parse_document;
 pub use reasoner::N3Reasoner;
 
-/// Parses N3 text, saturates it under its forward rules, and returns the derived facts as N3
+/// Parses N3 text, reasons over it, and returns what the run outputs as N3: the query answers
+/// when it has queries, else the derived facts
 ///
 /// # Errors
 /// Returns whatever [`parse_document`], [`N3Reasoner::load`] or [`N3Reasoner::run`] returns
@@ -37,5 +38,5 @@ pub fn reason(text: &str, base: Option<&str>) -> Result<String, N3Error> {
     let mut reasoner = N3Reasoner::new();
     reasoner.load(&document)?;
     reasoner.run()?;
-    Ok(reasoner.derived_n3())
+    Ok(reasoner.output_n3())
 }

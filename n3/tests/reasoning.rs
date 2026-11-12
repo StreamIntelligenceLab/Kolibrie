@@ -158,12 +158,10 @@ fn input_facts_are_not_reported_as_derived() {
 #[test]
 fn unsupported_features_are_named_not_ignored() {
     for (program, feature) in [
-        ("{ ?x :p ?y } <= { ?y :q ?x } .", "backward rules"),
         (
             "{ ?x :p ?y . ?y string:matches \"a\" } => { ?x :big true } .",
             "string#matches",
         ),
-        ("{ ?x :p ?y } log:query { ?x :q ?y } .", "log:query"),
         ("{ ?x :p ?y } => { ?x :q ?z } .", "?z"),
     ] {
         match derive(program) {
