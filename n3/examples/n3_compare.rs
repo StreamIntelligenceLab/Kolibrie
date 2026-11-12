@@ -26,6 +26,8 @@ use std::time::Instant;
 
 enum Outcome {
     Pass,
+    /// Differs from the stored golden but matches eyeron run on this machine
+    PassLive,
     Divergence(String),
     Mismatch {
         missing: Vec<String>,
@@ -91,15 +93,19 @@ fn inputs(path: &Path) -> Vec<PathBuf> {
 }
 
 /// What a run printed: N3 statements, canonicalised, or `log:outputString` text
+#[derive(Clone)]
 enum Answer {
     Statements(Vec<String>),
     Text(String),
+    /// The run stopped at an inference fuse
+    Fuse,
 }
 
 impl Answer {
     fn into_lines(self) -> Vec<String> {
         match self {
             Answer::Statements(lines) => lines,
+            Answer::Fuse => vec!["(inference fuse)".to_string()],
             Answer::Text(text) => text
                 .lines()
                 .map(|line| line.trim_end().to_string())
@@ -122,7 +128,12 @@ fn ours(path: &Path) -> Result<Answer, N3Error> {
         })?;
         reasoner.load(&document)?;
     }
-    reasoner.run()?;
+    match reasoner.run() {
+        Err(N3Error::Fuse(_)) => return Ok(Answer::Fuse),
+        other => {
+            other?;
+        }
+    }
     if let Some(text) = reasoner.output_strings() {
         return Ok(Answer::Text(text));
     }
@@ -134,8 +145,40 @@ fn ours(path: &Path) -> Result<Answer, N3Error> {
     Ok(Answer::Statements(canonical_lines(&statements)))
 }
 
-fn expected(path: &Path, eyeron_home: &Path) -> Result<Answer, String> {
-    let golden = |extension: &str| {
+/// Runs eyeron on the case and reads what it printed
+fn live(path: &Path, eyeron_home: &Path) -> Result<Answer, String> {
+    let binary = eyeron_home.join("target/release/eyeron");
+    let output = Command::new(&binary)
+        .args(inputs(path))
+        .output()
+        .map_err(|e| format!("cannot run {}: {e}", binary.display()))?;
+    if output.status.code() == Some(65) {
+        return Ok(Answer::Fuse);
+    }
+    if !output.status.success() {
+        return Err(format!(
+            "eyeron exited with {}: {}",
+            output.status,
+            String::from_utf8_lossy(&output.stderr).trim()
+        ));
+    }
+    Ok(read_answer(&String::from_utf8_lossy(&output.stdout)))
+}
+
+/// Reads an oracle's output: a fuse report, N3 statements, or `log:outputString` text
+fn read_answer(text: &str) -> Answer {
+    if text.starts_with("# Inference fuse triggered") {
+        return Answer::Fuse;
+    }
+    match parse_document(text, None) {
+        Ok(document) => Answer::Statements(canonical_lines(&document.statements)),
+        Err(_) => Answer::Text(text.to_string()),
+    }
+}
+
+/// The stored golden next to a case, if it has one
+fn golden(path: &Path) -> Result<Option<Answer>, String> {
+    let stored = |extension: &str| {
         let name = path.with_extension(extension);
         path.parent()
             .map(|dir| {
@@ -144,31 +187,40 @@ fn expected(path: &Path, eyeron_home: &Path) -> Result<Answer, String> {
             })
             .filter(|p| p.exists())
     };
-    if let Some(markdown) = golden("md") {
+    if let Some(markdown) = stored("md") {
         let text = std::fs::read_to_string(&markdown).map_err(|e| e.to_string())?;
-        return Ok(Answer::Text(text));
+        return Ok(Some(Answer::Text(text)));
     }
-    let text = match golden("n3") {
-        Some(stored) => std::fs::read_to_string(&stored).map_err(|e| e.to_string())?,
-        None => {
-            let binary = eyeron_home.join("target/release/eyeron");
-            let output = Command::new(&binary)
-                .args(inputs(path))
-                .output()
-                .map_err(|e| format!("cannot run {}: {e}", binary.display()))?;
-            if !output.status.success() {
-                return Err(format!(
-                    "eyeron exited with {}: {}",
-                    output.status,
-                    String::from_utf8_lossy(&output.stderr).trim()
-                ));
-            }
-            String::from_utf8_lossy(&output.stdout).into_owned()
+    match stored("n3") {
+        Some(n3) => {
+            let text = std::fs::read_to_string(&n3).map_err(|e| e.to_string())?;
+            Ok(Some(read_answer(&text)))
         }
+        None => Ok(None),
+    }
+}
+
+/// Whether two answers agree, and if not, what each has that the other lacks
+fn difference(expected: Answer, actual: Answer) -> Option<(Vec<String>, Vec<String>)> {
+    let (expected, actual) = (expected.into_lines(), actual.into_lines());
+    let expected_set: BTreeSet<&String> = expected.iter().collect();
+    let actual_set: BTreeSet<&String> = actual.iter().collect();
+    if expected_set == actual_set {
+        return None;
+    }
+    let only = |a: &BTreeSet<&String>, b: &BTreeSet<&String>| {
+        a.difference(b).map(|s| (*s).clone()).collect()
     };
-    match parse_document(&text, None) {
-        Ok(document) => Ok(Answer::Statements(canonical_lines(&document.statements))),
-        Err(_) => Ok(Answer::Text(text)),
+    Some((
+        only(&expected_set, &actual_set),
+        only(&actual_set, &expected_set),
+    ))
+}
+
+fn expected(path: &Path, eyeron_home: &Path) -> Result<Answer, String> {
+    match golden(path)? {
+        Some(answer) => Ok(answer),
+        None => live(path, eyeron_home),
     }
 }
 
@@ -196,26 +248,23 @@ fn compare(path: &Path, eyeron_home: &Path) -> Outcome {
         Ok(lines) => lines,
         Err(reason) => return Outcome::NoOracle(reason),
     };
-    let (expected, actual) = (expected.into_lines(), actual.into_lines());
-    let expected_set: BTreeSet<&String> = expected.iter().collect();
-    let actual_set: BTreeSet<&String> = actual.iter().collect();
-    if expected_set == actual_set {
+    let Some((missing, extra)) = difference(expected, actual.clone()) else {
         return Outcome::Pass;
+    };
+    // A stored golden records one platform's floating-point library; eyeron run here may agree.
+    let has_golden = matches!(golden(path), Ok(Some(_)));
+    if has_golden {
+        if let Ok(here) = live(path, eyeron_home) {
+            if difference(here, actual).is_none() {
+                return Outcome::PassLive;
+            }
+        }
     }
     let name = path.file_stem().unwrap_or_default().to_string_lossy();
     if let Some(reason) = divergences(path).remove(&*name) {
         return Outcome::Divergence(reason);
     }
-    Outcome::Mismatch {
-        missing: expected_set
-            .difference(&actual_set)
-            .map(|s| (*s).clone())
-            .collect(),
-        extra: actual_set
-            .difference(&expected_set)
-            .map(|s| (*s).clone())
-            .collect(),
-    }
+    Outcome::Mismatch { missing, extra }
 }
 
 /// Groups an unsupported feature by kind, built-ins by namespace
@@ -277,6 +326,7 @@ fn main() -> ExitCode {
         let elapsed = started.elapsed().as_millis();
         let label = match &outcome {
             Outcome::Pass => "pass",
+            Outcome::PassLive => "pass-live",
             Outcome::Divergence(_) => "divergence",
             Outcome::Mismatch { .. } => "MISMATCH",
             Outcome::Unsupported(_) => "unsupported",
@@ -285,7 +335,7 @@ fn main() -> ExitCode {
         };
         *tally.entry(label).or_default() += 1;
         match outcome {
-            Outcome::Pass => println!("{label:<12} {name} ({elapsed} ms)"),
+            Outcome::Pass | Outcome::PassLive => println!("{label:<12} {name} ({elapsed} ms)"),
             Outcome::Mismatch { missing, extra } => {
                 println!(
                     "{label:<12} {name}: {} missing, {} extra",

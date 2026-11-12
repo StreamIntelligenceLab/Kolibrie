@@ -26,6 +26,9 @@ pub enum N3Error {
     Unsupported(String),
     /// Reasoning exceeded a resource budget before reaching a fixpoint
     Limit(String),
+    /// An inference fuse fired: a forbidden premise held, or a premise that let a rule fire was
+    /// contradicted by what came after
+    Fuse(String),
 }
 
 impl N3Error {
@@ -64,6 +67,7 @@ impl fmt::Display for N3Error {
             } => write!(f, "syntax error: {message}"),
             N3Error::Unsupported(feature) => write!(f, "unsupported: {feature}"),
             N3Error::Limit(budget) => write!(f, "limit reached: {budget}"),
+            N3Error::Fuse(reason) => write!(f, "inference fuse: {reason}"),
         }
     }
 }

@@ -164,7 +164,6 @@ fn unsupported_features_are_named_not_ignored() {
             "string#matches",
         ),
         ("{ ?x :p ?y } log:query { ?x :q ?y } .", "log:query"),
-        ("{ ?x :p ?y } => false .", "fuses"),
         ("{ ?x :p ?y } => { ?x :q ?z } .", "?z"),
     ] {
         match derive(program) {

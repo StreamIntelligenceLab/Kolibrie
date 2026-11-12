@@ -57,6 +57,17 @@ pub struct N3Rule {
     pub head: Vec<Atom>,
     /// Whether the conclusion introduces existential witnesses
     pub has_existentials: bool,
+    /// Whether the premise tests the whole current graph, so the rule waits for saturation
+    pub deferred: bool,
+    /// Whether the rule is an inference fuse, `{ body } => false`, forbidding its premise
+    pub fuse: bool,
+}
+
+impl N3Rule {
+    /// Whether the rule waits for ordinary rules to saturate before it fires
+    pub fn waits(&self) -> bool {
+        self.has_existentials || self.deferred
+    }
 }
 
 impl PTerm {
@@ -193,11 +204,17 @@ impl Compiler<'_> {
     }
 
     fn atom(&mut self, statement: &Statement, quoted: bool) -> Atom {
-        Atom::new(
+        let mut atom = Atom::new(
             self.term(&statement.subject, quoted),
             self.term(&statement.predicate, quoted),
             self.term(&statement.object, quoted),
-        )
+        );
+        if quoted && self.side == Side::Body {
+            if let Node::Iri(iri) = &statement.predicate {
+                atom.builtin = Builtin::from_iri(iri);
+            }
+        }
+        atom
     }
 }
 
@@ -237,12 +254,10 @@ pub fn compile_rule(store: &mut TermStore, body: &Node, head: &Node) -> Result<N
     let Some(body) = formula_statements(body) else {
         return Err(N3Error::unsupported("a rule premise that is not a formula"));
     };
-    let head = match head {
-        Node::Literal {
-            lexical, datatype, ..
-        } if lexical == "false" && datatype.as_deref() == Some(crate::syntax::XSD_BOOLEAN) => {
-            return Err(N3Error::unsupported("inference fuses (=> false)"));
-        }
+    let fuse = matches!(head, Node::Literal { lexical, datatype, .. }
+        if lexical == "false" && datatype.as_deref() == Some(crate::syntax::XSD_BOOLEAN));
+    let head: &[Statement] = match head {
+        _ if fuse => &[],
         other => match formula_statements(other) {
             Some(statements) => statements,
             None => {
@@ -285,10 +300,15 @@ pub fn compile_rule(store: &mut TermStore, body: &Node, head: &Node) -> Result<N
         )));
     }
     let has_existentials = head_atoms.iter().any(Atom::has_exists);
+    let deferred = body_atoms
+        .iter()
+        .any(|atom| atom.builtin.is_some_and(Builtin::reads_whole_graph));
     Ok(N3Rule {
         body: body_atoms,
         head: head_atoms,
         has_existentials,
+        deferred,
+        fuse,
     })
 }
 

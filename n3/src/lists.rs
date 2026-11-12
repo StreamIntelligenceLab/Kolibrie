@@ -343,16 +343,11 @@ fn map(
         let solutions = match Builtin::from_iri(&iri) {
             Some(builtin) => builtin.evaluate(m, &PTerm::Const(input), &output, Binding::new()),
             None => {
-                let mut values: Vec<u32> = m
-                    .facts
-                    .query(Some(input), Some(predicate), None)
+                let mut facts = m.facts.query(Some(input), Some(predicate), None);
+                m.in_order(&mut facts);
+                facts
                     .into_iter()
-                    .map(|t| t.object)
-                    .collect();
-                values.sort_unstable();
-                values
-                    .into_iter()
-                    .map(|value| Binding::from([("?list:map output".to_string(), value)]))
+                    .map(|t| Binding::from([("?list:map output".to_string(), t.object)]))
                     .collect()
             }
         };

@@ -14,6 +14,7 @@ use crate::lists::ListOp;
 use crate::matcher::Matcher;
 use crate::numeric::{compare, integer_literal, number_literal, numbers_equal, numeric, Numeric};
 use crate::rules::PTerm;
+use crate::scoped::ScopedOp;
 use crate::syntax::Node;
 use num_bigint::BigInt;
 use num_traits::{Signed, ToPrimitive, Zero};
@@ -81,6 +82,8 @@ pub enum Builtin {
     NotEqualTo,
     /// A `list:` built-in
     List(ListOp),
+    /// A `log:` built-in that reads a graph
+    Scoped(ScopedOp),
 }
 
 /// The functions `math:` defines with an inverse
@@ -207,8 +210,13 @@ impl Builtin {
         match iri.strip_prefix(LOG)? {
             "equalTo" => Some(Builtin::EqualTo),
             "notEqualTo" => Some(Builtin::NotEqualTo),
-            _ => None,
+            name => ScopedOp::from_name(name).map(Builtin::Scoped),
         }
+    }
+
+    /// Whether the built-in reads the whole current graph, so its rule waits for saturation
+    pub(crate) fn reads_whole_graph(self) -> bool {
+        matches!(self, Builtin::Scoped(op) if op.reads_whole_graph())
     }
 
     /// Whether the atom can run in its forward mode, computing from its inputs alone; a
@@ -224,6 +232,7 @@ impl Builtin {
                 ground(subject) && ground(object)
             }
             Builtin::List(op) => op.forward(subject, object, ground),
+            Builtin::Scoped(op) => op.forward(subject, ground),
             _ => ground(subject),
         }
     }
@@ -258,6 +267,7 @@ impl Builtin {
                 ground(subject) && ground(object)
             }
             Builtin::List(op) => op.ready(subject, object, ground),
+            Builtin::Scoped(op) => op.ready(),
         }
     }
 
@@ -269,8 +279,10 @@ impl Builtin {
         object: &PTerm,
         binding: Binding,
     ) -> Vec<Binding> {
-        if let Builtin::List(op) = self {
-            return op.evaluate(matcher, subject, object, binding);
+        match self {
+            Builtin::List(op) => return op.evaluate(matcher, subject, object, binding),
+            Builtin::Scoped(op) => return op.evaluate(matcher, subject, object, binding),
+            _ => {}
         }
         let s = matcher.ground(subject, &binding);
         let o = matcher.ground(object, &binding);
@@ -372,7 +384,7 @@ impl Builtin {
                 (Some(left), Some(right)) if !matcher.same_term(left, right) => vec![binding],
                 _ => Vec::new(),
             },
-            Builtin::List(_) => Vec::new(),
+            Builtin::List(_) | Builtin::Scoped(_) => Vec::new(),
         }
     }
 }

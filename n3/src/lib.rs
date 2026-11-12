@@ -20,6 +20,7 @@ mod numeric;
 pub mod parser;
 pub mod reasoner;
 pub mod rules;
+mod scoped;
 pub mod syntax;
 pub mod terms;
 

@@ -29,7 +29,8 @@ default. Its `examples/` are always run. The expected answer is the stored golde
 
 | Label | Meaning |
 |---|---|
-| `pass` | Same derived facts |
+| `pass` | Same derived facts, or both runs stopped at an inference fuse |
+| `pass-live` | Differs from the stored golden but matches eyeron run on this machine; the golden was made with another platform's floating-point library |
 | `MISMATCH` | Different derived facts; the missing (`-`) and extra (`+`) lines follow |
 | `unsupported` | The program uses a feature this crate reports instead of guessing at |
 | `divergence` | A mismatch listed in `divergences.txt`, where eyeron and N3 disagree |

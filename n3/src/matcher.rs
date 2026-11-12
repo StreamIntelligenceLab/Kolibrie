@@ -19,7 +19,7 @@ use shared::dataset_index::DatasetIndex;
 use shared::pattern::matches_rule_pattern;
 use shared::terms::Binding;
 use shared::triple::Triple;
-use std::collections::{BTreeSet, HashSet};
+use std::collections::{BTreeSet, HashMap, HashSet};
 
 /// What a pattern position says about the id it must match
 enum Key {
@@ -64,6 +64,8 @@ pub(crate) struct Matcher<'a> {
     pub(crate) rule_facts: &'a DatasetIndex,
     /// The non-empty native lists occurring in facts, which `rdf:first`/`rdf:rest` also match
     pub(crate) list_terms: &'a BTreeSet<u32>,
+    /// The order facts were added in, which lookups keep so joins are deterministic
+    pub(crate) sequence: &'a HashMap<Triple, usize>,
     pub(crate) vocabulary: Vocabulary,
 }
 
@@ -163,9 +165,11 @@ impl Matcher<'_> {
             if impossible {
                 continue;
             }
-            let candidates = indexes
+            let mut candidates: Vec<Triple> = indexes
                 .iter()
-                .flat_map(|index| index.query(keys[0], keys[1], keys[2]));
+                .flat_map(|index| index.query(keys[0], keys[1], keys[2]))
+                .collect();
+            self.in_order(&mut candidates);
             for fact in candidates {
                 if let Some(flat) = &atom.flat {
                     let mut extended = binding.clone();
@@ -178,6 +182,14 @@ impl Matcher<'_> {
             }
         }
         out
+    }
+
+    /// Sorts facts into the order they were added, unknown ones last in a fixed order
+    pub(crate) fn in_order(&self, facts: &mut [Triple]) {
+        facts.sort_by(|a, b| {
+            let rank = |t: &Triple| self.sequence.get(t).copied().unwrap_or(usize::MAX);
+            rank(a).cmp(&rank(b)).then_with(|| a.cmp(b))
+        });
     }
 
     /// How `rdf:first` (or, when `first` is false, `rdf:rest`) holds of a native list
@@ -439,6 +451,41 @@ impl Matcher<'_> {
                 Some(self.store.formula(triples))
             }
             PTerm::Exists(_) => None,
+        }
+    }
+
+    /// The id `position` denotes as data: like [`Matcher::ground`], except that a variable still
+    /// unbound inside a formula stays in it as a quoted variable
+    pub(crate) fn quote(&mut self, position: &PTerm, binding: &Binding) -> Option<u32> {
+        self.quote_in(position, binding, false)
+    }
+
+    fn quote_in(&mut self, position: &PTerm, binding: &Binding, inside: bool) -> Option<u32> {
+        match position {
+            PTerm::Var(name) => match binding.get(name) {
+                Some(&id) => Some(id),
+                None if inside => Some(self.store.quoted_var(name)),
+                None => None,
+            },
+            PTerm::List(items) => {
+                let ids = items
+                    .iter()
+                    .map(|item| self.quote_in(item, binding, inside))
+                    .collect::<Option<Vec<u32>>>()?;
+                Some(self.store.list(ids))
+            }
+            PTerm::Formula(atoms) => {
+                let mut triples = Vec::with_capacity(atoms.len());
+                for atom in atoms {
+                    triples.push(Triple {
+                        subject: self.quote_in(&atom.subject, binding, true)?,
+                        predicate: self.quote_in(&atom.predicate, binding, true)?,
+                        object: self.quote_in(&atom.object, binding, true)?,
+                    });
+                }
+                Some(self.store.formula(triples))
+            }
+            other => self.ground(other, binding),
         }
     }
 

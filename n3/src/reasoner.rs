@@ -44,10 +44,13 @@ pub struct N3Reasoner {
     /// The term dictionary and compound-term structure
     pub store: TermStore,
     facts: DatasetIndex,
-    known: HashSet<Triple>,
+    /// Every fact, with the order it was added in
+    known: HashMap<Triple, usize>,
     rules: Vec<N3Rule>,
     rule_sources: HashSet<(u32, u32)>,
     rule_facts: DatasetIndex,
+    /// Firings that rested on a test of the whole graph, rechecked once reasoning ends
+    retained: Vec<(usize, Binding)>,
     list_terms: BTreeSet<u32>,
     derived: Vec<Triple>,
     fresh: usize,
@@ -59,6 +62,43 @@ impl N3Reasoner {
     /// An empty reasoner with default limits
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// An empty reasoner over an existing term store, so ids carry over in both directions
+    pub fn with_store(store: TermStore) -> Self {
+        Self {
+            store,
+            ..Self::default()
+        }
+    }
+
+    /// Adds already-encoded triples as facts, and those that are `log:implies` triples between
+    /// formulas as rules
+    ///
+    /// # Errors
+    /// Returns [`N3Error::Unsupported`] for backward rules and rules this engine cannot evaluate
+    pub fn load_triples(&mut self, triples: &[Triple]) -> Result<(), N3Error> {
+        let implies = self.store.lookup(LOG_IMPLIES);
+        let implied_by = self.store.lookup(LOG_IMPLIED_BY);
+        for triple in triples {
+            if Some(triple.predicate) == implied_by {
+                return Err(N3Error::unsupported("backward rules (<=)"));
+            }
+            if Some(triple.predicate) == implies {
+                if let (Some(body), Some(head)) = (
+                    formula_node(&self.store, triple.subject),
+                    formula_node(&self.store, triple.object),
+                ) {
+                    let rule = compile_rule(&mut self.store, &body, &head)?;
+                    self.rule_sources.insert((triple.subject, triple.object));
+                    self.rule_facts.insert(triple);
+                    self.rules.push(rule);
+                    continue;
+                }
+            }
+            self.insert(triple.clone());
+        }
+        Ok(())
     }
 
     /// Adds a document's facts and rules
@@ -92,7 +132,8 @@ impl N3Reasoner {
     }
 
     fn insert(&mut self, triple: Triple) -> bool {
-        if self.known.insert(triple.clone()) {
+        if !self.known.contains_key(&triple) {
+            self.known.insert(triple.clone(), self.known.len());
             for term in [triple.subject, triple.object] {
                 if matches!(self.store.compound(term), Some(Compound::List(items)) if !items.is_empty())
                 {
@@ -106,9 +147,11 @@ impl N3Reasoner {
         }
     }
 
-    /// Every fact the store holds, input and derived
+    /// Every fact the store holds, input and derived, in the order they were added
     pub fn facts(&self) -> Vec<Triple> {
-        self.facts.query(None, None, None)
+        let mut facts = self.facts.query(None, None, None);
+        facts.sort_by_key(|triple| self.known.get(triple).copied().unwrap_or(usize::MAX));
+        facts
     }
 
     /// The facts derived so far, in derivation order
@@ -131,13 +174,12 @@ impl N3Reasoner {
         loop {
             self.saturate(&mut pending, &mut fresh_rules)?;
             let mut progressed = false;
-            for rule_index in self.existential_order() {
+            for rule_index in self.waiting_order() {
                 let rule = self.rules[rule_index].clone();
                 let before = pending.len();
                 let solutions = self.matcher().solve(&rule.body, None, Binding::new());
                 for binding in solutions {
-                    let conclusion = self.fire(&rule, &binding)?;
-                    self.commit(conclusion, &mut pending, &mut fresh_rules)?;
+                    self.apply(rule_index, binding, &mut pending, &mut fresh_rules)?;
                 }
                 if pending.len() > before {
                     progressed = true;
@@ -145,6 +187,7 @@ impl N3Reasoner {
                 }
             }
             if !progressed {
+                self.recheck_retained()?;
                 return Ok(&self.derived);
             }
         }
@@ -161,7 +204,7 @@ impl N3Reasoner {
             let ordinary_fresh: Vec<usize> = fresh_rules
                 .iter()
                 .copied()
-                .filter(|&i| !self.rules[i].has_existentials)
+                .filter(|&i| !self.rules[i].waits())
                 .collect();
             if pending.is_empty() && ordinary_fresh.is_empty() {
                 return Ok(());
@@ -170,36 +213,38 @@ impl N3Reasoner {
             if rounds > self.limits.max_rounds {
                 return Err(N3Error::Limit(format!("{} rounds", self.limits.max_rounds)));
             }
-            fresh_rules.retain(|i| self.rules[*i].has_existentials);
+            fresh_rules.retain(|i| self.rules[*i].waits());
             let mut delta_index = DatasetIndex::new();
             for triple in pending.drain(..) {
                 delta_index.insert(&triple);
             }
             for rule_index in 0..self.rules.len() {
                 let rule = self.rules[rule_index].clone();
-                if rule.has_existentials {
+                if rule.waits() {
                     continue;
                 }
                 let full = ordinary_fresh.contains(&rule_index);
                 for binding in self.rule_solutions(&rule, &delta_index, full) {
-                    let conclusion = self.fire(&rule, &binding)?;
-                    self.commit(conclusion, pending, fresh_rules)?;
+                    self.apply(rule_index, binding, pending, fresh_rules)?;
                 }
             }
         }
     }
 
-    /// Stores new conclusion triples, queues them for the next round, and adopts derived rules
+    /// Stores new conclusion triples, queues them for the next round, and adopts derived rules;
+    /// returns how many were new
     fn commit(
         &mut self,
         conclusion: Vec<Triple>,
         pending: &mut Vec<Triple>,
         fresh_rules: &mut Vec<usize>,
-    ) -> Result<(), N3Error> {
+    ) -> Result<usize, N3Error> {
+        let mut added = 0;
         for triple in conclusion {
             if !self.insert(triple.clone()) {
                 continue;
             }
+            added += 1;
             self.derived.push(triple.clone());
             if self.adopt_derived_rule(&triple)? {
                 fresh_rules.push(self.rules.len() - 1);
@@ -209,30 +254,146 @@ impl N3Reasoner {
         if self.known.len() > self.limits.max_facts {
             return Err(N3Error::Limit(format!("{} facts", self.limits.max_facts)));
         }
+        Ok(added)
+    }
+
+    /// Fires a rule for one binding and stores what it concludes, remembering the firing when it
+    /// rested on a test of the whole graph
+    fn apply(
+        &mut self,
+        rule_index: usize,
+        binding: Binding,
+        pending: &mut Vec<Triple>,
+        fresh_rules: &mut Vec<usize>,
+    ) -> Result<(), N3Error> {
+        let rule = self.rules[rule_index].clone();
+        let conclusion = self.fire(&rule, &binding)?;
+        if self.commit(conclusion, pending, fresh_rules)? > 0 && rule.deferred {
+            self.retained.push((rule_index, binding));
+        }
         Ok(())
     }
 
-    /// The existential rules, each after every rule whose conclusion could satisfy its own
-    fn existential_order(&self) -> Vec<usize> {
-        let existential: Vec<usize> = (0..self.rules.len())
-            .filter(|&i| self.rules[i].has_existentials)
+    /// Checks that every firing that rested on a test of the whole graph still has its premise
+    fn recheck_retained(&mut self) -> Result<(), N3Error> {
+        for (rule_index, binding) in std::mem::take(&mut self.retained) {
+            let body = self.rules[rule_index].body.clone();
+            if self
+                .matcher()
+                .solve(&body, None, binding.clone())
+                .is_empty()
+            {
+                return Err(N3Error::Fuse(
+                    "a rule fired on a test of the current graph that later facts contradict"
+                        .to_string(),
+                ));
+            }
+            self.retained.push((rule_index, binding));
+        }
+        Ok(())
+    }
+
+    /// The rules that wait for saturation, in source order except where one must go first: a
+    /// whole-graph test before an existential rule whose premises its conclusion can feed, and an
+    /// existential rule before another whose piece it completes or covers
+    fn waiting_order(&self) -> Vec<usize> {
+        let mut waiting: Vec<usize> = (0..self.rules.len())
+            .filter(|&i| self.rules[i].waits())
             .collect();
-        let mut placed: Vec<usize> = Vec::with_capacity(existential.len());
-        let mut waiting = existential.clone();
+        let mut placed = Vec::with_capacity(waiting.len());
         while !waiting.is_empty() {
             let ready = waiting
                 .iter()
                 .position(|&candidate| {
-                    !waiting.iter().any(|&other| {
-                        other != candidate
-                            && covers(&self.rules[other].head, &self.rules[candidate].head)
-                            && !covers(&self.rules[candidate].head, &self.rules[other].head)
-                    })
+                    !waiting
+                        .iter()
+                        .any(|&other| other != candidate && self.must_precede(other, candidate))
                 })
                 .unwrap_or(0);
             placed.push(waiting.remove(ready));
         }
         placed
+    }
+
+    /// Whether waiting rule `first` must run before waiting rule `second`
+    fn must_precede(&self, first: usize, second: usize) -> bool {
+        let (a, b) = (&self.rules[first], &self.rules[second]);
+        match (a.has_existentials, b.has_existentials) {
+            (true, true) => self.precedes(first, second),
+            (false, true) => feeds(&a.head, &b.body),
+            _ => false,
+        }
+    }
+
+    /// Whether existential rule `first` must run before `second`: it completes the other's
+    /// piece together with existing facts, or its conclusion covers the other's and not the
+    /// reverse
+    fn precedes(&self, first: usize, second: usize) -> bool {
+        let (a, b) = (&self.rules[first].head, &self.rules[second].head);
+        let completes_ab = self.completes(a, b);
+        let completes_ba = self.completes(b, a);
+        if completes_ab != completes_ba {
+            return completes_ab;
+        }
+        covers(a, b) && !covers(b, a)
+    }
+
+    /// Whether `head` together with existing facts could satisfy every existential atom of
+    /// `piece`, using at least one fact
+    ///
+    /// An existential that a fact supplies is an individual that already exists, so the head can
+    /// only reach it through a universal or a constant, never through a fresh witness of its own.
+    fn completes(&self, head: &[Atom], piece: &[Atom]) -> bool {
+        let key = |position: &PTerm| match position {
+            PTerm::Const(id) => Some(*id),
+            _ => None,
+        };
+        let piece: Vec<&Atom> = piece.iter().filter(|atom| atom.has_exists()).collect();
+        let mut from_facts = BTreeSet::new();
+        let mut from_head = Vec::new();
+        for atom in &piece {
+            let matching: Vec<&Atom> = head
+                .iter()
+                .filter(|candidate| {
+                    atom.positions()
+                        .into_iter()
+                        .zip(candidate.positions())
+                        .all(|(x, y)| compatible(x, y))
+                })
+                .collect();
+            if !matching.is_empty() {
+                from_head.push((atom, matching));
+                continue;
+            }
+            let found = !self
+                .facts
+                .query(key(&atom.subject), key(&atom.predicate), key(&atom.object))
+                .is_empty();
+            if !found {
+                return false;
+            }
+            for position in atom.positions() {
+                if let PTerm::Exists(label) = position {
+                    from_facts.insert(label.clone());
+                }
+            }
+        }
+        if from_facts.is_empty() {
+            return false;
+        }
+        from_head.iter().all(|(atom, matching)| {
+            matching.iter().any(|candidate| {
+                atom.positions()
+                    .into_iter()
+                    .zip(candidate.positions())
+                    .all(|(x, y)| match x {
+                        PTerm::Exists(label) if from_facts.contains(label) => {
+                            !matches!(y, PTerm::Exists(_))
+                        }
+                        _ => true,
+                    })
+            })
+        })
     }
 
     /// Turns a derived `{…} log:implies {…}` triple into a rule; true if it added one
@@ -270,6 +431,7 @@ impl N3Reasoner {
             facts: &self.facts,
             rule_facts: &self.rule_facts,
             list_terms: &self.list_terms,
+            sequence: &self.known,
             vocabulary,
         }
     }
@@ -312,6 +474,18 @@ impl N3Reasoner {
 
     /// The conclusion triples of one firing; empty when its existential pieces already hold
     fn fire(&mut self, rule: &N3Rule, binding: &Binding) -> Result<Vec<Triple>, N3Error> {
+        if rule.fuse {
+            let mut bound: Vec<String> = binding
+                .iter()
+                .filter(|(name, _)| !name.starts_with("_:"))
+                .map(|(name, &id)| format!("?{name} = {}", self.store.n3(id)))
+                .collect();
+            bound.sort();
+            return Err(N3Error::Fuse(format!(
+                "a forbidden premise holds ({})",
+                bound.join(", ")
+            )));
+        }
         if rule.has_existentials && self.conclusion_holds(rule, binding) {
             return Ok(Vec::new());
         }
@@ -456,6 +630,21 @@ fn compatible(left: &PTerm, right: &PTerm) -> bool {
         }
         _ => true,
     }
+}
+
+/// Whether some conclusion atom could match some premise atom that is looked up in facts
+fn feeds(head: &[Atom], body: &[Atom]) -> bool {
+    body.iter()
+        .filter(|atom| atom.builtin.is_none())
+        .any(|premise| {
+            head.iter().any(|conclusion| {
+                premise
+                    .positions()
+                    .into_iter()
+                    .zip(conclusion.positions())
+                    .all(|(x, y)| compatible(x, y))
+            })
+        })
 }
 
 /// Whether every existential atom of `piece` could be produced by some atom of `head`
