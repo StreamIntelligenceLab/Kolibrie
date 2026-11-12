@@ -13,7 +13,7 @@
 use crate::error::N3Error;
 use crate::lexer::{tokenize, Token, TokenKind};
 use crate::syntax::*;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 /// Parses an N3 document, resolving relative IRIs against `base`
 ///
@@ -21,7 +21,7 @@ use std::collections::HashMap;
 /// Returns [`N3Error::Syntax`] for malformed text and [`N3Error::Unsupported`] for N3 this
 /// parser does not handle yet, such as explicit quantifiers
 pub fn parse_document(text: &str, base: Option<&str>) -> Result<Document, N3Error> {
-    parse_with(text, base, false)
+    parse_with(text, base, false, "")
 }
 
 /// Parses TriG: N3 statements plus named graphs `g { … }` and `GRAPH g { … }`, each read as
@@ -30,7 +30,7 @@ pub fn parse_document(text: &str, base: Option<&str>) -> Result<Document, N3Erro
 /// # Errors
 /// As [`parse_document`]
 pub fn parse_trig(text: &str, base: Option<&str>) -> Result<Document, N3Error> {
-    parse_with(text, base, true)
+    parse_with(text, base, true, "")
 }
 
 /// Whether text is an RDF Message Log: a `VERSION "…-messages"` directive or a `MESSAGE` line
@@ -150,7 +150,13 @@ pub fn parse_message_log(text: &str, base: Option<&str>) -> Result<Document, N3E
             ));
             continue;
         }
-        let payload_document = parse_document(&format!("{prefixes}\n{body}"), base)?;
+        // Labels are the message's own, spelled as eyeron spells them so proofs can name them.
+        let payload_document = parse_with(
+            &format!("{prefixes}\n{body}"),
+            base,
+            false,
+            &format!("m{}_", index + 1),
+        )?;
         let payload = iri(format!("{STREAM}:payload:{}", index + 1));
         facts.push(Statement::new(
             envelope.clone(),
@@ -171,8 +177,28 @@ pub fn parse_message_log(text: &str, base: Option<&str>) -> Result<Document, N3E
     Ok(document)
 }
 
-fn parse_with(text: &str, base: Option<&str>, trig: bool) -> Result<Document, N3Error> {
-    let tokens = tokenize(text)?;
+/// Parses `text`, writing `label_prefix` before every blank node label the text spells
+fn parse_with(
+    text: &str,
+    base: Option<&str>,
+    trig: bool,
+    label_prefix: &str,
+) -> Result<Document, N3Error> {
+    let mut tokens = tokenize(text)?;
+    if !label_prefix.is_empty() {
+        for token in &mut tokens {
+            if let TokenKind::Blank(label) = &mut token.kind {
+                label.insert_str(0, label_prefix);
+            }
+        }
+    }
+    let source_labels = tokens
+        .iter()
+        .filter_map(|token| match &token.kind {
+            TokenKind::Blank(label) | TokenKind::Var(label) => Some(label.clone()),
+            _ => None,
+        })
+        .collect();
     let mut parser = Parser {
         trig,
         tokens,
@@ -190,6 +216,7 @@ fn parse_with(text: &str, base: Option<&str>, trig: bool) -> Result<Document, N3
         quantifiers: vec![HashMap::new()],
         quantified: 0,
         local_names: false,
+        source_labels,
     };
     parser.parse()?;
     Ok(parser.document)
@@ -225,6 +252,8 @@ struct Parser {
     quantified: usize,
     /// Whether some formula already named its binders canonically, so later ones must shift them
     local_names: bool,
+    /// The blank node and variable labels the source spells, which generated names avoid
+    source_labels: HashSet<String>,
 }
 
 fn is_word(kind: &TokenKind, word: &str) -> bool {
@@ -390,8 +419,16 @@ impl Parser {
                     self.quantified += 1;
                     let node = if universal {
                         Node::Var(format!("__q{}", self.quantified))
+                    } else if self.blank_scopes.len() == 1 {
+                        Node::Blank(format!(
+                            "kolibrie-doc-{}-.__q{}",
+                            self.scope, self.quantified
+                        ))
                     } else {
-                        self.scoped_blank(&format!(".q{}", self.quantified))
+                        Node::Blank(format!(
+                            "kolibrie-doc-{}-.f{}-.__q{}",
+                            self.scope, self.formulas, self.quantified
+                        ))
                     };
                     let depth = self.blank_scopes.len();
                     self.quantifiers[depth - 1].insert(iri, node);
@@ -477,12 +514,16 @@ impl Parser {
         loop {
             let (verb, inverse) = self.parse_verb(out)?;
             loop {
-                let object = self.parse_path(out)?;
-                if inverse {
-                    out.push(Statement::new(object, verb.clone(), subject.clone()));
+                // eyeron lists a statement before those its object's brackets imply
+                let mut nested = Vec::new();
+                let object = self.parse_path(&mut nested)?;
+                let statement = if inverse {
+                    Statement::new(object, verb.clone(), subject.clone())
                 } else {
-                    out.push(Statement::new(subject.clone(), verb.clone(), object));
-                }
+                    Statement::new(subject.clone(), verb.clone(), object)
+                };
+                out.push(rule_sides(statement));
+                out.append(&mut nested);
                 if *self.peek() == TokenKind::Comma {
                     self.advance();
                 } else {
@@ -552,7 +593,7 @@ impl Parser {
             };
             self.advance();
             let predicate = self.parse_term(out)?;
-            let next = self.fresh_blank();
+            let next = self.fresh_blank("path");
             if forward {
                 out.push(Statement::new(current, predicate, next.clone()));
             } else {
@@ -562,9 +603,23 @@ impl Parser {
         }
     }
 
-    fn fresh_blank(&mut self) -> Node {
-        self.fresh += 1;
-        Node::Blank(format!("kolibrie-doc-{}-.g{}", self.scope, self.fresh))
+    /// A blank node the syntax implies, named as eyeron names it, `kind` then a counter shared by
+    /// every kind, skipping labels the source spells itself
+    fn fresh_blank(&mut self, kind: &str) -> Node {
+        loop {
+            self.fresh += 1;
+            let candidate = format!("{kind}{}", self.fresh);
+            if !self.source_labels.contains(&candidate) {
+                return Node::Blank(if self.blank_scopes.len() > 1 {
+                    format!(
+                        "kolibrie-doc-{}-.f{}-.{candidate}",
+                        self.scope, self.formulas
+                    )
+                } else {
+                    format!("kolibrie-doc-{}-.{candidate}", self.scope)
+                });
+            }
+        }
     }
 
     fn scoped_blank(&mut self, label: &str) -> Node {
@@ -597,7 +652,7 @@ impl Parser {
             TokenKind::Number(text) => Ok(number_literal(&text)),
             TokenKind::LBrace => self.parse_formula(),
             TokenKind::LBracket => {
-                let blank = self.fresh_blank();
+                let blank = self.fresh_blank("b");
                 if *self.peek() == TokenKind::RBracket {
                     self.advance();
                     return Ok(blank);
@@ -625,7 +680,7 @@ impl Parser {
                 if parenthesised {
                     return Ok(triple);
                 }
-                let reifier = self.fresh_blank();
+                let reifier = self.fresh_blank("reif");
                 out.push(Statement::new(
                     reifier.clone(),
                     Node::iri("http://www.w3.org/1999/02/22-rdf-syntax-ns#reifies"),
@@ -840,6 +895,29 @@ fn canonical_binders(statements: Vec<Statement>, own: &[Node]) -> Vec<Statement>
         .iter()
         .map(|s| rename_statement(s, &order))
         .collect()
+}
+
+/// A `log:implies` or `log:impliedBy` statement with `true` as a side read as the empty formula,
+/// as N3 means it
+fn rule_sides(statement: Statement) -> Statement {
+    let is_rule = matches!(&statement.predicate,
+        Node::Iri(iri) if iri == LOG_IMPLIES || iri == LOG_IMPLIED_BY);
+    if !is_rule {
+        return statement;
+    }
+    let side = |node: Node| match &node {
+        Node::Literal {
+            lexical,
+            datatype: Some(datatype),
+            ..
+        } if lexical == "true" && datatype == XSD_BOOLEAN => Node::Formula(Vec::new()),
+        _ => node,
+    };
+    Statement::new(
+        side(statement.subject),
+        statement.predicate,
+        side(statement.object),
+    )
 }
 
 fn number_literal(text: &str) -> Node {

@@ -9,7 +9,8 @@
  */
 
 //! Reasons over N3 files and prints what the run outputs:
-//! `n3_reason [--max-backward-depth N] <file.n3>…`
+//! `n3_reason [--max-backward-depth N] [--proof] <file.n3>…`; `--proof` prints a proof of the output
+//! that `eyeron --check-proof` can verify, instead of the output itself
 
 use n3::{parse_input, N3Error, N3Reasoner};
 use std::process::ExitCode;
@@ -21,20 +22,35 @@ fn file_base(path: &str) -> String {
     }
 }
 
-fn run(paths: &[String], max_backward_depth: Option<usize>) -> Result<String, N3Error> {
+fn run(
+    paths: &[String],
+    max_backward_depth: Option<usize>,
+    proof: bool,
+) -> Result<String, N3Error> {
     let mut reasoner = N3Reasoner::new();
+    if proof {
+        reasoner.enable_proofs();
+    }
     if let Some(depth) = max_backward_depth {
         reasoner.limits.max_backward_depth = depth;
     }
     for path in paths {
         let text = std::fs::read_to_string(path)
             .map_err(|e| N3Error::syntax(format!("cannot read {path}: {e}")))?;
+        let label = std::path::Path::new(path)
+            .file_name()
+            .map_or_else(|| path.clone(), |name| name.to_string_lossy().into_owned());
+        reasoner.set_source_label(label);
         let trig = path.ends_with(".trig");
         let document = parse_input(&text, Some(&file_base(path)), trig)?;
         reasoner.load(&document)?;
     }
     reasoner.run()?;
-    let output = reasoner.output_n3();
+    let output = if proof {
+        reasoner.proof_n3()
+    } else {
+        reasoner.output_n3()
+    };
     // The process exits next, so freeing a large store one allocation at a time is wasted work.
     std::mem::forget(reasoner);
     Ok(output)
@@ -43,9 +59,12 @@ fn run(paths: &[String], max_backward_depth: Option<usize>) -> Result<String, N3
 fn main() -> ExitCode {
     let mut paths = Vec::new();
     let mut max_backward_depth = None;
+    let mut proof = false;
     let mut args = std::env::args().skip(1);
     while let Some(arg) = args.next() {
-        if arg == "--max-backward-depth" {
+        if arg == "--proof" {
+            proof = true;
+        } else if arg == "--max-backward-depth" {
             match args.next().and_then(|n| n.parse().ok()) {
                 Some(depth) => max_backward_depth = Some(depth),
                 None => {
@@ -58,10 +77,10 @@ fn main() -> ExitCode {
         }
     }
     if paths.is_empty() {
-        eprintln!("usage: n3_reason [--max-backward-depth N] <file.n3>…");
+        eprintln!("usage: n3_reason [--max-backward-depth N] [--proof] <file.n3>…");
         return ExitCode::from(2);
     }
-    match run(&paths, max_backward_depth) {
+    match run(&paths, max_backward_depth, proof) {
         Ok(text) => {
             print!("{text}");
             ExitCode::SUCCESS

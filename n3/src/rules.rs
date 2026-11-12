@@ -174,6 +174,9 @@ impl Compiler<'_> {
             },
             Node::Blank(label) => match (self.side, quoted) {
                 (Side::Body, _) => PTerm::Var(format!("_:{label}")),
+                (Side::Head, false) if document_level(label) => {
+                    PTerm::Const(self.store.encode(node))
+                }
                 (Side::Head, false) => PTerm::Exists(label.clone()),
                 (Side::Head, true) => PTerm::Const(self.store.encode(node)),
             },
@@ -243,6 +246,15 @@ fn builtin_of(statement: &Statement) -> Result<Option<Builtin>, N3Error> {
         return Err(N3Error::unsupported(format!("built-in <{iri}>")));
     }
     Ok(None)
+}
+
+/// Whether a blank node belongs to the document rather than to a formula, so it names one fixed
+/// individual wherever a rule mentions it
+fn document_level(label: &str) -> bool {
+    label
+        .strip_prefix("kolibrie-doc-")
+        .and_then(|rest| rest.split_once('-'))
+        .is_some_and(|(_, local)| !local.starts_with(".f"))
 }
 
 /// The prefix of a variable a rule conclusion's own `@forAll` binds

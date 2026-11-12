@@ -237,3 +237,17 @@ fn quantifiers_bind_iris_to_variables_and_blank_nodes() {
     assert!(matches!(statements[0].object, Node::Blank(_)));
     assert_eq!(statements[0].predicate, iri("loves"));
 }
+
+#[test]
+fn a_statement_comes_before_those_its_bracketed_object_implies() {
+    let statements = parse(&format!("{PREFIX}[ :p :a ] :q [ :r :b ] ."));
+    let [first, second, third] = statements.as_slice() else {
+        panic!("three statements expected, got {statements:?}");
+    };
+    assert_eq!(
+        (&first.predicate, &second.predicate, &third.predicate),
+        (&iri("p"), &iri("q"), &iri("r"))
+    );
+    assert_eq!(second.subject, first.subject);
+    assert_eq!(second.object, third.subject);
+}

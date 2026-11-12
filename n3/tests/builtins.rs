@@ -236,3 +236,17 @@ fn a_name_in_a_builtin_namespace_that_is_no_builtin_is_data() {
         expect(":r :length 3 .")
     );
 }
+
+#[test]
+fn an_exponent_too_large_for_a_float_logarithm_is_found_exactly() {
+    // With the power bound first, the last premise solves for its exponent, 2^65536 has no
+    // float logarithm, and the backward goal that binds the exponent only answers after it.
+    assert_eq!(
+        derive(
+            "{ (?b 4) :tower 65536 } <= { } .
+             { (2 65536) math:exponentiation ?v . (2 4) :tower ?p . (2 ?p) math:exponentiation ?v }
+                 => { :power :found true } ."
+        ),
+        expect(":power :found true .")
+    );
+}

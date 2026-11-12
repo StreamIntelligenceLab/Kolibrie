@@ -58,12 +58,12 @@ pub struct N3Reasoner {
     facts: DatasetIndex,
     /// Every fact, with the order it was added in
     known: HashMap<Triple, usize>,
-    rules: Vec<Rc<N3Rule>>,
+    pub(crate) rules: Vec<Rc<N3Rule>>,
     rule_sources: HashSet<(u32, u32)>,
     rule_facts: DatasetIndex,
     /// Input rules not yet encoded into `rule_facts`, which only a premise naming
     /// `log:implies` or `log:impliedBy` reads
-    unencoded_rules: Vec<Statement>,
+    unencoded_rules: Vec<(Statement, String)>,
     /// Each premise's constants, `WILDCARD` for its variables, to the rules it belongs to, so a
     /// round visits only the rules its new facts could feed
     ///
@@ -76,9 +76,9 @@ pub struct N3Reasoner {
     retained: Vec<(usize, Binding)>,
     list_terms: BTreeSet<u32>,
     /// Rules proved on demand: `{ head } <= { body }`
-    backward: Vec<N3Rule>,
+    pub(crate) backward: Vec<N3Rule>,
     /// `{ body } log:query { head }`, answered once reasoning is done
-    queries: Vec<N3Rule>,
+    pub(crate) queries: Vec<N3Rule>,
     /// The query answers, in the order they were found
     answers: Vec<Triple>,
     /// Set when a backward proof hit the depth limit
@@ -97,6 +97,37 @@ pub struct N3Reasoner {
     fresh: usize,
     /// Budgets for [`N3Reasoner::run`]
     pub limits: Limits,
+    /// What a proof needs, kept only once [`N3Reasoner::enable_proofs`] is called
+    pub(crate) proofs_on: bool,
+    /// The number each source rule has in a proof, by index into `rules`
+    pub(crate) rule_numbers: HashMap<usize, usize>,
+    /// The number each source backward rule has in a proof, by index into `backward`
+    pub(crate) backward_numbers: HashMap<usize, usize>,
+    /// The label of the source each universal fact came from, by index into `backward`
+    pub(crate) universal_labels: HashMap<usize, String>,
+    pub(crate) next_rule_number: usize,
+    /// The label input facts are attributed to in a proof
+    pub(crate) source_label: String,
+    /// What a proof writes before a witness's number, chosen so no source blank node has it
+    pub(crate) witness_prefix: String,
+    /// The source label of each input fact
+    pub(crate) fact_labels: HashMap<Triple, String>,
+    /// How each derived fact was first derived: the rule's index and the binding it fired with
+    pub(crate) derivations: HashMap<Triple, (usize, Binding)>,
+    /// The derived `log:implies` triple each derived rule came from, by index into `rules`
+    pub(crate) carried: HashMap<usize, Triple>,
+    /// The built-in calls a proof being written justifies by re-evaluation, with the built-in
+    pub(crate) builtin_steps: HashMap<Triple, String>,
+    /// The derived `log:impliedBy` triple each derived backward rule came from, by index into
+    /// `backward`
+    pub(crate) carried_backward: HashMap<usize, Triple>,
+    /// The forward rule and binding that asserted each universal statement, by index into
+    /// `backward`
+    pub(crate) universal_origins: HashMap<usize, (usize, Binding)>,
+    /// Each query's source statement, `{ … } log:query { … }`, by index into `queries`
+    pub(crate) query_sources: HashMap<usize, Statement>,
+    /// How each query answer was found: the query's index and the binding it answered with
+    pub(crate) query_answers: HashMap<Triple, (usize, Binding)>,
 }
 
 impl N3Reasoner {
@@ -172,20 +203,32 @@ impl N3Reasoner {
                         &statement.subject,
                         &statement.object,
                     )?;
-                    self.unencoded_rules.push(statement.clone());
+                    self.unencoded_rules
+                        .push((statement.clone(), self.source_label.clone()));
+                    self.next_rule_number += 1;
+                    self.backward_numbers
+                        .insert(self.backward.len(), self.next_rule_number);
                     self.backward.push(rule);
                     continue;
                 }
                 if predicate == LOG_QUERY {
                     let query =
                         compile_rule(&mut self.store, &statement.subject, &statement.object)?;
+                    if self.proofs_on {
+                        self.query_sources
+                            .insert(self.queries.len(), statement.clone());
+                    }
                     self.queries.push(query);
                     continue;
                 }
                 if predicate == LOG_IMPLIES {
                     let rule =
                         compile_rule(&mut self.store, &statement.subject, &statement.object)?;
-                    self.unencoded_rules.push(statement.clone());
+                    self.unencoded_rules
+                        .push((statement.clone(), self.source_label.clone()));
+                    self.next_rule_number += 1;
+                    self.rule_numbers
+                        .insert(self.rules.len(), self.next_rule_number);
                     self.rules.push(Rc::new(rule));
                     continue;
                 }
@@ -197,13 +240,29 @@ impl N3Reasoner {
                     &Node::Formula(vec![statement.clone()]),
                     &Node::typed("true", crate::syntax::XSD_BOOLEAN),
                 )?;
+                self.universal_labels
+                    .insert(self.backward.len(), self.source_label.clone());
                 self.backward.push(rule);
                 continue;
             }
             let triple = self.store.encode_statement(statement);
+            if self.proofs_on && !self.fact_labels.contains_key(&triple) {
+                self.fact_labels
+                    .insert(triple.clone(), self.source_label.clone());
+            }
             self.insert(triple);
         }
         Ok(())
+    }
+
+    /// Keeps what [`N3Reasoner::proof_n3`] needs to justify the output; call before loading
+    pub fn enable_proofs(&mut self) {
+        self.proofs_on = true;
+    }
+
+    /// Names the source the facts loaded next come from, as proofs cite it
+    pub fn set_source_label(&mut self, label: impl Into<String>) {
+        self.source_label = label.into();
     }
 
     fn insert(&mut self, triple: Triple) -> bool {
@@ -244,7 +303,7 @@ impl N3Reasoner {
     /// Returns [`N3Error::Limit`] when a budget in [`N3Reasoner::limits`] runs out, and
     /// [`N3Error::Unsupported`] when a derived rule cannot be evaluated
     pub fn run(&mut self) -> Result<&[Triple], N3Error> {
-        if self.premises_name_rules() {
+        if self.premises_name_rules() || (self.proofs_on && !self.unencoded_rules.is_empty()) {
             self.encode_rule_facts();
         }
         let mut pending: Vec<Triple> = self.facts();
@@ -405,6 +464,15 @@ impl N3Reasoner {
     ) -> Result<(), N3Error> {
         let rule = Rc::clone(&self.rules[rule_index]);
         let conclusion = self.fire(&rule, &binding)?;
+        if self.proofs_on {
+            for triple in &conclusion {
+                if !self.known.contains_key(triple) {
+                    self.derivations
+                        .entry(triple.clone())
+                        .or_insert_with(|| (rule_index, binding.clone()));
+                }
+            }
+        }
         if self.commit(conclusion, pending, fresh_rules)? > 0 && rule.deferred {
             self.retained.push((rule_index, binding));
         }
@@ -440,11 +508,15 @@ impl N3Reasoner {
     fn answer_queries(&mut self) -> Result<(), N3Error> {
         let queries = self.queries.clone();
         let mut seen = HashSet::new();
-        for query in &queries {
+        for (query_index, query) in queries.iter().enumerate() {
             let solutions = self.matcher().solve(&query.body, None, Binding::new());
             for binding in solutions {
                 for triple in self.fire(query, &binding)? {
                     if seen.insert(triple.clone()) {
+                        if self.proofs_on {
+                            self.query_answers
+                                .insert(triple.clone(), (query_index, binding.clone()));
+                        }
                         self.answers.push(triple);
                     }
                 }
@@ -587,8 +659,11 @@ impl N3Reasoner {
     /// Encodes the input rules as `log:implies` and `log:impliedBy` triples between formulas
     fn encode_rule_facts(&mut self) {
         let implies = self.store.iri(LOG_IMPLIES);
-        for statement in std::mem::take(&mut self.unencoded_rules) {
+        for (statement, label) in std::mem::take(&mut self.unencoded_rules) {
             let triple = self.store.encode_statement(&statement);
+            if self.proofs_on {
+                self.fact_labels.entry(triple.clone()).or_insert(label);
+            }
             if triple.predicate == implies {
                 self.rule_sources.insert((triple.subject, triple.object));
             }
@@ -645,6 +720,10 @@ impl N3Reasoner {
             ) {
                 if self.rule_sources.insert((triple.subject, triple.object)) {
                     let rule = compile_backward_rule(&mut self.store, &head, &body)?;
+                    if self.proofs_on {
+                        self.carried_backward
+                            .insert(self.backward.len(), triple.clone());
+                    }
                     self.backward.push(rule);
                 }
             }
@@ -664,12 +743,15 @@ impl N3Reasoner {
             return Ok(false);
         };
         let rule = compile_rule(&mut self.store, &body, &head)?;
+        if self.proofs_on {
+            self.carried.insert(self.rules.len(), triple.clone());
+        }
         self.rules.push(Rc::new(rule));
         Ok(true)
     }
 
     /// A matcher over this reasoner's facts and terms
-    fn matcher(&mut self) -> Matcher<'_> {
+    pub(crate) fn matcher(&mut self) -> Matcher<'_> {
         let vocabulary = Vocabulary::of(&self.store);
         if self.proofs_for.get() != self.known.len() {
             self.proofs.borrow_mut().clear();
@@ -811,6 +893,12 @@ impl N3Reasoner {
                 .iter()
                 .any(|b| b.body.is_empty() && b.head == assertion.head)
             {
+                if self.proofs_on {
+                    if let Some(origin) = self.rules.iter().position(|r| std::ptr::eq(&**r, rule)) {
+                        self.universal_origins
+                            .insert(self.backward.len(), (origin, binding.clone()));
+                    }
+                }
                 self.backward.push(assertion);
                 self.universals_added = true;
             }

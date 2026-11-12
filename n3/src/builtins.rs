@@ -569,6 +569,38 @@ fn binary(builtin: Builtin, a: &Numeric, b: &Numeric) -> Option<Node> {
     }
 }
 
+/// The whole exponent that raises one integer to another exactly, if there is one; an
+/// integer too large for a float has no float logarithm to round
+fn exact_logarithm(base: &Numeric, result: &Numeric) -> Option<u32> {
+    let (base, result) = (base.exact.as_ref()?, result.exact.as_ref()?);
+    if *base <= BigInt::from(1) {
+        return None;
+    }
+    let estimate = (log2(result) / log2(base)).round();
+    if !estimate.is_finite() || estimate < 0.0 || estimate > f64::from(u32::MAX) {
+        return None;
+    }
+    let estimate = estimate as u32;
+    [
+        estimate.saturating_sub(1),
+        estimate,
+        estimate.saturating_add(1),
+    ]
+    .into_iter()
+    .find(|&exponent| {
+        base.bits().saturating_mul(u64::from(exponent)) <= MAX_EXACT_POWER_BITS + base.bits()
+            && base.pow(exponent) == *result
+    })
+}
+
+/// The base-2 logarithm of a positive integer of any size, to float precision
+fn log2(value: &BigInt) -> f64 {
+    let bits = value.bits();
+    let shift = bits.saturating_sub(64);
+    let top = (value >> shift).to_f64().unwrap_or(f64::NAN);
+    top.log2() + shift as f64
+}
+
 fn exact_power(base: &Numeric, exponent: &Numeric) -> Option<Node> {
     let base = base.exact.as_ref()?;
     let exponent = exponent.exact.as_ref()?.to_u32()?;
@@ -611,7 +643,10 @@ fn exponentiation(
     if base.value <= 0.0 || result.value <= 0.0 || items.len() != 2 {
         return Vec::new();
     }
-    let exponent = number_literal(result.value.ln() / base.value.ln(), true);
+    let exponent = match exact_logarithm(&base, &result) {
+        Some(exponent) => integer_literal(&BigInt::from(exponent)),
+        None => number_literal(result.value.ln() / base.value.ln(), true),
+    };
     let id = matcher.intern(&exponent);
     matcher.unify(&items[1], id, binding)
 }

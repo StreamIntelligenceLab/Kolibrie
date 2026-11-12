@@ -19,6 +19,7 @@ pub mod literals;
 mod matcher;
 mod numeric;
 pub mod parser;
+mod proof;
 pub mod reasoner;
 pub mod rules;
 pub mod scoped;

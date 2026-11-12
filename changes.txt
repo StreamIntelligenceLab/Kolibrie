@@ -13,6 +13,8 @@ Added
 - N3 regular expression built-ins (`string:matches`, `notMatches`, `replace`, `scrape`), `crypto:sha`, `log:uuid`, `log:uri`, `log:skolem`, `log:dtlit`, `log:langlit`, `log:rawType`, the `time:` built-ins, and date and duration arithmetic and comparison in `math:`
 - N3 input as TriG (`n3::parse_trig`: named graphs as `log:nameOf`, RDF 1.2 triple terms) and as RDF Message Logs (`n3::parse_message_log`); `n3::parse_input` picks the reader
 - N3 `@forSome` and `@forAll` at any level: formulas that differ only in quantified names are the same term, `log:includes` neither instantiates a universal nor treats an existential as one, and a conclusion's own universals make a statement that holds for every instance; universal facts are answered for every instance, and `{ … } => ?f` rules that conclude a formula held by a variable
+- N3 proofs in eyeron's `pe:` vocabulary that `eyeron --check-proof` accepts (`N3Reasoner::enable_proofs` and `proof_n3`, `n3_reason --proof`; `n3_compare --proofs` checks them)
+- N3 `true` as either side of `=>` or `<=`, read as the empty formula; a document's blank node in a rule conclusion names that one node rather than a new one per firing
 - N3 rules whose conclusion names a variable the premise leaves unbound now conclude the other triples; a predicate in a built-in namespace that names no built-in is an ordinary predicate
 - N3 `list:` built-ins (first, rest, firstRest, last, length, member, in, memberAt, remove, notMember, append, reverse, sort, iterate, map), reading `rdf:first`/`rdf:rest` chains as lists, and `rdf:first`/`rdf:rest` matching native lists
 - DatalogMTL endpoints in the HTTP server: `/datalogmtl/register`, `/datalogmtl/push`, `/datalogmtl/static` and `/datalogmtl/events/`

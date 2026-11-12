@@ -10,7 +10,8 @@
 
 //! Compares this crate's N3 reasoning with eyeron's, case by case
 //!
-//! Usage: `n3_compare [--eyeron-home DIR] [--cases DIR]… [--verbose] [NAME…]`. Each `X.n3` in a
+//! Usage: `n3_compare [--eyeron-home DIR] [--cases DIR]… [--proofs] [--verbose] [NAME…]`. With
+//! `--proofs`, every case that matches also has its proof checked by `eyeron --check-proof`. Each `X.n3` in a
 //! cases directory is one case; the expected answer is `output/X.n3` next to it when present,
 //! and otherwise eyeron's own output for the file. `--eyeron-home` defaults to `$EYERON_HOME`,
 //! then `../eyeron`; its `examples/` directory is always a cases directory. A mismatch for a
@@ -43,6 +44,7 @@ struct Options {
     case_dirs: Vec<PathBuf>,
     names: BTreeSet<String>,
     verbose: bool,
+    proofs: bool,
 }
 
 fn parse_options() -> Result<Options, String> {
@@ -52,6 +54,7 @@ fn parse_options() -> Result<Options, String> {
     let mut case_dirs = Vec::new();
     let mut names = BTreeSet::new();
     let mut verbose = false;
+    let mut proofs = false;
     let mut args = std::env::args().skip(1);
     while let Some(arg) = args.next() {
         match arg.as_str() {
@@ -60,6 +63,7 @@ fn parse_options() -> Result<Options, String> {
             }
             "--cases" => case_dirs.push(PathBuf::from(args.next().ok_or("--cases needs a value")?)),
             "--verbose" | "-v" => verbose = true,
+            "--proofs" => proofs = true,
             name => {
                 names.insert(name.trim_end_matches(".n3").to_string());
             }
@@ -71,6 +75,7 @@ fn parse_options() -> Result<Options, String> {
         case_dirs,
         names,
         verbose,
+        proofs,
     })
 }
 
@@ -113,6 +118,82 @@ impl Answer {
                 .collect(),
         }
     }
+}
+
+/// What eyeron's checker said about the proof of a case
+enum ProofVerdict {
+    /// Every step verified
+    Checked,
+    /// No failures, but some steps are trust obligations
+    Trusted(String),
+    /// The checker found failures
+    Invalid(String),
+    /// No proof could be made or checked
+    Error(String),
+    /// The run stopped at an inference fuse, so there is no output to prove
+    NotApplicable,
+}
+
+/// Writes this crate's proof of a case and has eyeron check it against the case's inputs
+fn check_proof(path: &Path, eyeron_home: &Path) -> ProofVerdict {
+    let mut reasoner = N3Reasoner::new();
+    reasoner.enable_proofs();
+    for input in inputs(path) {
+        let Ok(text) = std::fs::read_to_string(&input) else {
+            return ProofVerdict::Error(format!("cannot read {}", input.display()));
+        };
+        reasoner.set_source_label(input.file_name().unwrap_or_default().to_string_lossy());
+        let trig = input.extension().is_some_and(|x| x == "trig");
+        let loaded = parse_input(&text, Some(&file_base(&input)), trig)
+            .and_then(|document| reasoner.load(&document));
+        if let Err(error) = loaded {
+            return ProofVerdict::Error(error.to_string());
+        }
+    }
+    match reasoner.run() {
+        Ok(_) => {}
+        Err(N3Error::Fuse(_)) => return ProofVerdict::NotApplicable,
+        Err(error) => return ProofVerdict::Error(error.to_string()),
+    }
+    let proof = reasoner.proof_n3();
+    let file = std::env::temp_dir().join(format!(
+        "n3-proof-{}-{}.n3",
+        std::process::id(),
+        path.file_stem().unwrap_or_default().to_string_lossy()
+    ));
+    if let Err(error) = std::fs::write(&file, proof) {
+        return ProofVerdict::Error(error.to_string());
+    }
+    let output = Command::new(eyeron_home.join("target/release/eyeron"))
+        .arg("--check-proof")
+        .arg(&file)
+        .args(inputs(path))
+        .output();
+    let _ = std::fs::remove_file(&file);
+    let Ok(output) = output else {
+        return ProofVerdict::Error("cannot run eyeron".to_string());
+    };
+    let report = String::from_utf8_lossy(&output.stdout).into_owned()
+        + &String::from_utf8_lossy(&output.stderr);
+    let first = report.lines().next().unwrap_or("").to_string();
+    let detail = report
+        .lines()
+        .filter(|line| line.contains("C1") || line.contains("failure") || line.contains("detail"))
+        .take(4)
+        .collect::<Vec<_>>()
+        .join(" | ");
+    if first.starts_with("# checked with") {
+        ProofVerdict::Trusted(first)
+    } else if first.starts_with("# checked") {
+        ProofVerdict::Checked
+    } else {
+        ProofVerdict::Invalid(format!("{first} {detail}"))
+    }
+}
+
+fn file_base(path: &Path) -> String {
+    let absolute = std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
+    format!("file://{}", absolute.display())
 }
 
 fn ours(path: &Path) -> Result<Answer, N3Error> {
@@ -310,6 +391,7 @@ fn main() -> ExitCode {
         }
     };
     let mut tally: BTreeMap<&str, usize> = BTreeMap::new();
+    let mut proof_tally: BTreeMap<&str, usize> = BTreeMap::new();
     let mut unsupported: BTreeMap<String, usize> = BTreeMap::new();
     for path in cases(&options) {
         let name = path
@@ -320,6 +402,19 @@ fn main() -> ExitCode {
         let started = Instant::now();
         let outcome = compare(&path, &options.eyeron_home);
         let elapsed = started.elapsed().as_millis();
+        if options.proofs && matches!(outcome, Outcome::Pass | Outcome::PassLive) {
+            let (label, detail) = match check_proof(&path, &options.eyeron_home) {
+                ProofVerdict::Checked => ("proof-ok", String::new()),
+                ProofVerdict::Trusted(report) => ("proof-trusted", report),
+                ProofVerdict::Invalid(report) => ("PROOF-BAD", report),
+                ProofVerdict::Error(report) => ("proof-error", report),
+                ProofVerdict::NotApplicable => ("proof-n/a", String::new()),
+            };
+            *proof_tally.entry(label).or_default() += 1;
+            if !matches!(label, "proof-ok" | "proof-n/a") {
+                println!("{label:<12} {name}: {detail}");
+            }
+        }
         let label = match &outcome {
             Outcome::Pass => "pass",
             Outcome::PassLive => "pass-live",
@@ -356,6 +451,11 @@ fn main() -> ExitCode {
         }
     }
     println!("\nsummary:");
+    if options.proofs {
+        for (label, count) in &proof_tally {
+            println!("  {label:<12} {count}");
+        }
+    }
     for (label, count) in &tally {
         println!("  {label:<12} {count}");
     }

@@ -454,6 +454,55 @@ impl Matcher<'_> {
         answers
     }
 
+    /// One backward proof of a ground goal, for a proof to cite: the rule's index, the solution
+    /// of its body, and the body as solved, its variables renamed apart
+    pub(crate) fn trace(&mut self, goal: &Triple) -> Option<(usize, Binding, Vec<Atom>)> {
+        let keys = [Some(goal.subject), Some(goal.predicate), Some(goal.object)];
+        let backward = self.backward;
+        for (rule_index, rule) in backward.iter().enumerate() {
+            if self.goals.contains(&(rule_index, keys)) {
+                continue;
+            }
+            let depth = self.goals.len();
+            let rename = |name: &str| format!("#{depth}#{name}");
+            for head in &rule.head {
+                let head = head.renamed(&rename);
+                if head.has_exists() {
+                    continue;
+                }
+                let body: Vec<Atom> = rule.body.iter().map(|a| a.renamed(&rename)).collect();
+                let mut starts = vec![Binding::new()];
+                for (position, id) in
+                    head.positions()
+                        .into_iter()
+                        .zip([goal.subject, goal.predicate, goal.object])
+                {
+                    starts = starts
+                        .into_iter()
+                        .flat_map(|b| self.unify_value(position, id, b))
+                        .collect();
+                }
+                let mut head_vars = BTreeSet::new();
+                head.variables(&mut head_vars);
+                for mut start in starts {
+                    for name in &head_vars {
+                        if !start.contains_key(name) {
+                            let logic = self.store.fresh_logic_var();
+                            start.insert(name.clone(), logic);
+                        }
+                    }
+                    self.goals.push((rule_index, keys));
+                    let solution = self.solve(&body, None, start).into_iter().next();
+                    self.goals.pop();
+                    if let Some(solution) = solution {
+                        return Some((rule_index, solution, body));
+                    }
+                }
+            }
+        }
+        None
+    }
+
     /// [`Matcher::prove`] without the cache
     fn prove_uncached(
         &mut self,
@@ -1047,6 +1096,12 @@ impl Matcher<'_> {
     /// unbound inside a formula stays in it as a quoted variable
     pub(crate) fn quote(&mut self, position: &PTerm, binding: &Binding) -> Option<u32> {
         self.quote_in(position, binding, false)
+    }
+
+    /// Like [`Matcher::quote`], but every unbound variable stays as a quoted variable, as a
+    /// proof records a scoped test whose clause variables are its own
+    pub(crate) fn quote_all(&mut self, position: &PTerm, binding: &Binding) -> Option<u32> {
+        self.quote_in(position, binding, true)
     }
 
     fn quote_in(&mut self, position: &PTerm, binding: &Binding, inside: bool) -> Option<u32> {
