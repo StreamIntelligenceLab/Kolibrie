@@ -57,6 +57,15 @@ pub(crate) const RDF_REST: &str = "http://www.w3.org/1999/02/22-rdf-syntax-ns#re
 /// `rdf:nil`
 pub(crate) const RDF_NIL: &str = "http://www.w3.org/1999/02/22-rdf-syntax-ns#nil";
 
+/// The facts new in a round, which semi-naive evaluation matches one premise against
+#[derive(Debug, Clone, Copy)]
+pub(crate) enum Delta<'d> {
+    /// Many new facts, indexed
+    Index(&'d DatasetIndex),
+    /// A few new facts, scanned in the order they were added
+    Facts(&'d [Triple]),
+}
+
 /// The fact base and term store one join reads, borrowed for the join's duration
 #[derive(Debug)]
 pub(crate) struct Matcher<'a> {
@@ -99,16 +108,77 @@ impl Matcher<'_> {
     pub(crate) fn solve(
         &mut self,
         atoms: &[Atom],
-        seed: Option<(usize, &DatasetIndex)>,
+        seed: Option<(usize, Delta<'_>)>,
         initial: Binding,
     ) -> Vec<Binding> {
         let mut remaining: Vec<usize> = (0..atoms.len()).collect();
         let mut bound: BTreeSet<String> = initial.keys().cloned().collect();
         let mut bindings = vec![initial];
-        if let Some((first, index)) = seed {
+        // Each atom's variables, whole and by position, worked out once for the whole join.
+        let position_vars: Vec<[BTreeSet<String>; 3]> = atoms
+            .iter()
+            .map(|atom| {
+                atom.positions().map(|position| {
+                    let mut vars = BTreeSet::new();
+                    position.variables(&mut vars);
+                    vars
+                })
+            })
+            .collect();
+        let atom_vars: Vec<BTreeSet<String>> = position_vars
+            .iter()
+            .map(|[s, p, o]| s.iter().chain(p).chain(o).cloned().collect())
+            .collect();
+        // How many of each atom's variables, and of each position's, are still unbound, kept up to
+        // date as variables bind, so picking the next atom costs no set comparisons.
+        let mut open_atom: Vec<usize> = atom_vars
+            .iter()
+            .map(|vars| vars.difference(&bound).count())
+            .collect();
+        let mut open_position: Vec<[usize; 3]> = position_vars
+            .iter()
+            .map(|vars| vars.each_ref().map(|v| v.difference(&bound).count()))
+            .collect();
+        let mut in_atoms: HashMap<&str, Vec<usize>> = HashMap::new();
+        let mut in_positions: HashMap<&str, Vec<(usize, usize)>> = HashMap::new();
+        for (i, positions) in position_vars.iter().enumerate() {
+            for v in &atom_vars[i] {
+                in_atoms.entry(v.as_str()).or_default().push(i);
+            }
+            for (k, vars) in positions.iter().enumerate() {
+                for v in vars {
+                    in_positions.entry(v.as_str()).or_default().push((i, k));
+                }
+            }
+        }
+        let mark = |vars: &BTreeSet<String>,
+                    bound: &mut BTreeSet<String>,
+                    open_atom: &mut Vec<usize>,
+                    open_position: &mut Vec<[usize; 3]>| {
+            for v in vars {
+                if !bound.insert(v.clone()) {
+                    continue;
+                }
+                for &i in in_atoms.get(v.as_str()).into_iter().flatten() {
+                    open_atom[i] -= 1;
+                }
+                for &(i, k) in in_positions.get(v.as_str()).into_iter().flatten() {
+                    open_position[i][k] -= 1;
+                }
+            }
+        };
+        if let Some((first, delta)) = seed {
             remaining.retain(|&i| i != first);
-            bindings = self.extend(&atoms[first], &[index], false, bindings);
-            atoms[first].variables(&mut bound);
+            bindings = match delta {
+                Delta::Index(index) => self.extend(&atoms[first], &[index], false, bindings),
+                Delta::Facts(facts) => self.scan(&atoms[first], facts, bindings),
+            };
+            mark(
+                &atom_vars[first],
+                &mut bound,
+                &mut open_atom,
+                &mut open_position,
+            );
         }
         while !remaining.is_empty() && !bindings.is_empty() {
             let is_ground = |position: &PTerm| {
@@ -124,22 +194,27 @@ impl Matcher<'_> {
             let forward = builtin_where(&|b, a| b.forward(&a.subject, &a.object, &is_ground));
             let backward = self.backward;
             let sample = &bindings[0];
-            let settled = |atom: &Atom| {
-                let mut vars = BTreeSet::new();
-                atom.variables(&mut vars);
-                vars.is_subset(&bound) || !asks(backward, atom, sample)
-            };
+            let settled = |i: usize| open_atom[i] == 0 || !asks(backward, &atoms[i], sample);
             // Settled premises go most-bound first, the earliest on a tie; open backward goals go
             // in the order written, since each one's inputs come from those before it.
             let data = |wanted: bool| {
                 let mut candidates = remaining
                     .iter()
                     .enumerate()
-                    .filter(|(_, &i)| atoms[i].builtin.is_none() && settled(&atoms[i]) == wanted);
+                    .filter(|(_, &i)| atoms[i].builtin.is_none() && settled(i) == wanted);
                 if wanted {
                     candidates
                         .min_by_key(|(position, &i)| {
-                            (std::cmp::Reverse(boundness(&atoms[i], &bound)), *position)
+                            let fixed = atoms[i]
+                                .positions()
+                                .into_iter()
+                                .zip(open_position[i])
+                                .filter(|(position, open)| {
+                                    *open == 0
+                                        && !matches!(position, PTerm::Exists(_) | PTerm::Formula(_))
+                                })
+                                .count();
+                            (std::cmp::Reverse(fixed), *position)
                         })
                         .map(|(position, _)| position)
                 } else {
@@ -219,7 +294,12 @@ impl Matcher<'_> {
                     }
                 }
             };
-            atom.variables(&mut bound);
+            mark(
+                &atom_vars[next],
+                &mut bound,
+                &mut open_atom,
+                &mut open_position,
+            );
         }
         bindings
     }
@@ -390,12 +470,22 @@ impl Matcher<'_> {
                 .iter()
                 .flat_map(|index| index.query(keys[0], keys[1], keys[2]))
                 .collect();
+            let may_hold_rules = indexes.len() > 1;
+            if !may_hold_rules {
+                candidates.retain(|fact| {
+                    atom.positions()
+                        .into_iter()
+                        .zip([fact.subject, fact.predicate, fact.object])
+                        .all(|(position, id)| self.could_match(position, id, &binding))
+                });
+            }
             self.in_order(&mut candidates);
             for fact in candidates {
-                let from_rule = !self
-                    .rule_facts
-                    .query(Some(fact.subject), Some(fact.predicate), Some(fact.object))
-                    .is_empty();
+                let from_rule = may_hold_rules
+                    && !self
+                        .rule_facts
+                        .query(Some(fact.subject), Some(fact.predicate), Some(fact.object))
+                        .is_empty();
                 if from_rule {
                     self.in_rule.set(true);
                     let matched = self.unify_triple(atom, &fact, binding.clone());
@@ -426,12 +516,43 @@ impl Matcher<'_> {
         out
     }
 
+    /// Extends each binding with every way `atom` matches one of `facts`, without an index
+    fn scan(&self, atom: &Atom, facts: &[Triple], bindings: Vec<Binding>) -> Vec<Binding> {
+        let mut out = Vec::new();
+        for binding in bindings {
+            for fact in facts {
+                let possible = atom
+                    .positions()
+                    .into_iter()
+                    .zip([fact.subject, fact.predicate, fact.object])
+                    .all(|(position, id)| self.could_match(position, id, &binding));
+                if !possible {
+                    continue;
+                }
+                match &atom.flat {
+                    Some(flat) => {
+                        let mut extended = binding.clone();
+                        if matches_rule_pattern(flat, fact, &mut extended) {
+                            out.push(extended);
+                        }
+                    }
+                    None => out.extend(self.unify_triple(atom, fact, binding.clone())),
+                }
+            }
+        }
+        out
+    }
+
     /// Sorts facts into the order they were added, unknown ones last in a fixed order
     pub(crate) fn in_order(&self, facts: &mut [Triple]) {
-        facts.sort_by(|a, b| {
-            let rank = |t: &Triple| self.sequence.get(t).copied().unwrap_or(usize::MAX);
-            rank(a).cmp(&rank(b)).then_with(|| a.cmp(b))
-        });
+        if facts.len() > 1 {
+            facts.sort_by_cached_key(|t| {
+                (
+                    self.sequence.get(t).copied().unwrap_or(usize::MAX),
+                    t.clone(),
+                )
+            });
+        }
     }
 
     /// How `rdf:first` (or, when `first` is false, `rdf:rest`) holds of a native list
@@ -858,16 +979,4 @@ fn compatible_position(goal: &PTerm, head: &PTerm) -> bool {
         }
         _ => true,
     }
-}
-
-/// How many of an atom's positions are already fixed, for picking the next atom to join
-fn boundness(atom: &Atom, bound: &BTreeSet<String>) -> usize {
-    atom.positions()
-        .into_iter()
-        .filter(|position| {
-            let mut vars = BTreeSet::new();
-            position.variables(&mut vars);
-            vars.is_subset(bound) && !matches!(position, PTerm::Exists(_) | PTerm::Formula(_))
-        })
-        .count()
 }

@@ -11,17 +11,22 @@
 //! Forward N3 reasoning: semi-naive saturation over a Kolibrie [`DatasetIndex`]
 
 use crate::error::N3Error;
-use crate::matcher::{Matcher, Vocabulary};
+use crate::matcher::{Delta, Matcher, Vocabulary};
 use crate::rules::{compile_backward_rule, compile_rule, formula_node, Atom, N3Rule, PTerm};
 use crate::syntax::{
     Document, Node, Statement, LOG_IMPLIED_BY, LOG_IMPLIES, LOG_OUTPUT_STRING, LOG_QUERY,
 };
 use crate::terms::{Compound, TermStore};
 use shared::dataset_index::DatasetIndex;
+use shared::rule_index::WILDCARD;
 use shared::terms::Binding;
 use shared::triple::Triple;
 use std::cell::{Cell, OnceCell, RefCell};
 use std::collections::{BTreeSet, HashMap, HashSet};
+use std::rc::Rc;
+
+/// Most new facts a round scans directly before it indexes them instead
+const SCAN_LIMIT: usize = 64;
 
 /// Resource budgets that stop a run which would not reach a fixpoint
 #[derive(Debug, Clone, Copy)]
@@ -53,9 +58,20 @@ pub struct N3Reasoner {
     facts: DatasetIndex,
     /// Every fact, with the order it was added in
     known: HashMap<Triple, usize>,
-    rules: Vec<N3Rule>,
+    rules: Vec<Rc<N3Rule>>,
     rule_sources: HashSet<(u32, u32)>,
     rule_facts: DatasetIndex,
+    /// Input rules not yet encoded into `rule_facts`, which only a premise naming
+    /// `log:implies` or `log:impliedBy` reads
+    unencoded_rules: Vec<Statement>,
+    /// Each premise's constants, `WILDCARD` for its variables, to the rules it belongs to, so a
+    /// round visits only the rules its new facts could feed
+    ///
+    /// Not `shared::rule_index::RuleIndex`: that files premises by pairs of positions, so a
+    /// predicate every rule shares, such as `rdf:type`, makes every fact a candidate for every rule.
+    premises: HashMap<[u32; 3], Vec<usize>>,
+    /// How many of `rules` are filed in `premises`
+    indexed: usize,
     /// Firings that rested on a test of the whole graph, rechecked once reasoning ends
     retained: Vec<(usize, Binding)>,
     list_terms: BTreeSet<u32>,
@@ -131,7 +147,7 @@ impl N3Reasoner {
                     let rule = compile_rule(&mut self.store, &body, &head)?;
                     self.rule_sources.insert((triple.subject, triple.object));
                     self.rule_facts.insert(triple);
-                    self.rules.push(rule);
+                    self.rules.push(Rc::new(rule));
                     continue;
                 }
             }
@@ -154,8 +170,7 @@ impl N3Reasoner {
                         &statement.subject,
                         &statement.object,
                     )?;
-                    let triple = self.store.encode_statement(statement);
-                    self.rule_facts.insert(&triple);
+                    self.unencoded_rules.push(statement.clone());
                     self.backward.push(rule);
                     continue;
                 }
@@ -168,10 +183,8 @@ impl N3Reasoner {
                 if predicate == LOG_IMPLIES {
                     let rule =
                         compile_rule(&mut self.store, &statement.subject, &statement.object)?;
-                    let triple = self.store.encode_statement(statement);
-                    self.rule_sources.insert((triple.subject, triple.object));
-                    self.rule_facts.insert(&triple);
-                    self.rules.push(rule);
+                    self.unencoded_rules.push(statement.clone());
+                    self.rules.push(Rc::new(rule));
                     continue;
                 }
             }
@@ -229,13 +242,16 @@ impl N3Reasoner {
     /// Returns [`N3Error::Limit`] when a budget in [`N3Reasoner::limits`] runs out, and
     /// [`N3Error::Unsupported`] when a derived rule cannot be evaluated
     pub fn run(&mut self) -> Result<&[Triple], N3Error> {
+        if self.premises_name_rules() {
+            self.encode_rule_facts();
+        }
         let mut pending: Vec<Triple> = self.facts();
         let mut fresh_rules: Vec<usize> = (0..self.rules.len()).collect();
         loop {
             self.saturate(&mut pending, &mut fresh_rules)?;
             let mut progressed = false;
             for rule_index in self.waiting_order() {
-                let rule = self.rules[rule_index].clone();
+                let rule = Rc::clone(&self.rules[rule_index]);
                 let before = pending.len();
                 let solutions = self.matcher().solve(&rule.body, None, Binding::new());
                 for binding in solutions {
@@ -286,21 +302,73 @@ impl N3Reasoner {
                 return Err(N3Error::Limit(format!("{} rounds", self.limits.max_rounds)));
             }
             fresh_rules.retain(|i| self.rules[*i].waits());
-            let mut delta_index = DatasetIndex::new();
-            for triple in pending.drain(..) {
-                delta_index.insert(&triple);
+            self.index_new_rules();
+            let delta: Vec<Triple> = std::mem::take(pending);
+            let mut full: BTreeSet<usize> = ordinary_fresh.into_iter().collect();
+            if !self.backward.is_empty() {
+                full.extend((0..self.rules.len()).filter(|&i| self.asks_backward(&self.rules[i])));
             }
-            for rule_index in 0..self.rules.len() {
-                let rule = self.rules[rule_index].clone();
-                if rule.waits() {
+            let mut candidates = full.clone();
+            for triple in &delta {
+                for mask in 0..8u8 {
+                    let key = |bit: u8, id: u32| if mask & bit == 0 { id } else { WILDCARD };
+                    let key = [
+                        key(1, triple.subject),
+                        key(2, triple.predicate),
+                        key(4, triple.object),
+                    ];
+                    if let Some(rules) = self.premises.get(&key) {
+                        candidates.extend(rules);
+                    }
+                }
+            }
+            let needs_delta = candidates.iter().any(|i| !full.contains(i));
+            let mut delta_index = DatasetIndex::new();
+            if needs_delta && delta.len() > SCAN_LIMIT {
+                for triple in &delta {
+                    delta_index.insert(triple);
+                }
+            }
+            let seed = if delta.len() > SCAN_LIMIT {
+                Delta::Index(&delta_index)
+            } else {
+                Delta::Facts(&delta)
+            };
+            for rule_index in candidates {
+                if self.rules[rule_index].waits() {
                     continue;
                 }
-                let full = ordinary_fresh.contains(&rule_index) || self.asks_backward(&rule);
-                for binding in self.rule_solutions(&rule, &delta_index, full) {
+                let rule = Rc::clone(&self.rules[rule_index]);
+                let solutions = self.rule_solutions(&rule, seed, full.contains(&rule_index));
+                for binding in solutions {
                     self.apply(rule_index, binding, pending, fresh_rules)?;
                 }
             }
         }
+    }
+
+    /// Files the premises of rules added since the last call by their constants
+    fn index_new_rules(&mut self) {
+        let key = |position: &PTerm| match position {
+            PTerm::Const(id) => *id,
+            _ => WILDCARD,
+        };
+        for rule_id in self.indexed..self.rules.len() {
+            for atom in self.rules[rule_id]
+                .body
+                .iter()
+                .filter(|a| a.builtin.is_none())
+            {
+                let entry = self
+                    .premises
+                    .entry([key(&atom.subject), key(&atom.predicate), key(&atom.object)])
+                    .or_default();
+                if entry.last() != Some(&rule_id) {
+                    entry.push(rule_id);
+                }
+            }
+        }
+        self.indexed = self.rules.len();
     }
 
     /// Stores new conclusion triples, queues them for the next round, and adopts derived rules;
@@ -338,7 +406,7 @@ impl N3Reasoner {
         pending: &mut Vec<Triple>,
         fresh_rules: &mut Vec<usize>,
     ) -> Result<(), N3Error> {
-        let rule = self.rules[rule_index].clone();
+        let rule = Rc::clone(&self.rules[rule_index]);
         let conclusion = self.fire(&rule, &binding)?;
         if self.commit(conclusion, pending, fresh_rules)? > 0 && rule.deferred {
             self.retained.push((rule_index, binding));
@@ -511,8 +579,56 @@ impl N3Reasoner {
         })
     }
 
+    /// Encodes the input rules as `log:implies` and `log:impliedBy` triples between formulas
+    fn encode_rule_facts(&mut self) {
+        let implies = self.store.iri(LOG_IMPLIES);
+        for statement in std::mem::take(&mut self.unencoded_rules) {
+            let triple = self.store.encode_statement(&statement);
+            if triple.predicate == implies {
+                self.rule_sources.insert((triple.subject, triple.object));
+            }
+            self.rule_facts.insert(&triple);
+        }
+    }
+
+    /// Whether some premise names `log:implies` or `log:impliedBy`, so it reads rules as data
+    fn premises_name_rules(&self) -> bool {
+        let names: Vec<u32> = [LOG_IMPLIES, LOG_IMPLIED_BY]
+            .iter()
+            .filter_map(|iri| self.store.lookup(iri))
+            .collect();
+        if names.is_empty() || self.unencoded_rules.is_empty() {
+            return false;
+        }
+        fn mentions(atoms: &[Atom], names: &[u32]) -> bool {
+            atoms.iter().any(|atom| {
+                matches!(atom.predicate, PTerm::Const(id) if names.contains(&id))
+                    || atom.positions().into_iter().any(|p| match p {
+                        PTerm::Formula(inner) => mentions(inner, names),
+                        PTerm::List(items) => items.iter().any(
+                            |item| matches!(item, PTerm::Formula(inner) if mentions(inner, names)),
+                        ),
+                        _ => false,
+                    })
+            })
+        }
+        self.rules
+            .iter()
+            .map(|rule| &**rule)
+            .chain(&self.backward)
+            .chain(&self.queries)
+            .any(|rule| mentions(&rule.body, &names))
+    }
+
     /// Turns a derived `{…} log:implies {…}` triple into a rule; true if it added one
     fn adopt_derived_rule(&mut self, triple: &Triple) -> Result<bool, N3Error> {
+        if !self.unencoded_rules.is_empty()
+            && [LOG_IMPLIES, LOG_IMPLIED_BY]
+                .iter()
+                .any(|iri| self.store.lookup(iri) == Some(triple.predicate))
+        {
+            self.encode_rule_facts();
+        }
         if self
             .store
             .lookup(LOG_IMPLIED_BY)
@@ -543,7 +659,7 @@ impl N3Reasoner {
             return Ok(false);
         };
         let rule = compile_rule(&mut self.store, &body, &head)?;
-        self.rules.push(rule);
+        self.rules.push(Rc::new(rule));
         Ok(true)
     }
 
@@ -575,7 +691,7 @@ impl N3Reasoner {
 
     /// Every binding of the rule body that uses at least one delta fact, or all bindings when
     /// `full`
-    fn rule_solutions(&mut self, rule: &N3Rule, delta: &DatasetIndex, full: bool) -> Vec<Binding> {
+    fn rule_solutions(&mut self, rule: &N3Rule, delta: Delta<'_>, full: bool) -> Vec<Binding> {
         let data_atoms: Vec<usize> = (0..rule.body.len())
             .filter(|&i| rule.body[i].builtin.is_none())
             .collect();

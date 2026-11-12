@@ -34,7 +34,10 @@ fn run(paths: &[String], max_backward_depth: Option<usize>) -> Result<String, N3
         reasoner.load(&document)?;
     }
     reasoner.run()?;
-    Ok(reasoner.output_n3())
+    let output = reasoner.output_n3();
+    // The process exits next, so freeing a large store one allocation at a time is wasted work.
+    std::mem::forget(reasoner);
+    Ok(output)
 }
 
 fn main() -> ExitCode {
