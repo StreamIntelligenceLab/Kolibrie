@@ -154,9 +154,36 @@ fn queries_replace_the_output_and_feed_nothing_back() {
 }
 
 #[test]
-fn an_answer_that_needs_open_variables_is_reported() {
-    assert!(matches!(
-        run("{ :a :p ?x } <= true . { :a :p ?y } => { :r :is ?y } ."),
-        Err(N3Error::Unsupported(_))
-    ));
+fn a_value_a_proof_leaves_open_is_bound_by_a_later_premise() {
+    assert_eq!(
+        output(
+            "{ (?x) :wrap (:box ?x) } <= true .
+             { (5) :wrap ?w } => { :r :is ?w } ."
+        ),
+        expect(":r :is (:box 5) ."),
+        "the head's ?x is open while the rule is proved, then the goal's 5 binds it"
+    );
+}
+
+#[test]
+fn an_open_variable_travels_through_a_list_and_is_bound_later() {
+    assert_eq!(
+        output(
+            "{ (?env ?name) :lookup ?t } <= { ?env list:firstRest ((?name ?t) ?rest) } .
+             { (?env (:lam ?n ?b)) :typeOf (:fun ?arg ?res) } <= {
+                 ?inner list:firstRest ((?n ?arg) ?env) . (?inner ?b) :typeOf ?res } .
+             { (?env (:var ?n)) :typeOf ?t } <= { (?env ?n) :lookup ?t } .
+             { (?env (:int ?v)) :typeOf :int } <= true .
+             { (?env (:app ?f ?a)) :typeOf ?res } <= {
+                 (?env ?f) :typeOf (:fun ?in ?res) . (?env ?a) :typeOf ?in } .
+             { (() (:app (:lam :x (:var :x)) (:int 7))) :typeOf ?t } => { :query :type ?t } ."
+        ),
+        expect(":query :type :int ."),
+        "the argument type is unknown inside the lambda until the application supplies it"
+    );
+}
+
+#[test]
+fn a_conclusion_whose_value_stays_open_is_left_out() {
+    assert!(output("{ :a :p ?x } <= true . { :a :p ?y } => { :r :is ?y } .").is_empty());
 }

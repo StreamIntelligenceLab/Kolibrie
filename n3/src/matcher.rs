@@ -66,6 +66,87 @@ pub(crate) enum Delta<'d> {
     Facts(&'d [Triple]),
 }
 
+/// The term a logic variable stands for under `binding`, following chains; any other id as is
+pub(crate) fn deref(store: &TermStore, mut id: u32, binding: &Binding) -> u32 {
+    if !store.has_logic_vars() {
+        return id;
+    }
+    while let Some(Compound::Logic(_)) = store.compound(id) {
+        match binding.get(&TermStore::logic_key(id)) {
+            Some(&next) => id = next,
+            None => break,
+        }
+    }
+    id
+}
+
+/// Whether `id` is, under `binding`, a logic variable nothing has bound yet
+pub(crate) fn is_open(store: &TermStore, id: u32, binding: &Binding) -> bool {
+    store.has_logic_vars()
+        && matches!(
+            store.compound(deref(store, id, binding)),
+            Some(Compound::Logic(_))
+        )
+}
+
+/// Whether an open logic variable occurs anywhere in `id` under `binding`
+pub(crate) fn contains_open(store: &TermStore, id: u32, binding: &Binding) -> bool {
+    if !store.has_logic_vars() {
+        return false;
+    }
+    let id = deref(store, id, binding);
+    match store.compound(id) {
+        Some(Compound::Logic(_)) => true,
+        Some(Compound::List(items)) => items.iter().any(|&i| contains_open(store, i, binding)),
+        Some(Compound::Formula(triples)) => triples.iter().any(|t| {
+            [t.subject, t.predicate, t.object]
+                .into_iter()
+                .any(|i| contains_open(store, i, binding))
+        }),
+        _ => false,
+    }
+}
+
+/// `id` with every logic variable `binding` binds replaced by its value, at any depth
+pub(crate) fn resolve(store: &mut TermStore, id: u32, binding: &Binding) -> u32 {
+    if !store.has_logic_vars() {
+        return id;
+    }
+    let id = deref(store, id, binding);
+    match store.compound(id).cloned() {
+        Some(Compound::List(items)) => {
+            let resolved: Vec<u32> = items.iter().map(|&i| resolve(store, i, binding)).collect();
+            if resolved == items {
+                id
+            } else {
+                store.list(resolved)
+            }
+        }
+        Some(Compound::Formula(triples)) => {
+            let resolved: Vec<Triple> = triples
+                .iter()
+                .map(|t| Triple {
+                    subject: resolve(store, t.subject, binding),
+                    predicate: resolve(store, t.predicate, binding),
+                    object: resolve(store, t.object, binding),
+                })
+                .collect();
+            if resolved == triples {
+                id
+            } else {
+                store.formula(resolved)
+            }
+        }
+        _ => id,
+    }
+}
+
+/// The ground term `id` stands for under `binding`, or `None` while a logic variable in it is open
+pub(crate) fn settle(store: &mut TermStore, id: u32, binding: &Binding) -> Option<u32> {
+    let id = resolve(store, id, binding);
+    (!contains_open(store, id, binding)).then_some(id)
+}
+
 /// The fact base and term store one join reads, borrowed for the join's duration
 #[derive(Debug)]
 pub(crate) struct Matcher<'a> {
@@ -83,9 +164,6 @@ pub(crate) struct Matcher<'a> {
     pub(crate) goals: Vec<(usize, [Option<u32>; 3])>,
     /// Set when a proof was cut off at `max_depth`, so the answer may be incomplete
     pub(crate) cut_off: &'a Cell<bool>,
-    /// Set when a backward rule answered with a variable still open, which needs unification
-    /// over non-ground terms that this engine does not do
-    pub(crate) open_answer: &'a Cell<bool>,
     /// Proved goals and their answers, one triple per proof, valid while the facts are unchanged
     pub(crate) proofs: &'a RefCell<HashMap<[Option<u32>; 3], Vec<Triple>>>,
     /// How many proofs were cut short by the cycle check or the depth limit, so a goal proved
@@ -112,7 +190,18 @@ impl Matcher<'_> {
         initial: Binding,
     ) -> Vec<Binding> {
         let mut remaining: Vec<usize> = (0..atoms.len()).collect();
-        let mut bound: BTreeSet<String> = initial.keys().cloned().collect();
+        // A variable bound to an open logic variable is not known yet, though it may sit inside a
+        // list that a built-in takes apart.
+        let open: BTreeSet<String> = initial
+            .iter()
+            .filter(|(_, &id)| is_open(self.store, id, &initial))
+            .map(|(name, _)| name.clone())
+            .collect();
+        let mut bound: BTreeSet<String> = initial
+            .keys()
+            .filter(|name| !open.contains(*name))
+            .cloned()
+            .collect();
         let mut bindings = vec![initial];
         // Each atom's variables, whole and by position, worked out once for the whole join.
         let position_vars: Vec<[BTreeSet<String>; 3]> = atoms
@@ -184,7 +273,10 @@ impl Matcher<'_> {
             let is_ground = |position: &PTerm| {
                 let mut vars = BTreeSet::new();
                 position.variables(&mut vars);
-                vars.is_subset(&bound) && !position.has_exists()
+                let known = |v: &String| {
+                    bound.contains(v) || (open.contains(v) && !matches!(position, PTerm::Var(_)))
+                };
+                vars.iter().all(known) && !position.has_exists()
             };
             let builtin_where = |test: &dyn Fn(Builtin, &Atom) -> bool| {
                 remaining
@@ -318,12 +410,16 @@ impl Matcher<'_> {
                 vars.iter().all(|v| binding.contains_key(v))
             }
         };
-        let cacheable = goal.positions().into_iter().all(open_or_ground);
         let keys = [
             self.ground(&goal.subject, binding),
             self.ground(&goal.predicate, binding),
             self.ground(&goal.object, binding),
         ];
+        let cacheable = goal.positions().into_iter().all(open_or_ground)
+            && keys
+                .iter()
+                .flatten()
+                .all(|&key| !contains_open(self.store, key, binding));
         if cacheable {
             let cached = self.proofs.borrow().get(&keys).cloned();
             if let Some(proved) = cached {
@@ -346,7 +442,12 @@ impl Matcher<'_> {
                     })
                 })
                 .collect();
-            if proved.len() == answers.len() {
+            let ground_answers = proved.iter().all(|t| {
+                [t.subject, t.predicate, t.object]
+                    .into_iter()
+                    .all(|id| !contains_open(self.store, id, &Binding::new()))
+            });
+            if proved.len() == answers.len() && ground_answers {
                 self.proofs.borrow_mut().insert(keys, proved);
             }
         }
@@ -405,20 +506,35 @@ impl Matcher<'_> {
                             .collect();
                     }
                 }
-                for start in starts {
+                let mut head_vars = BTreeSet::new();
+                head.variables(&mut head_vars);
+                for mut start in starts {
+                    // A head variable the goal leaves open is a logic variable the proof may bind,
+                    // or leave open for the caller to bind later.
+                    for name in &head_vars {
+                        if !start.contains_key(name) {
+                            let logic = self.store.fresh_logic_var();
+                            start.insert(name.clone(), logic);
+                        }
+                    }
                     self.goals.push((rule_index, keys));
                     let solutions = self.solve(&body, None, start);
                     self.goals.pop();
                     for solution in solutions {
-                        let mut answers = vec![binding.clone()];
+                        let mut carried = binding.clone();
+                        for (name, &value) in &solution {
+                            if name.starts_with("#lv") {
+                                carried.insert(name.clone(), value);
+                            }
+                        }
+                        let mut answers = vec![carried];
                         for ((goal_position, head_position), key) in
                             goal.positions().into_iter().zip(head.positions()).zip(keys)
                         {
                             if key.is_some() {
                                 continue;
                             }
-                            let Some(value) = self.ground(head_position, &solution) else {
-                                self.open_answer.set(true);
+                            let Some(value) = self.value_of(head_position, &solution) else {
                                 answers.clear();
                                 break;
                             };
@@ -496,7 +612,7 @@ impl Matcher<'_> {
                     }));
                     continue;
                 }
-                if let Some(flat) = &atom.flat {
+                if let Some(flat) = atom.flat.as_ref().filter(|_| !self.store.has_logic_vars()) {
                     let mut extended = binding.clone();
                     if matches_rule_pattern(flat, &fact, &mut extended) {
                         out.push(extended);
@@ -529,7 +645,7 @@ impl Matcher<'_> {
                 if !possible {
                     continue;
                 }
-                match &atom.flat {
+                match atom.flat.as_ref().filter(|_| !self.store.has_logic_vars()) {
                     Some(flat) => {
                         let mut extended = binding.clone();
                         if matches_rule_pattern(flat, fact, &mut extended) {
@@ -639,6 +755,10 @@ impl Matcher<'_> {
         binding: Binding,
     ) -> Vec<Binding> {
         if let Some(known) = self.ground(position, &binding) {
+            if contains_open(self.store, known, &binding) || contains_open(self.store, id, &binding)
+            {
+                return self.unify_ids(known, id, binding).into_iter().collect();
+            }
             return if self.equivalent(known, id) {
                 vec![binding]
             } else {
@@ -648,6 +768,7 @@ impl Matcher<'_> {
         let PTerm::List(patterns) = position else {
             return self.unify(position, id, binding);
         };
+        let id = deref(self.store, id, &binding);
         let Some(items) = self.list_items(id) else {
             return Vec::new();
         };
@@ -690,7 +811,11 @@ impl Matcher<'_> {
     fn could_match(&self, position: &PTerm, id: u32, binding: &Binding) -> bool {
         match position {
             PTerm::Const(c) => *c == id,
-            PTerm::Var(name) => binding.get(name).is_none_or(|&bound| bound == id),
+            PTerm::Var(name) => binding.get(name).is_none_or(|&bound| {
+                bound == id
+                    || deref(self.store, bound, binding) == id
+                    || contains_open(self.store, bound, binding)
+            }),
             PTerm::List(items) => match self.store.compound(id) {
                 Some(Compound::List(members)) => {
                     members.len() == items.len()
@@ -710,7 +835,8 @@ impl Matcher<'_> {
         match position {
             PTerm::Const(id) => Key::Bound(*id),
             PTerm::Var(name) => match binding.get(name) {
-                Some(&id) => Key::Bound(id),
+                Some(&id) if contains_open(self.store, id, binding) => Key::Free,
+                Some(&id) => Key::Bound(deref(self.store, id, binding)),
                 None => Key::Free,
             },
             PTerm::List(items) => {
@@ -738,6 +864,11 @@ impl Matcher<'_> {
                 if *c == id {
                     return vec![binding];
                 }
+                if self.store.has_logic_vars() {
+                    if let Some(unified) = self.unify_ids(*c, id, binding.clone()) {
+                        return vec![unified];
+                    }
+                }
                 let Some(Compound::Var(name)) = self
                     .in_rule
                     .get()
@@ -757,6 +888,13 @@ impl Matcher<'_> {
                 }
             }
             PTerm::Var(name) => match binding.get(name) {
+                Some(&bound) if bound != id && self.store.has_logic_vars() => {
+                    match self.unify_ids(bound, id, binding.clone()) {
+                        Some(unified) => vec![unified],
+                        None if self.in_rule.get() => self.unify(&PTerm::Const(bound), id, binding),
+                        None => Vec::new(),
+                    }
+                }
                 Some(&bound) if bound != id => {
                     if self.in_rule.get() {
                         self.unify(&PTerm::Const(bound), id, binding)
@@ -771,6 +909,7 @@ impl Matcher<'_> {
                 }
             },
             PTerm::List(items) => {
+                let id = deref(self.store, id, &binding);
                 let Some(Compound::List(members)) = self.store.compound(id) else {
                     return Vec::new();
                 };
@@ -831,15 +970,31 @@ impl Matcher<'_> {
         }
     }
 
-    /// The id `position` denotes under `binding`, interning lists and formulas it builds
+    /// The id `position` denotes under `binding`, interning lists and formulas it builds; `None`
+    /// when it is unbound or an open logic variable, though a list may hold open ones
     pub(crate) fn ground(&mut self, position: &PTerm, binding: &Binding) -> Option<u32> {
+        self.ground_in(position, binding, false)
+    }
+
+    /// Like [`Matcher::ground`], but an open logic variable is a value too
+    fn value_of(&mut self, position: &PTerm, binding: &Binding) -> Option<u32> {
+        self.ground_in(position, binding, true)
+    }
+
+    fn ground_in(&mut self, position: &PTerm, binding: &Binding, open_ok: bool) -> Option<u32> {
         match position {
             PTerm::Const(id) => Some(*id),
-            PTerm::Var(name) => binding.get(name).copied(),
+            PTerm::Var(name) => {
+                let id = *binding.get(name)?;
+                if !open_ok && is_open(self.store, id, binding) {
+                    return None;
+                }
+                Some(resolve(self.store, id, binding))
+            }
             PTerm::List(items) => {
                 let ids = items
                     .iter()
-                    .map(|item| self.ground(item, binding))
+                    .map(|item| self.ground_in(item, binding, true))
                     .collect::<Option<Vec<u32>>>()?;
                 Some(self.store.list(ids))
             }
@@ -847,15 +1002,45 @@ impl Matcher<'_> {
                 let mut triples = Vec::with_capacity(atoms.len());
                 for atom in atoms {
                     triples.push(Triple {
-                        subject: self.ground(&atom.subject, binding)?,
-                        predicate: self.ground(&atom.predicate, binding)?,
-                        object: self.ground(&atom.object, binding)?,
+                        subject: self.ground_in(&atom.subject, binding, true)?,
+                        predicate: self.ground_in(&atom.predicate, binding, true)?,
+                        object: self.ground_in(&atom.object, binding, true)?,
                     });
                 }
                 Some(self.store.formula(triples))
             }
             PTerm::Exists(_) => None,
         }
+    }
+
+    /// Unifies two terms that may hold open logic variables, binding those as needed
+    pub(crate) fn unify_ids(&self, left: u32, right: u32, mut binding: Binding) -> Option<Binding> {
+        let (left, right) = (
+            deref(self.store, left, &binding),
+            deref(self.store, right, &binding),
+        );
+        if left == right {
+            return Some(binding);
+        }
+        for (open, value) in [(left, right), (right, left)] {
+            if let Some(Compound::Logic(_)) = self.store.compound(open) {
+                binding.insert(TermStore::logic_key(open), value);
+                return Some(binding);
+            }
+        }
+        if let (Some(Compound::List(a)), Some(Compound::List(b))) =
+            (self.store.compound(left), self.store.compound(right))
+        {
+            if a.len() != b.len() {
+                return None;
+            }
+            let pairs: Vec<(u32, u32)> = a.iter().copied().zip(b.iter().copied()).collect();
+            for (x, y) in pairs {
+                binding = self.unify_ids(x, y, binding)?;
+            }
+            return Some(binding);
+        }
+        self.equivalent(left, right).then_some(binding)
     }
 
     /// The id `position` denotes as data: like [`Matcher::ground`], except that a variable still

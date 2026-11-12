@@ -8,6 +8,7 @@ Added
 - N3 `log:outputString` text output
 - N3 graph built-ins: `log:includes`, `log:notIncludes`, `log:collectAllIn`, `log:forAllIn`, `log:conjunction` and `log:conclusion`; rules testing the whole graph wait until it is saturated
 - N3 backward rules (`{ … } <= { … }`), proved on demand up to a configurable depth (`Limits::max_backward_depth`, default 32; `n3_reason --max-backward-depth N`), and `log:query`, whose answers become a run's output
+- N3 backward rules can answer with values not known yet, which later premises bind (unification over non-ground terms)
 - N3 inference fuses: `{ … } => false`, and a fuse when later facts contradict a negation or collection a rule already fired on
 - N3 regular expression built-ins (`string:matches`, `notMatches`, `replace`, `scrape`), `crypto:sha`, `log:uuid`, `log:uri`, `log:skolem`, `log:dtlit`, `log:langlit`, `log:rawType`, the `time:` built-ins, and date and duration arithmetic and comparison in `math:`
 - N3 input as TriG (`n3::parse_trig`: named graphs as `log:nameOf`, RDF 1.2 triple terms) and as RDF Message Logs (`n3::parse_message_log`); `n3::parse_input` picks the reader

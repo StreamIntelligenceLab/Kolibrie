@@ -83,8 +83,6 @@ pub struct N3Reasoner {
     answers: Vec<Triple>,
     /// Set when a backward proof hit the depth limit
     cut_off: Cell<bool>,
-    /// Set when a backward rule answered with a variable still open
-    open_answer: Cell<bool>,
     /// Proved backward goals, valid for the fact count recorded alongside
     proofs: RefCell<HashMap<[Option<u32>; 3], Vec<Triple>>>,
     proofs_for: Cell<usize>,
@@ -265,11 +263,6 @@ impl N3Reasoner {
             if !progressed {
                 self.recheck_retained()?;
                 self.answer_queries()?;
-                if self.open_answer.get() {
-                    return Err(N3Error::unsupported(
-                        "backward rule answers that leave a variable open",
-                    ));
-                }
                 if self.cut_off.get() {
                     return Err(N3Error::Limit(format!(
                         "backward rules nested deeper than {}",
@@ -680,7 +673,6 @@ impl N3Reasoner {
             backward: &self.backward,
             goals: Vec::new(),
             cut_off: &self.cut_off,
-            open_answer: &self.open_answer,
             proofs: &self.proofs,
             cuts: &self.cuts,
             max_depth: self.limits.max_backward_depth,
@@ -818,7 +810,7 @@ impl N3Reasoner {
                     .collect();
                 self.store.formula(triples)
             }
-            None => id,
+            Some(Compound::Logic(_)) | None => id,
         }
     }
 
@@ -832,7 +824,9 @@ impl N3Reasoner {
     ) -> Option<u32> {
         Some(match position {
             PTerm::Const(id) => *id,
-            PTerm::Var(name) => *binding.get(name)?,
+            PTerm::Var(name) => {
+                crate::matcher::settle(&mut self.store, *binding.get(name)?, binding)?
+            }
             PTerm::List(items) => {
                 let mut ids = Vec::with_capacity(items.len());
                 for item in items {

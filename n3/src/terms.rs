@@ -25,6 +25,9 @@ pub enum Compound {
     Formula(Vec<Triple>),
     /// A variable occurring inside a quoted formula, by name
     Var(String),
+    /// A logic variable a backward proof introduced for a value not known yet, by serial
+    /// number; a solution binds it under [`TermStore::logic_key`]
+    Logic(u32),
 }
 
 /// A Kolibrie [`Dictionary`] plus the structure of the compound terms interned in it
@@ -33,6 +36,7 @@ pub struct TermStore {
     /// Every term's spelling, compound terms spelled as N3 text
     pub dictionary: Dictionary,
     compounds: HashMap<u32, Compound>,
+    logic_vars: u32,
 }
 
 /// The dictionary spelling of a literal, quoted wherever the bare form would read as another term
@@ -118,6 +122,22 @@ impl TermStore {
         self.intern_compound(Compound::Formula(triples))
     }
 
+    /// A logic variable no term has used before
+    pub fn fresh_logic_var(&mut self) -> u32 {
+        self.logic_vars += 1;
+        self.intern_compound(Compound::Logic(self.logic_vars))
+    }
+
+    /// Whether any logic variable was ever made, so the matcher can skip following them
+    pub fn has_logic_vars(&self) -> bool {
+        self.logic_vars > 0
+    }
+
+    /// The binding key under which a solution records the value of logic variable `id`
+    pub fn logic_key(id: u32) -> String {
+        format!("#lv{id}")
+    }
+
     /// The id of the quoted variable `name`
     pub fn quoted_var(&mut self, name: &str) -> u32 {
         self.intern_compound(Compound::Var(name.to_string()))
@@ -151,6 +171,7 @@ impl TermStore {
                 format!("{{{}}}", statements.join(" "))
             }
             Compound::Var(name) => format!("?{name}"),
+            Compound::Logic(serial) => format!("?#{serial}"),
         }
     }
 
@@ -193,6 +214,7 @@ impl TermStore {
                 Node::Formula(triples.iter().map(|t| self.statement(t)).collect())
             }
             Some(Compound::Var(name)) => Node::Var(name.clone()),
+            Some(Compound::Logic(serial)) => Node::Var(format!("_{serial}")),
             None => {
                 let spelling = self.dictionary.decode(id).unwrap_or("");
                 match rdf_term::kind_of(spelling) {

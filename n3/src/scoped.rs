@@ -245,7 +245,7 @@ fn substitute(m: &mut Matcher<'_>, id: u32, solution: &Binding) -> u32 {
                 .collect();
             m.store.formula(triples)
         }
-        None => id,
+        Some(Compound::Logic(_)) | None => id,
     }
 }
 
@@ -282,7 +282,6 @@ fn solve_in(m: &mut Matcher<'_>, scope: &Scope, clause: &[Atom], binding: Bindin
                 backward: &[],
                 goals: Vec::new(),
                 cut_off: m.cut_off,
-                open_answer: m.open_answer,
                 proofs: m.proofs,
                 cuts: m.cuts,
                 max_depth: m.max_depth,
