@@ -11,7 +11,7 @@
 //! Forward N3 reasoning: semi-naive saturation over a Kolibrie [`DatasetIndex`]
 
 use crate::error::N3Error;
-use crate::matcher::{Delta, Matcher, Vocabulary};
+use crate::matcher::{atom_constants, shape_of, Delta, DeltaGroups, Matcher, Vocabulary};
 use crate::rows::{RowJoin, RowPlan};
 use crate::rules::{compile_backward_rule, compile_rule, formula_node, Atom, N3Rule, PTerm};
 use crate::syntax::{
@@ -382,14 +382,22 @@ impl N3Reasoner {
                 }
             }
             let needs_delta = candidates.iter().any(|i| !full.contains(i));
-            let mut delta_index = DatasetIndex::new();
-            if needs_delta && delta.len() > SCAN_LIMIT {
-                for triple in &delta {
-                    delta_index.insert(triple);
-                }
-            }
+            // Many new facts are grouped by the constants each candidate premise has, so a premise
+            // scans only the new facts that agree with them, in the order they were added.
+            let groups = if needs_delta && delta.len() > SCAN_LIMIT {
+                let shapes: BTreeSet<u8> = candidates
+                    .iter()
+                    .filter(|i| !full.contains(i))
+                    .flat_map(|&i| &self.rules[i].body)
+                    .filter(|atom| atom.builtin.is_none())
+                    .map(|atom| shape_of(atom_constants(atom)))
+                    .collect();
+                DeltaGroups::new(&delta, &shapes)
+            } else {
+                DeltaGroups::default()
+            };
             let seed = if delta.len() > SCAN_LIMIT {
-                Delta::Index(&delta_index)
+                Delta::Grouped(&groups)
             } else {
                 Delta::Facts(&delta)
             };

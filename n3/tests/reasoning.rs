@@ -262,3 +262,32 @@ fn a_plain_rule_matches_a_repeated_variable_and_skips_an_unbound_conclusion() {
     .expect("reasons");
     assert_eq!(derived, expect(":a :loop true ."));
 }
+
+#[test]
+fn many_new_facts_reach_premises_of_every_constant_shape() {
+    // Over 64 facts derived in one round, read by premises fixing different positions.
+    let facts: String = (0..100)
+        .map(|i| format!(":s{i} :p :o{} . ", i % 3))
+        .collect();
+    let derived = derive(&format!(
+        "{facts}
+         {{ ?s :p ?o }} => {{ ?s :q ?o }} .
+         {{ ?s :q :o1 }} => {{ ?s :one true }} .
+         {{ :s7 ?p :o1 }} => {{ :s7 :has ?p }} .
+         {{ ?s ?p :o2 . ?s :q ?x }} => {{ ?s :two ?p }} ."
+    ))
+    .expect("reasons");
+    let count = |local: &str| {
+        let predicate = format!("<http://example.org/t#{local}>");
+        derived
+            .iter()
+            .filter(|line| line.split(' ').nth(1) == Some(predicate.as_str()))
+            .count()
+    };
+    assert_eq!(count("q"), 100);
+    assert_eq!(count("one"), 33);
+    assert_eq!(count("two"), 2 * 33);
+    assert!(derived
+        .iter()
+        .any(|l| l.contains("#s7> <http://example.org/t#has> <http://example.org/t#q>")));
+}

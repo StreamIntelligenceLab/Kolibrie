@@ -149,10 +149,11 @@ impl RowJoin<'_> {
         if let Some((first, delta)) = seed {
             remaining.retain(|&i| i != first);
             let atom = &plan.body[first];
-            rows = match delta {
-                Delta::Index(index) => self.extend(atom, index, rows),
-                Delta::Facts(facts) => scan(atom, facts, rows),
-            };
+            let constants = atom.map(|slot| match slot {
+                Slot::Const(id) => Some(id),
+                Slot::Var(_) => None,
+            });
+            rows = scan(atom, delta.matching(constants), rows);
             mark(atom, &mut bound);
         }
         while !remaining.is_empty() && !rows.is_empty() {

@@ -60,10 +60,85 @@ pub(crate) const RDF_NIL: &str = "http://www.w3.org/1999/02/22-rdf-syntax-ns#nil
 /// The facts new in a round, which semi-naive evaluation matches one premise against
 #[derive(Debug, Clone, Copy)]
 pub(crate) enum Delta<'d> {
-    /// Many new facts, indexed
-    Index(&'d DatasetIndex),
+    /// Many new facts, grouped by the constants of the premises that read them
+    Grouped(&'d DeltaGroups),
     /// A few new facts, scanned in the order they were added
     Facts(&'d [Triple]),
+}
+
+impl<'d> Delta<'d> {
+    /// The new facts that agree with these constants, in the order they were added
+    pub(crate) fn matching(self, constants: [Option<u32>; 3]) -> &'d [Triple] {
+        match self {
+            Delta::Facts(all) => all,
+            Delta::Grouped(groups) => groups.matching(constants),
+        }
+    }
+}
+
+/// A round's new facts, grouped once for each shape of constants a premise looks them up by
+#[derive(Debug, Default)]
+pub(crate) struct DeltaGroups {
+    all: Vec<Triple>,
+    /// By which positions are constant, then by those constants' values
+    by_shape: HashMap<u8, HashMap<[u32; 3], Vec<Triple>>>,
+}
+
+impl DeltaGroups {
+    /// Groups `facts`, kept in order, for every shape in `shapes`
+    pub(crate) fn new(facts: &[Triple], shapes: &BTreeSet<u8>) -> Self {
+        let mut by_shape: HashMap<u8, HashMap<[u32; 3], Vec<Triple>>> = HashMap::new();
+        for &shape in shapes.iter().filter(|&&shape| shape != 0) {
+            let groups = by_shape.entry(shape).or_default();
+            for fact in facts {
+                groups
+                    .entry(shape_key(
+                        shape,
+                        [fact.subject, fact.predicate, fact.object],
+                    ))
+                    .or_default()
+                    .push(fact.clone());
+            }
+        }
+        DeltaGroups {
+            all: facts.to_vec(),
+            by_shape,
+        }
+    }
+
+    fn matching(&self, constants: [Option<u32>; 3]) -> &[Triple] {
+        let shape = shape_of(constants);
+        if shape == 0 {
+            return &self.all;
+        }
+        let key = shape_key(shape, constants.map(|c| c.unwrap_or(0)));
+        match self.by_shape.get(&shape) {
+            Some(groups) => groups.get(&key).map_or(&[], Vec::as_slice),
+            // A shape no candidate premise has: nothing grouped it, so every fact is a candidate.
+            None => &self.all,
+        }
+    }
+}
+
+/// Which of the three positions hold a constant, one bit each
+pub(crate) fn shape_of(constants: [Option<u32>; 3]) -> u8 {
+    constants
+        .iter()
+        .enumerate()
+        .filter(|(_, c)| c.is_some())
+        .fold(0, |shape, (i, _)| shape | (1 << i))
+}
+
+fn shape_key(shape: u8, ids: [u32; 3]) -> [u32; 3] {
+    [0, 1, 2].map(|i| if shape & (1 << i) != 0 { ids[i] } else { 0 })
+}
+
+/// The constants a premise's positions hold, `None` for any other position
+pub(crate) fn atom_constants(atom: &Atom) -> [Option<u32>; 3] {
+    atom.positions().map(|position| match position {
+        PTerm::Const(id) => Some(*id),
+        _ => None,
+    })
 }
 
 /// The term a logic variable stands for under `binding`, following chains; any other id as is
@@ -258,10 +333,8 @@ impl Matcher<'_> {
         };
         if let Some((first, delta)) = seed {
             remaining.retain(|&i| i != first);
-            bindings = match delta {
-                Delta::Index(index) => self.extend(&atoms[first], &[index], false, bindings),
-                Delta::Facts(facts) => self.scan(&atoms[first], facts, bindings),
-            };
+            let candidates = delta.matching(atom_constants(&atoms[first]));
+            bindings = self.scan(&atoms[first], candidates, bindings);
             mark(
                 &atom_vars[first],
                 &mut bound,
