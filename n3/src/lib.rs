@@ -21,6 +21,7 @@ mod numeric;
 pub mod parser;
 mod proof;
 pub mod reasoner;
+mod rows;
 pub mod rules;
 pub mod scoped;
 pub mod strings;

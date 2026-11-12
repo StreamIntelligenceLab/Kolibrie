@@ -252,3 +252,13 @@ fn the_fact_budget_stops_a_run_that_never_saturates() {
     reasoner.load(&document).expect("loads");
     assert!(matches!(reasoner.run(), Err(N3Error::Limit(_))));
 }
+
+#[test]
+fn a_plain_rule_matches_a_repeated_variable_and_skips_an_unbound_conclusion() {
+    let derived = derive(
+        ":a :p :a . :a :p :b .
+         { ?x :p ?x } => { ?x :loop true . ?x :seen ?nobody } .",
+    )
+    .expect("reasons");
+    assert_eq!(derived, expect(":a :loop true ."));
+}

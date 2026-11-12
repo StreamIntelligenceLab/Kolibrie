@@ -12,6 +12,7 @@
 
 use crate::error::N3Error;
 use crate::matcher::{Delta, Matcher, Vocabulary};
+use crate::rows::{RowJoin, RowPlan};
 use crate::rules::{compile_backward_rule, compile_rule, formula_node, Atom, N3Rule, PTerm};
 use crate::syntax::{
     Document, Node, Statement, LOG_IMPLIED_BY, LOG_IMPLIES, LOG_OUTPUT_STRING, LOG_QUERY,
@@ -72,6 +73,8 @@ pub struct N3Reasoner {
     premises: HashMap<[u32; 3], Vec<usize>>,
     /// How many of `rules` are filed in `premises`
     indexed: usize,
+    /// Each filed rule's plan for joining rows of ids, when it is plain Datalog
+    row_plans: Vec<Option<Rc<RowPlan>>>,
     /// Firings that rested on a test of the whole graph, rechecked once reasoning ends
     retained: Vec<(usize, Binding)>,
     list_terms: BTreeSet<u32>,
@@ -394,8 +397,19 @@ impl N3Reasoner {
                 if self.rules[rule_index].waits() {
                     continue;
                 }
+                let full_rule = full.contains(&rule_index);
+                if let Some(plan) = self.row_plan(rule_index) {
+                    let join = RowJoin {
+                        facts: &self.facts,
+                        sequence: &self.known,
+                    };
+                    for row in join.solutions(&plan, seed, full_rule) {
+                        self.commit(plan.conclusion(&row), pending, fresh_rules)?;
+                    }
+                    continue;
+                }
                 let rule = Rc::clone(&self.rules[rule_index]);
-                let solutions = self.rule_solutions(&rule, seed, full.contains(&rule_index));
+                let solutions = self.rule_solutions(&rule, seed, full_rule);
                 for binding in solutions {
                     self.apply(rule_index, binding, pending, fresh_rules)?;
                 }
@@ -403,8 +417,22 @@ impl N3Reasoner {
         }
     }
 
+    /// The row plan for a rule, while nothing in the run needs the general join: no backward
+    /// rules, whose proofs each premise lookup also asks for, no logic variables, and no proofs
+    fn row_plan(&self, rule_index: usize) -> Option<Rc<RowPlan>> {
+        if self.proofs_on || !self.backward.is_empty() || self.store.has_logic_vars() {
+            return None;
+        }
+        self.row_plans.get(rule_index).cloned().flatten()
+    }
+
     /// Files the premises of rules added since the last call by their constants
     fn index_new_rules(&mut self) {
+        let vocabulary = Vocabulary::of(&self.store);
+        for rule in &self.rules[self.row_plans.len()..] {
+            self.row_plans
+                .push(RowPlan::compile(rule, &vocabulary).map(Rc::new));
+        }
         let key = |position: &PTerm| match position {
             PTerm::Const(id) => *id,
             _ => WILDCARD,

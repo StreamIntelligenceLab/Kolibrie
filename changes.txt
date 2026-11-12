@@ -36,7 +36,7 @@ Added
 - Python examples for terms, parsing, SPARQL, streaming and Datalog, and the Rust `rdf_terms` example
 
 Changed
-- N3 reasoning visits only the rules new facts can feed, loads rules as data only when a premise reads them, and joins long premises without quadratic scheduling, so large rule sets and long premises run much faster
+- N3 reasoning visits only the rules new facts can feed, loads rules as data only when a premise reads them, joins long premises without quadratic scheduling, and joins rules that are plain Datalog over rows of term ids, so large rule sets, long premises and large data run much faster
 - Builds with any stable Rust 1.85 or newer; no toolchain version is pinned
 - The Python environment for the `ml` feature is declared in `pyproject.toml` and locked in `uv.lock`; `uv sync` installs it, and the ML Docker image installs it the same way
 - `mlschema` is installed from `ml/src/pyproject.toml` instead of `setup.py`, and needs Python 3.10 or newer
