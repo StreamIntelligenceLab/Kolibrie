@@ -1,0 +1,9 @@
+@prefix : <http://example.org/formulas#> .
+
+:alice :says { :sky :is :blue } .
+:bob :says { :sky :is :green . :grass :is :green } .
+:carol :believes :alice .
+
+{ ?who :says { ?thing :is ?colour } } => { ?who :claimsColour ?colour } .
+{ ?x :believes ?y . ?y :says ?f } => { ?x :accepts ?f } .
+{ ?x :says ?f } => { :log :recorded { ?x :said ?f } } .

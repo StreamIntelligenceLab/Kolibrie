@@ -1,0 +1,8 @@
+@prefix : <http://example.org/blanks#> .
+
+:alice :knows [ :name "Bob" ; :age 42 ] .
+_:c :name "Carol" .
+:alice :knows _:c .
+
+{ ?x :knows _:someone . _:someone :name ?n } => { ?x :knowsNamed ?n } .
+{ ?x :knowsNamed "Carol" } => { ?x :friend [ :called "Carol" ] } .

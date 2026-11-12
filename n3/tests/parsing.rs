@@ -1,0 +1,169 @@
+/*
+ * Copyright © 2024 Volodymyr Kadzhaia
+ * Copyright © 2024 Pieter Bonte
+ * KU Leuven — Stream Intelligence Lab, Belgium
+ *
+ * This Source Code Form is subject to the terms of the Mozilla Public
+ * License, v. 2.0. If a copy of the MPL was not distributed with this file,
+ * you can obtain one at https://mozilla.org/MPL/2.0/.
+ */
+
+//! N3 syntax read into statements
+
+use n3::parser::resolve_iri;
+use n3::syntax::{Node, Statement, RDF_TYPE, XSD_DECIMAL, XSD_DOUBLE, XSD_INTEGER};
+use n3::{parse_document, N3Error};
+
+fn parse(text: &str) -> Vec<Statement> {
+    parse_document(text, None).expect("parses").statements
+}
+
+fn iri(local: &str) -> Node {
+    Node::iri(format!("http://example.org/t#{local}"))
+}
+
+const PREFIX: &str = "@prefix : <http://example.org/t#> .\n";
+
+#[test]
+fn predicate_and_object_lists_expand_to_triples() {
+    let statements = parse(&format!("{PREFIX}:a :p :b , :c ; a :T ;; ."));
+    assert_eq!(
+        statements,
+        vec![
+            Statement::new(iri("a"), iri("p"), iri("b")),
+            Statement::new(iri("a"), iri("p"), iri("c")),
+            Statement::new(iri("a"), Node::iri(RDF_TYPE), iri("T")),
+        ]
+    );
+}
+
+#[test]
+fn local_names_keep_inner_dots_and_escapes() {
+    let statements = parse(&format!("{PREFIX}:St.%20Helena :p :a.b.c ."));
+    assert_eq!(statements[0].subject, iri("St.%20Helena"));
+    assert_eq!(statements[0].object, iri("a.b.c"));
+}
+
+#[test]
+fn numbers_take_the_datatype_their_form_implies() {
+    let statements = parse(&format!("{PREFIX}:x :p 7, -1.5, 2e3 ."));
+    let datatypes: Vec<_> = statements
+        .iter()
+        .map(|s| match &s.object {
+            Node::Literal { datatype, .. } => datatype.clone(),
+            other => panic!("not a literal: {other:?}"),
+        })
+        .collect();
+    assert_eq!(
+        datatypes,
+        vec![
+            Some(XSD_INTEGER.to_string()),
+            Some(XSD_DECIMAL.to_string()),
+            Some(XSD_DOUBLE.to_string())
+        ]
+    );
+}
+
+#[test]
+fn a_statement_can_end_right_after_a_number() {
+    let statements = parse(&format!("{PREFIX}:x :p 7.\n:y :p 8 ."));
+    assert_eq!(statements.len(), 2);
+}
+
+#[test]
+fn strings_unescape_and_long_strings_span_lines() {
+    let statements = parse(&format!(
+        "{PREFIX}:x :p \"a\\tb\", \"\"\"two\nlines\"\"\", 'single'@EN ."
+    ));
+    let lexicals: Vec<_> = statements
+        .iter()
+        .map(|s| match &s.object {
+            Node::Literal {
+                lexical, language, ..
+            } => (lexical.clone(), language.clone()),
+            other => panic!("not a literal: {other:?}"),
+        })
+        .collect();
+    assert_eq!(
+        lexicals,
+        vec![
+            ("a\tb".to_string(), None),
+            ("two\nlines".to_string(), None),
+            ("single".to_string(), Some("en".to_string())),
+        ]
+    );
+}
+
+#[test]
+fn is_of_reverses_and_paths_introduce_blank_nodes() {
+    let statements = parse(&format!("{PREFIX}:b is :child of :a .\n:a!:child :p :o ."));
+    assert_eq!(
+        statements[0],
+        Statement::new(iri("a"), iri("child"), iri("b"))
+    );
+    let Node::Blank(step) = &statements[1].object else {
+        panic!("a path step is a blank node: {:?}", statements[1]);
+    };
+    assert_eq!(statements[2].subject, Node::Blank(step.clone()));
+}
+
+#[test]
+fn blank_node_labels_are_scoped_to_their_formula() {
+    let statements = parse(&format!("{PREFIX}_:x :p {{ _:x :q :r }} ."));
+    let Node::Formula(inner) = &statements[0].object else {
+        panic!("object is a formula");
+    };
+    assert_ne!(statements[0].subject, inner[0].subject);
+}
+
+#[test]
+fn rules_parse_as_log_implies_and_log_implied_by() {
+    let statements = parse(&format!(
+        "{PREFIX}{{ ?x :p ?y }} => {{ ?y :q ?x }} .\n{{ :a :b :c }} <= {{}} ."
+    ));
+    assert_eq!(
+        statements[0].predicate,
+        Node::iri("http://www.w3.org/2000/10/swap/log#implies")
+    );
+    assert_eq!(
+        statements[1].predicate,
+        Node::iri("http://www.w3.org/2000/10/swap/log#impliedBy")
+    );
+}
+
+#[test]
+fn sparql_style_directives_and_versions_are_read() {
+    let statements = parse("VERSION \"1.2\"\n@prefix : <http://example.org/t#> .\nPREFIX ex: <http://example.org/e#>\n:a ex:p :b .");
+    assert_eq!(statements[0].predicate, Node::iri("http://example.org/e#p"));
+}
+
+#[test]
+fn well_known_prefixes_need_no_declaration() {
+    let statements = parse(&format!("{PREFIX}:a rdfs:label \"x\" ."));
+    assert_eq!(
+        statements[0].predicate,
+        Node::iri("http://www.w3.org/2000/01/rdf-schema#label")
+    );
+}
+
+#[test]
+fn an_unknown_prefix_is_a_syntax_error() {
+    assert!(matches!(
+        parse_document(":a :b :c .", None),
+        Err(N3Error::Syntax { .. })
+    ));
+}
+
+#[test]
+fn relative_references_resolve_against_the_base() {
+    let base = "http://example.org/a/b/c.n3";
+    assert_eq!(resolve_iri(base, "d"), "http://example.org/a/b/d");
+    assert_eq!(resolve_iri(base, "../d"), "http://example.org/a/d");
+    assert_eq!(resolve_iri(base, "/d"), "http://example.org/d");
+    assert_eq!(
+        resolve_iri(base, "#frag"),
+        "http://example.org/a/b/c.n3#frag"
+    );
+    assert_eq!(resolve_iri(base, ""), "http://example.org/a/b/c.n3");
+    assert_eq!(resolve_iri(base, "urn:x"), "urn:x");
+}

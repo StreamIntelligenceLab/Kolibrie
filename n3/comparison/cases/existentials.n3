@@ -1,0 +1,8 @@
+@prefix : <http://example.org/exist#> .
+
+:alice a :Person .
+:bob a :Person .
+:bob :hasParent :carol .
+
+{ ?p a :Person } => { ?p :hasParent _:parent } .
+{ ?p :hasParent ?q } => { ?q a :Parent } .
