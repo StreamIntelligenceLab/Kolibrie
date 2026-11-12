@@ -15,18 +15,40 @@ pub mod canon;
 pub mod error;
 mod lexer;
 pub mod lists;
+pub mod literals;
 mod matcher;
 mod numeric;
 pub mod parser;
 pub mod reasoner;
 pub mod rules;
 pub mod scoped;
+pub mod strings;
 pub mod syntax;
 pub mod terms;
+pub mod time;
 
 pub use error::N3Error;
-pub use parser::parse_document;
+pub use parser::{parse_document, parse_message_log, parse_trig};
 pub use reasoner::N3Reasoner;
+
+/// Parses one input the way eyeron chooses its reader: an RDF Message Log when the text is one,
+/// TriG when `trig` is set, N3 otherwise
+///
+/// # Errors
+/// As [`parse_document`]
+pub fn parse_input(
+    text: &str,
+    base: Option<&str>,
+    trig: bool,
+) -> Result<syntax::Document, N3Error> {
+    if parser::is_message_log(text) {
+        parse_message_log(text, base)
+    } else if trig {
+        parse_trig(text, base)
+    } else {
+        parse_document(text, base)
+    }
+}
 
 /// Parses N3 text, reasons over it, and returns what the run outputs as N3: the query answers
 /// when it has queries, else the derived facts

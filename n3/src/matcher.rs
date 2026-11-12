@@ -19,7 +19,7 @@ use shared::dataset_index::DatasetIndex;
 use shared::pattern::matches_rule_pattern;
 use shared::terms::Binding;
 use shared::triple::Triple;
-use std::cell::{Cell, RefCell};
+use std::cell::{Cell, OnceCell, RefCell};
 use std::collections::{BTreeSet, HashMap, HashSet};
 
 /// What a pattern position says about the id it must match
@@ -84,7 +84,15 @@ pub(crate) struct Matcher<'a> {
     pub(crate) cuts: &'a Cell<usize>,
     /// How deep backward rules may call each other
     pub(crate) max_depth: usize,
+    /// The instant `time:localTime` reports, read once per run
+    pub(crate) clock: &'a OnceCell<(i64, u32)>,
+    /// Set while a premise is matched against a rule stored as data, whose own variables may
+    /// then stand for any term
+    pub(crate) in_rule: Cell<bool>,
 }
+
+/// The prefix of the binding keys for a stored rule's variables during one match
+const RULE_VAR: &str = "?rule ";
 
 impl Matcher<'_> {
     /// Joins `atoms`, matching the atom `seed.0` against `seed.1` and the rest against the store
@@ -295,9 +303,20 @@ impl Matcher<'_> {
                     self.cuts.set(self.cuts.get() + 1);
                     continue;
                 }
-                let head = head.renamed(&rename);
+                let mut witnesses = Binding::new();
+                let head = open_exists(&head.renamed(&rename), &mut |label| {
+                    let name = format!("#{depth}#!{label}");
+                    let spelling = format!(
+                        "_:kolibrie-n3-.w{rule_index}-{label}-{}",
+                        keys.map(|k| k.map_or_else(|| "?".to_string(), |id| id.to_string()))
+                            .join("-")
+                    );
+                    let id = self.store.dictionary.encode(&spelling);
+                    witnesses.insert(name.clone(), id);
+                    name
+                });
                 let body: Vec<Atom> = rule.body.iter().map(|a| a.renamed(&rename)).collect();
-                let mut starts = vec![Binding::new()];
+                let mut starts = vec![witnesses];
                 for (position, key) in head.positions().into_iter().zip(keys) {
                     if let Some(id) = key {
                         starts = starts
@@ -373,6 +392,20 @@ impl Matcher<'_> {
                 .collect();
             self.in_order(&mut candidates);
             for fact in candidates {
+                let from_rule = !self
+                    .rule_facts
+                    .query(Some(fact.subject), Some(fact.predicate), Some(fact.object))
+                    .is_empty();
+                if from_rule {
+                    self.in_rule.set(true);
+                    let matched = self.unify_triple(atom, &fact, binding.clone());
+                    self.in_rule.set(false);
+                    out.extend(matched.into_iter().map(|mut b| {
+                        b.retain(|name, _| !name.starts_with(RULE_VAR));
+                        b
+                    }));
+                    continue;
+                }
                 if let Some(flat) = &atom.flat {
                     let mut extended = binding.clone();
                     if matches_rule_pattern(flat, &fact, &mut extended) {
@@ -582,13 +615,34 @@ impl Matcher<'_> {
         match position {
             PTerm::Const(c) => {
                 if *c == id {
-                    vec![binding]
-                } else {
-                    Vec::new()
+                    return vec![binding];
+                }
+                let Some(Compound::Var(name)) = self
+                    .in_rule
+                    .get()
+                    .then(|| self.store.compound(id))
+                    .flatten()
+                else {
+                    return Vec::new();
+                };
+                let key = format!("{RULE_VAR}{name}");
+                match binding.get(&key) {
+                    Some(&bound) if bound != *c => Vec::new(),
+                    Some(_) => vec![binding],
+                    None => {
+                        binding.insert(key, *c);
+                        vec![binding]
+                    }
                 }
             }
             PTerm::Var(name) => match binding.get(name) {
-                Some(&bound) if bound != id => Vec::new(),
+                Some(&bound) if bound != id => {
+                    if self.in_rule.get() {
+                        self.unify(&PTerm::Const(bound), id, binding)
+                    } else {
+                        Vec::new()
+                    }
+                }
                 Some(_) => vec![binding],
                 None => {
                     binding.insert(name.clone(), id);
@@ -718,6 +772,16 @@ impl Matcher<'_> {
         }
     }
 
+    /// The run's instant as Unix seconds and milliseconds, read from the system clock on first use
+    pub(crate) fn now(&self) -> (i64, u32) {
+        *self.clock.get_or_init(|| {
+            let elapsed = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default();
+            (elapsed.as_secs() as i64, elapsed.subsec_millis())
+        })
+    }
+
     /// The node behind an id
     pub(crate) fn node(&self, id: u32) -> Node {
         self.store.node(id)
@@ -750,6 +814,22 @@ impl Matcher<'_> {
             _ => false,
         }
     }
+}
+
+/// An atom with each existential replaced by the variable `name` gives it
+fn open_exists(atom: &Atom, name: &mut dyn FnMut(&str) -> String) -> Atom {
+    fn position(p: &PTerm, name: &mut dyn FnMut(&str) -> String) -> PTerm {
+        match p {
+            PTerm::Exists(label) => PTerm::Var(name(label)),
+            PTerm::List(items) => PTerm::List(items.iter().map(|i| position(i, name)).collect()),
+            other => other.clone(),
+        }
+    }
+    Atom::new(
+        position(&atom.subject, name),
+        position(&atom.predicate, name),
+        position(&atom.object, name),
+    )
 }
 
 /// Whether some backward rule could answer `atom`, with the variables `binding` binds read as

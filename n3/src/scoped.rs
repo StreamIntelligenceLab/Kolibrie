@@ -18,6 +18,7 @@ use crate::terms::Compound;
 use shared::dataset_index::DatasetIndex;
 use shared::terms::Binding;
 use shared::triple::Triple;
+use std::cell::Cell;
 use std::collections::{BTreeSet, HashMap};
 
 /// A scoped `log:` built-in
@@ -285,6 +286,8 @@ fn solve_in(m: &mut Matcher<'_>, scope: &Scope, clause: &[Atom], binding: Bindin
                 proofs: m.proofs,
                 cuts: m.cuts,
                 max_depth: m.max_depth,
+                clock: m.clock,
+                in_rule: Cell::new(false),
             };
             inner.solve(clause, None, binding)
         }

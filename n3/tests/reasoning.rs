@@ -159,10 +159,13 @@ fn input_facts_are_not_reported_as_derived() {
 fn unsupported_features_are_named_not_ignored() {
     for (program, feature) in [
         (
-            "{ ?x :p ?y . ?y string:matches \"a\" } => { ?x :big true } .",
-            "string#matches",
+            "{ ?x :p ?y . ?y log:content \"a\" } => { ?x :big true } .",
+            "log#content",
         ),
-        ("{ ?x :p ?y } => { ?x :q ?z } .", "?z"),
+        (
+            "{ :a :p ?x } => { :r :is true } . { :g :has { @forAll :y . :y :p :o } } => { :r :q true } .",
+            "@forAll inside a formula",
+        ),
     ] {
         match derive(program) {
             Err(N3Error::Unsupported(message)) => {
@@ -171,6 +174,41 @@ fn unsupported_features_are_named_not_ignored() {
             other => panic!("{program}: expected unsupported {feature}, got {other:?}"),
         }
     }
+}
+
+#[test]
+fn a_conclusion_triple_with_an_unbound_variable_is_left_out() {
+    let derived = derive(":a :p :b . { ?x :p ?y } => { ?x :q ?y . ?x :r ?z } .").expect("reasons");
+    assert_eq!(derived, expect(":a :q :b ."));
+}
+
+#[test]
+fn a_rule_can_conclude_the_formula_a_variable_holds() {
+    let derived = derive(
+        ":c a :Cat . :Cat :rule { ?x a :Animal } .
+         { ?x a ?k . ?k :rule ?f } => ?f .",
+    )
+    .expect("reasons");
+    assert_eq!(
+        derived,
+        expect(":c a :Animal ."),
+        "?x in the formula is the rule's ?x"
+    );
+}
+
+#[test]
+fn a_universal_fact_answers_every_instance() {
+    let derived = derive(
+        "@forAll :x . @forSome :m . :x :hasMother :m .
+         { :bob :hasMother ?b } => { :bob :mother ?b } .
+         { :liz :hasMother ?l } => { :liz :mother ?l } .",
+    )
+    .expect("reasons");
+    assert_eq!(
+        derived,
+        expect(":bob :mother _:b . :liz :mother _:l ."),
+        "each instance gets its own mother"
+    );
 }
 
 #[test]

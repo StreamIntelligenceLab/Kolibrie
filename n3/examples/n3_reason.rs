@@ -11,7 +11,7 @@
 //! Reasons over N3 files and prints what the run outputs:
 //! `n3_reason [--max-backward-depth N] <file.n3>…`
 
-use n3::{parse_document, N3Error, N3Reasoner};
+use n3::{parse_input, N3Error, N3Reasoner};
 use std::process::ExitCode;
 
 fn file_base(path: &str) -> String {
@@ -29,7 +29,8 @@ fn run(paths: &[String], max_backward_depth: Option<usize>) -> Result<String, N3
     for path in paths {
         let text = std::fs::read_to_string(path)
             .map_err(|e| N3Error::syntax(format!("cannot read {path}: {e}")))?;
-        let document = parse_document(&text, Some(&file_base(path)))?;
+        let trig = path.ends_with(".trig");
+        let document = parse_input(&text, Some(&file_base(path)), trig)?;
         reasoner.load(&document)?;
     }
     reasoner.run()?;

@@ -38,6 +38,8 @@ pub(crate) enum TokenKind {
     HatHat,
     Bang,
     Caret,
+    LTriple,
+    RTriple,
     Eof,
 }
 
@@ -110,6 +112,14 @@ impl Lexer<'_> {
                 '<' if self.char_at(1) == Some('=') => {
                     self.pos += 2;
                     self.push(TokenKind::BackArrow, start);
+                }
+                '<' if self.char_at(1) == Some('<') => {
+                    self.pos += 2;
+                    self.push(TokenKind::LTriple, start);
+                }
+                '>' if self.char_at(1) == Some('>') => {
+                    self.pos += 2;
+                    self.push(TokenKind::RTriple, start);
                 }
                 '<' => {
                     let iri = self.read_iri()?;

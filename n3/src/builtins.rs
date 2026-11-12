@@ -11,11 +11,17 @@
 //! N3 built-in predicates: computed instead of looked up
 
 use crate::lists::ListOp;
+use crate::literals::LiteralOp;
 use crate::matcher::Matcher;
-use crate::numeric::{compare, integer_literal, number_literal, numbers_equal, numeric, Numeric};
+use crate::numeric::{
+    compare, datetime_seconds, duration_literal, duration_seconds, integer_literal, number_literal,
+    numbers_equal, numeric, Numeric,
+};
 use crate::rules::PTerm;
 use crate::scoped::ScopedOp;
+use crate::strings::TextOp;
 use crate::syntax::Node;
+use crate::time::TimeOp;
 use num_bigint::BigInt;
 use num_traits::{Signed, ToPrimitive, Zero};
 use shared::terms::Binding;
@@ -25,17 +31,8 @@ const MATH: &str = "http://www.w3.org/2000/10/swap/math#";
 const STRING: &str = "http://www.w3.org/2000/10/swap/string#";
 const LOG: &str = "http://www.w3.org/2000/10/swap/log#";
 const LIST: &str = "http://www.w3.org/2000/10/swap/list#";
-
-/// The namespaces whose predicates are built-ins
-pub(crate) const BUILTIN_NAMESPACES: [&str; 7] = [
-    MATH,
-    STRING,
-    LOG,
-    LIST,
-    "http://www.w3.org/2000/10/swap/time#",
-    "http://www.w3.org/2000/10/swap/crypto#",
-    "http://www.w3.org/2007/rif#",
-];
+const TIME: &str = "http://www.w3.org/2000/10/swap/time#";
+const CRYPTO: &str = "http://www.w3.org/2000/10/swap/crypto#";
 
 /// Largest exact power worth computing, in bits of the result
 const MAX_EXACT_POWER_BITS: u64 = 2_000_000;
@@ -84,7 +81,26 @@ pub enum Builtin {
     List(ListOp),
     /// A `log:` built-in that reads a graph
     Scoped(ScopedOp),
+    /// A regular expression, digest or generated identifier
+    Strings(TextOp),
+    /// A `log:` built-in over one term
+    Term(LiteralOp),
+    /// A `time:` built-in
+    Time(TimeOp),
 }
+
+/// The built-ins eyeron implements that this engine does not yet, by namespace and local name;
+/// any other name in a built-in namespace is an ordinary predicate, as in eyeron
+const NOT_YET: [(&str, &str); 5] = [
+    (
+        "https://eyereasoner.github.io/eyeling/vocab/sudoku#",
+        "solve",
+    ),
+    (LOG, "content"),
+    (LOG, "semantics"),
+    (LOG, "semanticsOrError"),
+    (LOG, "parsedAsN3"),
+];
 
 /// The functions `math:` defines with an inverse
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -189,6 +205,10 @@ impl Builtin {
         }
         if let Some(name) = iri.strip_prefix(STRING) {
             return Some(match name {
+                "matches" => Builtin::Strings(TextOp::Matches),
+                "notMatches" => Builtin::Strings(TextOp::NotMatches),
+                "replace" => Builtin::Strings(TextOp::Replace),
+                "scrape" => Builtin::Strings(TextOp::Scrape),
                 "concatenation" => Builtin::Concatenation,
                 "format" => Builtin::Format,
                 "lessThan" => Builtin::Text(TextTest::LessThan),
@@ -207,11 +227,27 @@ impl Builtin {
         if let Some(name) = iri.strip_prefix(LIST) {
             return ListOp::from_name(name).map(Builtin::List);
         }
+        if let Some(name) = iri.strip_prefix(TIME) {
+            return TimeOp::from_name(name).map(Builtin::Time);
+        }
+        if iri.strip_prefix(CRYPTO) == Some("sha") {
+            return Some(Builtin::Strings(TextOp::Sha));
+        }
         match iri.strip_prefix(LOG)? {
             "equalTo" => Some(Builtin::EqualTo),
             "notEqualTo" => Some(Builtin::NotEqualTo),
-            name => ScopedOp::from_name(name).map(Builtin::Scoped),
+            "uuid" => Some(Builtin::Strings(TextOp::Uuid)),
+            name => ScopedOp::from_name(name)
+                .map(Builtin::Scoped)
+                .or_else(|| LiteralOp::from_name(name).map(Builtin::Term)),
         }
+    }
+
+    /// Whether an IRI names a built-in eyeron implements and this engine does not yet
+    pub(crate) fn not_yet(iri: &str) -> bool {
+        NOT_YET
+            .iter()
+            .any(|(namespace, name)| iri.strip_prefix(namespace) == Some(name))
     }
 
     /// Whether the built-in reads the whole current graph, so its rule waits for saturation
@@ -233,6 +269,9 @@ impl Builtin {
             }
             Builtin::List(op) => op.forward(subject, object, ground),
             Builtin::Scoped(op) => op.forward(subject, ground),
+            Builtin::Term(op) => op.forward(subject, ground),
+            Builtin::Strings(op) => op.ready(subject, object, ground),
+            Builtin::Time(op) => op.ready(subject, ground),
             _ => ground(subject),
         }
     }
@@ -268,6 +307,9 @@ impl Builtin {
             }
             Builtin::List(op) => op.ready(subject, object, ground),
             Builtin::Scoped(op) => op.ready(),
+            Builtin::Strings(op) => op.ready(subject, object, ground),
+            Builtin::Term(op) => op.ready(subject, object, ground),
+            Builtin::Time(op) => op.ready(subject, ground),
         }
     }
 
@@ -282,6 +324,9 @@ impl Builtin {
         match self {
             Builtin::List(op) => return op.evaluate(matcher, subject, object, binding),
             Builtin::Scoped(op) => return op.evaluate(matcher, subject, object, binding),
+            Builtin::Strings(op) => return op.evaluate(matcher, subject, object, binding),
+            Builtin::Term(op) => return op.evaluate(matcher, subject, object, binding),
+            Builtin::Time(op) => return op.evaluate(matcher, subject, object, binding),
             _ => {}
         }
         let s = matcher.ground(subject, &binding);
@@ -313,6 +358,12 @@ impl Builtin {
                 };
                 emit(matcher, object, o, &result, binding)
             }
+            Builtin::Difference if dates(matcher, s).is_some() => {
+                let Some([a, b]) = dates(matcher, s) else {
+                    return Vec::new();
+                };
+                emit(matcher, object, o, &duration_literal(a - b), binding)
+            }
             Builtin::Difference
             | Builtin::Quotient
             | Builtin::IntegerQuotient
@@ -331,9 +382,14 @@ impl Builtin {
             }
             Builtin::Trig(function) => trig(function, matcher, subject, object, s, o, binding),
             Builtin::Compare(comparison) => {
-                let (Some(left), Some(right)) = (number(matcher, s), number(matcher, o)) else {
+                let (Some(left), Some(right)) = (comparable(matcher, s), comparable(matcher, o))
+                else {
                     return Vec::new();
                 };
+                if left.1 != right.1 {
+                    return Vec::new();
+                }
+                let (left, right) = (left.0, right.0);
                 if holds(comparison, &left, &right) {
                     vec![binding]
                 } else {
@@ -384,7 +440,11 @@ impl Builtin {
                 (Some(left), Some(right)) if !matcher.same_term(left, right) => vec![binding],
                 _ => Vec::new(),
             },
-            Builtin::List(_) | Builtin::Scoped(_) => Vec::new(),
+            Builtin::List(_)
+            | Builtin::Scoped(_)
+            | Builtin::Strings(_)
+            | Builtin::Term(_)
+            | Builtin::Time(_) => Vec::new(),
         }
     }
 }
@@ -427,6 +487,36 @@ fn numbers(matcher: &Matcher<'_>, id: Option<u32>) -> Option<Vec<Numeric>> {
         .into_iter()
         .map(|member| number(matcher, Some(member)))
         .collect()
+}
+
+/// The instants of a pair of dates or date-times
+fn dates(matcher: &Matcher<'_>, id: Option<u32>) -> Option<[f64; 2]> {
+    let items = matcher.list_items(id?)?;
+    let [a, b] = items.as_slice() else {
+        return None;
+    };
+    Some([
+        datetime_seconds(&matcher.node(*a))?,
+        datetime_seconds(&matcher.node(*b))?,
+    ])
+}
+
+/// What a comparison reads a term as, and whether it is a date: a number, a duration in
+/// seconds, or a date's instant; a date only compares with another date
+fn comparable(matcher: &Matcher<'_>, id: Option<u32>) -> Option<(Numeric, bool)> {
+    let node = matcher.node(id?);
+    if let Some(n) = numeric(&node) {
+        return Some((n, false));
+    }
+    let as_float = |value| Numeric {
+        value,
+        integer: false,
+        exact: None,
+    };
+    if let Some(instant) = datetime_seconds(&node) {
+        return Some((as_float(instant), true));
+    }
+    Some((as_float(duration_seconds(&node)?), false))
 }
 
 fn exact_all(items: &[Numeric]) -> Option<Vec<BigInt>> {

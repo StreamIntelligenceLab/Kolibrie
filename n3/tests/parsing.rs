@@ -167,3 +167,73 @@ fn relative_references_resolve_against_the_base() {
     assert_eq!(resolve_iri(base, ""), "http://example.org/a/b/c.n3");
     assert_eq!(resolve_iri(base, "urn:x"), "urn:x");
 }
+
+#[test]
+fn trig_names_graphs_with_log_name_of() {
+    let document = n3::parse_trig(
+        &format!("{PREFIX}:a :p :b .\n:g {{ :c :p :d }}\nGRAPH :h {{ :e :p :f }}\n{{ :x :p :y }}"),
+        None,
+    )
+    .expect("parses");
+    let name_of = Node::iri("http://www.w3.org/2000/10/swap/log#nameOf");
+    let named: Vec<&Node> = document
+        .statements
+        .iter()
+        .filter(|s| s.predicate == name_of)
+        .map(|s| &s.subject)
+        .collect();
+    assert_eq!(named, vec![&iri("g"), &iri("h")]);
+    assert!(document
+        .statements
+        .contains(&Statement::new(iri("x"), iri("p"), iri("y"))));
+}
+
+#[test]
+fn triple_terms_are_quoted_formulas_and_reifiers_reify_them() {
+    let document = n3::parse_trig(
+        &format!("{PREFIX}:a :says <<( :b :p :c )>> .\n:d :says << :e :p :f >> ."),
+        None,
+    )
+    .expect("parses");
+    let quoted = Node::Formula(vec![Statement::new(iri("b"), iri("p"), iri("c"))]);
+    assert_eq!(document.statements[0].object, quoted);
+    let reifies = Node::iri("http://www.w3.org/1999/02/22-rdf-syntax-ns#reifies");
+    assert!(document.statements.iter().any(|s| s.predicate == reifies));
+}
+
+#[test]
+fn a_message_log_becomes_ordered_envelopes_with_payload_graphs() {
+    let log = "VERSION \"1.2-messages\"\nPREFIX : <http://example.org/t#>\n_:b :p 1 .\nMESSAGE\nMESSAGE\n_:b :p 2 .\n";
+    assert!(n3::parser::is_message_log(log));
+    let document = n3::parse_message_log(log, None).expect("parses");
+    let payloads: Vec<&Node> = document
+        .statements
+        .iter()
+        .filter(|s| s.predicate == Node::iri("http://www.w3.org/2000/10/swap/log#nameOf"))
+        .map(|s| &s.object)
+        .collect();
+    assert_eq!(
+        payloads.len(),
+        2,
+        "the empty middle message has no payload graph"
+    );
+    let blank = |payload: &Node| match payload {
+        Node::Formula(statements) => statements[0].subject.clone(),
+        other => panic!("payload is a formula: {other:?}"),
+    };
+    assert_ne!(
+        blank(payloads[0]),
+        blank(payloads[1]),
+        "each message scopes its blank nodes"
+    );
+}
+
+#[test]
+fn quantifiers_bind_iris_to_variables_and_blank_nodes() {
+    let statements = parse(&format!(
+        "{PREFIX}@forAll :x .\n@forSome :y .\n:x :loves :y ."
+    ));
+    assert!(matches!(statements[0].subject, Node::Var(_)));
+    assert!(matches!(statements[0].object, Node::Blank(_)));
+    assert_eq!(statements[0].predicate, iri("loves"));
+}

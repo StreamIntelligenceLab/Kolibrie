@@ -1367,6 +1367,7 @@ version = "0.3.0"
 dependencies = [
  "num-bigint",
  "num-traits",
+ "regex",
  "shared",
 ]
 

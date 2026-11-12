@@ -153,3 +153,86 @@ fn log_equality_binds_one_side_and_compares_numbers_by_value() {
         "log:equalTo compares numbers only within one datatype"
     );
 }
+
+#[test]
+fn regular_expressions_match_replace_and_scrape() {
+    assert_eq!(
+        derive(
+            "{ \"hello world\" string:matches \"^h.*d$\" . \"abc\" string:notMatches \"x\" .
+               (\"a-b-c\" \"-\" \"+\") string:replace ?r . (\"id=42;\" \"id=([0-9]+)\") string:scrape ?n }
+             => { :r :replaced ?r ; :scraped ?n } ."
+        ),
+        expect(":r :replaced \"a+b+c\" ; :scraped \"42\" .")
+    );
+}
+
+#[test]
+fn a_pattern_that_does_not_compile_matches_nothing() {
+    assert!(derive("{ \"abc\" string:matches \"(\" } => { :r :matched true } .").is_empty());
+}
+
+#[test]
+fn digests_and_term_inspection() {
+    assert_eq!(
+        derive(
+            "{ \"abc\" crypto:sha ?h . :x log:uri ?u . ?i log:uri \"http://example.org/t#y\" .
+               ?p log:dtlit \"7\"^^xsd:integer . (\"hi\" \"en\") log:langlit ?l . { :a :b :c } log:rawType ?f }
+             => { :r :h ?h ; :u ?u ; :i ?i ; :p ?p ; :l ?l ; :f ?f } ."
+        ),
+        expect(
+            ":r :h \"a9993e364706816aba3e25717850c26c9cd0d89d\" ; :u \"http://example.org/t#x\" ;
+               :i :y ; :p (\"7\" xsd:integer) ; :l \"hi\"@en ; :f log:Formula ."
+        )
+    );
+}
+
+#[test]
+fn dates_subtract_to_durations_and_compare_with_dates_only() {
+    assert_eq!(
+        derive(
+            "{ (\"2024-03-01\"^^xsd:date \"2024-02-28\"^^xsd:date) math:difference ?d .
+               ?d math:greaterThan \"P1D\"^^xsd:duration .
+               \"2024-01-01\"^^xsd:date math:lessThan \"2024-01-02T00:00:01Z\"^^xsd:dateTime } => { :r :d ?d } .
+             { \"2024-01-01\"^^xsd:date math:lessThan 5 } => { :r :mixed true } ."
+        ),
+        expect(":r :d \"PT172800S\"^^xsd:duration .")
+    );
+}
+
+#[test]
+fn time_builtins_read_date_time_fields() {
+    assert_eq!(
+        derive("{ \"2021-07-07T10:20:30Z\" time:year ?y ; time:minute ?m ; time:timeZone ?z } => { :r :y ?y ; :m ?m ; :z ?z } ."),
+        expect(":r :y 2021 ; :m 20 ; :z \"Z\" .")
+    );
+}
+
+#[test]
+fn local_time_reports_the_pinned_instant() {
+    let document = parse_document(
+        &format!("{PREFIX}{{ \"\" time:localTime ?t }} => {{ :r :now ?t }} ."),
+        None,
+    )
+    .expect("parses");
+    let mut reasoner = N3Reasoner::new();
+    reasoner.pin_clock(86_400_000);
+    reasoner.load(&document).expect("loads");
+    reasoner.run().expect("reasons");
+    let statements: Vec<_> = reasoner
+        .derived()
+        .iter()
+        .map(|t| reasoner.store.statement(t))
+        .collect();
+    assert_eq!(
+        canonical_lines(&statements),
+        expect(":r :now \"1970-01-02T00:00:00.000+00:00\"^^xsd:dateTime .")
+    );
+}
+
+#[test]
+fn a_name_in_a_builtin_namespace_that_is_no_builtin_is_data() {
+    assert_eq!(
+        derive("\"abc\" string:length 3 . { \"abc\" string:length ?n } => { :r :length ?n } ."),
+        expect(":r :length 3 .")
+    );
+}

@@ -10,7 +10,7 @@
 
 //! N3 rules compiled to patterns over dictionary ids
 
-use crate::builtins::{Builtin, BUILTIN_NAMESPACES};
+use crate::builtins::Builtin;
 use crate::error::N3Error;
 use crate::syntax::{Node, Statement};
 use crate::terms::{Compound, TermStore};
@@ -61,6 +61,8 @@ pub struct N3Rule {
     pub deferred: bool,
     /// Whether the rule is an inference fuse, `{ body } => false`, forbidding its premise
     pub fuse: bool,
+    /// For `{ body } => ?f`, the term whose formula the rule concludes
+    pub unquote: Option<PTerm>,
 }
 
 impl N3Rule {
@@ -226,8 +228,7 @@ fn builtin_of(statement: &Statement) -> Result<Option<Builtin>, N3Error> {
     if let Some(builtin) = Builtin::from_iri(iri) {
         return Ok(Some(builtin));
     }
-    let in_namespace = BUILTIN_NAMESPACES.iter().any(|ns| iri.starts_with(ns));
-    if in_namespace && iri != crate::syntax::LOG_IMPLIES {
+    if Builtin::not_yet(iri) {
         return Err(N3Error::unsupported(format!("built-in <{iri}>")));
     }
     Ok(None)
@@ -256,16 +257,10 @@ pub fn compile_rule(store: &mut TermStore, body: &Node, head: &Node) -> Result<N
     };
     let fuse = matches!(head, Node::Literal { lexical, datatype, .. }
         if lexical == "false" && datatype.as_deref() == Some(crate::syntax::XSD_BOOLEAN));
+    let unquoted = (!fuse && formula_statements(head).is_none()).then_some(head);
     let head: &[Statement] = match head {
-        _ if fuse => &[],
-        other => match formula_statements(other) {
-            Some(statements) => statements,
-            None => {
-                return Err(N3Error::unsupported(
-                    "a rule conclusion that is not a formula",
-                ))
-            }
-        },
+        _ if fuse || unquoted.is_some() => &[],
+        other => formula_statements(other).unwrap_or(&[]),
     };
     let mut body_atoms: Vec<Atom> = {
         let mut compiler = Compiler {
@@ -294,11 +289,16 @@ pub fn compile_rule(store: &mut TermStore, body: &Node, head: &Node) -> Result<N
     for atom in &head_atoms {
         atom.variables(&mut used);
     }
-    if let Some(unbound) = used.difference(&bound).next() {
-        return Err(N3Error::unsupported(format!(
-            "conclusion variable ?{unbound} that the premise does not bind"
-        )));
-    }
+    let unquote = match unquoted {
+        Some(Node::Var(name)) if bound.contains(name) => Some(PTerm::Var(name.clone())),
+        Some(Node::Var(_)) => None,
+        Some(_) => {
+            return Err(N3Error::unsupported(
+                "a rule conclusion that is not a formula",
+            ))
+        }
+        None => None,
+    };
     let has_existentials = head_atoms.iter().any(Atom::has_exists);
     let deferred = body_atoms
         .iter()
@@ -309,6 +309,7 @@ pub fn compile_rule(store: &mut TermStore, body: &Node, head: &Node) -> Result<N
         has_existentials,
         deferred,
         fuse,
+        unquote,
     })
 }
 
@@ -337,6 +338,26 @@ pub fn compile_backward_rule(
     };
     let head_atoms: Vec<Atom> = head.iter().map(|s| compiler.atom(s, false)).collect();
     let mut body_atoms: Vec<Atom> = body.iter().map(|s| compiler.atom(s, false)).collect();
+    let mut body_vars = BTreeSet::new();
+    for atom in &body_atoms {
+        atom.variables(&mut body_vars);
+    }
+    // A head blank node the body does not bind is an existential, with a witness per goal.
+    let open = |name: &str| {
+        name.strip_prefix("_:")
+            .filter(|_| !body_vars.contains(name))
+            .map(str::to_string)
+    };
+    let head_atoms: Vec<Atom> = head_atoms
+        .iter()
+        .map(|atom| {
+            Atom::new(
+                blank_exists(&atom.subject, &open),
+                blank_exists(&atom.predicate, &open),
+                blank_exists(&atom.object, &open),
+            )
+        })
+        .collect();
     for (atom, statement) in body_atoms.iter_mut().zip(body) {
         atom.builtin = builtin_of(statement)?;
     }
@@ -349,7 +370,17 @@ pub fn compile_backward_rule(
         has_existentials: false,
         deferred,
         fuse: false,
+        unquote: None,
     })
+}
+
+/// A position with each variable `open` names turned into that existential
+fn blank_exists(position: &PTerm, open: &dyn Fn(&str) -> Option<String>) -> PTerm {
+    match position {
+        PTerm::Var(name) => open(name).map_or_else(|| position.clone(), PTerm::Exists),
+        PTerm::List(items) => PTerm::List(items.iter().map(|i| blank_exists(i, open)).collect()),
+        other => other.clone(),
+    }
 }
 
 impl Atom {

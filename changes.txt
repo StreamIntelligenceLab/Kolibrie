@@ -9,6 +9,10 @@ Added
 - N3 graph built-ins: `log:includes`, `log:notIncludes`, `log:collectAllIn`, `log:forAllIn`, `log:conjunction` and `log:conclusion`; rules testing the whole graph wait until it is saturated
 - N3 backward rules (`{ … } <= { … }`), proved on demand up to a configurable depth (`Limits::max_backward_depth`, default 32; `n3_reason --max-backward-depth N`), and `log:query`, whose answers become a run's output
 - N3 inference fuses: `{ … } => false`, and a fuse when later facts contradict a negation or collection a rule already fired on
+- N3 regular expression built-ins (`string:matches`, `notMatches`, `replace`, `scrape`), `crypto:sha`, `log:uuid`, `log:uri`, `log:skolem`, `log:dtlit`, `log:langlit`, `log:rawType`, the `time:` built-ins, and date and duration arithmetic and comparison in `math:`
+- N3 input as TriG (`n3::parse_trig`: named graphs as `log:nameOf`, RDF 1.2 triple terms) and as RDF Message Logs (`n3::parse_message_log`); `n3::parse_input` picks the reader
+- N3 `@forSome`, `@forAll` at document level, universal facts answered for every instance, and `{ … } => ?f` rules that conclude a formula held by a variable
+- N3 rules whose conclusion names a variable the premise leaves unbound now conclude the other triples; a predicate in a built-in namespace that names no built-in is an ordinary predicate
 - N3 `list:` built-ins (first, rest, firstRest, last, length, member, in, memberAt, remove, notMember, append, reverse, sort, iterate, map), reading `rdf:first`/`rdf:rest` chains as lists, and `rdf:first`/`rdf:rest` matching native lists
 - DatalogMTL endpoints in the HTTP server: `/datalogmtl/register`, `/datalogmtl/push`, `/datalogmtl/static` and `/datalogmtl/events/`
 - Drone geofencing demo with a visual clock in the web UI, and an updated traffic demo

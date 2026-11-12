@@ -9,6 +9,7 @@ description = "Notation3 (N3) logic reasoning over Kolibrie's term dictionary an
 [dependencies]
 num-bigint = "0.4"
 num-traits = "0.2"
+regex = { workspace = true }
 shared = { path = "../shared" }
 
 [lints]

@@ -13,12 +13,14 @@
 use crate::error::N3Error;
 use crate::matcher::{Matcher, Vocabulary};
 use crate::rules::{compile_backward_rule, compile_rule, formula_node, Atom, N3Rule, PTerm};
-use crate::syntax::{Document, Node, LOG_IMPLIED_BY, LOG_IMPLIES, LOG_OUTPUT_STRING, LOG_QUERY};
+use crate::syntax::{
+    Document, Node, Statement, LOG_IMPLIED_BY, LOG_IMPLIES, LOG_OUTPUT_STRING, LOG_QUERY,
+};
 use crate::terms::{Compound, TermStore};
 use shared::dataset_index::DatasetIndex;
 use shared::terms::Binding;
 use shared::triple::Triple;
-use std::cell::{Cell, RefCell};
+use std::cell::{Cell, OnceCell, RefCell};
 use std::collections::{BTreeSet, HashMap, HashSet};
 
 /// Resource budgets that stop a run which would not reach a fixpoint
@@ -71,6 +73,8 @@ pub struct N3Reasoner {
     proofs: RefCell<HashMap<[Option<u32>; 3], Vec<Triple>>>,
     proofs_for: Cell<usize>,
     cuts: Cell<usize>,
+    /// The instant `time:localTime` reports
+    clock: OnceCell<(i64, u32)>,
     derived: Vec<Triple>,
     fresh: usize,
     /// Budgets for [`N3Reasoner::run`]
@@ -89,6 +93,14 @@ impl N3Reasoner {
             store,
             ..Self::default()
         }
+    }
+
+    /// Fixes the instant `time:localTime` reports, in milliseconds since the Unix epoch, instead
+    /// of reading the system clock when a rule first asks; has no effect once the clock was read
+    pub fn pin_clock(&mut self, millis: i64) {
+        let _ = self
+            .clock
+            .set((millis.div_euclid(1000), millis.rem_euclid(1000) as u32));
     }
 
     /// Adds already-encoded triples as facts, and those that are `log:implies` triples between
@@ -162,6 +174,16 @@ impl N3Reasoner {
                     self.rules.push(rule);
                     continue;
                 }
+            }
+            if universal(statement) {
+                // A fact about any value of its variables is answered on demand, never listed.
+                let rule = compile_backward_rule(
+                    &mut self.store,
+                    &Node::Formula(vec![statement.clone()]),
+                    &Node::typed("true", crate::syntax::XSD_BOOLEAN),
+                )?;
+                self.backward.push(rule);
+                continue;
             }
             let triple = self.store.encode_statement(statement);
             self.insert(triple);
@@ -546,6 +568,8 @@ impl N3Reasoner {
             proofs: &self.proofs,
             cuts: &self.cuts,
             max_depth: self.limits.max_backward_depth,
+            clock: &self.clock,
+            in_rule: Cell::new(false),
         }
     }
 
@@ -604,11 +628,36 @@ impl N3Reasoner {
         }
         let mut witnesses = HashMap::new();
         let mut out = Vec::with_capacity(rule.head.len());
+        if let Some(term) = &rule.unquote {
+            let triples = match self.instantiate(term, binding, &mut witnesses) {
+                Some(id) => match self.store.compound(id).cloned() {
+                    Some(Compound::Formula(triples)) => triples
+                        .iter()
+                        .map(|t| Triple {
+                            subject: self.substitute(t.subject, binding),
+                            predicate: self.substitute(t.predicate, binding),
+                            object: self.substitute(t.object, binding),
+                        })
+                        .collect(),
+                    _ => Vec::new(),
+                },
+                None => Vec::new(),
+            };
+            return Ok(triples);
+        }
         for atom in &rule.head {
+            // A conclusion triple with a variable the premise left unbound is not concluded.
+            let (Some(subject), Some(predicate), Some(object)) = (
+                self.instantiate(&atom.subject, binding, &mut witnesses),
+                self.instantiate(&atom.predicate, binding, &mut witnesses),
+                self.instantiate(&atom.object, binding, &mut witnesses),
+            ) else {
+                continue;
+            };
             out.push(Triple {
-                subject: self.instantiate(&atom.subject, binding, &mut witnesses)?,
-                predicate: self.instantiate(&atom.predicate, binding, &mut witnesses)?,
-                object: self.instantiate(&atom.object, binding, &mut witnesses)?,
+                subject,
+                predicate,
+                object,
             });
         }
         Ok(out)
@@ -633,22 +682,41 @@ impl N3Reasoner {
             .is_empty()
     }
 
+    /// A term with the quoted variables the rule's own variables of the same name bind replaced
+    /// by their values
+    fn substitute(&mut self, id: u32, binding: &Binding) -> u32 {
+        match self.store.compound(id).cloned() {
+            Some(Compound::Var(name)) => binding.get(&name).copied().unwrap_or(id),
+            Some(Compound::List(items)) => {
+                let items = items.iter().map(|&i| self.substitute(i, binding)).collect();
+                self.store.list(items)
+            }
+            Some(Compound::Formula(triples)) => {
+                let triples = triples
+                    .iter()
+                    .map(|t| Triple {
+                        subject: self.substitute(t.subject, binding),
+                        predicate: self.substitute(t.predicate, binding),
+                        object: self.substitute(t.object, binding),
+                    })
+                    .collect();
+                self.store.formula(triples)
+            }
+            None => id,
+        }
+    }
+
+    /// The id a conclusion position stands for under `binding`, minting existential witnesses;
+    /// `None` when it holds a variable the premise left unbound
     fn instantiate(
         &mut self,
         position: &PTerm,
         binding: &Binding,
         witnesses: &mut HashMap<String, u32>,
-    ) -> Result<u32, N3Error> {
-        Ok(match position {
+    ) -> Option<u32> {
+        Some(match position {
             PTerm::Const(id) => *id,
-            PTerm::Var(name) => match binding.get(name) {
-                Some(&id) => id,
-                None => {
-                    return Err(N3Error::unsupported(format!(
-                        "conclusion variable ?{name} left unbound"
-                    )))
-                }
-            },
+            PTerm::Var(name) => *binding.get(name)?,
             PTerm::List(items) => {
                 let mut ids = Vec::with_capacity(items.len());
                 for item in items {
@@ -729,6 +797,18 @@ impl N3Reasoner {
         }
         out
     }
+}
+
+/// Whether a statement has a variable outside any quoted formula, so it holds for every value
+fn universal(statement: &Statement) -> bool {
+    fn open(node: &Node) -> bool {
+        match node {
+            Node::Var(_) => true,
+            Node::List(items) => items.iter().any(open),
+            _ => false,
+        }
+    }
+    open(&statement.subject) || open(&statement.predicate) || open(&statement.object)
 }
 
 /// The node behind a formula id, or the literal `true` that stands for the empty premise

@@ -21,8 +21,160 @@ use std::collections::HashMap;
 /// Returns [`N3Error::Syntax`] for malformed text and [`N3Error::Unsupported`] for N3 this
 /// parser does not handle yet, such as explicit quantifiers
 pub fn parse_document(text: &str, base: Option<&str>) -> Result<Document, N3Error> {
+    parse_with(text, base, false)
+}
+
+/// Parses TriG: N3 statements plus named graphs `g { … }` and `GRAPH g { … }`, each read as
+/// `g log:nameOf { … }`, and default-graph blocks `{ … }`
+///
+/// # Errors
+/// As [`parse_document`]
+pub fn parse_trig(text: &str, base: Option<&str>) -> Result<Document, N3Error> {
+    parse_with(text, base, true)
+}
+
+/// Whether text is an RDF Message Log: a `VERSION "…-messages"` directive or a `MESSAGE` line
+pub fn is_message_log(text: &str) -> bool {
+    text.lines()
+        .any(|line| is_message_version(line.trim()) || is_message_delimiter(line.trim()))
+}
+
+fn is_message_version(line: &str) -> bool {
+    let lower = line.to_ascii_lowercase();
+    (lower.starts_with("version ") || lower.starts_with("@version ")) && lower.contains("-messages")
+}
+
+fn is_message_delimiter(line: &str) -> bool {
+    line.eq_ignore_ascii_case("MESSAGE") || line.eq_ignore_ascii_case("@message .")
+}
+
+const MESSAGE: &str = "https://eyereasoner.github.io/eyeling/vocab/message#";
+const STREAM: &str = "urn:eyeron:rdf-message-stream:1";
+
+/// Parses an RDF Message Log into the replay view eyeron gives it: one stream, an ordered
+/// envelope per message, and each non-empty message's triples as a named payload graph
+///
+/// # Errors
+/// As [`parse_document`], for the prefixes and each message
+pub fn parse_message_log(text: &str, base: Option<&str>) -> Result<Document, N3Error> {
+    let mut prefixes = String::new();
+    let mut messages = vec![String::new()];
+    for line in text.lines() {
+        let trimmed = line.trim();
+        let directive = |keyword: &str, n3: &str| -> Option<String> {
+            let head = trimmed.get(..keyword.len())?;
+            if !head.eq_ignore_ascii_case(keyword) || !trimmed[keyword.len()..].starts_with(' ') {
+                return None;
+            }
+            let rest = trimmed[keyword.len()..].trim();
+            Some(format!(
+                "{n3} {} .\n",
+                rest.strip_suffix('.').unwrap_or(rest).trim()
+            ))
+        };
+        if is_message_version(trimmed) {
+            continue;
+        }
+        if is_message_delimiter(trimmed) {
+            messages.push(String::new());
+            continue;
+        }
+        if let Some(prefix) = directive("PREFIX", "@prefix").or_else(|| directive("BASE", "@base"))
+        {
+            prefixes.push_str(&prefix);
+            continue;
+        }
+        if let Some(current) = messages.last_mut() {
+            current.push_str(line);
+            current.push('\n');
+        }
+    }
+    let iri = |text: String| Node::Iri(text);
+    let message = |local: &str| iri(format!("{MESSAGE}{local}"));
+    let stream = iri(STREAM.to_string());
+    let envelopes: Vec<Node> = (1..=messages.len())
+        .map(|i| iri(format!("{STREAM}:envelope:{i}")))
+        .collect();
+    let mut document = parse_document(&prefixes, base)?;
+    let facts = &mut document.statements;
+    facts.push(Statement::new(
+        stream.clone(),
+        iri(RDF_TYPE.to_string()),
+        message("RDFMessageStream"),
+    ));
+    facts.push(Statement::new(
+        stream.clone(),
+        message("orderedEnvelopes"),
+        Node::List(envelopes.clone()),
+    ));
+    if let Some(first) = envelopes.first() {
+        facts.push(Statement::new(
+            stream.clone(),
+            message("firstEnvelope"),
+            first.clone(),
+        ));
+    }
+    for (index, body) in messages.iter().enumerate() {
+        let envelope = envelopes[index].clone();
+        facts.push(Statement::new(
+            stream.clone(),
+            message("envelope"),
+            envelope.clone(),
+        ));
+        facts.push(Statement::new(
+            envelope.clone(),
+            iri(RDF_TYPE.to_string()),
+            message("MessageEnvelope"),
+        ));
+        facts.push(Statement::new(
+            envelope.clone(),
+            message("offset"),
+            Node::typed(index.to_string(), XSD_INTEGER),
+        ));
+        if let Some(next) = envelopes.get(index + 1) {
+            facts.push(Statement::new(
+                envelope.clone(),
+                message("nextEnvelope"),
+                next.clone(),
+            ));
+        }
+        let empty = body.lines().all(|line| {
+            let trimmed = line.trim();
+            trimmed.is_empty() || trimmed.starts_with('#')
+        });
+        if empty {
+            facts.push(Statement::new(
+                envelope,
+                message("payloadKind"),
+                message("empty"),
+            ));
+            continue;
+        }
+        let payload_document = parse_document(&format!("{prefixes}\n{body}"), base)?;
+        let payload = iri(format!("{STREAM}:payload:{}", index + 1));
+        facts.push(Statement::new(
+            envelope.clone(),
+            message("payloadKind"),
+            message("nonEmpty"),
+        ));
+        facts.push(Statement::new(
+            envelope,
+            message("payloadGraph"),
+            payload.clone(),
+        ));
+        facts.push(Statement::new(
+            payload,
+            iri(format!("{LOG}nameOf")),
+            Node::Formula(payload_document.statements),
+        ));
+    }
+    Ok(document)
+}
+
+fn parse_with(text: &str, base: Option<&str>, trig: bool) -> Result<Document, N3Error> {
     let tokens = tokenize(text)?;
     let mut parser = Parser {
+        trig,
         tokens,
         pos: 0,
         prefixes: WELL_KNOWN_PREFIXES
@@ -35,6 +187,8 @@ pub fn parse_document(text: &str, base: Option<&str>) -> Result<Document, N3Erro
         fresh: 0,
         formulas: 0,
         blank_scopes: vec![HashMap::new()],
+        quantifiers: vec![HashMap::new()],
+        quantified: 0,
     };
     parser.parse()?;
     Ok(parser.document)
@@ -55,6 +209,7 @@ const WELL_KNOWN_PREFIXES: [(&str, &str); 10] = [
 ];
 
 struct Parser {
+    trig: bool,
     tokens: Vec<Token>,
     pos: usize,
     prefixes: HashMap<String, String>,
@@ -64,6 +219,9 @@ struct Parser {
     fresh: usize,
     formulas: usize,
     blank_scopes: Vec<HashMap<String, String>>,
+    /// The IRIs `@forAll` and `@forSome` bind in each open graph, outermost first
+    quantifiers: Vec<HashMap<String, Node>>,
+    quantified: usize,
 }
 
 fn is_word(kind: &TokenKind, word: &str) -> bool {
@@ -113,11 +271,60 @@ impl Parser {
                 self.advance();
                 continue;
             }
+            if self.trig && self.parse_graph_block()? {
+                continue;
+            }
             self.parse_triples(&mut out)?;
             self.expect(&TokenKind::Dot, "'.'")?;
             self.document.statements.extend(out);
         }
         Ok(())
+    }
+
+    /// In TriG, reads `g { … }`, `GRAPH g { … }` or a default-graph `{ … }`; false if the next
+    /// tokens start none of them
+    fn parse_graph_block(&mut self) -> Result<bool, N3Error> {
+        let next = self.tokens.get(self.pos + 1).map(|t| t.kind.clone());
+        if *self.peek() == TokenKind::LBrace {
+            let mut out = Vec::new();
+            let Node::Formula(statements) = self.parse_term(&mut out)? else {
+                return Err(N3Error::at("expected a graph", self.offset()));
+            };
+            self.document.statements.extend(statements);
+            return Ok(true);
+        }
+        let keyword = is_word_ignore_case(self.peek(), "GRAPH");
+        let labelled = match self.peek() {
+            TokenKind::Iri(_) | TokenKind::PName(_) | TokenKind::Blank(_) => {
+                next == Some(TokenKind::LBrace) || keyword
+            }
+            _ => false,
+        };
+        if !labelled {
+            return Ok(false);
+        }
+        if keyword {
+            self.advance();
+        }
+        let mut out = Vec::new();
+        let label = self.parse_term(&mut out)?;
+        let graph = self.parse_term(&mut out)?;
+        if !matches!(graph, Node::Formula(_)) {
+            return Err(N3Error::at(
+                "expected '{' after a graph name",
+                self.offset(),
+            ));
+        }
+        self.document.statements.push(Statement::new(
+            label,
+            Node::iri(format!("{LOG}nameOf")),
+            graph,
+        ));
+        self.document.statements.extend(out);
+        if *self.peek() == TokenKind::Dot {
+            self.advance();
+        }
+        Ok(true)
     }
 
     /// Handles a prefix, base or quantifier directive; false if the next token starts none
@@ -167,9 +374,37 @@ impl Parser {
                 self.parse_version_body()?;
                 Ok(true)
             }
-            TokenKind::AtKeyword(word) if word == "forAll" || word == "forSome" => Err(
-                N3Error::unsupported(format!("explicit quantification (@{word})")),
-            ),
+            TokenKind::AtKeyword(word) if word == "forAll" || word == "forSome" => {
+                let universal = word == "forAll";
+                if universal && self.blank_scopes.len() > 1 {
+                    return Err(N3Error::unsupported(
+                        "explicit quantification (@forAll inside a formula)",
+                    ));
+                }
+                self.advance();
+                loop {
+                    let offset = self.offset();
+                    let iri = match self.advance() {
+                        TokenKind::Iri(iri) => self.resolve(&iri),
+                        TokenKind::PName(name) => self.expand(&name, offset)?,
+                        _ => return Err(N3Error::at("a quantifier names IRIs", offset)),
+                    };
+                    self.quantified += 1;
+                    let node = if universal {
+                        Node::Var(format!("__q{}", self.quantified))
+                    } else {
+                        self.scoped_blank(&format!(".q{}", self.quantified))
+                    };
+                    let depth = self.blank_scopes.len();
+                    self.quantifiers[depth - 1].insert(iri, node);
+                    if *self.peek() != TokenKind::Comma {
+                        break;
+                    }
+                    self.advance();
+                }
+                self.expect(&TokenKind::Dot, "'.' after a quantifier")?;
+                Ok(true)
+            }
             TokenKind::AtKeyword(word) if word == "keywords" => {
                 Err(N3Error::unsupported("@keywords"))
             }
@@ -353,7 +588,10 @@ impl Parser {
     fn parse_term(&mut self, out: &mut Vec<Statement>) -> Result<Node, N3Error> {
         let offset = self.offset();
         match self.advance() {
-            TokenKind::Iri(iri) => Ok(Node::Iri(self.resolve(&iri))),
+            TokenKind::Iri(iri) => {
+                let iri = self.resolve(&iri);
+                Ok(self.quantified_or(iri))
+            }
             TokenKind::PName(name) => self.pname_term(&name, offset),
             TokenKind::Var(name) => Ok(Node::Var(name)),
             TokenKind::Blank(label) => Ok(self.scoped_blank(&label)),
@@ -372,6 +610,30 @@ impl Parser {
                 self.parse_predicate_object_list(&blank, out)?;
                 self.expect(&TokenKind::RBracket, "']'")?;
                 Ok(blank)
+            }
+            TokenKind::LTriple => {
+                let parenthesised = *self.peek() == TokenKind::LParen;
+                if parenthesised {
+                    self.advance();
+                }
+                let subject = self.parse_term(out)?;
+                let (predicate, _) = self.parse_verb(out)?;
+                let object = self.parse_term(out)?;
+                if parenthesised {
+                    self.expect(&TokenKind::RParen, "')'")?;
+                }
+                self.expect(&TokenKind::RTriple, "'>>'")?;
+                let triple = Node::Formula(vec![Statement::new(subject, predicate, object)]);
+                if parenthesised {
+                    return Ok(triple);
+                }
+                let reifier = self.fresh_blank();
+                out.push(Statement::new(
+                    reifier.clone(),
+                    Node::iri("http://www.w3.org/1999/02/22-rdf-syntax-ns#reifies"),
+                    triple,
+                ));
+                Ok(reifier)
             }
             TokenKind::LParen => {
                 let mut items = Vec::new();
@@ -398,6 +660,7 @@ impl Parser {
     fn parse_formula(&mut self) -> Result<Node, N3Error> {
         self.formulas += 1;
         self.blank_scopes.push(HashMap::new());
+        self.quantifiers.push(HashMap::new());
         let mut statements = Vec::new();
         loop {
             match self.peek() {
@@ -426,6 +689,7 @@ impl Parser {
             }
         }
         self.blank_scopes.pop();
+        self.quantifiers.pop();
         Ok(Node::Formula(statements))
     }
 
@@ -435,7 +699,17 @@ impl Parser {
             "true" | "false" => return Ok(Node::typed(name, XSD_BOOLEAN)),
             _ => {}
         }
-        Ok(Node::Iri(self.expand(name, offset)?))
+        let iri = self.expand(name, offset)?;
+        Ok(self.quantified_or(iri))
+    }
+
+    /// The variable or blank node a quantifier binds `iri` to, innermost first, or the IRI
+    fn quantified_or(&self, iri: String) -> Node {
+        self.quantifiers
+            .iter()
+            .rev()
+            .find_map(|scope| scope.get(&iri).cloned())
+            .unwrap_or(Node::Iri(iri))
     }
 
     fn expand(&self, name: &str, offset: usize) -> Result<String, N3Error> {

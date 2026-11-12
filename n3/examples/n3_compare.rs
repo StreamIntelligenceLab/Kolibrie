@@ -18,7 +18,7 @@
 //! a known divergence rather than a failure.
 
 use n3::canon::canonical_lines;
-use n3::{parse_document, N3Error, N3Reasoner};
+use n3::{parse_document, parse_input, N3Error, N3Reasoner};
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 use std::process::{Command, ExitCode};
@@ -120,12 +120,8 @@ fn ours(path: &Path) -> Result<Answer, N3Error> {
     for input in inputs(path) {
         let text = std::fs::read_to_string(&input)
             .map_err(|e| N3Error::syntax(format!("cannot read {}: {e}", input.display())))?;
-        let document = parse_document(&text, None).map_err(|e| match e {
-            N3Error::Syntax { .. } if input.extension().is_some_and(|x| x == "trig") => {
-                N3Error::unsupported(format!("TriG companion input ({e})"))
-            }
-            other => other,
-        })?;
+        let trig = input.extension().is_some_and(|x| x == "trig");
+        let document = parse_input(&text, None, trig)?;
         reasoner.load(&document)?;
     }
     match reasoner.run() {
