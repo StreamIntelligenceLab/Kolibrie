@@ -22,6 +22,6 @@ pub use crate::execute_query::execute;
 /// Why a request could not be answered
 pub use crate::execute_query::QueryError;
 
+pub use crate::query_builder::Queryable;
 /// Why N3 text could not be read or reasoned over, as `KolibrieDB::materialize_n3` reports it
 pub use n3::N3Error;
-pub use crate::query_builder::Queryable;

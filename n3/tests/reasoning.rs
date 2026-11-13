@@ -156,6 +156,36 @@ fn input_facts_are_not_reported_as_derived() {
 }
 
 #[test]
+fn facts_since_lists_only_what_came_later_in_order() {
+    let mut reasoner = N3Reasoner::new();
+    let input = parse_document(&format!("{PREFIX}:a :p :b .\n"), None).expect("input parses");
+    reasoner.load(&input).expect("loads");
+    let before = reasoner.fact_count();
+    let program = parse_document(
+        &format!("{PREFIX}:c :p :d .\n{{ ?x :p ?y }} => {{ ?y :q ?x }} .\n"),
+        None,
+    )
+    .expect("program parses");
+    reasoner.load(&program).expect("loads");
+    reasoner.run().expect("reasons");
+    let later: Vec<_> = reasoner
+        .facts_since(before)
+        .iter()
+        .map(|t| reasoner.store.statement(t))
+        .collect();
+    assert_eq!(later.len(), 3, "{later:?}");
+    assert_eq!(
+        canonical_lines(&later[..1]),
+        expect(":c :p :d ."),
+        "the program's own fact comes first"
+    );
+    assert_eq!(
+        canonical_lines(&later),
+        expect(":c :p :d . :b :q :a . :d :q :c .")
+    );
+}
+
+#[test]
 fn unsupported_features_are_named_not_ignored() {
     for (program, feature) in [(
         "{ ?x :p ?y . ?y log:content \"a\" } => { ?x :big true } .",

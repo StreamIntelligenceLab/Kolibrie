@@ -40,9 +40,9 @@ impl KolibrieDB {
         let mut store = TermStore::new();
         store.dictionary = std::mem::take(&mut *terms);
         let mut reasoner = N3Reasoner::with_store(store);
-        let entailed = entail(&mut reasoner, &facts, &document).map(|()| {
-            let facts = reasoner.facts();
-            Storable::new(&mut reasoner.store).triples(&facts)
+        let entailed = entail(&mut reasoner, facts, &document).map(|stored| {
+            let new = reasoner.facts_since(stored);
+            Storable::new(&mut reasoner.store).triples(&new)
         });
         *terms = std::mem::take(&mut reasoner.store.dictionary);
         drop(terms);
@@ -57,18 +57,22 @@ impl KolibrieDB {
     }
 }
 
-/// Loads the stored facts and the document, and saturates, refusing rules a store cannot honour
+/// Loads the stored facts and the document, and saturates, refusing rules a store cannot honour;
+/// returns how many facts came from the store
 fn entail(
     reasoner: &mut N3Reasoner,
-    facts: &[Triple],
+    facts: Vec<Triple>,
     document: &n3::syntax::Document,
-) -> Result<(), N3Error> {
-    reasoner.load_triples(facts)?;
+) -> Result<usize, N3Error> {
+    reasoner.load_triples(&facts)?;
+    drop(facts);
+    let stored = reasoner.fact_count();
     reasoner.load(document)?;
     refuse_unstorable(reasoner)?;
     reasoner.run()?;
     // A forward rule can conclude a backward rule
-    refuse_unstorable(reasoner)
+    refuse_unstorable(reasoner)?;
+    Ok(stored)
 }
 
 fn refuse_unstorable(reasoner: &N3Reasoner) -> Result<(), N3Error> {

@@ -29,9 +29,12 @@ fn loaded() -> KolibrieDB {
 }
 
 fn select(database: &mut KolibrieDB, query: &str) -> Vec<Vec<String>> {
-    let mut rows = execute(&format!("PREFIX ex: <http://example.org/>\n{query}"), database)
-        .expect("the query should run")
-        .into_rows();
+    let mut rows = execute(
+        &format!("PREFIX ex: <http://example.org/>\n{query}"),
+        database,
+    )
+    .expect("the query should run")
+    .into_rows();
     rows.sort();
     rows
 }
@@ -90,7 +93,10 @@ fn a_rule_can_join_derived_facts_with_stored_ones() {
         ))
         .expect("the rules should run");
     assert_eq!(
-        select(&mut database, "SELECT ?s WHERE { ?s ex:hasSeniorSupervisor ex:bob }"),
+        select(
+            &mut database,
+            "SELECT ?s WHERE { ?s ex:hasSeniorSupervisor ex:bob }"
+        ),
         rows(&[&["http://example.org/alice"]])
     );
 }
@@ -121,9 +127,8 @@ fn blank_nodes_from_separate_runs_stay_distinct() {
 #[test]
 fn materializing_the_same_rules_again_adds_nothing() {
     let mut database = loaded();
-    let rules = format!(
-        "{PREFIX}{{ ?x a ex:Professor }} => {{ ?x ex:office [ ex:in ex:building1 ] }} .\n"
-    );
+    let rules =
+        format!("{PREFIX}{{ ?x a ex:Professor }} => {{ ?x ex:office [ ex:in ex:building1 ] }} .\n");
     assert_eq!(database.materialize_n3(&rules).expect("first run"), 2);
     assert_eq!(database.materialize_n3(&rules).expect("second run"), 0);
 }

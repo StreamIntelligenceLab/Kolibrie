@@ -16,8 +16,8 @@ use n3::N3Error;
 use shared::quoted_triple_store::QuotedTripleStore;
 use shared::rdf_term;
 use shared::term_encoder::TermsMut;
-use std::sync::RwLock;
 use shared::triple::Triple;
+use std::sync::RwLock;
 
 const RDF_FIRST: &str = "http://www.w3.org/1999/02/22-rdf-syntax-ns#first";
 const RDF_REST: &str = "http://www.w3.org/1999/02/22-rdf-syntax-ns#rest";

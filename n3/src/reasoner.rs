@@ -292,6 +292,26 @@ impl N3Reasoner {
         facts
     }
 
+    /// How many facts the store holds, input and derived
+    pub fn fact_count(&self) -> usize {
+        self.known.len()
+    }
+
+    /// The facts added after the first `count`, in the order they were added
+    pub fn facts_since(&self, count: usize) -> Vec<Triple> {
+        let mut facts: Vec<(usize, &Triple)> = self
+            .known
+            .iter()
+            .filter(|&(_, &at)| at >= count)
+            .map(|(triple, &at)| (at, triple))
+            .collect();
+        facts.sort_unstable_by_key(|&(at, _)| at);
+        facts
+            .into_iter()
+            .map(|(_, triple)| triple.clone())
+            .collect()
+    }
+
     /// Whether the program has backward rules `{ … } <= { … }`, loaded or derived
     pub fn has_backward_rules(&self) -> bool {
         !self.backward.is_empty()
