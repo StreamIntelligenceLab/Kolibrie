@@ -11,7 +11,9 @@
 //! Forward N3 reasoning: semi-naive saturation over a Kolibrie [`DatasetIndex`]
 
 use crate::error::N3Error;
-use crate::matcher::{atom_constants, shape_of, Delta, DeltaGroups, Matcher, Vocabulary};
+use crate::matcher::{
+    atom_constants, shape_of, Delta, DeltaGroups, Matcher, Sequence, Vocabulary,
+};
 use crate::rows::{RowJoin, RowPlan};
 use crate::rules::{compile_backward_rule, compile_rule, formula_node, Atom, N3Rule, PTerm};
 use crate::syntax::{
@@ -19,6 +21,7 @@ use crate::syntax::{
 };
 use crate::terms::{Compound, TermStore};
 use shared::dataset_index::DatasetIndex;
+use shared::id_hash::TermBuildHasher;
 use shared::rule_index::WILDCARD;
 use shared::terms::Binding;
 use shared::triple::Triple;
@@ -58,7 +61,7 @@ pub struct N3Reasoner {
     pub store: TermStore,
     facts: DatasetIndex,
     /// Every fact, with the order it was added in
-    known: HashMap<Triple, usize>,
+    known: Sequence,
     pub(crate) rules: Vec<Rc<N3Rule>>,
     rule_sources: HashSet<(u32, u32)>,
     rule_facts: DatasetIndex,
@@ -70,7 +73,7 @@ pub struct N3Reasoner {
     ///
     /// Not `shared::rule_index::RuleIndex`: that files premises by pairs of positions, so a
     /// predicate every rule shares, such as `rdf:type`, makes every fact a candidate for every rule.
-    premises: HashMap<[u32; 3], Vec<usize>>,
+    premises: HashMap<[u32; 3], Vec<usize>, TermBuildHasher>,
     /// How many of `rules` are filed in `premises`
     indexed: usize,
     /// Each filed rule's plan for joining rows of ids, when it is plain Datalog

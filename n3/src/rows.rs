@@ -10,11 +10,12 @@
 
 //! Joins for rules that are plain Datalog, with each solution a row of ids instead of a map
 
-use crate::matcher::{Delta, Vocabulary};
+use crate::matcher::{Delta, Sequence, Vocabulary};
 use crate::rules::{Atom, N3Rule, PTerm};
 use shared::dataset_index::DatasetIndex;
+use shared::id_hash::TermBuildHasher;
 use shared::triple::Triple;
-use std::collections::{HashMap, HashSet};
+use std::collections::HashSet;
 
 /// A slot of a row that holds no value yet
 const UNBOUND: u32 = u32::MAX;
@@ -118,7 +119,7 @@ fn slots(atom: &Atom, names: &mut Vec<String>) -> Option<[Slot; 3]> {
 /// What a row join reads: the store, and the position each fact was added at
 pub(crate) struct RowJoin<'a> {
     pub(crate) facts: &'a DatasetIndex,
-    pub(crate) sequence: &'a HashMap<Triple, usize>,
+    pub(crate) sequence: &'a Sequence,
 }
 
 impl RowJoin<'_> {
@@ -130,7 +131,7 @@ impl RowJoin<'_> {
         } else {
             (0..plan.body.len()).map(Some).collect()
         };
-        let mut seen: HashSet<Vec<u32>> = HashSet::new();
+        let mut seen: HashSet<Vec<u32>, TermBuildHasher> = HashSet::default();
         let mut out = Vec::new();
         for start in starts {
             for row in self.solve(plan, start.map(|i| (i, delta))) {

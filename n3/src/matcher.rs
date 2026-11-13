@@ -16,6 +16,7 @@ use crate::rules::{Atom, N3Rule, PTerm};
 use crate::syntax::Node;
 use crate::terms::{Compound, TermStore};
 use shared::dataset_index::DatasetIndex;
+use shared::id_hash::TermBuildHasher;
 use shared::pattern::matches_rule_pattern;
 use shared::terms::Binding;
 use shared::triple::Triple;
@@ -76,18 +77,22 @@ impl<'d> Delta<'d> {
     }
 }
 
+/// The position each fact was added at
+pub(crate) type Sequence = HashMap<Triple, usize, TermBuildHasher>;
+
 /// A round's new facts, grouped once for each shape of constants a premise looks them up by
 #[derive(Debug, Default)]
 pub(crate) struct DeltaGroups {
     all: Vec<Triple>,
     /// By which positions are constant, then by those constants' values
-    by_shape: HashMap<u8, HashMap<[u32; 3], Vec<Triple>>>,
+    by_shape: HashMap<u8, HashMap<[u32; 3], Vec<Triple>, TermBuildHasher>>,
 }
 
 impl DeltaGroups {
     /// Groups `facts`, kept in order, for every shape in `shapes`
     pub(crate) fn new(facts: &[Triple], shapes: &BTreeSet<u8>) -> Self {
-        let mut by_shape: HashMap<u8, HashMap<[u32; 3], Vec<Triple>>> = HashMap::new();
+        let mut by_shape: HashMap<u8, HashMap<[u32; 3], Vec<Triple>, TermBuildHasher>> =
+            HashMap::new();
         for &shape in shapes.iter().filter(|&&shape| shape != 0) {
             let groups = by_shape.entry(shape).or_default();
             for fact in facts {
@@ -231,7 +236,7 @@ pub(crate) struct Matcher<'a> {
     /// The non-empty native lists occurring in facts, which `rdf:first`/`rdf:rest` also match
     pub(crate) list_terms: &'a BTreeSet<u32>,
     /// The order facts were added in, which lookups keep so joins are deterministic
-    pub(crate) sequence: &'a HashMap<Triple, usize>,
+    pub(crate) sequence: &'a Sequence,
     pub(crate) vocabulary: Vocabulary,
     /// Rules proved on demand when a premise asks for their head
     pub(crate) backward: &'a [N3Rule],

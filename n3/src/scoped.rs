@@ -11,7 +11,7 @@
 //! The `log:` built-ins that read a graph: a quoted formula, or the current graph
 
 use crate::builtins::Builtin;
-use crate::matcher::Matcher;
+use crate::matcher::{Matcher, Sequence};
 use crate::reasoner::N3Reasoner;
 use crate::rules::{Atom, PTerm};
 use crate::terms::Compound;
@@ -19,7 +19,7 @@ use shared::dataset_index::DatasetIndex;
 use shared::terms::Binding;
 use shared::triple::Triple;
 use std::cell::Cell;
-use std::collections::{BTreeSet, HashMap};
+use std::collections::BTreeSet;
 
 /// A scoped `log:` built-in
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -305,7 +305,7 @@ fn solve_in(m: &mut Matcher<'_>, scope: &Scope, clause: &[Atom], binding: Bindin
             for triple in triples {
                 index.insert(triple);
             }
-            let sequence: HashMap<Triple, usize> = triples
+            let sequence: Sequence = triples
                 .iter()
                 .cloned()
                 .enumerate()
