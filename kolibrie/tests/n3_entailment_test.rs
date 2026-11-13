@@ -223,3 +223,41 @@ fn the_dictionary_survives_a_failed_run() {
         rows(&[&["http://example.org/alice"]])
     );
 }
+
+const NAMED: &str = "<http://example.org/carol> <http://www.w3.org/1999/02/22-rdf-syntax-ns#type> \
+                     <http://example.org/Student> <http://example.org/g> .\n";
+
+#[test]
+fn rules_see_only_the_default_graph_and_named_graphs_are_kept() {
+    let mut database = loaded();
+    database.parse_nquads_and_add(NAMED);
+    database
+        .materialize_n3(&format!(
+            "{PREFIX}{{ ?x a ex:Student }} => {{ ?x a ex:Learner }} .\n"
+        ))
+        .expect("the rule should run");
+    assert_eq!(
+        select(&mut database, "SELECT ?x WHERE { ?x a ex:Learner }"),
+        rows(&[&["http://example.org/alice"]])
+    );
+    assert_eq!(
+        select(
+            &mut database,
+            "SELECT ?x WHERE { GRAPH ex:g { ?x a ex:Student } }"
+        ),
+        rows(&[&["http://example.org/carol"]])
+    );
+}
+
+#[test]
+fn a_failed_run_leaves_every_graph_as_it_was() {
+    let mut database = loaded();
+    database.parse_nquads_and_add(NAMED);
+    let before = database.generate_nquads();
+    let result = database.materialize_n3(&format!(
+        "{PREFIX}{{ ?x a ex:Student }} => {{ ?x a ex:Learner }} .\n\
+         {{ ?x a ex:Learner }} => false .\n"
+    ));
+    assert!(matches!(result, Err(N3Error::Fuse(_))), "{result:?}");
+    assert_eq!(database.generate_nquads(), before);
+}

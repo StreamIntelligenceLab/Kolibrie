@@ -12,6 +12,8 @@
 
 use n3::canon::canonical_lines;
 use n3::{parse_document, N3Error, N3Reasoner};
+use shared::dataset_index::{DatasetIndex, GraphId, Quad};
+use shared::triple::Triple;
 
 const PREFIX: &str = "@prefix : <http://example.org/t#> .\n";
 
@@ -183,6 +185,47 @@ fn facts_since_lists_only_what_came_later_in_order() {
         canonical_lines(&later),
         expect(":c :p :d . :b :q :a . :d :q :c .")
     );
+}
+
+#[test]
+fn an_adopted_index_comes_back_with_its_named_graphs_and_the_derived_facts() {
+    let mut reasoner = N3Reasoner::new();
+    let [a, p, b, g, q] = ["a", "p", "b", "g", "q"]
+        .map(|name| reasoner.store.iri(&format!("http://example.org/t#{name}")));
+    let mut index = DatasetIndex::new();
+    index.insert(&Triple {
+        subject: a,
+        predicate: p,
+        object: b,
+    });
+    let named = Quad {
+        subject: b,
+        predicate: p,
+        object: a,
+        graph: GraphId::Named(g),
+    };
+    index.insert_quad(&named);
+    reasoner.adopt_facts(index).expect("adopts");
+    let stored = reasoner.fact_count();
+    assert_eq!(stored, 1, "only the default graph is facts");
+    let rules = parse_document(
+        &format!("{PREFIX}{{ ?x :p ?y }} => {{ ?y :q ?x }} .\n"),
+        None,
+    )
+    .expect("rules parse");
+    reasoner.load(&rules).expect("loads");
+    reasoner.run().expect("reasons");
+    assert_eq!(
+        reasoner.facts_since(stored),
+        vec![Triple {
+            subject: b,
+            predicate: q,
+            object: a
+        }]
+    );
+    let index = reasoner.take_facts();
+    assert!(index.contains_quad(&named));
+    assert_eq!(index.len_default(), 2);
 }
 
 #[test]

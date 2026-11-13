@@ -18,7 +18,7 @@ use crate::syntax::{
     Document, Node, Statement, LOG_IMPLIED_BY, LOG_IMPLIES, LOG_OUTPUT_STRING, LOG_QUERY,
 };
 use crate::terms::{Compound, TermStore};
-use shared::dataset_index::DatasetIndex;
+use shared::dataset_index::{DatasetIndex, GraphId};
 use shared::id_hash::TermBuildHasher;
 use shared::rule_index::WILDCARD;
 use shared::terms::Binding;
@@ -193,6 +193,57 @@ impl N3Reasoner {
         Ok(())
     }
 
+    /// Takes the default graph of `index` as facts, after any facts loaded before, and keeps
+    /// the rest of the index for [`N3Reasoner::take_facts`] to hand back
+    ///
+    /// # Errors
+    /// Returns [`N3Error::Unsupported`] when the graph holds a rule between formulas, which
+    /// [`N3Reasoner::load_triples`] reads instead; the index is kept even then
+    pub fn adopt_facts(&mut self, mut index: DatasetIndex) -> Result<(), N3Error> {
+        self.facts
+            .for_each_quad_in_graph(GraphId::Default, |subject, predicate, object| {
+                index.insert(&Triple {
+                    subject,
+                    predicate,
+                    object,
+                });
+            });
+        index.for_each_quad_in_graph(GraphId::Default, |subject, predicate, object| {
+            self.note(&Triple {
+                subject,
+                predicate,
+                object,
+            });
+        });
+        self.facts = index;
+        for predicate in [LOG_IMPLIES, LOG_IMPLIED_BY] {
+            let Some(predicate) = self.store.lookup(predicate) else {
+                continue;
+            };
+            let rule = self
+                .facts
+                .query(None, Some(predicate), None)
+                .into_iter()
+                .any(|triple| {
+                    formula_node(&self.store, triple.subject).is_some()
+                        && formula_or_true(&self.store, triple.object).is_some()
+                });
+            if rule {
+                return Err(N3Error::Unsupported(
+                    "rules among the facts of an adopted index".to_string(),
+                ));
+            }
+        }
+        Ok(())
+    }
+
+    /// Hands back the index holding the facts, leaving the reasoner with none
+    pub fn take_facts(&mut self) -> DatasetIndex {
+        self.known.clear();
+        self.list_terms.clear();
+        std::mem::take(&mut self.facts)
+    }
+
     /// Adds a document's facts and rules
     ///
     /// # Errors
@@ -270,19 +321,26 @@ impl N3Reasoner {
     }
 
     fn insert(&mut self, triple: Triple) -> bool {
-        if !self.known.contains_key(&triple) {
-            self.known.insert(triple.clone(), self.known.len());
-            for term in [triple.subject, triple.object] {
-                if matches!(self.store.compound(term), Some(Compound::List(items)) if !items.is_empty())
-                {
-                    self.list_terms.insert(term);
-                }
-            }
+        let new = self.note(&triple);
+        if new {
             self.facts.insert(&triple);
-            true
-        } else {
-            false
         }
+        new
+    }
+
+    /// Records a fact's position and its list terms, without storing it; false if already known
+    fn note(&mut self, triple: &Triple) -> bool {
+        if self.known.contains_key(triple) {
+            return false;
+        }
+        self.known.insert(triple.clone(), self.known.len());
+        for term in [triple.subject, triple.object] {
+            if matches!(self.store.compound(term), Some(Compound::List(items)) if !items.is_empty())
+            {
+                self.list_terms.insert(term);
+            }
+        }
+        true
     }
 
     /// Every fact the store holds, input and derived, in the order they were added

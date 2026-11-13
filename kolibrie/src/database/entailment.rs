@@ -34,19 +34,26 @@ impl KolibrieDB {
     /// [`N3Error::Limit`] when reasoning stops; the store is unchanged then
     pub fn materialize_n3(&mut self, n3_document: &str) -> Result<usize, N3Error> {
         let document = n3::parse_document(n3_document, None)?;
-        let facts = self.query_default_triples(None, None, None);
         // Held throughout, so no other user of the dictionary sees it taken out
         let mut terms = self.dictionary.write();
         let mut store = TermStore::new();
         store.dictionary = std::mem::take(&mut *terms);
         let mut reasoner = N3Reasoner::with_store(store);
-        let entailed = entail(&mut reasoner, facts, &document).map(|stored| {
-            let new = reasoner.facts_since(stored);
-            Storable::new(&mut reasoner.store).triples(&new)
-        });
+        // The reasoner works in the store's own index, so no triple is copied
+        let adopted = reasoner.adopt_facts(std::mem::take(&mut self.dataset_index));
+        let stored = reasoner.fact_count();
+        let entailed = adopted.and_then(|()| entail(&mut reasoner, &document));
+        let new = reasoner.facts_since(stored);
+        let triples = entailed.map(|()| Storable::new(&mut reasoner.store).triples(&new));
+        let mut index = reasoner.take_facts();
         *terms = std::mem::take(&mut reasoner.store.dictionary);
         drop(terms);
-        let triples = entailed?;
+        // Every new fact goes back in below only if the run succeeded, as a storable triple
+        for triple in &new {
+            index.delete_triple(triple);
+        }
+        self.dataset_index = index;
+        let triples = triples?;
         for (prefix, iri) in document.prefixes {
             self.prefixes.insert(prefix, iri);
         }
@@ -57,22 +64,13 @@ impl KolibrieDB {
     }
 }
 
-/// Loads the stored facts and the document, and saturates, refusing rules a store cannot honour;
-/// returns how many facts came from the store
-fn entail(
-    reasoner: &mut N3Reasoner,
-    facts: Vec<Triple>,
-    document: &n3::syntax::Document,
-) -> Result<usize, N3Error> {
-    reasoner.load_triples(&facts)?;
-    drop(facts);
-    let stored = reasoner.fact_count();
+/// Loads the document and saturates, refusing rules a store cannot honour
+fn entail(reasoner: &mut N3Reasoner, document: &n3::syntax::Document) -> Result<(), N3Error> {
     reasoner.load(document)?;
     refuse_unstorable(reasoner)?;
     reasoner.run()?;
     // A forward rule can conclude a backward rule
-    refuse_unstorable(reasoner)?;
-    Ok(stored)
+    refuse_unstorable(reasoner)
 }
 
 fn refuse_unstorable(reasoner: &N3Reasoner) -> Result<(), N3Error> {
