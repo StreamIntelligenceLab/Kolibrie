@@ -40,6 +40,8 @@ pub(crate) enum TokenKind {
     Caret,
     LTriple,
     RTriple,
+    LAnnotation,
+    RAnnotation,
     Eof,
 }
 
@@ -172,6 +174,14 @@ impl Lexer<'_> {
                 }
                 ';' => self.single(TokenKind::Semicolon),
                 ',' => self.single(TokenKind::Comma),
+                '{' if self.char_at(1) == Some('|') => {
+                    self.pos += 2;
+                    self.push(TokenKind::LAnnotation, start);
+                }
+                '|' if self.char_at(1) == Some('}') => {
+                    self.pos += 2;
+                    self.push(TokenKind::RAnnotation, start);
+                }
                 '{' => self.single(TokenKind::LBrace),
                 '}' => self.single(TokenKind::RBrace),
                 '[' => self.single(TokenKind::LBracket),

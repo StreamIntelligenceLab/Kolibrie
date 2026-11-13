@@ -30,7 +30,7 @@ pub mod terms;
 pub mod time;
 
 pub use error::N3Error;
-pub use parser::{parse_document, parse_message_log, parse_trig};
+pub use parser::{parse_document, parse_message_log, parse_rdf_star, parse_trig};
 pub use reasoner::N3Reasoner;
 
 /// Parses one input the way eyeron chooses its reader: an RDF Message Log when the text is one,

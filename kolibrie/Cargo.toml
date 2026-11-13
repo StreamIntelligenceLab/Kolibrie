@@ -31,6 +31,7 @@ crossbeam = { workspace = true }
 pyo3 = { workspace = true, optional = true, features = ["auto-initialize"] }
 shared = { path = "../shared" }
 datalog =  { path = "../datalog" }
+n3 = { path = "../n3" }
 datalogmtl = { path = "../datalogmtl" }
 ml = { path = "../ml", optional = true }
 log = "0.4.27"

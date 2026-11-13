@@ -21,7 +21,29 @@ use std::collections::{HashMap, HashSet};
 /// Returns [`N3Error::Syntax`] for malformed text and [`N3Error::Unsupported`] for N3 this
 /// parser does not handle yet, such as explicit quantifiers
 pub fn parse_document(text: &str, base: Option<&str>) -> Result<Document, N3Error> {
-    parse_with(text, base, false, "")
+    parse_with(text, base, Reading::default(), "")
+}
+
+/// Parses Turtle-star as RDF-star reads it, where `<< s p o >>` and an annotation's subject are
+/// the quoted triple itself rather than a reifier of it
+///
+/// # Errors
+/// As [`parse_document`]
+pub fn parse_rdf_star(text: &str, base: Option<&str>) -> Result<Document, N3Error> {
+    let reading = Reading {
+        quoted_triples: true,
+        ..Reading::default()
+    };
+    parse_with(text, base, reading, "")
+}
+
+/// Which syntax extensions a parse reads
+#[derive(Debug, Clone, Copy, Default)]
+struct Reading {
+    /// Named graph blocks, as TriG writes them
+    trig: bool,
+    /// `<< s p o >>` as the quoted triple, as RDF-star reads it, instead of an RDF 1.2 reifier
+    quoted_triples: bool,
 }
 
 /// Parses TriG: N3 statements plus named graphs `g { … }` and `GRAPH g { … }`, each read as
@@ -30,7 +52,11 @@ pub fn parse_document(text: &str, base: Option<&str>) -> Result<Document, N3Erro
 /// # Errors
 /// As [`parse_document`]
 pub fn parse_trig(text: &str, base: Option<&str>) -> Result<Document, N3Error> {
-    parse_with(text, base, true, "")
+    let reading = Reading {
+        trig: true,
+        ..Reading::default()
+    };
+    parse_with(text, base, reading, "")
 }
 
 /// Whether text is an RDF Message Log: a `VERSION "…-messages"` directive or a `MESSAGE` line
@@ -154,7 +180,7 @@ pub fn parse_message_log(text: &str, base: Option<&str>) -> Result<Document, N3E
         let payload_document = parse_with(
             &format!("{prefixes}\n{body}"),
             base,
-            false,
+            Reading::default(),
             &format!("m{}_", index + 1),
         )?;
         let payload = iri(format!("{STREAM}:payload:{}", index + 1));
@@ -181,7 +207,7 @@ pub fn parse_message_log(text: &str, base: Option<&str>) -> Result<Document, N3E
 fn parse_with(
     text: &str,
     base: Option<&str>,
-    trig: bool,
+    reading: Reading,
     label_prefix: &str,
 ) -> Result<Document, N3Error> {
     let mut tokens = tokenize(text)?;
@@ -200,7 +226,8 @@ fn parse_with(
         })
         .collect();
     let mut parser = Parser {
-        trig,
+        trig: reading.trig,
+        quoted_triples: reading.quoted_triples,
         tokens,
         pos: 0,
         prefixes: WELL_KNOWN_PREFIXES
@@ -238,6 +265,7 @@ const WELL_KNOWN_PREFIXES: [(&str, &str); 10] = [
 
 struct Parser {
     trig: bool,
+    quoted_triples: bool,
     tokens: Vec<Token>,
     pos: usize,
     prefixes: HashMap<String, String>,
@@ -492,7 +520,11 @@ impl Parser {
     fn at_statement_end(&self) -> bool {
         matches!(
             self.peek(),
-            TokenKind::Dot | TokenKind::RBrace | TokenKind::RBracket | TokenKind::Eof
+            TokenKind::Dot
+                | TokenKind::RBrace
+                | TokenKind::RBracket
+                | TokenKind::RAnnotation
+                | TokenKind::Eof
         )
     }
 
@@ -522,6 +554,12 @@ impl Parser {
                 } else {
                     Statement::new(subject.clone(), verb.clone(), object)
                 };
+                if *self.peek() == TokenKind::LAnnotation {
+                    self.advance();
+                    let about = self.quoted(statement.clone(), &mut nested);
+                    self.parse_predicate_object_list(&about, &mut nested)?;
+                    self.expect(&TokenKind::RAnnotation, "'|}'")?;
+                }
                 out.push(rule_sides(statement));
                 out.append(&mut nested);
                 if *self.peek() == TokenKind::Comma {
@@ -603,6 +641,22 @@ impl Parser {
         }
     }
 
+    /// The term `<< statement >>` stands for: the triple itself when reading RDF-star, else a
+    /// fresh reifier of it, whose `rdf:reifies` statement goes to `out`
+    fn quoted(&mut self, statement: Statement, out: &mut Vec<Statement>) -> Node {
+        let triple = Node::Formula(vec![statement]);
+        if self.quoted_triples {
+            return triple;
+        }
+        let reifier = self.fresh_blank("reif");
+        out.push(Statement::new(
+            reifier.clone(),
+            Node::iri("http://www.w3.org/1999/02/22-rdf-syntax-ns#reifies"),
+            triple,
+        ));
+        reifier
+    }
+
     /// A blank node the syntax implies, named as eyeron names it, `kind` then a counter shared by
     /// every kind, skipping labels the source spells itself
     fn fresh_blank(&mut self, kind: &str) -> Node {
@@ -676,17 +730,11 @@ impl Parser {
                     self.expect(&TokenKind::RParen, "')'")?;
                 }
                 self.expect(&TokenKind::RTriple, "'>>'")?;
-                let triple = Node::Formula(vec![Statement::new(subject, predicate, object)]);
+                let statement = Statement::new(subject, predicate, object);
                 if parenthesised {
-                    return Ok(triple);
+                    return Ok(Node::Formula(vec![statement]));
                 }
-                let reifier = self.fresh_blank("reif");
-                out.push(Statement::new(
-                    reifier.clone(),
-                    Node::iri("http://www.w3.org/1999/02/22-rdf-syntax-ns#reifies"),
-                    triple,
-                ));
-                Ok(reifier)
+                Ok(self.quoted(statement, out))
             }
             TokenKind::LParen => {
                 let mut items = Vec::new();

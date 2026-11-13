@@ -11,9 +11,7 @@
 //! Forward N3 reasoning: semi-naive saturation over a Kolibrie [`DatasetIndex`]
 
 use crate::error::N3Error;
-use crate::matcher::{
-    atom_constants, shape_of, Delta, DeltaGroups, Matcher, Sequence, Vocabulary,
-};
+use crate::matcher::{atom_constants, shape_of, Delta, DeltaGroups, Matcher, Sequence, Vocabulary};
 use crate::rows::{RowJoin, RowPlan};
 use crate::rules::{compile_backward_rule, compile_rule, formula_node, Atom, N3Rule, PTerm};
 use crate::syntax::{
@@ -292,6 +290,16 @@ impl N3Reasoner {
         let mut facts = self.facts.query(None, None, None);
         facts.sort_by_key(|triple| self.known.get(triple).copied().unwrap_or(usize::MAX));
         facts
+    }
+
+    /// Whether the program has backward rules `{ … } <= { … }`, loaded or derived
+    pub fn has_backward_rules(&self) -> bool {
+        !self.backward.is_empty()
+    }
+
+    /// Whether the program has `log:query` statements
+    pub fn has_queries(&self) -> bool {
+        !self.queries.is_empty()
     }
 
     /// The facts derived so far, in derivation order

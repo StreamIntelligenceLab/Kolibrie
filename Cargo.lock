@@ -1211,6 +1211,7 @@ dependencies = [
  "libc",
  "log",
  "ml",
+ "n3",
  "nom",
  "percent-encoding",
  "pyo3",

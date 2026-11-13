@@ -216,7 +216,10 @@ mod tests {
 
         assert_eq!(
             rows,
-            vec![vec!["10".to_string(), "http://example.org/Bob".to_string(),]]
+            vec![vec![
+                "\"10\"^^<http://www.w3.org/2001/XMLSchema#integer>".to_string(),
+                "http://example.org/Bob".to_string(),
+            ]]
         );
     }
 
@@ -274,7 +277,7 @@ mod tests {
         assert_eq!(rows.len(), 3);
         assert!(rows.contains(&vec![
             "http://example.org/Age".to_string(),
-            "10".to_string(),
+            "\"10\"^^<http://www.w3.org/2001/XMLSchema#integer>".to_string(),
         ]));
         assert!(rows.contains(&vec![
             "http://example.org/Friend".to_string(),

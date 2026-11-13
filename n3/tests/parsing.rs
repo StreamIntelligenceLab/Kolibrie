@@ -202,6 +202,40 @@ fn triple_terms_are_quoted_formulas_and_reifiers_reify_them() {
 }
 
 #[test]
+fn an_annotation_describes_a_reifier_of_its_triple() {
+    let statements = parse(&format!("{PREFIX}:a :p :b {{| :source :c |}} ."));
+    let triple = Statement::new(iri("a"), iri("p"), iri("b"));
+    assert_eq!(statements[0], triple);
+    let reifies = Node::iri("http://www.w3.org/1999/02/22-rdf-syntax-ns#reifies");
+    let reifier = statements
+        .iter()
+        .find(|s| s.predicate == reifies && s.object == Node::Formula(vec![triple.clone()]))
+        .map(|s| s.subject.clone())
+        .expect("a reifier of the annotated triple");
+    assert!(statements.contains(&Statement::new(reifier, iri("source"), iri("c"))));
+}
+
+#[test]
+fn rdf_star_reads_a_quoted_triple_and_an_annotation_as_the_triple_itself() {
+    let statements = n3::parse_rdf_star(
+        &format!("{PREFIX}<< :a :p :b >> :says :c .\n:d :q :e {{| :source :f |}} ."),
+        None,
+    )
+    .expect("parses")
+    .statements;
+    let quoted =
+        |s: &str, p: &str, o: &str| Node::Formula(vec![Statement::new(iri(s), iri(p), iri(o))]);
+    assert_eq!(
+        statements,
+        vec![
+            Statement::new(quoted("a", "p", "b"), iri("says"), iri("c")),
+            Statement::new(iri("d"), iri("q"), iri("e")),
+            Statement::new(quoted("d", "q", "e"), iri("source"), iri("f")),
+        ]
+    );
+}
+
+#[test]
 fn a_message_log_becomes_ordered_envelopes_with_payload_graphs() {
     let log = "VERSION \"1.2-messages\"\nPREFIX : <http://example.org/t#>\n_:b :p 1 .\nMESSAGE\nMESSAGE\n_:b :p 2 .\n";
     assert!(n3::parser::is_message_log(log));

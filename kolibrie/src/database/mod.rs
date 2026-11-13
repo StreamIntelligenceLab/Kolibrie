@@ -16,9 +16,11 @@
 //! - `planning_stats`: statistics the planner costs with, and when they are rebuilt
 //! - `serialize`: writing RDF/XML, N-Triples, N-Quads and Turtle
 //! - `parse_rdf_xml`, `parse_turtle`, `parse_n3`, `parse_ntriples`: reading those formats
+//! - `entailment`: adding what N3 rules entail, so queries see it
 //! - `extensions`: user-defined functions, rule names, ML and probabilistic state
 
 mod dataset;
+mod entailment;
 mod extensions;
 mod parse_n3;
 mod parse_ntriples;
