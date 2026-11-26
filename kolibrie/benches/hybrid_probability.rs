@@ -7,6 +7,8 @@ use shared::triple::Triple;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
+const STAGE_DEADLINE: Duration = Duration::from_secs(10);
+
 fn fixture() -> (
     Arc<Mutex<LineageStore>>,
     Arc<shared::hybrid::SeedSnapshot>,
@@ -54,7 +56,7 @@ fn bench_hybrid(c: &mut Criterion) {
                 black_box(&seeds),
                 root,
                 8,
-                Duration::from_millis(25),
+                STAGE_DEADLINE,
                 100_000,
             )
             .unwrap()
@@ -77,7 +79,7 @@ fn bench_hybrid(c: &mut Criterion) {
                 black_box(&guard),
                 black_box(&seeds),
                 root,
-                no_alert.sdd_budget,
+                STAGE_DEADLINE,
                 no_alert.sdd_node_budget,
             )
             .unwrap()
