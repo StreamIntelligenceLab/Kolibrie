@@ -75,7 +75,10 @@ fn run(options: &Options) -> Result<String, N3Error> {
     }
     let ran = reasoner.run().map(|_| ());
     if options.timing {
-        eprintln!("reasoning_ms={:.3}", started.elapsed().as_secs_f64() * 1000.0);
+        eprintln!(
+            "reasoning_ms={:.3}",
+            started.elapsed().as_secs_f64() * 1000.0
+        );
     }
     ran?;
     let output = if options.proof {
@@ -125,9 +128,11 @@ fn parse_options() -> Result<Options, String> {
         }
     }
     if options.paths.is_empty() {
-        return Err("usage: n3_reason [--max-backward-depth N] [--proof | --canonical] \
+        return Err(
+            "usage: n3_reason [--max-backward-depth N] [--proof | --canonical] \
                     [--no-base] [--timing] <file>…"
-            .to_string());
+                .to_string(),
+        );
     }
     if options.proof && options.canonical {
         return Err("--proof and --canonical cannot be combined".to_string());
