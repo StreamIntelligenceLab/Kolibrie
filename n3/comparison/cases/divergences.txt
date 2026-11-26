@@ -1,1 +1,0 @@
-blank-nodes: eyeron derives nothing from a blank node in a rule premise (`{ ?x :knows _:s } => …`); N3 reads it as an existential of the premise, so it matches like a variable, as EYE does

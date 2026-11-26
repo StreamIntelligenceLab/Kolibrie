@@ -1,9 +1,0 @@
-@prefix : <http://example.org/lists#> .
-
-:alice :pair (:bob :carol) .
-:dave :pair (:erin (:frank :grace)) .
-:alice :tags () .
-
-{ ?x :pair (?a ?b) } => { ?a :pairedWith ?b . ?x :introduced (?b ?a) } .
-{ ?x :pair (?a (?b ?c)) } => { ?x :nested ?c } .
-{ ?x :tags () } => { ?x :untagged true } .

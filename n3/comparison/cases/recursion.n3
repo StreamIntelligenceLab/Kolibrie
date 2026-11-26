@@ -1,7 +1,0 @@
-@prefix : <http://example.org/rec#> .
-
-:a :edge :b . :b :edge :c . :c :edge :a . :c :edge :d .
-
-{ ?x :edge ?y } => { ?x :reach ?y } .
-{ ?x :edge ?y . ?y :reach ?z } => { ?x :reach ?z } .
-{ ?x :reach ?x } => { ?x a :OnCycle } .

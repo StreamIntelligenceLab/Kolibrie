@@ -1,7 +1,7 @@
 # Python tooling for the repository; Cargo still builds the Rust workspace
 [project]
 name = "kolibrie-workspace"
-version = "0.3.0"
+version = "0.3.1"
 description = "Python environment for developing Kolibrie: ML runtime, linting and tests"
 license = "MPL-2.0"
 requires-python = ">=3.10"

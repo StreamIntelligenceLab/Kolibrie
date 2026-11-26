@@ -32,7 +32,7 @@ exclude = [
 ]
 
 [workspace.package]
-version      = "0.3.0"
+version      = "0.3.1"
 edition      = "2021"
 license      = "MPL-2.0"
 # Floor imposed by the dependency tree (hashbrown / indexmap / toml_edit all

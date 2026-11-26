@@ -1,6 +1,0 @@
-@prefix : <http://example.org/derived#> .
-
-:knows a :Symmetric .
-:alice :knows :bob .
-
-{ ?p a :Symmetric } => { { ?x ?p ?y } => { ?y ?p ?x } } .
