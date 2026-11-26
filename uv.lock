@@ -69,7 +69,7 @@ wheels = [
 
 [[package]]
 name = "kolibrie-workspace"
-version = "0.3.0"
+version = "0.3.1"
 source = { virtual = "." }
 default-groups = ["dev", "ml"]
 
@@ -108,7 +108,7 @@ ml = [
 
 [[package]]
 name = "mlschema"
-version = "0.3.0"
+version = "0.3.1"
 source = { editable = "ml/src" }
 dependencies = [
     { name = "numpy", version = "2.2.6", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.11'" },

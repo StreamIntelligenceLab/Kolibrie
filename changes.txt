@@ -1,3 +1,29 @@
+0.3.1
+Added
+- N3 reasoning (`n3` crate): a full N3 parser and forward `=>` rules over lists, quoted formulas and blank nodes, with existentials introduced only where none is known; the remaining built-ins are reported as unsupported
+- N3 built-ins: `math:` arithmetic, comparisons and trigonometry with exact integers, the `string:` tests, `string:concatenation` and `string:format`, and `log:equalTo` / `log:notEqualTo`
+- N3 `log:outputString` text output
+- N3 graph built-ins: `log:includes`, `log:notIncludes`, `log:collectAllIn`, `log:forAllIn`, `log:conjunction` and `log:conclusion`; rules testing the whole graph wait until it is saturated
+- N3 backward rules (`{ … } <= { … }`), proved on demand up to a configurable depth (`Limits::max_backward_depth`, default 32; `n3_reason --max-backward-depth N`), and `log:query`, whose answers become a run's output
+- N3 backward rules can answer with values not known yet, which later premises bind (unification over non-ground terms)
+- N3 inference fuses: `{ … } => false`, and a fuse when later facts contradict a negation or collection a rule already fired on
+- N3 regular expression built-ins (`string:matches`, `notMatches`, `replace`, `scrape`), `crypto:sha`, `log:uuid`, `log:uri`, `log:skolem`, `log:dtlit`, `log:langlit`, `log:rawType`, the `time:` built-ins, and date and duration arithmetic and comparison in `math:`
+- N3 input as TriG (`n3::parse_trig`: named graphs as `log:nameOf`, RDF 1.2 triple terms) and as RDF Message Logs (`n3::parse_message_log`); `n3::parse_input` picks the reader
+- N3 and Turtle annotations `{| … |}`, and `n3::parse_rdf_star`, which reads `<< s p o >>` as the quoted triple itself
+- `KolibrieDB::try_parse_turtle`, which returns how many triples it added or why the document was rejected
+- SPARQL under N3 entailment: `KolibrieDB::materialize_n3` adds what an N3 document's forward rules entail from the store, so queries see it; backward rules and `log:query` are refused, and `N3Reasoner::has_backward_rules` and `has_queries` say whether a program has them; `N3Reasoner::fact_count` and `facts_since` list the facts added after a point, and `adopt_facts` and `take_facts` let it reason in a `DatasetIndex` it is lent
+- N3 `@forSome` and `@forAll` at any level: formulas that differ only in quantified names are the same term, `log:includes` neither instantiates a universal nor treats an existential as one, and a conclusion's own universals make a statement that holds for every instance; universal facts are answered for every instance, and `{ … } => ?f` rules that conclude a formula held by a variable
+- N3 proofs in eyeron's `pe:` vocabulary that `eyeron --check-proof` accepts (`N3Reasoner::enable_proofs` and `proof_n3`, `n3_reason --proof`)
+- `n3_reason` prints `log:outputString` text as eyeron does, and takes `--canonical` (one statement per line, blank nodes named canonically), `--no-base` and `--timing`; it exits with 65 at an inference fuse, as eyeron does, and 3 for an unsupported feature; `n3_canonical` prints any N3 document in that canonical form
+- N3 `true` as either side of `=>` or `<=`, read as the empty formula; a document's blank node in a rule conclusion names that one node rather than a new one per firing
+- N3 rules whose conclusion names a variable the premise leaves unbound now conclude the other triples; a predicate in a built-in namespace that names no built-in is an ordinary predicate
+- N3 `list:` built-ins (first, rest, firstRest, last, length, member, in, memberAt, remove, notMember, append, reverse, sort, iterate, map), reading `rdf:first`/`rdf:rest` chains as lists, and `rdf:first`/`rdf:rest` matching native lists
+Changed
+- N3 reasoning visits only the rules new facts can feed, loads rules as data only when a premise reads them, joins long premises without quadratic scheduling, joins rules that are plain Datalog over rows of term ids, and matches a round's new facts through groups keyed by each premise's constants instead of a full index, so large rule sets, long premises and large data run much faster
+- `DatasetIndex` and the N3 reasoner's fact tables hash term ids with `TermHasher` instead of the default hasher, so storing and looking up quads is faster; `TermHasher` and its map types move to `shared::id_hash` and are still re-exported from `kolibrie::stats`
+Fixed
+- The Turtle reader losing statements that continue onto the next line, storing `a` as a plain string instead of `rdf:type`, storing numbers and booleans without their datatype, splitting `1.5` into two terms, ignoring statements on the line of a `@prefix`, and misreading `[ … ]`, `( … )` and `"""…"""`; it now reads with the `n3` parser, and Turtle integers come out as typed literals like N-Triples ones
+
 0.3.0
 Added
 - DatalogMTL reasoning over RDF streams (`datalogmtl` crate): `Box`, `Diamond`, `Since`, and stream shapes with channel staleness and expiry

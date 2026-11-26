@@ -773,6 +773,36 @@ Inferred 1 new facts
 Alice is ancestor of Charlie
 ```
 
+### SPARQL under N3 Entailment
+
+`materialize_n3` runs the forward rules (`=>`) of an N3 document over the store and adds what they entail, together with the document's own facts, so ordinary SPARQL queries see it. N3 built-ins, blank nodes in conclusions and lists (stored as `rdf:first`/`rdf:rest` chains) work. Backward rules (`<=`) and `log:query` are refused, since what they conclude is never stored and a query would silently miss it. A contradiction (`=> false`) is reported as an error. On any error the store is left unchanged. Facts added or deleted afterwards are not re-reasoned, so call it again when the data changes.
+
+```rust
+db.parse_turtle(r#"
+@prefix ex: <http://example.org/> .
+ex:alice a ex:Student ; ex:age 20 .
+ex:bob a ex:Professor ; ex:age 47 .
+"#);
+
+let added = db.materialize_n3(r#"
+@prefix ex: <http://example.org/> .
+@prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .
+@prefix math: <http://www.w3.org/2000/10/swap/math#> .
+ex:Student rdfs:subClassOf ex:Person .
+ex:Professor rdfs:subClassOf ex:Person .
+{ ?x a ?c . ?c rdfs:subClassOf ?d } => { ?x a ?d } .
+{ ?x ex:age ?a . ?a math:greaterThan 40 } => { ?x a ex:Senior } .
+"#).expect("the rules should run");
+println!("Added {added} triples");
+
+let people = execute(
+    "PREFIX ex: <http://example.org/> SELECT ?x WHERE { ?x a ex:Person }",
+    &mut db,
+)
+.expect("the query should run")
+.into_rows();
+```
+
 ### Machine Learning Integration
 
 **All machine learning examples can be found [here](https://github.com/StreamIntelligenceLab/Kolibrie/tree/main/kolibrie/examples/sparql_syntax/combination)**.

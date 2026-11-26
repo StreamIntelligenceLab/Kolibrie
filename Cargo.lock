@@ -329,7 +329,7 @@ checksum = "b94f61472cee1439c0b966b47e3aca9ae07e45d070759512cd390ea2bebc6675"
 
 [[package]]
 name = "cli"
-version = "0.3.0"
+version = "0.3.1"
 dependencies = [
  "clap",
  "kolibrie-api",
@@ -485,7 +485,7 @@ dependencies = [
 
 [[package]]
 name = "datalog"
-version = "0.3.0"
+version = "0.3.1"
 dependencies = [
  "nom",
  "rayon",
@@ -494,7 +494,7 @@ dependencies = [
 
 [[package]]
 name = "datalogmtl"
-version = "0.3.0"
+version = "0.3.1"
 dependencies = [
  "shared",
 ]
@@ -1199,7 +1199,7 @@ dependencies = [
 
 [[package]]
 name = "kolibrie"
-version = "0.3.0"
+version = "0.3.1"
 dependencies = [
  "annotate-snippets",
  "chrono",
@@ -1211,6 +1211,7 @@ dependencies = [
  "libc",
  "log",
  "ml",
+ "n3",
  "nom",
  "percent-encoding",
  "pyo3",
@@ -1229,7 +1230,7 @@ dependencies = [
 
 [[package]]
 name = "kolibrie-api"
-version = "0.3.0"
+version = "0.3.1"
 dependencies = [
  "datalog",
  "datalogmtl",
@@ -1239,7 +1240,7 @@ dependencies = [
 
 [[package]]
 name = "kolibrie-http-server"
-version = "0.3.0"
+version = "0.3.1"
 dependencies = [
  "datalog",
  "datalogmtl",
@@ -1251,7 +1252,7 @@ dependencies = [
 
 [[package]]
 name = "kolibrie-python"
-version = "0.3.0"
+version = "0.3.1"
 dependencies = [
  "datalog",
  "kolibrie",
@@ -1350,7 +1351,7 @@ dependencies = [
 
 [[package]]
 name = "ml"
-version = "0.3.0"
+version = "0.3.1"
 dependencies = [
  "candle-core",
  "pyo3",
@@ -1358,6 +1359,16 @@ dependencies = [
  "rand",
  "serde",
  "serde_json",
+ "shared",
+]
+
+[[package]]
+name = "n3"
+version = "0.3.1"
+dependencies = [
+ "num-bigint",
+ "num-traits",
+ "regex",
  "shared",
 ]
 
@@ -2082,7 +2093,7 @@ dependencies = [
 
 [[package]]
 name = "shared"
-version = "0.3.0"
+version = "0.3.1"
 dependencies = [
  "rayon",
  "serde",

@@ -9,6 +9,7 @@ default-members = [
   "shared",
   "datalog",
   "datalogmtl",
+  "n3",
   "ml",
   "cli",
   "kolibrie-http-server",
@@ -19,6 +20,7 @@ members = [
   "shared",
   "datalog",
   "datalogmtl",
+  "n3",
   "python",
   "ml",
   "cli",
@@ -30,7 +32,7 @@ exclude = [
 ]
 
 [workspace.package]
-version      = "0.3.0"
+version      = "0.3.1"
 edition      = "2021"
 license      = "MPL-2.0"
 # Floor imposed by the dependency tree (hashbrown / indexmap / toml_edit all

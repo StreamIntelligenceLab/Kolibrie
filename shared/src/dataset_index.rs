@@ -11,6 +11,7 @@
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeSet, HashMap, HashSet};
 
+use crate::id_hash::{TermBuildHasher, TermMap, TermSet};
 use crate::terms::{Term, TriplePattern};
 use crate::triple::Triple;
 
@@ -71,9 +72,9 @@ pub struct QuadPattern {
     pub graph: GraphTerm,
 }
 
-type NestedIndex = HashMap<u32, HashMap<u32, HashSet<u32>>>;
-type GraphNestedIndex = HashMap<GraphId, NestedIndex>;
-type SpoGraphIndex = HashMap<u32, HashMap<u32, HashMap<u32, HashSet<GraphId>>>>;
+type NestedIndex = TermMap<TermMap<TermSet>>;
+type GraphNestedIndex = HashMap<GraphId, NestedIndex, TermBuildHasher>;
+type SpoGraphIndex = TermMap<TermMap<TermMap<HashSet<GraphId, TermBuildHasher>>>>;
 
 /// Quad storage with enough index orderings to answer any binding pattern without a full scan
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]

@@ -11,302 +11,146 @@
 //! Reading Turtle and Turtle-star
 
 use super::KolibrieDB;
+use n3::syntax::{Node, Statement};
+use n3::N3Error;
+use shared::quoted_triple_store::QuotedTripleStore;
 use shared::rdf_term;
+use shared::term_encoder::TermsMut;
 use shared::triple::Triple;
+use std::sync::RwLock;
+
+const RDF_FIRST: &str = "http://www.w3.org/1999/02/22-rdf-syntax-ns#first";
+const RDF_REST: &str = "http://www.w3.org/1999/02/22-rdf-syntax-ns#rest";
+const RDF_NIL: &str = "http://www.w3.org/1999/02/22-rdf-syntax-ns#nil";
 
 impl KolibrieDB {
-    /// Parses Turtle and adds the triples, honouring `@prefix` declarations and the `;` and `,`
-    /// abbreviations
+    /// Parses Turtle or Turtle-star and adds the triples, reporting a malformed document on
+    /// standard error and adding nothing from it
     pub fn parse_turtle(&mut self, turtle_data: &str) {
-        let document = rdf_term::next_document_scope();
-        for raw_line in turtle_data.lines() {
-            let line = raw_line.trim();
-
-            if line.is_empty() || line.starts_with("#") {
-                continue;
-            }
-
-            if line.starts_with("@prefix") || line.starts_with("PREFIX") {
-                let prefix_line = line
-                    .trim_start_matches("@prefix")
-                    .trim_start_matches("PREFIX")
-                    .trim_end_matches('.')
-                    .trim();
-
-                let parts: Vec<&str> = prefix_line.split_whitespace().collect();
-                if parts.len() >= 2 {
-                    let prefix = parts[0].trim_end_matches(':').to_string();
-                    let uri = parts[1]
-                        .trim_start_matches('<')
-                        .trim_end_matches('>')
-                        .to_string();
-                    self.prefixes.insert(prefix, uri);
-                } else {
-                    eprintln!("KOLIBRIE_OPERATION_FAILED");
-                }
-                continue;
-            }
-
-            let tokens = Self::tokenize_turtle_star_line(line);
-
-            let mut subject_raw: Option<String> = None;
-            let mut predicate_raw: Option<String> = None;
-            let mut object_tokens: Vec<String> = Vec::new();
-
-            let mut expect_subject = true;
-            let mut expect_predicate = false;
-            let mut expect_object = false;
-
-            let flush_object = |this: &mut Self,
-                                subject_raw: &Option<String>,
-                                predicate_raw: &Option<String>,
-                                object_tokens: &mut Vec<String>| {
-                if let (Some(s_raw), Some(p_raw)) = (subject_raw.as_ref(), predicate_raw.as_ref()) {
-                    if object_tokens.is_empty() {
-                        return;
-                    }
-
-                    let object_raw = object_tokens.join(" ");
-
-                    let (object_part, annotations) = if let Some(ann_start) = object_raw.find("{|")
-                    {
-                        let obj = object_raw[..ann_start].trim().to_string();
-
-                        if let Some(ann_end) = object_raw.find("|}") {
-                            let ann_content = object_raw[ann_start + 2..ann_end].trim();
-                            let ann_parts: Vec<&str> =
-                                ann_content.splitn(2, char::is_whitespace).collect();
-
-                            if ann_parts.len() == 2 {
-                                (
-                                    obj,
-                                    vec![(ann_parts[0].to_string(), ann_parts[1].to_string())],
-                                )
-                            } else {
-                                (obj, vec![])
-                            }
-                        } else {
-                            (object_raw, vec![])
-                        }
-                    } else {
-                        (object_raw, vec![])
-                    };
-
-                    let subject =
-                        this.resolve_query_term(&Self::clean_turtle_term(s_raw), &this.prefixes);
-                    let subject = this.scope_blank_nodes(subject, document);
-                    let predicate =
-                        this.resolve_query_term(&Self::clean_turtle_term(p_raw), &this.prefixes);
-                    let predicate = this.scope_blank_nodes(predicate, document);
-                    let object = this
-                        .resolve_query_term(&Self::clean_turtle_term(&object_part), &this.prefixes);
-                    let object = this.scope_blank_nodes(object, document);
-
-                    if subject.starts_with("<<") || object.starts_with("<<") {
-                        let s_id = this.encode_term_star(&subject);
-                        let p_id = this.encode_term_star(&predicate);
-                        let o_id = this.encode_term_star(&object);
-                        let triple = Triple {
-                            subject: s_id,
-                            predicate: p_id,
-                            object: o_id,
-                        };
-                        this.add_triple(triple);
-                    } else {
-                        let mut dict = this.dictionary.write();
-                        let triple = Triple {
-                            subject: dict.encode(&subject),
-                            predicate: dict.encode(&predicate),
-                            object: dict.encode(&object),
-                        };
-                        drop(dict);
-                        this.add_triple(triple);
-                    }
-
-                    for (ann_pred, ann_obj) in &annotations {
-                        let qt_str = format!("<< {} {} {} >>", subject, predicate, object);
-                        let qt_id = this.encode_term_star(&qt_str);
-
-                        let ann_p_id = this.encode_term_star(&this.resolve_query_term(
-                            &Self::clean_turtle_term(ann_pred),
-                            &this.prefixes,
-                        ));
-                        let ann_o_id =
-                            this.encode_term_star(&this.resolve_query_term(
-                                &Self::clean_turtle_term(ann_obj),
-                                &this.prefixes,
-                            ));
-
-                        let ann_triple = Triple {
-                            subject: qt_id,
-                            predicate: ann_p_id,
-                            object: ann_o_id,
-                        };
-                        this.add_triple(ann_triple);
-                    }
-
-                    object_tokens.clear();
-                }
-            };
-
-            for token in tokens {
-                match token.as_str() {
-                    "." => {
-                        flush_object(self, &subject_raw, &predicate_raw, &mut object_tokens);
-                        subject_raw = None;
-                        predicate_raw = None;
-                        expect_subject = true;
-                        expect_predicate = false;
-                        expect_object = false;
-                    }
-                    ";" => {
-                        flush_object(self, &subject_raw, &predicate_raw, &mut object_tokens);
-                        predicate_raw = None;
-                        expect_predicate = true;
-                        expect_object = false;
-                    }
-                    "," => {
-                        flush_object(self, &subject_raw, &predicate_raw, &mut object_tokens);
-                        expect_object = true;
-                    }
-                    _ => {
-                        if expect_subject {
-                            subject_raw = Some(token);
-                            expect_subject = false;
-                            expect_predicate = true;
-                        } else if expect_predicate {
-                            predicate_raw = Some(token);
-                            expect_predicate = false;
-                            expect_object = true;
-                        } else if expect_object {
-                            object_tokens.push(token);
-                        } else {
-                            object_tokens.push(token);
-                        }
-                    }
-                }
-            }
-
-            flush_object(self, &subject_raw, &predicate_raw, &mut object_tokens);
+        if let Err(error) = self.try_parse_turtle(turtle_data) {
+            eprintln!("KOLIBRIE_OPERATION_FAILED: {error}");
         }
     }
 
-    /// Tokenize a Turtle-star line, keeping `<< ... >>` and punctuation structure intact
-    fn tokenize_turtle_star_line(line: &str) -> Vec<String> {
-        let mut tokens = Vec::new();
-        let mut current = String::new();
-
-        let mut depth = 0i32;
-        let mut in_uri = false;
-        let mut in_literal = false;
-        let mut escaped = false;
-
-        let mut chars = line.chars().peekable();
-
-        while let Some(ch) = chars.next() {
-            if escaped {
-                current.push(ch);
-                escaped = false;
-                continue;
-            }
-
-            match ch {
-                '\\' if in_literal => {
-                    current.push(ch);
-                    escaped = true;
-                }
-
-                '"' if !in_uri && depth == 0 => {
-                    in_literal = !in_literal;
-                    current.push(ch);
-                }
-
-                '"' if depth > 0 => {
-                    in_literal = !in_literal;
-                    current.push(ch);
-                }
-
-                '<' if !in_literal => {
-                    if chars.peek() == Some(&'<') && !in_uri {
-                        current.push(ch);
-                        current.push(chars.next().unwrap());
-                        depth += 1;
-                    } else if depth > 0 {
-                        current.push(ch);
-                        if chars.peek() == Some(&'<') {
-                            current.push(chars.next().unwrap());
-                            depth += 1;
-                        }
-                    } else {
-                        in_uri = true;
-                        current.push(ch);
-                    }
-                }
-
-                '>' if !in_literal => {
-                    if depth > 0 && !in_uri {
-                        current.push(ch);
-                        if chars.peek() == Some(&'>') {
-                            current.push(chars.next().unwrap());
-                            depth -= 1;
-                            if depth == 0 {
-                                tokens.push(current.trim().to_string());
-                                current.clear();
-                            }
-                        }
-                    } else if in_uri {
-                        in_uri = false;
-                        current.push(ch);
-                        if depth == 0 {
-                            tokens.push(current.trim().to_string());
-                            current.clear();
-                        }
-                    } else {
-                        current.push(ch);
-                    }
-                }
-
-                ';' | ',' | '.' if depth == 0 && !in_uri && !in_literal => {
-                    let trimmed = current.trim().to_string();
-                    if !trimmed.is_empty() {
-                        tokens.push(trimmed);
-                        current.clear();
-                    }
-                    tokens.push(ch.to_string());
-                }
-
-                ' ' | '\t' | '\n' | '\r' if depth == 0 && !in_uri && !in_literal => {
-                    let trimmed = current.trim().to_string();
-                    if !trimmed.is_empty() {
-                        tokens.push(trimmed);
-                        current.clear();
-                    }
-                }
-
-                _ => {
-                    current.push(ch);
-                }
-            }
+    /// Parses Turtle or Turtle-star and adds the triples, returning how many it added; prefixes
+    /// the store knows need no declaration, `<< s p o >>` is the quoted triple itself as RDF-star
+    /// reads it, and collections become `rdf:first`/`rdf:rest` chains
+    ///
+    /// # Errors
+    /// Returns [`N3Error::Syntax`] for malformed text and [`N3Error::Unsupported`] for N3 that
+    /// Turtle cannot write, such as variables or formulas; nothing is added then
+    pub fn try_parse_turtle(&mut self, turtle_data: &str) -> Result<usize, N3Error> {
+        let mut known = String::new();
+        for (prefix, iri) in &self.prefixes {
+            known.push_str(&format!("@prefix {prefix}: <{iri}> .\n"));
         }
-
-        let trimmed = current.trim().to_string();
-        if !trimmed.is_empty() {
-            tokens.push(trimmed);
+        let document = n3::parse_rdf_star(&format!("{known}{turtle_data}"), None)?;
+        let mut writer = Writer {
+            terms: self.dictionary.write(),
+            quoted: &self.quoted_triple_store,
+            scope: rdf_term::next_document_scope(),
+            lists: 0,
+            triples: Vec::new(),
+        };
+        for statement in &document.statements {
+            let triple = writer.triple(statement, false)?;
+            writer.triples.push(triple);
         }
+        let triples = std::mem::take(&mut writer.triples);
+        drop(writer);
+        for (prefix, iri) in document.prefixes {
+            self.prefixes.insert(prefix, iri);
+        }
+        let count = triples.len();
+        for triple in triples {
+            self.add_triple(triple);
+        }
+        Ok(count)
+    }
+}
 
-        tokens
+/// Encodes a document's terms, holding the store's dictionary for the whole document
+struct Writer<'a> {
+    terms: TermsMut<'a>,
+    quoted: &'a RwLock<QuotedTripleStore>,
+    scope: u64,
+    lists: usize,
+    triples: Vec<Triple>,
+}
+
+impl Writer<'_> {
+    /// `statement` as ids; `quoted` inside `<< … >>`, where a collection has nowhere to go
+    fn triple(&mut self, statement: &Statement, quoted: bool) -> Result<Triple, N3Error> {
+        Ok(Triple {
+            subject: self.term(&statement.subject, quoted)?,
+            predicate: self.term(&statement.predicate, quoted)?,
+            object: self.term(&statement.object, quoted)?,
+        })
     }
 
-    fn clean_turtle_term(term: &str) -> String {
-        let term = term.trim();
-        if term.starts_with("<<") {
-            term.to_string()
-        } else if term.starts_with('<') && term.ends_with('>') {
-            term.to_string()
-        } else if term.starts_with('"') {
-            term.to_string()
-        } else {
-            term.trim_matches('"').to_string()
+    fn term(&mut self, node: &Node, quoted: bool) -> Result<u32, N3Error> {
+        match node {
+            Node::Iri(iri) => Ok(self.encode(iri)),
+            Node::Literal {
+                lexical,
+                datatype,
+                language,
+            } => Ok(self.encode(&rdf_term::spell_literal(
+                lexical,
+                datatype.as_deref(),
+                language.as_deref(),
+            ))),
+            Node::Blank(label) => Ok(self.encode(&format!("_:{label}"))),
+            Node::List(_) if quoted => Err(N3Error::Unsupported(
+                "a collection inside a quoted triple".to_string(),
+            )),
+            Node::List(items) => self.list(items),
+            Node::Formula(statements) if statements.len() == 1 => {
+                let triple = self.triple(&statements[0], true)?;
+                let mut quoted = self
+                    .quoted
+                    .write()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner());
+                Ok(quoted.encode(triple.subject, triple.predicate, triple.object))
+            }
+            Node::Formula(_) => Err(N3Error::Unsupported(
+                "a formula '{ … }', which Turtle cannot write".to_string(),
+            )),
+            Node::Var(name) => Err(N3Error::Unsupported(format!(
+                "the variable '?{name}', which Turtle cannot write"
+            ))),
         }
+    }
+
+    /// The head of an `rdf:first`/`rdf:rest` chain holding `items`, the chain queued as triples
+    fn list(&mut self, items: &[Node]) -> Result<u32, N3Error> {
+        let first = self.encode(RDF_FIRST);
+        let rest = self.encode(RDF_REST);
+        let mut tail = self.encode(RDF_NIL);
+        let mut cells = Vec::with_capacity(items.len());
+        for _ in items {
+            self.lists += 1;
+            let label = rdf_term::spell_blank_node(&format!(".list{}", self.lists), self.scope);
+            cells.push(self.encode(&label));
+        }
+        for (cell, item) in cells.iter().zip(items).rev() {
+            let value = self.term(item, false)?;
+            self.triples.push(Triple {
+                subject: *cell,
+                predicate: first,
+                object: value,
+            });
+            self.triples.push(Triple {
+                subject: *cell,
+                predicate: rest,
+                object: tail,
+            });
+            tail = *cell;
+        }
+        Ok(tail)
+    }
+
+    fn encode(&mut self, spelling: &str) -> u32 {
+        self.terms.encode(spelling)
     }
 }
